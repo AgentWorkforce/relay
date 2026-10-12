@@ -15,6 +15,8 @@ const CLEANUP_ACK_TIMEOUT: Duration = Duration::from_secs(30);
 /// The retry delay doubles per failed attempt up to the cap, with ±25%
 /// jitter, so a fleet of stuck cleanups cannot pile onto an already
 /// pressured Relaycast (e.g. sustained `d1_pressure`/`workspace_busy`).
+/// Jitter is applied inside the cap so the five-minute maximum is a real
+/// bound, not a base the jitter can exceed.
 fn cleanup_retry_delay(failed_attempts: u32) -> Duration {
     use rand::Rng;
     let shift = failed_attempts.saturating_sub(1).min(6);
@@ -24,6 +26,7 @@ fn cleanup_retry_delay(failed_attempts: u32) -> Duration {
     let base_ms = base.as_millis() as u64;
     let jitter = base_ms / 4;
     Duration::from_millis(rand::thread_rng().gen_range(base_ms - jitter..=base_ms + jitter))
+        .min(CLEANUP_RETRY_MAX_DELAY)
 }
 
 /// What an owned-cleanup attempt proved about the remote identity.
@@ -493,8 +496,15 @@ impl BrokerRuntime {
                         "owned identity cleanup unconfirmed; name reserved for retry");
                 }
             } else {
+                let unverifiable = matches!(&result, Ok(CleanupOutcome::Unverifiable));
                 match &result {
                     Ok(CleanupOutcome::IdentityNotOurs) => {
+                        // A replacement holding the name means this
+                        // generation's token is dead — and it may still sit
+                        // in the shared registration cache, where the next
+                        // spawn's 409 takeover would be handed it back.
+                        // Drop it the way a confirmed delete does.
+                        pending.http.invalidate_cached_registration(name.as_str());
                         tracing::info!(worker = %name, %generation,
                         "remote identity is no longer this generation's; releasing owned cleanup custody")
                     }
@@ -514,7 +524,12 @@ impl BrokerRuntime {
                     .is_some_and(|(owned, _)| *owned == generation)
                 {
                     self.workers.owned_spawn_generations.remove(&name);
-                    if delete_identity {
+                    // Only a remotely-proven release earns the completion
+                    // tombstone: an unverifiable cleanup freed custody without
+                    // proving the remote identity is gone, and the tombstone's
+                    // `{"identity":"deleted"}` fast-path must not repeat a
+                    // claim the cleanup could not confirm.
+                    if delete_identity && !unverifiable {
                         self.workers
                             .completed_owned_releases
                             .push_back((name.clone(), generation));
@@ -529,7 +544,16 @@ impl BrokerRuntime {
                 persist_journal(&self.workers);
             }
             for completion in completions {
-                let cleanup_error = result.as_ref().err().map(|error| format!("owned identity cleanup unconfirmed for {name} generation {generation}; retry retained: {error}"));
+                let cleanup_error = match &result {
+                    Err(error) => Some(format!("owned identity cleanup unconfirmed for {name} generation {generation}; retry retained: {error}")),
+                    // Custody freed, but nothing remote was proven — callers
+                    // must hear that, not `identity: deleted` for a row that
+                    // may still exist.
+                    Ok(CleanupOutcome::Unverifiable) => Some(format!(
+                        "owned identity cleanup unverifiable for {name} generation {generation}; name released without remote confirmation"
+                    )),
+                    _ => None,
+                };
                 if let Some(delivery_ack) =
                     send_cleanup_completion(&self.fleet_completion_tx, completion, cleanup_error)
                 {
@@ -537,5 +561,26 @@ impl BrokerRuntime {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_retry_delay_never_exceeds_the_cap() {
+        // The ±25% jitter is applied inside the five-minute cap — a capped
+        // base must not be pushed past the stated maximum.
+        for attempt in [6_u32, 7, 8, 20, u32::MAX] {
+            for _ in 0..200 {
+                assert!(
+                    cleanup_retry_delay(attempt) <= CLEANUP_RETRY_MAX_DELAY,
+                    "delay exceeded the cap at attempt {attempt}"
+                );
+            }
+        }
+        // Lower attempts keep their jittered range below the cap anyway.
+        assert!(cleanup_retry_delay(1) <= CLEANUP_RETRY_MAX_DELAY);
     }
 }

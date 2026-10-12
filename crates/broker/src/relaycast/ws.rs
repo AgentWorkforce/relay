@@ -451,7 +451,7 @@ impl RelaycastHttpClient {
         }
     }
 
-    fn invalidate_cached_registration(&self, agent_name: &str) {
+    pub(crate) fn invalidate_cached_registration(&self, agent_name: &str) {
         if let Some(registration) = self.registration.as_ref() {
             registration.invalidate_cached_registration(agent_name);
         }
@@ -1428,7 +1428,13 @@ impl RelaycastHttpClient {
                             "agent_release_generation_conflict" | "agent_identity_mismatch"
                         ))
                         || (status == reqwest::StatusCode::FORBIDDEN
-                            && error_code == "expected_token_hash_mismatch");
+                            && error_code == "expected_token_hash_mismatch")
+                        // The bounded visibility retries above already covered
+                        // read-after-write lag; a 404 that outlives them means
+                        // the identity is genuinely gone — the cleanup's goal
+                        // is met and retrying can never change the answer.
+                        || (status == reqwest::StatusCode::NOT_FOUND
+                            && error_code == "agent_not_found");
                     if not_ours {
                         return Err(ReleaseIdentityConflict {
                             agent_name: agent_name.to_string(),
@@ -3214,7 +3220,7 @@ mod tests {
         retry_workspace_busy_reconcile, with_registration_attempts, workspace_busy_reconcile_delay,
         workspace_busy_retry_allowed, ImpersonationAwareRegistrationError, MessageInjectionMode,
         RecipientReachability, RegRetryOutcome, RegisterIntent, RelaycastHttpClient,
-        RelaycastRegistrationError, MAX_AGENT_REGISTRATION_ELAPSED,
+        RelaycastRegistrationError, ReleaseIdentityConflict, MAX_AGENT_REGISTRATION_ELAPSED,
         MAX_AGENT_REGISTRATION_OUTER_TIMEOUT, MAX_AGENT_REGISTRATION_RETRY_DELAY,
         WORKSPACE_BUSY_ACTION_SAFETY_CAP, WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP,
         WORKSPACE_BUSY_RECONCILE_BUDGET, WORKSPACE_BUSY_RECONCILE_SAFETY_CAP,
@@ -5343,6 +5349,43 @@ mod tests {
             .expect("guarded cleanup should retry transient by-name absence");
         server.await.unwrap();
         assert!(client.owned_identity_token_hash("owned-worker").is_err());
+    }
+
+    #[tokio::test]
+    async fn owned_identity_cleanup_treats_persistent_agent_not_found_as_terminal() {
+        use sha2::{Digest, Sha256};
+        let server = MockServer::start();
+        // The bounded visibility retries already covered read-after-write
+        // lag; a 404 that outlives them means the identity is genuinely gone
+        // and the cleanup's goal is met — not retried forever.
+        let release = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/release");
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"not present on this Relaycast target"
+            }}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        client.seed_agent_token("owned-worker", "owned-token");
+        let expected_hash = format!("{:x}", Sha256::digest(b"owned-token"));
+
+        let error = client
+            .release_agent_identity_guarded_with_budget(
+                "owned-worker",
+                None,
+                true,
+                Some(&expected_hash),
+                &[1, 1],
+                Duration::from_secs(30),
+            )
+            .await
+            .expect_err("a persistent agent_not_found resolves the cleanup, not a retry");
+
+        assert!(
+            error.downcast_ref::<ReleaseIdentityConflict>().is_some(),
+            "expected a durable identity conflict, got: {error:#}"
+        );
+        // Two visibility retries plus the terminal verdict: three requests.
+        release.assert_hits(3);
     }
 
     #[tokio::test]

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Owned worker-name cleanup no longer gives up after five tries and blocks the name until manual recovery. The broker keeps reconciling the release on a jittered backoff (up to five minutes between attempts), and completes the cleanup outright when Relaycast reports the remote identity is already gone or belongs to a newer generation — so a name stuck in "pending owned cleanup" frees itself once the remote state is reachable or resolved.
+- Owned worker-name cleanup no longer gives up after five tries and blocks the name until manual recovery. The broker keeps reconciling the release on a jittered backoff (up to five minutes between attempts), and completes the cleanup outright when Relaycast reports the remote identity is already gone or belongs to a newer generation — so a name stuck in "pending owned cleanup" frees itself once the remote state is reachable or resolved. When the remote deletion cannot be verified (no captured registration token), the release reports the cleanup as unverifiable instead of claiming the identity was deleted, and a confirmed ownership conflict drops the cached registration credential so it cannot be replayed.
 - `npx @agent-relay/connect join` no longer waits 60 seconds and rolls back when the local probe is running but cannot match the command to a live Claude Code or Codex session (for example, when it was run from a separate terminal). It stops within about a second and says to run the command from the agent's own shell. A timeout that does happen now names the probe's last answer. `connect install` no longer reports such a probe as ready when its version cannot be checked.
 
 ## [13.4.0] - 2026-10-11

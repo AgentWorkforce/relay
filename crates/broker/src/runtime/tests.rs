@@ -516,7 +516,7 @@ async fn owned_cleanup_releases_custody_when_remote_identity_is_not_ours() {
         .runtime
         .workers
         .owned_spawn_generations
-        .insert(name.clone(), (generation, http));
+        .insert(name.clone(), (generation, http.clone()));
     fixture
         .runtime
         .fleet_delivery_book
@@ -563,6 +563,92 @@ async fn owned_cleanup_releases_custody_when_remote_identity_is_not_ours() {
         .owned_spawn_generations
         .contains_key(&name));
     assert!(released.await.unwrap().is_ok());
+    // The conflict proves a replacement holds the name, so this generation's
+    // cached token is dead — a later spawn's takeover must not reuse it.
+    assert!(http.owned_identity_token_hash(&name).is_err());
+    let mut respawn = fixture.runtime.workers.workers["unrelated"].spec.clone();
+    respawn.name = name.clone();
+    let spawn_error = fixture
+        .runtime
+        .workers
+        .spawn(respawn, None, None, None, false, None, None, None, None)
+        .await
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+    assert!(
+        !spawn_error.contains("pending owned cleanup"),
+        "freed name must not be rejected: {spawn_error}"
+    );
+}
+
+#[tokio::test]
+async fn owned_cleanup_reports_unverifiable_release_without_claiming_delete() {
+    use crate::listen_api::ListenApiRequest;
+    use tokio::sync::oneshot;
+    let registry = make_worker_registry_with_worker("unrelated").await;
+    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    let name = WorkerName::from("unverifiable");
+    let generation = Uuid::new_v4();
+    // No seeded credential: the guarded delete can never run, so the cleanup
+    // frees custody rather than retrying forever — but the caller must hear
+    // "unverifiable", not `identity: deleted` for a row that may still exist.
+    let http = RelaycastHttpClient::new(
+        Some("http://127.0.0.1:1".into()),
+        "rk_live_fixture",
+        "broker",
+        "codex",
+    );
+    fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .insert(name.clone(), (generation, http));
+    let (reply, released) = oneshot::channel();
+    fixture
+        .runtime
+        .handle_api_request(ListenApiRequest::Release {
+            name: name.clone(),
+            reason: None,
+            expected_generation: Some(generation.to_string()),
+            delete_identity: true,
+            reply,
+        })
+        .await;
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            fixture.runtime.reconcile_identity_cleanups().await;
+            if !fixture
+                .runtime
+                .workers
+                .identity_cleanups
+                .contains_key(&name)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("an unverifiable cleanup must not retry forever");
+    let error = released
+        .await
+        .unwrap()
+        .expect_err("unverified deletion must not report success");
+    assert!(error.contains("unverifiable"), "{error}");
+    assert!(!fixture
+        .runtime
+        .workers
+        .owned_spawn_generations
+        .contains_key(&name));
+    // Nothing remote was proven, so the cleanup earns no completion
+    // tombstone — a replayed release must not answer `identity: deleted`.
+    assert!(fixture
+        .runtime
+        .workers
+        .completed_owned_releases
+        .iter()
+        .all(|(n, _)| *n != name));
     let mut respawn = fixture.runtime.workers.workers["unrelated"].spec.clone();
     respawn.name = name.clone();
     let spawn_error = fixture
