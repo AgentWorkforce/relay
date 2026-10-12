@@ -739,6 +739,16 @@ export async function resolveNodeIdentityFromSession(
  * Read the node id/name the broker registered as, from its HTTP session. The
  * capability providers attach to this same node so they share its identity.
  */
+/**
+ * The node id and token of the broker running for `dataDir`, if one is up.
+ * Null when no broker is running or it has not reported its node yet.
+ */
+export async function readRunningBrokerNodeIdentity(dataDir: string): Promise<BrokerNodeIdentity | null> {
+  const conn = readBrokerConnectionFromFs(fs, dataDir);
+  if (!conn) return null;
+  return readBrokerNodeIdentity(conn).catch(() => null);
+}
+
 async function readBrokerNodeIdentity(
   conn: BrokerConnection,
   options: { awaitTokenMs?: number; sleep?: (ms: number) => Promise<void> } = {}

@@ -472,6 +472,58 @@ async function mintFleetNodeEnrollment(
 }
 
 /**
+ * Record the signed-in person as the owner of the node a node token belongs
+ * to (Cloud's `POST /api/v1/fleet/nodes/claim`). Cloud asks Relaycast which
+ * node the token is for and requires a workspace owner, so agents the node
+ * spawns then count as that person's own. The node token goes only to Cloud,
+ * over the authenticated session, and is never printed.
+ */
+export async function claimFleetNodeOwnership(
+  options: { workspace: string; nodeToken: string; apiUrl?: string },
+  deps: Pick<CloudDependencies, 'ensureCloudSession' | 'authorizedApiFetch'>
+): Promise<{ nodeId: string; claimed: boolean }> {
+  const workspace = options.workspace.trim();
+  if (!workspace) {
+    throw new Error('A workspace name or ID is required to claim a node.');
+  }
+  try {
+    const session = await deps.ensureCloudSession({
+      apiUrl: options.apiUrl || defaultApiUrl(),
+      interactive: false,
+    });
+    const selected = await resolveWorkspaceSelector(workspace, session.auth, deps);
+    const resolved = await resolveCloudWorkspace(selected.workspaceId, selected.auth, deps);
+    const { response } = await deps.authorizedApiFetch(
+      resolved.auth,
+      '/api/v1/fleet/nodes/claim',
+      {
+        method: 'POST',
+        body: JSON.stringify({ workspaceId: resolved.cloudWorkspaceId, nodeToken: options.nodeToken }),
+      },
+      { interactive: false }
+    );
+    const payload = (await response.json().catch(() => null)) as unknown;
+    if (!response.ok) {
+      // Cloud's messages name the problem and never echo the token.
+      const message = isObject(payload) && typeof payload.error === 'string' ? payload.error : undefined;
+      if (response.status === 403 && !message) {
+        throw new Error('Only an owner of the workspace can claim its nodes.');
+      }
+      throw new Error(`Could not claim the node: ${message ?? `${response.status} ${response.statusText}`.trim()}`);
+    }
+    if (!isObject(payload) || typeof payload.nodeId !== 'string' || typeof payload.claimed !== 'boolean') {
+      throw new Error('Cloud returned an invalid node claim response.');
+    }
+    return { nodeId: payload.nodeId, claimed: payload.claimed };
+  } catch (error) {
+    if (isCloudLoginError(error)) {
+      throw new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
+    }
+    throw error;
+  }
+}
+
+/**
  * Link a redeemed enrollment to this project's workspace pin and report anything
  * the operator must act on. Runs after the one-time token is already consumed,
  * so every failure here is reported and swallowed — never fatal.
