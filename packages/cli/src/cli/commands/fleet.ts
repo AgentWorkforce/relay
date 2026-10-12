@@ -430,7 +430,7 @@ export function registerFleetCommands(
     .description('Attach live Relayfile context to an existing sandbox using Cloud sign-in')
     .requiredOption('--cloud-workspace-id <id>', 'Cloud workspace UUID returned by sandbox provisioning')
     .requiredOption('--sandbox-id <id>', 'Exact Cloud sandbox identity (sbx_<UUID>)')
-    .option('--path <path...>', 'Only these context subtrees (each must end in /**)')
+    .option('--path <path...>', 'Only these exact context roots (for example /linear)')
     .option('--cloud-api-url <url>', 'Cloud API origin, including /cloud when required')
     .option('--timeout <ms>', 'Attachment timeout in milliseconds', '300000')
     .action(async (options: Record<string, unknown>) => {

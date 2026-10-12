@@ -408,13 +408,14 @@ spawn response (this uses Cloud sign-in):
 agent-relay fleet relayfile attach \
   --cloud-workspace-id <Cloud-workspace-UUID> \
   --sandbox-id <sbx_UUID> \
-  --path '/linear/**' '/.skills/**'
+  --path '/linear' '/.skills'
 ```
 
 Omit `--path` for the full workspace. For a dev sandbox, add
 `--cloud-api-url https://dev.agentrelay.com/cloud`. The command waits at most
 five minutes by default, reports the separate mount path, and does not restart
-the worker or retry a failed attachment. Tell an already running worker the
+the worker or retry a failed attachment. Pending detached preparation is polled
+against the same sandbox within that shared deadline. Tell an already running worker the
 returned path when its task needs that context. The mount uses its own directory;
 it never overlays the Git checkout. Attachment failure leaves the repository task
 running.
@@ -430,9 +431,10 @@ use the pinned workspace's connected GitHub access; a repository-access error
 means that connection must be granted access to the repository. No GitHub token
 or workspace key needs to be copied into the task, mount, or checkout.
 
-With `--checkout`, the Git checkout and Relayfile mirror are separate trees. In
+With `--checkout --sandbox-relayfile`, the Git checkout and Relayfile mirror are
+separate trees. Checkout-only mode has no Relayfile mirror or workspace skills. In
 the ordinary live mode, source files are decoded from Relayfile records without
-placing `.git` in the mirror. Workspace `.skills` are exposed through the agent
+placing `.git` in the mirror. When a live mount is requested at startup, workspace `.skills` are exposed through the agent
 CLIs' usual skill directories, and the worker's task context identifies the
 mirror and exact source revision.
 

@@ -761,12 +761,14 @@ export async function ensureAuthenticated(
 }
 
 export async function ensureCloudSession(options: CloudSessionOptions = {}): Promise<CloudSession> {
+  options.signal?.throwIfAborted();
   const env = options.env ?? process.env;
   const apiUrl = options.apiUrl || defaultApiUrl(env);
   const force = options.force === true;
   const interactive = options.interactive !== false;
   const refreshTimeoutMs = options.refreshTimeoutMs;
   const stored = !force ? await readStoredAuth(env) : null;
+  options.signal?.throwIfAborted();
 
   // Stored auth is authoritative on its own host. A host mismatch between
   // `apiUrl` (typically defaultApiUrl()) and `stored.apiUrl` is NOT a reason
@@ -807,6 +809,7 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
 
   try {
     const auth = await refreshStoredAuth(stored, {
+      signal: options.signal,
       refreshTimeoutMs,
       validateApiUrl: options.validateApiUrl,
     });
@@ -815,6 +818,7 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
       validateApiUrl: options.validateApiUrl,
     });
   } catch (error) {
+    options.signal?.throwIfAborted();
     if (isEnvBackedAuth(stored)) {
       throw toEnvAuthRefreshError(error);
     }

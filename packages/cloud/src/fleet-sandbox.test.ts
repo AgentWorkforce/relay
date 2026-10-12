@@ -99,7 +99,7 @@ describe('Cloud fleet sandbox client', () => {
     const result = await attachCloudFleetSandboxRelayfile({
       cloudWorkspaceId: CLOUD_WORKSPACE_ID,
       sandboxId: SANDBOX_ID,
-      paths: ['/linear/**'],
+      paths: ['/linear'],
     });
     expect(result.relayfileMountPath).toBe('/home/node/workspace');
     expect(mocks.authorizedApiFetch).toHaveBeenCalledExactlyOnceWith(
@@ -107,7 +107,7 @@ describe('Cloud fleet sandbox client', () => {
       `/api/v1/workspaces/${CLOUD_WORKSPACE_ID}/sandboxes/${SANDBOX_ID}/relayfile-mount`,
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ paths: ['/linear/**'] }),
+        body: JSON.stringify({ paths: ['/linear'] }),
         signal: expect.any(AbortSignal),
       }),
       { interactive: false }
@@ -130,6 +130,94 @@ describe('Cloud fleet sandbox client', () => {
       attachCloudFleetSandboxRelayfile({ cloudWorkspaceId: CLOUD_WORKSPACE_ID, sandboxId: SANDBOX_ID })
     ).rejects.toThrow('did not confirm');
   });
+
+  it('includes stalled Cloud authentication in the attachment timeout and never sends a late POST', async () => {
+    let finishAuth!: (value: { auth: typeof auth; client: object }) => void;
+    mocks.ensureCloudSession.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishAuth = resolve;
+        })
+    );
+    await expect(
+      attachCloudFleetSandboxRelayfile(
+        { cloudWorkspaceId: CLOUD_WORKSPACE_ID, sandboxId: SANDBOX_ID },
+        { timeoutMs: 20 }
+      )
+    ).rejects.toMatchObject({ name: 'TimeoutError' });
+    const signal = mocks.ensureCloudSession.mock.calls[0][0].signal as AbortSignal;
+    expect(signal.aborted).toBe(true);
+    finishAuth({ auth, client: {} });
+    await Promise.resolve();
+    expect(mocks.authorizedApiFetch).not.toHaveBeenCalled();
+  });
+
+  it('polls confirmed detached preparation on the same sandbox and authentication deadline', async () => {
+    mocks.authorizedApiFetch
+      .mockResolvedValueOnce({
+        auth: refreshedAuth,
+        response: Response.json(
+          {
+            sandboxId: SANDBOX_ID,
+            relayfileMounted: false,
+            state: 'pending',
+            phase: 'relayfile_mount_bootstrap',
+          },
+          { status: 202, headers: { 'Retry-After': '0' } }
+        ),
+      })
+      .mockResolvedValueOnce({
+        auth: refreshedAuth,
+        response: Response.json({
+          sandboxId: SANDBOX_ID,
+          relayWorkspaceId: 'rw_abc',
+          relayfileMounted: true,
+          relayfileMountPath: '/home/node/workspace',
+        }),
+      });
+    await expect(
+      attachCloudFleetSandboxRelayfile({ cloudWorkspaceId: CLOUD_WORKSPACE_ID, sandboxId: SANDBOX_ID })
+    ).resolves.toMatchObject({ relayfileMounted: true });
+    const calls = mocks.authorizedApiFetch.mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[1][0]).toEqual(refreshedAuth);
+    expect(calls[1][1]).toEqual(calls[0][1]);
+    expect(calls[1][2].signal).toBe(calls[0][2].signal);
+    expect(mocks.ensureCloudSession.mock.calls[0][0].signal).toBe(calls[0][2].signal);
+  });
+
+  it('does not poll pending preparation for a different sandbox', async () => {
+    mocks.authorizedApiFetch.mockResolvedValue({
+      auth,
+      response: Response.json(
+        {
+          sandboxId: 'sbx_wrong',
+          relayfileMounted: false,
+          state: 'pending',
+          phase: 'relayfile_mount_bootstrap',
+        },
+        { status: 202 }
+      ),
+    });
+    await expect(
+      attachCloudFleetSandboxRelayfile({ cloudWorkspaceId: CLOUD_WORKSPACE_ID, sandboxId: SANDBOX_ID })
+    ).rejects.toThrow('did not confirm pending');
+    expect(mocks.authorizedApiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['/linear/**', '/linear/../secret', 'relative', '/'])(
+    'rejects a path the Cloud attachment route cannot accept (%s)',
+    async (path) => {
+      await expect(
+        attachCloudFleetSandboxRelayfile({
+          cloudWorkspaceId: CLOUD_WORKSPACE_ID,
+          sandboxId: SANDBOX_ID,
+          paths: [path],
+        })
+      ).rejects.toThrow('absolute exact roots');
+      expect(mocks.ensureCloudSession).not.toHaveBeenCalled();
+    }
+  );
 
   it('does not retry a failed optional attachment or allocate a replacement sandbox', async () => {
     mocks.authorizedApiFetch.mockResolvedValue({

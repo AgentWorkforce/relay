@@ -212,7 +212,7 @@ describe('fleet sandbox command regressions', () => {
         '--sandbox-id',
         REPLAY_SANDBOX_ID,
         '--path',
-        '/linear/**',
+        '/linear',
         '--cloud-api-url',
         'https://dev.agentrelay.com/cloud',
       ],
@@ -222,7 +222,7 @@ describe('fleet sandbox command regressions', () => {
       {
         cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
         sandboxId: REPLAY_SANDBOX_ID,
-        paths: ['/linear/**'],
+        paths: ['/linear'],
       },
       { timeoutMs: 300000, apiUrl: 'https://dev.agentrelay.com/cloud' }
     );
