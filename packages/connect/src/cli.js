@@ -2,13 +2,20 @@
 
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import {
   ensureProbe,
+  findLiveSocket,
   InstallError,
   linuxProbeSessionUpdateHint,
+  probeSupportedOnPlatform,
+  requireSupportedProbe,
   requireExistingProbe as findExistingProbe,
 } from './install.js';
 import { requestJson, requireOk, SocketResponseError } from './http.js';
+import { identifyCaller, SessionNotFoundError } from './relay/identify.js';
+import { ensureRelay, RelayStartError } from './relay/launch.js';
+import { relayPaths } from './relay/paths.js';
 
 const USAGE = `Usage:
   connect join <link-or-id> [--name <agent_name>] [--host-claim-stdin] [--json]
@@ -113,8 +120,28 @@ function errorDetails(error) {
     connect_join_timeout: ['Relay Connect join timed out; retry the same join safely.', 8],
     connect_unreachable: ['Relay Connect cannot reach Cloud or Relaycast; retry once.', 8],
     agent_token_invalid: ['Relay Connect is over; run leave once to clear the local registration.', 3],
-    not_a_relay_session: ['Run this command from a live Claude Code or Codex session.', 6],
+    not_a_relay_session: [
+      "Agent Relay is running but could not match this command to a live Claude Code or Codex session. Run it from the agent's own shell tool, not a separate terminal; if it already is, update Claude Code or Codex and retry.",
+      6,
+    ],
   };
+  if (code === 'session_file_unreadable') {
+    return {
+      message: safeText(
+        error?.response?.error?.message,
+        "This session's file cannot be read; resume the session and retry."
+      ),
+      exitCode: 6,
+      code,
+    };
+  }
+  if (error instanceof SessionNotFoundError || error instanceof RelayStartError) {
+    return {
+      message: safeText(error.message.split('\n')[0]) + tailOf(error.message),
+      exitCode: error.exitCode,
+      code,
+    };
+  }
   if (known[code]) return { message: known[code][0], exitCode: known[code][1], code };
   if (error instanceof UsageError || error instanceof InstallError) {
     return { message: safeText(error.message, 'Relay Connect failed.'), exitCode: error.exitCode || 1, code };
@@ -127,6 +154,12 @@ function errorDetails(error) {
     exitCode: 1,
     code,
   };
+}
+
+// Keeps the log tail a start failure carries, on its own lines.
+function tailOf(message) {
+  const lines = String(message).split('\n').slice(1);
+  return lines.length ? `\n${lines.map((line) => safeText(line, '')).join('\n')}` : '';
 }
 
 async function requireExistingProbe() {
@@ -147,8 +180,15 @@ function requireSessionOk(response, probe) {
   return requireOk(response);
 }
 
-function joinSummary(response) {
+function joinSummary(response, backend) {
   const data = response.data || {};
+  const claudeNote =
+    backend.kind === 'node'
+      ? 'Claude Code note: Relay Connect sets "crossSessionInbound": "accept" in ~/.claude/settings.json so replies can be injected; the previous file is kept as settings.json.relay-desktop-backup.'
+      : 'Claude Code note: the probe sets "crossSessionInbound": "accept" in ~/.claude/settings.json; undo it by POSTing {"enabled":false} to /setup/direct-delivery over the pointer socket (exact command in the package README).';
+  const warnings = Array.isArray(data.warnings)
+    ? data.warnings.map((warning) => `Warning: ${safeText(warning)}`)
+    : [];
   const hostAgent = safeText(data.host?.agent_name);
   const hostPerson = safeText(data.host?.person, '');
   const host = hostPerson && hostPerson !== hostAgent ? `${hostPerson} (${hostAgent})` : hostAgent;
@@ -163,7 +203,12 @@ function joinSummary(response) {
     '- Check membership: npx -y @agent-relay/connect status',
     '- Leave: npx -y @agent-relay/connect leave',
     '- An ended or expired notice means the Connect is over; stop sending and do not silently rejoin.',
-    'Claude Code note: the probe sets "crossSessionInbound": "accept" in ~/.claude/settings.json; undo it by POSTing {"enabled":false} to /setup/direct-delivery over the pointer socket (exact command in the package README).',
+    ...(backend.kind === 'node'
+      ? ['- After a restart, run status once to resume delivery: npx -y @agent-relay/connect status']
+      : []),
+    claudeNote,
+    ...(backend.note ? [backend.note] : []),
+    ...warnings,
   ].join('\n');
 }
 
@@ -207,7 +252,7 @@ async function run(options) {
     return;
   }
 
-  const probe = options.command === 'join' ? await ensureProbe() : await requireExistingProbe();
+  const backend = await chooseBackend(options.command);
   if (options.command === 'join') {
     const body = { link: options.positionals[0] };
     if (options.name) body.name = options.name;
@@ -216,19 +261,19 @@ async function run(options) {
       if (!claim) throw new UsageError('--host-claim-stdin requires a claim on stdin.');
       body.host_claim = claim;
     }
-    const response = requireSessionOk(
-      await requestJson(probe.socketPath, {
+    const response = backend.check(
+      await backend.call({
         method: 'POST',
         path: '/connect/join',
         body: JSON.stringify(body),
         headers: { 'content-type': 'application/json' },
-      }),
-      probe
+        timeoutMs: 60_000,
+      })
     );
     delete body.host_claim;
 
     if (options.json) printJson(response);
-    else process.stdout.write(`${joinSummary(response)}\n`);
+    else process.stdout.write(`${joinSummary(response, backend)}\n`);
     return;
   }
 
@@ -236,13 +281,13 @@ async function run(options) {
     const message = await stdinText();
     if (!message) throw new UsageError('send requires message text on stdin.');
     const suffix = options.to ? `?to=${encodeURIComponent(options.to)}` : '';
-    const response = requireSessionOk(
-      await requestJson(probe.socketPath, {
+    const response = backend.check(
+      await backend.call({
         method: 'POST',
         path: `/connect/send${suffix}`,
         body: message,
-      }),
-      probe
+        headers: { 'x-agent-relay-request': randomUUID() },
+      })
     );
     if (options.json) printJson(response);
     else {
@@ -253,21 +298,96 @@ async function run(options) {
   }
 
   if (options.command === 'status') {
-    const response = requireSessionOk(
-      await requestJson(probe.socketPath, { path: '/connect/status' }),
-      probe
-    );
+    const response = backend.check(await backend.call({ path: '/connect/status' }));
     if (options.json) printJson(response);
     else process.stdout.write(`${statusSummary(response)}\n`);
     return;
   }
 
-  const response = requireSessionOk(
-    await requestJson(probe.socketPath, { method: 'POST', path: '/connect/leave' }),
-    probe
-  );
+  const response = backend.check(await backend.call({ method: 'POST', path: '/connect/leave' }));
   if (options.json) printJson(response);
   else process.stdout.write(`Left Relay Connect ${safeText(response.data?.connect_id)}.\n`);
+}
+
+async function nodeHoldsSession(home, target) {
+  try {
+    const state = JSON.parse(await readFile(relayPaths(home).state, 'utf8'));
+    return Boolean(state?.sessions?.[`${target.kind}:${target.id}`]);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Which local relay serves this command. The Node relay serves any session it
+ * already holds; otherwise an eligible desktop probe is preferred; otherwise
+ * `join` starts the Node relay. AGENT_RELAY_CONNECT_BACKEND=node|probe forces one.
+ */
+async function chooseBackend(command) {
+  const home = os.homedir();
+  const forced = process.env.AGENT_RELAY_CONNECT_BACKEND;
+  const probeBackend = (probe) => ({
+    kind: 'probe',
+    call: (request) => requestJson(probe.socketPath, request),
+    check: (response) => requireSessionOk(response, probe),
+  });
+  if (forced === 'probe') {
+    return probeBackend(command === 'join' ? await ensureProbe() : await requireExistingProbe());
+  }
+
+  let target = null;
+  let identifyError = null;
+  try {
+    target = await identifyCaller({ home });
+  } catch (error) {
+    if (!(error instanceof SessionNotFoundError)) throw error;
+    identifyError = error;
+  }
+  const nodeBackend = async (note) => {
+    const socket = await ensureRelay({ home });
+    return {
+      kind: 'node',
+      note,
+      call: (request) =>
+        requestJson(socket, {
+          ...request,
+          headers: { ...request.headers, 'x-agent-relay-target': `${target.kind}:${target.id}` },
+        }),
+      check: (response) => requireOk(response),
+    };
+  };
+  if (forced === 'node') {
+    if (!target) throw identifyError;
+    return await nodeBackend();
+  }
+  if (target && (await nodeHoldsSession(home, target))) return await nodeBackend();
+
+  let probe = null;
+  try {
+    probe = await findLiveSocket(home, 2_000);
+  } catch {
+    // An unsafe or unreadable probe pointer is never used; the Node relay is.
+    probe = null;
+  }
+  if (probe && !probe.sessionRejected) {
+    if (probeSupportedOnPlatform(probe)) return probeBackend(probe);
+    if (command === 'join' && target) {
+      return await nodeBackend(
+        `Note: Agent Relay ${safeText(probe.version)} is too old for Relay Connect, so this Connect uses the relay built into this package.`
+      );
+    }
+    requireSupportedProbe(probe);
+  }
+  if (!target) {
+    // The probe knows the session but cannot read its record: its reason is the useful one.
+    if (probe?.status?.error?.code === 'session_file_unreadable') throw new SocketResponseError(probe.status);
+    throw identifyError;
+  }
+  if (command === 'join') return await nodeBackend();
+  throw new SocketResponseError({
+    ok: false,
+    error: { code: 'connect_not_joined', message: 'This agent session has not joined a Relay Connect.' },
+  });
 }
 
 export async function main(argv = process.argv.slice(2)) {

@@ -86,8 +86,12 @@ async function runCli(home: string, args: string[], input = '') {
     if (error.code !== 'EEXIST') throw error;
   });
   return await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolveRun) => {
+    // Never let the session running these tests be identified as the caller.
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(([key]) => !/^(CLAUDE|CODEX)/.test(key))
+    );
     const child = spawn(process.execPath, [launcher, ...args], {
-      env: { ...process.env, HOME: home },
+      env: { ...env, HOME: home },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const stdout: Buffer[] = [];
@@ -1223,6 +1227,150 @@ describe('probe installer', () => {
     });
     expect(result.status.data.version).toBe('2026.10.5');
     expect(checks).toBe(2);
+  });
+
+  it('treats a probe that cannot identify the caller as live at once', async () => {
+    let clock = 0;
+    let checks = 0;
+    const result = await waitForLiveSocket({
+      timeoutMs: 60_000,
+      now: () => clock,
+      sleep: async (milliseconds) => {
+        clock += milliseconds;
+      },
+      pointer: async () => '/tmp/relay.sock',
+      check: async () => {
+        checks += 1;
+        return { ok: false, error: { code: 'not_a_relay_session' } };
+      },
+    });
+    expect(result).toMatchObject({ socketPath: '/tmp/relay.sock', sessionRejected: true });
+    expect(checks).toBe(1);
+    expect(clock).toBe(0);
+  });
+
+  it("names the probe's last answer when readiness times out", async () => {
+    let clock = 0;
+    await expect(
+      waitForLiveSocket({
+        timeoutMs: 2_000,
+        now: () => clock,
+        sleep: async (milliseconds) => {
+          clock += milliseconds;
+        },
+        pointer: async () => '/tmp/relay.sock',
+        check: async () => ({ ok: false, error: { code: 'relay_stopping' } }),
+      })
+    ).rejects.toThrow('after 2000 ms (its last answer was relay_stopping).');
+    clock = 0;
+    await expect(
+      waitForLiveSocket({
+        timeoutMs: 1_000,
+        now: () => clock,
+        sleep: async (milliseconds) => {
+          clock += milliseconds;
+        },
+        pointer: async () => '',
+        check: async () => null,
+      })
+    ).rejects.toThrow('(it never answered; see ~/.agentworkforce/desktop/headless.log).');
+  });
+
+  it('finds a live probe that rejects the caller instead of installing another', async () => {
+    const { home, socketPath } = await listen((_request, response) => {
+      json(response, { ok: false, error: { code: 'not_a_relay_session' } }, 403);
+    });
+    await expect(findLiveSocket(home)).resolves.toMatchObject({
+      socketPath,
+      sessionRejected: true,
+      version: undefined,
+    });
+  });
+
+  it('reports an unidentified session inline, as a fresh-HOME probe answers it', async () => {
+    // A just-started probe that cannot tie the caller to a live session (as on
+    // a fresh HOME) answers every route, /setup/status included, this way.
+    const seen: string[] = [];
+    const { home } = await listen((request, response) => {
+      seen.push(`${request.method} ${request.url}`);
+      json(
+        response,
+        {
+          ok: false,
+          error: {
+            code: 'not_a_relay_session',
+            message: 'This command is not running inside a supported live Agent Relay session.',
+          },
+        },
+        403
+      );
+    });
+    const started = Date.now();
+    const result = await runCli(home, ['join', 'connect-test']);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    // The CLI names the session itself; with no session and a probe that
+    // cannot place it either, it stops with what it checked.
+    expect(result).toEqual({
+      code: 6,
+      stdout: '',
+      stderr:
+        'Run this from a live Claude Code or Codex session (no Codex thread id in the environment; no Claude Code session record for any parent process). In Claude Code, if a permission check blocks the command, run it yourself with the ! prefix.\n',
+    });
+    expect(seen).toEqual(['GET /setup/status']);
+  });
+
+  it("passes the probe's explanation through for an unreadable session file", async () => {
+    const { home } = await listen((_request, response) => {
+      json(
+        response,
+        {
+          ok: false,
+          error: {
+            code: 'session_file_unreadable',
+            message: 'This Claude Code session is running, but its session file cannot be read.',
+          },
+        },
+        409
+      );
+    });
+    expect(await runCli(home, ['status'])).toEqual({
+      code: 6,
+      stdout: '',
+      stderr: 'This Claude Code session is running, but its session file cannot be read.\n',
+    });
+  });
+
+  it('keeps a fresh Linux install whose probe answers but cannot identify the caller', async () => {
+    const root = await mkdtemp(join(os.tmpdir(), 'connect-linux-unidentified-test-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const home = join(root, 'home');
+    const run = async (file: string, args: string[]) => {
+      if (file === 'tar') {
+        const destination = args[args.indexOf('-C') + 1];
+        const probe = join(destination, 'release/agent_relay/helpers/agent-relay-probe');
+        await mkdir(join(probe, '..'), { recursive: true });
+        await writeFile(probe, '#!/bin/sh\n');
+        await chmod(probe, 0o755);
+      }
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const result = await installLinux({
+      home,
+      arch: 'x64',
+      run,
+      start: async () => ({ pid: undefined, unref() {} }),
+      wait: (options: Record<string, unknown>) =>
+        waitForLiveSocket({
+          ...options,
+          sleep: async () => {},
+          pointer: async () => '/tmp/relay.sock',
+          check: async () => ({ ok: false, error: { code: 'not_a_relay_session' } }),
+        }),
+    });
+    expect(result).toMatchObject({ sessionRejected: true });
+    await expect(readlink(join(home, '.local/bin/agent-relay-probe'))).resolves.toContain(
+      join(home, '.local/lib/agent-relay/current')
+    );
   });
 
   it('enforces a timeout on each Unix-socket request', async () => {
