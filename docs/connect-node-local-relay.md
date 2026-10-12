@@ -51,6 +51,7 @@ The references point into `relay-desktop/probe/src/relay/`.
 ### Connect client (`connect.rs`, `outbound.rs` routes)
 
 **Join**
+
 - Call `POST https://agentrelay.com/cloud/connect/{id}/join` with no auth.
 - Send an `Idempotency-Key` header and a body of `{agent_name?, host_claim?}`.
 - Accept the link forms the probe accepts: a URL whose id is the last path
@@ -64,15 +65,18 @@ The references point into `relay-desktop/probe/src/relay/`.
   today.
 
 **Send**
+
 - `POST {relay_base_url}/v1/dm` with `{to, text, mode:"wait"}` and the
   participant bearer token.
 - Recipient resolution matches the probe: the join roster, plus senders we have
   observed, plus the Relaycast roster.
 
 **Status**
+
 - Read `GET /v1/agents?status=all` with the token. Map presence the same way.
 
 **Ended or expired**
+
 - Expiry is checked locally from `expires_at` on every call and every poll.
 - A 404/410 from Relaycast means the Connect is over.
 - On 401/403, check `GET https://agentrelay.com/connect/{id}` to tell "ended"
@@ -81,6 +85,7 @@ The references point into `relay-desktop/probe/src/relay/`.
   ended/expired notice.
 
 **Backoff**
+
 - Use the per-Connect gate for 429, `rate_limit_exceeded` and `workspace_busy`:
   2 s up to 15 min.
 
@@ -104,6 +109,7 @@ Codex delivery detection depends on that first line.
 The routes, in the probe's selection order:
 
 **Claude Code terminal: peer inbox socket**
+
 - Pure `node:net`, so no binary is needed.
 - Read `sessions/<pid>.json` from `~/.claude` and sibling `.claude-*` folders.
   Parse only the first JSON value. The process start time must match
@@ -122,6 +128,7 @@ The routes, in the probe's selection order:
   managed file.
 
 **Codex terminal: `codex queue`, confirmed from the rollout**
+
 - Run `codex queue --thread <id> --message=<text>` and parse
   `Queued message <id>`.
 - Feature-detect the command with `codex queue --help`.
@@ -134,6 +141,7 @@ The routes, in the probe's selection order:
   - on macOS, `lsof -p` and `ps -o args=`.
 
 **Codex desktop app: `ipc.sock`**
+
 - Pure `node:net`.
 - Frames are a 4-byte little-endian length followed by JSON.
 - Sequence: `initialize`, then `thread-owner-discovery`, then
@@ -143,6 +151,7 @@ The routes, in the probe's selection order:
 - Keep the probe's pinned method versions.
 
 **Codex shared app-server: `codex app-server proxy`**
+
 - WebSocket over the proxy's stdio.
 - Call `thread/loaded/list`, then `turn/start` only for a thread that is
   already loaded.
@@ -150,6 +159,7 @@ The routes, in the probe's selection order:
   IPC route.
 
 **SQLite**
+
 - The probe reads `queue_1.sqlite` and `state_5.sqlite`.
 - Use `node:sqlite` when the running Node has it. Otherwise:
   - find the rollout through `sessions/YYYY/MM/DD/rollout-*-<id>.jsonl`;
@@ -233,23 +243,23 @@ probe.
   If that write fails, stop the pass without acking.
 - **Outcomes:**
 
-  | Outcome | Persisted as | Settlement | Notes |
-  |---|---|---|---|
-  | Delivered | Delivered | `ack` | |
-  | InDoubt | InDoubt | `fail` with `retryable:false` | Never resent: at-most-once. |
-  | Refused | failed | `fail` | |
-  | Retry / Waiting | — | — | Back off 5, 10, 20, then 30 s. The pass stops here (head-of-line per target). After 1 h unaccepted, one final attempt, then Unavailable + `fail`. `AGENT_RELAY_CONNECT_HANDOFF_TIMEOUT_SECONDS` is honored. |
-  | Accepted / WaitingForTurn (Codex queue holds it) | — | — | Later passes only observe the queue and rollout. No second write. |
+  | Outcome                                          | Persisted as | Settlement                    | Notes                                                                                                                                                                                                       |
+  | ------------------------------------------------ | ------------ | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | Delivered                                        | Delivered    | `ack`                         |                                                                                                                                                                                                             |
+  | InDoubt                                          | InDoubt      | `fail` with `retryable:false` | Never resent: at-most-once.                                                                                                                                                                                 |
+  | Refused                                          | failed       | `fail`                        |                                                                                                                                                                                                             |
+  | Retry / Waiting                                  | —            | —                             | Back off 5, 10, 20, then 30 s. The pass stops here (head-of-line per target). After 1 h unaccepted, one final attempt, then Unavailable + `fail`. `AGENT_RELAY_CONNECT_HANDOFF_TIMEOUT_SECONDS` is honored. |
+  | Accepted / WaitingForTurn (Codex queue holds it) | —            | —                             | Later passes only observe the queue and rollout. No second write.                                                                                                                                           |
 
 - **Crash windows**, the same as the probe:
-  - *Between injecting and persisting the outcome:* a not-yet-accepted item is
+  - _Between injecting and persisting the outcome:_ a not-yet-accepted item is
     attempted again.
     - Codex closes this window, because the router checks the rollout and the
       queue for the ref before it writes.
     - Claude Code does not, because its inbox gives no read-back. This remains
       at-least-once, as it is in the probe. `msg_id` is sent as the Relaycast
       message id in case Claude dedupes on it.
-  - *Between persisting the outcome and acking:* the next pass re-acks from the
+  - _Between persisting the outcome and acking:_ the next pass re-acks from the
     ledger.
 - **Tests pin each outcome against a fake Relaycast** (see Tests).
 
@@ -282,13 +292,13 @@ Rules that keep them apart:
 
 ## Failures print the real cause, inline
 
-| Situation | What `join` prints |
-|---|---|
+| Situation                                                             | What `join` prints                                                                                                                     |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | No `CODEX_THREAD_ID` and no Claude session record among the ancestors | "Run this from a live Claude Code or Codex session (no Codex thread id in env; no Claude Code session record for any parent process)." |
-| Managed settings pin `crossSessionInbound` | The managed file path, plus "replies cannot be injected; ask your admin". |
-| Codex too old for `queue` and no app IPC socket | "Codex <version> cannot receive injected messages; update Codex." |
-| Cloud error | Cloud's code and message, through the existing `errorDetails` table. |
-| Daemon failed to start | The child's error and the last log lines. |
+| Managed settings pin `crossSessionInbound`                            | The managed file path, plus "replies cannot be injected; ask your admin".                                                              |
+| Codex too old for `queue` and no app IPC socket                       | "Codex <version> cannot receive injected messages; update Codex."                                                                      |
+| Cloud error                                                           | Cloud's code and message, through the existing `errorDetails` table.                                                                   |
+| Daemon failed to start                                                | The child's error and the last log lines.                                                                                              |
 
 **Preflight.** After a successful join, the CLI runs a no-write check that the
 calling session is injectable now: the Claude record and key are readable, or
@@ -297,14 +307,14 @@ inline instead of leaving the guest to wait for replies that never come.
 
 ## Not ported (deliberately)
 
-| Probe feature | Why it stays out |
-|---|---|
-| Account sign-in, registrations, uploads, mailbox, webhooks and subscriptions, push WebSocket | Not part of a guest's Connect path. |
-| Claude app cloud sessions (`claude --print --cloud`) | macOS app only, and needs a signed-in Claude CLI. A guest runs `npx` from a terminal session. |
-| Conductor Stop-hook hold (writes `~/.codex/hooks.json` pointing at a binary) | Requires a persistent installed binary. A busy Conductor chat gets the message through the queue at its next turn. |
-| Fleet and broker Codex workers; Paseo, Muse, OpenCode, Grok and Devin routes | Not guest surfaces. |
-| Code-signing checks of Codex ancestors (`security_framework`), `SO_PEERCRED` | See "Identifying the calling session"; equivalent trust for a same-user socket. |
-| Attachment downloads | Phase 1 injects the attachment names and URLs only. |
+| Probe feature                                                                                | Why it stays out                                                                                                   |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Account sign-in, registrations, uploads, mailbox, webhooks and subscriptions, push WebSocket | Not part of a guest's Connect path.                                                                                |
+| Claude app cloud sessions (`claude --print --cloud`)                                         | macOS app only, and needs a signed-in Claude CLI. A guest runs `npx` from a terminal session.                      |
+| Conductor Stop-hook hold (writes `~/.codex/hooks.json` pointing at a binary)                 | Requires a persistent installed binary. A busy Conductor chat gets the message through the queue at its next turn. |
+| Fleet and broker Codex workers; Paseo, Muse, OpenCode, Grok and Devin routes                 | Not guest surfaces.                                                                                                |
+| Code-signing checks of Codex ancestors (`security_framework`), `SO_PEERCRED`                 | See "Identifying the calling session"; equivalent trust for a same-user socket.                                    |
+| Attachment downloads                                                                         | Phase 1 injects the attachment names and URLs only.                                                                |
 
 ## Related fixes in this effort (separate PRs)
 
@@ -320,12 +330,12 @@ The cases, in `relay-desktop` `outbound.rs`:
 
 Proposed codes:
 
-| Code | Meaning |
-|---|---|
-| `connect_unreachable` | Transport failure only. |
-| `connect_upstream_error` | A 5xx, flagged "may have been sent". |
-| `connect_auth_rejected` | A 401/403 while the Connect is active. |
-| `connect_availability_unknown` | The availability check failed. |
+| Code                           | Meaning                                |
+| ------------------------------ | -------------------------------------- |
+| `connect_unreachable`          | Transport failure only.                |
+| `connect_upstream_error`       | A 5xx, flagged "may have been sent".   |
+| `connect_auth_rejected`        | A 401/403 while the Connect is active. |
+| `connect_availability_unknown` | The availability check failed.         |
 
 Each is logged with `tracing::warn` and its cause, with no token or text. The
 CLI maps the new codes. The Node relay uses the same codes from day one.
@@ -362,6 +372,7 @@ Both the probe and the Node relay call both.
 ## Tests
 
 **Unit (vitest, in `packages/connect/tests`)**
+
 - Link parsing and join idempotency, against a fake Cloud that counts
   idempotency keys.
 - Ledger transitions for every outcome.
@@ -370,21 +381,25 @@ Both the probe and the Node relay call both.
 - Head-of-line backoff, the unaccepted TTL, re-ack from the ledger.
 
 **Injection**
+
 - A fake Claude inbox socket asserts the two NDJSON lines and the token.
 - Codex `queue`, through a fake `codex` on `PATH` and a fixture rollout
   `jsonl`.
 - An IPC socket fake that speaks the length-prefixed frames.
 
 **Lifecycle**
+
 - The handshake: a daemon that exits early produces an inline error, not a
   timeout.
 - Single instance, idle exit, revival from persisted state.
 
 **Coexistence**
+
 - An eligible fake probe socket wins.
 - A session found in `state.json` stays on the Node relay.
 
 **Real round trip** (manual, recorded in the PR)
+
 - Create a throwaway Connect.
 - Join from a live Claude Code session and from a live Codex session on a
   machine without the desktop app.
