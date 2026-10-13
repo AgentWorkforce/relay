@@ -376,9 +376,9 @@ async fn owned_cleanup_recovers_on_later_retry_and_frees_the_name() {
     let server = MockServer::start();
     let release = server.mock(|when, then| {
         when.method(POST)
-            .path("/v1/agents/release")
+            .path("/v1/agents/release-exact")
             .json_body_partial(json!({"name":"recovered", "delete_agent":true}).to_string());
-        then.status(200)
+        then.status(201)
             .json_body(json!({"ok":true,"data":{"status":"completed"}}));
     });
     let registry = make_worker_registry_with_worker("unrelated").await;
@@ -500,11 +500,11 @@ async fn owned_cleanup_releases_custody_without_clearing_replacement_token() {
     // completes instead of retrying a conflict that can never resolve.
     let release = server.mock(|when, then| {
         when.method(POST)
-            .path("/v1/agents/release")
+            .path("/v1/agents/release-exact")
             .json_body_partial(json!({"name":"conflicted", "delete_agent":true}).to_string());
         then.status(409).json_body(json!({
             "ok": false,
-            "error": { "code": "agent_release_generation_conflict", "message": "generation changed" }
+            "error": { "code": "agent_identity_mismatch", "message": "generation changed" }
         }));
     });
     let registry = make_worker_registry_with_worker("unrelated").await;
@@ -673,9 +673,9 @@ async fn owned_cleanup_waits_off_actor_and_retains_custody_until_confirmed() {
     let server = MockServer::start();
     let release = server.mock(|when, then| {
         when.method(POST)
-            .path("/v1/agents/release")
+            .path("/v1/agents/release-exact")
             .json_body_partial(json!({"name":"retired", "delete_agent":true}).to_string());
-        then.status(200)
+        then.status(201)
             .json_body(json!({"ok":true,"data":{"status":"completed"}}));
     });
     let registry = make_worker_registry_with_worker("unrelated").await;
@@ -8807,7 +8807,7 @@ async fn node_owned_identity_create_reconcile_teardown_create_again() {
         }}));
     });
     let mut delayed_cleanup = server.mock(|when, then| {
-        when.method(POST).path("/v1/agents/release");
+        when.method(POST).path("/v1/agents/release-exact");
         then.status(503).json_body(json!({"ok":false,"error":{
             "code":"cleanup_unavailable","message":"release service is temporarily unavailable"
         }}));
@@ -8919,8 +8919,8 @@ async fn node_owned_identity_create_reconcile_teardown_create_again() {
 
     delayed_cleanup.delete();
     let cleanup = server.mock(|when, then| {
-        when.method(POST).path("/v1/agents/release");
-        then.status(200)
+        when.method(POST).path("/v1/agents/release-exact");
+        then.status(201)
             .json_body(json!({"ok":true,"data":{"status":"completed"}}));
     });
     fixture
@@ -9201,7 +9201,7 @@ async fn owned_cleanup_retries_delete_without_repeating_acknowledged_deregistrat
     use tokio::sync::oneshot;
     let server = MockServer::start();
     let mut failed = server.mock(|when, then| {
-        when.method(POST).path("/v1/agents/release");
+        when.method(POST).path("/v1/agents/release-exact");
         then.status(503);
     });
     let registry = make_worker_registry_with_worker("unrelated").await;
@@ -9253,8 +9253,8 @@ async fn owned_cleanup_retries_delete_without_repeating_acknowledged_deregistrat
     failed.assert_hits(1);
     failed.delete();
     let success = server.mock(|when, then| {
-        when.method(POST).path("/v1/agents/release");
-        then.status(200)
+        when.method(POST).path("/v1/agents/release-exact");
+        then.status(201)
             .json_body(json!({"ok":true,"data":{"status":"completed"}}));
     });
     fixture
@@ -9300,8 +9300,8 @@ async fn name_only_release_of_retired_owned_worker_deletes_directly_and_is_idemp
 
     let server = MockServer::start();
     let release = server.mock(|when, then| {
-        when.method(POST).path("/v1/agents/release");
-        then.status(200)
+        when.method(POST).path("/v1/agents/release-exact");
+        then.status(201)
             .json_body(json!({"ok":true,"data":{"status":"completed"}}));
     });
     let registry = make_worker_registry_with_worker("unrelated").await;
@@ -9393,8 +9393,8 @@ async fn completed_owned_release_history_keeps_prior_generation_idempotent_after
 
     let server = MockServer::start();
     let release = server.mock(|when, then| {
-        when.method(POST).path("/v1/agents/release");
-        then.status(200)
+        when.method(POST).path("/v1/agents/release-exact");
+        then.status(201)
             .json_body(json!({"ok":true,"data":{"status":"completed"}}));
     });
     let name = WorkerName::from("retired-name-only");
@@ -9516,8 +9516,8 @@ async fn completed_owned_release_history_is_bounded_and_evictions_drop_old_gener
 
     let server = MockServer::start();
     let release = server.mock(|when, then| {
-        when.method(POST).path("/v1/agents/release");
-        then.status(200)
+        when.method(POST).path("/v1/agents/release-exact");
+        then.status(201)
             .json_body(json!({"ok":true,"data":{"status":"completed"}}));
     });
     let registry = make_worker_registry_with_worker("unrelated").await;

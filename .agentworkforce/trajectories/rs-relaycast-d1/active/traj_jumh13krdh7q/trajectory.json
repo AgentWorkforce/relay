@@ -67,6 +67,18 @@
             "reasoning": "A restarted broker no longer has the exact bearer token, and persisting that reusable secret would violate journal hygiene. The existing journal agent_id plus an independent workspace lookup distinguishes confirmed absence, replacement, and a still-live original generation without weakening custody."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1791888565057,
+          "type": "decision",
+          "content": "Use Relaycast atomic exact-release for journaled cleanups: Use Relaycast atomic exact-release for journaled cleanups",
+          "raw": {
+            "question": "Use Relaycast atomic exact-release for journaled cleanups",
+            "chosen": "Use Relaycast atomic exact-release for journaled cleanups",
+            "alternatives": [],
+            "reasoning": "Relaycast 10.3 exposes a crash-safe immutable-ID and idempotency-key release endpoint. Using it avoids stale by-name absence proofs; legacy journals without agent_id remain retryable and fail closed."
+          },
+          "significance": "high"
         }
       ]
     }

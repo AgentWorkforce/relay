@@ -69,6 +69,23 @@ const server = http.createServer(async (request, response) => {
     );
     return;
   }
+  if (request.method === 'POST' && pathname === '/v1/agents/release-exact') {
+    assert.equal(body.name, NAME);
+    assert.equal(body.expected_agent_id, `id_${NAME}`);
+    assert.equal(body.delete_agent, true);
+    assert.equal(body.expected_token_hash, TOKEN_HASH);
+    assert.ok(request.headers['idempotency-key']);
+    guardedReleaseCount += 1;
+    send(
+      409,
+      {
+        code: 'agent_identity_mismatch',
+        message: 'the immutable identity was replaced',
+      },
+      false
+    );
+    return;
+  }
   send(404, { code: 'not_found', message: 'unsupported fixture route' }, false);
 });
 server.on('connection', (socket) => {
@@ -83,7 +100,11 @@ try {
   await writeFile(
     path.join(stateDir, 'owned-cleanups.json'),
     JSON.stringify({
-      [NAME]: { generation: GENERATION, expected_token_hash: TOKEN_HASH, agent_id: null },
+      [NAME]: {
+        generation: GENERATION,
+        expected_token_hash: TOKEN_HASH,
+        agent_id: `id_${NAME}`,
+      },
     })
   );
 
