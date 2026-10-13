@@ -1762,12 +1762,18 @@ export type CloudFleetSandboxRelayfileAttachment = {
   relayfileMountPath: string;
 };
 
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end -= 1;
+  return value.slice(0, end);
+}
+
 function comparableApiUrl(value: string): string {
   try {
     const url = new URL(value);
-    return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+    return `${url.origin}${trimTrailingSlashes(url.pathname)}`;
   } catch {
-    return value.trim().replace(/\/+$/, '');
+    return trimTrailingSlashes(value.trim());
   }
 }
 
