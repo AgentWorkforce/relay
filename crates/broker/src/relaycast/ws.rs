@@ -1276,7 +1276,10 @@ impl RelaycastHttpClient {
         let total_budget = identity_visibility_total_budget(
             visibility_backoffs_ms,
             NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT,
-        );
+        )
+        // A persistent by-name 404 gets one independent exact-token probe
+        // before it can be considered terminal.
+        .saturating_add(NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT);
         self.release_agent_identity_guarded_with_budget(
             agent_name,
             reason,
@@ -1422,19 +1425,76 @@ impl RelaycastHttpClient {
                     // another write. Transient failures (429/503/d1_pressure,
                     // timeouts) keep the generic retryable bail.
                     let error_code = result["error"]["code"].as_str().unwrap_or_default();
+                    if status == reqwest::StatusCode::NOT_FOUND && error_code == "agent_not_found" {
+                        let cached_token = self.cached_agent_token(agent_name).with_context(|| {
+                            format!(
+                                "owned identity cleanup for '{agent_name}' cannot verify a persistent by-name 404 because its captured token is no longer cached"
+                            )
+                        })?;
+                        let cached_hash = format!("{:x}", Sha256::digest(cached_token.as_bytes()));
+                        if cached_hash != expected_token_hash {
+                            return Err(ReleaseIdentityConflict {
+                                agent_name: agent_name.to_string(),
+                                status: reqwest::StatusCode::CONFLICT.as_u16(),
+                                code: "cached_token_generation_changed".to_string(),
+                            }
+                            .into());
+                        }
+                        let remaining =
+                            deadline.saturating_duration_since(tokio::time::Instant::now());
+                        anyhow::ensure!(
+                            !remaining.is_zero(),
+                            "owned identity cleanup for '{agent_name}' exceeded its {total_budget:?} total budget before exact-token verification"
+                        );
+                        let request_budget =
+                            NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT.min(remaining);
+                        let relay = self.relay_client().context(
+                            "SDK relay client not initialized for exact-token cleanup verification",
+                        )?;
+                        match tokio::time::timeout(
+                            request_budget,
+                            relay.get_current_agent(cached_token),
+                        )
+                        .await
+                        {
+                            Err(_) => anyhow::bail!(
+                                "owned identity cleanup exact-token verification for '{agent_name}' timed out after {request_budget:?}"
+                            ),
+                            Ok(Ok(agent)) => anyhow::bail!(
+                                "owned identity cleanup release lookup returned agent_not_found, but the captured token still authenticates as {}/{}; retaining custody for retry",
+                                agent.name,
+                                agent.id
+                            ),
+                            Ok(Err(error))
+                                if super::auth::is_agent_token_invalid(&error)
+                                    || matches!(
+                                        &error,
+                                        RelayError::Api {
+                                            status: 404,
+                                            code,
+                                            ..
+                                        } if code == "agent_not_found"
+                                    ) =>
+                            {
+                                return Err(ReleaseIdentityConflict {
+                                    agent_name: agent_name.to_string(),
+                                    status: status.as_u16(),
+                                    code: error_code.to_string(),
+                                }
+                                .into());
+                            }
+                            Ok(Err(error)) => anyhow::bail!(
+                                "owned identity cleanup exact-token verification for '{agent_name}' failed: {error}"
+                            ),
+                        }
+                    }
                     let not_ours = (status == reqwest::StatusCode::CONFLICT
                         && matches!(
                             error_code,
                             "agent_release_generation_conflict" | "agent_identity_mismatch"
                         ))
                         || (status == reqwest::StatusCode::FORBIDDEN
-                            && error_code == "expected_token_hash_mismatch")
-                        // The bounded visibility retries above already covered
-                        // read-after-write lag; a 404 that outlives them means
-                        // the identity is genuinely gone — the cleanup's goal
-                        // is met and retrying can never change the answer.
-                        || (status == reqwest::StatusCode::NOT_FOUND
-                            && error_code == "agent_not_found");
+                            && error_code == "expected_token_hash_mismatch");
                     if not_ours {
                         return Err(ReleaseIdentityConflict {
                             agent_name: agent_name.to_string(),
@@ -5305,7 +5365,7 @@ mod tests {
             .release_agent_identity("owned-worker", None, true)
             .await
             .expect_err("ownership failure must remain terminal");
-        assert!(error.to_string().contains("HTTP 403"));
+        assert!(error.downcast_ref::<ReleaseIdentityConflict>().is_some());
         cleanup.assert_hits(1);
         assert!(client.owned_identity_token_hash("owned-worker").is_ok());
     }
@@ -5355,13 +5415,20 @@ mod tests {
     async fn owned_identity_cleanup_treats_persistent_agent_not_found_as_terminal() {
         use sha2::{Digest, Sha256};
         let server = MockServer::start();
-        // The bounded visibility retries already covered read-after-write
-        // lag; a 404 that outlives them means the identity is genuinely gone
-        // and the cleanup's goal is met — not retried forever.
+        // A persistent by-name 404 is terminal only after the captured token's
+        // independent identity lookup also proves the row is gone.
         let release = server.mock(|when, then| {
             when.method(POST).path("/v1/agents/release");
             then.status(404).json_body(json!({"ok":false,"error":{
                 "code":"agent_not_found","message":"not present on this Relaycast target"
+            }}));
+        });
+        let token_probe = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer owned-token");
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"token identity is gone"
             }}));
         });
         let client = seeded_http_client(&server.base_url());
@@ -5386,6 +5453,55 @@ mod tests {
         );
         // Two visibility retries plus the terminal verdict: three requests.
         release.assert_hits(3);
+        token_probe.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn owned_identity_cleanup_retains_custody_when_by_name_404_is_stale() {
+        use sha2::{Digest, Sha256};
+        let server = MockServer::start();
+        let release = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/release");
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"not visible by name"
+            }}));
+        });
+        let token_probe = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agent")
+                .header("authorization", "Bearer owned-token");
+            then.status(200).json_body(json!({"ok":true,"data":{
+                "id":"agent-owned","workspace_id":"ws-test","name":"owned-worker",
+                "type":"agent","status":"online","persona":null,"metadata":{},"channels":[]
+            }}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        client.seed_agent_token("owned-worker", "owned-token");
+        let expected_hash = format!("{:x}", Sha256::digest(b"owned-token"));
+
+        let error = client
+            .release_agent_identity_guarded_with_budget(
+                "owned-worker",
+                None,
+                true,
+                Some(&expected_hash),
+                &[1, 1],
+                Duration::from_secs(30),
+            )
+            .await
+            .expect_err("a live exact-token identity must keep cleanup retryable");
+
+        assert!(
+            error.downcast_ref::<ReleaseIdentityConflict>().is_none(),
+            "a stale by-name 404 must not be treated as completed cleanup: {error:#}"
+        );
+        assert!(
+            error.to_string().contains("still authenticates"),
+            "{error:#}"
+        );
+        assert!(client.owned_identity_token_hash("owned-worker").is_ok());
+        release.assert_hits(3);
+        token_probe.assert_hits(1);
     }
 
     #[tokio::test]

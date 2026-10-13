@@ -38,11 +38,6 @@ pub(super) enum CleanupOutcome {
     /// delete, so custody can release instead of retrying a conflict that
     /// can never resolve.
     IdentityNotOurs,
-    /// No captured credential hash exists for this generation, so the
-    /// guarded delete can never run — retrying can never succeed. Releasing
-    /// custody matches the journal's restart behavior (un-capturable
-    /// cleanups are never persisted).
-    Unverifiable,
 }
 
 pub(super) enum CleanupCompletion {
@@ -173,9 +168,10 @@ fn start_attempt(
         // Only delete an identity created by this generation. A supplied token
         // can request binding teardown, but never grants deletion ownership.
         if delete_identity {
-            let Ok(expected_token_hash) = expected_token_hash else {
-                return Ok(CleanupOutcome::Unverifiable);
-            };
+            // Missing ownership proof is a cleanup failure, not evidence that
+            // the remote row is gone. Keep custody so a same-name spawn cannot
+            // collide with an identity we never verified or deleted.
+            let expected_token_hash = expected_token_hash?;
             match http
                 .release_agent_identity_guarded(
                     &name,
@@ -496,21 +492,27 @@ impl BrokerRuntime {
                         "owned identity cleanup unconfirmed; name reserved for retry");
                 }
             } else {
-                let unverifiable = matches!(&result, Ok(CleanupOutcome::Unverifiable));
-                match &result {
-                    Ok(CleanupOutcome::IdentityNotOurs) => {
-                        // A replacement holding the name means this
-                        // generation's token is dead — and it may still sit
-                        // in the shared registration cache, where the next
-                        // spawn's 409 takeover would be handed it back.
-                        // Drop it the way a confirmed delete does.
+                if let Ok(CleanupOutcome::IdentityNotOurs) = &result {
+                    // Drop only this cleanup generation's credential. A
+                    // same-name replacement may have seeded a newer token
+                    // while the guarded request was in flight.
+                    if pending
+                        .expected_token_hash
+                        .as_ref()
+                        .ok()
+                        .is_some_and(|expected| {
+                            pending
+                                .http
+                                .owned_identity_token_hash(name.as_str())
+                                .ok()
+                                .as_deref()
+                                == Some(expected.as_str())
+                        })
+                    {
                         pending.http.invalidate_cached_registration(name.as_str());
-                        tracing::info!(worker = %name, %generation,
-                        "remote identity is no longer this generation's; releasing owned cleanup custody")
                     }
-                    Ok(CleanupOutcome::Unverifiable) => tracing::warn!(worker = %name, %generation,
-                        "owned cleanup has no captured credential hash to verify with; releasing custody"),
-                    _ => {}
+                    tracing::info!(worker = %name, %generation,
+                    "remote identity is no longer this generation's; releasing owned cleanup custody")
                 }
                 let delete_identity = pending.delete_identity;
                 let agent_id = pending.agent_id.clone();
@@ -524,12 +526,7 @@ impl BrokerRuntime {
                     .is_some_and(|(owned, _)| *owned == generation)
                 {
                     self.workers.owned_spawn_generations.remove(&name);
-                    // Only a remotely-proven release earns the completion
-                    // tombstone: an unverifiable cleanup freed custody without
-                    // proving the remote identity is gone, and the tombstone's
-                    // `{"identity":"deleted"}` fast-path must not repeat a
-                    // claim the cleanup could not confirm.
-                    if delete_identity && !unverifiable {
+                    if delete_identity {
                         self.workers
                             .completed_owned_releases
                             .push_back((name.clone(), generation));
@@ -546,12 +543,6 @@ impl BrokerRuntime {
             for completion in completions {
                 let cleanup_error = match &result {
                     Err(error) => Some(format!("owned identity cleanup unconfirmed for {name} generation {generation}; retry retained: {error}")),
-                    // Custody freed, but nothing remote was proven — callers
-                    // must hear that, not `identity: deleted` for a row that
-                    // may still exist.
-                    Ok(CleanupOutcome::Unverifiable) => Some(format!(
-                        "owned identity cleanup unverifiable for {name} generation {generation}; name released without remote confirmation"
-                    )),
                     _ => None,
                 };
                 if let Some(delivery_ack) =
