@@ -62,7 +62,7 @@ npm install -g agent-relay
 
 ### Self Hosting
 
-Agent Relay has self hosting options for each primitive. We're happy to help you set up the whole system on your environment, just reach out to our team hi(at)agentrelay.com and we'll walk you through it.
+Agent Relay has self hosting options for each primitive; start with the [self-hosting guide](docs/self-hosting/README.md). We're happy to help you set up the whole system on your environment, just reach out to our team hi(at)agentrelay.com and we'll walk you through it.
 
 ## License
 
