@@ -51,6 +51,23 @@ Local-broker `node agent` subcommands and `node tail` accept `--state-dir <dir>`
 
 For AI SDK native harnesses, attach renders structured activity, text, tools, approvals, files, usage, and lifecycle events. Add `--json` for NDJSON, `--reasoning` for reasoning events, or `--diagnostics` for sidecar diagnostics. Native harness `drive` is line-oriented and acknowledged; native harness `passthrough` is unsupported because no terminal stream exists. PTY attach behavior is unchanged.
 
+### Claiming this node as yours
+
+Agent Relay Cloud can treat agents this node spawns as your own (for example,
+so a ChatGPT dot replies automatically only to your agents). Nodes enrolled
+with `agent-relay cloud enroll` record you as owner automatically. For a node
+enrolled earlier, or started with a workspace key, claim it once while signed
+in to Cloud as an owner of the workspace:
+
+```sh
+agent-relay node claim                      # uses the running broker's or the stored enrollment's node token
+agent-relay node claim --workspace my-team  # name the workspace when this project has none pinned
+```
+
+Cloud checks the node token with Relaycast, records you as the owner (the first
+claim wins), and audits the claim. The token is sent only over HTTPS and is
+never printed.
+
 ### Local operation during a Relaycast outage
 
 ```bash

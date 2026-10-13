@@ -471,6 +471,91 @@ async function mintFleetNodeEnrollment(
   }
 }
 
+/** Throws unless the URL is HTTPS (or plain HTTP to this machine). */
+function requireSecureCloudUrl(apiUrl: string): void {
+  if (!isSecureCloudUrl(apiUrl)) {
+    throw new Error('Refusing to send the node token to a Cloud URL that is not HTTPS.');
+  }
+}
+
+/** HTTPS, or plain HTTP to this machine only. */
+function isSecureCloudUrl(apiUrl: string): boolean {
+  try {
+    const url = new URL(apiUrl);
+    return (
+      url.protocol === 'https:' ||
+      (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Record the signed-in person as the owner of the node a node token belongs
+ * to (Cloud's `POST /api/v1/fleet/nodes/claim`). Cloud asks Relaycast which
+ * node the token is for and requires a workspace owner, so agents the node
+ * spawns then count as that person's own. The node token goes only to Cloud,
+ * over the authenticated session, and is never printed.
+ */
+export async function claimFleetNodeOwnership(
+  options: { workspace: string; nodeToken: string; apiUrl?: string },
+  deps: Pick<CloudDependencies, 'ensureCloudSession' | 'authorizedApiFetch'>
+): Promise<{ nodeId: string; claimed: boolean }> {
+  const workspace = options.workspace.trim();
+  if (!workspace) {
+    throw new Error('A workspace name or ID is required to claim a node.');
+  }
+  try {
+    const session = await deps.ensureCloudSession({
+      apiUrl: options.apiUrl || defaultApiUrl(),
+      interactive: false,
+    });
+    const selected = await resolveWorkspaceSelector(workspace, session.auth, deps);
+    const resolved = await resolveCloudWorkspace(selected.workspaceId, selected.auth, deps);
+    // The node token is a credential: never send it over plaintext.
+    if (!isSecureCloudUrl(resolved.auth.apiUrl)) {
+      throw new Error(
+        `Refusing to send the node token to ${new URL(resolved.auth.apiUrl).origin} over plain HTTP. Log in to Cloud over HTTPS.`
+      );
+    }
+    const { response } = await deps.authorizedApiFetch(
+      resolved.auth,
+      '/api/v1/fleet/nodes/claim',
+      {
+        method: 'POST',
+        body: JSON.stringify({ workspaceId: resolved.cloudWorkspaceId, nodeToken: options.nodeToken }),
+      },
+      // No redirects for the request that carries the token: a 307/308 would
+      // replay the body elsewhere. validateApiUrl also re-checks a refreshed host.
+      { interactive: false, validateApiUrl: requireSecureCloudUrl }
+    );
+    const payload = (await response.json().catch(() => null)) as unknown;
+    if (!response.ok) {
+      // Redacted before it can reach a terminal, whatever the server echoed.
+      const message =
+        isObject(payload) && typeof payload.error === 'string'
+          ? redactCredentialValues(payload.error.split(options.nodeToken).join('[redacted]'))
+          : undefined;
+      if (response.status === 403 && !message) {
+        throw new Error('Only an owner of the workspace can claim its nodes.');
+      }
+      throw new Error(
+        `Could not claim the node: ${message ?? `${response.status} ${response.statusText}`.trim()}`
+      );
+    }
+    if (!isObject(payload) || typeof payload.nodeId !== 'string' || typeof payload.claimed !== 'boolean') {
+      throw new Error('Cloud returned an invalid node claim response.');
+    }
+    return { nodeId: payload.nodeId, claimed: payload.claimed };
+  } catch (error) {
+    if (isCloudLoginError(error)) {
+      throw new Error('Cloud login required. Run `agent-relay cloud login` and retry.', { cause: error });
+    }
+    throw error;
+  }
+}
+
 /**
  * Link a redeemed enrollment to this project's workspace pin and report anything
  * the operator must act on. Runs after the one-time token is already consumed,

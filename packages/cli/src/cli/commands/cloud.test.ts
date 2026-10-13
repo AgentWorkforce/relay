@@ -72,7 +72,12 @@ import {
 } from '@agent-relay/cloud';
 import { track } from '../telemetry/index.js';
 
-import { buildCloudSyncPatchExcludeArgs, registerCloudCommands, type CloudDependencies } from './cloud.js';
+import {
+  buildCloudSyncPatchExcludeArgs,
+  claimFleetNodeOwnership,
+  registerCloudCommands,
+  type CloudDependencies,
+} from './cloud.js';
 import { createDefaultAssignmentRunner } from './cloud-worker.js';
 
 beforeEach(() => {
@@ -2037,5 +2042,101 @@ describe('registerCloudCommands', () => {
     ).rejects.toThrow();
 
     expect(cloudMocks.enrollFleetNode).not.toHaveBeenCalled();
+  });
+});
+
+describe('claimFleetNodeOwnership', () => {
+  const auth = { apiUrl: 'https://cloud.test', accessToken: 'access' } as never;
+  const json = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+
+  function deps(claim: Response) {
+    const authorizedApiFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        response: json(200, { cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99' }),
+        auth,
+      })
+      .mockResolvedValueOnce({ response: claim, auth });
+    const ensureCloudSession = vi.fn(async () => ({ auth }));
+    return { authorizedApiFetch, ensureCloudSession } as unknown as Pick<
+      CloudDependencies,
+      'ensureCloudSession' | 'authorizedApiFetch'
+    > & { authorizedApiFetch: ReturnType<typeof vi.fn> };
+  }
+
+  it("resolves the node's workspace and posts the node token to Cloud's claim route", async () => {
+    const d = deps(json(200, { nodeId: 'sf-mini', claimed: true, owner: 'you' }));
+    await expect(
+      claimFleetNodeOwnership(
+        { workspace: 'rw_7ccfea89', nodeToken: 'nt_live_secret', apiUrl: 'https://cloud.test' },
+        d
+      )
+    ).resolves.toEqual({ nodeId: 'sf-mini', claimed: true });
+    expect(d.authorizedApiFetch).toHaveBeenNthCalledWith(
+      1,
+      auth,
+      '/api/v1/workspaces/rw_7ccfea89/resolve',
+      { method: 'GET' },
+      { interactive: false }
+    );
+    expect(d.authorizedApiFetch).toHaveBeenNthCalledWith(
+      2,
+      auth,
+      '/api/v1/fleet/nodes/claim',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          workspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99',
+          nodeToken: 'nt_live_secret',
+        }),
+      },
+      { interactive: false, validateApiUrl: expect.any(Function) }
+    );
+    // The token-bearing request refuses redirects (authorizedApiFetch sets
+    // redirect: 'error' with a validator) and a non-HTTPS refreshed host.
+    const options = d.authorizedApiFetch.mock.calls[1]![3] as { validateApiUrl: (url: string) => void };
+    expect(() => options.validateApiUrl('http://cloud.example.com')).toThrow(/not HTTPS/);
+    expect(() => options.validateApiUrl('https://cloud.test')).not.toThrow();
+  });
+
+  it('redacts a node token the server echoes back', async () => {
+    const d = deps(json(403, { error: 'Bad token nt_live_secret_echoed_value for this workspace.' }));
+    const error = (await claimFleetNodeOwnership(
+      { workspace: 'rw_7ccfea89', nodeToken: 'nt_live_secret_echoed_value', apiUrl: 'https://cloud.test' },
+      d
+    ).catch((e: Error) => e)) as Error;
+    expect(error.message).not.toContain('nt_live_secret_echoed_value');
+    expect(error.message).toContain('[redacted]');
+  });
+
+  it('refuses to send the node token over plain HTTP', async () => {
+    const plain = { apiUrl: 'http://cloud.example.com', accessToken: 'access' } as never;
+    const authorizedApiFetch = vi.fn().mockResolvedValueOnce({
+      response: json(200, { cloudWorkspaceId: '50587328-441d-4acb-b8f3-dbe1b3c5de99' }),
+      auth: plain,
+    });
+    const d = {
+      authorizedApiFetch,
+      ensureCloudSession: vi.fn(async () => ({ auth: plain })),
+    } as unknown as Pick<CloudDependencies, 'ensureCloudSession' | 'authorizedApiFetch'>;
+    await expect(
+      claimFleetNodeOwnership(
+        { workspace: 'rw_7ccfea89', nodeToken: 'nt_live_secret', apiUrl: 'http://cloud.example.com' },
+        d
+      )
+    ).rejects.toThrow(/plain HTTP/);
+    // Only the workspace resolve went out; the token never did.
+    expect(authorizedApiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces Cloud's refusal without echoing the token", async () => {
+    const d = deps(json(409, { error: 'Another person owns this node.' }));
+    const error = await claimFleetNodeOwnership(
+      { workspace: 'rw_7ccfea89', nodeToken: 'nt_live_secret', apiUrl: 'https://cloud.test' },
+      d
+    ).catch((e: Error) => e);
+    expect((error as Error).message).toBe('Could not claim the node: Another person owns this node.');
+    expect((error as Error).message).not.toContain('nt_live_secret');
   });
 });

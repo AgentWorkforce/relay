@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay node claim` records you as this node's owner in Agent Relay Cloud, using the node's own token (from `RELAY_NODE_TOKEN`, the stored enrollment, or the running broker), so agents the node spawns count as your own, for example for automatic replies to your agents. Needs a workspace owner's Cloud login.
 
 ## [13.4.1] - 2026-10-12
 

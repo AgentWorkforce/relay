@@ -1,5 +1,7 @@
 import type { Command } from 'commander';
 import {
+  authorizedApiFetch,
+  ensureCloudSession,
   fleetNodeEnrollmentStorePath,
   readFleetNodeEnrollmentStore,
   resolveActiveFleetNodeEnrollment,
@@ -13,7 +15,8 @@ import {
   type CoreDependencies,
   type UpCommandOptions,
 } from './core.js';
-import { runUpCommand } from '../lib/broker-lifecycle.js';
+import { readRunningBrokerNodeIdentity, runUpCommand } from '../lib/broker-lifecycle.js';
+import { claimFleetNodeOwnership } from './cloud.js';
 import {
   describeNodeClaimHolder,
   enrolledNodeIdForClaim,
@@ -45,6 +48,14 @@ export interface NodeCommandDependencies {
    * drive the guard without a real claim directory.
    */
   inspectNodeClaim: (nodeId: string) => Promise<NodeClaimState>;
+  /** The running local broker's node id and token, when a broker is up. */
+  readRunningNodeIdentity: () => Promise<{ nodeId: string; nodeToken?: string } | null>;
+  /** Records the signed-in person as the node's owner in Cloud. */
+  claimNodeOwnership: (input: {
+    workspace: string;
+    nodeToken: string;
+    apiUrl?: string;
+  }) => Promise<{ nodeId: string; claimed: boolean }>;
   log: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
@@ -70,6 +81,8 @@ function withNodeDefaults(overrides: Partial<NodeCommandDependencies> = {}): Nod
         killProcess: core.killProcess,
         execCommand: core.execCommand,
       }),
+    readRunningNodeIdentity: () => readRunningBrokerNodeIdentity(core.getProjectPaths().dataDir),
+    claimNodeOwnership: (input) => claimFleetNodeOwnership(input, { ensureCloudSession, authorizedApiFetch }),
     log: (...args: unknown[]) => console.log(...args),
     warn: (...args: unknown[]) => console.warn(...args),
     error: (...args: unknown[]) => console.error(...args),
@@ -104,6 +117,21 @@ export function registerNodeCommands(
       await runNodeUp(options, deps);
     });
 
+  node
+    .command('claim')
+    .description(
+      "Record you as this node's owner in Agent Relay Cloud, so agents it spawns count as your own (for example, for automatic replies to your agents)"
+    )
+    .option(
+      '--workspace <id|name>',
+      'Cloud workspace the node belongs to (defaults to its enrollment or this project)'
+    )
+    .option('--api-url <url>', 'Cloud API URL')
+    .option('--json', 'Print the result as JSON')
+    .action(async (options: NodeClaimCommandOptions) => {
+      await runNodeClaim(options, deps);
+    });
+
   // down / status / metrics are the same as `local` — reuse the core
   // registrations without a second `up`.
   registerCoreCommands(node, deps.core, { includeUp: false });
@@ -112,6 +140,86 @@ export function registerNodeCommands(
   registerLocalWorkflowCommands(
     node.command('workflow').description('Run and inspect workflows on this node')
   );
+}
+
+type NodeClaimCommandOptions = { workspace?: string; apiUrl?: string; json?: boolean };
+
+/**
+ * `node claim`: find this machine's node token (the environment, the stored
+ * enrollment, or the running broker) and ask Cloud to record the signed-in
+ * person as the node's owner. Cloud verifies the token with Relaycast and
+ * requires a workspace owner; the token is never printed.
+ */
+async function runNodeClaim(options: NodeClaimCommandOptions, deps: NodeCommandDependencies): Promise<void> {
+  const env = deps.core.env;
+  const fail = (message: string) => {
+    deps.error(message);
+    deps.exit(1);
+  };
+  // Same rule as `node up`: a set RELAY_NODE_TOKEN is an explicit choice, so a
+  // blank one is a mistake to report, never a reason to claim some other node.
+  if (env.RELAY_NODE_TOKEN !== undefined && !env.RELAY_NODE_TOKEN.trim()) {
+    fail("RELAY_NODE_TOKEN is set but empty. Unset it, or set it to this node's token.");
+    return;
+  }
+  const explicitToken = env.RELAY_NODE_TOKEN?.trim();
+  const explicitWorkspace = options.workspace?.trim();
+  const projectSession = deps.resolveProjectWorkspaceSession();
+  // The node this machine serves now: its live token beats a stored one, which
+  // a rotation may since have replaced.
+  const running = explicitToken ? null : await deps.readRunningNodeIdentity();
+  // The enrollment store is read only for what is still missing; explicit
+  // inputs never depend on it (it throws when several enrollments match).
+  let record: ReturnType<typeof resolveActiveFleetNodeEnrollment> | undefined;
+  let storeError: string | undefined;
+  if (!(explicitToken || running?.nodeToken) || !explicitWorkspace) {
+    try {
+      record = resolveEnrollmentForProject(projectSession, deps);
+    } catch (err) {
+      storeError = err instanceof Error ? err.message : String(err);
+    }
+  }
+  // A stored enrollment speaks for the running node only when it is that node:
+  // claiming another node's token would leave the one actually serving here
+  // unclaimed while reporting success.
+  if (record && !explicitToken && running && !running.nodeToken && record.nodeId !== running.nodeId) {
+    fail(
+      `This machine is serving node ${running.nodeId}, which has not reported its token yet, and the stored enrollment is for node ${record.nodeId}. ` +
+        "Export that node's RELAY_NODE_TOKEN and run this again."
+    );
+    return;
+  }
+  const nodeToken = explicitToken || running?.nodeToken || record?.nodeToken;
+  if (!nodeToken) {
+    fail(
+      storeError ??
+        "No node token found on this machine. Start the node with 'agent-relay node up' (or export RELAY_NODE_TOKEN) and run this again."
+    );
+    return;
+  }
+  const workspace = explicitWorkspace || record?.relayWorkspaceId || projectSession?.workspaceId;
+  if (!workspace) {
+    fail(
+      storeError ??
+        'Pass --workspace <id|name>: this node has no stored enrollment or project workspace to claim it in.'
+    );
+    return;
+  }
+  try {
+    const result = await deps.claimNodeOwnership({ workspace, nodeToken, apiUrl: options.apiUrl });
+    if (options.json) {
+      deps.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    deps.log(
+      result.claimed
+        ? `Claimed node ${result.nodeId}: agents it spawns now count as yours.`
+        : `You already own node ${result.nodeId}.`
+    );
+  } catch (err) {
+    deps.error(err instanceof Error ? err.message : String(err));
+    deps.exit(1);
+  }
 }
 
 /** Normalize workspace env aliases and report whether `node up` received an explicit workspace. */
