@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add `--sandbox-relayfile` to retain the previous required live repository mirror. Combine it with `--checkout` when both a Git checkout and live context must be ready before dispatch.
 
+### Fixed
+
+- When a broker worker fails to spawn, the log now includes the underlying OS error, such as a missing binary, instead of only `failed to spawn worker`.
+
 ## [13.4.1] - 2026-10-12
 
 ### Fixed

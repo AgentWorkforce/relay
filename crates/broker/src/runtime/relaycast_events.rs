@@ -1125,17 +1125,36 @@ pub(super) async fn spawn_worker_from_request(
             if msg.contains("already exists") {
                 tracing::debug!(child = %name, "agent already spawned via SDK, skipping duplicate relaycast WS spawn");
             } else {
-                tracing::error!(child = %name, error = %e, "failed to spawn worker via relaycast WS");
-                eprintln!("[agent-relay] failed to spawn '{}': {}", name, e);
+                let detail = spawn_failure_detail(&e);
+                tracing::error!(child = %name, error = %detail, "failed to spawn worker via relaycast WS");
+                eprintln!("[agent-relay] failed to spawn '{}': {}", name, detail);
             }
             Err(e)
         }
     }
 }
 
+/// The whole error chain. Display alone stops at the outermost context
+/// ("failed to spawn worker") and drops the OS error that says why.
+fn spawn_failure_detail(error: &anyhow::Error) -> String {
+    format!("{error:#}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawn_failure_detail_keeps_the_os_error() {
+        let error = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::NotFound))
+            .context("failed to spawn worker");
+        let detail = spawn_failure_detail(&error);
+        assert!(detail.starts_with("failed to spawn worker: "), "{detail}");
+        assert!(
+            detail.contains(&std::io::Error::from(std::io::ErrorKind::NotFound).to_string()),
+            "{detail}"
+        );
+    }
 
     #[test]
     fn duplicate_registration_keeps_already_exists_for_debug_log_classification() {
