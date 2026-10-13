@@ -29,15 +29,18 @@ use crate::broker::{
     continuity::parse_continuity_command,
     delivery_verification::{
         assess_harness_acceptance, current_timestamp_ms, delivery_injected_event_payload,
-        delivery_queued_event_payload, DeliveryOutcome, HarnessAcceptance, PendingActivity,
-        PendingVerification, ThrottleState, VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES,
-        ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+        delivery_queued_event_payload, draft_visible_at_cursor, failed_draft_released,
+        DeliveryOutcome, HarnessAcceptance, PendingActivity, PendingVerification, ThrottleState,
+        VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+        MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
     },
     injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
 };
 use crate::cli::command_parse::parse_cli_command;
 use crate::cli::PtyCommand;
-use crate::readiness::{detect_cli_ready, is_muse_cli, GridReadinessSnapshot};
+use crate::readiness::{
+    detect_cli_ready, devin_trust_prompt_active, is_devin_cli, is_muse_cli, GridReadinessSnapshot,
+};
 use crate::runtime::{get_terminal_size, send_frame};
 use crate::snapshot::Snapshot;
 use crate::util::ansi::{floor_char_boundary, strip_ansi, AnsiStripper};
@@ -47,8 +50,8 @@ use crate::util::terminal::{
 use crate::util::utf8_stream::Utf8StreamDecoder;
 use crate::worker::detection::{is_codex_busy_status_line, ActivityDetector};
 use crate::wrap::{
-    submit_injection_body, submit_injection_recovery, warn_on_auto_response_write, PtyAutoState,
-    AUTO_SUGGESTION_BLOCK_TIMEOUT,
+    cancel_recovery_writes, new_recovery_cancel, submit_injection_body, submit_injection_recovery,
+    warn_on_auto_response_write, PtyAutoState, AUTO_SUGGESTION_BLOCK_TIMEOUT,
 };
 use base64::Engine;
 
@@ -98,6 +101,101 @@ impl CompletedWorkerDeliveries {
         self.events.insert(delivery_id.clone(), event_id);
         self.order.push_back(delivery_id);
     }
+}
+
+/// A delivery whose body was written to the composer but never proven
+/// accepted. Its text may still be in the editor, so no further delivery is
+/// injected until the composer is observed without it; otherwise the next body
+/// would append to the failed draft or submit both as one turn.
+#[derive(Debug, Clone)]
+struct FailedComposerLatch {
+    delivery_id: DeliveryId,
+    event_id: EventId,
+    expected_echo: String,
+    latched_at: Instant,
+    /// The terminal stuck signal has been sent for this latch.
+    escalated: bool,
+}
+
+/// How long a visibly stuck draft may hold injection before the worker sends
+/// the terminal `failed_draft_latched` signal to the sender and operator. The
+/// draft is still never typed over; queued deliveries keep waiting.
+const FAILED_DRAFT_ESCALATION_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// [`FAILED_DRAFT_ESCALATION_TIMEOUT`], overridable in milliseconds through
+/// `RELAY_FAILED_DRAFT_ESCALATION_MS` so integration tests need not wait.
+fn failed_draft_escalation_timeout() -> Duration {
+    std::env::var("RELAY_FAILED_DRAFT_ESCALATION_MS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(FAILED_DRAFT_ESCALATION_TIMEOUT)
+}
+
+/// Whether a still-latched draft has outlived the escalation timeout and has
+/// not been reported yet.
+fn failed_draft_escalation_due(latch: &FailedComposerLatch, timeout: Duration) -> bool {
+    !latch.escalated && latch.latched_at.elapsed() >= timeout
+}
+
+/// Record a terminal failure for a delivery whose body was written: fence its
+/// id against replay for the PTY's lifetime and, only on positive evidence
+/// that the body is still in the composer (`draft_visible`), latch injection
+/// until the composer releases the draft. A failure without that evidence
+/// never blocks later deliveries.
+fn latch_failed_written_delivery(
+    failed_written_deliveries: &mut HashMap<DeliveryId, EventId>,
+    failed_composer_latch: &mut Option<FailedComposerLatch>,
+    delivery_id: &DeliveryId,
+    event_id: &EventId,
+    expected_echo: &str,
+    draft_visible: bool,
+) {
+    failed_written_deliveries.insert(delivery_id.clone(), event_id.clone());
+    if !draft_visible {
+        return;
+    }
+    *failed_composer_latch = Some(FailedComposerLatch {
+        delivery_id: delivery_id.clone(),
+        event_id: event_id.clone(),
+        expected_echo: expected_echo.to_string(),
+        latched_at: Instant::now(),
+        escalated: false,
+    });
+}
+
+/// Whether the composer is owned by an unresolved delivery: one awaiting
+/// acceptance, one whose submit-key recovery is in flight, or a failed body that
+/// may still be typed there. The next injection must wait in every case.
+fn composer_owned_by_delivery(
+    pending_verifications_empty: bool,
+    pending_recovery_writes_empty: bool,
+    failed_composer_latch: Option<&FailedComposerLatch>,
+) -> bool {
+    !pending_verifications_empty
+        || !pending_recovery_writes_empty
+        || failed_composer_latch.is_some()
+}
+
+/// Whether the failed-draft latch alone holds a newly queued delivery. Another
+/// blocker (a verification, a recovery write, an active injection) already
+/// explains the wait; reporting the latch then would be redundant.
+fn failed_draft_latch_is_sole_blocker(
+    failed_composer_latch: Option<&FailedComposerLatch>,
+    pending_verifications_empty: bool,
+    pending_recovery_writes_empty: bool,
+    active_injection_present: bool,
+) -> bool {
+    failed_composer_latch.is_some()
+        && pending_verifications_empty
+        && pending_recovery_writes_empty
+        && !active_injection_present
+}
+
+/// Only a non-empty `write_pty` that the drainer admitted can change the
+/// composer, so only that write takes ownership away from relay deliveries.
+fn human_write_takes_ownership(byte_len: usize, admitted: bool) -> bool {
+    byte_len > 0 && admitted
 }
 
 /// Default per-atom gap for escape-aware paced injection, in milliseconds.
@@ -166,6 +264,7 @@ enum InjectionStage {
 struct ActiveInjection {
     pending: PendingWorkerInjection,
     stage: InjectionStage,
+    prompt_wait_started: Instant,
     next_at: tokio::time::Instant,
     injection_text: Option<String>,
     /// Receive-time PTY-output sequence captured atomically with submitting
@@ -533,6 +632,8 @@ struct StartupReadinessState {
     fallback_sent: bool,
     wait_warned: bool,
     auth_error_sent: bool,
+    trust_first_seen: Option<Instant>,
+    trust_error_sent: bool,
 }
 
 fn append_bounded(buf: &mut String, text: &str, max: usize, keep: usize) {
@@ -607,7 +708,8 @@ fn evaluate_startup_gate(
         "codex" | "codex.exe"
     );
     let trust_blocked = detect_codex_trust_prompt(grid.screen)
-        || detect_claude_trust_prompt(grid.screen) == (true, true);
+        || detect_claude_trust_prompt(grid.screen) == (true, true)
+        || (is_devin_cli(resolved_cli) && devin_trust_prompt_active(grid));
     let composer_ready = is_codex && codex_composer_ready(grid);
     tracing::debug!(target: "relay_broker::startup_gate",
         cli = resolved_cli, is_codex, composer_ready, trust_blocked,
@@ -625,7 +727,7 @@ fn evaluate_startup_gate(
 
 /// The startup gate's verdict.
 ///
-/// Three states, not two booleans: `Ready && Blocked` is not representable,
+/// Explicit verdicts rather than booleans: `Ready && Blocked` is not representable,
 /// and the difference between "we could not recognise the prompt" and "the
 /// harness is deliberately refusing work" decides whether the deadline may
 /// release queued work at all.
@@ -644,14 +746,20 @@ pub(crate) enum StartupGate {
     /// node will ever answer a device prompt, so the worker reports
     /// `provider_auth_required` rather than waiting out the deadline.
     ProviderAuthRequired,
+    /// Devin requires directory trust. Block immediately and report a terminal
+    /// spawn error if the screen persists for DIRECTORY_TRUST_TIMEOUT.
+    DirectoryTrustRequired,
 }
 
 impl StartupGate {
     /// Whether the harness is deliberately refusing input, as opposed to
     /// showing a prompt we failed to recognise. No deadline may release
-    /// queued work past either blocking verdict.
+    /// queued work past any blocking verdict.
     fn is_blocking(self) -> bool {
-        matches!(self, Self::Blocked | Self::ProviderAuthRequired)
+        matches!(
+            self,
+            Self::Blocked | Self::ProviderAuthRequired | Self::DirectoryTrustRequired
+        )
     }
 }
 
@@ -668,7 +776,14 @@ impl StartupGate {
 /// browser elsewhere. `detect_cli_ready` already refuses to prove readiness
 /// on that screen; this names it as deliberate so the deadline cannot
 /// release the brief into a login form.
-fn startup_gate_block_reason(resolved_cli: &str, screen: &str) -> Option<StartupGate> {
+fn startup_gate_block_reason(
+    resolved_cli: &str,
+    grid: GridReadinessSnapshot<'_>,
+) -> Option<StartupGate> {
+    let screen = grid.screen;
+    if is_devin_cli(resolved_cli) && devin_trust_prompt_active(grid) {
+        return Some(StartupGate::DirectoryTrustRequired);
+    }
     if is_muse_cli(resolved_cli) && detect_muse_device_auth_prompt(screen) {
         return Some(StartupGate::ProviderAuthRequired);
     }
@@ -688,19 +803,20 @@ fn startup_gate(
     pty: &PtySession,
 ) -> StartupGate {
     let screen = pty.screen_text();
+    let grid = GridReadinessSnapshot {
+        screen: &screen,
+        cursor: Some(pty.cursor_position()),
+    };
     if evaluate_startup_gate(
         resolved_cli,
         startup_output,
         startup_total_bytes,
         output_quiet,
-        GridReadinessSnapshot {
-            screen: &screen,
-            cursor: Some(pty.cursor_position()),
-        },
+        grid,
     ) {
         return StartupGate::Ready;
     }
-    startup_gate_block_reason(resolved_cli, &screen).unwrap_or(StartupGate::Unrecognised)
+    startup_gate_block_reason(resolved_cli, grid).unwrap_or(StartupGate::Unrecognised)
 }
 
 /// Whether the loop may pop and start the next pending injection this tick.
@@ -822,6 +938,8 @@ fn should_block_pending_injection(
         && pending.queued_at.elapsed() < AUTO_SUGGESTION_BLOCK_TIMEOUT
 }
 
+const DIRECTORY_TRUST_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[allow(clippy::too_many_arguments)]
 async fn try_emit_worker_ready(
     out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
@@ -835,8 +953,36 @@ async fn try_emit_worker_ready(
     // init_received_at is Some only after init_worker has been received.
     // We use it (not init_request_id) as the gate because the broker sends
     // init_worker without a request_id.
-    if readiness.ready_sent || init_received_at.is_none() {
+    if readiness.ready_sent || readiness.trust_error_sent || init_received_at.is_none() {
         return;
+    }
+
+    // Anchor the deadline on the gate's own detector, not a parsed menu row or
+    // response attempt. The 200 ms verification tick drives this even when the
+    // child stops producing output. Blocking suppresses the generic fail-open.
+    // A prompt that cleared before readiness must not hand its deadline to a
+    // later one; each appearance gets the full timeout.
+    if gate != StartupGate::DirectoryTrustRequired {
+        readiness.trust_first_seen = None;
+    }
+    if gate == StartupGate::DirectoryTrustRequired && !readiness.fallback_sent {
+        let first_seen = readiness.trust_first_seen.get_or_insert_with(Instant::now);
+        if first_seen.elapsed() >= DIRECTORY_TRUST_TIMEOUT {
+            readiness.trust_error_sent = true;
+            tracing::warn!(target: "agent_relay::worker::pty", worker = %worker_name,
+                "Devin directory trust is unresolved; reporting directory_trust_required");
+            let _ = send_frame(
+                out_tx,
+                "worker_error",
+                None,
+                json!({
+                    "code": "directory_trust_required",
+                    "message": "Devin requires directory trust; run `devin` in the explicit spawn working directory on this node, trust that directory, then retry",
+                    "retryable": false
+                }),
+            ).await;
+            return;
+        }
     }
 
     let startup_ready = gate == StartupGate::Ready;
@@ -1047,6 +1193,12 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut pending_worker_injections: VecDeque<PendingWorkerInjection> = VecDeque::new();
     let mut pending_worker_delivery_ids: HashSet<DeliveryId> = HashSet::new();
     let mut completed_worker_deliveries = CompletedWorkerDeliveries::default();
+    // Deliveries written to this PTY that then failed terminally. A replay of
+    // one of these ids is refused rather than pasted over the failed draft.
+    // Unbounded on purpose: entries exist only for failures, and an evicted id
+    // would let a late retry paste the same body again.
+    let mut failed_written_deliveries: HashMap<DeliveryId, EventId> = HashMap::new();
+    let mut failed_composer_latch: Option<FailedComposerLatch> = None;
     // The injection currently being written across paced stages, if any. Only
     // one injection is in flight at a time; the pending-injection interval arm
     // starts the next one once this returns to `None`.
@@ -1093,6 +1245,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut pending_recovery_writes: FuturesUnordered<RecoveryWriteAckFuture> =
         FuturesUnordered::new();
     let mut human_input_generation = 0u64;
+    // Cancellation flags for queued submit-key recoveries. Human input sets
+    // them so a delayed recovery key cannot submit the human's draft.
+    let mut recovery_cancels: Vec<Arc<AtomicBool>> = Vec::new();
+    let failed_draft_escalation_timeout = failed_draft_escalation_timeout();
     let mut startup_output = String::new();
     let mut startup_total_bytes = 0usize;
     let mut init_request_id: Option<RequestId> = None;
@@ -1353,6 +1509,18 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                             "retryable": false,
                                         })).await;
                                     }
+                                } else if failed_written_deliveries.contains_key(&delivery.delivery_id) {
+                                    tracing::warn!(
+                                        delivery_id = %delivery.delivery_id,
+                                        event_id = %delivery.event_id,
+                                        "refusing to re-inject a delivery that already failed in this composer"
+                                    );
+                                    let _ = send_frame(&out_tx, "delivery_failed", None, json!({
+                                        "delivery_id": delivery.delivery_id,
+                                        "event_id": delivery.event_id,
+                                        "reason": "delivery was already written to this PTY and failed; refusing to inject it again",
+                                        "attempts": 0,
+                                    })).await;
                                 } else if pending_worker_delivery_ids.insert(delivery.delivery_id.clone()) {
                                     let _ = send_frame(
                                         &out_tx,
@@ -1371,6 +1539,21 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         request_id: frame.request_id,
                                         queued_at: Instant::now(),
                                     });
+                                    if failed_draft_latch_is_sole_blocker(
+                                        failed_composer_latch.as_ref(),
+                                        pending_verifications.is_empty(),
+                                        pending_recovery_writes.is_empty(),
+                                        active_injection.is_some(),
+                                    ) {
+                                        // The broker marks a worker Working on
+                                        // delivery_queued, but this delivery
+                                        // will wait behind the failed draft.
+                                        let _ = send_frame(&out_tx, "agent_blocked_on_send", None, json!({
+                                            "reason": "failed_draft_latched",
+                                            "blocked_secs": 0,
+                                            "pending_delivery_count": pending_worker_injections.len(),
+                                        })).await;
+                                    }
                                 } else {
                                     tracing::debug!(
                                         delivery_id = %delivery.delivery_id,
@@ -1419,35 +1602,55 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 // child process sees the keystrokes.
                                 match frame.payload.get("data").and_then(Value::as_str) {
                                     Some(data) => {
-                                        human_input_generation = human_input_generation.saturating_add(1);
-                                        if let Some(cancel) = &initial_injection_cancel { cancel.store(true, Ordering::Relaxed); }
-                                        // Once a human writes into the PTY we can
-                                        // no longer distinguish the broker body
-                                        // from their partial composer text. Give
-                                        // the human ownership and terminate every
-                                        // pending automatic verification without
-                                        // pressing a recovery key.
-                                        let mut cancelled_verification = false;
-                                        while let Some(pv) = pending_verifications.pop_front() {
-                                            cancelled_verification = true;
-                                            let delivery_id = pv.delivery_id.clone();
-                                            let _ = send_frame(&out_tx, "delivery_failed", None, json!({
-                                                "delivery_id": delivery_id,
-                                                "event_id": pv.event_id,
-                                                "reason": "human PTY input took ownership before harness acceptance",
-                                                "attempts": pv.attempts,
-                                            })).await;
-                                            pending_worker_delivery_ids.remove(&delivery_id);
-                                        }
-                                        if cancelled_verification {
-                                            throttle.record(DeliveryOutcome::Failed);
-                                        }
                                         // Non-blocking submission: never parks the
                                         // select loop even if the drainer is wedged
                                         // behind a child that stopped reading stdin.
                                         let bytes = data.as_bytes().to_vec();
                                         let byte_len = bytes.len();
-                                        match pty.submit_write(bytes) {
+                                        let admitted = pty.submit_write(bytes);
+                                        // An empty frame changes nothing in the
+                                        // composer, and a rejected write never
+                                        // reached it: neither takes ownership.
+                                        if human_write_takes_ownership(byte_len, admitted.is_ok()) {
+                                            // Withdraw queued recovery keys first so
+                                            // a delayed submit cannot send the
+                                            // human's draft.
+                                            cancel_recovery_writes(&mut recovery_cancels);
+                                            human_input_generation = human_input_generation.saturating_add(1);
+                                            if let Some(cancel) = &initial_injection_cancel { cancel.store(true, Ordering::Relaxed); }
+                                            // Once a human writes into the PTY we can
+                                            // no longer distinguish the broker body
+                                            // from their partial composer text. Give
+                                            // the human ownership and terminate every
+                                            // pending automatic verification without
+                                            // pressing a recovery key. Only an admitted
+                                            // write transfers ownership: a rejected one
+                                            // never reached the composer.
+                                            let mut cancelled_verification = false;
+                                            while let Some(pv) = pending_verifications.pop_front() {
+                                                cancelled_verification = true;
+                                                let delivery_id = pv.delivery_id.clone();
+                                                let _ = send_frame(&out_tx, "delivery_failed", None, json!({
+                                                    "delivery_id": delivery_id,
+                                                    "event_id": pv.event_id,
+                                                    "reason": "human PTY input took ownership before harness acceptance",
+                                                    "attempts": pv.attempts,
+                                                })).await;
+                                                pending_worker_delivery_ids.remove(&delivery_id);
+                                                latch_failed_written_delivery(
+                                                    &mut failed_written_deliveries,
+                                                    &mut failed_composer_latch,
+                                                    &delivery_id,
+                                                    &pv.event_id,
+                                                    &pv.expected_echo,
+                                                    draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &pv.expected_echo),
+                                                );
+                                            }
+                                            if cancelled_verification {
+                                                throttle.record(DeliveryOutcome::Failed);
+                                            }
+                                        }
+                                        match admitted {
                                             Ok(ack_rx) => {
                                                 // Defer the ack until the drainer confirms the
                                                 // write landed (or failed). The broker holds the
@@ -1571,6 +1774,19 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     .and_then(Value::as_str)
                                     .filter(|event_id| !event_id.is_empty())
                                     .map(str::to_string);
+                                // An operator-wide flush is the explicit override
+                                // for a failed draft the worker cannot prove has
+                                // left the composer.
+                                if targeted_event_id.is_none() {
+                                    if let Some(latch) = failed_composer_latch.take() {
+                                        tracing::warn!(
+                                            target: "agent_relay::worker::pty",
+                                            worker = %worker_name,
+                                            delivery_id = %latch.delivery_id,
+                                            "operator flush released the failed-draft injection latch"
+                                        );
+                                    }
+                                }
                                 if pty_auto.interactive_hold {
                                     if let Some(event_id) = targeted_event_id {
                                         if let Some(inj) = active_injection.as_mut() {
@@ -2085,7 +2301,11 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 if let Some(index) = next_injection_index(
                     &pending_worker_injections,
                     active_injection.is_some(),
-                    !pending_verifications.is_empty() || !pending_recovery_writes.is_empty(),
+                    composer_owned_by_delivery(
+                        pending_verifications.is_empty(),
+                        pending_recovery_writes.is_empty(),
+                        failed_composer_latch.as_ref(),
+                    ),
                     pty_auto.interactive_hold,
                     hold_exempt_injections,
                     &hold_exempt_event_ids,
@@ -2103,6 +2323,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             active_injection = Some(ActiveInjection {
                                 pending,
                                 stage: InjectionStage::Escape,
+                                prompt_wait_started: Instant::now(),
                                 next_at: tokio::time::Instant::now() + throttle.delay(),
                                 injection_text: None,
                                 output_boundary: None,
@@ -2188,7 +2409,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                     InjectionStage::Body => {
                         // Recheck after throttling/steer delay: never paste
                         // into a dialog that replaced the previously idle UI.
-                        if !crate::devin::can_inject(&resolved_cli, &pty) {
+                        if !crate::injection_wire::can_inject(&resolved_cli, &pty) {
+                            if inj.prompt_wait_started.elapsed() >= crate::injection_wire::INJECTION_PROMPT_WAIT {
+                                let delivery = &inj.pending.delivery;
+                                let _ = send_frame(&out_tx, "delivery_failed", None, json!({"delivery_id": delivery.delivery_id, "event_id": delivery.event_id, "reason": "prompt_unproven"})).await;
+                                let _ = send_frame(&out_tx, "worker_error", inj.pending.request_id, json!({"code": "prompt_unproven", "retryable": false, "message": "Composer readiness could not be proven; body was not written"})).await;
+                                // Retain the pending id: a retry must never turn failure into an ack.
+                                continue;
+                            }
                             inj.next_at = tokio::time::Instant::now() + Duration::from_millis(50);
                             active_injection = Some(inj);
                             continue;
@@ -2207,36 +2435,29 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             inj.pending.delivery.workspace_id.as_deref(),
                             inj.pending.delivery.workspace_alias.as_deref(),
                         );
+                        let injection = String::from_utf8(crate::injection_wire::injection_bytes(crate::injection_wire::InjectionWire::Typed, &injection))?;
+                        let wire = crate::injection_wire::injection_wire(&resolved_cli, &pty);
+                        let limit = if initial_codex_delivery(&resolved_cli, &inj.pending.delivery) {
+                            initial_codex_max_body_bytes().min(crate::injection_wire::MAX_INJECTION_BODY_BYTES)
+                        } else { crate::injection_wire::effective_limit(wire, inject_rate) };
+                        if injection.len() > limit {
+                            let delivery = &inj.pending.delivery;
+                            let reason = format!("injection_too_large: {resolved_cli} effective limit is {limit} bytes including envelope; use a brief file pointer");
+                            let _ = send_frame(&out_tx, "delivery_failed", None, json!({"delivery_id": delivery.delivery_id, "event_id": delivery.event_id, "reason": reason})).await;
+                            let _ = send_frame(&out_tx, "worker_error", inj.pending.request_id, json!({"code": "injection_too_large", "retryable": false, "message": reason})).await;
+                            // Retain the pending id; terminal failure is never a successful replay.
+                            continue;
+                        }
+                        // Only an envelope that passed the size gate is written,
+                        // so only it may consume the reminder throttle.
                         if include_mcp_reminder {
                             mcp_reminder_throttle.note_sent(Instant::now());
                         }
                         if initial_codex_delivery(&resolved_cli, &inj.pending.delivery) {
-                            // Reject before any byte is written rather than after
-                            // guaranteeing a partial-write timeout: a body needing
-                            // more chunks than initial_codex_deadline's cap can
-                            // afford cannot reach Enter no matter how fast every
-                            // chunk renders (relay#1782 review). Reuses the
-                            // existing was_chunked && !confirmed path below --
-                            // delivery_failed, retry record removed, id retained
-                            // to reject a duplicate, body never replayed.
-                            let max_bytes = initial_codex_max_body_bytes();
-                            if injection.len() > max_bytes {
-                                tracing::warn!(
-                                    delivery_id = %inj.pending.delivery.delivery_id,
-                                    body_bytes = injection.len(),
-                                    max_bytes,
-                                    "initial Codex task exceeds chunked delivery's deadline-bounded size limit; rejecting before writing any byte"
-                                );
-                                inj.stage = InjectionStage::Finalize;
-                                initial_injection_cancel = Some(Arc::new(AtomicBool::new(false)));
-                                injection_ack = Some(Box::pin(async move {
-                                    Ok(Err(std::io::Error::other(
-                                        "initial Codex task exceeds the maximum size chunked delivery can complete within its deadline; body will not be written",
-                                    )))
-                                }));
-                                active_injection = Some(inj);
-                                continue;
-                            }
+                            // The size gate above already caps an initial Codex
+                            // body at `initial_codex_max_body_bytes`, so every body
+                            // reaching here can finish within its deadline
+                            // (relay#1782 review).
                             let before = pty.consumed_offset();
                             let end = chunk_end(&injection, 0);
                             let (first_ack, boundary) = match pty.submit_write_paced_with_output_boundary(
@@ -2268,7 +2489,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         // bracketed-paste body shape; the shared helper then
                         // selects the harness-specific delayed Enter. Finalization
                         // still waits for this ack in the injection-ack arm.
-                        let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                        let bytes = crate::injection_wire::injection_bytes(wire, &injection);
                         let write =
                             submit_injection_body(&pty, &resolved_cli, bytes, inject_rate);
                         match write {
@@ -2341,6 +2562,16 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             "event_id": inj.pending.delivery.event_id,
                             "reason": "initial_injection_incomplete; body will not be replayed"
                         })).await;
+                        // A partial chunked body may sit in the composer; the
+                        // next delivery must not be pasted onto it.
+                        latch_failed_written_delivery(
+                            &mut failed_written_deliveries,
+                            &mut failed_composer_latch,
+                            &inj.pending.delivery.delivery_id,
+                            &inj.pending.delivery.event_id,
+                            inj.injection_text.as_deref().unwrap_or_default(),
+                            draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, inj.injection_text.as_deref().unwrap_or_default()),
+                        );
                         let _ = send_frame(&out_tx, "worker_error", inj.pending.request_id, json!({
                             "code": "initial_injection_incomplete", "retryable": false,
                             "message": "Initial task delivery interrupted or timed out; inspect the composer before retrying"
@@ -2355,6 +2586,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             "reason": "human PTY input took ownership during injection",
                         })).await;
                         pending_worker_delivery_ids.remove(&delivery_id);
+                        latch_failed_written_delivery(
+                            &mut failed_written_deliveries,
+                            &mut failed_composer_latch,
+                            &delivery_id,
+                            &inj.pending.delivery.event_id,
+                            inj.injection_text.as_deref().unwrap_or_default(),
+                            draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, inj.injection_text.as_deref().unwrap_or_default()),
+                        );
                         throttle.record(DeliveryOutcome::Failed);
                         continue;
                     }
@@ -2509,17 +2748,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                 if !pending_recovery_writes.is_empty() => {
                 let delivery_id = pv.delivery_id.clone();
                 let event_id = pv.event_id.clone();
-                if submitted_generation != human_input_generation {
-                    let _ = send_frame(&out_tx, "delivery_failed", None, json!({
-                        "delivery_id": delivery_id,
-                        "event_id": event_id,
-                        "reason": "human PTY input took ownership during submit recovery",
-                        "attempts": pv.attempts,
-                    })).await;
-                    throttle.record(DeliveryOutcome::Failed);
-                    pending_worker_delivery_ids.remove(&delivery_id);
-                    continue;
-                }
+                // Human input cancels any part of the recovery that had not yet
+                // reached the child. A key that did reach it may still have
+                // started the turn, so assess acceptance before failing.
+                let human_took_over = submitted_generation != human_input_generation;
                 match ack {
                     Ok(Ok(())) => {
                         pv.output_boundary = output_boundary;
@@ -2582,13 +2814,39 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 pending_worker_delivery_ids.remove(&delivery_id);
                                 completed_worker_deliveries.insert(delivery_id, event_id);
                             }
-                            HarnessAcceptance::Parked | HarnessAcceptance::Inconclusive => {
+                            HarnessAcceptance::Parked | HarnessAcceptance::Inconclusive
+                                if !human_took_over =>
+                            {
                                 pending_verifications.push_back(pv);
+                            }
+                            HarnessAcceptance::Parked | HarnessAcceptance::Inconclusive => {
+                                let _ = send_frame(&out_tx, "delivery_failed", None, json!({
+                                    "delivery_id": delivery_id,
+                                    "event_id": event_id,
+                                    "reason": "human PTY input took ownership during submit recovery",
+                                    "attempts": pv.attempts,
+                                })).await;
+                                throttle.record(DeliveryOutcome::Failed);
+                                pending_worker_delivery_ids.remove(&delivery_id);
+                                latch_failed_written_delivery(
+                                    &mut failed_written_deliveries,
+                                    &mut failed_composer_latch,
+                                    &delivery_id,
+                                    &event_id,
+                                    &pv.expected_echo,
+                                    draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &pv.expected_echo),
+                                );
                             }
                         }
                     }
                     Ok(Err(error)) => {
-                        let reason = format!("submit recovery write failed: {error}");
+                        let reason = if human_took_over {
+                            format!(
+                                "human PTY input took ownership during submit recovery; queued submit key withheld: {error}"
+                            )
+                        } else {
+                            format!("submit recovery write failed: {error}")
+                        };
                         let _ = send_frame(&out_tx, "delivery_failed", None, json!({
                             "delivery_id": delivery_id,
                             "event_id": event_id,
@@ -2597,6 +2855,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         })).await;
                         throttle.record(DeliveryOutcome::Failed);
                         pending_worker_delivery_ids.remove(&delivery_id);
+                        latch_failed_written_delivery(
+                            &mut failed_written_deliveries,
+                            &mut failed_composer_latch,
+                            &delivery_id,
+                            &event_id,
+                            &pv.expected_echo,
+                            draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &pv.expected_echo),
+                        );
                     }
                     Err(_) => {
                         let reason = "submit recovery drainer exited before acknowledging the key";
@@ -2608,6 +2874,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         })).await;
                         throttle.record(DeliveryOutcome::Failed);
                         pending_worker_delivery_ids.remove(&delivery_id);
+                        latch_failed_written_delivery(
+                            &mut failed_written_deliveries,
+                            &mut failed_composer_latch,
+                            &delivery_id,
+                            &event_id,
+                            &pv.expected_echo,
+                            draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &pv.expected_echo),
+                        );
                     }
                 }
             }
@@ -2714,7 +2988,12 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     }),
                                 )
                                 .await;
-                                match submit_injection_recovery(&pty, &resolved_cli, pv.attempts) {
+                                match submit_injection_recovery(
+                                    &pty,
+                                    &resolved_cli,
+                                    pv.attempts,
+                                    new_recovery_cancel(&mut recovery_cancels),
+                                ) {
                                     Ok((ack_rx, output_boundary)) => {
                                         pv.attempts += 1;
                                         let _ = send_frame(
@@ -2743,6 +3022,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                         })).await;
                                         throttle.record(DeliveryOutcome::Failed);
                                         pending_worker_delivery_ids.remove(&delivery_id);
+                                        latch_failed_written_delivery(
+                                            &mut failed_written_deliveries,
+                                            &mut failed_composer_latch,
+                                            &delivery_id,
+                                            &event_id,
+                                            &pv.expected_echo,
+                                            draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &pv.expected_echo),
+                                        );
                                     }
                                 }
                             }
@@ -2765,29 +3052,101 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 pv.injected_at = Instant::now();
                                 pending_verifications.push_back(pv);
                             }
-                            state @ (HarnessAcceptance::Parked
-                            | HarnessAcceptance::Inconclusive) => {
-                                let reason = match state {
-                                    HarnessAcceptance::Parked => {
-                                        "body remained parked after bounded submit-key recovery"
-                                    }
-                                    HarnessAcceptance::Inconclusive => {
-                                        "harness acceptance could not be proven"
-                                    }
-                                    HarnessAcceptance::Accepted(_) => unreachable!(),
-                                };
+                            HarnessAcceptance::Inconclusive => {
+                                // Unconfirmed: the body was written and is not
+                                // visibly parked, but nothing proved the
+                                // harness took the turn. That is a delivery,
+                                // not a failure: release custody, report it
+                                // unconfirmed, and keep delivering. Never latch.
+                                let _ = send_frame(
+                                    &out_tx,
+                                    "delivery_ack",
+                                    pv.request_id.clone(),
+                                    json!({ "delivery_id": delivery_id, "event_id": event_id }),
+                                )
+                                .await;
+                                let _ = send_frame(&out_tx, "delivery_unconfirmed", None, json!({
+                                    "delivery_id": delivery_id,
+                                    "event_id": event_id,
+                                    "outcome": "unconfirmed",
+                                    "terminal": true,
+                                    "reason": crate::broker::delivery_verification::HARNESS_ACCEPTANCE_UNPROVEN,
+                                    "attempts": pv.attempts,
+                                })).await;
+                                throttle.record(DeliveryOutcome::Unverified);
+                                pending_worker_delivery_ids.remove(&delivery_id);
+                                completed_worker_deliveries.insert(delivery_id, event_id);
+                            }
+                            HarnessAcceptance::Parked => {
+                                // StuckInComposer: the body is still visibly
+                                // parked after bounded submit-key recovery.
                                 let _ = send_frame(&out_tx, "delivery_failed", None, json!({
                                     "delivery_id": delivery_id,
                                     "event_id": event_id,
-                                    "reason": reason,
+                                    "reason": "body remained parked after bounded submit-key recovery",
                                     "attempts": pv.attempts,
                                 })).await;
                                 throttle.record(DeliveryOutcome::Failed);
+                                // Latch before removing the pending id: the body
+                                // is still in the composer, so neither a replay
+                                // nor the next queued delivery may be typed on
+                                // top of it. Parked is the positive evidence.
+                                latch_failed_written_delivery(
+                                    &mut failed_written_deliveries,
+                                    &mut failed_composer_latch,
+                                    &delivery_id,
+                                    &event_id,
+                                    &pv.expected_echo,
+                                    true,
+                                );
                                 pending_worker_delivery_ids.remove(&delivery_id);
                             }
                         }
                     } else {
                         i += 1;
+                    }
+                }
+
+                // Release the failed-draft latch once the composer no longer
+                // holds that body (the harness took it late, or a human
+                // submitted or cleared it). Until then queued deliveries wait.
+                if let Some(latch) = failed_composer_latch.as_ref() {
+                    if pending_verifications.is_empty()
+                        && pending_recovery_writes.is_empty()
+                        && active_injection.is_none()
+                        && failed_draft_released(
+                            &resolved_cli,
+                            &latch.expected_echo,
+                            &Snapshot::capture(&pty),
+                        )
+                    {
+                        tracing::info!(
+                            delivery_id = %latch.delivery_id,
+                            event_id = %latch.event_id,
+                            "failed delivery left the composer; resuming injection"
+                        );
+                        failed_composer_latch = None;
+                    }
+                }
+                // A draft still stuck after the bounded timeout gets one
+                // terminal signal to the sender and operator. It is still
+                // never typed over; queued deliveries keep waiting.
+                if let Some(latch) = failed_composer_latch.as_mut() {
+                    if failed_draft_escalation_due(latch, failed_draft_escalation_timeout) {
+                        latch.escalated = true;
+                        tracing::warn!(
+                            delivery_id = %latch.delivery_id,
+                            event_id = %latch.event_id,
+                            "failed draft still stuck in the composer; escalating"
+                        );
+                        let _ = send_frame(&out_tx, "agent_blocked_on_send", None, json!({
+                            "reason": "failed_draft_latched",
+                            "terminal": true,
+                            "delivery_id": latch.delivery_id,
+                            "event_id": latch.event_id,
+                            "blocked_secs": latch.latched_at.elapsed().as_secs(),
+                            "pending_delivery_count": pending_worker_injections.len(),
+                        })).await;
                     }
                 }
 
@@ -3506,9 +3865,13 @@ mod tests {
                     if attempt_started.elapsed() >= VERIFICATION_WINDOW
                         && verification.attempts < verification.max_attempts =>
                 {
-                    let (recovery_ack, boundary) =
-                        submit_injection_recovery(pty, "codex", verification.attempts)
-                            .expect("queue submit-key recovery");
+                    let (recovery_ack, boundary) = submit_injection_recovery(
+                        pty,
+                        "codex",
+                        verification.attempts,
+                        Default::default(),
+                    )
+                    .expect("queue submit-key recovery");
                     tokio::time::timeout(Duration::from_secs(5), recovery_ack)
                         .await
                         .expect("submit-key recovery ack timed out")
@@ -3679,7 +4042,8 @@ mod tests {
         let mut accepted_after = None;
         for completed_attempts in [1, 2] {
             let (recovery_ack, boundary) =
-                submit_injection_recovery(&pty, "codex", completed_attempts).unwrap();
+                submit_injection_recovery(&pty, "codex", completed_attempts, Default::default())
+                    .unwrap();
             recovery_ack.await.unwrap().unwrap();
             verification.attempts += 1;
             verification.output_boundary = boundary;
@@ -4001,26 +4365,232 @@ mod tests {
         );
     }
 
+    fn screen_only(screen: &str) -> GridReadinessSnapshot<'_> {
+        GridReadinessSnapshot {
+            screen,
+            cursor: None,
+        }
+    }
+
+    #[test]
+    fn devin_trust_gate_is_scoped_to_devin_and_vetoes_composer() {
+        let screen = "Do you trust the authors of this directory?\n❭ 1 Yes, trust\n2 No, exit";
+        for cli in ["devin", "/usr/local/bin/devin", "devin.exe"] {
+            assert_eq!(
+                startup_gate_block_reason(cli, screen_only(screen)),
+                Some(StartupGate::DirectoryTrustRequired)
+            );
+            assert!(!evaluate_startup_gate(
+                cli,
+                screen,
+                1000,
+                Duration::from_secs(90),
+                GridReadinessSnapshot {
+                    screen,
+                    cursor: Some((2, 1))
+                }
+            ));
+        }
+        for cli in ["claude", "codex", "muse"] {
+            assert_eq!(startup_gate_block_reason(cli, screen_only(screen)), None);
+        }
+        assert_eq!(
+            startup_gate_block_reason(
+                "devin",
+                screen_only("Sign in to continue\nVisit https://www.facebook.com/device\n›")
+            ),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn devin_trust_deadline_starts_at_detection_and_fails_once() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut request_id = None;
+        let started = Instant::now() - STARTUP_READY_TIMEOUT - Duration::from_secs(60);
+        let mut readiness = StartupReadinessState::default();
+        try_emit_worker_ready(
+            &tx,
+            "devin-trust",
+            Some(42),
+            &mut request_id,
+            Some(started),
+            &mut readiness,
+            StartupGate::DirectoryTrustRequired,
+        )
+        .await;
+        assert!(readiness.trust_first_seen.is_some());
+        assert!(
+            rx.try_recv().is_err(),
+            "init age must not advance the trust deadline"
+        );
+        readiness.trust_first_seen = Some(Instant::now() - DIRECTORY_TRUST_TIMEOUT);
+        for gate in [
+            StartupGate::DirectoryTrustRequired,
+            StartupGate::DirectoryTrustRequired,
+            StartupGate::Unrecognised,
+            StartupGate::Ready,
+        ] {
+            try_emit_worker_ready(
+                &tx,
+                "devin-trust",
+                Some(42),
+                &mut request_id,
+                Some(started),
+                &mut readiness,
+                gate,
+            )
+            .await;
+        }
+        let frame = rx.try_recv().expect("trust error");
+        assert_eq!(frame.msg_type, "worker_error");
+        assert_eq!(frame.payload["code"], "directory_trust_required");
+        assert_eq!(frame.payload["retryable"], false);
+        assert!(
+            rx.try_recv().is_err(),
+            "terminal error cannot become ready later"
+        );
+        assert!(!readiness.ready_sent && !readiness.fallback_sent);
+    }
+
+    #[tokio::test]
+    async fn devin_trust_cannot_retroactively_fail_released_workers() {
+        for proven in [true, false] {
+            let (tx, mut rx) = mpsc::channel(4);
+            let mut request_id = None;
+            let mut readiness = StartupReadinessState {
+                ready_sent: proven,
+                fallback_sent: !proven,
+                trust_first_seen: Some(Instant::now() - DIRECTORY_TRUST_TIMEOUT),
+                ..Default::default()
+            };
+            try_emit_worker_ready(
+                &tx,
+                "devin-trust",
+                Some(42),
+                &mut request_id,
+                Some(Instant::now()),
+                &mut readiness,
+                StartupGate::DirectoryTrustRequired,
+            )
+            .await;
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn devin_trust_history_above_live_composer_does_not_block_readiness() {
+        // A resumed or uncleared Devin screen can keep the answered trust
+        // question visible above the idle composer that holds the cursor.
+        let screen = "Do you trust this directory?\n1 Yes, trust\n2 No, exit\n❭ Ask Devin to build features, fix bugs, or work on your code\nSWE-2 High";
+        let grid = GridReadinessSnapshot {
+            screen,
+            cursor: Some((4, 3)),
+        };
+        assert!(evaluate_startup_gate(
+            "devin",
+            screen,
+            1000,
+            Duration::from_secs(90),
+            grid
+        ));
+        assert_eq!(startup_gate_block_reason("devin", grid), None);
+        // The same text with the cursor on the menu is still the live dialog.
+        let menu = GridReadinessSnapshot {
+            screen,
+            cursor: Some((2, 1)),
+        };
+        assert_eq!(
+            startup_gate_block_reason("devin", menu),
+            Some(StartupGate::DirectoryTrustRequired)
+        );
+    }
+
+    #[tokio::test]
+    async fn devin_trust_prompt_that_returns_gets_a_fresh_deadline() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut request_id = None;
+        let mut readiness = StartupReadinessState {
+            trust_first_seen: Some(Instant::now() - DIRECTORY_TRUST_TIMEOUT),
+            ..Default::default()
+        };
+        // The earlier prompt cleared before readiness, then trust reappears.
+        for gate in [
+            StartupGate::Unrecognised,
+            StartupGate::DirectoryTrustRequired,
+        ] {
+            try_emit_worker_ready(
+                &tx,
+                "devin-trust",
+                Some(42),
+                &mut request_id,
+                Some(Instant::now()),
+                &mut readiness,
+                gate,
+            )
+            .await;
+        }
+        assert!(
+            rx.try_recv().is_err(),
+            "a returning trust prompt must not inherit the cleared prompt's deadline"
+        );
+        assert!(!readiness.trust_error_sent);
+        assert!(readiness
+            .trust_first_seen
+            .is_some_and(|seen| seen.elapsed() < DIRECTORY_TRUST_TIMEOUT));
+    }
+
+    #[tokio::test]
+    async fn devin_trust_cleared_before_deadline_allows_readiness() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut request_id = None;
+        let mut readiness = StartupReadinessState::default();
+        for gate in [StartupGate::DirectoryTrustRequired, StartupGate::Ready] {
+            try_emit_worker_ready(
+                &tx,
+                "devin-trust",
+                Some(42),
+                &mut request_id,
+                Some(Instant::now()),
+                &mut readiness,
+                gate,
+            )
+            .await;
+        }
+        let frame = rx.try_recv().expect("ready after trust resolved");
+        assert_eq!(frame.msg_type, "worker_ready");
+        assert_eq!(frame.payload["readiness_proven"], true);
+        assert!(rx.try_recv().is_err());
+    }
+
     #[test]
     fn provider_login_and_trust_dialogs_are_classified_apart() {
         let device_auth = "Sign in to continue\nVisit https://www.facebook.com/device\n›\n";
         assert_eq!(
-            startup_gate_block_reason("/usr/local/bin/muse", device_auth),
+            startup_gate_block_reason("/usr/local/bin/muse", screen_only(device_auth)),
             Some(StartupGate::ProviderAuthRequired)
         );
         // Only Muse carries the device-login arm; another harness rendering
         // the same words keeps its existing unrecognised-prompt behaviour.
-        assert_eq!(startup_gate_block_reason("codex", device_auth), None);
+        assert_eq!(
+            startup_gate_block_reason("codex", screen_only(device_auth)),
+            None
+        );
         assert_eq!(
             startup_gate_block_reason(
                 "codex",
-                "Do you trust the contents of this directory?\n> Yes, continue\n  No, quit\n"
+                screen_only(
+                    "Do you trust the contents of this directory?\n> Yes, continue\n  No, quit\n"
+                )
             ),
             Some(StartupGate::Blocked)
         );
         // An authenticated composer is neither.
         assert_eq!(
-            startup_gate_block_reason("muse", "muse  signed in as relay-node\n/login\n›\n"),
+            startup_gate_block_reason(
+                "muse",
+                screen_only("muse  signed in as relay-node\n/login\n›\n")
+            ),
             None
         );
     }
@@ -4235,6 +4805,130 @@ mod tests {
     }
 
     #[test]
+    fn latch_arms_only_on_visible_draft_and_escalates_once_after_timeout() {
+        let mut failed = HashMap::new();
+        let mut latch = None;
+        let delivery_id = DeliveryId::from("del_unproven");
+        let event_id = EventId::from("evt_unproven");
+        latch_failed_written_delivery(
+            &mut failed,
+            &mut latch,
+            &delivery_id,
+            &event_id,
+            "Relay message from Lead [evt]: unproven",
+            false,
+        );
+        assert!(failed.contains_key(&delivery_id), "replay stays fenced");
+        assert!(latch.is_none(), "no positive evidence, no latch");
+
+        latch_failed_written_delivery(
+            &mut failed,
+            &mut latch,
+            &delivery_id,
+            &event_id,
+            "Relay message from Lead [evt]: stuck",
+            true,
+        );
+        let latch = latch.as_mut().expect("visible draft latches");
+        assert!(!failed_draft_escalation_due(
+            latch,
+            Duration::from_secs(3600)
+        ));
+        assert!(failed_draft_escalation_due(latch, Duration::ZERO));
+        latch.escalated = true;
+        assert!(
+            !failed_draft_escalation_due(latch, Duration::ZERO),
+            "escalates once"
+        );
+    }
+
+    #[test]
+    fn failed_written_delivery_latches_injection_and_fences_replay() {
+        let mut failed = HashMap::new();
+        let mut latch = None;
+        let delivery_id = DeliveryId::from("del_parked_failure");
+        let event_id = EventId::from("evt_parked_failure");
+        assert!(!composer_owned_by_delivery(true, true, latch.as_ref()));
+
+        latch_failed_written_delivery(
+            &mut failed,
+            &mut latch,
+            &delivery_id,
+            &event_id,
+            "Relay message from Lead [evt]: parked",
+            true,
+        );
+
+        assert_eq!(failed.get(&delivery_id), Some(&event_id));
+        assert!(
+            composer_owned_by_delivery(true, true, latch.as_ref()),
+            "a failed body still in the composer must block the next injection"
+        );
+        let mut pending = VecDeque::new();
+        pending.push_back(test_pending_injection("evt_next"));
+        assert_eq!(
+            next_injection_index(
+                &pending,
+                false,
+                composer_owned_by_delivery(true, true, latch.as_ref()),
+                false,
+                0,
+                &HashSet::new(),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn latched_worker_reports_blocked_only_when_the_latch_is_the_sole_blocker() {
+        let latch = FailedComposerLatch {
+            delivery_id: DeliveryId::from("del_failed"),
+            event_id: EventId::from("evt_failed"),
+            expected_echo: "Relay message from Lead [evt]: failed".to_string(),
+            latched_at: Instant::now(),
+            escalated: false,
+        };
+        assert!(failed_draft_latch_is_sole_blocker(
+            Some(&latch),
+            true,
+            true,
+            false
+        ));
+        assert!(!failed_draft_latch_is_sole_blocker(None, true, true, false));
+        assert!(!failed_draft_latch_is_sole_blocker(
+            Some(&latch),
+            false,
+            true,
+            false
+        ));
+        assert!(!failed_draft_latch_is_sole_blocker(
+            Some(&latch),
+            true,
+            false,
+            false
+        ));
+        assert!(!failed_draft_latch_is_sole_blocker(
+            Some(&latch),
+            true,
+            true,
+            true
+        ));
+    }
+
+    #[test]
+    fn only_an_admitted_nonempty_human_write_takes_ownership() {
+        assert!(
+            !human_write_takes_ownership(0, true),
+            "empty write_pty frame"
+        );
+        assert!(
+            !human_write_takes_ownership(5, false),
+            "write rejected by a full queue"
+        );
+        assert!(human_write_takes_ownership(5, true));
+    }
+
+    #[test]
     fn requeued_targeted_exemption_returns_to_its_event_id() {
         // A failed write requeues the injection. A targeted exemption must go
         // back to the event-id set — turning it into a blanket allowance would
@@ -4244,6 +4938,7 @@ mod tests {
         let targeted = ActiveInjection {
             pending: test_pending_injection("init_task"),
             stage: InjectionStage::Escape,
+            prompt_wait_started: Instant::now(),
             next_at: tokio::time::Instant::now(),
             injection_text: None,
             output_boundary: None,
@@ -4284,6 +4979,7 @@ mod tests {
         let mut injection = ActiveInjection {
             pending: test_pending_injection("init_task"),
             stage: InjectionStage::Escape,
+            prompt_wait_started: Instant::now(),
             next_at: tokio::time::Instant::now(),
             injection_text: None,
             output_boundary: None,

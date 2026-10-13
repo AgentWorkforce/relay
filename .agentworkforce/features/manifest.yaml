@@ -724,6 +724,13 @@ categories:
         location: packages/cli/src/cli/commands/fleet.ts
         verify_tier: 5
 
+      - id: fleet-spawn-status
+        name: Read Fleet Spawn Dispatch Status
+        cli: relay fleet spawn-status <invocation-id>
+        description: Read a recorded fleet spawn dispatch without spawning again, separating confirmed readiness, terminal failure, and an outcome the node has not reported yet
+        location: packages/cli/src/cli/commands/fleet.ts
+        verify_tier: 5
+
       - id: fleet-release
         name: Release Fleet Agent
         cli: relay fleet release <name> [--reason <reason>] [--delete-agent]

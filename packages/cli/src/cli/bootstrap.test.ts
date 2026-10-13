@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -46,6 +47,7 @@ const expectedLeafCommands = [
   'fleet nodes list',
   'fleet release',
   'fleet spawn',
+  'fleet spawn-status',
   'fleet status',
   // cloud
   'cloud login',
@@ -123,6 +125,8 @@ const expectedLeafCommands = [
   'message inbox mark_read',
   'message inbox get_readers',
   'message file upload',
+  'message file get',
+  'message file download',
   // integration
   'integration subscribe',
   'integration unsubscribe',
@@ -478,5 +482,46 @@ describe('telemetry context propagation', () => {
     } finally {
       fs.rmSync(dataDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('install.sh quick start', () => {
+  const installScript = fs.readFileSync(new URL('../../../../install.sh', import.meta.url), 'utf-8');
+  const usageFunction = installScript.match(/^print_usage\(\)\s*\{\n[\s\S]*?^\}/m)?.[0] ?? '';
+
+  function quickStartCommands(version: string): string[] {
+    // Run the real function so version-dependent command forms are what we check.
+    const output = execFileSync('bash', ['-c', `${usageFunction}\nprint_usage`], {
+      encoding: 'utf-8',
+      env: { ...process.env, VERSION: version, BOLD: '', NC: '' },
+    });
+    return [...output.matchAll(/^\s*agent-relay (.+)$/gm)].map((match) => match[1].trim());
+  }
+
+  it('prints only commands this CLI actually has', () => {
+    // The installer once printed `agent-relay up --background` after `up` moved
+    // under `node`, so a first run failed with "unknown command 'up'".
+    expect(usageFunction).not.toBe('');
+    const commands = quickStartCommands('latest');
+    expect(commands).toContain('node up --background');
+    const program = createProgram();
+    for (const command of commands) {
+      let current: Command = program;
+      // Flags, <placeholders>, and anything after a leaf command are arguments, not command words.
+      for (const word of command
+        .split(/\s+/)
+        .filter((part) => !part.startsWith('-') && !/^<[^>]+>$/.test(part))) {
+        if (current !== program && current.commands.length === 0) break;
+        const next = current.commands.find((sub) => sub.name() === word || sub.aliases().includes(word));
+        expect(next, `agent-relay ${command}: no "${word}" command`).toBeDefined();
+        current = next as Command;
+      }
+    }
+  });
+
+  it('keeps the top-level up/down forms for pinned installs older than 9.2.2', () => {
+    expect(quickStartCommands('9.2.1')).toEqual(['up --background', 'status', 'down']);
+    expect(quickStartCommands('9.2.2')).toEqual(['node up --background', 'status', 'node down']);
+    expect(quickStartCommands('13.1.5')).toEqual(['node up --background', 'status', 'node down']);
   });
 });

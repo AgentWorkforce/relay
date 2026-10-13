@@ -613,7 +613,11 @@ export type BrokerEvent =
       name: string;
       delivery_id: string;
       event_id: string;
-      /** 'harness_acceptance' for current PTY workers; legacy workers may report 'echo' or 'timeout_fallback'. */
+      /**
+       * 'harness_acceptance' for accepted PTY deliveries and 'completed_replay'
+       * for duplicate completed deliveries; legacy workers may report 'echo'
+       * or 'timeout_fallback'.
+       */
       verification?: string;
       reason?: string;
       evidence?: string | null;
@@ -857,6 +861,7 @@ export type WorkerToBroker =
     }
   | {
       type: 'delivery_verified';
+      /** See the `delivery_verified` broker event for `verification` values. */
       payload: {
         delivery_id: string;
         event_id: string;
@@ -887,6 +892,13 @@ export type WorkerToBroker =
     }
   | {
       type: 'delivery_failed';
+      /**
+       * Terminal and never replayed. PTY injection adds 'prompt_unproven' (no
+       * composer was recognized in time), 'body remained parked after bounded
+       * submit-key recovery', 'harness acceptance could not be proven'
+       * (neither parked nor accepted, so not evidence of loss) and
+       * 'injection_too_large: …' (rejected before any byte was written).
+       */
       payload: { delivery_id: string; event_id: string; reason: string };
     }
   | {

@@ -1,0 +1,51 @@
+{
+  "id": "compact_fe43i9idd2e5",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-10-04T07:26:54.566Z",
+  "sourceTrajectories": [
+    "traj_mrt7zp5f4emg"
+  ],
+  "dateRange": {
+    "start": "2026-10-04T07:16:26.257Z",
+    "end": "2026-10-04T07:26:54.151Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Use a latched paste capability, a 16 KiB ceiling and a 1536-byte default typed cap; preserve absent-echo fallback, fail only positive tail-loss evidence",
+          "chosen": "Use a latched paste capability, a 16 KiB ceiling and a 1536-byte default typed cap; preserve absent-echo fallback, fail only positive tail-loss evidence",
+          "reasoning": "Reviewed plan requires a bounded 90-second spawn budget and compatibility for TUIs that do not echo. Wrap already bulk-writes. Live Claude enabled DECSET 2004 during startup.",
+          "fromTrajectory": "traj_mrt7zp5f4emg"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    "crates/broker/src/broker/delivery_verification.rs",
+    "crates/broker/src/devin.rs",
+    "crates/broker/src/injection_wire.rs",
+    "crates/broker/src/lib.rs",
+    "crates/broker/src/pty_worker.rs",
+    "crates/broker/src/runtime/delivery.rs",
+    "crates/broker/src/wrap.rs",
+    "crates/broker/tests/pty_injection_integrity.rs",
+    "crates/relay-pty/src/pty.rs",
+    "docs/harnesses/injection.md"
+  ],
+  "commits": [
+    "a973af9",
+    "3521cb4"
+  ]
+}

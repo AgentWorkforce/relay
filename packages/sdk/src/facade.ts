@@ -169,6 +169,7 @@ export interface RelayAgentClient extends RelayAgentHandle {
   readonly messages: EnrichedMessages;
   readonly threads: RelayMessaging['threads'];
   readonly inbox: RelayMessaging['inbox'];
+  readonly files: RelayMessaging['files'];
   sendMessage(input: RelaySendMessageInput): Promise<RelayMessage>;
   reply(input: RelayReplyInput): Promise<RelayMessage>;
   react(input: RelayClientReactInput): Promise<RelayMessageReaction>;

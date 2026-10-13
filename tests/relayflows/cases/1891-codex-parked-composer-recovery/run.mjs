@@ -53,6 +53,9 @@ function park() {
   // match the original formatted body byte-for-byte, while the exact compact
   // tail remains visible in the live composer.
   process.stdout.write('\r\n' + composer.replaceAll('\n', '\r\n  ') + '\r\nCOMPOSER_PARKED\r\n› ' + composer.replace(/\s+/g, '').slice(-96));
+  setTimeout(() => {
+    if (!submitted) process.stdout.write('\r\nTASK_PARKED_TIMEOUT copies=' + copies + '\r\n');
+  }, 12_000).unref();
 }
 
 function submit() {
@@ -96,10 +99,6 @@ function receiveByte(byte) {
 process.stdin.on('data', (chunk) => {
   for (const byte of chunk) receiveByte(byte);
 });
-
-setTimeout(() => {
-  if (!submitted) process.stdout.write('\r\nTASK_PARKED_TIMEOUT copies=' + copies + '\r\n');
-}, 12_000).unref();
 `;
 
 let worker;

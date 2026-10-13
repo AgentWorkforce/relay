@@ -35,7 +35,7 @@ concurrency:
 
 jobs:
   select:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Select Flows v2 shards
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -94,7 +94,7 @@ jobs:
           retention-days: 14
 
   targeted:
-    if: (github.event_name != 'pull_request' && github.event_name != 'pull_request_target') || (github.head_ref == 'trunk' && github.event.pull_request.head.repo.full_name == github.repository && github.base_ref == 'main')
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Flows v2 shard ${{ matrix.shard }}
     needs: select
     runs-on: ubuntu-24.04

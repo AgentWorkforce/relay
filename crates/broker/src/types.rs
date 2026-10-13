@@ -168,6 +168,9 @@ pub struct InboundRelayEvent {
     pub text: String,
     pub thread_id: Option<ThreadId>,
     pub priority: RelayPriority,
+    /// File attachments carried by the message (empty for non-message events).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::attachments::InboundAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

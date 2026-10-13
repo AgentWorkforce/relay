@@ -1,0 +1,48 @@
+{
+  "id": "compact_18kvuqhd9nlt",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-10-08T23:50:44.509Z",
+  "sourceTrajectories": [
+    "traj_jem7cb38r68j"
+  ],
+  "dateRange": {
+    "start": "2026-10-08T23:50:38.751Z",
+    "end": "2026-10-08T23:50:44.205Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Reuse owner-authorized agent subscription channels for --to self",
+          "chosen": "Reuse owner-authorized agent subscription channels for --to self",
+          "reasoning": "The desktop session discovery endpoint is outside this repository; broker workers already carry RELAY_AGENT_NAME and workspace credentials. Reuse registered-identity routing and existing transactional setup instead of adding another subscription transport.",
+          "fromTrajectory": "traj_jem7cb38r68j"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    "packages/cli/src/cli/commands/integration.ts",
+    "packages/cli/src/cli/commands/integration-subscribe.test.ts",
+    "packages/cli/README.md",
+    "CHANGELOG.md",
+    "summary.md"
+  ],
+  "commits": [],
+  "narrative": "Added integration subscribe --to self using the broker-assigned RELAY_AGENT_NAME and existing owner-authorized registered-agent subscription routing. Missing identities and spawn conflicts fail before subscription creation. Explicit recipient routing is preserved. Validation: 144 tests passed, 4 skipped; CLI typecheck passed; targeted lint passed with 31 existing warnings. Desktop session discovery is outside this repository and remains unchanged; live provider delivery was not tested. The task used isolated trajectory storage because the default store already had an unrelated active trajectory.",
+  "decisions": [],
+  "conventions": [],
+  "lessons": [],
+  "openQuestions": []
+}

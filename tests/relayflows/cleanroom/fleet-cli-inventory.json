@@ -1044,7 +1044,7 @@
           "conflictsWith": [],
           "implied": null,
           "envVar": null,
-          "defaultValue": "120000",
+          "defaultValue": "360000",
           "presetArg": null
         },
         {
@@ -1442,6 +1442,91 @@
           "flags": "--workstream <workstream>",
           "short": null,
           "long": "--workstream",
+          "mandatory": false,
+          "valueRequired": true,
+          "valueOptional": false,
+          "variadic": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null,
+          "conflictsWith": [],
+          "implied": null,
+          "envVar": null,
+          "defaultValue": null,
+          "presetArg": null
+        }
+      ]
+    },
+    {
+      "path": "fleet spawn-status",
+      "aliases": [],
+      "hidden": false,
+      "leaf": true,
+      "arguments": [
+        {
+          "name": "invocation-id",
+          "required": true,
+          "variadic": false,
+          "choices": null,
+          "defaultValue": null
+        }
+      ],
+      "options": [
+        {
+          "flags": "--base-url <url>",
+          "short": null,
+          "long": "--base-url",
+          "mandatory": false,
+          "valueRequired": true,
+          "valueOptional": false,
+          "variadic": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null,
+          "conflictsWith": [],
+          "implied": null,
+          "envVar": null,
+          "defaultValue": null,
+          "presetArg": null
+        },
+        {
+          "flags": "--token <token>",
+          "short": null,
+          "long": "--token",
+          "mandatory": false,
+          "valueRequired": true,
+          "valueOptional": false,
+          "variadic": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null,
+          "conflictsWith": [],
+          "implied": null,
+          "envVar": null,
+          "defaultValue": null,
+          "presetArg": null
+        },
+        {
+          "flags": "--wk <key>",
+          "short": null,
+          "long": "--wk",
+          "mandatory": false,
+          "valueRequired": true,
+          "valueOptional": false,
+          "variadic": false,
+          "negate": false,
+          "hidden": false,
+          "choices": null,
+          "conflictsWith": [],
+          "implied": null,
+          "envVar": null,
+          "defaultValue": null,
+          "presetArg": null
+        },
+        {
+          "flags": "--workspace-key <key>",
+          "short": null,
+          "long": "--workspace-key",
           "mandatory": false,
           "valueRequired": true,
           "valueOptional": false,

@@ -8,7 +8,7 @@
   "requiredSnapshotRelayVersion": "11.10.3",
   "artifactRoot": ".workflow-artifacts/verify-fleet-daytona",
   "inventoryFile": "fleet-cli-inventory.json",
-  "inventorySha256": "8bdc4be9341d4efb5a5e04ae8fe601fd30a9d664681b82ab2c4c729f46b4ac16",
+  "inventorySha256": "88839ab72869ab2cfc6d0757700dd7f0253581b921c5c3d9097dd08ff4ba23df",
   "commandSurface": {
     "fleet agent list": [
       "fleet-agent-list-json",
@@ -118,7 +118,7 @@
     "node-agent-set-model-app-server-a": ["node agent spawn", "node agent set-model"],
     "node-agent-set-model-app-server-b": ["node agent spawn", "node agent set-model"]
   },
-  "deferredCommandSurface": [],
+  "deferredCommandSurface": ["fleet spawn-status"],
   "optionCoverage": {
     "fleet agent list": [
       {
@@ -570,6 +570,28 @@
         "option": "--workstream",
         "status": "supported",
         "operationId": "fleet-spawn-metadata-channel-model-cwd"
+      }
+    ],
+    "fleet spawn-status": [
+      {
+        "option": "--base-url",
+        "status": "skipped",
+        "reason": "The proof uses the credential-bound workspace endpoint; alternate endpoint selection is covered by CLI connection tests without changing the Daytona target."
+      },
+      {
+        "option": "--token",
+        "status": "skipped",
+        "reason": "Token argv would duplicate reveal-once credentials; the board proves redaction and uses the bound workspace key."
+      },
+      {
+        "option": "--wk",
+        "status": "skipped",
+        "reason": "The legacy --wk credential alias is covered by CLI connection tests; the board must not mint a second credential source."
+      },
+      {
+        "option": "--workspace-key",
+        "status": "skipped",
+        "reason": "The bound workspace key is injected only where the operation needs it; repeating it on every Fleet read would multiply secret-bearing argv."
       }
     ],
     "fleet status": [

@@ -98,6 +98,26 @@ pub fn detect_codex_trust_prompt(clean_output: &str) -> bool {
         && lower.contains("no, quit")
 }
 
+/// Detect Devin's startup directory-trust interstitial, including wrapped text.
+/// This is a blocking-screen detector, not authority to select a menu option.
+/// Corroborate the question with a choice so ordinary trust-related prose does
+/// not block startup. Callers must restrict this detector to Devin startup.
+pub fn detect_devin_trust_prompt(screen: &str) -> bool {
+    let compact: String = screen
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect();
+    let question = compact.contains("doyoutrust")
+        && ["directory", "authors", "workspace"]
+            .iter()
+            .any(|word| compact.contains(word));
+    let choice = ["yes,itrust", "yes,trust", "no,exit", "no,quit"]
+        .iter()
+        .any(|word| compact.contains(word));
+    question && choice
+}
+
 /// Detect Muse's interactive provider (device) login screen.
 ///
 /// Muse authenticates out of band: the TUI prints a verification URL and a
@@ -523,6 +543,27 @@ pub fn is_auto_suggestion(output: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn devin_trust_requires_question_and_choice_including_wrapped_variants() {
+        for screen in [
+            "Do you trust the authors of this directory?\n1. Yes, I trust the authors\n2. No, exit",
+            "Do you trust this workspace?\n❭ 1 Yes, trust\n  this workspace",
+            "Do you trust the authors of this\ndirectory?\n❯ 2) No, exit",
+            "Do you trust this directory?\n❭ 1 Yes, trust the parent directory\n2 No, quit",
+        ] {
+            assert!(detect_devin_trust_prompt(screen), "{screen}");
+        }
+        for screen in [
+            "❭ Ask Devin to build features, fix bugs, or work on your code",
+            "Do you trust this directory?",
+            "❭ 1 Yes, trust\n  this workspace",
+            "Documentation: directory trust requires an operator",
+            "Do you trust this tool?\nYes, trust",
+        ] {
+            assert!(!detect_devin_trust_prompt(screen), "{screen}");
+        }
+    }
 
     #[test]
     fn trust_question_header_is_not_an_affirmative_menu_option() {

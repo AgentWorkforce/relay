@@ -20,6 +20,7 @@ import {
   withDeliveryStatus,
   type LocalAgentDependencies,
 } from './local-agent.js';
+import { MAX_TASK_BODY_BYTES } from '../lib/task-input.js';
 
 function harness(overrides: Partial<LocalAgentDependencies> = {}) {
   const client = {
@@ -993,6 +994,33 @@ describe('local agent subtree', () => {
       expect(client.spawnPty).toHaveBeenCalledWith(
         expect.objectContaining({ name: 'Nested', cli: 'codex', cwd: '/tmp/project/packages/web' })
       );
+    }
+  );
+
+  // relay#1930 review (cubic): auto-routing wraps the task in a Director
+  // prompt, so the routed task is what must fit the PTY body limit.
+  it('rejects an auto-routed task whose Director prompt exceeds the PTY body limit', async () => {
+    const { program, client, error, exit } = harness();
+    await program.parseAsync(
+      ['local', 'agent', 'spawn', 'claude', '--model', 'auto', '--task', 'x'.repeat(MAX_TASK_BODY_BYTES)],
+      { from: 'user' }
+    );
+    expect(error.mock.calls.flat().join(' ')).toContain('UTF-8 bytes');
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(client.spawnPty).not.toHaveBeenCalled();
+  });
+
+  it.each(['spawn', 'new'])(
+    '%s reports an unreadable --task-file through the CLI error path',
+    async (command) => {
+      const { program, client, error, exit } = harness();
+      await program.parseAsync(
+        ['local', 'agent', command, 'codex', '--task-file', '/nonexistent/relay-brief.md'],
+        { from: 'user' }
+      );
+      expect(error.mock.calls.flat().join(' ')).toContain('ENOENT');
+      expect(exit).toHaveBeenCalledWith(1);
+      expect(client.spawnPty).not.toHaveBeenCalled();
     }
   );
 

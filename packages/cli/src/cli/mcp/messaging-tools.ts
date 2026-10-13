@@ -1,5 +1,10 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { replayMessageMetadata } from '@agent-relay/sdk';
+import {
+  downloadRelayFile,
+  replayMessageMetadata,
+  uploadRelayFile,
+  type RelayFilesApiLike,
+} from '@agent-relay/sdk';
 import { z } from 'zod';
 
 import {
@@ -9,9 +14,16 @@ import {
   messageReadersReceipt,
   resolveExactAgentName,
 } from '../lib/message-delivery-receipts.js';
+import {
+  MAX_ATTACHMENT_BYTES,
+  contentTypeFor,
+  decodeBase64Strict,
+  readAttachment,
+  saveAttachment,
+} from '../lib/attachments.js';
 import { jsonContent, jsonResult, textContent } from './tool-results.js';
 import { identityOverrideInputShape, messageResult } from './tool-shapes.js';
-import { McpRequestReplay } from './request-replay.js';
+import { McpRequestReplay, replayScopeOf } from './request-replay.js';
 import type { AgentClientLike } from './types.js';
 
 const directMessageResult = z.looseObject({
@@ -60,6 +72,26 @@ function resolveEmoji(input: string): string {
     clap: '👏',
   };
   return aliases[normalized] ?? input;
+}
+
+const idempotencyKeyInput = z
+  .string()
+  // Relaycast trims this key upstream, so trim before both the local replay
+  // cache and the forwarded call to keep one logical send on one key; a
+  // whitespace-only key would otherwise become an unkeyed send.
+  .trim()
+  .min(1)
+  .max(255)
+  .optional()
+  .describe(
+    'Stable key for retrying this same message after a lost response; use a new key for a new message. Surrounding whitespace is trimmed and a whitespace-only key is rejected.'
+  );
+
+function requireFiles(client: AgentClientLike): RelayFilesApiLike {
+  if (!client.files) {
+    throw new Error('This Relay client cannot store files.');
+  }
+  return client.files;
 }
 
 /**
@@ -230,13 +262,14 @@ export function registerMessagingTools(
       inputSchema: {
         channel: z.string().describe('Channel name'),
         text: z.string().describe('Message text'),
-        attachments: z.array(z.string()).optional().describe('File attachment IDs'),
+        attachments: z.array(z.string()).optional().describe('File IDs from "upload_file"'),
         mode: z
           .enum(['wait', 'steer'])
           .optional()
           .describe(
             'wait (default): queue delivery until each recipient reaches a safe idle boundary; steer: request immediate injection, which may interrupt active work.'
           ),
+        idempotency_key: idempotencyKeyInput,
         ...identityOverrideInputShape,
       },
       outputSchema: jsonResult,
@@ -247,14 +280,26 @@ export function registerMessagingTools(
         openWorldHint: true,
       },
     },
-    async ({ channel, text, attachments, mode, as }) =>
-      jsonContent(
-        await getAgentClient(as).send(channel, text, {
-          attachments,
-          data: replayMessageMetadata(),
-          mode,
-        })
-      )
+    async ({ channel, text, attachments, mode, idempotency_key, as }, extra) => {
+      // Bind the acting identity now: a register_agent that moves the session
+      // default must not reroute a write that is already in flight.
+      const client = getAgentClient(as);
+      return replay.run(
+        'post_message',
+        extra,
+        idempotency_key,
+        async () =>
+          jsonContent(
+            await client.send(channel, text, {
+              attachments,
+              data: replayMessageMetadata(),
+              mode,
+              idempotencyKey: idempotency_key,
+            })
+          ),
+        replayScopeOf(client)
+      );
+    }
   );
 
   server.registerTool(
@@ -292,6 +337,7 @@ export function registerMessagingTools(
       inputSchema: {
         message_id: z.string().describe('Parent message ID'),
         text: z.string().describe('Reply text'),
+        idempotency_key: idempotencyKeyInput,
         ...identityOverrideInputShape,
       },
       outputSchema: jsonResult,
@@ -302,8 +348,22 @@ export function registerMessagingTools(
         openWorldHint: true,
       },
     },
-    async ({ message_id, text, as }) =>
-      jsonContent(await getAgentClient(as).reply(message_id, text, { data: replayMessageMetadata() }))
+    async ({ message_id, text, idempotency_key, as }, extra) => {
+      const client = getAgentClient(as);
+      return replay.run(
+        'reply_to_thread',
+        extra,
+        idempotency_key,
+        async () =>
+          jsonContent(
+            await client.reply(message_id, text, {
+              data: replayMessageMetadata(),
+              idempotencyKey: idempotency_key,
+            })
+          ),
+        replayScopeOf(client)
+      );
+    }
   );
 
   server.registerTool(
@@ -347,19 +407,8 @@ export function registerMessagingTools(
           .describe(
             'wait (default): queue until the recipient reaches a safe idle boundary; steer: request immediate injection, which may interrupt active work. Both modes return before reading is confirmed.'
           ),
-        attachments: z.array(z.string()).optional().describe('File attachment IDs'),
-        idempotency_key: z
-          .string()
-          // Relaycast trims this key upstream, so trim before both the local
-          // replay cache and the forwarded call to keep one logical send on one
-          // key; a whitespace-only key would otherwise become an unkeyed send.
-          .trim()
-          .min(1)
-          .max(255)
-          .optional()
-          .describe(
-            'Stable key for retrying this same message after a lost response; use a new key for a new message. Surrounding whitespace is trimmed and a whitespace-only key is rejected.'
-          ),
+        attachments: z.array(z.string()).optional().describe('File IDs from "upload_file"'),
+        idempotency_key: idempotencyKeyInput,
         ...identityOverrideInputShape,
       },
       outputSchema: directMessageResult,
@@ -370,22 +419,30 @@ export function registerMessagingTools(
         openWorldHint: true,
       },
     },
-    async ({ to, text, mode, attachments, idempotency_key, as }, extra) =>
-      replay.run('send_dm', extra, idempotency_key, async () => {
-        const agents = await listAgentsForRecipientResolution?.();
-        const resolvedRecipient = agents ? resolveExactAgentName(agents, to) : undefined;
-        const message = await getAgentClient(as).dm(to, text, {
-          idempotencyKey: idempotency_key,
-          mode,
-          attachments,
-          data: replayMessageMetadata(),
-        });
-        const receipt = compactDirectMessageReceipt(
-          directMessageReceipt(message, to, mode, resolvedRecipient)
-        );
-        const result = jsonContent(receipt);
-        return directMessageDeliveryFailure(receipt) ? { ...result, isError: true as const } : result;
-      })
+    async ({ to, text, mode, attachments, idempotency_key, as }, extra) => {
+      const client = getAgentClient(as);
+      return replay.run(
+        'send_dm',
+        extra,
+        idempotency_key,
+        async () => {
+          const agents = await listAgentsForRecipientResolution?.();
+          const resolvedRecipient = agents ? resolveExactAgentName(agents, to) : undefined;
+          const message = await client.dm(to, text, {
+            idempotencyKey: idempotency_key,
+            mode,
+            attachments,
+            data: replayMessageMetadata(),
+          });
+          const receipt = compactDirectMessageReceipt(
+            directMessageReceipt(message, to, mode, resolvedRecipient)
+          );
+          const result = jsonContent(receipt);
+          return directMessageDeliveryFailure(receipt) ? { ...result, isError: true as const } : result;
+        },
+        replayScopeOf(client)
+      );
+    }
   );
 
   server.registerTool(
@@ -417,6 +474,7 @@ export function registerMessagingTools(
         participants: z.array(z.string()).describe('Participant agent names'),
         name: z.string().optional().describe('Optional group name'),
         text: z.string().describe('Initial message'),
+        attachments: z.array(z.string()).optional().describe('File IDs from "upload_file"'),
         ...identityOverrideInputShape,
       },
       outputSchema: jsonResult,
@@ -427,13 +485,101 @@ export function registerMessagingTools(
         openWorldHint: true,
       },
     },
-    async ({ participants, name, text, as }) => {
+    async ({ participants, name, text, attachments, as }) => {
       const client = getAgentClient(as);
       const conversation = await client.dms.createGroup({ participants, name });
       const message = await client.dms.sendMessage(conversation.id, text, {
+        attachments,
         data: replayMessageMetadata(),
       });
       return jsonContent({ conversation, message });
+    }
+  );
+
+  server.registerTool(
+    'upload_file',
+    {
+      title: 'Upload File',
+      description:
+        'Upload a file (for example a screenshot) so it can be attached to a message. ' +
+        'Pass a local `path`, or `content_base64` with `filename`. The bytes are stored before this returns, so the returned `id` is ready to pass in `attachments` to "send_dm", "post_message" or "send_group_dm". ' +
+        `Files are limited to ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MiB.`,
+      inputSchema: {
+        path: z.string().optional().describe('Local file path to upload'),
+        content_base64: z.string().optional().describe('File bytes, base64-encoded (instead of path)'),
+        filename: z.string().optional().describe('File name; defaults to the basename of path'),
+        content_type: z.string().optional().describe('MIME type; guessed from the file name when omitted'),
+        ...identityOverrideInputShape,
+      },
+      outputSchema: jsonResult,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({ path: filePath, content_base64, filename, content_type, as }) => {
+      if (filePath && content_base64 !== undefined) {
+        throw new Error('Pass either a local `path` or `content_base64`, not both.');
+      }
+      let file: { filename: string; contentType: string; data: Uint8Array };
+      if (filePath) {
+        const read = await readAttachment(filePath);
+        file = {
+          ...read,
+          filename: filename ?? read.filename,
+          contentType: content_type ?? read.contentType,
+        };
+      } else if (content_base64 !== undefined && filename) {
+        const data = decodeBase64Strict(content_base64);
+        if (data.byteLength > MAX_ATTACHMENT_BYTES) {
+          throw new Error(
+            `Cannot attach ${filename}: ${data.byteLength} bytes exceeds the ${MAX_ATTACHMENT_BYTES}-byte limit.`
+          );
+        }
+        file = { filename, contentType: content_type ?? contentTypeFor(filename), data };
+      } else {
+        throw new Error('Pass a local `path`, or `content_base64` with `filename`.');
+      }
+      const uploaded = await uploadRelayFile(requireFiles(getAgentClient(as)), file);
+      // Signed download URLs are bearer credentials. MCP callers need only
+      // the stable metadata and id used to attach the completed upload.
+      return jsonContent({
+        id: uploaded.id,
+        filename: uploaded.filename,
+        contentType: uploaded.contentType,
+        sizeBytes: uploaded.sizeBytes,
+        status: uploaded.status,
+      });
+    }
+  );
+
+  server.registerTool(
+    'download_file',
+    {
+      title: 'Download File',
+      description:
+        'Download a message attachment to a local file and return its `path`, so you can open it (for example, read an attached screenshot). ' +
+        "Use the `file_id` (or `id`) from a message's attachments. By default the file is saved under .agent-relay/attachments/<file_id>/ in the working directory.",
+      inputSchema: {
+        file_id: z.string().describe('Attachment file ID'),
+        path: z.string().optional().describe('Output file or existing directory'),
+        ...identityOverrideInputShape,
+      },
+      outputSchema: jsonResult,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ file_id, path: out, as }) => {
+      const { file, data } = await downloadRelayFile(requireFiles(getAgentClient(as)), file_id);
+      const saved = await saveAttachment(file_id, file.filename, data, out);
+      return jsonContent({
+        id: file.id,
+        filename: file.filename,
+        contentType: file.contentType,
+        sizeBytes: data.byteLength,
+        path: saved,
+      });
     }
   );
 

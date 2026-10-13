@@ -204,6 +204,7 @@ mod tests {
             text: "hey there".into(),
             thread_id: None,
             priority: RelayPriority::P2,
+            attachments: Vec::new(),
         });
         log.log_inbound(&InboundRelayEvent {
             event_id: "e2".into(),
@@ -217,6 +218,7 @@ mod tests {
             text: "hello team".into(),
             thread_id: None,
             priority: RelayPriority::P3,
+            attachments: Vec::new(),
         });
 
         let body = fs::read_to_string(&path).expect("read");

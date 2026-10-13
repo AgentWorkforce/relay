@@ -242,6 +242,9 @@ pub(crate) struct BrokerRuntime {
     /// them; this map correlates that response back to its terminal session.
     pub(super) terminal_input_requests: HashMap<String, TerminalInputRequest>,
     pub(super) fleet_delivery_book: FleetDeliveryBook,
+    /// Node deliveries held while their file attachments download.
+    pub(super) attachment_staging:
+        crate::attachments::AttachmentStaging<crate::fleet_wire::Deliver>,
     pub(super) fleet_max_agents: u32,
     pub(super) fleet_inventory: HashMap<WorkerName, InventoryAgent>,
     /// Per-worker retry deadlines for failed Relaycast identity lookups while
@@ -302,6 +305,7 @@ enum RuntimeEvent {
     Stdin(std::io::Result<Option<String>>),
     Relaycast(Option<WorkspaceInboundMessage>),
     Fleet(Option<FleetControlEvent>),
+    AttachmentsStaged(Option<crate::attachments::StagedAttachments>),
     Terminal(Option<TerminalControlEvent>),
     Worker(Option<WorkerEvent>),
     MaintenanceTick,
@@ -347,6 +351,7 @@ impl BrokerRuntime {
                 result = self.sdk_lines.next_line(), if self.stdin_open => RuntimeEvent::Stdin(result),
                 message = self.ws_inbound_rx.recv(), if self.relaycast_open => RuntimeEvent::Relaycast(message),
                 event = self.fleet_event_rx.recv(), if self.fleet_control_open => RuntimeEvent::Fleet(event),
+                staged = self.attachment_staging.recv() => RuntimeEvent::AttachmentsStaged(staged),
                 event = self.terminal_event_rx.recv(), if self.terminal_control_open => RuntimeEvent::Terminal(event),
                 event = self.worker_event_rx.recv(), if self.worker_events_open => RuntimeEvent::Worker(event),
                 _ = self.reap_tick.tick() => RuntimeEvent::MaintenanceTick,
@@ -386,6 +391,11 @@ impl BrokerRuntime {
                 RuntimeEvent::Fleet(None) => {
                     self.fleet_control_open = false;
                 }
+                RuntimeEvent::AttachmentsStaged(Some(staged)) => {
+                    self.handle_staged_attachments(staged).await;
+                }
+                // Unreachable: the staging area holds its own sender.
+                RuntimeEvent::AttachmentsStaged(None) => {}
                 RuntimeEvent::Terminal(Some(event)) => {
                     self.handle_terminal_control_event(event).await;
                 }

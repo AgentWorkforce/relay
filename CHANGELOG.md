@@ -19,6 +19,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add `--sandbox-relayfile` to retain the previous required live repository mirror. Combine it with `--checkout` when both a Git checkout and live context must be ready before dispatch.
 
+## [13.4.1] - 2026-10-12
+
+### Fixed
+
+- `npx @agent-relay/connect join` no longer waits 60 seconds and rolls back when the local probe is running but cannot match the command to a live Claude Code or Codex session (for example, when it was run from a separate terminal). It stops within about a second and says to run the command from the agent's own shell. A timeout that does happen now names the probe's last answer. `connect install` no longer reports such a probe as ready when its version cannot be checked.
+
+## [13.4.0] - 2026-10-11
+
+### Added
+
+- `agent-relay integration subscribe --to self` routes provider events to the broker worker's registered identity, allowing fleet workers to subscribe without desktop session detection.
+- Broker events report PTY submit recovery: `delivery_unconfirmed` (no acceptance evidence for a write, with `attempts` / `max_attempts`; `terminal: true` when the delivery ends unconfirmed) and `delivery_resubmitted` (a submit-only retry, with `attempt` and `strategy`); `delivery_verified` adds `evidence` and `attempts`. `@agent-relay/harness-driver` and the Python and Swift SDK protocol types include both new events.
+
+### Changed
+
+- A PTY delivery the broker can neither confirm nor see still parked in the agent's input box is now delivered as unconfirmed (a terminal `delivery_unconfirmed` with `outcome: "unconfirmed"`) instead of failing, and later messages to that agent are no longer held behind it. Agents whose terminal shows no acceptance signal keep receiving messages.
+- A confirmed `fleet spawn --task` whose task was written but never visibly accepted now succeeds (`spawned: true`) with `warning.code: "spawn_task_unconfirmed"`, instead of failing with `spawn_task_unconfirmed` and exit 8. Only a task that could not be delivered fails the spawn, with `spawn_task_failed`.
+
+### Fixed
+
+- `agent-relay fleet spawn` explains how to reuse a retained agent name with `fleet release <name> --delete-agent --wait` when registration fails with `agent_already_exists`.
+- The installer's Quick Start now prints `agent-relay node up --background` and `agent-relay node down`, which exist, instead of the removed `agent-relay up` form that failed with "unknown command 'up'". An install pinned with `AGENT_RELAY_VERSION` to a release older than 9.2.2 still prints the top-level `up`/`down` forms that release has.
+- A PTY message still visible in the agent's input box after submit is retried by pressing submit only, never by resending the body, for up to three total attempts. Later messages queue behind it instead of being typed on top of it, and if it is still stuck after 60 seconds the broker reports a terminal `agent_blocked_on_send` with reason `failed_draft_latched`.
+- Typing into an agent's terminal while a delivery is being retried takes over the terminal and cancels the retries.
+
+## [13.3.0] - 2026-10-10
+
+### Added
+
+- MCP `spawn` reports pending/liveness evidence, and `remove_agent` accepts optional registration-clearance waits.
+- `agent remove --wait` and `fleet release --delete-agent --wait` verify registration clearance before name reuse, with `--wait-timeout` and `--no-wait` controls. Fleet release adds `removal` evidence when waiting.
+- `fleet agent list` JSON includes node heartbeat timestamps and ages, with warnings for stale snapshots.
+- `fleet spawn`, `agent spawn`, and `node agent spawn` accept `--task-file` to read an initial brief from a local UTF-8 file. Fleet requires exactly one of `--task` and `--task-file`.
+- `agent-relay message dm send`, `message post` and `message dm send_group` take a repeatable `--file <path>` that uploads and attaches local files (for example screenshots); `message file upload` accepts `--to <agent>` for a DM.
+- `agent-relay message file download <file_id>` saves a received attachment (default `.agent-relay/attachments/<file_id>/`) and prints its path; `message file get <file_id>` shows it with a short-lived download URL.
+- The `agent-relay mcp` server adds `upload_file` (local path or base64) and `download_file`, and `send_group_dm` accepts `attachments`.
+- Agents spawned by the broker receive message attachments (up to 25 MiB each) as local files: the injected message ends with an `Attachments:` list giving each file's path under `.agent-relay/attachments/` in the agent's working directory, or an `agent-relay message file download <file_id>` command when a file could not be fetched. Messages that carry only attachments are now delivered too.
+- `@agent-relay/sdk` adds `files.upload` / `files.get` / `files.download` on `AgentRelay` and `RelaycastMessagingClient`, plus `uploadRelayFile` / `downloadRelayFile` helpers.
+- `agent-relay fleet spawn-status <invocation-id>` reads a recorded spawn dispatch without spawning again, separating confirmed readiness, a node-reported failure, and an outcome the node has not reported yet.
+
+### Changed
+
+- Unconfirmed `fleet spawn` results keep the `spawn_unconfirmed` code, now with `state: "pending"`, invocation diagnostics, liveness evidence and exit 8. Node heartbeat presence is reported as liveness evidence but never confirms the spawn.
+- Removal waits exit 8 if the registration remains present; scripts must handle nonzero exits beyond `$? -eq 1`. Waits remain opt-in, and unavailable verification reads preserve the asynchronous acknowledgement.
+- PTY-delivered tasks and messages are limited to 14 KiB (16 KiB with the message envelope); `fleet spawn`, `agent spawn` and PTY delivery reject larger input and name the limit, so write the brief to a file and send a pointer. Agents whose terminal lacks bracketed paste accept at most 1,536 bytes per injection. Muse startup tasks and messages to headless CLI agents travel as a single process argument and are limited to 16 KiB instead; native-runtime and app-server agents receive tasks and messages as frames and have no such limit; `message post|reply|dm send` are not capped, and a wrapped agent receives an oversized message as a pointer to it in Relay.
+
+### Fixed
+
+- Verified Fleet Devin spawns fail with `directory_trust_required` when the directory-trust prompt persists, releasing the worker through spawn cleanup instead of leaving a live but blocked worker.
+- Relay MCP `post_message` and `reply_to_thread` coalesce a transport replay of one request (and accept an `idempotency_key` for retries after a lost response), matching `send_dm`; native host tools key on the tool call ID. Independent writes with identical text remain separate messages.
+- `integration subscribe` rejects `--events` values the engine cannot subscribe to.
+- `integration subscribe` checks that the requested writeback events were persisted and rolls back a subscription left incomplete.
+- `integration subscribe` says when GitHub authorization for writeback could not be verified, instead of implying it succeeded.
+- `integration subscribe --list` separates a subscription's configuration from delivery confirmation, so a configured subscription is no longer read as a delivered one.
+- Fleet registration collisions use readable `spawn_name_taken` guidance covering asynchronous removal and failed-spawn cleanup, instead of Rust `Fatal(AlreadyExists {...})` text.
+- Pending fleet spawns preserve provisioned sandboxes and distinguish live, stale, elsewhere, registered, absent, and unknown evidence before advising a retry.
+- Tasks and relay messages typed into an agent's terminal wait until the agent is ready for input and can no longer be submitted half-way through, and a message that is too large fails with an explicit error instead of being retried.
+- Control characters other than newline and tab (for example `Ctrl-C`) are removed from tasks and messages typed into an agent's terminal, so they can no longer interrupt or edit the agent's input line.
+- A confirmed `fleet spawn --task` (the default) succeeds only once the agent's harness has visibly accepted the task (activity or a cleared composer, not merely the task echoed into the composer). If the task cannot be delivered, the worker is released and the spawn fails with `spawn_task_failed`. If delivery cannot be confirmed, the spawn fails with `spawn_task_unconfirmed`, names the agent that is still running, and says not to retry. With `--no-confirm` the spawn reports as soon as the node accepts it, without waiting for the task to arrive.
+- `agent-relay message file upload` now uploads and attaches the file; it always failed with "Invalid attachments: file ids must exist in workspace and be complete".
+- Broker-managed messages retry failed delivery up to three times, and later sends wait until delivery succeeds.
+- `fleet spawn` (and SDK placement confirmation) now waits six minutes for launch confirmation instead of two, so agents that register minutes after dispatch are confirmed rather than reported as unconfirmed; the timeout error names the `fleet spawn-status` poll for its invocation id instead of suggesting a redispatch.
+
 ## [13.2.0] - 2026-10-08
 
 ### Added
@@ -89,7 +152,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Broker fleet control keeps a healthy node WebSocket open when Relaycast returns retryable `d1_pressure` for `node.register` or `inventory.sync`, retrying the same frame with bounded exponential backoff while the existing registration and application-liveness deadlines remain fail-closed.
-- Broker-managed PTY messages now remain pending until the harness accepts them; failed delivery blocks further sends, with up to two submit-only retries (three total attempts) instead of silently parked input. Codex recovery uses `End`, a distinct carriage return, and a guarded line-feed fallback without replaying the body; human input takes ownership and cancels recovery. Upgrade and restart brokers and PTY agents for the planned 13.2.0 rollout.
 - `--state-dir` on `node agent` commands, `node status`, and `node down` also accepts a fleet node directory whose broker state lives in `state/`.
 - An explicit `--state-dir` on `node agent` commands is no longer overridden by `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.
 - "No broker connection" errors name the path searched and whether it was the project default or `--state-dir`, instead of implying a running broker is down.

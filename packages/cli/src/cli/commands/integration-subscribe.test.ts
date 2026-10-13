@@ -30,6 +30,7 @@ interface InboundWebhook {
 
 function createRelayMock(opts: { inboundWebhooks?: InboundWebhook[] } = {}) {
   let counter = 0;
+  const subscriptions = new Map<string, Record<string, unknown>>();
   return {
     agents: {
       register: vi.fn(async (i: { name: string }) => ({ id: 'a1', token: 't1', name: i.name })),
@@ -37,7 +38,13 @@ function createRelayMock(opts: { inboundWebhooks?: InboundWebhook[] } = {}) {
     },
     integrations: {
       subscriptions: {
-        create: vi.fn(async (i: unknown) => ({ id: `sub_${++counter}`, ...(i as object) })),
+        create: vi.fn(async (i: unknown) => {
+          const row = { id: `sub_${++counter}`, ...(i as object) };
+          subscriptions.set(row.id, row);
+          return row;
+        }),
+        get: vi.fn(async (id: string) => subscriptions.get(id) ?? { id }),
+        list: vi.fn(async () => [...subscriptions.values()]),
         delete: vi.fn(async () => undefined),
       },
     },
@@ -169,6 +176,7 @@ function harness(
     relayfile?: ReturnType<typeof createRelayfileMock>;
     journal?: ReturnType<typeof memoryJournal>;
     resolveLocalRelayOptions?: IntegrationCommandDependencies['resolveLocalRelayOptions'];
+    prompt?: IntegrationCommandDependencies['prompt'];
   } = {}
 ) {
   const relay = opts.relay ?? createRelayMock();
@@ -208,7 +216,8 @@ function harness(
     cleanupJournal: journal,
     resolveLocalRelayOptions:
       opts.resolveLocalRelayOptions ?? (async () => ({ workspaceKey: 'rk_live_test' })),
-    isInteractive: () => false,
+    isInteractive: () => opts.prompt !== undefined,
+    ...(opts.prompt ? { prompt: opts.prompt } : {}),
     log,
     error,
     exit: exit as never,
@@ -1988,6 +1997,124 @@ describe('integration unsubscribe', () => {
 });
 
 describe('confirmed agent subscription setup', () => {
+  it.each(['dots-A', 'dots-C'])('routes fleet worker %s through its registered identity', async (name) => {
+    vi.stubEnv('RELAY_AGENT_NAME', name);
+    vi.stubEnv('RELAY_AGENT_TOKEN', 'at_worker_token');
+    vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_worker_workspace');
+    const relay = createRelayMock();
+    relay.agents.list.mockResolvedValue([{ id: 'a1', name }]);
+    const resolveAgentChannel = vi.fn(async () => 'agent-events-a1');
+    const h = harness({
+      relay,
+      recipientDeps: { resolveAgentChannel },
+      resolveLocalRelayOptions: async () => undefined,
+    });
+    const resource = '/github/repos/AgentWorkforce/relay/pulls/123/**';
+    await h.program.parseAsync(
+      ['integration', 'subscribe', 'github', '--resource', resource, '--to', 'self', '--no-input'],
+      { from: 'user' }
+    );
+    expect(h.error).not.toHaveBeenCalled();
+    expect(resolveAgentChannel).toHaveBeenCalledWith(name, expect.any(Object));
+    expect(h.createWorkspaceRelay).toHaveBeenCalledOnce();
+    expect(h.createAgentRelay).not.toHaveBeenCalled();
+    expect(relay.agents.register).not.toHaveBeenCalled();
+    expect(h.relayfile.createWebhookSubscription).toHaveBeenCalledWith(
+      expect.objectContaining({ pathGlobs: [resource] })
+    );
+    expect(h.relayfile.bind).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'github', resource, channel: 'agent-events-a1' })
+    );
+    expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith(
+      expect.objectContaining({ filter: { channel: 'agent-events-a1' } })
+    );
+  });
+
+  it.each([
+    ['a padded flag', ['--to', ' self '], undefined],
+    ['the recipient prompt', [], ' self '],
+  ])('routes self given through %s to the worker identity', async (_label, toArgs, prompted) => {
+    vi.stubEnv('RELAY_AGENT_NAME', 'dots-A');
+    vi.stubEnv('RELAY_AGENT_TOKEN', 'at_worker_token');
+    vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_worker_workspace');
+    const relay = createRelayMock();
+    relay.agents.list.mockResolvedValue([{ id: 'a1', name: 'dots-A' }]);
+    const resolveAgentChannel = vi.fn(async () => 'agent-events-a1');
+    const prompt = prompted === undefined ? undefined : vi.fn(async () => prompted);
+    const h = harness({
+      relay,
+      recipientDeps: { resolveAgentChannel },
+      resolveLocalRelayOptions: async () => undefined,
+      prompt,
+    });
+    const resource = '/github/repos/AgentWorkforce/relay/pulls/123/**';
+    await h.program.parseAsync(
+      [
+        'integration',
+        'subscribe',
+        'github',
+        '--resource',
+        resource,
+        ...toArgs,
+        ...(prompt ? [] : ['--no-input']),
+      ],
+      { from: 'user' }
+    );
+    expect(h.error).not.toHaveBeenCalled();
+    if (prompt) expect(prompt).toHaveBeenCalledWith('Relay recipient: ');
+    expect(resolveAgentChannel).toHaveBeenCalledWith('dots-A', expect.any(Object));
+    expect(h.relayfile.bind).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'github', resource, channel: 'agent-events-a1' })
+    );
+  });
+
+  it.each([undefined, '', '   '])(
+    'rejects self without a worker identity (%s) before provisioning',
+    async (name) => {
+      vi.stubEnv('RELAY_AGENT_NAME', name);
+      const resolveAgentChannel = vi.fn();
+      const h = harness({ recipientDeps: { resolveAgentChannel } });
+      await h.program.parseAsync(ARGS(['--to', 'self']), { from: 'user' });
+      expect(h.error).toHaveBeenCalledWith(expect.stringContaining('--to self requires RELAY_AGENT_NAME'));
+      expect(resolveAgentChannel).not.toHaveBeenCalled();
+      expect(h.relay.webhooks.createInbound).not.toHaveBeenCalled();
+      expect(h.relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+    }
+  );
+
+  it('rejects self with spawn before launching another worker', async () => {
+    vi.stubEnv('RELAY_AGENT_NAME', 'lead');
+    const launchRecipient = vi.fn();
+    const h = harness({ recipientDeps: { launchRecipient } });
+    await h.program.parseAsync(ARGS(['--to', 'self', '--spawn', 'claude']), { from: 'user' });
+    expect(h.error).toHaveBeenCalledWith(
+      expect.stringContaining('--to self cannot be combined with --spawn')
+    );
+    expect(launchRecipient).not.toHaveBeenCalled();
+    expect(h.relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+  });
+
+  it('verifies self exists in the selected workspace before provisioning', async () => {
+    vi.stubEnv('RELAY_AGENT_NAME', 'missing-worker');
+    const resolveAgentChannel = vi.fn();
+    const h = harness({ recipientDeps: { resolveAgentChannel } });
+    await h.program.parseAsync(ARGS(['--to', 'self']), { from: 'user' });
+    expect(h.error).toHaveBeenCalledWith(expect.stringContaining('Recipient @missing-worker does not exist'));
+    expect(resolveAgentChannel).not.toHaveBeenCalled();
+    expect(h.relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(h.relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+  });
+
+  it('keeps explicit channel routing when a worker identity is present', async () => {
+    vi.stubEnv('RELAY_AGENT_NAME', 'lead');
+    const resolveAgentChannel = vi.fn();
+    const h = harness({ recipientDeps: { resolveAgentChannel } });
+    await h.program.parseAsync(ARGS(), { from: 'user' });
+    expect(h.error).not.toHaveBeenCalled();
+    expect(resolveAgentChannel).not.toHaveBeenCalled();
+    expect(h.relayfile.bind).toHaveBeenCalledWith(expect.objectContaining({ channel: 'general' }));
+  });
+
   it('creates no subscription, webhook or binding when launch fails', async () => {
     const launchRecipient = vi.fn(async () => {
       throw new Error('invalid cwd or harness exited before ready');
@@ -2098,4 +2225,215 @@ describe('confirmed agent subscription setup', () => {
     expect(h.relayfile.bind).not.toHaveBeenCalled();
     expect(h.relay.webhooks.createInbound).not.toHaveBeenCalled();
   });
+});
+
+describe('subscription writeback verification', () => {
+  it.each([{ event: 'message.created' }, { events: ['message.created'] }, {}])(
+    'rolls back incomplete persisted event coverage: %j',
+    async (echo) => {
+      const relay = createRelayMock();
+      relay.integrations.subscriptions.get.mockImplementation(async (id) => ({ id, ...echo }));
+      const { program, relayfile, error, journal } = harness({ relay });
+      await program.parseAsync(ARGS(), { from: 'user' });
+      expect(error.mock.calls.flat().join(' ')).toContain('did not confirm requested events');
+      expect(relayfile.bind).not.toHaveBeenCalled();
+      expect(relay.integrations.subscriptions.delete).toHaveBeenCalled();
+      expect(relay.webhooks.delete).toHaveBeenCalled();
+      expect(relayfile.deleteWebhookSubscription).toHaveBeenCalled();
+      expect(await journal.list()).toEqual([]);
+    }
+  );
+
+  it('journals a failed rollback delete after read-back fails', async () => {
+    const relay = createRelayMock();
+    relay.integrations.subscriptions.get.mockRejectedValue(new Error('read unavailable'));
+    relay.integrations.subscriptions.delete.mockRejectedValue(new Error('delete unavailable'));
+    const { program, journal, relayfile } = harness({ relay });
+    await program.parseAsync(ARGS(), { from: 'user' });
+    expect(relayfile.bind).not.toHaveBeenCalled();
+    expect(await journal.list()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'relay-subscription', id: expect.stringMatching(/^sub_/) }),
+      ])
+    );
+  });
+
+  it.each(['events', 'event_types', 'eventTypes'])(
+    'accepts %s coverage and de-duplicates requested events',
+    async (field) => {
+      const relay = createRelayMock();
+      relay.integrations.subscriptions.get.mockImplementation(async (id) => ({
+        id,
+        [field]: ['thread.reply', 'message.created'],
+      }));
+      const { program, relayfile } = harness({ relay });
+      await program.parseAsync(ARGS(['--events', 'thread.reply,message.created,thread.reply']), {
+        from: 'user',
+      });
+      expect(relayfile.bind).toHaveBeenCalledOnce();
+      expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: 'thread.reply',
+          events: ['thread.reply', 'message.created'],
+        })
+      );
+    }
+  );
+
+  it('rejects misspelled events before provisioning', async () => {
+    const { program, relay, relayfile, error } = harness();
+    await program.parseAsync(ARGS(['--events', 'thread.replies']), { from: 'user' });
+    expect(error.mock.calls.flat().join(' ')).toContain('Unsupported subscription events');
+    expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
+    expect(relayfile.createWebhookSubscription).not.toHaveBeenCalled();
+  });
+
+  it.each(['action.completed', 'message.updated'])(
+    'provisions engine-supported %s subscriptions',
+    async (event) => {
+      const relay = createRelayMock();
+      relay.integrations.subscriptions.get.mockImplementation(async (id) => ({ id, events: [event] }));
+      const { program, relayfile, error } = harness({ relay });
+      await program.parseAsync(ARGS(['--events', event]), { from: 'user' });
+      expect(error.mock.calls.flat().join(' ')).not.toContain('Unsupported subscription events');
+      expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith(
+        expect.objectContaining({ event, events: [event] })
+      );
+      expect(relayfile.bind).toHaveBeenCalledOnce();
+    }
+  );
+
+  it('accepts singular thread.reply coverage', async () => {
+    const relay = createRelayMock();
+    relay.integrations.subscriptions.get.mockImplementation(async (id) => ({ id, event: 'thread.reply' }));
+    const { program, relayfile } = harness({ relay });
+    await program.parseAsync(ARGS(['--events', 'thread.reply']), { from: 'user' });
+    expect(relayfile.bind).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false, undefined])(
+    'reports GitHub identity authorization %s honestly',
+    async (authorized) => {
+      const relayfile = createRelayfileMock([], {
+        listWebhookSubscriptions: vi.fn(async () => ({
+          workspaceId: 'rw_test',
+          subscriptions: [
+            {
+              subscriptionId: 'whsub_1',
+              url: 'https://cast.test/inbound',
+              pathGlobs: ['/github/repos/AgentWorkforce/relaycast/pulls/448/**'],
+              githubPrIdentityAuthorized: authorized,
+            },
+          ],
+        })),
+      });
+      const { program, log } = harness({ relayfile });
+      await program.parseAsync(
+        [
+          'integration',
+          'subscribe',
+          'github',
+          '--resource',
+          '/github/repos/AgentWorkforce/relaycast/pulls/448/**',
+          '--to',
+          '#general',
+        ],
+        { from: 'user' }
+      );
+      const output = log.mock.calls.flat().join(' ');
+      expect(output).not.toContain('Replies will post back');
+      expect(output).toContain(authorized === true ? 'writeback is configured' : 'writeback is unverified');
+      expect(relayfile.bind).toHaveBeenCalledWith(
+        expect.objectContaining({ resource: '/github/repos/AgentWorkforce/relaycast/pulls/448/**' })
+      );
+    }
+  );
+});
+
+it('reports outbound configuration separately from inferred inbound activity', async () => {
+  const relay = createRelayMock();
+  relay.integrations.subscriptions.list.mockResolvedValue([
+    { id: 'sub_existing', events: ['thread.reply'], isActive: false },
+  ] as never);
+  relay.messages.list.mockResolvedValue([{ createdAt: '2026-10-05T00:00:00Z' }] as never);
+  const relayfile = createRelayfileMock([
+    {
+      provider: 'github',
+      resource: '/github/repos/AgentWorkforce/relaycast/pulls/448/**',
+      channel: 'general',
+      subscriptionId: 'sub_existing',
+      webhookId: 'in_existing',
+    },
+  ]);
+  const { program, log } = harness({ relay, relayfile });
+  await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
+  expect(JSON.parse(log.mock.calls[0][0]).bindings[0]).toMatchObject({
+    lastDeliverySource: 'channel-inferred',
+    writebackSubscription: {
+      id: 'sub_existing',
+      events: ['thread.reply'],
+      active: false,
+      deliveryStatus: null,
+    },
+  });
+  relay.integrations.subscriptions.list.mockRejectedValue(new Error('unavailable'));
+  log.mockClear();
+  await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
+  expect(JSON.parse(log.mock.calls[0][0]).bindings[0].writebackSubscription).toBeNull();
+});
+
+// One collection read serves every bound row, so a large workspace cannot
+// turn --list into one subscription request per binding.
+it('reads writeback subscriptions once for all bound rows', async () => {
+  const relay = createRelayMock();
+  relay.integrations.subscriptions.list.mockResolvedValue([
+    { id: 'sub_a', events: ['thread.reply'], isActive: true },
+    { id: 'sub_b', events: ['message.created'], isActive: true },
+  ] as never);
+  const relayfile = createRelayfileMock(
+    ['sub_a', 'sub_b', 'sub_missing'].map((subscriptionId, index) => ({
+      provider: 'github',
+      resource: `/github/repos/AgentWorkforce/relaycast/pulls/${index}/**`,
+      channel: 'general',
+      subscriptionId,
+      webhookId: `in_${index}`,
+    }))
+  );
+  const { program, log } = harness({ relay, relayfile });
+  await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
+  const rows = JSON.parse(log.mock.calls[0][0]).bindings;
+  expect(
+    rows.map((row: { writebackSubscription: { id: string } | null }) => row.writebackSubscription?.id ?? null)
+  ).toEqual(['sub_a', 'sub_b', null]);
+  expect(relay.integrations.subscriptions.list).toHaveBeenCalledTimes(1);
+  expect(relay.integrations.subscriptions.get).not.toHaveBeenCalled();
+});
+
+it.each([
+  { id: 'wrong', events: ['message.created', 'thread.reply'] },
+  { isActive: false, events: ['message.created', 'thread.reply'] },
+  { is_active: false, events: ['message.created', 'thread.reply'] },
+])('preserves the prior binding when read-back is invalid: %j', async (echo) => {
+  const prior = {
+    provider: 'slack',
+    resource: RESOURCE,
+    channel: 'general',
+    webhookId: 'in_old',
+    subscriptionId: 'sub_old',
+  };
+  const relay = createRelayMock();
+  relay.integrations.subscriptions.get.mockImplementation(async (id) => ({ id, ...echo }));
+  const relayfile = createRelayfileMock([prior]);
+  const { program, error } = harness({ relay, relayfile });
+  await program.parseAsync(ARGS(), { from: 'user' });
+  expect(error.mock.calls.flat().join(' ')).toContain('different or inactive subscription');
+  expect(await relayfile.listBindings()).toEqual([prior]);
+  expect(relay.integrations.subscriptions.delete).not.toHaveBeenCalledWith('sub_old');
+  expect(relay.webhooks.delete).not.toHaveBeenCalledWith('in_old');
+});
+
+it('does not advertise thread writeback when only message.created is requested', async () => {
+  const { program, log } = harness();
+  await program.parseAsync(ARGS(['--events', 'message.created']), { from: 'user' });
+  expect(log.mock.calls.flat().join(' ')).toContain('thread.reply was not requested');
 });

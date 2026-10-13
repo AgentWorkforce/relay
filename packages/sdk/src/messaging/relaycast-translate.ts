@@ -232,6 +232,12 @@ export function normalizeActionInvocation(raw: unknown): RelayActionInvocation {
     actionName: readStr(record, 'actionName', 'action_name') ?? '',
     callerId: (readStr(record, 'callerId', 'caller_id') ?? null) as string | null,
     callerName: (readStr(record, 'callerName', 'caller_name') ?? null) as string | null,
+    ...(readStr(record, 'handlerNodeId', 'handler_node_id')
+      ? { handlerNodeId: readStr(record, 'handlerNodeId', 'handler_node_id') }
+      : {}),
+    ...(readStr(record, 'dispatchedNodeId', 'dispatched_node_id')
+      ? { dispatchedNodeId: readStr(record, 'dispatchedNodeId', 'dispatched_node_id') }
+      : {}),
     input: readRecord(record, 'input') ?? {},
     output: readRecord(record, 'output') ?? null,
     status: readStr(record, 'status') ?? 'invoked',
@@ -267,9 +273,12 @@ export function normalizeInboundWebhook(raw: unknown): RelayInboundWebhook {
 /** Normalize a relaycast event subscription into `RelayWebhookSubscription`. */
 export function normalizeWebhookSubscription(raw: unknown): RelayWebhookSubscription {
   const record = asRecord(raw);
-  const events = Array.isArray(record.events)
-    ? record.events.filter((event): event is string => typeof event === 'string')
-    : undefined;
+  const rawEvents = record.events ?? record.event_types ?? record.eventTypes;
+  const events = Array.isArray(rawEvents)
+    ? rawEvents.filter((event): event is string => typeof event === 'string')
+    : typeof record.event === 'string'
+      ? [record.event]
+      : undefined;
   return {
     id: readStr(record, 'id') ?? '',
     ...(readStr(record, 'url') ? { url: readStr(record, 'url') } : {}),

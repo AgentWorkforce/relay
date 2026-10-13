@@ -14,6 +14,10 @@
 //! field-probing path and logs a structured warning, so contract drift is
 //! observable in logs without dropping traffic.
 //!
+//! Message attachments are carried alongside the normalized event (the
+//! `relaycast` SDK type has no attachment field) and parsed tolerantly:
+//! malformed entries are skipped without rejecting the event.
+//!
 //! For contract-conformant events the typed path produces exactly the
 //! same [`NormalizedInboundEvent`] the tolerant path would; the
 //! equivalence is pinned by the fixture tests in `bridge.rs` and the unit
@@ -22,6 +26,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::attachments::{parse_attachment_list, parse_attachments, InboundAttachment};
 use relaycast::{
     normalize_sender_identity, NormalizedEventKind, NormalizedInboundEvent, RelayPriority,
     SenderKind,
@@ -30,8 +35,9 @@ use relaycast::{
 /// Outcome of a successful typed parse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TypedInbound {
-    /// The event matched the typed contract and routes as an inbound event.
-    Event(NormalizedInboundEvent),
+    /// The event matched the typed contract and routes as an inbound event,
+    /// with the message's file attachments (empty for non-message events).
+    Event(NormalizedInboundEvent, Vec<InboundAttachment>),
     /// The event matched the typed contract but is intentionally not
     /// routed (currently: reactions without channel context, which are
     /// surfaced via the inbox API instead of PTY injection).
@@ -93,8 +99,8 @@ struct WireChannelMessage {
     agent_id: String,
     agent_name: String,
     text: String,
-    /// Required by the schema; contents are not consumed by the broker.
-    #[allow(dead_code)]
+    /// Required by the schema. Entries are parsed tolerantly: a malformed
+    /// entry is skipped rather than failing the whole event.
     attachments: Vec<Value>,
 }
 
@@ -104,17 +110,20 @@ impl WireMessageCreated {
         if self.id.is_empty() || self.message.agent_name.is_empty() {
             return None;
         }
-        Some(TypedInbound::Event(NormalizedInboundEvent {
-            event_id: self.id,
-            kind: NormalizedEventKind::MessageCreated,
-            from: normalize_sender_identity(&self.message.agent_name),
-            sender_agent_id: non_empty(self.message.agent_id),
-            sender_kind: SenderKind::Unknown,
-            target,
-            text: self.message.text,
-            thread_id: None,
-            priority: RelayPriority::P3,
-        }))
+        Some(TypedInbound::Event(
+            NormalizedInboundEvent {
+                event_id: self.id,
+                kind: NormalizedEventKind::MessageCreated,
+                from: normalize_sender_identity(&self.message.agent_name),
+                sender_agent_id: non_empty(self.message.agent_id),
+                sender_kind: SenderKind::Unknown,
+                target,
+                text: self.message.text,
+                thread_id: None,
+                priority: RelayPriority::P3,
+            },
+            parse_attachment_list(&self.message.attachments),
+        ))
     }
 }
 
@@ -128,6 +137,9 @@ struct WireCoreMessage {
     agent_id: String,
     agent_name: String,
     text: String,
+    /// Optional here; parsed tolerantly (any non-array value means none).
+    #[serde(default)]
+    attachments: Value,
 }
 
 /// `dm.received` / `group_dm.received` (zod `DmReceivedEventSchema` /
@@ -175,17 +187,20 @@ impl WireDirectMessage {
         } else {
             RelayPriority::P3
         };
-        Some(TypedInbound::Event(NormalizedInboundEvent {
-            event_id: self.id,
-            kind,
-            from: normalize_sender_identity(&self.message.agent_name),
-            sender_agent_id: non_empty(self.message.agent_id),
-            sender_kind: SenderKind::Unknown,
-            target,
-            text: self.message.text,
-            thread_id: None,
-            priority,
-        }))
+        Some(TypedInbound::Event(
+            NormalizedInboundEvent {
+                event_id: self.id,
+                kind,
+                from: normalize_sender_identity(&self.message.agent_name),
+                sender_agent_id: non_empty(self.message.agent_id),
+                sender_kind: SenderKind::Unknown,
+                target,
+                text: self.message.text,
+                thread_id: None,
+                priority,
+            },
+            parse_attachments(&self.message.attachments),
+        ))
     }
 }
 
@@ -207,17 +222,20 @@ impl WireThreadReply {
         if self.id.is_empty() || self.message.agent_name.is_empty() {
             return None;
         }
-        Some(TypedInbound::Event(NormalizedInboundEvent {
-            event_id: self.id,
-            kind: NormalizedEventKind::ThreadReply,
-            from: normalize_sender_identity(&self.message.agent_name),
-            sender_agent_id: non_empty(self.message.agent_id),
-            sender_kind: SenderKind::Unknown,
-            target,
-            text: self.message.text,
-            thread_id: non_empty(self.parent_id),
-            priority: RelayPriority::P3,
-        }))
+        Some(TypedInbound::Event(
+            NormalizedInboundEvent {
+                event_id: self.id,
+                kind: NormalizedEventKind::ThreadReply,
+                from: normalize_sender_identity(&self.message.agent_name),
+                sender_agent_id: non_empty(self.message.agent_id),
+                sender_kind: SenderKind::Unknown,
+                target,
+                text: self.message.text,
+                thread_id: non_empty(self.parent_id),
+                priority: RelayPriority::P3,
+            },
+            parse_attachments(&self.message.attachments),
+        ))
     }
 }
 
@@ -261,7 +279,7 @@ impl WireMessageReacted {
             ),
             thread_id: None,
             priority: RelayPriority::P4,
-        })
+        }, Vec::new())
     }
 }
 
@@ -283,17 +301,20 @@ struct WireAgentRef {
 impl WireAgentStatus {
     fn into_inbound(self, event_type: &str) -> Option<TypedInbound> {
         let from = non_empty(self.agent.name)?;
-        Some(TypedInbound::Event(NormalizedInboundEvent {
-            event_id: format!("presence-{event_type}-{from}"),
-            kind: NormalizedEventKind::Presence,
-            from,
-            sender_agent_id: None,
-            sender_kind: SenderKind::Agent,
-            target: String::new(),
-            text: String::new(),
-            thread_id: None,
-            priority: RelayPriority::P4,
-        }))
+        Some(TypedInbound::Event(
+            NormalizedInboundEvent {
+                event_id: format!("presence-{event_type}-{from}"),
+                kind: NormalizedEventKind::Presence,
+                from,
+                sender_agent_id: None,
+                sender_kind: SenderKind::Agent,
+                target: String::new(),
+                text: String::new(),
+                thread_id: None,
+                priority: RelayPriority::P4,
+            },
+            Vec::new(),
+        ))
     }
 }
 
@@ -328,7 +349,7 @@ mod tests {
     /// behavior oracle for this refactor.
     fn assert_typed_matches_tolerant(event: &serde_json::Value) {
         let typed = match parse_typed_inbound(event) {
-            Some(TypedInbound::Event(typed)) => typed,
+            Some(TypedInbound::Event(typed, _)) => typed,
             other => panic!("expected typed parse for {event}, got {other:?}"),
         };
         let tolerant = relaycast::normalize_inbound_event(event)
@@ -439,7 +460,7 @@ mod tests {
             }
         });
         match parse_typed_inbound(&event) {
-            Some(TypedInbound::Event(typed)) => assert_eq!(typed.from, "Dashboard"),
+            Some(TypedInbound::Event(typed, _)) => assert_eq!(typed.from, "Dashboard"),
             other => panic!("expected typed parse, got {other:?}"),
         }
     }
@@ -529,6 +550,70 @@ mod tests {
     }
 
     #[test]
+    fn typed_path_carries_attachments_for_every_message_kind() {
+        let attachment = json!({
+            "file_id": "file_1",
+            "filename": "shot.png",
+            "content_type": "image/png",
+            "size_bytes": 156748
+        });
+        let message = json!({
+            "id": "m1",
+            "agent_id": "a1",
+            "agent_name": "alice",
+            "text": "",
+            "attachments": [attachment, "junk", {"filename": "no-id"}]
+        });
+        for event in [
+            json!({"id": "e1", "type": "message.created", "channel": "general", "message": message}),
+            json!({"id": "e2", "type": "dm.received", "conversation_id": "dm_1", "message": message}),
+            json!({"id": "e3", "type": "group_dm.received", "conversation_id": "conv_1", "message": message}),
+            json!({"id": "e4", "type": "thread.reply", "channel": "general", "parent_id": "p1", "message": message}),
+        ] {
+            match parse_typed_inbound(&event) {
+                Some(TypedInbound::Event(typed, attachments)) => {
+                    // Empty text still yields a routable event.
+                    assert_eq!(typed.text, "");
+                    assert_eq!(attachments.len(), 1, "{event}");
+                    assert_eq!(attachments[0].file_id, "file_1");
+                    assert_eq!(attachments[0].size_bytes, Some(156748));
+                }
+                other => panic!("expected typed parse for {event}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_optional_attachments_do_not_fail_typed_dm() {
+        for attachments in [
+            json!("oops"),
+            json!(null),
+            json!({"file_id": "x"}),
+            json!(42),
+        ] {
+            let event = json!({
+                "id": "e5",
+                "type": "dm.received",
+                "conversation_id": "dm_1",
+                "message": {
+                    "id": "m5",
+                    "agent_id": "a5",
+                    "agent_name": "bob",
+                    "text": "hi",
+                    "attachments": attachments
+                }
+            });
+            match parse_typed_inbound(&event) {
+                Some(TypedInbound::Event(typed, attachments)) => {
+                    assert_eq!(typed.text, "hi");
+                    assert!(attachments.is_empty());
+                }
+                other => panic!("expected typed parse for {event}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn hybrid_dm_with_explicit_recipient_keeps_tolerant_precedence() {
         // Off-contract but fully-typed events must still route the way the
         // tolerant path would: explicit recipient wins over conversation_id.
@@ -545,7 +630,7 @@ mod tests {
             }
         });
         match parse_typed_inbound(&event) {
-            Some(TypedInbound::Event(typed)) => assert_eq!(typed.target, "Lead"),
+            Some(TypedInbound::Event(typed, _)) => assert_eq!(typed.target, "Lead"),
             other => panic!("expected typed parse, got {other:?}"),
         }
     }

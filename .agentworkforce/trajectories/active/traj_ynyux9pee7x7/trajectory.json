@@ -31,6 +31,108 @@
             "reasoning": "npm ci pinned SDK 8.0.7 without metadata while Publish Package freshly resolves 8.14.0 with relay.action-caller=v1. Align CI with release resolution without weakening assertions or changing production code."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1791096850177,
+          "type": "decision",
+          "content": "Root-caused tail truncation to paced per-codepoint typing (5ms/atom) with no bracketed-paste framing for Claude; plan fixes it with capability-gated atomic paste + head/tail-anchored confirmation: Root-caused tail truncation to paced per-codepoint typing (5ms/atom) with no bracketed-paste framing for Claude; plan fixes it with capability-gated atomic paste + head/tail-anchored confirmation",
+          "raw": {
+            "question": "Root-caused tail truncation to paced per-codepoint typing (5ms/atom) with no bracketed-paste framing for Claude; plan fixes it with capability-gated atomic paste + head/tail-anchored confirmation",
+            "chosen": "Root-caused tail truncation to paced per-codepoint typing (5ms/atom) with no bracketed-paste framing for Claude; plan fixes it with capability-gated atomic paste + head/tail-anchored confirmation",
+            "alternatives": [],
+            "reasoning": "write_paced emits one VT atom per write_all, so a 6.7KB task spends ~33s only in the TUI composer; any composer clear in that window loses the head. devin.rs:12 wraps paste only for Devin. check_echo_in_output cannot detect the loss, so pty_worker.rs:2368 acks it as timeout_fallback success."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1791099654001,
+          "type": "decision",
+          "content": "Reserve per-byte VTE parsing for chunks carrying the DECSET 2004 parameter: Reserve per-byte VTE parsing for chunks carrying the DECSET 2004 parameter",
+          "raw": {
+            "question": "Reserve per-byte VTE parsing for chunks carrying the DECSET 2004 parameter",
+            "chosen": "Reserve per-byte VTE parsing for chunks carrying the DECSET 2004 parameter",
+            "alternatives": [],
+            "reasoning": "The paste-capability latch parsed every PTY output byte with its own processor.advance() call until the mode was seen, which is permanent for any harness that never enables 2004. Scanning the chunk for the literal 2004 and otherwise bulk-parsing with one post-chunk mode check keeps enable+disable-in-one-read detection (both complete sequences must contain 2004) and still latches a sequence split across reads."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1791099654447,
+          "type": "decision",
+          "content": "Treat the two failing CLI suites and four Rust hook-chain tests as sandbox environment, not branch regressions: Treat the two failing CLI suites and four Rust hook-chain tests as sandbox environment, not branch regressions",
+          "raw": {
+            "question": "Treat the two failing CLI suites and four Rust hook-chain tests as sandbox environment, not branch regressions",
+            "chosen": "Treat the two failing CLI suites and four Rust hook-chain tests as sandbox environment, not branch regressions",
+            "alternatives": [],
+            "reasoning": "sdk-client.test.ts and fleet-lifecycle-integration.test.ts assert no ambient gateway is inherited and read the real process env; this sandbox exports RELAY_BASE_URL, which no CI workflow sets. The spawner hook-chain tests are defeated by the sandbox's GIT_CONFIG_COUNT core.hooksPath=/dev/null override. Both fixed in .relayflow/check.sh (uncommitted) rather than by changing tests."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1791100397805,
+          "type": "decision",
+          "content": "Review current PR and staged repair together; withhold clean signoff for unverified task success: Review current PR and staged repair together; withhold clean signoff for unverified task success",
+          "raw": {
+            "question": "Review current PR and staged repair together; withhold clean signoff for unverified task success",
+            "chosen": "Review current PR and staged repair together; withhold clean signoff for unverified task success",
+            "alternatives": [],
+            "reasoning": "The user requires full receipt confirmation; timeout_fallback still completes a verified spawn successfully."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1791100495394,
+          "type": "decision",
+          "content": "Review PR 1893 requests changes: timeout success and incomplete-echo confirmations remain: Review PR 1893 requests changes: timeout success and incomplete-echo confirmations remain",
+          "raw": {
+            "question": "Review PR 1893 requests changes: timeout success and incomplete-echo confirmations remain",
+            "chosen": "Review PR 1893 requests changes: timeout success and incomplete-echo confirmations remain",
+            "alternatives": [],
+            "reasoning": "188 CLI tests and six PTY tests pass; temporary adversarial PTY integration reproduces echo_anchors for a missing middle and paste_summary for a marker plus 40-byte tail. Findings recorded in review.md; no review.clean."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1791100867791,
+          "type": "decision",
+          "content": "Positive delivery confirmation requires whole-payload echo evidence; endpoint anchors and collapsed-paste markers are inconclusive, and an unconfirmed initial task resolves a verified fleet spawn as an explicit non-retryable unconfirmed outcome rather than success: Positive delivery confirmation requires whole-payload echo evidence; endpoint anchors and collapsed-paste markers are inconclusive, and an unconfirmed initial task resolves a verified fleet spawn as an explicit non-retryable unconfirmed outcome rather than success",
+          "raw": {
+            "question": "Positive delivery confirmation requires whole-payload echo evidence; endpoint anchors and collapsed-paste markers are inconclusive, and an unconfirmed initial task resolves a verified fleet spawn as an explicit non-retryable unconfirmed outcome rather than success",
+            "chosen": "Positive delivery confirmation requires whole-payload echo evidence; endpoint anchors and collapsed-paste markers are inconclusive, and an unconfirmed initial task resolves a verified fleet spawn as an explicit non-retryable unconfirmed outcome rather than success",
+            "alternatives": [],
+            "reasoning": "review.md P1 x3: timeout_fallback/anchors/paste_summary all reached the spawn success branch, so a swallowed or middle-truncated task was indistinguishable from a received one"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1791101890744,
+          "type": "decision",
+          "content": "Report what the terminal actually showed (echo_incomplete / paste_summary) instead of labelling every unconfirmed ack timeout_fallback: Report what the terminal actually showed (echo_incomplete / paste_summary) instead of labelling every unconfirmed ack timeout_fallback",
+          "raw": {
+            "question": "Report what the terminal actually showed (echo_incomplete / paste_summary) instead of labelling every unconfirmed ack timeout_fallback",
+            "chosen": "Report what the terminal actually showed (echo_incomplete / paste_summary) instead of labelling every unconfirmed ack timeout_fallback",
+            "alternatives": [],
+            "reasoning": "Operators need to tell a collapsed paste apart from a silent agent; the runtime gates on verification_label_confirms_receipt, so richer labels cost nothing in correctness"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1791101891202,
+          "type": "reflection",
+          "content": "Three P1s shared one root cause: confirmed() conflated 'some evidence' with 'full receipt'. Narrowing confirmation to whole-payload echo and gating the spawn result on the label fixed all three; 20 cold starts and the two adversarial fixture modes pass.",
+          "raw": {
+            "focalPoints": [
+              "verification-policy",
+              "spawn-confirmation"
+            ],
+            "confidence": 0.85
+          },
+          "significance": "high",
+          "tags": [
+            "focal:verification-policy",
+            "focal:spawn-confirmation",
+            "confidence:0.85"
+          ]
         }
       ]
     }

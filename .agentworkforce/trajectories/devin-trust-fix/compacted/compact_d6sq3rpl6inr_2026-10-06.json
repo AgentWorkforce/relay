@@ -1,0 +1,48 @@
+{
+  "id": "compact_hbapxe3axu5d",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-10-06T13:43:02.276Z",
+  "sourceTrajectories": [
+    "traj_t5rhaj5534rg"
+  ],
+  "dateRange": {
+    "start": "2026-10-06T13:38:30.682Z",
+    "end": "2026-10-06T13:42:41.615Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 2,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Implement reviewed-plan Part 1; defer automatic trust acceptance pending real captures",
+          "chosen": "Implement reviewed-plan Part 1; defer automatic trust acceptance pending real captures",
+          "reasoning": "No Devin binary or raw trust captures are available. Preserve the existing Claude planner and generic Devin approval restrictions. Add the Devin veto to both startup gate paths; deadline uses detector and verification ticks. CLI help inspection and advisory path corroboration remain Part 2 prerequisites.",
+          "fromTrajectory": "traj_t5rhaj5534rg"
+        }
+      ]
+    },
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Run broker validation without inherited Git config injection",
+          "chosen": "Run broker validation without inherited Git config injection",
+          "reasoning": "The default suite passed 1374 tests and failed four hook-chain tests because the runner injects core.hooksPath. With GIT_CONFIG_COUNT unset only in the test process, all four hook tests pass and all 1378 broker unit tests pass.",
+          "fromTrajectory": "traj_t5rhaj5534rg"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

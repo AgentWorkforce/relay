@@ -1,6 +1,10 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -23,9 +27,10 @@ use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::broker::{
     delivery_verification::{
-        assess_harness_acceptance, DeliveryOutcome, HarnessAcceptance, PendingActivity,
-        PendingVerification, ThrottleState, VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES,
-        ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW, MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
+        assess_harness_acceptance, draft_visible_at_cursor, failed_draft_released, DeliveryOutcome,
+        HarnessAcceptance, PendingActivity, PendingVerification, ThrottleState, VerificationOutput,
+        ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+        MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
     },
     injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
 };
@@ -103,7 +108,20 @@ pub(crate) fn submit_injection_body(
     bytes: Vec<u8>,
     pace: Duration,
 ) -> anyhow::Result<(tokio::sync::oneshot::Receiver<std::io::Result<()>>, u64)> {
-    if let Some(delay) = injection_submit_followup_delay(resolved_cli) {
+    // Follow the already-selected wire. Capability can latch between body
+    // construction and queue admission; re-probing here could bulk-type raw bytes.
+    let wire = if bytes.starts_with(b"\x1b[200~") && bytes.ends_with(b"\x1b[201~") {
+        crate::injection_wire::InjectionWire::Paste
+    } else {
+        crate::injection_wire::InjectionWire::Typed
+    };
+    let limit = crate::injection_wire::effective_limit(wire, pace);
+    anyhow::ensure!(bytes.len().saturating_sub(if wire == crate::injection_wire::InjectionWire::Paste { 12 } else { 0 }) <= limit, "injection_too_large: {resolved_cli} effective limit is {limit} bytes; use a brief file pointer");
+    let paste = wire == crate::injection_wire::InjectionWire::Paste;
+    let pace = if paste { Duration::ZERO } else { pace };
+    if let Some(delay) = injection_submit_followup_delay(resolved_cli)
+        .or_else(|| paste.then_some(PASTE_INJECTION_SUBMIT_DELAY))
+    {
         pty.submit_write_paced_with_followup_and_output_boundary(bytes, pace, delay, b"\r".to_vec())
     } else {
         let mut burst = bytes;
@@ -119,10 +137,14 @@ pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
 /// Retry only the submit gesture for a body proven to remain in the live
 /// composer. Never write the body twice: an accepted first write whose activity
 /// marker was missed would otherwise create a duplicate turn.
+///
+/// `cancel` lets human input withdraw the gesture until it reaches the child:
+/// the drainer skips a not-yet-started key and withholds Codex's delayed CR.
 pub(crate) fn submit_injection_recovery(
     pty: &PtySession,
     resolved_cli: &str,
     completed_attempts: usize,
+    cancel: Arc<AtomicBool>,
 ) -> anyhow::Result<(tokio::sync::oneshot::Receiver<std::io::Result<()>>, u64)> {
     let lower = resolved_cli.to_ascii_lowercase();
     if lower.contains("codex") && completed_attempts == 1 {
@@ -131,11 +153,10 @@ pub(crate) fn submit_injection_recovery(
         // later LF submitted it. First reproduce the non-destructive
         // End+Enter half; the final bounded attempt below sends LF only if the
         // same delivery is still visibly parked.
-        return pty.submit_write_paced_with_followup_and_output_boundary(
+        return pty.submit_cancellable_write_with_output_boundary(
             b"\x1b[F".to_vec(),
-            Duration::ZERO,
-            Duration::from_secs(1),
-            b"\r".to_vec(),
+            Some((Duration::from_secs(1), b"\r".to_vec())),
+            cancel,
         );
     }
 
@@ -144,7 +165,22 @@ pub(crate) fn submit_injection_recovery(
     } else {
         b'\r'
     };
-    pty.submit_write_paced_with_output_boundary(vec![key], Duration::ZERO)
+    pty.submit_cancellable_write_with_output_boundary(vec![key], None, cancel)
+}
+
+/// Cancel every queued submit-key recovery because a human now owns the input.
+pub(crate) fn cancel_recovery_writes(cancels: &mut Vec<Arc<AtomicBool>>) {
+    for cancel in cancels.drain(..) {
+        cancel.store(true, Ordering::Release);
+    }
+}
+
+/// Start a cancellable recovery, pruning flags whose writes already settled.
+pub(crate) fn new_recovery_cancel(cancels: &mut Vec<Arc<AtomicBool>>) -> Arc<AtomicBool> {
+    cancels.retain(|cancel| Arc::strong_count(cancel) > 1);
+    let cancel = Arc::new(AtomicBool::new(false));
+    cancels.push(cancel.clone());
+    cancel
 }
 
 /// Warn (without retrying) when a one-shot auto-response keystroke can't be
@@ -279,6 +315,14 @@ fn wrap_injection_timer_allowed(has_pending_write_ack: bool, has_pending_accepta
     !has_pending_write_ack && !has_pending_acceptance
 }
 
+/// A lone Enter keystroke submits the composer and takes whatever it holds,
+/// including a failed relay draft, so it releases the wrap failed-draft latch.
+/// A multiline or bracketed paste also carries CR/LF bytes but adds text to
+/// the composer rather than submitting it, so it never releases the latch.
+fn human_input_submits_composer(data: &[u8]) -> bool {
+    !data.is_empty() && data.iter().all(|byte| matches!(byte, b'\r' | b'\n'))
+}
+
 // Readiness deferrals must not spend the bounded delivery retry budget.
 fn prepare_wrap_retry(
     verification: &mut PendingVerification,
@@ -291,6 +335,78 @@ fn prepare_wrap_retry(
     }
     verification.attempts += 1;
     true
+}
+
+/// Format a wrap injection, replacing a body whose envelope would exceed the
+/// PTY injection limit with a bounded pointer to the message.
+///
+/// The entry has already left `pending_wrap_injections`, and wrap has no
+/// channel back to the sender, so skipping the write would make the message
+/// vanish silently. The notice tells the agent the message exists and where to
+/// read it; the full text stays in Relay (relay#1893 review).
+#[allow(clippy::too_many_arguments)]
+fn format_wrap_injection(
+    from: &str,
+    event_id: &str,
+    body: &str,
+    target: &str,
+    include_reminder: bool,
+    workspace_id: Option<&str>,
+    workspace_alias: Option<&str>,
+) -> String {
+    let format = |body: &str| {
+        format_injection_for_worker_with_workspace(
+            from,
+            event_id,
+            body,
+            target,
+            include_reminder,
+            true, // pre_registered
+            None, // assigned_name
+            workspace_id,
+            workspace_alias,
+        )
+    };
+    let injection = format(body);
+    if injection.len() <= crate::injection_wire::MAX_INJECTION_BODY_BYTES {
+        return injection;
+    }
+    tracing::warn!(
+        event_id,
+        bytes = injection.len(),
+        limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES,
+        "wrap: injection_too_large; delivering a pointer instead of the body"
+    );
+    let pointer = |event_id: &str| {
+        format!(
+            "[Message body not shown: {} bytes exceeds the {}-byte terminal delivery limit. \
+             The full message is stored in Relay as message {event_id}; read it with your Relay \
+             message tools before replying.]",
+            body.len(),
+            crate::injection_wire::MAX_INJECTION_BODY_BYTES
+        )
+    };
+    let injection = format(&pointer(event_id));
+    if injection.len() <= crate::injection_wire::MAX_INJECTION_BODY_BYTES {
+        return injection;
+    }
+    // Oversized sender, target or workspace metadata. A write that cannot fit
+    // is re-queued at the head of the queue, so the last resort must always
+    // fit: clip every field and drop the optional reminder and workspace label.
+    fn clip(value: &str) -> &str {
+        &value[..crate::util::ansi::floor_char_boundary(value, 256)]
+    }
+    format_injection_for_worker_with_workspace(
+        clip(from),
+        clip(event_id),
+        &pointer(clip(event_id)),
+        clip(target),
+        false,
+        true,
+        None,
+        None,
+        None,
+    )
 }
 
 /// Start echo verification after a PTY write ack without missing output that
@@ -1566,6 +1682,12 @@ pub(crate) async fn run_wrap(
     // is hit (at which point the child is not consuming input anyway).
     let mut stdin_pending: VecDeque<Vec<u8>> = VecDeque::new();
     let mut human_input_generation = 0u64;
+    let mut recovery_cancels: Vec<Arc<AtomicBool>> = Vec::new();
+    // Expected echo of a delivery whose body was written but never proven
+    // accepted. It may still be typed in the composer, so no later relay
+    // message is injected on top of it until the composer is provably idle or
+    // the human submits it.
+    let mut wrap_failed_draft: Option<String> = None;
     let mut stdin_retry_deadline: Option<tokio::time::Instant> = None;
     const STDIN_RETRY_INTERVAL: Duration = Duration::from_millis(4);
 
@@ -1582,6 +1704,14 @@ pub(crate) async fn run_wrap(
             // keystrokes are never dropped or reordered under back-pressure.
             Some(data) = stdin_rx.recv() => {
                 human_input_generation = human_input_generation.saturating_add(1);
+                cancel_recovery_writes(&mut recovery_cancels);
+                if wrap_failed_draft.is_some() && human_input_submits_composer(&data) {
+                    tracing::info!(
+                        target = "agent_relay::worker::wrap",
+                        "wrap: human submitted the composer; releasing the failed-draft latch"
+                    );
+                    wrap_failed_draft = None;
+                }
                 if !pending_verifications.is_empty() {
                     for verification in pending_verifications.drain(..) {
                         tracing::warn!(
@@ -2120,7 +2250,12 @@ pub(crate) async fn run_wrap(
                             event_id: mapped.event_id,
                             workspace_id: Some(mapped.workspace_id),
                             workspace_alias: mapped.workspace_alias,
-                            body: mapped.text,
+                            // The wrap path does not download attachments;
+                            // the agent gets each file id and a fetch command.
+                            body: crate::relaycast::bridge::text_with_attachment_references(
+                                &mapped.text,
+                                &mapped.attachments,
+                            ),
                             target: mapped.target,
                             queued_at: Instant::now(),
                         });
@@ -2136,7 +2271,7 @@ pub(crate) async fn run_wrap(
             _ = pending_injection_interval.tick(),
                 if wrap_injection_timer_allowed(
                     !pending_wrap_writes.is_empty(),
-                    !pending_verifications.is_empty(),
+                    !pending_verifications.is_empty() || wrap_failed_draft.is_some(),
                 ) => {
                 // Give backlogged human keystrokes priority onto the PTY FIFO
                 // over a new automated injection — see the auto-responder gate
@@ -2176,18 +2311,16 @@ pub(crate) async fn run_wrap(
                     tracing::debug!("relay from {} → {}", pending.from, pending.target);
                     let include_reminder = !skip_prompt
                         && mcp_reminder_throttle.should_include(Instant::now());
-                    let injection = format_injection_for_worker_with_workspace(
+                    let injection = format_wrap_injection(
                         &pending.from,
                         &pending.event_id,
                         &pending.body,
                         &pending.target,
                         include_reminder,
-                        true, // pre_registered
-                        None, // assigned_name
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
-                    let bytes = crate::devin::injection_bytes(&resolved_cli, &injection);
+                    let bytes = crate::injection_wire::injection_bytes(crate::injection_wire::injection_wire(&resolved_cli, &pty), &injection);
                     let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
                         Ok((ack_rx, output_boundary)) => {
@@ -2249,6 +2382,9 @@ pub(crate) async fn run_wrap(
                                 "wrap: human input followed the injection write; automatic verification cancelled"
                             );
                             throttle.record(DeliveryOutcome::Failed);
+                            if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &injection) {
+                                wrap_failed_draft = Some(injection.clone());
+                            }
                             continue;
                         }
 
@@ -2313,6 +2449,9 @@ pub(crate) async fn run_wrap(
                                 "wrap: human input followed submit-key recovery; further automatic recovery cancelled"
                             );
                             throttle.record(DeliveryOutcome::Failed);
+                            if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &verification.expected_echo) {
+                                wrap_failed_draft = Some(verification.expected_echo.clone());
+                            }
                             continue;
                         }
 
@@ -2323,6 +2462,9 @@ pub(crate) async fn run_wrap(
                                 "wrap: submit-key recovery was not confirmed; body left untouched"
                             );
                             throttle.record(DeliveryOutcome::Failed);
+                            if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &verification.expected_echo) {
+                                wrap_failed_draft = Some(verification.expected_echo.clone());
+                            }
                             continue;
                         }
 
@@ -2393,6 +2535,7 @@ pub(crate) async fn run_wrap(
                                     &pty,
                                     &resolved_cli,
                                     completed_attempts,
+                                    new_recovery_cancel(&mut recovery_cancels),
                                 ) {
                                     Ok((ack_rx, output_boundary)) => {
                                         let pending_write = PendingWrapWrite::Retry {
@@ -2418,19 +2561,23 @@ pub(crate) async fn run_wrap(
                                             "wrap: failed to queue submit-key recovery; body left untouched"
                                         );
                                         throttle.record(DeliveryOutcome::Failed);
+                                        if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &pv.expected_echo) {
+                                            wrap_failed_draft = Some(pv.expected_echo.clone());
+                                        }
                                     }
                                 }
                             }
                             HarnessAcceptance::Parked
                                 if !pv.acceptance_expired()
                                     && (!stdin_pending.is_empty()
-                                        || !pending_wrap_writes.is_empty()) =>
+                                        || !pending_wrap_writes.is_empty()
+                                        || !crate::devin::can_inject(&resolved_cli, &pty)) =>
                             {
-                                // An in-flight writer takes priority. Human
-                                // input already drains these verifications in
-                                // the stdin arm, so this deferral never resets
-                                // the total acceptance lifetime.
-                                pv.injected_at = Instant::now();
+                                // An in-flight writer or a briefly unready
+                                // Devin prompt takes priority. Deferring spends
+                                // no retry budget and never resets the total
+                                // acceptance lifetime.
+                                prepare_wrap_retry(&mut pv, false, Instant::now());
                                 pending_verifications.push_back(pv);
                             }
                             HarnessAcceptance::Parked => {
@@ -2440,18 +2587,33 @@ pub(crate) async fn run_wrap(
                                     "wrap: body remained parked after bounded submit-key recovery"
                                 );
                                 throttle.record(DeliveryOutcome::Failed);
+                                // Parked is the positive evidence.
+                                wrap_failed_draft = Some(pv.expected_echo.clone());
                             }
                             HarnessAcceptance::Inconclusive => {
-                                tracing::error!(
+                                tracing::info!(
                                     event_id = %pv.event_id,
                                     attempts = pv.attempts,
-                                    "wrap: harness acceptance could not be proven; body left untouched"
+                                    "wrap: delivery unconfirmed; delivered without harness evidence"
                                 );
-                                throttle.record(DeliveryOutcome::Failed);
+                                throttle.record(DeliveryOutcome::Unverified);
                             }
                         }
                     } else {
                         i += 1;
+                    }
+                }
+
+                if let Some(expected_echo) = wrap_failed_draft.as_deref() {
+                    if pending_verifications.is_empty()
+                        && pending_wrap_writes.is_empty()
+                        && failed_draft_released(&resolved_cli, expected_echo, &Snapshot::capture(&pty))
+                    {
+                        tracing::info!(
+                            target = "agent_relay::worker::wrap",
+                            "wrap: failed draft left the composer; resuming injection"
+                        );
+                        wrap_failed_draft = None;
                     }
                 }
 
@@ -2629,13 +2791,15 @@ mod tests {
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let (first_ack, _) = submit_injection_recovery(&pty, "codex", 1).unwrap();
+        let (first_ack, _) =
+            submit_injection_recovery(&pty, "codex", 1, Default::default()).unwrap();
         tokio::time::timeout(Duration::from_secs(3), first_ack)
             .await
             .expect("End+CR recovery timed out")
             .expect("drainer exited")
             .expect("End+CR recovery failed");
-        let (second_ack, _) = submit_injection_recovery(&pty, "codex", 2).unwrap();
+        let (second_ack, _) =
+            submit_injection_recovery(&pty, "codex", 2, Default::default()).unwrap();
         tokio::time::timeout(Duration::from_secs(3), second_ack)
             .await
             .expect("LF recovery timed out")
@@ -2789,6 +2953,18 @@ sys.stdout.flush()"#;
 
     #[test]
     fn wrap_injection_timer_waits_for_write_ack_and_harness_acceptance() {
+        assert!(super::human_input_submits_composer(b"\r"));
+        assert!(super::human_input_submits_composer(b"\r\n"));
+        assert!(
+            !super::human_input_submits_composer(b"ok\n"),
+            "typed line plus newline is text"
+        );
+        assert!(
+            !super::human_input_submits_composer(b"\x1b[200~line one\rline two\x1b[201~"),
+            "a bracketed multiline paste is not a submit"
+        );
+        assert!(!super::human_input_submits_composer(b""));
+        assert!(!super::human_input_submits_composer(b"typing"));
         assert!(wrap_injection_timer_allowed(false, false));
         assert!(!wrap_injection_timer_allowed(true, false));
         assert!(!wrap_injection_timer_allowed(false, true));
@@ -2827,6 +3003,57 @@ sys.stdout.flush()"#;
             Instant::now()
         ));
         assert_eq!(verification.attempts, 2);
+    }
+
+    #[test]
+    fn oversized_wrap_messages_are_delivered_as_a_bounded_pointer() {
+        let limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES;
+        let normal =
+            super::format_wrap_injection("alice", "evt_ok", "hello", "bob", true, None, None);
+        assert!(normal.contains("Relay message from alice [evt_ok]: hello"));
+        // A body that fits on its own but whose reminder and attribution push
+        // the envelope past the limit (the reviewer's 16,000-byte DM), and one
+        // far over it.
+        for len in [limit - 384, limit * 2] {
+            let body = format!("UNIQUE-BODY-MARKER{}", "x".repeat(len));
+            let injection =
+                super::format_wrap_injection("alice", "evt_big", &body, "bob", true, None, None);
+            assert!(injection.len() <= limit, "{len}: {} bytes", injection.len());
+            assert!(
+                !injection.contains("UNIQUE-BODY-MARKER"),
+                "{len}: body leaked"
+            );
+            assert!(
+                injection.contains("Relay message from alice [evt_big]"),
+                "{injection}"
+            );
+            assert!(injection.contains("message evt_big"), "{injection}");
+            assert!(
+                injection.contains(&format!("{} bytes exceeds", body.len())),
+                "{injection}"
+            );
+        }
+    }
+
+    /// relay#1930 review (cubic): the pointer replaces only the body, so
+    /// oversized sender, target or workspace metadata kept the envelope over
+    /// the limit, failing submit and re-queuing the delivery at the head of
+    /// the queue forever. The final fallback must always fit.
+    #[test]
+    fn oversized_wrap_metadata_still_yields_a_bounded_pointer() {
+        let limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES;
+        let huge = "é".repeat(limit);
+        let injection = super::format_wrap_injection(
+            &huge,
+            "evt_meta",
+            &"x".repeat(limit),
+            &huge,
+            true,
+            Some(&huge),
+            Some(&huge),
+        );
+        assert!(injection.len() <= limit, "{} bytes", injection.len());
+        assert!(injection.contains("message evt_meta"), "{injection}");
     }
 
     #[test]

@@ -21,6 +21,7 @@ import {
   relaycastWorkspaceTelemetryOptions,
   type RelaycastTelemetryOptions,
 } from '../relaycast-telemetry.js';
+import type { RelayFilesApiLike } from './files.js';
 import { currentReplaySessionRef, replayMessageMetadata, resolveReplaySessionRef } from './session-ref.js';
 import type {
   RelayCreateChannelInput,
@@ -103,6 +104,8 @@ export interface RelayAgentThinClient {
     channel: string,
     text: string,
     options?: {
+      /** Stable key for retries of one logical send, including across processes. */
+      idempotencyKey?: string;
       attachments?: string[];
       data?: Record<string, unknown> | null;
       mode?: RelayMessageMode;
@@ -112,7 +115,11 @@ export interface RelayAgentThinClient {
   reply(
     messageId: string,
     text: string,
-    options?: { data?: Record<string, unknown> | null }
+    options?: {
+      /** Stable key for retries of one logical reply, including across processes. */
+      idempotencyKey?: string;
+      data?: Record<string, unknown> | null;
+    }
   ): Promise<unknown>;
   thread(messageId: string, options?: { limit?: number }): Promise<unknown>;
   dm(
@@ -134,6 +141,8 @@ export interface RelayAgentThinClient {
       conversationId: string,
       text: string,
       options?: {
+        /** Stable key for retries of one logical send, including across processes. */
+        idempotencyKey?: string;
         attachments?: string[];
         data?: Record<string, unknown> | null;
         mode?: RelayMessageMode;
@@ -155,6 +164,8 @@ export interface RelayAgentThinClient {
   inbox(options?: { limit?: number }): Promise<unknown>;
   markRead(messageId: string): Promise<unknown>;
   readers(messageId: string): Promise<unknown[]>;
+  /** Stored file attachments; use with `uploadRelayFile` / `downloadRelayFile`. */
+  readonly files?: RelayFilesApiLike;
   /** Relay action surface; absent on backends without action support. */
   readonly actions?: {
     invoke(name: string, input?: Record<string, unknown>): Promise<unknown>;

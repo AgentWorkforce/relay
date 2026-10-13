@@ -102,6 +102,7 @@ export interface AgentRelayAgent {
   readonly nodes: RelayMessaging['nodes'];
   readonly triggers: RelayMessaging['triggers'];
   readonly workspace: RelayWorkspace;
+  readonly files: RelayMessaging['files'];
   registerAction<TInput, TOutput>(
     def: RegisterActionInput<TInput, TOutput>
   ): TypedActionHandle<TInput, TOutput>;
@@ -296,6 +297,10 @@ export class AgentRelay implements AgentRelayAgent {
 
   get triggers(): RelayMessaging['triggers'] {
     return this.messaging.triggers;
+  }
+
+  get files(): RelayMessaging['files'] {
+    return this.messaging.files;
   }
 
   get workspace(): RelayWorkspace {
@@ -507,6 +512,7 @@ export function agentRelayAgent(
     capabilities: messaging.commands,
     nodes: messaging.nodes,
     triggers: messaging.triggers,
+    files: messaging.files,
     workspace: createWorkspaceFacade(messaging),
     registerAction: (def) =>
       registerFacadeAction(actions, def, { messaging, handlerAgent, onError: options?.onError }),
