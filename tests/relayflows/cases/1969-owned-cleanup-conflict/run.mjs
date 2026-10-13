@@ -100,7 +100,10 @@ server.on('upgrade', (request, socket) => {
     socket.destroy();
     return;
   }
-  const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
+  const accept = crypto
+    .createHash('sha1')
+    .update(key + WS_GUID)
+    .digest('base64');
   socket.write(
     `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`
   );
