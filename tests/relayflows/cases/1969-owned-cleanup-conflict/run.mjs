@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
@@ -11,6 +12,7 @@ const NAME = 'owned-conflict-probe';
 const GENERATION = '11111111-1111-4111-8111-111111111111';
 const TOKEN_HASH = 'bec092bff160b23541205064ab9f4485d6c2089760b1bb4e5f5ce19f0274aad3';
 const API_KEY = 'br_owned_conflict_probe';
+const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 const targetDir = required('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = required('RELAY_PR_PROOF_HARNESS_DIR');
@@ -91,6 +93,27 @@ const server = http.createServer(async (request, response) => {
 server.on('connection', (socket) => {
   sockets.add(socket);
   socket.once('close', () => sockets.delete(socket));
+});
+server.on('upgrade', (request, socket) => {
+  const key = request.headers['sec-websocket-key'];
+  if (!key) {
+    socket.destroy();
+    return;
+  }
+  const accept = crypto.createHash('sha1').update(key + WS_GUID).digest('base64');
+  socket.write(
+    `HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`
+  );
+  socket.on(
+    'data',
+    createFrameReader((frame) => {
+      if (frame.type === 'node.register' || frame.type === 'inventory.sync' || frame.id) {
+        socket.write(
+          encodeTextFrame(JSON.stringify({ v: 1, type: 'reply', id: frame.id, ok: true, data: {} }))
+        );
+      }
+    })
+  );
 });
 
 try {
@@ -239,4 +262,48 @@ async function stopProcess(child) {
   const timer = setTimeout(() => child.kill('SIGKILL'), 2_000);
   await exited;
   clearTimeout(timer);
+}
+
+function encodeTextFrame(text) {
+  const payload = Buffer.from(text, 'utf8');
+  if (payload.length < 126) return Buffer.concat([Buffer.from([0x81, payload.length]), payload]);
+  const header = Buffer.alloc(4);
+  header[0] = 0x81;
+  header[1] = 126;
+  header.writeUInt16BE(payload.length, 2);
+  return Buffer.concat([header, payload]);
+}
+
+function createFrameReader(onFrame) {
+  let buffer = Buffer.alloc(0);
+  return (chunk) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    for (;;) {
+      if (buffer.length < 2) return;
+      const opcode = buffer[0] & 0x0f;
+      const masked = (buffer[1] & 0x80) !== 0;
+      let length = buffer[1] & 0x7f;
+      let offset = 2;
+      if (length === 126) {
+        if (buffer.length < offset + 2) return;
+        length = buffer.readUInt16BE(offset);
+        offset += 2;
+      } else if (length === 127) {
+        if (buffer.length < offset + 8) return;
+        length = Number(buffer.readBigUInt64BE(offset));
+        offset += 8;
+      }
+      let mask;
+      if (masked) {
+        if (buffer.length < offset + 4) return;
+        mask = buffer.subarray(offset, offset + 4);
+        offset += 4;
+      }
+      if (buffer.length < offset + length) return;
+      const payload = Buffer.from(buffer.subarray(offset, offset + length));
+      buffer = buffer.subarray(offset + length);
+      if (mask) for (let index = 0; index < payload.length; index += 1) payload[index] ^= mask[index % 4];
+      if (opcode === 0x1) onFrame(JSON.parse(payload.toString('utf8')));
+    }
+  };
 }
