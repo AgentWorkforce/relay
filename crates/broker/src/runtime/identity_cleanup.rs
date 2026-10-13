@@ -498,20 +498,10 @@ impl BrokerRuntime {
                     // Drop only this cleanup generation's credential. A
                     // same-name replacement may have seeded a newer token
                     // while the guarded request was in flight.
-                    if pending
-                        .expected_token_hash
-                        .as_ref()
-                        .ok()
-                        .is_some_and(|expected| {
-                            pending
-                                .http
-                                .owned_identity_token_hash(name.as_str())
-                                .ok()
-                                .as_deref()
-                                == Some(expected.as_str())
-                        })
-                    {
-                        pending.http.invalidate_cached_registration(name.as_str());
+                    if let Ok(expected) = pending.expected_token_hash.as_ref() {
+                        pending
+                            .http
+                            .invalidate_cached_registration_if_token_hash(name.as_str(), expected);
                     }
                     tracing::info!(worker = %name, %generation,
                     "remote identity is no longer this generation's; releasing owned cleanup custody")

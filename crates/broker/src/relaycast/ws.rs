@@ -457,6 +457,20 @@ impl RelaycastHttpClient {
         }
     }
 
+    pub(crate) fn invalidate_cached_registration_if_token_hash(
+        &self,
+        agent_name: &str,
+        expected_token_hash: &str,
+    ) -> bool {
+        self.registration
+            .as_ref()
+            .as_ref()
+            .is_some_and(|registration| {
+                registration
+                    .invalidate_cached_registration_if_token_hash(agent_name, expected_token_hash)
+            })
+    }
+
     pub(crate) fn relay_client(&self) -> Option<&RelayCast> {
         self.relay.as_ref().as_ref()
     }
@@ -1568,11 +1582,7 @@ impl RelaycastHttpClient {
                 if result["data"]["status"] != "completed" {
                     anyhow::bail!("owned identity cleanup queued but unconfirmed; reconcile lifecycle invocation {}", result["data"]["invocation_id"]);
                 }
-                if self.owned_identity_token_hash(agent_name).ok().as_deref()
-                    == Some(expected_token_hash)
-                {
-                    self.invalidate_cached_registration(agent_name);
-                }
+                self.invalidate_cached_registration_if_token_hash(agent_name, expected_token_hash);
                 return Ok(());
             }
             // Invalidate the cached token before the call so an ambiguous
