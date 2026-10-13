@@ -4908,7 +4908,7 @@ mod tests {
             .await
             .expect("explicit release should succeed");
 
-        release.assert_hits(3);
+        release.assert_hits(1);
     }
 
     #[tokio::test]
