@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `fleet spawn` and SDK placement no longer report `dispatchState: "dispatched"` for a spawn that was placed but never sent. Only `dispatched_node_id`, or a status the node moved, counts as dispatch evidence, so `fleet spawn` and `fleet spawn-status` agree.
 - When a broker worker fails to spawn, the log now includes the underlying OS error, such as a missing binary, instead of only `failed to spawn worker`.
 
 ## [13.4.1] - 2026-10-12

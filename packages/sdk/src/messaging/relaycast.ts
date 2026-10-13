@@ -1006,14 +1006,14 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
   ): Promise<RelayActionInvocation> {
     const { timeoutMs, pollIntervalMs, requireReadiness, ...errorContext } = context;
     const invocationId = ack.invocationId;
-    // Dispatch evidence is fixed at ack time: a node id here means the engine
-    // already routed the invocation to a node before this method starts
-    // polling. A `pending`/`queued` ack with no node id has not routed yet,
-    // and confirmation timing out or reading a terminal status later does not
-    // retroactively manufacture that evidence — see `resolveDispatchState`.
-    // Computed before either early exit below so every `spawn_unconfirmed`
-    // path, not just the timeout/failure paths, carries this evidence.
-    const dispatchState = resolveDispatchState(ack);
+    // Dispatch evidence starts from the ack: a `dispatchedNodeId` means the
+    // engine already routed the invocation to a node. A `pending`/`queued` ack
+    // without one has not routed yet. A read below that carries a
+    // `dispatchedNodeId` adds evidence (the engine may dispatch after
+    // acknowledging); a timeout or a terminal status never manufactures it — see
+    // `resolveDispatchState`. Computed before either early exit below so every
+    // `spawn_unconfirmed` path, not just the timeout/failure paths, carries it.
+    let dispatchState = resolveDispatchState(ack);
     if (!invocationId) {
       throw new RelayPlacementError(
         'spawn_unconfirmed',
@@ -1061,6 +1061,9 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             // A later success must not report an earlier transient failure.
             lastReadError = undefined;
             const invocation = outcome.value;
+            // Only a node id counts here: the read normalizer defaults a
+            // missing status to `invoked`, which is not evidence.
+            if (invocation?.dispatchedNodeId) dispatchState = 'dispatched';
             const status = invocation?.status?.toLowerCase();
             if (status && CONFIRM_SUCCESS_STATUSES.has(status)) {
               if (
