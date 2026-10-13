@@ -5,11 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
 
 ### Fixed
 
-- `fleet spawn` and the SDK placement no longer report `dispatchState: "dispatched"` for a spawn the engine never sent. The engine's acknowledgement always names the node placement chose in `handler_node_id`, even when sending to it failed, so that field is no longer read as dispatch evidence; only `dispatched_node_id` (or a status the node moved) is. `fleet spawn` and `fleet spawn-status` now agree.
+- `fleet spawn` and SDK placement no longer report `dispatchState: "dispatched"` for a spawn that was placed but never sent. Only `dispatched_node_id`, or a status the node moved, counts as dispatch evidence, so `fleet spawn` and `fleet spawn-status` agree.
 
 ## [13.4.1] - 2026-10-12
 
