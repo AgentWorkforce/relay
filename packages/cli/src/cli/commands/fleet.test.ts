@@ -1450,6 +1450,7 @@ describe('fleet command support', () => {
         'spawn',
         'codex',
         '--sandbox',
+        '--sandbox-relayfile',
         '--sandbox-provider',
         'agent37',
         '--name',

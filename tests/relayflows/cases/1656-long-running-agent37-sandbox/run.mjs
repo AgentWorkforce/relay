@@ -239,12 +239,17 @@ test('fleet spawn --sandbox replays and retains an exact provider-attributed ide
     .mockResolvedValueOnce({ response: Response.json({ cloudWorkspaceId: CLOUD_WORKSPACE_ID }), auth })
     // 2. provisioning. Cloud selects agent37 on its own; the command line below
     //    never names a provider, which is the whole point of the feature.
-    .mockResolvedValueOnce({
-      response: Response.json(
-        provisionedResponse,
-        { status: 201 }
-      ),
-      auth,
+    //    Echo any requested repository revisions, as Cloud does for a
+    //    checkout-first sandbox.
+    .mockImplementationOnce(async (_auth: unknown, _path: string, request?: { body?: string }) => {
+      const body = request?.body ? JSON.parse(request.body) : {};
+      return {
+        response: Response.json(
+          { ...provisionedResponse, ...(body.repoRevisions ? { repoRevisions: body.repoRevisions } : {}) },
+          { status: 201 }
+        ),
+        auth,
+      };
     })
     // 3. cleanup, triggered by the deliberate output-sink failure below
     .mockResolvedValueOnce({
