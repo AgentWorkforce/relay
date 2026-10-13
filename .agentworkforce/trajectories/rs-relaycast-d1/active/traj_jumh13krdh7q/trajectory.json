@@ -103,6 +103,18 @@
             "reasoning": "The prior fixture predates /v1/agents/release-exact, so failed-spawn cleanup could not settle. The release workflow was completed first specifically to make the atomic contract available; the targeted unsupported-resume scenario passes against the v10.3 source tree."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1791891580056,
+          "type": "decision",
+          "content": "Queued fleet release completion before inventory removal: Queued fleet release completion before inventory removal",
+          "raw": {
+            "question": "Queued fleet release completion before inventory removal",
+            "chosen": "Queued fleet release completion before inventory removal",
+            "alternatives": [],
+            "reasoning": "Relaycast v10.3 atomically authorizes a built-in release while the exact agent binding is still active. Sending agent.deregister first creates a deterministic generation conflict; FIFO action.result first lets the engine own the atomic lifecycle transition, after which local inventory can be pruned."
+          },
+          "significance": "high"
         }
       ]
     }
