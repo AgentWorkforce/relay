@@ -1423,10 +1423,7 @@ impl RelaycastHttpClient {
                     }
                     let agent_not_found = status == reqwest::StatusCode::NOT_FOUND
                         && result["error"]["code"] == "agent_not_found";
-                    if !exact_release
-                        && agent_not_found
-                        && agent_not_found_retries < visibility_backoffs_ms.len()
-                    {
+                    if agent_not_found && agent_not_found_retries < visibility_backoffs_ms.len() {
                         let delay_ms = visibility_backoffs_ms[agent_not_found_retries];
                         agent_not_found_retries += 1;
                         tracing::warn!(
@@ -4911,7 +4908,7 @@ mod tests {
             .await
             .expect("explicit release should succeed");
 
-        release.assert_hits(1);
+        release.assert_hits(3);
     }
 
     #[tokio::test]
@@ -5640,7 +5637,9 @@ mod tests {
             .expect_err("atomic exact-release absence should complete restored cleanup");
 
         assert!(error.downcast_ref::<ReleaseIdentityConflict>().is_some());
-        release.assert_hits(1);
+        // Exact release still spends the bounded visibility window before
+        // accepting absence as terminal.
+        release.assert_hits(3);
     }
 
     #[tokio::test]
