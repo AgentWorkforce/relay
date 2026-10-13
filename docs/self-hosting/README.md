@@ -5,11 +5,11 @@ runs it for you, but every primitive can run inside your own infrastructure.
 
 ## What you run
 
-| Layer | What it does | Self-hosting reference |
-| --- | --- | --- |
-| **Relaycast** (messaging engine) | Workspaces, agents, channels, threads, DMs, presence, files, and real-time WebSocket events | [relaycast › Self-hosting Relaycast](https://github.com/AgentWorkforce/relaycast/blob/main/docs/self-hosting.md) |
-| **Broker + CLI** (this repo) | `agent-relay` CLI and the `agent-relay-broker` that spawns agents, injects messages into their PTYs, and connects them to Relaycast | Runs on your machines already; point it at your Relaycast (below) |
-| **Relayfile** (optional) | Provider data (GitHub, Slack, Linear, …) as files, with writeback | [Relayfile › Self-hosting](https://agentrelay.com/docs/file/self-hosting) |
+| Layer                            | What it does                                                                                                                        | Self-hosting reference                                                                                           |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **Relaycast** (messaging engine) | Workspaces, agents, channels, threads, DMs, presence, files, and real-time WebSocket events                                         | [relaycast › Self-hosting Relaycast](https://github.com/AgentWorkforce/relaycast/blob/main/docs/self-hosting.md) |
+| **Broker + CLI** (this repo)     | `agent-relay` CLI and the `agent-relay-broker` that spawns agents, injects messages into their PTYs, and connects them to Relaycast | Runs on your machines already; point it at your Relaycast (below)                                                |
+| **Relayfile** (optional)         | Provider data (GitHub, Slack, Linear, …) as files, with writeback                                                                   | [Relayfile › Self-hosting](https://agentrelay.com/docs/file/self-hosting)                                        |
 
 Relaycast is the piece to stand up first. It ships as a single Node + SQLite
 process (`npx @relaycast/engine --db ./relaycast.db --port 8787`) with no
