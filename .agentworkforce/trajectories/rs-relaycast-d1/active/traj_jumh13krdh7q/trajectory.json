@@ -55,6 +55,18 @@
             "focal:verification",
             "confidence:0.9"
           ]
+        },
+        {
+          "ts": 1791886828636,
+          "type": "decision",
+          "content": "Use durable agent-id workspace verification for cleanup recovery: Use durable agent-id workspace verification for cleanup recovery",
+          "raw": {
+            "question": "Use durable agent-id workspace verification for cleanup recovery",
+            "chosen": "Use durable agent-id workspace verification for cleanup recovery",
+            "alternatives": [],
+            "reasoning": "A restarted broker no longer has the exact bearer token, and persisting that reusable secret would violate journal hygiene. The existing journal agent_id plus an independent workspace lookup distinguishes confirmed absence, replacement, and a still-live original generation without weakening custody."
+          },
+          "significance": "high"
         }
       ]
     }

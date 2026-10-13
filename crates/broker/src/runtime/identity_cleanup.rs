@@ -130,6 +130,7 @@ fn start_attempt(
     deregistered: Arc<AtomicBool>,
 ) -> JoinHandle<Result<CleanupOutcome, String>> {
     inventory.remove(&name);
+    let cleanup_agent_id = agent_id.clone();
     let acknowledgement = (|| {
         if deregistered.load(Ordering::Acquire) {
             return Ok(None);
@@ -173,11 +174,12 @@ fn start_attempt(
             // collide with an identity we never verified or deleted.
             let expected_token_hash = expected_token_hash?;
             match http
-                .release_agent_identity_guarded(
+                .release_agent_identity_guarded_for_agent(
                     &name,
                     Some("owned worker cleanup"),
                     true,
                     Some(&expected_token_hash),
+                    cleanup_agent_id.as_deref(),
                 )
                 .await
             {

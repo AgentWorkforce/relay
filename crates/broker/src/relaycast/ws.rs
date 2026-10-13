@@ -1255,11 +1255,34 @@ impl RelaycastHttpClient {
         delete_identity: bool,
         expected_token_hash: Option<&str>,
     ) -> Result<()> {
+        self.release_agent_identity_guarded_for_agent(
+            agent_name,
+            reason,
+            delete_identity,
+            expected_token_hash,
+            None,
+        )
+        .await
+    }
+
+    /// The durable cleanup journal records the immutable agent id but not the
+    /// bearer token. Supplying that id lets a restored cleanup independently
+    /// distinguish a deleted row from a stale release-path name lookup without
+    /// persisting a reusable credential on disk.
+    pub(crate) async fn release_agent_identity_guarded_for_agent(
+        &self,
+        agent_name: &str,
+        reason: Option<&str>,
+        delete_identity: bool,
+        expected_token_hash: Option<&str>,
+        expected_agent_id: Option<&str>,
+    ) -> Result<()> {
         self.release_agent_identity_guarded_with_backoffs(
             agent_name,
             reason,
             delete_identity,
             expected_token_hash,
+            expected_agent_id,
             &NODE_REGISTER_VISIBILITY_BACKOFFS_MS,
         )
         .await
@@ -1271,32 +1294,36 @@ impl RelaycastHttpClient {
         reason: Option<&str>,
         delete_identity: bool,
         expected_token_hash: Option<&str>,
+        expected_agent_id: Option<&str>,
         visibility_backoffs_ms: &[u64],
     ) -> Result<()> {
         let total_budget = identity_visibility_total_budget(
             visibility_backoffs_ms,
             NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT,
         )
-        // A persistent by-name 404 gets one independent exact-token probe
-        // before it can be considered terminal.
+        // A persistent by-name 404 gets one independent exact-token or
+        // immutable-id probe before it can be considered terminal.
         .saturating_add(NODE_REGISTER_VISIBILITY_REQUEST_TIMEOUT);
         self.release_agent_identity_guarded_with_budget(
             agent_name,
             reason,
             delete_identity,
             expected_token_hash,
+            expected_agent_id,
             visibility_backoffs_ms,
             total_budget,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn release_agent_identity_guarded_with_budget(
         &self,
         agent_name: &str,
         reason: Option<&str>,
         delete_identity: bool,
         expected_token_hash: Option<&str>,
+        expected_agent_id: Option<&str>,
         visibility_backoffs_ms: &[u64],
         total_budget: Duration,
     ) -> Result<()> {
@@ -1426,20 +1453,6 @@ impl RelaycastHttpClient {
                     // timeouts) keep the generic retryable bail.
                     let error_code = result["error"]["code"].as_str().unwrap_or_default();
                     if status == reqwest::StatusCode::NOT_FOUND && error_code == "agent_not_found" {
-                        let cached_token = self.cached_agent_token(agent_name).with_context(|| {
-                            format!(
-                                "owned identity cleanup for '{agent_name}' cannot verify a persistent by-name 404 because its captured token is no longer cached"
-                            )
-                        })?;
-                        let cached_hash = format!("{:x}", Sha256::digest(cached_token.as_bytes()));
-                        if cached_hash != expected_token_hash {
-                            return Err(ReleaseIdentityConflict {
-                                agent_name: agent_name.to_string(),
-                                status: reqwest::StatusCode::CONFLICT.as_u16(),
-                                code: "cached_token_generation_changed".to_string(),
-                            }
-                            .into());
-                        }
                         let remaining =
                             deadline.saturating_duration_since(tokio::time::Instant::now());
                         anyhow::ensure!(
@@ -1451,6 +1464,64 @@ impl RelaycastHttpClient {
                         let relay = self.relay_client().context(
                             "SDK relay client not initialized for exact-token cleanup verification",
                         )?;
+                        let Some(cached_token) = self.cached_agent_token(agent_name) else {
+                            match tokio::time::timeout(
+                                request_budget,
+                                relay.get_agent(agent_name),
+                            )
+                            .await
+                            {
+                                Err(_) => anyhow::bail!(
+                                    "owned identity cleanup workspace verification for '{agent_name}' timed out after {request_budget:?}"
+                                ),
+                                Ok(Ok(agent))
+                                    if expected_agent_id
+                                        .is_none_or(|expected| agent.id == expected) =>
+                                {
+                                    anyhow::bail!(
+                                    "owned identity cleanup release lookup returned agent_not_found, but workspace verification still sees {}/{}; retaining custody for retry",
+                                    agent.name,
+                                    agent.id
+                                )
+                                }
+                                Ok(Ok(agent)) => {
+                                    return Err(ReleaseIdentityConflict {
+                                        agent_name: agent_name.to_string(),
+                                        status: reqwest::StatusCode::CONFLICT.as_u16(),
+                                        code: format!(
+                                            "agent_id_changed_from_{}_to_{}",
+                                            expected_agent_id.unwrap_or("unknown"),
+                                            agent.id
+                                        ),
+                                    }
+                                    .into());
+                                }
+                                Ok(Err(RelayError::Api {
+                                    status: 404,
+                                    code,
+                                    ..
+                                })) if code == "agent_not_found" => {
+                                    return Err(ReleaseIdentityConflict {
+                                        agent_name: agent_name.to_string(),
+                                        status: status.as_u16(),
+                                        code: error_code.to_string(),
+                                    }
+                                    .into());
+                                }
+                                Ok(Err(error)) => anyhow::bail!(
+                                    "owned identity cleanup workspace verification for '{agent_name}' failed: {error}"
+                                ),
+                            }
+                        };
+                        let cached_hash = format!("{:x}", Sha256::digest(cached_token.as_bytes()));
+                        if cached_hash != expected_token_hash {
+                            return Err(ReleaseIdentityConflict {
+                                agent_name: agent_name.to_string(),
+                                status: reqwest::StatusCode::CONFLICT.as_u16(),
+                                code: "cached_token_generation_changed".to_string(),
+                            }
+                            .into());
+                        }
                         match tokio::time::timeout(
                             request_budget,
                             relay.get_current_agent(cached_token),
@@ -5441,6 +5512,7 @@ mod tests {
                 None,
                 true,
                 Some(&expected_hash),
+                None,
                 &[1, 1],
                 Duration::from_secs(30),
             )
@@ -5485,6 +5557,7 @@ mod tests {
                 None,
                 true,
                 Some(&expected_hash),
+                None,
                 &[1, 1],
                 Duration::from_secs(30),
             )
@@ -5502,6 +5575,91 @@ mod tests {
         assert!(client.owned_identity_token_hash("owned-worker").is_ok());
         release.assert_hits(3);
         token_probe.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn restored_owned_identity_cleanup_confirms_absence_without_plaintext_token() {
+        use sha2::{Digest, Sha256};
+        let server = MockServer::start();
+        let release = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/release");
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"not present on this Relaycast target"
+            }}));
+        });
+        let identity_probe = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/owned-worker")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"identity is gone"
+            }}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        let expected_hash = format!("{:x}", Sha256::digest(b"owned-token"));
+
+        let error = client
+            .release_agent_identity_guarded_with_budget(
+                "owned-worker",
+                None,
+                true,
+                Some(&expected_hash),
+                None,
+                &[1, 1],
+                Duration::from_secs(30),
+            )
+            .await
+            .expect_err("a restored cleanup should complete after workspace absence proof");
+
+        assert!(error.downcast_ref::<ReleaseIdentityConflict>().is_some());
+        release.assert_hits(3);
+        identity_probe.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn restored_owned_identity_cleanup_retains_custody_when_id_still_exists() {
+        use sha2::{Digest, Sha256};
+        let server = MockServer::start();
+        let release = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/release");
+            then.status(404).json_body(json!({"ok":false,"error":{
+                "code":"agent_not_found","message":"not visible by release path"
+            }}));
+        });
+        let identity_probe = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/owned-worker")
+                .header("authorization", "Bearer rk_live_test");
+            then.status(200).json_body(json!({"ok":true,"data":{
+                "id":"agent-owned","workspace_id":"ws-test","name":"owned-worker",
+                "type":"agent","status":"online","persona":null,"metadata":{},"channels":[]
+            }}));
+        });
+        let client = seeded_http_client(&server.base_url());
+        let expected_hash = format!("{:x}", Sha256::digest(b"owned-token"));
+
+        let error = client
+            .release_agent_identity_guarded_with_budget(
+                "owned-worker",
+                None,
+                true,
+                Some(&expected_hash),
+                Some("agent-owned"),
+                &[1, 1],
+                Duration::from_secs(30),
+            )
+            .await
+            .expect_err("a still-live immutable id must keep cleanup retryable");
+
+        assert!(error.downcast_ref::<ReleaseIdentityConflict>().is_none());
+        assert!(
+            error
+                .to_string()
+                .contains("workspace verification still sees"),
+            "{error:#}"
+        );
+        release.assert_hits(3);
+        identity_probe.assert_hits(1);
     }
 
     #[tokio::test]
@@ -5525,6 +5683,7 @@ mod tests {
                 None,
                 true,
                 Some(&expected_hash),
+                None,
                 &[5_000],
                 Duration::from_millis(50),
             )
@@ -5580,6 +5739,7 @@ mod tests {
                 None,
                 true,
                 Some(&expected_hash),
+                None,
                 &[0; 7],
             )
             .await
