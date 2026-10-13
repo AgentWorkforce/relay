@@ -114,6 +114,32 @@ describe('Cloud fleet sandbox client', () => {
     );
   });
 
+  it('refuses to attach through a stored login bound to a different Cloud origin', async () => {
+    await expect(
+      attachCloudFleetSandboxRelayfile(
+        { cloudWorkspaceId: CLOUD_WORKSPACE_ID, sandboxId: SANDBOX_ID },
+        { apiUrl: DEV_CLOUD_API_URL }
+      )
+    ).rejects.toThrow(`cloud login --api-url ${DEV_CLOUD_API_URL.replace(/\/+$/, '')} --force`);
+    expect(mocks.authorizedApiFetch).not.toHaveBeenCalled();
+
+    mocks.authorizedApiFetch.mockResolvedValue({
+      auth,
+      response: Response.json({
+        sandboxId: SANDBOX_ID,
+        relayWorkspaceId: 'rw_abc',
+        relayfileMounted: true,
+        relayfileMountPath: '/home/node/workspace',
+      }),
+    });
+    await expect(
+      attachCloudFleetSandboxRelayfile(
+        { cloudWorkspaceId: CLOUD_WORKSPACE_ID, sandboxId: SANDBOX_ID },
+        { apiUrl: `${auth.apiUrl}/` }
+      )
+    ).resolves.toMatchObject({ relayfileMounted: true });
+  });
+
   it.each([
     { sandboxId: 'sbx_wrong', relayfileMounted: true },
     { sandboxId: SANDBOX_ID, relayfileMounted: false },

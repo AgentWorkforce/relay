@@ -129,7 +129,7 @@ try {
   await mkdir(path.dirname(resultPath), { recursive: true });
   await writeFile(
     resultPath,
-    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature: outcome === 'fixed' ? 'live_relayfile_repository_contract_forwarded' : 'live_relayfile_repository_contract_absent', details: outcome === 'fixed' ? 'The real plain fleet spawn --sandbox command inferred the repository, materialized its exact revision through Relayfile, mounted source metadata and skills, mapped the caller-relative cwd, and sent no static clone request.' : 'The base plain fleet spawn command did not materialize or mount the inferred repository as a live decoded Relayfile working tree.' })}\n`
+    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome, signature: outcome === 'fixed' ? 'live_relayfile_repository_contract_forwarded' : 'live_relayfile_repository_contract_absent', details: outcome === 'fixed' ? 'The real fleet spawn --sandbox --sandbox-relayfile command inferred the repository, materialized its exact revision through Relayfile, mounted source metadata and skills, mapped the caller-relative cwd, and sent no static clone request.' : 'The base plain fleet spawn command did not materialize or mount the inferred repository as a live decoded Relayfile working tree.' })}\n`
   );
 } finally {
   await rm(probePath, { force: true });

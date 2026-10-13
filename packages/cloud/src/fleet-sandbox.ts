@@ -1762,6 +1762,15 @@ export type CloudFleetSandboxRelayfileAttachment = {
   relayfileMountPath: string;
 };
 
+function comparableApiUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return value.trim().replace(/\/+$/, '');
+  }
+}
+
 /** Bound session acquisition too, including filesystem and lock waits. */
 function awaitAttachmentSession(signal: AbortSignal, task: () => ReturnType<typeof ensureCloudSession>) {
   signal.throwIfAborted();
@@ -1817,6 +1826,15 @@ export async function attachCloudFleetSandboxRelayfile(
       signal,
     })
   );
+  // A stored login stays authoritative on its own host; never attach to a
+  // different environment than the one the caller explicitly selected.
+  if (options.apiUrl && comparableApiUrl(session.auth.apiUrl) !== comparableApiUrl(options.apiUrl)) {
+    throw new Error(
+      `Cloud login is bound to ${comparableApiUrl(session.auth.apiUrl)}. Run \`agent-relay cloud login --api-url ${comparableApiUrl(
+        options.apiUrl
+      )} --force\` before attaching on this host.`
+    );
+  }
   let activeAuth = session.auth;
   for (;;) {
     signal.throwIfAborted();
