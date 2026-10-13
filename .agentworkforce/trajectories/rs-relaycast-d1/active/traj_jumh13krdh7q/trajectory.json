@@ -79,6 +79,18 @@
             "reasoning": "Relaycast 10.3 exposes a crash-safe immutable-ID and idempotency-key release endpoint. Using it avoids stale by-name absence proofs; legacy journals without agent_id remain retryable and fail closed."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1791889916352,
+          "type": "decision",
+          "content": "Extended the 1615 RelayFlow fake Relaycast with the 10.3 release-exact contract: Extended the 1615 RelayFlow fake Relaycast with the 10.3 release-exact contract",
+          "raw": {
+            "question": "Extended the 1615 RelayFlow fake Relaycast with the 10.3 release-exact contract",
+            "chosen": "Extended the 1615 RelayFlow fake Relaycast with the 10.3 release-exact contract",
+            "alternatives": [],
+            "reasoning": "The production cleanup path now uses immutable agent-id and token-hash proof. The existing routing proof must accept and validate that exact release during teardown while preserving legacy release for its base arm."
+          },
+          "significance": "high"
         }
       ]
     }
