@@ -34,6 +34,8 @@ export type CloudSession = {
 
 export type CloudSessionOptions = {
   apiUrl?: string;
+  /** Cancellation/deadline shared with the operation acquiring this session. */
+  signal?: AbortSignal;
   force?: boolean;
   interactive?: boolean;
   /**

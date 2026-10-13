@@ -346,19 +346,22 @@ sandbox is selected. Ambient credentials and persisted Cloud routing do not
 change the local default. Workforce reporting metadata requires remote placement.
 Automatic placement and release need only the workspace key.
 
-The sandbox path provisions a fresh hosted instance and makes the Relayfile
-mount mandatory by default. Inside a GitHub checkout, Relay infers the Git root,
-repository identity, exact `HEAD`, and caller-relative directory. Cloud uses the
-pinned workspace's connected GitHub credential to seed that revision into
-Relayfile, and the worker starts in the decoded source tree under
-`/workspace/github/repos/<owner>/<repo>/contents`. The long-running Relayfile
-daemon keeps the mounted source tree synchronized with the workspace while
-GitHub push events update the workspace's repository source. Use `--checkout`
-when a task needs a separate static Git clone; that mode keeps the live
-Relayfile mirror available separately. Use `--sandbox-provider daytona` or
-`--sandbox-provider e2b` to require an operator-enabled provider; omit the flag
-to let Cloud's sandbox router choose. Pass `--no-sandbox-relayfile` only when a
-deliberately bare sandbox is desired. If provisioning times out or the spawn
+The sandbox path provisions a fresh hosted instance. Inside a GitHub checkout,
+Relay infers the Git root, repository identity, exact pushed `HEAD`, and caller-relative
+directory. Cloud makes a depth-1 clone, fetches that exact SHA, verifies `HEAD`,
+and starts the worker under `/srv/agent-workforce/<repo>`. Repository tasks start
+without waiting for Relayfile context. `--checkout` explicitly selects the same
+static mode. Outside Git, the default still requires the workspace Relayfile mount.
+
+Use `--sandbox-relayfile` to require live context before dispatch. Without
+`--checkout`, this retains the live repository mirror under
+`/workspace/github/repos/<owner>/<repo>/contents`; with `--checkout`, it mounts
+context separately from the Git clone. An explicit `--sandbox-relayfile-path`
+also requires its selected context before startup. `--no-sandbox-relayfile`
+explicitly disables mounting (combine with `--checkout` to clone repository files).
+Use `--sandbox-provider daytona` or `--sandbox-provider e2b` to require an
+operator-enabled provider; omit the flag to let Cloud's sandbox router choose.
+If provisioning times out or the spawn
 fails, Relay asks Cloud to delete the newly created sandbox. Runs without a
 custom name use one `sbx_<UUID>` identity and the matching
 `fleet-sandbox-<UUID>` node name. Legacy custom `--sandbox-name` values remain supported when no
@@ -380,7 +383,7 @@ reachable from a configured GitHub remote. This prevents a remote worker from
 silently starting at a different revision. Commit and push local work before
 retrying when Relay reports dirty files or an unreachable commit.
 
-With `--checkout`, sandbox provisioning also clones the attested `HEAD` under
+In default repository mode or with `--checkout`, sandbox provisioning clones the attested `HEAD` under
 `/srv/agent-workforce/<repo>`. The checkout must have no tracked changes or
 untracked source files, and the exact commit must be reachable from an origin
 remote. Relay's generated `.agentworkforce/relay/workspace-key.json`,
@@ -403,7 +406,7 @@ release commands reuse the persisted project route; if that remote session is
 unavailable, the command reports the routing failure instead of selecting a
 same-named local worker.
 
-From a clean repository already pinned to a Relay workspace, the ordinary live
+From a clean repository already pinned to a Relay workspace, the checkout-first
 path is:
 
 ```bash
@@ -416,21 +419,33 @@ agent-relay fleet agent list
 agent-relay fleet release cloud-zero-config
 ```
 
-Invoking the live command from `packages/web` starts the worker at
-`/workspace/github/repos/<owner>/<repo>/contents/packages/web`. The repository
-source metadata is available beside `contents` under `.relayfile`, `.skills`
-is mounted from the same workspace, and no `.git` directory is written into the
-Relayfile mirror.
+Invoking the command from `packages/web` starts the worker at
+`/srv/agent-workforce/<repo>/packages/web`, with `.git` available and `HEAD`
+pinned to the requested revision.
 
-For a static Git checkout, opt in explicitly:
+Attach optional context later using `cloudWorkspaceId` and `sandboxId` from the
+spawn response (this uses Cloud sign-in):
 
 ```bash
-agent-relay fleet spawn codex \
-  --name cloud-checkout \
-  --task "Inspect this repository and report its current commit" \
-  --sandbox \
-  --checkout
+agent-relay fleet relayfile attach \
+  --cloud-workspace-id <Cloud-workspace-UUID> \
+  --sandbox-id <sbx_UUID> \
+  --path '/linear' '/.skills'
 ```
+
+Omit `--path` for the full workspace. For a dev sandbox, add
+`--cloud-api-url https://dev.agentrelay.com/cloud`. The command waits at most
+five minutes by default, reports the separate mount path, and does not restart
+the worker or retry a failed attachment. Pending detached preparation is polled
+against the same sandbox within that shared deadline. Tell an already running worker the
+returned path when its task needs that context. The mount uses its own directory;
+it never overlays the Git checkout. Attachment failure leaves the repository task
+running.
+
+For a live repository mirror that must be ready before the task starts, add
+`--sandbox-relayfile` to spawn. Its decoded tree contains no `.git`; its source
+metadata sits beside `contents` under `.relayfile`. Use
+`--checkout --sandbox-relayfile` for a Git checkout plus required live context.
 
 In checkout mode, invoking spawn from `packages/web` places the worker in that
 same relative directory in the remote clone. In both modes, private repositories
@@ -438,9 +453,10 @@ use the pinned workspace's connected GitHub access; a repository-access error
 means that connection must be granted access to the repository. No GitHub token
 or workspace key needs to be copied into the task, mount, or checkout.
 
-With `--checkout`, the Git checkout and Relayfile mirror are separate trees. In
+With `--checkout --sandbox-relayfile`, the Git checkout and Relayfile mirror are
+separate trees. Checkout-only mode has no Relayfile mirror or workspace skills. In
 the ordinary live mode, source files are decoded from Relayfile records without
-placing `.git` in the mirror. Workspace `.skills` are exposed through the agent
+placing `.git` in the mirror. When a live mount is requested at startup, workspace `.skills` are exposed through the agent
 CLIs' usual skill directories, and the worker's task context identifies the
 mirror and exact source revision.
 

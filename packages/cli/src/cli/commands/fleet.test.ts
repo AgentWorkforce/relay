@@ -1450,6 +1450,7 @@ describe('fleet command support', () => {
         'spawn',
         'codex',
         '--sandbox',
+        '--sandbox-relayfile',
         '--sandbox-provider',
         'agent37',
         '--name',
@@ -1556,6 +1557,7 @@ describe('fleet command support', () => {
         'spawn',
         'codex',
         '--sandbox',
+        '--sandbox-relayfile',
         '--sandbox-provider',
         'agent37',
         '--name',
@@ -2445,7 +2447,7 @@ describe('fleet command support', () => {
       expect.objectContaining({
         input: expect.objectContaining({
           worker_cwd: '/srv/agent-workforce/cloud/packages/web',
-          task: expect.stringContaining('Relayfile records are available at /workspace'),
+          task: 'Review the Cloud web package',
         }),
       })
     );
