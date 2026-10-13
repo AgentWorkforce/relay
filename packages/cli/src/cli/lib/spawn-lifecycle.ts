@@ -10,13 +10,14 @@ function text(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
+// `handler_node_id` is the node placement chose, snapshotted before any send,
+// so it is present even when the send failed; only `dispatched_node_id` (or a
+// status the node itself moved) shows the node received the invocation.
 function dispatchEvidence(value: Record<string, unknown>): SpawnDispatchState {
   const status = text(value.status)?.toLowerCase();
   if (
     text(value.dispatchedNodeId) ||
     text(value.dispatched_node_id) ||
-    text(value.handlerNodeId) ||
-    text(value.handler_node_id) ||
     (status !== undefined && (DISPATCHED.has(status) || SUCCESS.has(status)))
   ) {
     return 'dispatched';

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `fleet spawn` and the SDK placement no longer report `dispatchState: "dispatched"` for a spawn the engine never sent. The engine's acknowledgement always names the node placement chose in `handler_node_id`, even when sending to it failed, so that field is no longer read as dispatch evidence; only `dispatched_node_id` (or a status the node moved) is. `fleet spawn` and `fleet spawn-status` now agree.
+
 ## [13.4.1] - 2026-10-12
 
 ### Fixed
