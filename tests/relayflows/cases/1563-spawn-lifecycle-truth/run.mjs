@@ -454,10 +454,13 @@ try {
   // Confirm:false is also the CLI's --no-confirm path. A terminal denial in
   // the ack is already a known failure, and its invocation/receipt correlation
   // must survive without entering the confirmation poll.
+  // node_a received the invocation and denied it, so the ack names it as the
+  // dispatched node; handler_node_id alone is only placement (relay#1972).
   const immediateDenied = createSdkClient(async () => undefined, {
     invocation_id: 'inv_immediate_denied',
     action_name: 'spawn:claude',
     handler_node_id: 'node_a',
+    dispatched_node_id: 'node_a',
     status: 'denied',
     error: 'node denied the spawn',
   });

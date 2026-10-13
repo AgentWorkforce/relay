@@ -45,18 +45,21 @@ const NOT_DISPATCHED_STATUSES = new Set(['pending', 'queued']);
 /**
  * Classify dispatch evidence from an invocation ack (or its terminal read
  * back), matching the CLI's `spawnLifecycleState`/`dispatchEvidence`
- * semantics: a `dispatchedNodeId`/`handlerNodeId` is real evidence a node
- * received the dispatch. Its absence, with a `pending`/`queued` status, means
- * the invocation never actually routed — even if the caller later observes a
+ * semantics: a `dispatchedNodeId` is real evidence a node received the
+ * dispatch. Its absence, with a `pending`/`queued` status, means the
+ * invocation never actually routed — even if the caller later observes a
  * terminal (timeout or error) outcome for it. A timeout or terminal error is
  * a fact about the *caller's* wait, not evidence that dispatch happened.
+ *
+ * `handlerNodeId` is deliberately not evidence: the engine snapshots the
+ * node placement *chose* there before any send, so an ack whose send failed
+ * still carries it alongside `dispatched_node_id: null`.
  */
 export function resolveDispatchState(ack: {
   dispatchedNodeId?: string | null;
-  handlerNodeId?: string | null;
   status?: string;
 }): RelaySpawnDispatchState {
-  if (ack.dispatchedNodeId || ack.handlerNodeId) return 'dispatched';
+  if (ack.dispatchedNodeId) return 'dispatched';
   const status = ack.status?.toLowerCase();
   if (status && DISPATCH_EVIDENT_STATUSES.has(status)) return 'dispatched';
   if (status && NOT_DISPATCHED_STATUSES.has(status)) return 'not_dispatched';
