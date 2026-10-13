@@ -91,6 +91,18 @@
             "reasoning": "The production cleanup path now uses immutable agent-id and token-hash proof. The existing routing proof must accept and validate that exact release during teardown while preserving legacy release for its base arm."
           },
           "significance": "high"
+        },
+        {
+          "ts": 1791890710219,
+          "type": "decision",
+          "content": "Pinned Fleet E2E to the released Relaycast v10.3 engine: Pinned Fleet E2E to the released Relaycast v10.3 engine",
+          "raw": {
+            "question": "Pinned Fleet E2E to the released Relaycast v10.3 engine",
+            "chosen": "Pinned Fleet E2E to the released Relaycast v10.3 engine",
+            "alternatives": [],
+            "reasoning": "The prior fixture predates /v1/agents/release-exact, so failed-spawn cleanup could not settle. The release workflow was completed first specifically to make the atomic contract available; the targeted unsupported-resume scenario passes against the v10.3 source tree."
+          },
+          "significance": "high"
         }
       ]
     }
