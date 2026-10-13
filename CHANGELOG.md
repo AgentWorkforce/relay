@@ -5,7 +5,19 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Major]
+
+### Changed
+
+- `fleet spawn --sandbox` inside a repository starts from an exact shallow Git checkout without waiting for Relayfile. `--checkout` also omits Relayfile unless context is explicitly requested.
+
+### Added
+
+- `fleet relayfile attach` adds optional live context to an existing sandbox without restarting its worker.
+
+### Migration Guidance
+
+- Add `--sandbox-relayfile` to retain the previous required live repository mirror. Combine it with `--checkout` when both a Git checkout and live context must be ready before dispatch.
 
 ## [13.4.1] - 2026-10-12
 
