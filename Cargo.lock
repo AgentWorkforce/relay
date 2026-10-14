@@ -2073,14 +2073,15 @@ dependencies = [
 
 [[package]]
 name = "relaycast"
-version = "8.0.1"
+version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53adee6048a65af443c258f6a3f360bae1b523507141c14228698fd0b6ef9407"
+checksum = "583647f5a1c61a8ec747b1099bd79b87f6e36b6fd10790e4d3b136d95bef8ed3"
 dependencies = [
  "futures-util",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.24.0",

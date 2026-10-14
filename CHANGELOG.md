@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Owned worker-name cleanup no longer gives up after five tries and blocks the name until manual recovery. The broker keeps reconciling the release on a jittered backoff (up to five minutes between attempts), confirms persistent by-name absence through the captured agent token, and preserves a replacement generation's cached credential. Cleanup without captured ownership proof fails closed and keeps the name reserved instead of claiming an unverified deletion.
 - `npx @agent-relay/connect join` no longer waits 60 seconds and rolls back when the local probe is running but cannot match the command to a live Claude Code or Codex session (for example, when it was run from a separate terminal). It stops within about a second and says to run the command from the agent's own shell. A timeout that does happen now names the probe's last answer. `connect install` no longer reports such a probe as ready when its version cannot be checked.
 
 ## [13.4.0] - 2026-10-11

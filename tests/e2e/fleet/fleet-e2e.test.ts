@@ -603,7 +603,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
         },
         { label: 'origin worker release confirmed', timeoutMs: 30_000 }
       );
-      expect(released.status).toBe('completed');
+      expect(released.status, JSON.stringify(released)).toBe('completed');
       // The legacy broker release action stops the PTY and detaches its binding;
       // the fixture owner separately removes its retained engine identity.
       expect(await releaseAgent(engine, workspaceKey, name)).toBeLessThan(300);
