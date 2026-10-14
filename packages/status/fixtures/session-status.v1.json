@@ -1,0 +1,3633 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "silent tool stays working across a long heartbeat gap",
+      "initial": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": null,
+        "revision": 0,
+        "state": "idle",
+        "reason": "no_activity",
+        "basis": "inferred",
+        "observedAt": null,
+        "lastSeenAt": null,
+        "dependencies": [],
+        "evidenceIds": [],
+        "producerSequences": {},
+        "resume": null
+      },
+      "steps": [
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e1",
+            "producerId": "runner",
+            "sequence": 1,
+            "expectedRevision": 0,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "kind": "start"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 1,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "lastSeenAt": "2026-10-13T12:01:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e1"
+            ],
+            "producerSequences": {
+              "runner": 1
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e2",
+            "producerId": "runner",
+            "sequence": 2,
+            "expectedRevision": 1,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "kind": "activity",
+            "reason": "tool_running"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 2,
+            "state": "working",
+            "reason": "tool_running",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:02:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 2
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e3",
+            "producerId": "runner",
+            "sequence": 3,
+            "expectedRevision": 2,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T14:00:00Z",
+            "kind": "heartbeat"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 3,
+            "state": "working",
+            "reason": "tool_running",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T14:00:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 3
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e4",
+            "producerId": "runner",
+            "sequence": 4,
+            "expectedRevision": 3,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:04:00Z",
+            "kind": "turn_finished"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 4,
+            "state": "idle",
+            "reason": "turn_finished",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:04:00Z",
+            "lastSeenAt": "2026-10-13T14:00:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e4"
+            ],
+            "producerSequences": {
+              "runner": 4
+            },
+            "resume": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "approval survives turn completion and heartbeat",
+      "initial": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": null,
+        "revision": 0,
+        "state": "idle",
+        "reason": "no_activity",
+        "basis": "inferred",
+        "observedAt": null,
+        "lastSeenAt": null,
+        "dependencies": [],
+        "evidenceIds": [],
+        "producerSequences": {},
+        "resume": null
+      },
+      "steps": [
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e1",
+            "producerId": "runner",
+            "sequence": 1,
+            "expectedRevision": 0,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "kind": "start"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 1,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "lastSeenAt": "2026-10-13T12:01:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e1"
+            ],
+            "producerSequences": {
+              "runner": 1
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e2",
+            "producerId": "runner",
+            "sequence": 2,
+            "expectedRevision": 1,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "kind": "wait",
+            "reason": "approval",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "human",
+                "state": "pending",
+                "target": "target_a"
+              }
+            ]
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 2,
+            "state": "needs_attention",
+            "reason": "approval",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:02:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "human",
+                "state": "pending",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 2
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e3",
+            "producerId": "runner",
+            "sequence": 3,
+            "expectedRevision": 2,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "kind": "turn_finished"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 3,
+            "state": "needs_attention",
+            "reason": "approval",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:03:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "human",
+                "state": "pending",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 3
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e4",
+            "producerId": "runner",
+            "sequence": 4,
+            "expectedRevision": 3,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:04:00Z",
+            "kind": "heartbeat"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 4,
+            "state": "needs_attention",
+            "reason": "approval",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:04:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "human",
+                "state": "pending",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 4
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e5",
+            "producerId": "runner",
+            "sequence": 5,
+            "expectedRevision": 4,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:05:00Z",
+            "kind": "complete",
+            "reason": "completed"
+          },
+          "outcome": "invalid_transition",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 4,
+            "state": "needs_attention",
+            "reason": "approval",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:04:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "human",
+                "state": "pending",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 4
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e6",
+            "producerId": "runner",
+            "sequence": 6,
+            "expectedRevision": 4,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:06:00Z",
+            "kind": "resolve_dependency",
+            "dependencyId": "dep_a"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 5,
+            "state": "idle",
+            "reason": "dependencies_resolved",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:06:00Z",
+            "lastSeenAt": "2026-10-13T12:06:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "human",
+                "state": "resolved",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e6"
+            ],
+            "producerSequences": {
+              "runner": 6
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e7",
+            "producerId": "runner",
+            "sequence": 7,
+            "expectedRevision": 5,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:07:00Z",
+            "kind": "complete",
+            "reason": "completed"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 6,
+            "state": "done",
+            "reason": "completed",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:07:00Z",
+            "lastSeenAt": "2026-10-13T12:07:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "human",
+                "state": "resolved",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e7"
+            ],
+            "producerSequences": {
+              "runner": 7
+            },
+            "resume": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "agent_reply survives turn completion and heartbeat",
+      "initial": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": null,
+        "revision": 0,
+        "state": "idle",
+        "reason": "no_activity",
+        "basis": "inferred",
+        "observedAt": null,
+        "lastSeenAt": null,
+        "dependencies": [],
+        "evidenceIds": [],
+        "producerSequences": {},
+        "resume": null
+      },
+      "steps": [
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e1",
+            "producerId": "runner",
+            "sequence": 1,
+            "expectedRevision": 0,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "kind": "start"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 1,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "lastSeenAt": "2026-10-13T12:01:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e1"
+            ],
+            "producerSequences": {
+              "runner": 1
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e2",
+            "producerId": "runner",
+            "sequence": 2,
+            "expectedRevision": 1,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "kind": "wait",
+            "reason": "agent_reply",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "agent",
+                "state": "pending",
+                "target": "target_a"
+              }
+            ]
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 2,
+            "state": "waiting_on_agent",
+            "reason": "agent_reply",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:02:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "agent",
+                "state": "pending",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 2
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e3",
+            "producerId": "runner",
+            "sequence": 3,
+            "expectedRevision": 2,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "kind": "turn_finished"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 3,
+            "state": "waiting_on_agent",
+            "reason": "agent_reply",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:03:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "agent",
+                "state": "pending",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 3
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e4",
+            "producerId": "runner",
+            "sequence": 4,
+            "expectedRevision": 3,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:04:00Z",
+            "kind": "heartbeat"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 4,
+            "state": "waiting_on_agent",
+            "reason": "agent_reply",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:04:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "agent",
+                "state": "pending",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 4
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e5",
+            "producerId": "runner",
+            "sequence": 5,
+            "expectedRevision": 4,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:05:00Z",
+            "kind": "complete",
+            "reason": "completed"
+          },
+          "outcome": "invalid_transition",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 4,
+            "state": "waiting_on_agent",
+            "reason": "agent_reply",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:04:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "agent",
+                "state": "pending",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 4
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e6",
+            "producerId": "runner",
+            "sequence": 6,
+            "expectedRevision": 4,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:06:00Z",
+            "kind": "resolve_dependency",
+            "dependencyId": "dep_a"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 5,
+            "state": "idle",
+            "reason": "dependencies_resolved",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:06:00Z",
+            "lastSeenAt": "2026-10-13T12:06:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "agent",
+                "state": "resolved",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e6"
+            ],
+            "producerSequences": {
+              "runner": 6
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e7",
+            "producerId": "runner",
+            "sequence": 7,
+            "expectedRevision": 5,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:07:00Z",
+            "kind": "complete",
+            "reason": "completed"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 6,
+            "state": "done",
+            "reason": "completed",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:07:00Z",
+            "lastSeenAt": "2026-10-13T12:07:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "agent",
+                "state": "resolved",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e7"
+            ],
+            "producerSequences": {
+              "runner": 7
+            },
+            "resume": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "pr_ci survives turn completion and heartbeat",
+      "initial": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": null,
+        "revision": 0,
+        "state": "idle",
+        "reason": "no_activity",
+        "basis": "inferred",
+        "observedAt": null,
+        "lastSeenAt": null,
+        "dependencies": [],
+        "evidenceIds": [],
+        "producerSequences": {},
+        "resume": null
+      },
+      "steps": [
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e1",
+            "producerId": "runner",
+            "sequence": 1,
+            "expectedRevision": 0,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "kind": "start"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 1,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "lastSeenAt": "2026-10-13T12:01:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e1"
+            ],
+            "producerSequences": {
+              "runner": 1
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e2",
+            "producerId": "runner",
+            "sequence": 2,
+            "expectedRevision": 1,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "kind": "wait",
+            "reason": "pr_ci",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "pr",
+                "state": "pending",
+                "target": "target_a"
+              }
+            ]
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 2,
+            "state": "waiting_on_pr",
+            "reason": "pr_ci",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:02:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "pr",
+                "state": "pending",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 2
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e3",
+            "producerId": "runner",
+            "sequence": 3,
+            "expectedRevision": 2,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "kind": "turn_finished"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 3,
+            "state": "waiting_on_pr",
+            "reason": "pr_ci",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:03:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "pr",
+                "state": "pending",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 3
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e4",
+            "producerId": "runner",
+            "sequence": 4,
+            "expectedRevision": 3,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:04:00Z",
+            "kind": "heartbeat"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 4,
+            "state": "waiting_on_pr",
+            "reason": "pr_ci",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:04:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "pr",
+                "state": "pending",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 4
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e5",
+            "producerId": "runner",
+            "sequence": 5,
+            "expectedRevision": 4,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:05:00Z",
+            "kind": "complete",
+            "reason": "completed"
+          },
+          "outcome": "invalid_transition",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 4,
+            "state": "waiting_on_pr",
+            "reason": "pr_ci",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:04:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "pr",
+                "state": "pending",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 4
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e6",
+            "producerId": "runner",
+            "sequence": 6,
+            "expectedRevision": 4,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:06:00Z",
+            "kind": "resolve_dependency",
+            "dependencyId": "dep_a"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 5,
+            "state": "idle",
+            "reason": "dependencies_resolved",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:06:00Z",
+            "lastSeenAt": "2026-10-13T12:06:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "pr",
+                "state": "resolved",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e6"
+            ],
+            "producerSequences": {
+              "runner": 6
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e7",
+            "producerId": "runner",
+            "sequence": 7,
+            "expectedRevision": 5,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:07:00Z",
+            "kind": "complete",
+            "reason": "completed"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 6,
+            "state": "done",
+            "reason": "completed",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:07:00Z",
+            "lastSeenAt": "2026-10-13T12:07:00Z",
+            "dependencies": [
+              {
+                "id": "dep_a",
+                "kind": "pr",
+                "state": "resolved",
+                "target": "target_a"
+              }
+            ],
+            "evidenceIds": [
+              "e7"
+            ],
+            "producerSequences": {
+              "runner": 7
+            },
+            "resume": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "useful work resumes while dependency remains pending",
+      "initial": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": null,
+        "revision": 0,
+        "state": "idle",
+        "reason": "no_activity",
+        "basis": "inferred",
+        "observedAt": null,
+        "lastSeenAt": null,
+        "dependencies": [],
+        "evidenceIds": [],
+        "producerSequences": {},
+        "resume": null
+      },
+      "steps": [
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e1",
+            "producerId": "runner",
+            "sequence": 1,
+            "expectedRevision": 0,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "kind": "start"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 1,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "lastSeenAt": "2026-10-13T12:01:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e1"
+            ],
+            "producerSequences": {
+              "runner": 1
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e2",
+            "producerId": "runner",
+            "sequence": 2,
+            "expectedRevision": 1,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "kind": "wait",
+            "reason": "agent_reply",
+            "dependencies": [
+              {
+                "id": "agent_a",
+                "kind": "agent",
+                "state": "pending",
+                "target": "agent_1"
+              }
+            ]
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 2,
+            "state": "waiting_on_agent",
+            "reason": "agent_reply",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:02:00Z",
+            "dependencies": [
+              {
+                "id": "agent_a",
+                "kind": "agent",
+                "state": "pending",
+                "target": "agent_1"
+              }
+            ],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 2
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e3",
+            "producerId": "runner",
+            "sequence": 3,
+            "expectedRevision": 2,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "kind": "activity",
+            "reason": "testing"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 3,
+            "state": "working",
+            "reason": "testing",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "lastSeenAt": "2026-10-13T12:03:00Z",
+            "dependencies": [
+              {
+                "id": "agent_a",
+                "kind": "agent",
+                "state": "pending",
+                "target": "agent_1"
+              }
+            ],
+            "evidenceIds": [
+              "e3"
+            ],
+            "producerSequences": {
+              "runner": 3
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e4",
+            "producerId": "runner",
+            "sequence": 4,
+            "expectedRevision": 3,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:04:00Z",
+            "kind": "turn_finished"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 4,
+            "state": "waiting_on_agent",
+            "reason": "agent_reply",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:04:00Z",
+            "lastSeenAt": "2026-10-13T12:04:00Z",
+            "dependencies": [
+              {
+                "id": "agent_a",
+                "kind": "agent",
+                "state": "pending",
+                "target": "agent_1"
+              }
+            ],
+            "evidenceIds": [
+              "e4"
+            ],
+            "producerSequences": {
+              "runner": 4
+            },
+            "resume": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "one PR merge does not finish two PRs",
+      "initial": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": null,
+        "revision": 0,
+        "state": "idle",
+        "reason": "no_activity",
+        "basis": "inferred",
+        "observedAt": null,
+        "lastSeenAt": null,
+        "dependencies": [],
+        "evidenceIds": [],
+        "producerSequences": {},
+        "resume": null
+      },
+      "steps": [
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e1",
+            "producerId": "runner",
+            "sequence": 1,
+            "expectedRevision": 0,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "kind": "start"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 1,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "lastSeenAt": "2026-10-13T12:01:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e1"
+            ],
+            "producerSequences": {
+              "runner": 1
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e2",
+            "producerId": "runner",
+            "sequence": 2,
+            "expectedRevision": 1,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "kind": "wait",
+            "reason": "pr_review",
+            "dependencies": [
+              {
+                "id": "pr1",
+                "kind": "pr",
+                "state": "pending",
+                "target": "https://github.com/a/b/pull/1"
+              },
+              {
+                "id": "pr2",
+                "kind": "pr",
+                "state": "pending",
+                "target": "https://github.com/a/b/pull/2"
+              }
+            ]
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 2,
+            "state": "waiting_on_pr",
+            "reason": "pr_review",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:02:00Z",
+            "dependencies": [
+              {
+                "id": "pr1",
+                "kind": "pr",
+                "state": "pending",
+                "target": "https://github.com/a/b/pull/1"
+              },
+              {
+                "id": "pr2",
+                "kind": "pr",
+                "state": "pending",
+                "target": "https://github.com/a/b/pull/2"
+              }
+            ],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 2
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e3",
+            "producerId": "runner",
+            "sequence": 3,
+            "expectedRevision": 2,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "kind": "resolve_dependency",
+            "dependencyId": "pr1"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 3,
+            "state": "waiting_on_pr",
+            "reason": "pr_review",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "lastSeenAt": "2026-10-13T12:03:00Z",
+            "dependencies": [
+              {
+                "id": "pr1",
+                "kind": "pr",
+                "state": "resolved",
+                "target": "https://github.com/a/b/pull/1"
+              },
+              {
+                "id": "pr2",
+                "kind": "pr",
+                "state": "pending",
+                "target": "https://github.com/a/b/pull/2"
+              }
+            ],
+            "evidenceIds": [
+              "e3"
+            ],
+            "producerSequences": {
+              "runner": 3
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e4",
+            "producerId": "runner",
+            "sequence": 4,
+            "expectedRevision": 3,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:04:00Z",
+            "kind": "complete",
+            "reason": "merged"
+          },
+          "outcome": "invalid_transition",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 3,
+            "state": "waiting_on_pr",
+            "reason": "pr_review",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "lastSeenAt": "2026-10-13T12:03:00Z",
+            "dependencies": [
+              {
+                "id": "pr1",
+                "kind": "pr",
+                "state": "resolved",
+                "target": "https://github.com/a/b/pull/1"
+              },
+              {
+                "id": "pr2",
+                "kind": "pr",
+                "state": "pending",
+                "target": "https://github.com/a/b/pull/2"
+              }
+            ],
+            "evidenceIds": [
+              "e3"
+            ],
+            "producerSequences": {
+              "runner": 3
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e5",
+            "producerId": "runner",
+            "sequence": 5,
+            "expectedRevision": 3,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:05:00Z",
+            "kind": "resolve_dependency",
+            "dependencyId": "pr2"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 4,
+            "state": "idle",
+            "reason": "dependencies_resolved",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:05:00Z",
+            "lastSeenAt": "2026-10-13T12:05:00Z",
+            "dependencies": [
+              {
+                "id": "pr1",
+                "kind": "pr",
+                "state": "resolved",
+                "target": "https://github.com/a/b/pull/1"
+              },
+              {
+                "id": "pr2",
+                "kind": "pr",
+                "state": "resolved",
+                "target": "https://github.com/a/b/pull/2"
+              }
+            ],
+            "evidenceIds": [
+              "e5"
+            ],
+            "producerSequences": {
+              "runner": 5
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e6",
+            "producerId": "runner",
+            "sequence": 6,
+            "expectedRevision": 4,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:06:00Z",
+            "kind": "complete",
+            "reason": "merged"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 5,
+            "state": "done",
+            "reason": "merged",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:06:00Z",
+            "lastSeenAt": "2026-10-13T12:06:00Z",
+            "dependencies": [
+              {
+                "id": "pr1",
+                "kind": "pr",
+                "state": "resolved",
+                "target": "https://github.com/a/b/pull/1"
+              },
+              {
+                "id": "pr2",
+                "kind": "pr",
+                "state": "resolved",
+                "target": "https://github.com/a/b/pull/2"
+              }
+            ],
+            "evidenceIds": [
+              "e6"
+            ],
+            "producerSequences": {
+              "runner": 6
+            },
+            "resume": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "new episode rejects late completion and stale revisions",
+      "initial": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": null,
+        "revision": 0,
+        "state": "idle",
+        "reason": "no_activity",
+        "basis": "inferred",
+        "observedAt": null,
+        "lastSeenAt": null,
+        "dependencies": [],
+        "evidenceIds": [],
+        "producerSequences": {},
+        "resume": null
+      },
+      "steps": [
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e1",
+            "producerId": "runner",
+            "sequence": 1,
+            "expectedRevision": 0,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "kind": "start"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 1,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "lastSeenAt": "2026-10-13T12:01:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e1"
+            ],
+            "producerSequences": {
+              "runner": 1
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e2",
+            "producerId": "runner",
+            "sequence": 2,
+            "expectedRevision": 1,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "kind": "complete",
+            "reason": "completed"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 2,
+            "state": "done",
+            "reason": "completed",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:02:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 2
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e3",
+            "producerId": "runner",
+            "sequence": 3,
+            "expectedRevision": 2,
+            "workEpisodeId": "episode_b",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "kind": "start"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_b",
+            "revision": 3,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "lastSeenAt": "2026-10-13T12:03:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e3"
+            ],
+            "producerSequences": {
+              "runner": 3
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e4",
+            "producerId": "runner",
+            "sequence": 4,
+            "expectedRevision": 3,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:04:00Z",
+            "kind": "complete",
+            "reason": "merged"
+          },
+          "outcome": "wrong_episode",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_b",
+            "revision": 3,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "lastSeenAt": "2026-10-13T12:03:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e3"
+            ],
+            "producerSequences": {
+              "runner": 3
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e5",
+            "producerId": "runner",
+            "sequence": 5,
+            "expectedRevision": 0,
+            "workEpisodeId": "episode_b",
+            "observedAt": "2026-10-13T12:05:00Z",
+            "kind": "activity",
+            "reason": "testing"
+          },
+          "outcome": "conflict",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_b",
+            "revision": 3,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "lastSeenAt": "2026-10-13T12:03:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e3"
+            ],
+            "producerSequences": {
+              "runner": 3
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e6",
+            "producerId": "runner",
+            "sequence": 1,
+            "expectedRevision": 3,
+            "workEpisodeId": "episode_b",
+            "observedAt": "2026-10-13T12:06:00Z",
+            "kind": "heartbeat"
+          },
+          "outcome": "duplicate",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_b",
+            "revision": 3,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "lastSeenAt": "2026-10-13T12:03:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e3"
+            ],
+            "producerSequences": {
+              "runner": 3
+            },
+            "resume": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "archive requires explicit unarchive",
+      "initial": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": null,
+        "revision": 0,
+        "state": "idle",
+        "reason": "no_activity",
+        "basis": "inferred",
+        "observedAt": null,
+        "lastSeenAt": null,
+        "dependencies": [],
+        "evidenceIds": [],
+        "producerSequences": {},
+        "resume": null
+      },
+      "steps": [
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e1",
+            "producerId": "runner",
+            "sequence": 1,
+            "expectedRevision": 0,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "kind": "start"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 1,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "lastSeenAt": "2026-10-13T12:01:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e1"
+            ],
+            "producerSequences": {
+              "runner": 1
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e2",
+            "producerId": "runner",
+            "sequence": 2,
+            "expectedRevision": 1,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "kind": "complete",
+            "reason": "completed"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 2,
+            "state": "done",
+            "reason": "completed",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:02:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 2
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e3",
+            "producerId": "runner",
+            "sequence": 3,
+            "expectedRevision": 2,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "kind": "archive"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 3,
+            "state": "archived",
+            "reason": "archived",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "lastSeenAt": "2026-10-13T12:03:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e3"
+            ],
+            "producerSequences": {
+              "runner": 3
+            },
+            "resume": {
+              "state": "done",
+              "reason": "completed",
+              "basis": "observed"
+            }
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e4",
+            "producerId": "runner",
+            "sequence": 4,
+            "expectedRevision": 3,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:04:00Z",
+            "kind": "activity",
+            "reason": "testing"
+          },
+          "outcome": "archived",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 3,
+            "state": "archived",
+            "reason": "archived",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "lastSeenAt": "2026-10-13T12:03:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e3"
+            ],
+            "producerSequences": {
+              "runner": 3
+            },
+            "resume": {
+              "state": "done",
+              "reason": "completed",
+              "basis": "observed"
+            }
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e5",
+            "producerId": "runner",
+            "sequence": 5,
+            "expectedRevision": 3,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:05:00Z",
+            "kind": "heartbeat"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 4,
+            "state": "archived",
+            "reason": "archived",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "lastSeenAt": "2026-10-13T12:05:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e3"
+            ],
+            "producerSequences": {
+              "runner": 5
+            },
+            "resume": {
+              "state": "done",
+              "reason": "completed",
+              "basis": "observed"
+            }
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e6",
+            "producerId": "runner",
+            "sequence": 6,
+            "expectedRevision": 4,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:06:00Z",
+            "kind": "unarchive"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 5,
+            "state": "done",
+            "reason": "completed",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:06:00Z",
+            "lastSeenAt": "2026-10-13T12:06:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e6"
+            ],
+            "producerSequences": {
+              "runner": 6
+            },
+            "resume": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "foreign scope and future schema do not overwrite status",
+      "initial": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": null,
+        "revision": 0,
+        "state": "idle",
+        "reason": "no_activity",
+        "basis": "inferred",
+        "observedAt": null,
+        "lastSeenAt": null,
+        "dependencies": [],
+        "evidenceIds": [],
+        "producerSequences": {},
+        "resume": null
+      },
+      "steps": [
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e1",
+            "producerId": "runner",
+            "sequence": 1,
+            "expectedRevision": 0,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "kind": "start"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 1,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "lastSeenAt": "2026-10-13T12:01:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e1"
+            ],
+            "producerSequences": {
+              "runner": 1
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_b",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e2",
+            "producerId": "runner",
+            "sequence": 2,
+            "expectedRevision": 1,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "kind": "turn_finished"
+          },
+          "outcome": "wrong_session",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 1,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "lastSeenAt": "2026-10-13T12:01:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e1"
+            ],
+            "producerSequences": {
+              "runner": 1
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 2,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e3",
+            "producerId": "runner",
+            "sequence": 3,
+            "expectedRevision": 1,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "kind": "turn_finished"
+          },
+          "outcome": "invalid",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 1,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "lastSeenAt": "2026-10-13T12:01:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e1"
+            ],
+            "producerSequences": {
+              "runner": 1
+            },
+            "resume": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "adding a wait preserves unrelated dependencies",
+      "initial": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": null,
+        "revision": 0,
+        "state": "idle",
+        "reason": "no_activity",
+        "basis": "inferred",
+        "observedAt": null,
+        "lastSeenAt": null,
+        "dependencies": [],
+        "evidenceIds": [],
+        "producerSequences": {},
+        "resume": null
+      },
+      "steps": [
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e1",
+            "producerId": "runner",
+            "sequence": 1,
+            "expectedRevision": 0,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "kind": "start"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 1,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "lastSeenAt": "2026-10-13T12:01:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e1"
+            ],
+            "producerSequences": {
+              "runner": 1
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e2",
+            "producerId": "runner",
+            "sequence": 2,
+            "expectedRevision": 1,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "kind": "wait",
+            "reason": "approval",
+            "dependencies": [
+              {
+                "id": "human_a",
+                "kind": "human",
+                "state": "pending",
+                "target": "user_a"
+              }
+            ]
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 2,
+            "state": "needs_attention",
+            "reason": "approval",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "lastSeenAt": "2026-10-13T12:02:00Z",
+            "dependencies": [
+              {
+                "id": "human_a",
+                "kind": "human",
+                "state": "pending",
+                "target": "user_a"
+              }
+            ],
+            "evidenceIds": [
+              "e2"
+            ],
+            "producerSequences": {
+              "runner": 2
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e3",
+            "producerId": "runner",
+            "sequence": 3,
+            "expectedRevision": 2,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "kind": "wait",
+            "reason": "agent_reply",
+            "dependencies": [
+              {
+                "id": "agent_a",
+                "kind": "agent",
+                "state": "pending",
+                "target": "agent_a"
+              }
+            ]
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 3,
+            "state": "waiting_on_agent",
+            "reason": "agent_reply",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "lastSeenAt": "2026-10-13T12:03:00Z",
+            "dependencies": [
+              {
+                "id": "human_a",
+                "kind": "human",
+                "state": "pending",
+                "target": "user_a"
+              },
+              {
+                "id": "agent_a",
+                "kind": "agent",
+                "state": "pending",
+                "target": "agent_a"
+              }
+            ],
+            "evidenceIds": [
+              "e3"
+            ],
+            "producerSequences": {
+              "runner": 3
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e4",
+            "producerId": "runner",
+            "sequence": 4,
+            "expectedRevision": 3,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:04:00Z",
+            "kind": "complete",
+            "reason": "completed"
+          },
+          "outcome": "invalid_transition",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 3,
+            "state": "waiting_on_agent",
+            "reason": "agent_reply",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:03:00Z",
+            "lastSeenAt": "2026-10-13T12:03:00Z",
+            "dependencies": [
+              {
+                "id": "human_a",
+                "kind": "human",
+                "state": "pending",
+                "target": "user_a"
+              },
+              {
+                "id": "agent_a",
+                "kind": "agent",
+                "state": "pending",
+                "target": "agent_a"
+              }
+            ],
+            "evidenceIds": [
+              "e3"
+            ],
+            "producerSequences": {
+              "runner": 3
+            },
+            "resume": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "merge without an associated PR is not completion",
+      "initial": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": null,
+        "revision": 0,
+        "state": "idle",
+        "reason": "no_activity",
+        "basis": "inferred",
+        "observedAt": null,
+        "lastSeenAt": null,
+        "dependencies": [],
+        "evidenceIds": [],
+        "producerSequences": {},
+        "resume": null
+      },
+      "steps": [
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e1",
+            "producerId": "runner",
+            "sequence": 1,
+            "expectedRevision": 0,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "kind": "start"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 1,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "lastSeenAt": "2026-10-13T12:01:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e1"
+            ],
+            "producerSequences": {
+              "runner": 1
+            },
+            "resume": null
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "e2",
+            "producerId": "runner",
+            "sequence": 2,
+            "expectedRevision": 1,
+            "workEpisodeId": "episode_a",
+            "observedAt": "2026-10-13T12:02:00Z",
+            "kind": "complete",
+            "reason": "merged"
+          },
+          "outcome": "invalid_transition",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": "episode_a",
+            "revision": 1,
+            "state": "working",
+            "reason": "thinking",
+            "basis": "observed",
+            "observedAt": "2026-10-13T12:01:00Z",
+            "lastSeenAt": "2026-10-13T12:01:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "e1"
+            ],
+            "producerSequences": {
+              "runner": 1
+            },
+            "resume": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "historical session can archive without inventing a work episode",
+      "initial": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": null,
+        "revision": 0,
+        "state": "idle",
+        "reason": "no_activity",
+        "basis": "inferred",
+        "observedAt": null,
+        "lastSeenAt": null,
+        "dependencies": [],
+        "evidenceIds": [],
+        "producerSequences": {},
+        "resume": null
+      },
+      "steps": [
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "archive_1",
+            "producerId": "desktop",
+            "sequence": 1,
+            "expectedRevision": 0,
+            "workEpisodeId": null,
+            "observedAt": "2026-10-13T13:01:00Z",
+            "kind": "archive"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": null,
+            "revision": 1,
+            "state": "archived",
+            "reason": "archived",
+            "basis": "observed",
+            "observedAt": "2026-10-13T13:01:00Z",
+            "lastSeenAt": "2026-10-13T13:01:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "archive_1"
+            ],
+            "producerSequences": {
+              "desktop": 1
+            },
+            "resume": {
+              "state": "idle",
+              "reason": "no_activity",
+              "basis": "inferred"
+            }
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "archive_2",
+            "producerId": "desktop",
+            "sequence": 2,
+            "expectedRevision": 1,
+            "workEpisodeId": null,
+            "observedAt": "2026-10-13T13:02:00Z",
+            "kind": "heartbeat"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": null,
+            "revision": 2,
+            "state": "archived",
+            "reason": "archived",
+            "basis": "observed",
+            "observedAt": "2026-10-13T13:01:00Z",
+            "lastSeenAt": "2026-10-13T13:02:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "archive_1"
+            ],
+            "producerSequences": {
+              "desktop": 2
+            },
+            "resume": {
+              "state": "idle",
+              "reason": "no_activity",
+              "basis": "inferred"
+            }
+          }
+        },
+        {
+          "event": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "eventId": "archive_3",
+            "producerId": "desktop",
+            "sequence": 3,
+            "expectedRevision": 2,
+            "workEpisodeId": null,
+            "observedAt": "2026-10-13T13:03:00Z",
+            "kind": "unarchive"
+          },
+          "outcome": "applied",
+          "expected": {
+            "schemaVersion": 1,
+            "identity": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "source": "codex",
+              "sessionId": "session_a"
+            },
+            "workEpisodeId": null,
+            "revision": 3,
+            "state": "idle",
+            "reason": "no_activity",
+            "basis": "inferred",
+            "observedAt": "2026-10-13T13:03:00Z",
+            "lastSeenAt": "2026-10-13T13:03:00Z",
+            "dependencies": [],
+            "evidenceIds": [
+              "archive_3"
+            ],
+            "producerSequences": {
+              "desktop": 3
+            },
+            "resume": null
+          }
+        }
+      ]
+    }
+  ],
+  "reads": [
+    {
+      "name": "read failure keeps last state",
+      "previous": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 1,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "input": null,
+      "expected": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 1,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "stale": true
+    },
+    {
+      "name": "unsupported schema keeps last state",
+      "previous": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 1,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "input": {
+        "schemaVersion": 2,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 1,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "expected": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 1,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "stale": true
+    },
+    {
+      "name": "stale revision keeps last state",
+      "previous": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 1,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "input": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 0,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "expected": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 1,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "stale": true
+    },
+    {
+      "name": "unknown enum keeps last state",
+      "previous": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 1,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "input": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 1,
+        "state": "future_state",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "expected": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 1,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "stale": true
+    },
+    {
+      "name": "other workspace keeps last state",
+      "previous": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 1,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "input": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "another_workspace",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 1,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "expected": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 1,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "stale": true
+    },
+    {
+      "name": "new supported revision is accepted",
+      "previous": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 1,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "input": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 2,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "expected": {
+        "schemaVersion": 1,
+        "identity": {
+          "organizationId": "org_a",
+          "workspaceId": "ws_a",
+          "source": "codex",
+          "sessionId": "session_a"
+        },
+        "workEpisodeId": "episode_a",
+        "revision": 2,
+        "state": "working",
+        "reason": "thinking",
+        "basis": "observed",
+        "observedAt": "2026-10-13T12:01:00Z",
+        "lastSeenAt": "2026-10-13T12:01:00Z",
+        "dependencies": [],
+        "evidenceIds": [
+          "e1"
+        ],
+        "producerSequences": {
+          "runner": 1
+        },
+        "resume": null
+      },
+      "stale": false
+    }
+  ]
+}

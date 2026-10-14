@@ -1,0 +1,1569 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "open accepts an authenticated scoped sender",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "open",
+            "interruption": "available",
+            "allowedAgentIds": []
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": null
+        },
+        "grants": [],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "open",
+      "expected": {
+        "action": "deliver",
+        "reason": "allowed",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "open does not cross workspace",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "open",
+            "interruption": "available",
+            "allowedAgentIds": []
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_b",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": null
+        },
+        "grants": [],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "open",
+      "expected": {
+        "action": "reject",
+        "reason": "wrong_scope",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "knock requires approval",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "knock",
+            "interruption": "available",
+            "allowedAgentIds": []
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": null
+        },
+        "grants": [],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "knock",
+      "expected": {
+        "action": "request_approval",
+        "reason": "approval_required",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "approved knock admits that conversation",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "knock",
+            "interruption": "available",
+            "allowedAgentIds": []
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": null
+        },
+        "grants": [
+          {
+            "schemaVersion": 1,
+            "id": "grant_a",
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "sender": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_sender"
+            },
+            "conversationId": "conv_a",
+            "state": "approved",
+            "revision": 1,
+            "expiresAt": "2026-10-14T12:00:00Z"
+          }
+        ],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "knock",
+      "expected": {
+        "action": "deliver",
+        "reason": "allowed",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "approval does not grant another conversation",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "knock",
+            "interruption": "available",
+            "allowedAgentIds": []
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_b",
+          "inReplyTo": null
+        },
+        "grants": [
+          {
+            "schemaVersion": 1,
+            "id": "grant_a",
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "sender": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_sender"
+            },
+            "conversationId": "conv_a",
+            "state": "approved",
+            "revision": 1,
+            "expiresAt": "2026-10-14T12:00:00Z"
+          }
+        ],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "knock",
+      "expected": {
+        "action": "request_approval",
+        "reason": "approval_required",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "rejected knock cannot deliver",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "knock",
+            "interruption": "available",
+            "allowedAgentIds": []
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": null
+        },
+        "grants": [
+          {
+            "schemaVersion": 1,
+            "id": "grant_a",
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "sender": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_sender"
+            },
+            "conversationId": "conv_a",
+            "state": "approved",
+            "revision": 1,
+            "expiresAt": "2026-10-14T12:00:00Z"
+          },
+          {
+            "schemaVersion": 1,
+            "id": "grant_a",
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "sender": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_sender"
+            },
+            "conversationId": "conv_a",
+            "state": "rejected",
+            "revision": 2,
+            "expiresAt": "2026-10-14T12:00:00Z"
+          }
+        ],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "knock",
+      "expected": {
+        "action": "reject",
+        "reason": "grant_rejected",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "revoked knock cannot deliver",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "knock",
+            "interruption": "available",
+            "allowedAgentIds": []
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": null
+        },
+        "grants": [
+          {
+            "schemaVersion": 1,
+            "id": "grant_a",
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "sender": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_sender"
+            },
+            "conversationId": "conv_a",
+            "state": "approved",
+            "revision": 1,
+            "expiresAt": "2026-10-14T12:00:00Z"
+          },
+          {
+            "schemaVersion": 1,
+            "id": "grant_a",
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "sender": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_sender"
+            },
+            "conversationId": "conv_a",
+            "state": "revoked",
+            "revision": 2,
+            "expiresAt": "2026-10-14T12:00:00Z"
+          }
+        ],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "knock",
+      "expected": {
+        "action": "reject",
+        "reason": "grant_revoked",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "expired knock cannot deliver",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "knock",
+            "interruption": "available",
+            "allowedAgentIds": []
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": null
+        },
+        "grants": [
+          {
+            "schemaVersion": 1,
+            "id": "grant_a",
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "sender": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_sender"
+            },
+            "conversationId": "conv_a",
+            "state": "approved",
+            "revision": 1,
+            "expiresAt": "2026-10-14T12:00:00Z"
+          },
+          {
+            "schemaVersion": 1,
+            "id": "grant_a",
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "sender": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_sender"
+            },
+            "conversationId": "conv_a",
+            "state": "expired",
+            "revision": 2,
+            "expiresAt": "2026-10-14T12:00:00Z"
+          }
+        ],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "knock",
+      "expected": {
+        "action": "reject",
+        "reason": "grant_expired",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "expiry boundary denies admission",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "knock",
+            "interruption": "available",
+            "allowedAgentIds": []
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": null
+        },
+        "grants": [
+          {
+            "schemaVersion": 1,
+            "id": "grant_a",
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "sender": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_sender"
+            },
+            "conversationId": "conv_a",
+            "state": "approved",
+            "revision": 1,
+            "expiresAt": "2026-10-13T12:00:00Z"
+          }
+        ],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "knock",
+      "expected": {
+        "action": "reject",
+        "reason": "grant_expired",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "allow list matches stable identity",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "allow_list",
+            "interruption": "available",
+            "allowedAgentIds": [
+              "agent_sender"
+            ]
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": null
+        },
+        "grants": [],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "allow_list",
+      "expected": {
+        "action": "deliver",
+        "reason": "allowed",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "unlisted sender is refused",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "allow_list",
+            "interruption": "available",
+            "allowedAgentIds": [
+              "another_agent"
+            ]
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": null
+        },
+        "grants": [],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "allow_list",
+      "expected": {
+        "action": "reject",
+        "reason": "not_allowed",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "busy holds ordinary messages",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "open",
+            "interruption": "busy",
+            "allowedAgentIds": []
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": null
+        },
+        "grants": [],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "busy",
+      "expected": {
+        "action": "hold",
+        "reason": "busy",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "busy admits correlated awaited reply",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "open",
+            "interruption": "busy",
+            "allowedAgentIds": []
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": "request_a"
+        },
+        "grants": [],
+        "awaitedReplies": [
+          {
+            "sender": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_sender"
+            },
+            "conversationId": "conv_a",
+            "requestId": "request_a"
+          }
+        ],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "busy",
+      "expected": {
+        "action": "deliver",
+        "reason": "awaited_reply",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "busy rejects wrong reply correlation",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "open",
+            "interruption": "busy",
+            "allowedAgentIds": []
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": "other_request"
+        },
+        "grants": [],
+        "awaitedReplies": [
+          {
+            "sender": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_sender"
+            },
+            "conversationId": "conv_a",
+            "requestId": "request_a"
+          }
+        ],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "busy",
+      "expected": {
+        "action": "hold",
+        "reason": "busy",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "awaited reply cannot bypass allow list",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "allow_list",
+            "interruption": "busy",
+            "allowedAgentIds": []
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": "request_a"
+        },
+        "grants": [],
+        "awaitedReplies": [
+          {
+            "sender": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_sender"
+            },
+            "conversationId": "conv_a",
+            "requestId": "request_a"
+          }
+        ],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "busy",
+      "expected": {
+        "action": "reject",
+        "reason": "not_allowed",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "offline wins over busy and retains policy",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "allow_list",
+            "interruption": "busy",
+            "allowedAgentIds": [
+              "agent_sender"
+            ]
+          },
+          "connection": "offline",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": null
+        },
+        "grants": [],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "offline",
+      "expected": {
+        "action": "queue",
+        "reason": "offline",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "offline transport without queue refuses",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "open",
+            "interruption": "available",
+            "allowedAgentIds": []
+          },
+          "connection": "offline",
+          "queueSupported": false,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": null
+        },
+        "grants": [],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "offline",
+      "expected": {
+        "action": "reject",
+        "reason": "offline_not_queueable",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "offline still requires knock admission",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "knock",
+            "interruption": "available",
+            "allowedAgentIds": []
+          },
+          "connection": "offline",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": null
+        },
+        "grants": [],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "offline",
+      "expected": {
+        "action": "request_approval",
+        "reason": "approval_required",
+        "policyRevision": 1
+      }
+    },
+    {
+      "name": "conflicting grant revision cannot restore approval",
+      "input": {
+        "status": {
+          "schemaVersion": 1,
+          "policy": {
+            "schemaVersion": 1,
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "revision": 1,
+            "admission": "knock",
+            "interruption": "available",
+            "allowedAgentIds": []
+          },
+          "connection": "online",
+          "queueSupported": true,
+          "revision": 1,
+          "observedAt": "2026-10-13T12:00:00Z"
+        },
+        "message": {
+          "id": "msg_a",
+          "sender": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_sender"
+          },
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "conversationId": "conv_a",
+          "inReplyTo": null
+        },
+        "grants": [
+          {
+            "schemaVersion": 1,
+            "id": "grant_a",
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "sender": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_sender"
+            },
+            "conversationId": "conv_a",
+            "state": "approved",
+            "revision": 1,
+            "expiresAt": "2026-10-14T12:00:00Z"
+          },
+          {
+            "schemaVersion": 1,
+            "id": "grant_a",
+            "recipient": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_recipient"
+            },
+            "sender": {
+              "organizationId": "org_a",
+              "workspaceId": "ws_a",
+              "agentId": "agent_sender"
+            },
+            "conversationId": "conv_a",
+            "state": "revoked",
+            "revision": 1,
+            "expiresAt": "2026-10-14T12:00:00Z"
+          }
+        ],
+        "awaitedReplies": [],
+        "now": "2026-10-13T12:00:00Z"
+      },
+      "label": "knock",
+      "expected": {
+        "action": "reject",
+        "reason": "grant_revoked",
+        "policyRevision": 1
+      }
+    }
+  ],
+  "reads": [
+    {
+      "name": "read failure keeps last state",
+      "previous": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "input": null,
+      "expected": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "stale": true
+    },
+    {
+      "name": "unsupported schema keeps last state",
+      "previous": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "input": {
+        "schemaVersion": 2,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "expected": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "stale": true
+    },
+    {
+      "name": "stale revision keeps last state",
+      "previous": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "input": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 0,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "expected": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "stale": true
+    },
+    {
+      "name": "unknown enum keeps last state",
+      "previous": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "input": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "future_policy",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "expected": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "stale": true
+    },
+    {
+      "name": "other workspace keeps last state",
+      "previous": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "input": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "another_workspace",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "expected": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "stale": true
+    },
+    {
+      "name": "unsupported policy keeps last state",
+      "previous": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "input": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 2,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "expected": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "stale": true
+    },
+    {
+      "name": "new supported revision is accepted",
+      "previous": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 1,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "input": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 2,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "expected": {
+        "schemaVersion": 1,
+        "policy": {
+          "schemaVersion": 1,
+          "recipient": {
+            "organizationId": "org_a",
+            "workspaceId": "ws_a",
+            "agentId": "agent_recipient"
+          },
+          "revision": 1,
+          "admission": "open",
+          "interruption": "available",
+          "allowedAgentIds": []
+        },
+        "connection": "online",
+        "queueSupported": true,
+        "revision": 2,
+        "observedAt": "2026-10-13T12:00:00Z"
+      },
+      "stale": false
+    }
+  ]
+}

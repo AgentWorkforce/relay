@@ -1,0 +1,59 @@
+{
+  "name": "@agent-relay/status",
+  "version": "14.1.0",
+  "description": "Portable Relay work status and communication policy semantics",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./work": {
+      "types": "./dist/work.d.ts",
+      "import": "./dist/work.js",
+      "default": "./dist/work.js"
+    },
+    "./communication": {
+      "types": "./dist/communication.d.ts",
+      "import": "./dist/communication.js",
+      "default": "./dist/communication.js"
+    },
+    "./native": {
+      "types": "./dist/native.d.ts",
+      "import": "./dist/native.js",
+      "default": "./dist/native.js"
+    },
+    "./contracts/*": "./contracts/*"
+  },
+  "files": [
+    "dist",
+    "contracts",
+    "fixtures",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --config vitest.config.ts",
+    "contracts": "npm run build && node scripts/export-contracts.mjs",
+    "contracts:check": "npm run build && node scripts/export-contracts.mjs --check",
+    "prepack": "npm run contracts:check"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.0",
+    "@types/node": "^22.19.3"
+  },
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/status"
+  }
+}

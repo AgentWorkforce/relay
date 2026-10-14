@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Minor
+
+- Add portable `@agent-relay/status` work transitions, communication admission rules, and cross-language contract fixtures. History remains an evidence provider.
+
 ## [14.0.0] - 2026-10-13
 
 ### Changed
