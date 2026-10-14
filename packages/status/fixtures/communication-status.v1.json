@@ -616,9 +616,7 @@
             "revision": 1,
             "admission": "allow_list",
             "interruption": "available",
-            "allowedAgentIds": [
-              "agent_sender"
-            ]
+            "allowedAgentIds": ["agent_sender"]
           },
           "connection": "online",
           "queueSupported": true,
@@ -666,9 +664,7 @@
             "revision": 1,
             "admission": "allow_list",
             "interruption": "available",
-            "allowedAgentIds": [
-              "another_agent"
-            ]
+            "allowedAgentIds": ["another_agent"]
           },
           "connection": "online",
           "queueSupported": true,
@@ -938,9 +934,7 @@
             "revision": 1,
             "admission": "allow_list",
             "interruption": "busy",
-            "allowedAgentIds": [
-              "agent_sender"
-            ]
+            "allowedAgentIds": ["agent_sender"]
           },
           "connection": "offline",
           "queueSupported": true,
