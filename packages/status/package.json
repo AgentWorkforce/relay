@@ -24,7 +24,12 @@
       "import": "./dist/native.js",
       "default": "./dist/native.js"
     },
-    "./contracts/*": "./contracts/*"
+    "./contracts/*": "./contracts/*",
+    "./pr": {
+      "types": "./dist/pr.d.ts",
+      "import": "./dist/pr.js",
+      "default": "./dist/pr.js"
+    }
   },
   "files": [
     "dist",
