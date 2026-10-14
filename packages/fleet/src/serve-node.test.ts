@@ -541,7 +541,7 @@ describe('serveNode', () => {
     await running.stop();
   });
 
-  it('delegates a spawn shadow to node.spawn with the harness flattened to top-level cli', async () => {
+  it.each(['codex', 'grok'])('delegates spawn:%s to native capacity', async (cli) => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -553,7 +553,7 @@ describe('serveNode', () => {
     const node = defineNode({
       name: 'p',
       capabilities: {
-        'spawn:codex': spawn({ runtime: 'pty', command: 'codex' }),
+        [`spawn:${cli}`]: spawn({ runtime: 'pty', command: cli }),
       },
     });
     const running = startServeNode({ definition: node, connection, reconnect: false });
@@ -562,7 +562,7 @@ describe('serveNode', () => {
     const register = sock.lastRegister();
     // The spawn definition registers as an invokable (shadow) action.
     expect(register.capabilities).toEqual([
-      { name: 'spawn:codex', kind: 'action', metadata: { 'relay.action-caller': 'v1' } },
+      { name: `spawn:${cli}`, kind: 'action', metadata: { 'relay.action-caller': 'v1' } },
     ]);
     sock.emit(acceptAll(register));
     await flush();
@@ -571,7 +571,7 @@ describe('serveNode', () => {
       v: 1,
       type: 'action.invoke',
       invocation_id: 'inv_3',
-      action: 'spawn:codex',
+      action: `spawn:${cli}`,
       input: {
         name: 'worker-a',
         task: 'Implement fleet metadata',
@@ -586,12 +586,11 @@ describe('serveNode', () => {
 
     const [nodeSpawn] = sock.sentOfType('node.spawn');
     expect(nodeSpawn).toBeTruthy();
-    // The delegation carries `capability: 'codex'` (from the shadow name) so the
-    // engine keys node capacity on `spawn:codex`, plus the executable `cli`.
+    // The shadow harness supplies the native capacity key alongside the executable cli.
     expect(nodeSpawn.input).toMatchObject({
       name: 'worker-a',
-      cli: 'codex',
-      capability: 'codex',
+      cli,
+      capability: cli,
       cwd: '/srv/relay',
       metadata: {
         organization: 'AgentWorkforce',
