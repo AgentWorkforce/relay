@@ -5,7 +5,15 @@
     "SessionWorkState": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "string",
-      "enum": ["working", "needs_attention", "waiting_on_agent", "idle", "waiting_on_pr", "done", "archived"]
+      "enum": [
+        "working",
+        "needs_attention",
+        "waiting_on_agent",
+        "idle",
+        "waiting_on_pr",
+        "done",
+        "archived"
+      ]
     },
     "SessionWorkReason": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -53,7 +61,12 @@
           "minLength": 1
         }
       },
-      "required": ["organizationId", "workspaceId", "source", "sessionId"],
+      "required": [
+        "organizationId",
+        "workspaceId",
+        "source",
+        "sessionId"
+      ],
       "additionalProperties": false
     },
     "SessionWorkDependency": {
@@ -66,18 +79,30 @@
         },
         "kind": {
           "type": "string",
-          "enum": ["human", "agent", "pr"]
+          "enum": [
+            "human",
+            "agent",
+            "pr"
+          ]
         },
         "state": {
           "type": "string",
-          "enum": ["pending", "resolved"]
+          "enum": [
+            "pending",
+            "resolved"
+          ]
         },
         "target": {
           "type": "string",
           "minLength": 1
         }
       },
-      "required": ["id", "kind", "state", "target"],
+      "required": [
+        "id",
+        "kind",
+        "state",
+        "target"
+      ],
       "additionalProperties": false
     },
     "SessionWorkStatus": {
@@ -108,7 +133,12 @@
               "minLength": 1
             }
           },
-          "required": ["organizationId", "workspaceId", "source", "sessionId"],
+          "required": [
+            "organizationId",
+            "workspaceId",
+            "source",
+            "sessionId"
+          ],
           "additionalProperties": false
         },
         "workEpisodeId": {
@@ -165,7 +195,10 @@
         },
         "basis": {
           "type": "string",
-          "enum": ["observed", "inferred"]
+          "enum": [
+            "observed",
+            "inferred"
+          ]
         },
         "observedAt": {
           "anyOf": [
@@ -202,18 +235,30 @@
               },
               "kind": {
                 "type": "string",
-                "enum": ["human", "agent", "pr"]
+                "enum": [
+                  "human",
+                  "agent",
+                  "pr"
+                ]
               },
               "state": {
                 "type": "string",
-                "enum": ["pending", "resolved"]
+                "enum": [
+                  "pending",
+                  "resolved"
+                ]
               },
               "target": {
                 "type": "string",
                 "minLength": 1
               }
             },
-            "required": ["id", "kind", "state", "target"],
+            "required": [
+              "id",
+              "kind",
+              "state",
+              "target"
+            ],
             "additionalProperties": false
           }
         },
@@ -278,10 +323,17 @@
                 },
                 "basis": {
                   "type": "string",
-                  "enum": ["observed", "inferred"]
+                  "enum": [
+                    "observed",
+                    "inferred"
+                  ]
                 }
               },
-              "required": ["state", "reason", "basis"],
+              "required": [
+                "state",
+                "reason",
+                "basis"
+              ],
               "additionalProperties": false
             },
             {
@@ -337,7 +389,12 @@
                   "minLength": 1
                 }
               },
-              "required": ["organizationId", "workspaceId", "source", "sessionId"],
+              "required": [
+                "organizationId",
+                "workspaceId",
+                "source",
+                "sessionId"
+              ],
               "additionalProperties": false
             },
             "eventId": {
@@ -419,7 +476,12 @@
                   "minLength": 1
                 }
               },
-              "required": ["organizationId", "workspaceId", "source", "sessionId"],
+              "required": [
+                "organizationId",
+                "workspaceId",
+                "source",
+                "sessionId"
+              ],
               "additionalProperties": false
             },
             "eventId": {
@@ -462,7 +524,12 @@
             },
             "reason": {
               "type": "string",
-              "enum": ["thinking", "tool_running", "testing", "coordinating"]
+              "enum": [
+                "thinking",
+                "tool_running",
+                "testing",
+                "coordinating"
+              ]
             }
           },
           "required": [
@@ -506,7 +573,12 @@
                   "minLength": 1
                 }
               },
-              "required": ["organizationId", "workspaceId", "source", "sessionId"],
+              "required": [
+                "organizationId",
+                "workspaceId",
+                "source",
+                "sessionId"
+              ],
               "additionalProperties": false
             },
             "eventId": {
@@ -572,18 +644,30 @@
                   },
                   "kind": {
                     "type": "string",
-                    "enum": ["human", "agent", "pr"]
+                    "enum": [
+                      "human",
+                      "agent",
+                      "pr"
+                    ]
                   },
                   "state": {
                     "type": "string",
-                    "enum": ["pending", "resolved"]
+                    "enum": [
+                      "pending",
+                      "resolved"
+                    ]
                   },
                   "target": {
                     "type": "string",
                     "minLength": 1
                   }
                 },
-                "required": ["id", "kind", "state", "target"],
+                "required": [
+                  "id",
+                  "kind",
+                  "state",
+                  "target"
+                ],
                 "additionalProperties": false
               }
             }
@@ -630,7 +714,12 @@
                   "minLength": 1
                 }
               },
-              "required": ["organizationId", "workspaceId", "source", "sessionId"],
+              "required": [
+                "organizationId",
+                "workspaceId",
+                "source",
+                "sessionId"
+              ],
               "additionalProperties": false
             },
             "eventId": {
@@ -717,7 +806,12 @@
                   "minLength": 1
                 }
               },
-              "required": ["organizationId", "workspaceId", "source", "sessionId"],
+              "required": [
+                "organizationId",
+                "workspaceId",
+                "source",
+                "sessionId"
+              ],
               "additionalProperties": false
             },
             "eventId": {
@@ -799,7 +893,12 @@
                   "minLength": 1
                 }
               },
-              "required": ["organizationId", "workspaceId", "source", "sessionId"],
+              "required": [
+                "organizationId",
+                "workspaceId",
+                "source",
+                "sessionId"
+              ],
               "additionalProperties": false
             },
             "eventId": {
@@ -842,7 +941,10 @@
             },
             "reason": {
               "type": "string",
-              "enum": ["completed", "merged"]
+              "enum": [
+                "completed",
+                "merged"
+              ]
             }
           },
           "required": [
@@ -886,7 +988,12 @@
                   "minLength": 1
                 }
               },
-              "required": ["organizationId", "workspaceId", "source", "sessionId"],
+              "required": [
+                "organizationId",
+                "workspaceId",
+                "source",
+                "sessionId"
+              ],
               "additionalProperties": false
             },
             "eventId": {
@@ -968,7 +1075,12 @@
                   "minLength": 1
                 }
               },
-              "required": ["organizationId", "workspaceId", "source", "sessionId"],
+              "required": [
+                "organizationId",
+                "workspaceId",
+                "source",
+                "sessionId"
+              ],
               "additionalProperties": false
             },
             "eventId": {
@@ -1050,7 +1162,12 @@
                   "minLength": 1
                 }
               },
-              "required": ["organizationId", "workspaceId", "source", "sessionId"],
+              "required": [
+                "organizationId",
+                "workspaceId",
+                "source",
+                "sessionId"
+              ],
               "additionalProperties": false
             },
             "eventId": {
@@ -1168,7 +1285,9 @@
               "observedAt": "2026-10-13T12:01:00Z",
               "lastSeenAt": "2026-10-13T12:01:00Z",
               "dependencies": [],
-              "evidenceIds": ["e1"],
+              "evidenceIds": [
+                "e1"
+              ],
               "producerSequences": {
                 "runner": 1
               },
@@ -1210,7 +1329,9 @@
               "observedAt": "2026-10-13T12:02:00Z",
               "lastSeenAt": "2026-10-13T12:02:00Z",
               "dependencies": [],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 2
               },
@@ -1251,7 +1372,9 @@
               "observedAt": "2026-10-13T12:02:00Z",
               "lastSeenAt": "2026-10-13T14:00:00Z",
               "dependencies": [],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 3
               },
@@ -1292,7 +1415,9 @@
               "observedAt": "2026-10-13T12:04:00Z",
               "lastSeenAt": "2026-10-13T14:00:00Z",
               "dependencies": [],
-              "evidenceIds": ["e4"],
+              "evidenceIds": [
+                "e4"
+              ],
               "producerSequences": {
                 "runner": 4
               },
@@ -1358,7 +1483,9 @@
               "observedAt": "2026-10-13T12:01:00Z",
               "lastSeenAt": "2026-10-13T12:01:00Z",
               "dependencies": [],
-              "evidenceIds": ["e1"],
+              "evidenceIds": [
+                "e1"
+              ],
               "producerSequences": {
                 "runner": 1
               },
@@ -1415,7 +1542,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 2
               },
@@ -1463,7 +1592,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 3
               },
@@ -1511,7 +1642,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 4
               },
@@ -1560,7 +1693,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 4
               },
@@ -1609,7 +1744,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e6"],
+              "evidenceIds": [
+                "e6"
+              ],
               "producerSequences": {
                 "runner": 6
               },
@@ -1658,7 +1795,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e7"],
+              "evidenceIds": [
+                "e7"
+              ],
               "producerSequences": {
                 "runner": 7
               },
@@ -1724,7 +1863,9 @@
               "observedAt": "2026-10-13T12:01:00Z",
               "lastSeenAt": "2026-10-13T12:01:00Z",
               "dependencies": [],
-              "evidenceIds": ["e1"],
+              "evidenceIds": [
+                "e1"
+              ],
               "producerSequences": {
                 "runner": 1
               },
@@ -1781,7 +1922,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 2
               },
@@ -1829,7 +1972,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 3
               },
@@ -1877,7 +2022,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 4
               },
@@ -1926,7 +2073,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 4
               },
@@ -1975,7 +2124,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e6"],
+              "evidenceIds": [
+                "e6"
+              ],
               "producerSequences": {
                 "runner": 6
               },
@@ -2024,7 +2175,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e7"],
+              "evidenceIds": [
+                "e7"
+              ],
               "producerSequences": {
                 "runner": 7
               },
@@ -2090,7 +2243,9 @@
               "observedAt": "2026-10-13T12:01:00Z",
               "lastSeenAt": "2026-10-13T12:01:00Z",
               "dependencies": [],
-              "evidenceIds": ["e1"],
+              "evidenceIds": [
+                "e1"
+              ],
               "producerSequences": {
                 "runner": 1
               },
@@ -2147,7 +2302,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 2
               },
@@ -2195,7 +2352,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 3
               },
@@ -2243,7 +2402,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 4
               },
@@ -2292,7 +2453,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 4
               },
@@ -2341,7 +2504,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e6"],
+              "evidenceIds": [
+                "e6"
+              ],
               "producerSequences": {
                 "runner": 6
               },
@@ -2390,7 +2555,9 @@
                   "target": "target_a"
                 }
               ],
-              "evidenceIds": ["e7"],
+              "evidenceIds": [
+                "e7"
+              ],
               "producerSequences": {
                 "runner": 7
               },
@@ -2456,7 +2623,9 @@
               "observedAt": "2026-10-13T12:01:00Z",
               "lastSeenAt": "2026-10-13T12:01:00Z",
               "dependencies": [],
-              "evidenceIds": ["e1"],
+              "evidenceIds": [
+                "e1"
+              ],
               "producerSequences": {
                 "runner": 1
               },
@@ -2513,7 +2682,9 @@
                   "target": "agent_1"
                 }
               ],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 2
               },
@@ -2562,7 +2733,9 @@
                   "target": "agent_1"
                 }
               ],
-              "evidenceIds": ["e3"],
+              "evidenceIds": [
+                "e3"
+              ],
               "producerSequences": {
                 "runner": 3
               },
@@ -2610,7 +2783,9 @@
                   "target": "agent_1"
                 }
               ],
-              "evidenceIds": ["e4"],
+              "evidenceIds": [
+                "e4"
+              ],
               "producerSequences": {
                 "runner": 4
               },
@@ -2676,7 +2851,9 @@
               "observedAt": "2026-10-13T12:01:00Z",
               "lastSeenAt": "2026-10-13T12:01:00Z",
               "dependencies": [],
-              "evidenceIds": ["e1"],
+              "evidenceIds": [
+                "e1"
+              ],
               "producerSequences": {
                 "runner": 1
               },
@@ -2745,7 +2922,9 @@
                   "target": "https://github.com/a/b/pull/2"
                 }
               ],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 2
               },
@@ -2800,7 +2979,9 @@
                   "target": "https://github.com/a/b/pull/2"
                 }
               ],
-              "evidenceIds": ["e3"],
+              "evidenceIds": [
+                "e3"
+              ],
               "producerSequences": {
                 "runner": 3
               },
@@ -2855,7 +3036,9 @@
                   "target": "https://github.com/a/b/pull/2"
                 }
               ],
-              "evidenceIds": ["e3"],
+              "evidenceIds": [
+                "e3"
+              ],
               "producerSequences": {
                 "runner": 3
               },
@@ -2910,7 +3093,9 @@
                   "target": "https://github.com/a/b/pull/2"
                 }
               ],
-              "evidenceIds": ["e5"],
+              "evidenceIds": [
+                "e5"
+              ],
               "producerSequences": {
                 "runner": 5
               },
@@ -2965,7 +3150,9 @@
                   "target": "https://github.com/a/b/pull/2"
                 }
               ],
-              "evidenceIds": ["e6"],
+              "evidenceIds": [
+                "e6"
+              ],
               "producerSequences": {
                 "runner": 6
               },
@@ -3031,7 +3218,9 @@
               "observedAt": "2026-10-13T12:01:00Z",
               "lastSeenAt": "2026-10-13T12:01:00Z",
               "dependencies": [],
-              "evidenceIds": ["e1"],
+              "evidenceIds": [
+                "e1"
+              ],
               "producerSequences": {
                 "runner": 1
               },
@@ -3073,7 +3262,9 @@
               "observedAt": "2026-10-13T12:02:00Z",
               "lastSeenAt": "2026-10-13T12:02:00Z",
               "dependencies": [],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 2
               },
@@ -3114,7 +3305,9 @@
               "observedAt": "2026-10-13T12:03:00Z",
               "lastSeenAt": "2026-10-13T12:03:00Z",
               "dependencies": [],
-              "evidenceIds": ["e3"],
+              "evidenceIds": [
+                "e3"
+              ],
               "producerSequences": {
                 "runner": 3
               },
@@ -3156,7 +3349,9 @@
               "observedAt": "2026-10-13T12:03:00Z",
               "lastSeenAt": "2026-10-13T12:03:00Z",
               "dependencies": [],
-              "evidenceIds": ["e3"],
+              "evidenceIds": [
+                "e3"
+              ],
               "producerSequences": {
                 "runner": 3
               },
@@ -3198,7 +3393,9 @@
               "observedAt": "2026-10-13T12:03:00Z",
               "lastSeenAt": "2026-10-13T12:03:00Z",
               "dependencies": [],
-              "evidenceIds": ["e3"],
+              "evidenceIds": [
+                "e3"
+              ],
               "producerSequences": {
                 "runner": 3
               },
@@ -3239,7 +3436,9 @@
               "observedAt": "2026-10-13T12:03:00Z",
               "lastSeenAt": "2026-10-13T12:03:00Z",
               "dependencies": [],
-              "evidenceIds": ["e3"],
+              "evidenceIds": [
+                "e3"
+              ],
               "producerSequences": {
                 "runner": 3
               },
@@ -3305,7 +3504,9 @@
               "observedAt": "2026-10-13T12:01:00Z",
               "lastSeenAt": "2026-10-13T12:01:00Z",
               "dependencies": [],
-              "evidenceIds": ["e1"],
+              "evidenceIds": [
+                "e1"
+              ],
               "producerSequences": {
                 "runner": 1
               },
@@ -3347,7 +3548,9 @@
               "observedAt": "2026-10-13T12:02:00Z",
               "lastSeenAt": "2026-10-13T12:02:00Z",
               "dependencies": [],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 2
               },
@@ -3388,7 +3591,9 @@
               "observedAt": "2026-10-13T12:03:00Z",
               "lastSeenAt": "2026-10-13T12:03:00Z",
               "dependencies": [],
-              "evidenceIds": ["e3"],
+              "evidenceIds": [
+                "e3"
+              ],
               "producerSequences": {
                 "runner": 3
               },
@@ -3434,7 +3639,9 @@
               "observedAt": "2026-10-13T12:03:00Z",
               "lastSeenAt": "2026-10-13T12:03:00Z",
               "dependencies": [],
-              "evidenceIds": ["e3"],
+              "evidenceIds": [
+                "e3"
+              ],
               "producerSequences": {
                 "runner": 3
               },
@@ -3479,7 +3686,9 @@
               "observedAt": "2026-10-13T12:03:00Z",
               "lastSeenAt": "2026-10-13T12:05:00Z",
               "dependencies": [],
-              "evidenceIds": ["e3"],
+              "evidenceIds": [
+                "e3"
+              ],
               "producerSequences": {
                 "runner": 5
               },
@@ -3524,7 +3733,9 @@
               "observedAt": "2026-10-13T12:06:00Z",
               "lastSeenAt": "2026-10-13T12:06:00Z",
               "dependencies": [],
-              "evidenceIds": ["e6"],
+              "evidenceIds": [
+                "e6"
+              ],
               "producerSequences": {
                 "runner": 6
               },
@@ -3590,7 +3801,9 @@
               "observedAt": "2026-10-13T12:01:00Z",
               "lastSeenAt": "2026-10-13T12:01:00Z",
               "dependencies": [],
-              "evidenceIds": ["e1"],
+              "evidenceIds": [
+                "e1"
+              ],
               "producerSequences": {
                 "runner": 1
               },
@@ -3631,7 +3844,9 @@
               "observedAt": "2026-10-13T12:01:00Z",
               "lastSeenAt": "2026-10-13T12:01:00Z",
               "dependencies": [],
-              "evidenceIds": ["e1"],
+              "evidenceIds": [
+                "e1"
+              ],
               "producerSequences": {
                 "runner": 1
               },
@@ -3672,7 +3887,9 @@
               "observedAt": "2026-10-13T12:01:00Z",
               "lastSeenAt": "2026-10-13T12:01:00Z",
               "dependencies": [],
-              "evidenceIds": ["e1"],
+              "evidenceIds": [
+                "e1"
+              ],
               "producerSequences": {
                 "runner": 1
               },
@@ -3738,7 +3955,9 @@
               "observedAt": "2026-10-13T12:01:00Z",
               "lastSeenAt": "2026-10-13T12:01:00Z",
               "dependencies": [],
-              "evidenceIds": ["e1"],
+              "evidenceIds": [
+                "e1"
+              ],
               "producerSequences": {
                 "runner": 1
               },
@@ -3795,7 +4014,9 @@
                   "target": "user_a"
                 }
               ],
-              "evidenceIds": ["e2"],
+              "evidenceIds": [
+                "e2"
+              ],
               "producerSequences": {
                 "runner": 2
               },
@@ -3858,7 +4079,9 @@
                   "target": "agent_a"
                 }
               ],
-              "evidenceIds": ["e3"],
+              "evidenceIds": [
+                "e3"
+              ],
               "producerSequences": {
                 "runner": 3
               },
@@ -3913,7 +4136,9 @@
                   "target": "agent_a"
                 }
               ],
-              "evidenceIds": ["e3"],
+              "evidenceIds": [
+                "e3"
+              ],
               "producerSequences": {
                 "runner": 3
               },
@@ -3979,7 +4204,9 @@
               "observedAt": "2026-10-13T12:01:00Z",
               "lastSeenAt": "2026-10-13T12:01:00Z",
               "dependencies": [],
-              "evidenceIds": ["e1"],
+              "evidenceIds": [
+                "e1"
+              ],
               "producerSequences": {
                 "runner": 1
               },
@@ -4021,7 +4248,9 @@
               "observedAt": "2026-10-13T12:01:00Z",
               "lastSeenAt": "2026-10-13T12:01:00Z",
               "dependencies": [],
-              "evidenceIds": ["e1"],
+              "evidenceIds": [
+                "e1"
+              ],
               "producerSequences": {
                 "runner": 1
               },
@@ -4087,7 +4316,9 @@
               "observedAt": "2026-10-13T13:01:00Z",
               "lastSeenAt": "2026-10-13T13:01:00Z",
               "dependencies": [],
-              "evidenceIds": ["archive_1"],
+              "evidenceIds": [
+                "archive_1"
+              ],
               "producerSequences": {
                 "desktop": 1
               },
@@ -4132,7 +4363,9 @@
               "observedAt": "2026-10-13T13:01:00Z",
               "lastSeenAt": "2026-10-13T13:02:00Z",
               "dependencies": [],
-              "evidenceIds": ["archive_1"],
+              "evidenceIds": [
+                "archive_1"
+              ],
               "producerSequences": {
                 "desktop": 2
               },
@@ -4177,7 +4410,9 @@
               "observedAt": "2026-10-13T13:03:00Z",
               "lastSeenAt": "2026-10-13T13:03:00Z",
               "dependencies": [],
-              "evidenceIds": ["archive_3"],
+              "evidenceIds": [
+                "archive_3"
+              ],
               "producerSequences": {
                 "desktop": 3
               },
@@ -4206,7 +4441,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4229,7 +4466,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4255,7 +4494,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4277,7 +4518,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4299,7 +4542,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4325,7 +4570,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4347,7 +4594,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4369,7 +4618,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4395,7 +4646,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4417,7 +4670,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4439,7 +4694,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4465,7 +4722,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4487,7 +4746,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4509,7 +4770,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4535,7 +4798,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4557,7 +4822,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },
@@ -4579,7 +4846,9 @@
           "observedAt": "2026-10-13T12:01:00Z",
           "lastSeenAt": "2026-10-13T12:01:00Z",
           "dependencies": [],
-          "evidenceIds": ["e1"],
+          "evidenceIds": [
+            "e1"
+          ],
           "producerSequences": {
             "runner": 1
           },

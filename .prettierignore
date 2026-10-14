@@ -9,3 +9,6 @@ packages/config/src/cli-registry.generated.ts
 tests/benchmarks/head-to-head.ts
 .agentworkforce/trajectories/
 .trajectories/
+
+# Owner-generated status bundles use the exporter canonical JSON format.
+packages/status/contracts/*.json

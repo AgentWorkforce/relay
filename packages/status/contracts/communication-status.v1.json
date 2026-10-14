@@ -5,7 +5,13 @@
     "CommunicationLabel": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "string",
-      "enum": ["open", "knock", "allow_list", "busy", "offline"]
+      "enum": [
+        "open",
+        "knock",
+        "allow_list",
+        "busy",
+        "offline"
+      ]
     },
     "CommunicationIdentity": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -24,7 +30,11 @@
           "minLength": 1
         }
       },
-      "required": ["organizationId", "workspaceId", "agentId"],
+      "required": [
+        "organizationId",
+        "workspaceId",
+        "agentId"
+      ],
       "additionalProperties": false
     },
     "CommunicationPolicy": {
@@ -51,7 +61,11 @@
               "minLength": 1
             }
           },
-          "required": ["organizationId", "workspaceId", "agentId"],
+          "required": [
+            "organizationId",
+            "workspaceId",
+            "agentId"
+          ],
           "additionalProperties": false
         },
         "revision": {
@@ -61,11 +75,18 @@
         },
         "admission": {
           "type": "string",
-          "enum": ["open", "knock", "allow_list"]
+          "enum": [
+            "open",
+            "knock",
+            "allow_list"
+          ]
         },
         "interruption": {
           "type": "string",
-          "enum": ["available", "busy"]
+          "enum": [
+            "available",
+            "busy"
+          ]
         },
         "allowedAgentIds": {
           "type": "array",
@@ -75,7 +96,14 @@
           }
         }
       },
-      "required": ["schemaVersion", "recipient", "revision", "admission", "interruption", "allowedAgentIds"],
+      "required": [
+        "schemaVersion",
+        "recipient",
+        "revision",
+        "admission",
+        "interruption",
+        "allowedAgentIds"
+      ],
       "additionalProperties": false
     },
     "CommunicationStatus": {
@@ -109,7 +137,11 @@
                   "minLength": 1
                 }
               },
-              "required": ["organizationId", "workspaceId", "agentId"],
+              "required": [
+                "organizationId",
+                "workspaceId",
+                "agentId"
+              ],
               "additionalProperties": false
             },
             "revision": {
@@ -119,11 +151,18 @@
             },
             "admission": {
               "type": "string",
-              "enum": ["open", "knock", "allow_list"]
+              "enum": [
+                "open",
+                "knock",
+                "allow_list"
+              ]
             },
             "interruption": {
               "type": "string",
-              "enum": ["available", "busy"]
+              "enum": [
+                "available",
+                "busy"
+              ]
             },
             "allowedAgentIds": {
               "type": "array",
@@ -145,7 +184,10 @@
         },
         "connection": {
           "type": "string",
-          "enum": ["online", "offline"]
+          "enum": [
+            "online",
+            "offline"
+          ]
         },
         "queueSupported": {
           "type": "boolean"
@@ -161,7 +203,14 @@
           "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
-      "required": ["schemaVersion", "policy", "connection", "queueSupported", "revision", "observedAt"],
+      "required": [
+        "schemaVersion",
+        "policy",
+        "connection",
+        "queueSupported",
+        "revision",
+        "observedAt"
+      ],
       "additionalProperties": false
     },
     "ConversationGrant": {
@@ -192,7 +241,11 @@
               "minLength": 1
             }
           },
-          "required": ["organizationId", "workspaceId", "agentId"],
+          "required": [
+            "organizationId",
+            "workspaceId",
+            "agentId"
+          ],
           "additionalProperties": false
         },
         "sender": {
@@ -211,7 +264,11 @@
               "minLength": 1
             }
           },
-          "required": ["organizationId", "workspaceId", "agentId"],
+          "required": [
+            "organizationId",
+            "workspaceId",
+            "agentId"
+          ],
           "additionalProperties": false
         },
         "conversationId": {
@@ -220,7 +277,13 @@
         },
         "state": {
           "type": "string",
-          "enum": ["pending", "approved", "rejected", "revoked", "expired"]
+          "enum": [
+            "pending",
+            "approved",
+            "rejected",
+            "revoked",
+            "expired"
+          ]
         },
         "revision": {
           "type": "integer",
@@ -269,7 +332,11 @@
               "minLength": 1
             }
           },
-          "required": ["organizationId", "workspaceId", "agentId"],
+          "required": [
+            "organizationId",
+            "workspaceId",
+            "agentId"
+          ],
           "additionalProperties": false
         },
         "recipient": {
@@ -288,7 +355,11 @@
               "minLength": 1
             }
           },
-          "required": ["organizationId", "workspaceId", "agentId"],
+          "required": [
+            "organizationId",
+            "workspaceId",
+            "agentId"
+          ],
           "additionalProperties": false
         },
         "conversationId": {
@@ -307,7 +378,13 @@
           ]
         }
       },
-      "required": ["id", "sender", "recipient", "conversationId", "inReplyTo"],
+      "required": [
+        "id",
+        "sender",
+        "recipient",
+        "conversationId",
+        "inReplyTo"
+      ],
       "additionalProperties": false
     },
     "AwaitedReply": {
@@ -330,7 +407,11 @@
               "minLength": 1
             }
           },
-          "required": ["organizationId", "workspaceId", "agentId"],
+          "required": [
+            "organizationId",
+            "workspaceId",
+            "agentId"
+          ],
           "additionalProperties": false
         },
         "conversationId": {
@@ -342,7 +423,11 @@
           "minLength": 1
         }
       },
-      "required": ["sender", "conversationId", "requestId"],
+      "required": [
+        "sender",
+        "conversationId",
+        "requestId"
+      ],
       "additionalProperties": false
     },
     "CommunicationDecision": {
@@ -351,7 +436,13 @@
       "properties": {
         "action": {
           "type": "string",
-          "enum": ["deliver", "request_approval", "hold", "queue", "reject"]
+          "enum": [
+            "deliver",
+            "request_approval",
+            "hold",
+            "queue",
+            "reject"
+          ]
         },
         "reason": {
           "type": "string",
@@ -376,7 +467,11 @@
           "maximum": 9007199254740991
         }
       },
-      "required": ["action", "reason", "policyRevision"],
+      "required": [
+        "action",
+        "reason",
+        "policyRevision"
+      ],
       "additionalProperties": false
     },
     "CommunicationReceipt": {
@@ -393,7 +488,14 @@
         },
         "state": {
           "type": "string",
-          "enum": ["pending_approval", "held", "queued", "delivered", "rejected", "expired"]
+          "enum": [
+            "pending_approval",
+            "held",
+            "queued",
+            "delivered",
+            "rejected",
+            "expired"
+          ]
         },
         "policyRevision": {
           "type": "integer",
@@ -406,7 +508,13 @@
           "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
-      "required": ["schemaVersion", "messageId", "state", "policyRevision", "observedAt"],
+      "required": [
+        "schemaVersion",
+        "messageId",
+        "state",
+        "policyRevision",
+        "observedAt"
+      ],
       "additionalProperties": false
     },
     "CommunicationDecisionInput": {
@@ -443,7 +551,11 @@
                       "minLength": 1
                     }
                   },
-                  "required": ["organizationId", "workspaceId", "agentId"],
+                  "required": [
+                    "organizationId",
+                    "workspaceId",
+                    "agentId"
+                  ],
                   "additionalProperties": false
                 },
                 "revision": {
@@ -453,11 +565,18 @@
                 },
                 "admission": {
                   "type": "string",
-                  "enum": ["open", "knock", "allow_list"]
+                  "enum": [
+                    "open",
+                    "knock",
+                    "allow_list"
+                  ]
                 },
                 "interruption": {
                   "type": "string",
-                  "enum": ["available", "busy"]
+                  "enum": [
+                    "available",
+                    "busy"
+                  ]
                 },
                 "allowedAgentIds": {
                   "type": "array",
@@ -479,7 +598,10 @@
             },
             "connection": {
               "type": "string",
-              "enum": ["online", "offline"]
+              "enum": [
+                "online",
+                "offline"
+              ]
             },
             "queueSupported": {
               "type": "boolean"
@@ -495,7 +617,14 @@
               "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
             }
           },
-          "required": ["schemaVersion", "policy", "connection", "queueSupported", "revision", "observedAt"],
+          "required": [
+            "schemaVersion",
+            "policy",
+            "connection",
+            "queueSupported",
+            "revision",
+            "observedAt"
+          ],
           "additionalProperties": false
         },
         "message": {
@@ -521,7 +650,11 @@
                   "minLength": 1
                 }
               },
-              "required": ["organizationId", "workspaceId", "agentId"],
+              "required": [
+                "organizationId",
+                "workspaceId",
+                "agentId"
+              ],
               "additionalProperties": false
             },
             "recipient": {
@@ -540,7 +673,11 @@
                   "minLength": 1
                 }
               },
-              "required": ["organizationId", "workspaceId", "agentId"],
+              "required": [
+                "organizationId",
+                "workspaceId",
+                "agentId"
+              ],
               "additionalProperties": false
             },
             "conversationId": {
@@ -559,7 +696,13 @@
               ]
             }
           },
-          "required": ["id", "sender", "recipient", "conversationId", "inReplyTo"],
+          "required": [
+            "id",
+            "sender",
+            "recipient",
+            "conversationId",
+            "inReplyTo"
+          ],
           "additionalProperties": false
         },
         "grants": {
@@ -591,7 +734,11 @@
                     "minLength": 1
                   }
                 },
-                "required": ["organizationId", "workspaceId", "agentId"],
+                "required": [
+                  "organizationId",
+                  "workspaceId",
+                  "agentId"
+                ],
                 "additionalProperties": false
               },
               "sender": {
@@ -610,7 +757,11 @@
                     "minLength": 1
                   }
                 },
-                "required": ["organizationId", "workspaceId", "agentId"],
+                "required": [
+                  "organizationId",
+                  "workspaceId",
+                  "agentId"
+                ],
                 "additionalProperties": false
               },
               "conversationId": {
@@ -619,7 +770,13 @@
               },
               "state": {
                 "type": "string",
-                "enum": ["pending", "approved", "rejected", "revoked", "expired"]
+                "enum": [
+                  "pending",
+                  "approved",
+                  "rejected",
+                  "revoked",
+                  "expired"
+                ]
               },
               "revision": {
                 "type": "integer",
@@ -666,7 +823,11 @@
                     "minLength": 1
                   }
                 },
-                "required": ["organizationId", "workspaceId", "agentId"],
+                "required": [
+                  "organizationId",
+                  "workspaceId",
+                  "agentId"
+                ],
                 "additionalProperties": false
               },
               "conversationId": {
@@ -678,7 +839,11 @@
                 "minLength": 1
               }
             },
-            "required": ["sender", "conversationId", "requestId"],
+            "required": [
+              "sender",
+              "conversationId",
+              "requestId"
+            ],
             "additionalProperties": false
           }
         },
@@ -688,7 +853,13 @@
           "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
         }
       },
-      "required": ["status", "message", "grants", "awaitedReplies", "now"],
+      "required": [
+        "status",
+        "message",
+        "grants",
+        "awaitedReplies",
+        "now"
+      ],
       "additionalProperties": false
     }
   },
@@ -1310,7 +1481,9 @@
               "revision": 1,
               "admission": "allow_list",
               "interruption": "available",
-              "allowedAgentIds": ["agent_sender"]
+              "allowedAgentIds": [
+                "agent_sender"
+              ]
             },
             "connection": "online",
             "queueSupported": true,
@@ -1358,7 +1531,9 @@
               "revision": 1,
               "admission": "allow_list",
               "interruption": "available",
-              "allowedAgentIds": ["another_agent"]
+              "allowedAgentIds": [
+                "another_agent"
+              ]
             },
             "connection": "online",
             "queueSupported": true,
@@ -1628,7 +1803,9 @@
               "revision": 1,
               "admission": "allow_list",
               "interruption": "busy",
-              "allowedAgentIds": ["agent_sender"]
+              "allowedAgentIds": [
+                "agent_sender"
+              ]
             },
             "connection": "offline",
             "queueSupported": true,
