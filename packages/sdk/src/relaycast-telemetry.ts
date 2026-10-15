@@ -73,10 +73,14 @@ export function relaycastTelemetryOptions(
     return {};
   // Delegated Cloud credentials do not establish the local operator's identity.
   // The receiving service must resolve their owner from its authenticated context.
-  if (env.CLOUD_API_ACCESS_TOKEN?.trim()) return {};
   const originActor = nonEmpty(explicit.originActor) ?? resolveOriginActor(env);
   const agentRelayUserId = nonEmpty(explicit.agentRelayUserId) ?? nonEmpty(env[USER_ID_ENV]);
   const agentRelayMachineId = nonEmpty(explicit.agentRelayMachineId) ?? nonEmpty(env[MACHINE_ID_ENV]);
+  if (env.CLOUD_API_ACCESS_TOKEN?.trim())
+    return {
+      ...(originActor ? { originActor } : {}),
+      ...(agentRelayMachineId ? { agentRelayMachineId } : {}),
+    };
   // Forward the current auth generation as a correlation hint; never use a machine id.
   const agentRelayDistinctId =
     nonEmpty(explicit.agentRelayDistinctId) ?? nonEmpty(env.AGENT_RELAY_DISTINCT_ID) ?? agentRelayUserId;

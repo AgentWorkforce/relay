@@ -28,6 +28,7 @@ describe('telemetry preferences', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     fs.rmSync(dataDir, { recursive: true, force: true });
   });
@@ -93,5 +94,26 @@ describe('telemetry preferences', () => {
     markNotified();
     expect(wasNotified()).toBe(true);
     expect(loadPrefs().notifiedAt).toEqual(expect.any(String));
+  });
+  it('never overwrites unreadable existing preferences with enabled defaults', () => {
+    fs.writeFileSync(getPrefsPath(), '{"enabled":false');
+    expect(loadPrefs().enabled).toBe(false);
+    expect(fs.readFileSync(getPrefsPath(), 'utf8')).toBe('{"enabled":false');
+    expect(isTelemetryEnabled()).toBe(false);
+  });
+
+  it('replaces preferences atomically so readers observe the complete previous snapshot', () => {
+    savePrefs({ enabled: false, distinctId: 'generation' });
+    const write = fs.writeFileSync;
+    let observed: unknown;
+    vi.spyOn(fs, 'writeFileSync').mockImplementation(((file, data, options) => {
+      observed = JSON.parse(fs.readFileSync(getPrefsPath(), 'utf8'));
+      expect(String(file)).not.toBe(getPrefsPath());
+      return write(file, data, options);
+    }) as typeof fs.writeFileSync);
+    savePrefs({ enabled: true, distinctId: 'generation' });
+    expect(observed).toMatchObject({ enabled: false });
+    expect(JSON.parse(fs.readFileSync(getPrefsPath(), 'utf8'))).toMatchObject({ enabled: true });
+    expect(fs.readdirSync(dataDir)).toEqual(['telemetry.json']);
   });
 });

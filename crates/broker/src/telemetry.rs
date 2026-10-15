@@ -574,34 +574,30 @@ fn detect_cloud_identity() -> CloudIdentity {
     });
     let machine_id = identity_env("AGENT_RELAY_MACHINE_ID", 128)
         .or_else(|| load_or_create_machine_id().map(|id| anonymous_id(&id)));
-    let anonymous = dir
-        .as_ref()
-        .and_then(|dir| {
-            std::fs::read_to_string(dir.join("cloud-identity.json.generation"))
-                .ok()
-                .filter(|generation| !generation.is_empty())
-                .or_else(|| {
-                    std::fs::read_to_string(dir.join("telemetry.json"))
-                        .ok()
-                        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-                        .and_then(|prefs| {
-                            prefs
-                                .get("authGeneration")
-                                .and_then(Value::as_str)
-                                .map(str::to_owned)
-                        })
-                })
+    let anonymous = anonymous_auth_generation(dir.as_deref());
+    let mut identity = stored.unwrap_or_default();
+    identity.machine_id = machine_id;
+    identity.distinct_id = identity.user_id.clone().or(Some(anonymous));
+    identity
+}
+
+// Identity revisions invalidate snapshots; only CLI authGeneration correlates
+// anonymous captures across emitters. Never substitute the revision or machine.
+fn anonymous_auth_generation(dir: Option<&std::path::Path>) -> String {
+    dir.and_then(|dir| std::fs::read_to_string(dir.join("telemetry.json")).ok())
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|prefs| {
+            prefs
+                .get("authGeneration")
+                .and_then(Value::as_str)
+                .and_then(|value| sanitize_identity_value(value, 128))
         })
         .unwrap_or_else(|| {
             static GENERATION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
             GENERATION
                 .get_or_init(|| uuid::Uuid::new_v4().to_string())
                 .clone()
-        });
-    let mut identity = stored.unwrap_or_default();
-    identity.machine_id = machine_id;
-    identity.distinct_id = identity.user_id.clone().or(Some(anonymous));
-    identity
+        })
 }
 
 /// Only the locally resolved Cloud session establishes an owner. Environment
@@ -1203,6 +1199,39 @@ mod tests {
         assert_eq!(b.org_id, None);
         std::fs::remove_file(&path).unwrap();
         assert!(read_identity_file(&path).is_none());
+    }
+
+    #[test]
+    fn anonymous_generation_matches_cli_even_when_identity_revision_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("cloud-identity.json.generation"),
+            "revision-not-person",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("telemetry.json"),
+            r#"{"authGeneration":"cli-generation"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            anonymous_auth_generation(Some(dir.path())),
+            "cli-generation"
+        );
+        std::fs::write(
+            dir.path().join("telemetry.json"),
+            r#"{"authGeneration":"cli-after-logout"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            anonymous_auth_generation(Some(dir.path())),
+            "cli-after-logout"
+        );
+        std::fs::remove_file(dir.path().join("telemetry.json")).unwrap();
+        assert_ne!(
+            anonymous_auth_generation(Some(dir.path())),
+            "revision-not-person"
+        );
     }
 
     #[test]

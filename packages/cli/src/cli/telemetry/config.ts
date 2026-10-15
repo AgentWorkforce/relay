@@ -56,7 +56,9 @@ export function loadPrefs(): TelemetryPrefs {
       return normalized;
     }
   } catch {
-    // Fall through to defaults
+    // An unreadable existing preference file may contain an opt-out. Never
+    // replace it with enabled defaults, even if another writer repairs it.
+    return { enabled: false, distinctId: randomUUID(), authGeneration: randomUUID() };
   }
 
   const prefs = { enabled: true, distinctId: randomUUID(), authGeneration: randomUUID() };
@@ -68,12 +70,20 @@ export function savePrefs(prefs: TelemetryPrefs): void {
   const prefsPath = getPrefsPath();
   const configDir = path.dirname(prefsPath);
 
+  const temporaryPath = `${prefsPath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     fs.mkdirSync(configDir, { recursive: true });
-    fs.writeFileSync(prefsPath, JSON.stringify(prefs, null, 2), 'utf-8');
+    fs.writeFileSync(temporaryPath, JSON.stringify(prefs, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    fs.renameSync(temporaryPath, prefsPath);
   } catch (err) {
     // Silently fail - telemetry shouldn't break the app
     console.error('[telemetry] Failed to save preferences:', err);
+  } finally {
+    try {
+      fs.rmSync(temporaryPath, { force: true });
+    } catch {
+      /* Best effort. */
+    }
   }
 }
 

@@ -224,6 +224,23 @@ describe('AgentRelay workspace setup', () => {
     ).toEqual({});
   });
 
+  it('keeps delegated actor and machine dimensions without stale local people', () => {
+    expect(
+      relaycastTelemetryOptions(
+        {
+          originActor: 'agent-relay-cli/agent/claude',
+          agentRelayMachineId: 'machine',
+          agentRelayUserId: 'usr_A',
+          agentRelayDistinctId: 'usr_A',
+          agentRelayOrgId: 'org_A',
+        },
+        {
+          CLOUD_API_ACCESS_TOKEN: 'synthetic-B',
+        }
+      )
+    ).toEqual({ originActor: 'agent-relay-cli/agent/claude', agentRelayMachineId: 'machine' });
+  });
+
   it('does not turn a durable machine dimension into a person hint', () => {
     expect(relaycastTelemetryOptions({}, { AGENT_RELAY_MACHINE_ID: 'machine' })).toEqual({
       agentRelayMachineId: 'machine',

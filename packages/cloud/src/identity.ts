@@ -210,8 +210,10 @@ export function isCloudAnalyticsEnabled(env: NodeJS.ProcessEnv = process.env): b
       fs.readFileSync(path.join(path.dirname(identityFilePath(env)), 'telemetry.json'), 'utf8')
     );
     return prefs.enabled !== false;
-  } catch {
-    return true;
+  } catch (error) {
+    // Only a genuinely absent preference file inherits the default. Corrupt or
+    // unreadable consent must not enable Cloud profile repair.
+    return (error as NodeJS.ErrnoException).code === 'ENOENT';
   }
 }
 

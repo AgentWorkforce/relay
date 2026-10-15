@@ -72,8 +72,27 @@ describe('buildAgentRelayTelemetryHeaders', () => {
 
   it('forwards the machine id for an anonymous caller', () => {
     expect(buildAgentRelayTelemetryHeaders({ AGENT_RELAY_MACHINE_ID: 'abc123def4567890' })).toEqual({
-      [AGENT_RELAY_DISTINCT_ID_HEADER]: 'abc123def4567890',
       [AGENT_RELAY_MACHINE_ID_HEADER]: 'abc123def4567890',
+    });
+  });
+
+  it('retains actor and installation dimensions without local identity for delegated credentials', () => {
+    expect(
+      buildAgentRelayTelemetryHeaders({
+        CLOUD_API_ACCESS_TOKEN: 'synthetic-B',
+        AGENT_RELAY_USER_ID: 'usr_A',
+        AGENT_RELAY_ORG_ID: 'org_A',
+        AGENT_RELAY_DISTINCT_ID: 'usr_A',
+        AGENT_RELAY_MACHINE_ID: 'machine',
+        AGENT_RELAY_ORCHESTRATOR_HARNESS: 'claude',
+        AGENT_RELAY_TELEMETRY_CLIENT: 'cli',
+        AGENT_RELAY_CLI_VERSION: '1.2.3',
+      })
+    ).toEqual({
+      [AGENT_RELAY_MACHINE_ID_HEADER]: 'machine',
+      'X-Relaycast-Harness': 'claude',
+      'X-Relaycast-Origin-Client': 'cli',
+      'X-Relaycast-Origin-Version': '1.2.3',
     });
   });
 
