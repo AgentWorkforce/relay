@@ -677,23 +677,9 @@ fn identity_headers(identity: &CloudIdentity) -> Vec<(&'static str, String)> {
 /// `agent-relay-cli/agent/<harness>`. See cloud/plans/origin-actor.md.
 pub(crate) const BROKER_ORIGIN_ACTOR: &str = "agent-relay-cli/cli";
 
-/// Env var carrying the anonymous distinct id, exported by the agent-relay CLI
-/// so the broker and every spawned agent report as the same machine.
-
-/// Anonymous machine id forwarded to relaycast as `X-Agent-Relay-Distinct-Id`,
-/// or `None` when the user has opted out of telemetry.
-///
-/// Relaycast's server-side product events key on this when present (see the
-/// engine's `emitServerEvent`), which is what lets a workspace-create or an
-/// agent-registration be attributed back to an install. Without it every
-/// broker-driven server event is keyed by workspace id alone, so "how many
-/// distinct installs are using this" is unanswerable.
-///
-/// Prefer the CLI-exported env var so the CLI, the broker, and the agents it
-/// spawns all report one id; fall back to the same hashed machine id the
-/// telemetry client uses, for a broker started outside the CLI. This is the
-/// same anonymous value already sent with the broker's own PostHog events —
-/// never a hostname, account, or path. Resolved once per process.
+/// Current anonymous auth-generation correlation hint for Relaycast requests.
+/// Read on every request so login, logout and opt-out take effect immediately.
+/// Receiving services must resolve person ownership from authenticated credentials.
 pub(crate) fn agent_relay_distinct_id() -> Option<String> {
     cloud_identity().distinct_id
 }

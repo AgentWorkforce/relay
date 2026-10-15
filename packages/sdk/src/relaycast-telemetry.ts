@@ -8,7 +8,7 @@ export interface RelaycastTelemetryOptions {
    * cross-tabs survive after login, when the distinct id becomes the user id.
    */
   agentRelayMachineId?: string;
-  /** Cloud organization id, for group analytics on the relaycast side. */
+  /** Unverified Cloud organization correlation hint. */
   agentRelayOrgId?: string;
   /** Cloud organization slug, for readable breakdowns. */
   agentRelayOrgSlug?: string;
@@ -77,7 +77,7 @@ export function relaycastTelemetryOptions(
   const originActor = nonEmpty(explicit.originActor) ?? resolveOriginActor(env);
   const agentRelayUserId = nonEmpty(explicit.agentRelayUserId) ?? nonEmpty(env[USER_ID_ENV]);
   const agentRelayMachineId = nonEmpty(explicit.agentRelayMachineId) ?? nonEmpty(env[MACHINE_ID_ENV]);
-  // A signed-in user id is the better person key; the machine hash is fallback.
+  // Forward the current auth generation as a correlation hint; never use a machine id.
   const agentRelayDistinctId =
     nonEmpty(explicit.agentRelayDistinctId) ?? nonEmpty(env.AGENT_RELAY_DISTINCT_ID) ?? agentRelayUserId;
   const agentRelayOrgId = nonEmpty(explicit.agentRelayOrgId) ?? nonEmpty(env[ORG_ID_ENV]);
