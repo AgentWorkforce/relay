@@ -8799,10 +8799,26 @@ async fn shutdown_returns_retained_fleet_cleanup_completion() {
 
 #[tokio::test]
 async fn shutdown_does_not_block_on_a_full_fleet_queue() {
+    use httpmock::{Method::PATCH, MockServer};
     use tokio::sync::oneshot;
 
+    let server = MockServer::start();
+    let offline = server.mock(|when, then| {
+        when.method(PATCH)
+            .path("/v1/agents/broker")
+            .header("authorization", "Bearer rk_live_test")
+            .json_body(json!({"status": "offline"}));
+        then.status(200).json_body(json!({"ok": true, "data": {
+            "id": "agent_broker", "name": "broker", "type": "agent",
+            "status": "offline", "persona": null, "metadata": {}
+        }}));
+    });
+
     let registry = make_worker_registry_with_worker("unrelated").await;
-    let mut fixture = worker_event_runtime_fixture(registry, HashMap::new());
+    // The complete shutdown also marks the broker offline. Keep that presence
+    // request local so this queue-pressure test never depends on the public host.
+    let mut fixture =
+        worker_event_runtime_fixture_with_relay(registry, HashMap::new(), Some(server.base_url()));
     let name = WorkerName::from("shutdown-full-queue");
     let generation = Uuid::new_v4();
     let http = RelaycastHttpClient::new(
@@ -8891,6 +8907,7 @@ async fn shutdown_does_not_block_on_a_full_fleet_queue() {
         .await
         .expect("a full Fleet queue must not block the complete broker shutdown path")
         .expect("broker shutdown should succeed");
+    offline.assert_hits(1);
 }
 
 #[tokio::test]
