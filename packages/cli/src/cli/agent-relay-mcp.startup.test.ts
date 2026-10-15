@@ -1814,11 +1814,17 @@ describe('createAgentRelayMcpServer', () => {
     vi.stubEnv('AGENT_RELAY_USER_ID', 'stale-person');
     vi.stubEnv('AGENT_RELAY_ORG_ID', 'stale-org');
     const { mod, mocks } = await loadAgentRelayMcpModule();
-    mod.createAgentRelayMcpServer({ apiKey: 'rk_live_existing', agentToken: 'at_live_existing', agentName: 'PinnedWorker', baseUrl: 'https://relay.example.com/' });
+    mod.createAgentRelayMcpServer({
+      apiKey: 'rk_live_existing',
+      agentToken: 'at_live_existing',
+      agentName: 'PinnedWorker',
+      baseUrl: 'https://relay.example.com/',
+    });
     await mocks.serverInstances[0].tools.get('check_inbox')?.handler({});
-    const client = mocks.relayInstances.find(instance => instance.config.apiKey === 'at_live_existing');
+    const client = mocks.relayInstances.find((instance) => instance.config.apiKey === 'at_live_existing');
     expect(client?.config).toMatchObject({ apiKey: 'at_live_existing' });
-    for (const key of ['originActor', 'agentRelayDistinctId', 'agentRelayUserId', 'agentRelayOrgId']) expect(client?.config).not.toHaveProperty(key);
+    for (const key of ['originActor', 'agentRelayDistinctId', 'agentRelayUserId', 'agentRelayOrgId'])
+      expect(client?.config).not.toHaveProperty(key);
   });
 
   it('passes opted-in telemetry context through Agent Relay MCP clients', async () => {
