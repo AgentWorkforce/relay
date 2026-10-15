@@ -1807,7 +1807,24 @@ describe('createAgentRelayMcpServer', () => {
     expect(response.structuredContent).toEqual({ success: true, result_id: 'ar_test' });
   });
 
-  it('passes telemetry context through Agent Relay MCP clients', async () => {
+  it('does not forward telemetry hints through MCP clients after opt-out', async () => {
+    vi.stubEnv('AGENT_RELAY_TELEMETRY_DISABLED', '1');
+    vi.stubEnv('AGENT_RELAY_ORIGIN_ACTOR', 'agent-relay-cli/agent/claude-code');
+    vi.stubEnv('AGENT_RELAY_DISTINCT_ID', 'stale-distinct');
+    vi.stubEnv('AGENT_RELAY_USER_ID', 'stale-person');
+    vi.stubEnv('AGENT_RELAY_ORG_ID', 'stale-org');
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({ apiKey: 'rk_live_existing', agentToken: 'at_live_existing', agentName: 'PinnedWorker', baseUrl: 'https://relay.example.com/' });
+    await mocks.serverInstances[0].tools.get('check_inbox')?.handler({});
+    const client = mocks.relayInstances.find(instance => instance.config.apiKey === 'at_live_existing');
+    expect(client?.config).toMatchObject({ apiKey: 'at_live_existing' });
+    for (const key of ['originActor', 'agentRelayDistinctId', 'agentRelayUserId', 'agentRelayOrgId']) expect(client?.config).not.toHaveProperty(key);
+  });
+
+  it('passes opted-in telemetry context through Agent Relay MCP clients', async () => {
+    vi.stubEnv('AGENT_RELAY_TELEMETRY_DISABLED', '0');
+    vi.stubEnv('DO_NOT_TRACK', '0');
+    vi.stubEnv('CLOUD_API_ACCESS_TOKEN', '');
     vi.stubEnv('AGENT_RELAY_ORIGIN_ACTOR', 'agent-relay-cli/agent/claude-code');
     vi.stubEnv('AGENT_RELAY_DISTINCT_ID', 'distinct_test');
 
