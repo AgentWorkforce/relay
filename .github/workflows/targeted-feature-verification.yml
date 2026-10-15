@@ -41,6 +41,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       matrix: ${{ steps.shards.outputs.matrix }}
+      selection_artifact_name: ${{ steps.shards.outputs.selection_artifact_name }}
     env:
       AGENT_RELAY_TELEMETRY_DISABLED: '1'
     steps:
@@ -83,11 +84,12 @@ jobs:
             --max-command-budget-seconds 2880 \
             --max-command-seconds 720
           echo "matrix=$(jq -c '.matrix' .workflow-artifacts/targeted-pr/shards/matrix.json)" >> "$GITHUB_OUTPUT"
+          echo "selection_artifact_name=targeted-feature-selection-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
       - name: Upload immutable selection
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: targeted-feature-selection-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ steps.shards.outputs.selection_artifact_name }}
           path: .workflow-artifacts/targeted-pr
           include-hidden-files: true
           if-no-files-found: error
@@ -153,7 +155,8 @@ jobs:
       - name: Download immutable selection
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: targeted-feature-selection-${{ github.run_id }}-${{ github.run_attempt }}
+          # A shard rerun must reuse its producer's attempt, not the consumer's.
+          name: ${{ needs.select.outputs.selection_artifact_name }}
           path: .workflow-artifacts/targeted-pr
 
       - name: Generate and check Flows v2 spec
