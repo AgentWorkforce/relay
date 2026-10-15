@@ -1,0 +1,37 @@
+{
+  "id": "compact_ridr6adoo0go",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-10-15T19:57:17.694Z",
+  "sourceTrajectories": [
+    "traj_fesap23qytsg"
+  ],
+  "dateRange": {
+    "start": "2026-10-15T19:49:55.679Z",
+    "end": "2026-10-15T19:56:51.350Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 2,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Warn once after a dispatched release acknowledgement, before optional identity cleanup",
+          "chosen": "Warn once after a dispatched release acknowledgement, before optional identity cleanup",
+          "reasoning": "The release endpoint acknowledges worker dispatch only. Emitting through the existing stderr warning sink preserves the single JSON stdout document and covers delete-agent variants without invoking Cloud/provider deletion.",
+          "fromTrajectory": "traj_fesap23qytsg"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}
