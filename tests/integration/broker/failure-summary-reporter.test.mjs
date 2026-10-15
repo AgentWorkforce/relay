@@ -61,7 +61,7 @@ test('failure summary bounds long startup diagnostics', async () => {
   let output = '';
   for await (const chunk of failureSummary(events())) output += chunk;
 
-  assert.ok(output.length < 260);
+  assert.ok(Buffer.byteLength(output, 'utf8') <= 900);
   assert.match(output, /…$/m);
 });
 
@@ -112,4 +112,47 @@ test('messaging cleanroom scenario retains bounded failure reporting', async () 
     scenario.command.includes('--test-reporter=./tests/integration/broker/failure-summary-reporter.mjs')
   );
   assert.ok(scenario.forbidOutput.includes('# SKIP'));
+});
+
+test('failure summary retains correlation and stderr beyond long startup command prefixes', async () => {
+  const credential = 'Bearer synthetic-secret';
+  async function* events() {
+    yield {
+      type: 'test:fail',
+      data: {
+        name: 'startup',
+        details: {
+          error: {
+            message: `[broker_diag operation=startup origin=https://relay.example operation_elapsed_ms=42] Broker exited (cwd=${'x'.repeat(600)}; stderr_tail=registration (500): internal_error; request_id: request-abc; ${credential})`,
+          },
+        },
+      },
+    };
+  }
+  let output = '';
+  for await (const chunk of failureSummary(events())) output += chunk;
+  assert.match(output, /origin=https:\/\/relay\.example/);
+  assert.match(output, /operation_elapsed_ms=42/);
+  assert.match(output, /request_id=request-abc/);
+  assert.match(output, /stderr_tail=registration \(500\): internal_error/);
+  assert.ok(!output.includes('synthetic-secret'));
+  assert.ok(Buffer.byteLength(output, 'utf8') <= 900);
+});
+
+test('failure summary redacts URL userinfo, query secrets and generic credential assignments', () => {
+  const output = redactFailureMessage(
+    'https://someone:password-value@relay.example/v1/agents?api_key=query-value#fragment-value api_key=key-value token: token-value authorization=header-value'
+  );
+  for (const secret of [
+    'someone',
+    'password-value',
+    'query-value',
+    'fragment-value',
+    'key-value',
+    'token-value',
+    'header-value',
+  ]) {
+    assert.ok(!output.includes(secret));
+  }
+  assert.match(output, /https:\/\/relay\.example\/v1\/agents\?redacted/);
 });

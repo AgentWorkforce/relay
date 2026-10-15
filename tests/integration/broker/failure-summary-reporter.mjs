@@ -21,7 +21,43 @@ export function redactFailureMessage(value) {
       /(?:rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|arr_live_|br_)[A-Za-z0-9._~+/=%-]+/g,
       '[REDACTED_RELAY_CREDENTIAL]'
     )
-    .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED_RELAY_CREDENTIAL]');
+    .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED_RELAY_CREDENTIAL]')
+    .replace(/https?:\/\/[^\s|)]+/gi, (raw) => {
+      try {
+        const url = new URL(raw);
+        url.username = '';
+        url.password = '';
+        if (url.search) url.search = '?redacted';
+        url.hash = '';
+        return url.toString();
+      } catch {
+        return '[REDACTED_URL]';
+      }
+    })
+    .replace(
+      /\b(api[_-]?key|token|authorization|password|secret)(\s*[:=]\s*)[^\s,;|]+/gi,
+      '$1$2[REDACTED_RELAY_CREDENTIAL]'
+    );
+}
+
+export function failureDetail(value) {
+  const message = redactFailureMessage(value);
+  const context = message.match(/^\[broker_diag [^\]]+\]/)?.[0];
+  const requestId = message.match(/\b(?:request_id|x-request-id|x-correlation-id)[:=]\s*([^\s;)]+)/i)?.[1];
+  const stderr = message.includes('stderr_tail=') ? message.split('stderr_tail=').at(-1) : undefined;
+  // Put retained evidence before cwd/command noise; keep the entire aggregate
+  // below the workflow's 1 KiB stderr tail. No payloads or headers are added.
+  return bounded(
+    [
+      context,
+      requestId ? `request_id=${bounded(requestId, 96)}` : undefined,
+      stderr ? `stderr_tail=${stderr.slice(-280)}` : undefined,
+      bounded(context ? message.slice(context.length) : message, 260),
+    ]
+      .filter(Boolean)
+      .join(' | '),
+    580
+  );
 }
 
 export default async function* failureSummary(source) {
@@ -32,7 +68,7 @@ export default async function* failureSummary(source) {
     const error = event.data?.details?.error;
     failures.push({
       name: bounded(redactFailureMessage(event.data?.name), 120),
-      message: bounded(redactFailureMessage(error?.message)),
+      message: failureDetail(error?.message),
     });
   }
 
