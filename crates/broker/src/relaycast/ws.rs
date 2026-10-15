@@ -2213,9 +2213,9 @@ async fn mute_self_channel(agent_client: &AgentClient, channel: &str) {
 fn build_relay_client(api_key: &str, base_url: Option<&str>) -> Option<RelayCast> {
     let mut opts =
         RelayCastOptions::new(api_key).with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
-    if let Some(distinct_id) = crate::telemetry::agent_relay_distinct_id() {
-        opts = opts.with_agent_relay_distinct_id(distinct_id);
-    }
+    // Cached SDK clients cannot track local account/consent changes. Omit
+    // mutable identity hints; the server resolves ownership from credentials.
+    // Older hosts may remain anonymous until verified attribution is released.
     if let Some(base_url) = base_url {
         opts = opts.with_base_url(base_url);
     }
@@ -3173,6 +3173,60 @@ mod tests {
         WORKSPACE_BUSY_ACTION_SAFETY_CAP, WORKSPACE_BUSY_CREATE_ONLY_SAFETY_CAP,
         WORKSPACE_BUSY_RECONCILE_BUDGET, WORKSPACE_BUSY_RECONCILE_SAFETY_CAP,
     };
+
+    #[test]
+    fn cached_sdk_client_cannot_retain_local_person_hints() {
+        // Run with an isolated environment: other broker tests mutate global env.
+        if std::env::var_os("RELAY_TEST_CACHED_IDENTITY_CHILD").is_none() {
+            let data = tempfile::tempdir().unwrap();
+            std::fs::write(
+                data.path().join("telemetry.json"),
+                r#"{"enabled":true,"authGeneration":"generation-A"}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                data.path().join("cloud-identity.json"),
+                r#"{"userId":"usr_A","_analyticsRevision":"revision-A"}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                data.path().join("cloud-identity.json.generation"),
+                "revision-A",
+            )
+            .unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "relaycast::ws::tests::cached_sdk_client_cannot_retain_local_person_hints",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env("RELAY_TEST_CACHED_IDENTITY_CHILD", "1")
+                .env("AGENT_RELAY_DATA_DIR", data.path())
+                .env_remove("AGENT_RELAY_TELEMETRY_DISABLED")
+                .env_remove("DO_NOT_TRACK")
+                .env_remove("CLOUD_API_ACCESS_TOKEN")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        assert_eq!(
+            crate::telemetry::cloud_identity().user_id.as_deref(),
+            Some("usr_A")
+        );
+        assert_eq!(
+            crate::telemetry::agent_relay_distinct_id().as_deref(),
+            Some("usr_A")
+        );
+        let relay =
+            super::build_relay_client("rk_live_synthetic", Some("https://example.test")).unwrap();
+        let agent = relay.as_agent("at_live_synthetic").unwrap();
+        assert_eq!(agent.http_client().agent_relay_distinct_id(), None);
+        assert_eq!(
+            agent.http_client().origin_actor(),
+            Some(crate::telemetry::BROKER_ORIGIN_ACTOR)
+        );
+    }
 
     fn seeded_http_client(base_url: &str) -> RelaycastHttpClient {
         let client = RelaycastHttpClient::new(

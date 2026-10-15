@@ -1,14 +1,14 @@
 export interface RelaycastTelemetryOptions {
   originActor?: string;
   agentRelayDistinctId?: string;
-  /** Cloud user id of the signed-in operator, when known. */
+  /** Unverified correlation hint; servers must resolve ownership from credentials. */
   agentRelayUserId?: string;
   /**
    * Hashed machine id. Forwarded alongside the distinct id so machine-level
    * cross-tabs survive after login, when the distinct id becomes the user id.
    */
   agentRelayMachineId?: string;
-  /** Cloud organization id, for group analytics on the relaycast side. */
+  /** Unverified Cloud organization correlation hint. */
   agentRelayOrgId?: string;
   /** Cloud organization slug, for readable breakdowns. */
   agentRelayOrgSlug?: string;
@@ -65,15 +65,25 @@ export function relaycastTelemetryOptions(
   explicit: RelaycastTelemetryOptions = {},
   env: Env = defaultEnv()
 ): RelaycastTelemetryOptions {
+  if (
+    [env.AGENT_RELAY_TELEMETRY_DISABLED, env.DO_NOT_TRACK].some(
+      (value) => value === '1' || value?.toLowerCase() === 'true'
+    )
+  )
+    return {};
+  // Delegated Cloud credentials do not establish the local operator's identity.
+  // The receiving service must resolve their owner from its authenticated context.
   const originActor = nonEmpty(explicit.originActor) ?? resolveOriginActor(env);
   const agentRelayUserId = nonEmpty(explicit.agentRelayUserId) ?? nonEmpty(env[USER_ID_ENV]);
   const agentRelayMachineId = nonEmpty(explicit.agentRelayMachineId) ?? nonEmpty(env[MACHINE_ID_ENV]);
-  // A signed-in user id is the better person key; the machine hash is fallback.
+  if (env.CLOUD_API_ACCESS_TOKEN?.trim())
+    return {
+      ...(originActor ? { originActor } : {}),
+      ...(agentRelayMachineId ? { agentRelayMachineId } : {}),
+    };
+  // Forward the current auth generation as a correlation hint; never use a machine id.
   const agentRelayDistinctId =
-    nonEmpty(explicit.agentRelayDistinctId) ??
-    nonEmpty(env.AGENT_RELAY_DISTINCT_ID) ??
-    agentRelayUserId ??
-    agentRelayMachineId;
+    nonEmpty(explicit.agentRelayDistinctId) ?? nonEmpty(env.AGENT_RELAY_DISTINCT_ID) ?? agentRelayUserId;
   const agentRelayOrgId = nonEmpty(explicit.agentRelayOrgId) ?? nonEmpty(env[ORG_ID_ENV]);
   const agentRelayOrgSlug = nonEmpty(explicit.agentRelayOrgSlug) ?? nonEmpty(env[ORG_SLUG_ENV]);
 

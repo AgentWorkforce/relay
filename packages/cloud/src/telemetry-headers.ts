@@ -30,16 +30,18 @@ function sanitizeHeaderValue(
 }
 
 function isTelemetryDisabledByEnv(env: NodeJS.ProcessEnv): boolean {
-  const disabled = env.AGENT_RELAY_TELEMETRY_DISABLED ?? env.DO_NOT_TRACK;
-  return disabled === '1' || disabled?.toLowerCase() === 'true';
+  return [env.AGENT_RELAY_TELEMETRY_DISABLED, env.DO_NOT_TRACK].some(
+    (value) => value === '1' || value?.toLowerCase() === 'true'
+  );
 }
 
 export function buildAgentRelayTelemetryHeaders(
   env: NodeJS.ProcessEnv = process.env
 ): Record<string, string> {
   if (isTelemetryDisabledByEnv(env)) return {};
+  const delegated = Boolean(env.CLOUD_API_ACCESS_TOKEN?.trim());
 
-  const userId = sanitizeHeaderValue(env[AGENT_RELAY_USER_ID_ENV], {
+  const userId = sanitizeHeaderValue(delegated ? undefined : env[AGENT_RELAY_USER_ID_ENV], {
     maxLength: 128,
     pattern: DISTINCT_ID_ALLOWED,
   });
@@ -49,21 +51,16 @@ export function buildAgentRelayTelemetryHeaders(
     pattern: DISTINCT_ID_ALLOWED,
   });
 
-  // When the caller is a signed-in cloud user, the user id IS the person key —
-  // it keeps CLI-side and relaycast-side events on one PostHog person. The
-  // machine hash remains the fallback for anonymous (not-logged-in) runs.
+  // Forward a current generation hint only for the selected local session.
+  // A durable machine dimension is never a fallback person key.
   const distinctId =
-    sanitizeHeaderValue(env[AGENT_RELAY_DISTINCT_ID_ENV], {
+    sanitizeHeaderValue(delegated ? undefined : env[AGENT_RELAY_DISTINCT_ID_ENV], {
       maxLength: 128,
       pattern: DISTINCT_ID_ALLOWED,
-    }) ??
-    userId ??
-    machineId;
-  if (!distinctId) return {};
+    }) ?? userId;
 
-  const headers: Record<string, string> = {
-    [AGENT_RELAY_DISTINCT_ID_HEADER]: distinctId,
-  };
+  const headers: Record<string, string> = {};
+  if (distinctId) headers[AGENT_RELAY_DISTINCT_ID_HEADER] = distinctId;
 
   // Sent alongside the distinct id, never instead of it: once a user signs in
   // the distinct id is their user id, so this is the only thing that keeps
@@ -71,13 +68,13 @@ export function buildAgentRelayTelemetryHeaders(
   if (machineId) headers[AGENT_RELAY_MACHINE_ID_HEADER] = machineId;
   if (userId) headers[AGENT_RELAY_USER_ID_HEADER] = userId;
 
-  const orgId = sanitizeHeaderValue(env[AGENT_RELAY_ORG_ID_ENV], {
+  const orgId = sanitizeHeaderValue(delegated ? undefined : env[AGENT_RELAY_ORG_ID_ENV], {
     maxLength: 128,
     pattern: DISTINCT_ID_ALLOWED,
   });
   if (orgId) headers[AGENT_RELAY_ORG_ID_HEADER] = orgId;
 
-  const orgSlug = sanitizeHeaderValue(env[AGENT_RELAY_ORG_SLUG_ENV], {
+  const orgSlug = sanitizeHeaderValue(delegated ? undefined : env[AGENT_RELAY_ORG_SLUG_ENV], {
     maxLength: 120,
     pattern: DISTINCT_ID_ALLOWED,
   });

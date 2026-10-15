@@ -1,3 +1,4 @@
+import { identityRevision, isCloudAnalyticsEnabled } from '@agent-relay/cloud/identity';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -695,7 +696,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         errorClass = errorClassName(err);
         throw err;
       } finally {
-        track('cloud_auth', {
+        track('cli_cloud_auth_command', {
           action: 'login',
           ...(method ? { method } : {}),
           success,
@@ -743,7 +744,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         errorClass = errorClassName(err);
         throw err;
       } finally {
-        track('cloud_auth', {
+        track('cli_cloud_auth_command', {
           action: 'logout',
           success,
           duration_ms: Date.now() - started,
@@ -819,8 +820,10 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       try {
         const apiUrl = options.apiUrl || defaultApiUrl();
         const auth = await ensureAuthenticated(apiUrl);
+        const revision = identityRevision();
         const { response } = await authorizedApiFetch(auth, '/api/v1/auth/whoami', {
           method: 'GET',
+          headers: isCloudAnalyticsEnabled() ? { 'X-Agent-Relay-Analytics': 'enabled' } : {},
         });
 
         const payload = (await response.json().catch(() => null)) as
@@ -849,7 +852,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         // for the locally cached identity that tags telemetry.
         const identity = toCloudIdentity(payload, auth.apiUrl);
         if (identity) {
-          await writeStoredIdentity(identity);
+          await writeStoredIdentity(identity, process.env, revision);
           deps.log(`Identity file: ${IDENTITY_FILE_PATH}`);
         }
         success = true;
@@ -857,7 +860,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         errorClass = errorClassName(err);
         throw err;
       } finally {
-        track('cloud_auth', {
+        track('cli_cloud_auth_command', {
           action: 'whoami',
           success,
           duration_ms: Date.now() - started,
@@ -901,7 +904,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         );
         deps.exit(1);
       } finally {
-        track('cloud_auth', {
+        track('cli_cloud_auth_command', {
           action: 'workspaces',
           success,
           duration_ms: Date.now() - started,
@@ -937,7 +940,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         errorClass = errorClassName(err);
         throw err;
       } finally {
-        track('cloud_auth', {
+        track('cli_cloud_auth_command', {
           action: 'connect',
           success,
           duration_ms: Date.now() - started,

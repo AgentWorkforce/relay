@@ -101,7 +101,7 @@ describe('writeStoredIdentity / readStoredIdentity', () => {
 
   it('leaves no temp file behind', async () => {
     await writeStoredIdentity(IDENTITY, env);
-    expect(fs.readdirSync(dataDir)).toEqual(['cloud-identity.json']);
+    expect(fs.readdirSync(dataDir).sort()).toEqual(['cloud-identity.json', 'cloud-identity.json.generation']);
   });
 
   it('refuses to persist an identity with no userId', async () => {
@@ -129,7 +129,7 @@ describe('writeStoredIdentity / readStoredIdentity', () => {
 });
 
 describe('resolveCloudIdentity', () => {
-  it('prefers env vars so a child process inherits its parent identity', async () => {
+  it('prefers the current local login over inherited correlation hints', async () => {
     await writeStoredIdentity(IDENTITY, env);
 
     const resolved = resolveCloudIdentity({
@@ -138,13 +138,18 @@ describe('resolveCloudIdentity', () => {
       [IDENTITY_ENV_KEYS.organizationId]: 'org_from_env',
     });
 
-    expect(resolved?.userId).toBe('usr_from_env');
-    expect(resolved?.organizationId).toBe('org_from_env');
+    expect(resolved?.userId).toBe(IDENTITY.userId);
+    expect(resolved?.organizationId).toBe(IDENTITY.organizationId);
   });
 
   it('falls back to the file when no env identity is published', async () => {
     await writeStoredIdentity(IDENTITY, env);
     expect(resolveCloudIdentity(env)?.userId).toBe(IDENTITY.userId);
+  });
+
+  it('does not credit local A when delegated Cloud credentials select B', async () => {
+    await writeStoredIdentity(IDENTITY, env);
+    expect(resolveCloudIdentity({ ...env, CLOUD_API_ACCESS_TOKEN: 'synthetic-B' })).toBeNull();
   });
 
   it('returns null when the user is not logged in', () => {
@@ -166,7 +171,6 @@ describe('cloudIdentityEnv', () => {
   it('publishes every known field', () => {
     expect(cloudIdentityEnv(IDENTITY)).toEqual({
       AGENT_RELAY_USER_ID: 'usr_abc123',
-      AGENT_RELAY_USER_EMAIL: 'will@agentrelay.com',
       AGENT_RELAY_ORG_ID: 'org_xyz789',
       AGENT_RELAY_ORG_SLUG: 'agentworkforce',
       AGENT_RELAY_CLOUD_WORKSPACE_ID: 'ws_123',

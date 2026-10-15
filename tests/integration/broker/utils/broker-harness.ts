@@ -119,6 +119,37 @@ export async function ensureApiKey(): Promise<string> {
   return apiKey;
 }
 
+/** Test-only failure context; elapsed time covers the operation, not one HTTP request. */
+export async function diagnoseBrokerOperation<T>(
+  operation: 'startup' | 'spawn',
+  env: NodeJS.ProcessEnv,
+  run: () => Promise<T>
+): Promise<T> {
+  const started = performance.now();
+  try {
+    return await run();
+  } catch (cause) {
+    let origin = '<invalid-origin>';
+    try {
+      // Match the broker resolver; origin excludes URL credentials, path and query.
+      const base = (env.RELAYCAST_BASE_URL ?? env.RELAY_BASE_URL)?.trim() || 'https://cast.agentrelay.com';
+      const url = new URL(base);
+      if (url.protocol === 'https:' || url.protocol === 'http:') origin = url.origin;
+    } catch {
+      /* Never print the malformed input. */
+    }
+    const elapsed = Math.round(performance.now() - started);
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    const message = `[broker_diag operation=${operation} origin=${origin} operation_elapsed_ms=${elapsed}] ${detail}`;
+    // Preserve typed broker error codes and identity used by test assertions.
+    if (cause instanceof Error) {
+      cause.message = message;
+      throw cause;
+    }
+    throw new Error(message, { cause });
+  }
+}
+
 type SpawnHarnessClient = (options: RuntimeSpawnOptions) => Promise<HarnessDriverClient>;
 
 export function spawnHarnessClientOnce(
@@ -235,7 +266,9 @@ export class BrokerHarness {
     };
 
     // Start the low-level client (spawns broker process)
-    const client = await spawnHarnessClientOnce(clientOpts);
+    const client = await diagnoseBrokerOperation('startup', this.opts.env, () =>
+      spawnHarnessClientOnce(clientOpts)
+    );
     try {
       const relay = new RelayCast({ apiKey });
       await waitForNodeRegistration(this.opts.brokerName, () => relay.nodes.get(this.opts.brokerName));
@@ -301,15 +334,17 @@ export class BrokerHarness {
     channels?: string[],
     options?: { task?: string; continueFrom?: string; model?: string; exitAfterTask?: boolean }
   ): Promise<{ name: string; runtime: string }> {
-    return this.client.spawnPty({
-      name,
-      cli,
-      channels: channels ?? ['general'],
-      task: options?.task,
-      continueFrom: options?.continueFrom,
-      model: options?.model,
-      exitAfterTask: options?.exitAfterTask,
-    });
+    return diagnoseBrokerOperation('spawn', this.opts.env, () =>
+      this.client.spawnPty({
+        name,
+        cli,
+        channels: channels ?? ['general'],
+        task: options?.task,
+        continueFrom: options?.continueFrom,
+        model: options?.model,
+        exitAfterTask: options?.exitAfterTask,
+      })
+    );
   }
 
   /**

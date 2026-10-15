@@ -455,7 +455,7 @@ describe('telemetry context propagation', () => {
     }
   );
 
-  it('keeps identity inherited from an ancestor when telemetry is enabled', () => {
+  it('replaces stale inherited identity with the current local session', () => {
     const dataDir = setup();
     vi.stubEnv('AGENT_RELAY_USER_ID', 'usr_inherited');
     vi.stubEnv('AGENT_RELAY_ORG_ID', 'org_inherited');
@@ -463,9 +463,10 @@ describe('telemetry context propagation', () => {
     try {
       propagateTelemetryContextToChildren();
 
-      // An ancestor's identity still wins over the local identity file.
-      expect(process.env.AGENT_RELAY_USER_ID).toBe('usr_inherited');
-      expect(process.env.AGENT_RELAY_ORG_ID).toBe('org_inherited');
+      // Parent hints cannot override the account authenticated on this machine.
+      expect(process.env.AGENT_RELAY_USER_ID).toBe('usr_abc123');
+      expect(process.env.AGENT_RELAY_ORG_ID).toBe('org_xyz789');
+      expect(process.env.AGENT_RELAY_USER_EMAIL).toBeUndefined();
     } finally {
       fs.rmSync(dataDir, { recursive: true, force: true });
     }

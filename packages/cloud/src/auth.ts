@@ -11,6 +11,9 @@ import { CloudApiClient, type CloudApiClientOptions, type CloudApiClientSnapshot
 import { appendAgentRelayTelemetryHeaders } from './telemetry-headers.js';
 import {
   clearStoredIdentity,
+  identityFilePath,
+  identityRevision,
+  isCloudAnalyticsEnabled,
   readStoredIdentity,
   writeStoredIdentity,
   type CloudIdentity,
@@ -179,25 +182,36 @@ export async function refreshStoredCloudIdentity(
   auth: StoredAuth,
   options: {
     env?: NodeJS.ProcessEnv;
+    signal?: AbortSignal;
     /** Apply the caller's credential transport policy to the whoami request. */
     validateApiUrl?: (apiUrl: string) => void;
+    /** Revision sampled before reading the credential snapshot for bootstrap repair. */
+    expectedRevision?: string;
+    /** Background analytics must never refresh or persist credentials. */
+    refreshCredentials?: boolean;
   } = {}
 ): Promise<CloudIdentity | null> {
   const env = options.env ?? process.env;
+  const revision = options.expectedRevision ?? identityRevision(env);
 
   try {
-    const { response } = await authorizedApiFetch(
-      auth,
-      '/api/v1/auth/whoami',
-      {
-        method: 'GET',
-        ...(options.validateApiUrl ? { redirect: 'error' as const } : {}),
-      },
-      {
-        interactive: false,
-        validateApiUrl: options.validateApiUrl,
-      }
-    );
+    if (identityRevision(env) !== revision) return null;
+    const init: RequestInit = {
+      method: 'GET',
+      signal: options.signal ?? AbortSignal.timeout(DEFAULT_REFRESH_TIMEOUT_MS),
+      headers: isCloudAnalyticsEnabled(env) ? { 'X-Agent-Relay-Analytics': 'enabled' } : {},
+      ...(options.validateApiUrl ? { redirect: 'error' as const } : {}),
+    };
+    options.validateApiUrl?.(auth.apiUrl);
+    const response =
+      options.refreshCredentials === false
+        ? await apiFetch(auth.apiUrl, auth.accessToken, '/api/v1/auth/whoami', init)
+        : (
+            await authorizedApiFetch(auth, '/api/v1/auth/whoami', init, {
+              interactive: false,
+              validateApiUrl: options.validateApiUrl,
+            })
+          ).response;
     if (!response.ok) return null;
 
     const payload = (await response.json().catch(() => null)) as WhoAmIResponse | null;
@@ -206,10 +220,48 @@ export async function refreshStoredCloudIdentity(
     const identity = toCloudIdentity(payload, auth.apiUrl);
     if (!identity) return null;
 
-    await writeStoredIdentity(identity, env);
-    return identity;
+    // Env-backed sessions never replace the unrelated local operator cache.
+    if (env.CLOUD_API_ACCESS_TOKEN?.trim()) return identity;
+    if (identityRevision(env) !== revision) return null;
+    await writeStoredIdentity(identity, env, revision);
+    return identityRevision(env) === revision ? identity : null;
   } catch {
     return null;
+  }
+}
+
+/** At most one bounded repair per eligible CLI bootstrap. Successful identity
+ * snapshots refresh daily; failures retry after five minutes. This never runs
+ * for opted-out clients and never turns a token failure into interactive login. */
+export async function recoverStoredCloudIdentity(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  if (!isCloudAnalyticsEnabled(env) || env.CLOUD_API_ACCESS_TOKEN?.trim()) return;
+  try {
+    const revision = identityRevision(env);
+    const auth = await readStoredAuth(env);
+    if (!auth) return;
+    // Background repair runs before command-specific policy is known. Require
+    // HTTPS and prevent redirects. Repair never refreshes credentials, so a
+    // late 401 cannot resurrect credentials after logout or an account switch.
+    const validateApiUrl = (apiUrl: string) => {
+      if (new URL(apiUrl).protocol !== 'https:') throw new Error('Analytics repair requires HTTPS');
+    };
+    validateApiUrl(auth.apiUrl);
+    const existing = await readStoredIdentity(env);
+    if (existing?.apiUrl === auth.apiUrl && Date.now() - Date.parse(existing.updatedAt) < 86_400_000) return;
+    const marker = `${identityFilePath(env)}.repair`;
+    const attempted = Number(await fs.readFile(marker, 'utf8').catch(() => '0'));
+    if (Date.now() - attempted < 300_000) return;
+    await fs.mkdir(path.dirname(marker), { recursive: true, mode: 0o700 });
+    await fs.writeFile(marker, String(Date.now()), { mode: 0o600 });
+    await refreshStoredCloudIdentity(auth, {
+      env,
+      signal: AbortSignal.timeout(2_000),
+      expectedRevision: revision,
+      refreshCredentials: false,
+      validateApiUrl,
+    });
+  } catch {
+    /* Analytics recovery must never prevent a command. */
   }
 }
 
@@ -670,6 +722,7 @@ async function completeLogin(
   // or sending its new bearer to whoami. This is the final common boundary for
   // both browser callbacks and device-code grants.
   options.validateApiUrl?.(auth.apiUrl);
+  await clearStoredIdentity();
   await writeStoredAuth(auth);
   // Record who just logged in so subsequent CLI/broker runs can attribute
   // telemetry to this user and org. Never blocks the login from succeeding.
