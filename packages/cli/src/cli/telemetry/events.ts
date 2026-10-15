@@ -348,7 +348,7 @@ export interface WorkflowRunEvent {
 }
 
 /**
- * cloud_auth - Emitted for cloud account auth flows
+ * cli_cloud_auth_command - Emitted for cloud account auth flows
  * (login/logout/whoami/workspaces/connect).
  * `action` distinguishes the flow; `provider` is only present for `connect`.
  */
@@ -488,7 +488,7 @@ export type TelemetryEventName =
   | 'cli_update'
   | 'agent_relay_tool_call'
   | 'workflow_run'
-  | 'cloud_auth'
+  | 'cli_cloud_auth_command'
   | 'cloud_workflow_run'
   | 'cloud_workflow_schedule'
   | 'provider_auth'
@@ -511,7 +511,7 @@ export interface TelemetryEventMap {
   cli_update: CliUpdateEvent;
   agent_relay_tool_call: AgentRelayToolCallEvent;
   workflow_run: WorkflowRunEvent;
-  cloud_auth: CloudAuthEvent;
+  cli_cloud_auth_command: CloudAuthEvent;
   cloud_workflow_run: CloudWorkflowRunEvent;
   cloud_workflow_schedule: CloudWorkflowScheduleEvent;
   provider_auth: ProviderAuthEvent;

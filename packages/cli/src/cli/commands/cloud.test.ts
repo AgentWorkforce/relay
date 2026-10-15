@@ -231,7 +231,7 @@ describe('registerCloudCommands', () => {
       await program.parseAsync(['cloud', 'login', '--device'], { from: 'user' });
 
       expect(vi.mocked(track)).toHaveBeenCalledWith(
-        'cloud_auth',
+        'cli_cloud_auth_command',
         expect.objectContaining({ action: 'login', method: 'device', success: true })
       );
     });
@@ -245,7 +245,7 @@ describe('registerCloudCommands', () => {
       await program.parseAsync(['cloud', 'login'], { from: 'user' });
 
       expect(vi.mocked(track)).toHaveBeenCalledWith(
-        'cloud_auth',
+        'cli_cloud_auth_command',
         expect.objectContaining({ method: 'device' })
       );
     });

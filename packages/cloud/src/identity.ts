@@ -18,6 +18,7 @@
  */
 
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -112,7 +113,9 @@ export async function readStoredIdentity(
 ): Promise<CloudIdentity | null> {
   try {
     const file = await fsp.readFile(identityFilePath(env), 'utf8');
-    return normalizeCloudIdentity(JSON.parse(file) as unknown);
+    const raw = JSON.parse(file);
+    if ((raw._analyticsRevision ?? '') !== identityRevision(env)) return null;
+    return normalizeCloudIdentity(raw);
   } catch {
     return null;
   }
@@ -125,26 +128,55 @@ export async function readStoredIdentity(
 export function readStoredIdentitySync(env: NodeJS.ProcessEnv = process.env): CloudIdentity | null {
   try {
     const file = fs.readFileSync(identityFilePath(env), 'utf8');
-    return normalizeCloudIdentity(JSON.parse(file) as unknown);
+    const raw = JSON.parse(file);
+    if ((raw._analyticsRevision ?? '') !== identityRevision(env)) return null;
+    return normalizeCloudIdentity(raw);
   } catch {
     return null;
   }
 }
 
+/** Logout/login invalidates in-flight whoami responses across processes. */
+export function identityRevision(env: NodeJS.ProcessEnv = process.env): string {
+  try {
+    return fs.readFileSync(`${identityFilePath(env)}.generation`, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function rotateIdentityRevision(env: NodeJS.ProcessEnv): string {
+  const target = `${identityFilePath(env)}.generation`;
+  const revision = randomUUID();
+  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(target, revision, { mode: 0o600 });
+  return revision;
+}
+
 export async function writeStoredIdentity(
   identity: CloudIdentity,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  expectedRevision?: string
 ): Promise<void> {
   const normalized = normalizeCloudIdentity(identity);
   if (!normalized) return;
 
   const target = identityFilePath(env);
-  const tmp = `${target}.${process.pid}.tmp`;
+  const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`;
 
   try {
+    // Bind the record to the generation observed before whoami. Even if logout
+    // happens during an awaited file write, readers reject the stale snapshot.
+    const revision = expectedRevision ?? rotateIdentityRevision(env);
+    if (revision !== identityRevision(env)) return;
     await fsp.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-    await fsp.writeFile(tmp, `${JSON.stringify(normalized, null, 2)}\n`, { mode: 0o600 });
+    await fsp.writeFile(
+      tmp,
+      `${JSON.stringify({ ...normalized, _analyticsRevision: revision }, null, 2)}\n`,
+      { mode: 0o600 }
+    );
     await fsp.rename(tmp, target);
+    if (identityRevision(env) === revision) publishCloudIdentity(normalized, env);
   } catch {
     // Identity is an analytics convenience — never fail a command over it.
     await fsp.rm(tmp, { force: true }).catch(() => undefined);
@@ -152,31 +184,47 @@ export async function writeStoredIdentity(
 }
 
 export async function clearStoredIdentity(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  publishCloudIdentity(null, env);
   try {
+    rotateIdentityRevision(env);
     await fsp.rm(identityFilePath(env), { force: true });
   } catch {
     // Best-effort.
   }
 }
 
-/**
- * Resolve identity for the current process: env vars win over the file so that
- * a child process inherits whatever its parent published, and so CI can inject
- * identity without a login.
- */
+/** Local login identity is authoritative. Inherited IDs are correlation hints,
+ * never proof that this process is still logged in as the same account. */
 export function resolveCloudIdentity(env: NodeJS.ProcessEnv = process.env): CloudIdentity | null {
-  const fromEnv = normalizeCloudIdentity({
-    userId: env[IDENTITY_ENV_KEYS.userId],
-    email: env[IDENTITY_ENV_KEYS.email],
-    organizationId: env[IDENTITY_ENV_KEYS.organizationId],
-    organizationSlug: env[IDENTITY_ENV_KEYS.organizationSlug],
-    workspaceId: env[IDENTITY_ENV_KEYS.workspaceId],
-    apiUrl: env.CLOUD_API_URL,
-    updatedAt: new Date().toISOString(),
-  });
-  if (fromEnv) return fromEnv;
-
+  // Delegated credentials may belong to someone other than the local login.
+  if (env.CLOUD_API_ACCESS_TOKEN?.trim()) return null;
   return readStoredIdentitySync(env);
+}
+
+/** Surface-local eligibility, shared with the CLI preference file. */
+export function isCloudAnalyticsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const disabled = (value: string | undefined) => value === '1' || value?.toLowerCase() === 'true';
+  if (disabled(env.AGENT_RELAY_TELEMETRY_DISABLED) || disabled(env.DO_NOT_TRACK)) return false;
+  try {
+    const prefs = JSON.parse(
+      fs.readFileSync(path.join(path.dirname(identityFilePath(env)), 'telemetry.json'), 'utf8')
+    );
+    return prefs.enabled !== false;
+  } catch {
+    return true;
+  }
+}
+
+/** Replace, rather than merge, child context so logout/workspace changes clear
+ * stale values. These are hints at remote boundaries, not authorization. */
+export function publishCloudIdentity(
+  identity: CloudIdentity | null,
+  env: NodeJS.ProcessEnv = process.env
+): void {
+  for (const key of [...Object.values(IDENTITY_ENV_KEYS), 'AGENT_RELAY_DISTINCT_ID']) delete env[key];
+  if (!isCloudAnalyticsEnabled(env)) return;
+  Object.assign(env, cloudIdentityEnv(identity));
+  if (identity) env.AGENT_RELAY_DISTINCT_ID = identity.userId;
 }
 
 /** The env vars a parent process should publish so children inherit identity. */
@@ -184,7 +232,6 @@ export function cloudIdentityEnv(identity: CloudIdentity | null): Record<string,
   if (!identity) return {};
   return {
     [IDENTITY_ENV_KEYS.userId]: identity.userId,
-    ...(identity.email ? { [IDENTITY_ENV_KEYS.email]: identity.email } : {}),
     ...(identity.organizationId ? { [IDENTITY_ENV_KEYS.organizationId]: identity.organizationId } : {}),
     ...(identity.organizationSlug ? { [IDENTITY_ENV_KEYS.organizationSlug]: identity.organizationSlug } : {}),
     ...(identity.workspaceId ? { [IDENTITY_ENV_KEYS.workspaceId]: identity.workspaceId } : {}),

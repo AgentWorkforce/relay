@@ -1,7 +1,7 @@
 export interface RelaycastTelemetryOptions {
   originActor?: string;
   agentRelayDistinctId?: string;
-  /** Cloud user id of the signed-in operator, when known. */
+  /** Unverified correlation hint; servers must resolve ownership from credentials. */
   agentRelayUserId?: string;
   /**
    * Hashed machine id. Forwarded alongside the distinct id so machine-level
@@ -65,15 +65,21 @@ export function relaycastTelemetryOptions(
   explicit: RelaycastTelemetryOptions = {},
   env: Env = defaultEnv()
 ): RelaycastTelemetryOptions {
+  if (
+    [env.AGENT_RELAY_TELEMETRY_DISABLED, env.DO_NOT_TRACK].some(
+      (value) => value === '1' || value?.toLowerCase() === 'true'
+    )
+  )
+    return {};
+  // Delegated Cloud credentials do not establish the local operator's identity.
+  // The receiving service must resolve their owner from its authenticated context.
+  if (env.CLOUD_API_ACCESS_TOKEN?.trim()) return {};
   const originActor = nonEmpty(explicit.originActor) ?? resolveOriginActor(env);
   const agentRelayUserId = nonEmpty(explicit.agentRelayUserId) ?? nonEmpty(env[USER_ID_ENV]);
   const agentRelayMachineId = nonEmpty(explicit.agentRelayMachineId) ?? nonEmpty(env[MACHINE_ID_ENV]);
   // A signed-in user id is the better person key; the machine hash is fallback.
   const agentRelayDistinctId =
-    nonEmpty(explicit.agentRelayDistinctId) ??
-    nonEmpty(env.AGENT_RELAY_DISTINCT_ID) ??
-    agentRelayUserId ??
-    agentRelayMachineId;
+    nonEmpty(explicit.agentRelayDistinctId) ?? nonEmpty(env.AGENT_RELAY_DISTINCT_ID) ?? agentRelayUserId;
   const agentRelayOrgId = nonEmpty(explicit.agentRelayOrgId) ?? nonEmpty(env[ORG_ID_ENV]);
   const agentRelayOrgSlug = nonEmpty(explicit.agentRelayOrgSlug) ?? nonEmpty(env[ORG_SLUG_ENV]);
 

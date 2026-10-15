@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fsMocks = vi.hoisted(() => ({
@@ -74,7 +78,9 @@ function requireHttps(apiUrl: string): void {
 // `clearAllMocks` resets call history but leaves `vi.spyOn` spies installed, so
 // a test that failed mid-body used to leave `console.log` silenced for every
 // later test in this file — silencing output exactly when a failure needs it.
+let analyticsTestDir: string;
 afterEach(() => {
+  fs.rmSync(analyticsTestDir, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
 
@@ -82,6 +88,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  analyticsTestDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-auth-analytics-'));
+  vi.stubEnv('AGENT_RELAY_DATA_DIR', analyticsTestDir);
 
   // Pin the browser-availability signal. Login now falls back to the device
   // flow on a host that cannot open a browser, so tests that exercise the

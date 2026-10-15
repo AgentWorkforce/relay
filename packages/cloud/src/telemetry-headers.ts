@@ -30,14 +30,15 @@ function sanitizeHeaderValue(
 }
 
 function isTelemetryDisabledByEnv(env: NodeJS.ProcessEnv): boolean {
-  const disabled = env.AGENT_RELAY_TELEMETRY_DISABLED ?? env.DO_NOT_TRACK;
-  return disabled === '1' || disabled?.toLowerCase() === 'true';
+  return [env.AGENT_RELAY_TELEMETRY_DISABLED, env.DO_NOT_TRACK].some(
+    (value) => value === '1' || value?.toLowerCase() === 'true'
+  );
 }
 
 export function buildAgentRelayTelemetryHeaders(
   env: NodeJS.ProcessEnv = process.env
 ): Record<string, string> {
-  if (isTelemetryDisabledByEnv(env)) return {};
+  if (isTelemetryDisabledByEnv(env) || env.CLOUD_API_ACCESS_TOKEN?.trim()) return {};
 
   const userId = sanitizeHeaderValue(env[AGENT_RELAY_USER_ID_ENV], {
     maxLength: 128,

@@ -37,8 +37,8 @@ describe('telemetry preferences', () => {
 
     expect(prefs.enabled).toBe(true);
     expect(prefs.notifiedAt).toBeUndefined();
-    expect(prefs.distinctId).toMatch(/^[a-f0-9]{16}$/);
-    expect(getDistinctId()).toBe(prefs.distinctId);
+    expect(prefs.authGeneration).toMatch(/^[a-f0-9-]{36}$/);
+    expect(getDistinctId()).toBe(prefs.authGeneration);
   });
 
   it('loads legacy anonymous ids and writes the normalized field', () => {
@@ -57,11 +57,13 @@ describe('telemetry preferences', () => {
       enabled: false,
       notifiedAt: '2026-06-03T00:00:00.000Z',
       distinctId: 'legacy-id',
+      authGeneration: expect.any(String),
     });
     expect(JSON.parse(fs.readFileSync(getPrefsPath(), 'utf-8'))).toEqual({
       enabled: false,
       notifiedAt: '2026-06-03T00:00:00.000Z',
       distinctId: 'legacy-id',
+      authGeneration: expect.any(String),
     });
   });
 

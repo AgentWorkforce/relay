@@ -7,16 +7,11 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  cloudIdentityFingerprint,
-  resolveCloudIdentity,
-  type CloudIdentity,
-} from '@agent-relay/cloud/identity';
+import { publishCloudIdentity, resolveCloudIdentity, type CloudIdentity } from '@agent-relay/cloud/identity';
 import {
   isTelemetryEnabled,
   getDistinctId,
-  getIdentifiedFingerprint,
-  markIdentified,
+  syncAuthGeneration,
   wasNotified,
   markNotified,
   isDisabledByEnv,
@@ -39,6 +34,7 @@ let distinctId: string | null = null;
 let groups: Record<string, string> | null = null;
 let initialized = false;
 let firstRunDetected = false;
+let identityOverride: CloudIdentity | null | undefined;
 
 function findPackageJson(startDir: string): string | null {
   let dir = startDir;
@@ -126,7 +122,7 @@ function buildCommonProperties(
 
 /**
  * Identity dimensions attached to every event. The email is deliberately absent
- * — it belongs on the PostHog *person*, set once by {@link announceIdentity}.
+ * — Cloud owns authoritative PostHog person properties.
  *
  * `machine_id` is emitted whether or not anyone is signed in: the distinct id
  * becomes the user id after login, so the machine dimension only survives as its
@@ -158,59 +154,6 @@ function safeMachineId(): string | undefined {
     return process.env[MACHINE_ID_ENV]?.trim() || createDistinctId();
   } catch {
     return undefined;
-  }
-}
-
-/**
- * Announce the signed-in user (and their org) to PostHog.
- *
- * Two things happen the first time we see a given identity, and only then:
- *
- *  - `alias` folds the machine's anonymous distinct id into the user id, so the
- *    events emitted before login aren't stranded on a separate person. Without
- *    it, "how many users tried the CLI then signed up" is unanswerable.
- *  - `identify` / `groupIdentify` set person and group properties. Email lives
- *    here — as a person property — not on individual events.
- *
- * Repeated on org switch or email change (the fingerprint covers both), skipped
- * otherwise so we don't emit two extra events on every CLI invocation.
- */
-function announceIdentity(posthog: PostHog, identity: CloudIdentity, machineDistinctId: string): void {
-  const fingerprint = cloudIdentityFingerprint(identity);
-  if (!fingerprint || fingerprint === getIdentifiedFingerprint()) return;
-
-  try {
-    if (machineDistinctId && machineDistinctId !== identity.userId) {
-      posthog.alias({ distinctId: identity.userId, alias: machineDistinctId });
-    }
-
-    posthog.identify({
-      distinctId: identity.userId,
-      properties: {
-        ...(identity.email ? { email: identity.email } : {}),
-        ...(identity.name ? { name: identity.name } : {}),
-        ...(identity.organizationId ? { organization_id: identity.organizationId } : {}),
-        ...(identity.organizationSlug ? { organization_slug: identity.organizationSlug } : {}),
-        ...(identity.organizationName ? { organization_name: identity.organizationName } : {}),
-        ...(identity.organizationRole ? { organization_role: identity.organizationRole } : {}),
-        cloud_api_url: identity.apiUrl,
-      },
-    });
-
-    if (identity.organizationId) {
-      posthog.groupIdentify({
-        groupType: ORGANIZATION_GROUP_TYPE,
-        groupKey: identity.organizationId,
-        properties: {
-          ...(identity.organizationName ? { name: identity.organizationName } : {}),
-          ...(identity.organizationSlug ? { slug: identity.organizationSlug } : {}),
-        },
-      });
-    }
-
-    markIdentified(fingerprint);
-  } catch {
-    // Telemetry must never break the CLI.
   }
 }
 
@@ -265,7 +208,7 @@ export interface InitTelemetryOptions {
   orchestratorHarness?: string;
   /**
    * Signed-in cloud identity. Defaults to `resolveCloudIdentity()`, which reads
-   * the identity env vars a parent process published, then falls back to the
+   * the current
    * on-disk identity written at `agent-relay cloud login`. Pass `null` to force
    * anonymous attribution.
    */
@@ -292,8 +235,15 @@ export function initTelemetry(options: InitTelemetryOptions = {}): void {
     flushAt: 10,
     flushInterval: 10000,
     disableGeoip: false, // CLI runs on user's machine, so IP is correct for geo
+    fetch: async (url, init) => {
+      // Recheck at send time: opting out in another process must also discard
+      // already queued batches that have not crossed the transport boundary.
+      if (!isTelemetryEnabled()) return new Response('{}', { status: 200 });
+      return fetch(url, init);
+    },
   });
 
+  identityOverride = options.identity;
   const identity = options.identity === undefined ? safeResolveCloudIdentity() : options.identity;
 
   commonProps = buildCommonProperties(
@@ -308,14 +258,9 @@ export function initTelemetry(options: InitTelemetryOptions = {}): void {
     identity
   );
 
-  const machineDistinctId = getDistinctId();
-  // A signed-in user is the person; the machine hash is only a fallback.
-  distinctId = identity?.userId ?? machineDistinctId;
-  groups = identity?.organizationId ? { [ORGANIZATION_GROUP_TYPE]: identity.organizationId } : null;
-
-  if (identity) {
-    announceIdentity(client, identity, machineDistinctId);
-  }
+  syncAuthGeneration(identity?.userId);
+  distinctId = identity?.userId ?? getDistinctId();
+  groups = identityGroups(identity);
 
   if (firstRunDetected) {
     track('cli_install', {
@@ -331,6 +276,27 @@ export function track<E extends TelemetryEventName>(
   properties?: TelemetryEventMap[E] & Partial<CommonProperties>
 ): void {
   if (!client || !commonProps || !distinctId) return;
+  if (!isTelemetryEnabled()) {
+    clearPendingEvents();
+    publishCloudIdentity(null);
+    return;
+  }
+  // Files may change while an MCP/CLI process stays alive. Reconcile before
+  // capture, never rely on the identity cached at process bootstrap.
+  const identity = identityOverride === undefined ? safeResolveCloudIdentity() : identityOverride;
+  const anonymousId = syncAuthGeneration(identity?.userId);
+  distinctId = identity?.userId ?? anonymousId;
+  groups = identityGroups(identity);
+  publishCloudIdentity(identity);
+  if (!identity) process.env.AGENT_RELAY_DISTINCT_ID = anonymousId;
+  const {
+    user_id: _user,
+    organization_id: _org,
+    organization_slug: _slug,
+    cloud_workspace_id: _workspace,
+    ...base
+  } = commonProps;
+  commonProps = { ...base, ...identityProperties(identity) };
 
   client.capture({
     distinctId,
@@ -338,13 +304,44 @@ export function track<E extends TelemetryEventName>(
     properties: {
       ...commonProps,
       ...properties,
+      ...identityProperties(identity),
+      analytics_contract_version: 2,
+      emitter: `relay-${commonProps.app}`,
+      identity_source: identity ? 'cloud_session' : 'anonymous_generation',
+      actor_kind: process.env.AGENT_RELAY_ORIGIN_ACTOR?.includes('/agent/') ? 'agent' : 'human',
+      ...(process.env.AGENT_RELAY_ORIGIN_ACTOR?.includes('/agent/')
+        ? {
+            actor_id: process.env.AGENT_RELAY_ORIGIN_ACTOR,
+            ...(identity ? { owner_user_id: identity.userId } : {}),
+          }
+        : {}),
+      $process_person_profile: Boolean(identity),
     },
     ...(groups ? { groups } : {}),
   });
 }
 
-export async function shutdown(): Promise<void> {
+function identityGroups(identity: CloudIdentity | null): Record<string, string> | null {
+  if (!identity) return null;
+  return {
+    ...(identity.organizationId ? { organization: identity.organizationId } : {}),
+    ...(identity.workspaceId ? { workspace: identity.workspaceId } : {}),
+  };
+}
+
+function clearPendingEvents(): void {
   if (!client) return;
+  // Public persistence API of the pinned PostHog SDK. optOut alone leaves the
+  // queue intact and shutdown would otherwise deliver pre-opt-out events.
+  client.setPersistedProperty('queue' as Parameters<PostHog['setPersistedProperty']>[0], []);
+}
+
+export async function shutdown(): Promise<void> {
+  if (!client) {
+    initialized = false;
+    return;
+  }
+  if (!isTelemetryEnabled()) clearPendingEvents();
 
   try {
     await client.shutdown();
@@ -356,6 +353,7 @@ export async function shutdown(): Promise<void> {
     distinctId = null;
     groups = null;
     initialized = false;
+    identityOverride = undefined;
   }
 }
 
@@ -381,7 +379,7 @@ export function getStatus(): {
     enabled: isTelemetryEnabled(),
     disabledByEnv: isDisabledByEnv(),
     // Report the id events will actually carry, not just the machine hash.
-    distinctId: identity?.userId ?? prefs.distinctId,
+    distinctId: identity?.userId ?? getDistinctId(),
     notifiedAt: prefs.notifiedAt,
     ...(identity ? { userId: identity.userId } : {}),
     ...(identity?.email ? { email: identity.email } : {}),

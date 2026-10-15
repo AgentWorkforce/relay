@@ -5,25 +5,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { createDistinctId } from './machine-id.js';
+import { randomUUID } from 'node:crypto';
 
 export interface TelemetryPrefs {
   /** Whether telemetry is enabled (default: true) */
   enabled: boolean;
   /** ISO timestamp when user was shown the first-run notice */
   notifiedAt?: string;
-  /**
-   * Stable hashed machine identifier. Used as the PostHog distinctId for
-   * anonymous runs, and as the alias merged into the cloud user id once the
-   * operator logs in.
-   */
+  /** Legacy identifier retained on disk for compatibility; never aliased. */
   distinctId: string;
-  /**
-   * Fingerprint of the cloud identity we last sent `$identify` /
-   * `$groupidentify` for. Lets us re-issue them when the user switches org (or
-   * their email changes) while skipping them on every other run.
-   */
+  /** Legacy profile-enqueue marker, removed when preferences are migrated. */
   identifiedFingerprint?: string;
+  /** Random ID for one anonymous authentication generation, never a machine. */
+  authGeneration?: string;
+  authUserId?: string;
 }
 
 type StoredTelemetryPrefs = Partial<TelemetryPrefs> & { anonymousId?: string };
@@ -40,15 +35,21 @@ export function loadPrefs(): TelemetryPrefs {
     if (fs.existsSync(prefsPath)) {
       const content = fs.readFileSync(prefsPath, 'utf-8');
       const prefs = JSON.parse(content) as StoredTelemetryPrefs;
-      const distinctId = prefs.distinctId ?? prefs.anonymousId ?? createDistinctId();
+      const distinctId = prefs.distinctId ?? prefs.anonymousId ?? randomUUID();
       const normalized: TelemetryPrefs = {
         enabled: prefs.enabled ?? true,
         notifiedAt: prefs.notifiedAt,
         distinctId,
-        ...(prefs.identifiedFingerprint ? { identifiedFingerprint: prefs.identifiedFingerprint } : {}),
+        authGeneration: prefs.authGeneration ?? randomUUID(),
+        ...(prefs.authUserId ? { authUserId: prefs.authUserId } : {}),
       };
 
-      if (prefs.distinctId !== distinctId || prefs.anonymousId !== undefined) {
+      if (
+        prefs.distinctId !== distinctId ||
+        prefs.anonymousId !== undefined ||
+        !prefs.authGeneration ||
+        prefs.identifiedFingerprint
+      ) {
         savePrefs(normalized);
       }
 
@@ -58,10 +59,9 @@ export function loadPrefs(): TelemetryPrefs {
     // Fall through to defaults
   }
 
-  return {
-    enabled: true,
-    distinctId: createDistinctId(),
-  };
+  const prefs = { enabled: true, distinctId: randomUUID(), authGeneration: randomUUID() };
+  savePrefs(prefs);
+  return prefs;
 }
 
 export function savePrefs(prefs: TelemetryPrefs): void {
@@ -108,6 +108,9 @@ export function enableTelemetry(): void {
 export function disableTelemetry(): void {
   const prefs = loadPrefs();
   prefs.enabled = false;
+  prefs.authGeneration = randomUUID();
+  delete prefs.authUserId;
+  delete prefs.identifiedFingerprint;
   savePrefs(prefs);
 }
 
@@ -122,16 +125,16 @@ export function wasNotified(): boolean {
 }
 
 export function getDistinctId(): string {
-  return loadPrefs().distinctId;
+  return loadPrefs().authGeneration!;
 }
 
-/** Fingerprint of the last cloud identity we announced to PostHog, if any. */
-export function getIdentifiedFingerprint(): string | undefined {
-  return loadPrefs().identifiedFingerprint;
-}
-
-export function markIdentified(fingerprint: string): void {
+/** Rotate before assigning a generation to a different account, including logout. */
+export function syncAuthGeneration(userId?: string): string {
   const prefs = loadPrefs();
-  prefs.identifiedFingerprint = fingerprint;
-  savePrefs(prefs);
+  if (prefs.authUserId !== userId) {
+    if (prefs.authUserId) prefs.authGeneration = randomUUID();
+    prefs.authUserId = userId;
+    savePrefs(prefs);
+  }
+  return prefs.authGeneration!;
 }

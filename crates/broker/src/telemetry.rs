@@ -12,7 +12,6 @@
 
 use std::path::PathBuf;
 
-use relaycast::sanitize_agent_relay_distinct_id;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -208,6 +207,8 @@ struct TelemetryPrefs {
     enabled: Option<bool>,
     #[serde(default)]
     notified_at: Option<String>,
+    #[serde(flatten)]
+    extra: std::collections::HashMap<String, Value>,
 }
 
 /// Override for both the preference file and the machine-id file, matching the
@@ -563,40 +564,91 @@ fn detect_cloud_identity() -> CloudIdentity {
         return CloudIdentity::default();
     }
 
-    let user_id = identity_env("AGENT_RELAY_USER_ID", 128);
-    // Prefer the value the CLI published so every process in one invocation
-    // reports the same machine; fall back to computing it from the shared
-    // machine-id file for a standalone broker.
+    let dir =
+        data_dir_override().or_else(|| dirs::home_dir().map(|h| h.join(".agentworkforce/relay")));
+    let stored = dir.as_ref().and_then(|dir| {
+        selected_identity(
+            &dir.join("cloud-identity.json"),
+            env_nonempty("CLOUD_API_ACCESS_TOKEN").is_some(),
+        )
+    });
     let machine_id = identity_env("AGENT_RELAY_MACHINE_ID", 128)
         .or_else(|| load_or_create_machine_id().map(|id| anonymous_id(&id)));
-
-    CloudIdentity {
-        // Reuse the shared resolver so the CLI, the broker's own PostHog
-        // events, and relaycast all report one person key. It already applies
-        // the env → machine-id fallback, sanitization, and the opt-out. A
-        // signed-in user id is the better key when the CLI published one.
-        distinct_id: agent_relay_distinct_id()
-            .map(str::to_string)
-            .or_else(|| user_id.clone())
-            .or_else(|| machine_id.clone()),
-        machine_id,
-        user_id,
-        org_id: identity_env("AGENT_RELAY_ORG_ID", 128),
-        org_slug: identity_env("AGENT_RELAY_ORG_SLUG", 120),
-    }
+    let anonymous = dir
+        .as_ref()
+        .and_then(|dir| {
+            std::fs::read_to_string(dir.join("cloud-identity.json.generation"))
+                .ok()
+                .filter(|generation| !generation.is_empty())
+                .or_else(|| {
+                    std::fs::read_to_string(dir.join("telemetry.json"))
+                        .ok()
+                        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                        .and_then(|prefs| {
+                            prefs
+                                .get("authGeneration")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        })
+                })
+        })
+        .unwrap_or_else(|| {
+            static GENERATION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+            GENERATION
+                .get_or_init(|| uuid::Uuid::new_v4().to_string())
+                .clone()
+        });
+    let mut identity = stored.unwrap_or_default();
+    identity.machine_id = machine_id;
+    identity.distinct_id = identity.user_id.clone().or(Some(anonymous));
+    identity
 }
 
-/// Process-wide cached cloud identity. Env vars don't change mid-process, and
-/// this is read on every outbound relaycast request.
-pub(crate) fn cloud_identity() -> &'static CloudIdentity {
-    static CACHE: std::sync::OnceLock<CloudIdentity> = std::sync::OnceLock::new();
-    CACHE.get_or_init(detect_cloud_identity)
+/// Only the locally resolved Cloud session establishes an owner. Environment
+/// headers remain unverified hints and cannot select a PostHog person.
+fn selected_identity(path: &std::path::Path, delegated_credentials: bool) -> Option<CloudIdentity> {
+    if delegated_credentials {
+        return None;
+    }
+    read_identity_file(path)
+}
+
+fn read_identity_file(path: &std::path::Path) -> Option<CloudIdentity> {
+    let value: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    let revision_path = PathBuf::from(format!("{}.generation", path.display()));
+    let revision = std::fs::read_to_string(revision_path).unwrap_or_default();
+    if value
+        .get("_analyticsRevision")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        != revision
+    {
+        return None;
+    }
+    let field = |key: &str, limit| {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .and_then(|value| sanitize_identity_value(value, limit))
+    };
+    Some(CloudIdentity {
+        user_id: Some(field("userId", 128)?),
+        org_id: field("organizationId", 128),
+        org_slug: field("organizationSlug", 120),
+        ..CloudIdentity::default()
+    })
+}
+
+/// Re-read at each capture/request: a long-lived broker must observe logout
+/// and account switches instead of retaining its startup owner's identity.
+pub(crate) fn cloud_identity() -> CloudIdentity {
+    detect_cloud_identity()
 }
 
 /// Identity headers for an outbound relaycast request, as `(name, value)` pairs.
 /// Empty when the operator isn't signed in.
 pub(crate) fn cloud_identity_headers() -> Vec<(&'static str, String)> {
-    identity_headers(cloud_identity())
+    identity_headers(&cloud_identity())
 }
 
 fn identity_headers(identity: &CloudIdentity) -> Vec<(&'static str, String)> {
@@ -627,7 +679,6 @@ pub(crate) const BROKER_ORIGIN_ACTOR: &str = "agent-relay-cli/cli";
 
 /// Env var carrying the anonymous distinct id, exported by the agent-relay CLI
 /// so the broker and every spawned agent report as the same machine.
-const AGENT_RELAY_DISTINCT_ID_ENV: &str = "AGENT_RELAY_DISTINCT_ID";
 
 /// Anonymous machine id forwarded to relaycast as `X-Agent-Relay-Distinct-Id`,
 /// or `None` when the user has opted out of telemetry.
@@ -643,37 +694,8 @@ const AGENT_RELAY_DISTINCT_ID_ENV: &str = "AGENT_RELAY_DISTINCT_ID";
 /// telemetry client uses, for a broker started outside the CLI. This is the
 /// same anonymous value already sent with the broker's own PostHog events —
 /// never a hostname, account, or path. Resolved once per process.
-pub(crate) fn agent_relay_distinct_id() -> Option<&'static str> {
-    static CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            resolve_distinct_id(
-                TelemetryClient::check_enabled(),
-                env_nonempty(AGENT_RELAY_DISTINCT_ID_ENV),
-                || load_or_create_machine_id().map(|id| anonymous_id(&id)),
-            )
-        })
-        .as_deref()
-}
-
-/// Policy half of [`agent_relay_distinct_id`], split out so the opt-out
-/// behaviour is testable without touching process-wide env or the cache.
-/// `machine_id` is lazy: an opted-out broker must not even derive one.
-///
-/// The resolved value is sanitized against the SDK's wire contract before any
-/// caller builds a header from it. The env var is caller-supplied, and an
-/// invalid one (a newline, a non-ASCII character) would otherwise be handed to
-/// `RequestBuilder::header`, which stores the conversion error and fails the
-/// request on every retry — optional telemetry must never break connectivity.
-fn resolve_distinct_id(
-    enabled: bool,
-    env_value: Option<String>,
-    machine_id: impl FnOnce() -> Option<String>,
-) -> Option<String> {
-    if !enabled {
-        return None;
-    }
-    sanitize_agent_relay_distinct_id(env_value.or_else(machine_id))
+pub(crate) fn agent_relay_distinct_id() -> Option<String> {
+    cloud_identity().distinct_id
 }
 
 /// Build the `origin_actor` path for a spawned agent:
@@ -829,16 +851,18 @@ impl TelemetryClient {
 
     /// Track an event. Fire-and-forget; never errors.
     pub fn track(&self, event: TelemetryEvent) {
-        if !self.enabled {
+        if !self.enabled || !Self::check_enabled() {
             return;
         }
         let Some(tx) = &self.tx else {
             return;
         };
 
+        let identity = cloud_identity();
         let mut props = event.properties();
         if let Some(obj) = props.as_object_mut() {
             obj.append(&mut self.common_properties());
+            apply_identity_properties(obj, &identity);
         }
 
         // `posthog_api_key()` is guaranteed `Some` here — `TelemetryClient::new`
@@ -850,7 +874,9 @@ impl TelemetryClient {
         let capture = PostHogCapture {
             api_key,
             event: event.name().to_string(),
-            distinct_id: self.distinct_id.clone(),
+            distinct_id: identity
+                .distinct_id
+                .unwrap_or_else(|| self.distinct_id.clone()),
             properties: props,
         };
 
@@ -867,6 +893,9 @@ impl TelemetryClient {
         let mut obj = serde_json::Map::new();
         let broker_version = crate::util::version::broker_version();
         obj.insert("app".to_string(), json!("broker"));
+        obj.insert("analytics_contract_version".to_string(), json!(2));
+        obj.insert("emitter".to_string(), json!("relay-broker"));
+        obj.insert("actor_kind".to_string(), json!("service"));
         obj.insert("surface".to_string(), json!("broker"));
         obj.insert(
             "orchestrator_harness".to_string(),
@@ -889,24 +918,7 @@ impl TelemetryClient {
         // Cloud identity. `$groups` is PostHog's group-analytics dimension, so
         // org-level rollups work without a separate `$groupidentify` from here —
         // the CLI owns the group's properties.
-        let identity = cloud_identity();
-        obj.insert(
-            "is_authenticated".to_string(),
-            json!(identity.user_id.is_some()),
-        );
-        if let Some(ref machine_id) = identity.machine_id {
-            obj.insert("machine_id".to_string(), json!(machine_id));
-        }
-        if let Some(ref user_id) = identity.user_id {
-            obj.insert("user_id".to_string(), json!(user_id));
-        }
-        if let Some(ref org_id) = identity.org_id {
-            obj.insert("organization_id".to_string(), json!(org_id));
-            obj.insert("$groups".to_string(), json!({ "organization": org_id }));
-        }
-        if let Some(ref org_slug) = identity.org_slug {
-            obj.insert("organization_slug".to_string(), json!(org_slug));
-        }
+        apply_identity_properties(&mut obj, &cloud_identity());
         obj
     }
 
@@ -959,6 +971,50 @@ impl TelemetryClient {
     }
 }
 
+fn apply_identity_properties(obj: &mut serde_json::Map<String, Value>, identity: &CloudIdentity) {
+    for key in [
+        "user_id",
+        "owner_user_id",
+        "organization_id",
+        "organization_slug",
+        "$groups",
+    ] {
+        obj.remove(key);
+    }
+    obj.insert(
+        "identity_source".to_string(),
+        json!(if identity.user_id.is_some() {
+            "cloud_session"
+        } else {
+            "anonymous_generation"
+        }),
+    );
+    obj.insert(
+        "$process_person_profile".to_string(),
+        json!(identity.user_id.is_some()),
+    );
+    if let Some(ref owner) = identity.user_id {
+        obj.insert("owner_user_id".to_string(), json!(owner));
+    }
+    obj.insert(
+        "is_authenticated".to_string(),
+        json!(identity.user_id.is_some()),
+    );
+    if let Some(ref machine_id) = identity.machine_id {
+        obj.insert("machine_id".to_string(), json!(machine_id));
+    }
+    if let Some(ref user_id) = identity.user_id {
+        obj.insert("user_id".to_string(), json!(user_id));
+    }
+    if let Some(ref org_id) = identity.org_id {
+        obj.insert("organization_id".to_string(), json!(org_id));
+        obj.insert("$groups".to_string(), json!({ "organization": org_id }));
+    }
+    if let Some(ref org_slug) = identity.org_slug {
+        obj.insert("organization_slug".to_string(), json!(org_slug));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Panic reporting
 // ---------------------------------------------------------------------------
@@ -978,21 +1034,28 @@ impl PanicReporter {
     /// `location` is a sanitized compile-time `file:line` — never the panic
     /// message, which can contain user data.
     fn report(&self, location: &str) {
+        if !TelemetryClient::check_enabled() {
+            return;
+        }
         // Serialize through the shared event contract so the event name and
         // payload can't drift from `TelemetryEvent`/the TypeScript schema.
         let event = TelemetryEvent::BrokerPanic {
             location: location.to_string(),
         };
+        let identity = cloud_identity();
         let mut props = event.properties();
         if let Some(obj) = props.as_object_mut() {
             for (key, value) in &self.common {
                 obj.insert(key.clone(), value.clone());
             }
+            apply_identity_properties(obj, &identity);
         }
         let capture = PostHogCapture {
             api_key: self.api_key.clone(),
             event: event.name().to_string(),
-            distinct_id: self.distinct_id.clone(),
+            distinct_id: identity
+                .distinct_id
+                .unwrap_or_else(|| self.distinct_id.clone()),
             properties: props,
         };
         send_capture_blocking(capture);
@@ -1110,6 +1173,9 @@ async fn sender_loop(mut rx: mpsc::UnboundedReceiver<PostHogCapture>) {
     let url = format!("{}/capture/", POSTHOG_HOST);
 
     while let Some(capture) = rx.recv().await {
+        if !TelemetryClient::check_enabled() {
+            continue;
+        }
         // Fire-and-forget: send POST, ignore result.
         let _ = client.post(&url).json(&capture).send().await;
     }
@@ -1122,6 +1188,47 @@ async fn sender_loop(mut rx: mpsc::UnboundedReceiver<PostHogCapture>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_identity_tracks_account_switch_and_rejects_stale_logout_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cloud-identity.json");
+        let revision = dir.path().join("cloud-identity.json.generation");
+        std::fs::write(&revision, "generation-A").unwrap();
+        std::fs::write(
+            &path,
+            r#"{"userId":"usr_A","organizationId":"org_A","_analyticsRevision":"generation-A"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_identity_file(&path).unwrap().user_id.as_deref(),
+            Some("usr_A")
+        );
+        std::fs::write(&revision, "generation-B").unwrap();
+        assert!(read_identity_file(&path).is_none());
+        std::fs::write(
+            &path,
+            r#"{"userId":"usr_B","_analyticsRevision":"generation-B"}"#,
+        )
+        .unwrap();
+        assert!(selected_identity(&path, true).is_none());
+        let b = selected_identity(&path, false).unwrap();
+        assert_eq!(b.user_id.as_deref(), Some("usr_B"));
+        assert_eq!(b.org_id, None);
+        std::fs::remove_file(&path).unwrap();
+        assert!(read_identity_file(&path).is_none());
+    }
+
+    #[test]
+    fn broker_preference_updates_preserve_cli_auth_generations() {
+        let prefs: TelemetryPrefs = serde_json::from_value(json!({
+            "enabled": true, "authGeneration": "random-generation", "authUserId": "usr_A"
+        }))
+        .unwrap();
+        let saved = serde_json::to_value(prefs).unwrap();
+        assert_eq!(saved["authGeneration"], "random-generation");
+        assert_eq!(saved["authUserId"], "usr_A");
+    }
 
     #[test]
     fn sanitizes_identity_values_to_the_wire_contract() {
@@ -1445,48 +1552,6 @@ mod tests {
         );
         assert_eq!(sanitize_orchestrator_harness("bad\nvalue"), None);
         assert_eq!(sanitize_orchestrator_harness(""), None);
-    }
-
-    #[test]
-    fn resolve_distinct_id_is_none_when_telemetry_is_disabled() {
-        // Opted out: neither the exported id nor a derived machine id may leak.
-        let mut derived = false;
-        let resolved = resolve_distinct_id(false, Some("abc123".to_string()), || {
-            derived = true;
-            Some("machine".to_string())
-        });
-        assert_eq!(resolved, None);
-        assert!(!derived, "machine id must not be derived when opted out");
-    }
-
-    #[test]
-    fn resolve_distinct_id_prefers_the_exported_env_value() {
-        let resolved = resolve_distinct_id(true, Some("abc123".to_string()), || {
-            Some("machine".to_string())
-        });
-        assert_eq!(resolved, Some("abc123".to_string()));
-    }
-
-    #[test]
-    fn resolve_distinct_id_falls_back_to_the_machine_id() {
-        let resolved = resolve_distinct_id(true, None, || Some("machine".to_string()));
-        assert_eq!(resolved, Some("machine".to_string()));
-        assert_eq!(resolve_distinct_id(true, None, || None), None);
-    }
-
-    #[test]
-    fn resolve_distinct_id_drops_a_header_invalid_env_value() {
-        // A caller-supplied value that can't be a header value must be dropped,
-        // not forwarded — reqwest would store the conversion error and fail the
-        // request on every retry. Matches the TS contract, which sends no header
-        // at all rather than falling back when the env value is malformed.
-        for bad in ["abc\ndef", "naïve", "has space"] {
-            assert_eq!(
-                resolve_distinct_id(true, Some(bad.to_string()), || Some("machine".to_string())),
-                None,
-                "expected {bad:?} to be rejected"
-            );
-        }
     }
 
     #[test]

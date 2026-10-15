@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Major]
 
+### Fixed
+
+- CLI and broker analytics follow login, logout, and account changes without merging shared machines into people. Cloud repairs profile data; child processes no longer inherit email addresses.
+
 ### Changed
 
 - `fleet spawn --sandbox` inside a repository starts from an exact shallow Git checkout without waiting for Relayfile. `--checkout` also omits Relayfile unless context is explicitly requested.

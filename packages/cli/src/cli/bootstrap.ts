@@ -9,18 +9,14 @@ import { Command } from 'commander';
 import { config as dotenvConfig } from 'dotenv';
 
 import { checkForUpdatesInBackground } from '@agent-relay/utils';
-import { redactCredentialValues } from '@agent-relay/cloud';
-import {
-  cloudIdentityEnv,
-  readStoredIdentitySync,
-  IDENTITY_ENV_KEYS,
-  type CloudIdentity,
-} from '@agent-relay/cloud/identity';
+import { redactCredentialValues, recoverStoredCloudIdentity } from '@agent-relay/cloud';
+import { publishCloudIdentity, resolveCloudIdentity, IDENTITY_ENV_KEYS } from '@agent-relay/cloud/identity';
 import {
   MACHINE_ID_ENV,
   ORCHESTRATOR_HARNESS_ENV,
   detectOrchestratorHarness,
   getDistinctId,
+  createDistinctId,
   initTelemetry,
   isEnabled as isTelemetryEnabled,
   shutdown as shutdownTelemetry,
@@ -128,22 +124,7 @@ function resolveProgramName(argv: string[] = process.argv): string {
  * different identity), and a missing identity is the normal not-logged-in case.
  */
 function propagateCloudIdentityToChildren(): void {
-  // Inherited from a parent process: leave it exactly as-is.
-  if (process.env[IDENTITY_ENV_KEYS.userId]) return;
-
-  let identity: CloudIdentity | null = null;
-  try {
-    identity = readStoredIdentitySync();
-  } catch {
-    return;
-  }
-  if (!identity) return;
-
-  for (const [key, value] of Object.entries(cloudIdentityEnv(identity))) {
-    if (!process.env[key]) {
-      process.env[key] = value;
-    }
-  }
+  publishCloudIdentity(resolveCloudIdentity());
 }
 
 /**
@@ -213,13 +194,12 @@ export function propagateTelemetryContextToChildren(): string {
       // user id after login, so this is the only thing that keeps the machine
       // dimension (machines per account, accounts per machine, machines per
       // workspace) answerable.
-      process.env[MACHINE_ID_ENV] = getDistinctId();
+      process.env[MACHINE_ID_ENV] = createDistinctId();
     }
     if (!process.env[AGENT_RELAY_DISTINCT_ID_ENV]) {
       // Signed-in runs are keyed by the cloud user id so CLI, broker, and
       // relaycast-server events all land on one PostHog person.
-      process.env[AGENT_RELAY_DISTINCT_ID_ENV] =
-        process.env[IDENTITY_ENV_KEYS.userId] || process.env[MACHINE_ID_ENV];
+      process.env[AGENT_RELAY_DISTINCT_ID_ENV] = process.env[IDENTITY_ENV_KEYS.userId] || getDistinctId();
     }
   } else {
     clearInheritedIdentity();
@@ -485,6 +465,7 @@ export async function runCli(argv: string[] = process.argv): Promise<Command> {
   assertSupportedNodeVersion();
   ensureWebSocketGlobal();
   maybeRunUpdateCheck(VERSION, argv);
+  if (!shouldSkipTelemetryInit(argv)) await recoverStoredCloudIdentity();
   const orchestratorHarness = propagateTelemetryContextToChildren();
 
   if (!shouldSkipTelemetryInit(argv)) {
