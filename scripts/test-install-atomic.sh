@@ -363,6 +363,22 @@ exec 8<&-
 kill "$RUNNING" 2>/dev/null; { wait "$RUNNING"; } 2>/dev/null
 
 # ---------------------------------------------------------------------------
+echo "== strict standalone update requires a digest and a writable temp directory =="
+reset_release
+D="$(newdir)"
+make_fake_broker "$FIX/asset/agent-relay-broker-test-test" ok new
+make_release_json "$FIX/release.json" "agent-relay-broker-test-test" ""
+AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 fetch_release_asset agent-relay-broker-test-test "$D" raw; rc=$?
+check "strict update rejects a missing published digest" test "$rc" -eq 2
+check "strict update explains the missing digest" contains "$(cat "$LOG")" "published SHA-256 digest is required"
+check "strict update leaves no new binary" test -z "$(leftovers "$D")"
+
+STANDALONE_TEMP_FAILURE=""
+TMPDIR="$WORK/missing-directory" check_cli_binary "$WORK/hello"; rc=$?
+check "unwritable temp directory rejects CLI verification" test "$rc" -ne 0
+check "temp failure names the directory" contains "$STANDALONE_TEMP_FAILURE" "$WORK/missing-directory"
+STANDALONE_TEMP_FAILURE=""
+
 echo "== (d) missing digest warns instead of silently passing =="
 
 reset_release
@@ -451,6 +467,25 @@ run_main; rc=$?
 check "all good: installer exits 0" test "$rc" -eq 0
 check "all good: CLI upgraded" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
 check "all good: no .prev left" test ! -e "$INSTALL_DIR/bin/agent-relay.prev"
+
+e2e_setup ok yes
+AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
+check "strict update: verified CLI and broker install" test "$rc" -eq 0
+check "strict update: CLI upgraded" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
+
+e2e_setup ok no
+AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
+check "strict update: missing digest fails" test "$rc" -ne 0
+check "strict update: previous CLI preserved" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+check "strict update: previous broker preserved" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+check "strict update: no npm fallback" bash -c '! grep -q "Installing via npm" "$1"' _ "$WORK/main.out"
+
+e2e_setup ok yes
+TMPDIR="$WORK/missing-directory" run_main; rc=$?
+check "bad temp directory: installer exits non-zero" test "$rc" -ne 0
+check "bad temp directory: previous CLI preserved" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+check "bad temp directory: reports temp failure" contains "$(cat "$WORK/main.out")" "Cannot create a temporary file"
+check "bad temp directory: no npm fallback" bash -c '! grep -q "Installing via npm" "$1"' _ "$WORK/main.out"
 
 e2e_setup crash no
 run_main; rc=$?

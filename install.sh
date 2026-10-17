@@ -9,6 +9,7 @@ set -e
 #   AGENT_RELAY_INSTALL_DIR          - Installation directory (default: ~/.agentworkforce/relay)
 #   AGENT_RELAY_BIN_DIR              - Binary directory (default: ~/.local/bin)
 #   AGENT_RELAY_TELEMETRY_DISABLED   - Disable anonymous install telemetry (default: false)
+#   AGENT_RELAY_INSTALL_STANDALONE_ONLY - Require a verified standalone install (used by `agent-relay update`)
 
 REPO_RELAY="AgentWorkforce/relay"
 VERSION="${AGENT_RELAY_VERSION:-latest}"
@@ -16,6 +17,7 @@ INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-$HOME/.agentworkforce/relay}"
 BIN_DIR="${AGENT_RELAY_BIN_DIR:-$HOME/.local/bin}"
 ORIGINAL_PATH="${PATH:-}"
 STANDALONE_FAILURE_REASON=""
+STANDALONE_TEMP_FAILURE=""
 
 # Colors
 RED='\033[0;31m'
@@ -279,7 +281,10 @@ make_temp_file() {
     local dir="$1"
     local label="$2"
     MADE_TEMP=""
-    MADE_TEMP=$(mktemp "$dir/.${label}.XXXXXX") || return 1
+    MADE_TEMP=$(mktemp "$dir/.${label}.XXXXXX") || {
+        STANDALONE_TEMP_FAILURE="Cannot create a temporary file in $dir; check that the directory is writable."
+        return 1
+    }
     register_temp "$MADE_TEMP"
 }
 
@@ -410,6 +415,10 @@ verify_asset_digest() {
     load_release_metadata
     expected=$(fetch_asset_expected_sha256 "$asset")
     if [ -z "$expected" ]; then
+        if [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" = "1" ]; then
+            warn "A published SHA-256 digest is required for $asset; refusing the standalone update."
+            return 1
+        fi
         if [ "$RELEASE_JSON_STATE" = "failed" ]; then
             warn "Could not fetch release metadata from the GitHub API (rate limit or network); cannot verify the SHA-256 of $asset. Continuing with the smoke test only."
         else
@@ -418,6 +427,10 @@ verify_asset_digest() {
         return 2
     fi
     if ! actual=$(sha256_of "$file"); then
+        if [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" = "1" ]; then
+            warn "No SHA-256 tool found; refusing the standalone update."
+            return 1
+        fi
         warn "No SHA-256 tool found (shasum, sha256sum or openssl); cannot verify $asset. Continuing with the smoke test only."
         return 2
     fi
@@ -629,7 +642,10 @@ check_broker_binary() {
 
 check_cli_binary() {
     local log
-    log=$(mktemp "${TMPDIR:-/tmp}/agent-relay-verify.XXXXXX") || return 1
+    log=$(mktemp "${TMPDIR:-/tmp}/agent-relay-verify.XXXXXX") || {
+        STANDALONE_TEMP_FAILURE="Cannot create a temporary file in ${TMPDIR:-/tmp}; check that the directory is writable."
+        return 1
+    }
     if "$1" --version >"$log" 2>&1; then
         rm -f "$log"
         return 0
@@ -821,6 +837,9 @@ abort_standalone_install() {
     undo_brokers
     undo_cli
     TXN_STATE=""
+    if [ -n "$STANDALONE_TEMP_FAILURE" ]; then
+        error "$STANDALONE_TEMP_FAILURE. ${ROLLBACK_OUTCOME}."
+    fi
     error "The v${VERSION} broker was rejected (integrity or smoke test failed), so the v${VERSION} CLI was NOT kept: ${ROLLBACK_OUTCOME}. The existing broker (${old_broker}) is untouched. Nothing was upgraded; re-run the installer, or set AGENT_RELAY_VERSION to a known-good version."
 }
 
@@ -1031,7 +1050,9 @@ download_standalone_binary() {
             fi
             verify_output="$CLI_CHECK_OUTPUT"
             record_standalone_failure "Standalone binary verification failed for $target_path${verify_output:+: $verify_output}. Trying uncompressed binary..."
+            [ -z "$STANDALONE_TEMP_FAILURE" ] || return 1
         else
+            [ -z "$STANDALONE_TEMP_FAILURE" ] || return 1
             info "Compressed binary not available, trying uncompressed..."
         fi
     else
@@ -1055,6 +1076,7 @@ download_standalone_binary() {
             fi
             verify_output="$CLI_CHECK_OUTPUT"
             record_standalone_failure "Standalone binary verification failed for $target_path${verify_output:+: $verify_output}"
+            [ -z "$STANDALONE_TEMP_FAILURE" ] || return 1
         else
             info "Uncompressed binary not available (file too small: ${file_size} bytes)"
             rm -f "$FETCHED_TMP"
@@ -1371,7 +1393,7 @@ main() {
         # broker (rc 2) rolls the CLI back; an unavailable one (rc 1) is fine.
         local broker_rc=0
         download_broker_binary || broker_rc=$?
-        if [ "$broker_rc" -eq 2 ]; then
+        if [ "$broker_rc" -eq 2 ] || { [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" = "1" ] && [ "$broker_rc" -ne 0 ]; }; then
             abort_standalone_install
         fi
         # COMMIT: one assignment; everything after this is cleanup of backups.
@@ -1383,6 +1405,18 @@ main() {
         # Install ACP bridge for Zed editor (requires Node.js)
         install_acp_bridge || true
         verify_installation && print_usage && track_event "install_completed" && exit 0
+    fi
+
+    if [ -n "$STANDALONE_TEMP_FAILURE" ]; then
+        undo_cli
+        TXN_STATE=""
+        error "$STANDALONE_TEMP_FAILURE"
+    fi
+
+    if [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" = "1" ]; then
+        undo_cli
+        TXN_STATE=""
+        error "Standalone update failed; the previous CLI and broker were preserved. ${STANDALONE_FAILURE_REASON}"
     fi
 
     # Standalone path not taken: nothing was replaced, disarm and drop the backup

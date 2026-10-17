@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1963-standalone-update",
+  "kind": "bugfix",
+  "title": "Update a standalone install through the verified binary installer",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1963-standalone-update/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "standalone_update_runs_npm"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "standalone_update_uses_verified_installer"
+    }
+  }
+}

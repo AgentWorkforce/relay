@@ -2812,6 +2812,40 @@ describe('registerCoreCommands', () => {
     });
   });
 
+  it('updates a standalone binary with the verified installer and pinned version', async () => {
+    const home = os.homedir();
+    const execCommand = vi.fn(async () => ({ stdout: 'updated\n', stderr: '' }));
+    const { deps } = createHarness({
+      execPath: nodePath.join(home, '.agentworkforce', 'relay', 'bin', 'agent-relay'),
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      execCommand,
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    expect(await runCommand(program, ['update'])).toBeUndefined();
+    expect(execCommand).toHaveBeenCalledWith(
+      "AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 AGENT_RELAY_VERSION='2.0.0' bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash'"
+    );
+    expect(deps.log).toHaveBeenCalledWith('Successfully updated to 2.0.0');
+  });
+
+  it('returns a failure when a standalone update fails', async () => {
+    const home = os.homedir();
+    const { deps } = createHarness({
+      execPath: nodePath.join(home, '.agentworkforce', 'relay', 'bin', 'agent-relay'),
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      execCommand: vi.fn(async () => {
+        throw new Error('installer failed');
+      }),
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    expect(await runCommand(program, ['update'])).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('Failed to install update: installer failed');
+  });
+
   it('update tracks failed install attempts without leaking messages', async () => {
     const { deps } = createHarness({
       checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
