@@ -472,6 +472,17 @@ e2e_setup ok yes
 AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
 check "strict update: verified CLI and broker install" test "$rc" -eq 0
 check "strict update: CLI upgraded" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
+check "strict update: optional ACP install is skipped" bash -c '! grep -q "relay-acp\|ACP bridge" "$1"' _ "$WORK/main.out"
+
+e2e_setup ok yes
+saved_launcher="$(declare -f install_binary_launcher)"
+install_binary_launcher() { printf '#!/bin/bash\nexit 1\n' > "$BIN_DIR/agent-relay"; chmod +x "$BIN_DIR/agent-relay"; }
+AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
+eval "$saved_launcher"
+check "strict update: broken launcher fails" test "$rc" -ne 0
+check "strict update: broken launcher restores CLI" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+check "strict update: broken launcher restores broker" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+check "strict update: broken launcher is removed" test ! -e "$BIN_DIR/agent-relay"
 
 e2e_setup ok no
 AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
@@ -485,6 +496,7 @@ TMPDIR="$WORK/missing-directory" run_main; rc=$?
 check "bad temp directory: installer exits non-zero" test "$rc" -ne 0
 check "bad temp directory: previous CLI preserved" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
 check "bad temp directory: reports temp failure" contains "$(cat "$WORK/main.out")" "Cannot create a temporary file"
+check "bad temp directory: no misleading verification failure" bash -c '! grep -qi "verification.*failed" "$1"' _ "$WORK/main.out"
 check "bad temp directory: no npm fallback" bash -c '! grep -q "Installing via npm" "$1"' _ "$WORK/main.out"
 
 e2e_setup crash no

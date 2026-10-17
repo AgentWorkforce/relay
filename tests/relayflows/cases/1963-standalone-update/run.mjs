@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -11,6 +11,7 @@ const resultPath = process.env.RELAY_PR_PROOF_RESULT_PATH;
 if (!['base', 'head'].includes(arm) || !targetDir || !harnessDir || !resultPath) {
   throw new Error('Missing RelayFlow proof environment.');
 }
+rmSync(resultPath, { force: true });
 
 const expectedSha = process.env[arm === 'base' ? 'RELAY_PR_PROOF_BASE_SHA' : 'RELAY_PR_PROOF_HEAD_SHA'];
 const actualSha = execFileSync('git', ['-C', targetDir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -33,7 +34,7 @@ function run(command, args) {
 
 if (!existsSync(path.join(targetDir, 'node_modules', 'vitest'))) run('npm', ['ci', '--ignore-scripts']);
 const modulePath = path.join(targetDir, 'packages', 'cli', 'dist', 'cli', 'lib', 'core-maintenance.js');
-if (!existsSync(modulePath)) run('npm', ['run', 'build:core']);
+run('npm', ['run', 'build:core']);
 const { runUpdateCommand } = await import(pathToFileURL(modulePath).href);
 
 const installDir = path.join(targetDir, '.tmp', 'proof-1963-standalone');

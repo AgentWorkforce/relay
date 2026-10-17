@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay update` upgrades standalone CLI and broker installs through the verified installer, keeps npm updates on npm, and exits non-zero when installation fails.
+- `agent-relay update` upgrades standalone CLI and broker installs through the verified installer instead of installing a separate npm copy. Installer temp-directory failures now report the cause without falling back to npm.
 
 ## [14.0.0] - 2026-10-13
 

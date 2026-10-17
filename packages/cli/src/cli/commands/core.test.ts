@@ -2825,9 +2825,43 @@ describe('registerCoreCommands', () => {
 
     expect(await runCommand(program, ['update'])).toBeUndefined();
     expect(execCommand).toHaveBeenCalledWith(
-      "AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 AGENT_RELAY_VERSION='2.0.0' bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash'"
+      `AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 AGENT_RELAY_VERSION='2.0.0' bash -c 'installer=$(curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh) && bash -c "$installer"'`
     );
     expect(deps.log).toHaveBeenCalledWith('Successfully updated to 2.0.0');
+  });
+
+  it('updates a standalone binary in a custom install directory', async () => {
+    const installDir = nodePath.resolve('/custom directory/relay');
+    const { deps } = createHarness({
+      execPath: nodePath.join(installDir, 'bin', 'agent-relay'),
+      env: { AGENT_RELAY_INSTALL_DIR: installDir },
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    expect(await runCommand(program, ['update'])).toBeUndefined();
+    expect(deps.execCommand).toHaveBeenCalledWith(
+      expect.stringContaining('AGENT_RELAY_INSTALL_STANDALONE_ONLY=1')
+    );
+  });
+
+  it('recognizes a symlink to a standalone binary', async () => {
+    const installedBinary = nodePath.join(os.homedir(), '.agentworkforce', 'relay', 'bin', 'agent-relay');
+    const { deps } = createHarness({
+      execPath: nodePath.resolve('/linked/agent-relay'),
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      configureDependencies: (deps) => {
+        deps.fs.realpathSync = () => installedBinary;
+      },
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    expect(await runCommand(program, ['update'])).toBeUndefined();
+    expect(deps.execCommand).toHaveBeenCalledWith(
+      expect.stringContaining('AGENT_RELAY_INSTALL_STANDALONE_ONLY=1')
+    );
   });
 
   it('returns a failure when a standalone update fails', async () => {

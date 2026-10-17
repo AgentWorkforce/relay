@@ -682,7 +682,11 @@ install_binary_atomic() {
     fi
 
     if ! "$check_fn" "$tmp"; then
-        warn "Verification of the new binary failed; $dest left untouched"
+        if [ -n "$STANDALONE_TEMP_FAILURE" ]; then
+            warn "$STANDALONE_TEMP_FAILURE"
+        else
+            warn "Verification of the new binary failed; $dest left untouched"
+        fi
         rm -f "$tmp"
         return 1
     fi
@@ -827,6 +831,7 @@ download_broker_binary() {
 # rejected after the CLI was replaced, undo the CLI step (transactional
 # install) and fail loudly instead of leaving a CLI/broker version skew.
 abort_standalone_install() {
+    local reason="${1:-The v${VERSION} broker was rejected (integrity or smoke test failed)}"
     local broker="$INSTALL_DIR/bin/agent-relay-broker"
     local old_broker="none installed"
 
@@ -838,9 +843,9 @@ abort_standalone_install() {
     undo_cli
     TXN_STATE=""
     if [ -n "$STANDALONE_TEMP_FAILURE" ]; then
-        error "$STANDALONE_TEMP_FAILURE. ${ROLLBACK_OUTCOME}."
+        error "$STANDALONE_TEMP_FAILURE ${ROLLBACK_OUTCOME}."
     fi
-    error "The v${VERSION} broker was rejected (integrity or smoke test failed), so the v${VERSION} CLI was NOT kept: ${ROLLBACK_OUTCOME}. The existing broker (${old_broker}) is untouched. Nothing was upgraded; re-run the installer, or set AGENT_RELAY_VERSION to a known-good version."
+    error "${reason}, so the v${VERSION} CLI was NOT kept: ${ROLLBACK_OUTCOME}. The existing broker (${old_broker}) is untouched. Nothing was upgraded; re-run the installer, or set AGENT_RELAY_VERSION to a known-good version."
 }
 
 # Idempotent undo of one destination: put this run's backup back; a destination
@@ -1048,9 +1053,9 @@ download_standalone_binary() {
                 success "Downloaded standalone agent-relay binary"
                 return 0
             fi
+            [ -z "$STANDALONE_TEMP_FAILURE" ] || return 1
             verify_output="$CLI_CHECK_OUTPUT"
             record_standalone_failure "Standalone binary verification failed for $target_path${verify_output:+: $verify_output}. Trying uncompressed binary..."
-            [ -z "$STANDALONE_TEMP_FAILURE" ] || return 1
         else
             [ -z "$STANDALONE_TEMP_FAILURE" ] || return 1
             info "Compressed binary not available, trying uncompressed..."
@@ -1074,9 +1079,9 @@ download_standalone_binary() {
                 success "Downloaded standalone agent-relay binary (no Node.js required!)"
                 return 0
             fi
+            [ -z "$STANDALONE_TEMP_FAILURE" ] || return 1
             verify_output="$CLI_CHECK_OUTPUT"
             record_standalone_failure "Standalone binary verification failed for $target_path${verify_output:+: $verify_output}"
-            [ -z "$STANDALONE_TEMP_FAILURE" ] || return 1
         else
             info "Uncompressed binary not available (file too small: ${file_size} bytes)"
             rm -f "$FETCHED_TMP"
@@ -1390,11 +1395,15 @@ main() {
     if [ "$standalone_ok" -eq 1 ]; then
         INSTALL_METHOD="binary"
         # Download broker binary for workflow/SDK agent spawning. A rejected
-        # broker (rc 2) rolls the CLI back; an unavailable one (rc 1) is fine.
+        # broker (rc 2) rolls the CLI back. Strict updates also require an
+        # available broker and a working launcher before dropping backups.
         local broker_rc=0
         download_broker_binary || broker_rc=$?
         if [ "$broker_rc" -eq 2 ] || { [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" = "1" ] && [ "$broker_rc" -ne 0 ]; }; then
             abort_standalone_install
+        fi
+        if [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" = "1" ] && ! check_cli_binary "$BIN_DIR/agent-relay"; then
+            abort_standalone_install "The v${VERSION} launcher failed verification"
         fi
         # COMMIT: one assignment; everything after this is cleanup of backups.
         TXN_STATE=""
@@ -1403,7 +1412,9 @@ main() {
         [ -n "$LAUNCHER_BACKUP" ] && rm -f "$LAUNCHER_BACKUP"
         LAUNCHER_BACKUP=""
         # Install ACP bridge for Zed editor (requires Node.js)
-        install_acp_bridge || true
+        if [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" != "1" ]; then
+            install_acp_bridge || true
+        fi
         verify_installation && print_usage && track_event "install_completed" && exit 0
     fi
 

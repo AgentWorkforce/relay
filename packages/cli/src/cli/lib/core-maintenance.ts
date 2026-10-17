@@ -200,7 +200,7 @@ export async function runUpdateCommand(options: { check?: boolean }, deps: CoreD
   const toVersion = info.latestVersion ?? 'latest';
   const standalone = isStandaloneInstall(deps);
   const installCommand = standalone
-    ? `AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 AGENT_RELAY_VERSION=${shellQuote(toVersion)} bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash'`
+    ? `AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 AGENT_RELAY_VERSION=${shellQuote(toVersion)} bash -c 'installer=$(curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh) && bash -c "$installer"'`
     : 'npm install -g agent-relay@latest';
   try {
     const { stdout, stderr } = await deps.execCommand(installCommand);
