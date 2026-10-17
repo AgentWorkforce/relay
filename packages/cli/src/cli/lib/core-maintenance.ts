@@ -21,6 +21,25 @@ function toErrorMessage(err: unknown): string {
   return describeError(err);
 }
 
+/** Locate the running standalone executable, including custom and legacy installs. */
+function standaloneInstallDir(deps: CoreDependencies): string | undefined {
+  let runningBinary = path.resolve(deps.execPath);
+  try {
+    runningBinary = deps.fs.realpathSync?.(runningBinary) ?? runningBinary;
+  } catch {
+    // Keep the executable path when realpath is unavailable.
+  }
+  // npm runs under node (or bun); execPath is the runtime, not the CLI script.
+  if (path.basename(runningBinary) !== 'agent-relay' || path.basename(path.dirname(runningBinary)) !== 'bin')
+    return undefined;
+  return path.dirname(path.dirname(runningBinary));
+}
+
+/** Quote one environment value for the POSIX installer shell. */
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
 /**
  * Remove agent-relay snippet blocks from a markdown file's content.
  * Returns the cleaned content, or null if no snippets were found.
@@ -155,6 +174,7 @@ function removeZedConfig(
   }
 }
 
+/** Update the running installation and report installer failures with a nonzero exit. */
 export async function runUpdateCommand(options: { check?: boolean }, deps: CoreDependencies): Promise<void> {
   const currentVersion = deps.getVersion();
   deps.log(`Current version: ${currentVersion}`);
@@ -181,8 +201,12 @@ export async function runUpdateCommand(options: { check?: boolean }, deps: CoreD
 
   deps.log('Installing update...');
   const toVersion = info.latestVersion ?? 'latest';
+  const installDir = standaloneInstallDir(deps);
+  const installCommand = installDir
+    ? `AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 AGENT_RELAY_INSTALL_DIR=${shellQuote(installDir)} AGENT_RELAY_VERSION=${shellQuote(toVersion)} bash -c 'installer=$(curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh) && bash -c "$installer"'`
+    : 'npm install -g agent-relay@latest';
   try {
-    const { stdout, stderr } = await deps.execCommand('npm install -g agent-relay@latest');
+    const { stdout, stderr } = await deps.execCommand(installCommand);
     if (stdout.trim().length > 0) {
       deps.log(stdout.trimEnd());
     }
@@ -204,7 +228,7 @@ export async function runUpdateCommand(options: { check?: boolean }, deps: CoreD
       ...(errorClass ? { error_class: errorClass } : {}),
     });
     deps.error(`Failed to install update: ${toErrorMessage(err)}`);
-    deps.log('Try running manually: npm install -g agent-relay@latest');
+    deps.log(`Try running manually: ${installCommand}`);
     deps.exit(1);
   }
 }

@@ -2812,6 +2812,91 @@ describe('registerCoreCommands', () => {
     });
   });
 
+  it('updates a standalone binary with the verified installer and pinned version', async () => {
+    const home = os.homedir();
+    const execCommand = vi.fn(async () => ({ stdout: 'updated\n', stderr: '' }));
+    const { deps } = createHarness({
+      execPath: nodePath.join(home, '.agentworkforce', 'relay', 'bin', 'agent-relay'),
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      execCommand,
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    expect(await runCommand(program, ['update'])).toBeUndefined();
+    expect(execCommand).toHaveBeenCalledWith(
+      `AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 AGENT_RELAY_INSTALL_DIR='${nodePath.join(home, '.agentworkforce', 'relay')}' AGENT_RELAY_VERSION='2.0.0' bash -c 'installer=$(curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh) && bash -c "$installer"'`
+    );
+    expect(deps.log).toHaveBeenCalledWith('Successfully updated to 2.0.0');
+  });
+
+  it.each([{}, { AGENT_RELAY_INSTALL_DIR: '/another-install' }])(
+    'updates a standalone binary in its actual custom directory with env %j',
+    async (env) => {
+      const installDir = nodePath.resolve("/custom directory/relay's install");
+      const { deps } = createHarness({
+        execPath: nodePath.join(installDir, 'bin', 'agent-relay'),
+        env,
+        checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      });
+      const program = new Command();
+      registerCoreMaintenance(program, deps);
+
+      expect(await runCommand(program, ['update'])).toBeUndefined();
+      expect(deps.execCommand).toHaveBeenCalledWith(
+        expect.stringContaining(`AGENT_RELAY_INSTALL_DIR='${installDir.replace(/'/g, `'"'"'`)}'`)
+      );
+    }
+  );
+
+  it('updates a standalone binary in the legacy install directory', async () => {
+    const installDir = nodePath.join(os.homedir(), '.agent-relay');
+    const { deps } = createHarness({
+      execPath: nodePath.join(installDir, 'bin', 'agent-relay'),
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+    expect(await runCommand(program, ['update'])).toBeUndefined();
+    expect(deps.execCommand).toHaveBeenCalledWith(
+      expect.stringContaining(`AGENT_RELAY_INSTALL_DIR='${installDir}'`)
+    );
+  });
+
+  it('recognizes a symlink to a standalone binary', async () => {
+    const installedBinary = nodePath.join(os.homedir(), '.agentworkforce', 'relay', 'bin', 'agent-relay');
+    const { deps } = createHarness({
+      execPath: nodePath.resolve('/linked/agent-relay'),
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      configureDependencies: (deps) => {
+        deps.fs.realpathSync = () => installedBinary;
+      },
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    expect(await runCommand(program, ['update'])).toBeUndefined();
+    expect(deps.execCommand).toHaveBeenCalledWith(
+      expect.stringContaining('AGENT_RELAY_INSTALL_STANDALONE_ONLY=1')
+    );
+  });
+
+  it('returns a failure when a standalone update fails', async () => {
+    const home = os.homedir();
+    const { deps } = createHarness({
+      execPath: nodePath.join(home, '.agentworkforce', 'relay', 'bin', 'agent-relay'),
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      execCommand: vi.fn(async () => {
+        throw new Error('installer failed');
+      }),
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    expect(await runCommand(program, ['update'])).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('Failed to install update: installer failed');
+  });
+
   it('update tracks failed install attempts without leaking messages', async () => {
     const { deps } = createHarness({
       checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },

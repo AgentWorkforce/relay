@@ -9,6 +9,7 @@ set -e
 #   AGENT_RELAY_INSTALL_DIR          - Installation directory (default: ~/.agentworkforce/relay)
 #   AGENT_RELAY_BIN_DIR              - Binary directory (default: ~/.local/bin)
 #   AGENT_RELAY_TELEMETRY_DISABLED   - Disable anonymous install telemetry (default: false)
+#   AGENT_RELAY_INSTALL_STANDALONE_ONLY - Require a verified standalone install (used by `agent-relay update`)
 
 REPO_RELAY="AgentWorkforce/relay"
 VERSION="${AGENT_RELAY_VERSION:-latest}"
@@ -16,6 +17,7 @@ INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-$HOME/.agentworkforce/relay}"
 BIN_DIR="${AGENT_RELAY_BIN_DIR:-$HOME/.local/bin}"
 ORIGINAL_PATH="${PATH:-}"
 STANDALONE_FAILURE_REASON=""
+STANDALONE_TEMP_FAILURE=""
 
 # Colors
 RED='\033[0;31m'
@@ -105,17 +107,47 @@ safe_remove_path() {
     fi
 }
 
-write_executable_file() {
-    local target="$1"
-    local temp="${target}.tmp.$$"
-
-    mkdir -p "$(dirname "$target")"
-    safe_remove_path "$temp"
-    cat > "$temp"
-    chmod +x "$temp"
-    mv -f "$temp" "$target"
+# Privileged installs must not write through directories another user can replace.
+check_privileged_directory() {
+    [ "$EUID" -eq 0 ] || return 0
+    local dir="$1" metadata owner mode physical destination
+    case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
+    destination="$dir"
+    while [ ! -d "$dir" ]; do dir=$(dirname "$dir"); done
+    physical=$(cd "$dir" && pwd -P) || return 1
+    if [ "$physical" != "$dir" ]; then
+        check_privileged_directory "$physical" || return 1
+    fi
+    while :; do
+        metadata=$(stat -L -c '%u %a' "$dir" 2>/dev/null) || metadata=$(stat -L -f '%u %Lp' "$dir") || return 1
+        read -r owner mode <<< "$metadata"
+        # A root-owned sticky ancestor (e.g. /tmp) cannot replace root-owned children.
+        if [ "$owner" != 0 ] || { [ $((8#$mode & 0022)) -ne 0 ] && { [ "$dir" = "$destination" ] || [ $((8#$mode & 01000)) -eq 0 ]; }; }; then
+            warn "Unsafe directory for a privileged install: $dir"
+            return 1
+        fi
+        [ "$dir" != / ] || break
+        dir=$(dirname "$dir")
+    done
 }
 
+# Publish a launcher from a registered, unpredictable temp file in its destination directory.
+write_executable_file() {
+    local target="$1"
+    local temp dir
+    dir=$(dirname "$target")
+
+    check_privileged_directory "$dir" || return 1
+    mkdir -p "$dir" || return 1
+    make_temp_file "$dir" "launcher-write" || return 1
+    temp="$MADE_TEMP"
+    if ! cat > "$temp" || ! chmod 755 "$temp" || ! mv -f "$temp" "$target"; then
+        rm -f "$temp"
+        return 1
+    fi
+}
+
+# Write the shell entry point that forwards arguments to the standalone executable.
 install_binary_launcher() {
     local target_binary="$1"
 
@@ -275,11 +307,15 @@ EOT
 # run in the caller's shell so that register_temp updates the TEMP_FILES that
 # the EXIT/INT/TERM cleanup reads (a $(...) subshell would lose the entry).
 MADE_TEMP=""
+# Allocate and register a destination-local temp file, reporting failures to the caller.
 make_temp_file() {
     local dir="$1"
     local label="$2"
     MADE_TEMP=""
-    MADE_TEMP=$(mktemp "$dir/.${label}.XXXXXX") || return 1
+    MADE_TEMP=$(mktemp "$dir/.${label}.XXXXXX") || {
+        STANDALONE_TEMP_FAILURE="Cannot create a temporary file in $dir; check that the directory is writable."
+        return 1
+    }
     register_temp "$MADE_TEMP"
 }
 
@@ -410,6 +446,10 @@ verify_asset_digest() {
     load_release_metadata
     expected=$(fetch_asset_expected_sha256 "$asset")
     if [ -z "$expected" ]; then
+        if [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" = "1" ]; then
+            warn "A published SHA-256 digest is required for $asset; refusing the standalone update."
+            return 1
+        fi
         if [ "$RELEASE_JSON_STATE" = "failed" ]; then
             warn "Could not fetch release metadata from the GitHub API (rate limit or network); cannot verify the SHA-256 of $asset. Continuing with the smoke test only."
         else
@@ -418,6 +458,10 @@ verify_asset_digest() {
         return 2
     fi
     if ! actual=$(sha256_of "$file"); then
+        if [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" = "1" ]; then
+            warn "No SHA-256 tool found; refusing the standalone update."
+            return 1
+        fi
         warn "No SHA-256 tool found (shasum, sha256sum or openssl); cannot verify $asset. Continuing with the smoke test only."
         return 2
     fi
@@ -627,10 +671,19 @@ check_broker_binary() {
     smoke_test_broker "$1"
 }
 
+# Smoke-test the CLI; strict updates also require the selected release version.
 check_cli_binary() {
     local log
-    log=$(mktemp "${TMPDIR:-/tmp}/agent-relay-verify.XXXXXX") || return 1
+    log=$(mktemp "${TMPDIR:-/tmp}/agent-relay-verify.XXXXXX") || {
+        STANDALONE_TEMP_FAILURE="Cannot create a temporary file in ${TMPDIR:-/tmp}; check that the directory is writable."
+        return 1
+    }
     if "$1" --version >"$log" 2>&1; then
+        if [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" = "1" ] && [ "$(tr -d '\r' < "$log")" != "$VERSION" ]; then
+            CLI_CHECK_OUTPUT="CLI version does not match the requested version $VERSION"
+            rm -f "$log"
+            return 1
+        fi
         rm -f "$log"
         return 0
     fi
@@ -666,7 +719,11 @@ install_binary_atomic() {
     fi
 
     if ! "$check_fn" "$tmp"; then
-        warn "Verification of the new binary failed; $dest left untouched"
+        if [ -n "$STANDALONE_TEMP_FAILURE" ]; then
+            warn "$STANDALONE_TEMP_FAILURE"
+        else
+            warn "Verification of the new binary failed; $dest left untouched"
+        fi
         rm -f "$tmp"
         return 1
     fi
@@ -811,6 +868,7 @@ download_broker_binary() {
 # rejected after the CLI was replaced, undo the CLI step (transactional
 # install) and fail loudly instead of leaving a CLI/broker version skew.
 abort_standalone_install() {
+    local reason="${1:-The v${VERSION} broker was rejected (integrity or smoke test failed)}"
     local broker="$INSTALL_DIR/bin/agent-relay-broker"
     local old_broker="none installed"
 
@@ -821,7 +879,10 @@ abort_standalone_install() {
     undo_brokers
     undo_cli
     TXN_STATE=""
-    error "The v${VERSION} broker was rejected (integrity or smoke test failed), so the v${VERSION} CLI was NOT kept: ${ROLLBACK_OUTCOME}. The existing broker (${old_broker}) is untouched. Nothing was upgraded; re-run the installer, or set AGENT_RELAY_VERSION to a known-good version."
+    if [ -n "$STANDALONE_TEMP_FAILURE" ]; then
+        error "$STANDALONE_TEMP_FAILURE ${ROLLBACK_OUTCOME}."
+    fi
+    error "${reason}, so the v${VERSION} CLI was NOT kept: ${ROLLBACK_OUTCOME}. The existing broker (${old_broker}) is untouched. Nothing was upgraded; re-run the installer, or set AGENT_RELAY_VERSION to a known-good version."
 }
 
 # Idempotent undo of one destination: put this run's backup back; a destination
@@ -1024,14 +1085,16 @@ download_standalone_binary() {
         if fetch_release_asset "${binary_name}.gz" "$INSTALL_DIR/bin" gz; then
             CLI_CHECK_OUTPUT=""
             if install_binary_atomic "$FETCHED_TMP" "$target_path" check_cli_binary; then
-                install_binary_launcher "$target_path"
+                install_binary_launcher "$target_path" || abort_standalone_install "Could not install the CLI launcher"
                 prepend_bin_dir_to_path
                 success "Downloaded standalone agent-relay binary"
                 return 0
             fi
+            [ -z "$STANDALONE_TEMP_FAILURE" ] || return 1
             verify_output="$CLI_CHECK_OUTPUT"
             record_standalone_failure "Standalone binary verification failed for $target_path${verify_output:+: $verify_output}. Trying uncompressed binary..."
         else
+            [ -z "$STANDALONE_TEMP_FAILURE" ] || return 1
             info "Compressed binary not available, trying uncompressed..."
         fi
     else
@@ -1048,11 +1111,12 @@ download_standalone_binary() {
         if [ "$file_size" -gt 1000000 ]; then
             CLI_CHECK_OUTPUT=""
             if install_binary_atomic "$FETCHED_TMP" "$target_path" check_cli_binary; then
-                install_binary_launcher "$target_path"
+                install_binary_launcher "$target_path" || abort_standalone_install "Could not install the CLI launcher"
                 prepend_bin_dir_to_path
                 success "Downloaded standalone agent-relay binary (no Node.js required!)"
                 return 0
             fi
+            [ -z "$STANDALONE_TEMP_FAILURE" ] || return 1
             verify_output="$CLI_CHECK_OUTPUT"
             record_standalone_failure "Standalone binary verification failed for $target_path${verify_output:+: $verify_output}"
         else
@@ -1061,7 +1125,11 @@ download_standalone_binary() {
         fi
     fi
 
-    info "No standalone binary available for $PLATFORM, falling back to npm"
+    if [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" = "1" ]; then
+        info "No verified standalone binary available for $PLATFORM"
+    else
+        info "No standalone binary available for $PLATFORM, falling back to npm"
+    fi
     return 1
 }
 
@@ -1322,6 +1390,12 @@ main() {
     detect_platform
     get_latest_version
 
+    check_privileged_directory "$BIN_DIR" && check_privileged_directory "$INSTALL_DIR/bin" || error "Install directories must be trusted by the installing user."
+    mkdir -p "$BIN_DIR" "$INSTALL_DIR/bin" || error "Could not create install directories."
+    if [ "$BIN_DIR" -ef "$INSTALL_DIR/bin" ]; then
+        error "The launcher directory and standalone binary directory must differ; set AGENT_RELAY_BIN_DIR to a separate directory. Nothing was upgraded."
+    fi
+
     # Track install started
     track_event "install_started"
 
@@ -1368,11 +1442,15 @@ main() {
     if [ "$standalone_ok" -eq 1 ]; then
         INSTALL_METHOD="binary"
         # Download broker binary for workflow/SDK agent spawning. A rejected
-        # broker (rc 2) rolls the CLI back; an unavailable one (rc 1) is fine.
+        # broker (rc 2) rolls the CLI back. Strict updates also require an
+        # available broker and a working launcher before dropping backups.
         local broker_rc=0
         download_broker_binary || broker_rc=$?
-        if [ "$broker_rc" -eq 2 ]; then
+        if [ "$broker_rc" -eq 2 ] || { [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" = "1" ] && [ "$broker_rc" -ne 0 ]; }; then
             abort_standalone_install
+        fi
+        if [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" = "1" ] && ! check_cli_binary "$BIN_DIR/agent-relay"; then
+            abort_standalone_install "The v${VERSION} launcher failed verification"
         fi
         # COMMIT: one assignment; everything after this is cleanup of backups.
         TXN_STATE=""
@@ -1381,8 +1459,22 @@ main() {
         [ -n "$LAUNCHER_BACKUP" ] && rm -f "$LAUNCHER_BACKUP"
         LAUNCHER_BACKUP=""
         # Install ACP bridge for Zed editor (requires Node.js)
-        install_acp_bridge || true
+        if [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" != "1" ]; then
+            install_acp_bridge || true
+        fi
         verify_installation && print_usage && track_event "install_completed" && exit 0
+    fi
+
+    if [ -n "$STANDALONE_TEMP_FAILURE" ]; then
+        undo_cli
+        TXN_STATE=""
+        error "$STANDALONE_TEMP_FAILURE"
+    fi
+
+    if [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" = "1" ]; then
+        undo_cli
+        TXN_STATE=""
+        error "Standalone update failed; the previous CLI and broker were preserved. ${STANDALONE_FAILURE_REASON}"
     fi
 
     # Standalone path not taken: nothing was replaced, disarm and drop the backup
