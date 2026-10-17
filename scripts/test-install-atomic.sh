@@ -440,11 +440,12 @@ REAL_PLATFORM="$PLATFORM"
 make_fake_cli() { # make_fake_cli <path> <version>
     printf '#!/bin/bash\n[ "$1" = "--version" ] && { echo "%s"; exit 0; }\nexit 0\n' "$2" > "$1"; chmod +x "$1"
 }
-e2e_setup() { # e2e_setup <broker-mode> <digests: yes|no> [old-cli: yes|no]
+# Prepare an isolated release and installation, optionally overriding the CLI version.
+e2e_setup() { # e2e_setup <broker-mode> <digests: yes|no> [old-cli: yes|no] [new-version]
     reset_release
     INSTALL_DIR="$(newdir)"; BIN_DIR="$(newdir)"; mkdir -p "$INSTALL_DIR/bin"
     make_fake_broker "$INSTALL_DIR/bin/agent-relay-broker" ok oldbroker
-    make_fake_cli "$FIX/cli-new" "9.9.9"
+    make_fake_cli "$FIX/cli-new" "${4:-9.9.9}"
     gzip -c "$FIX/cli-new" > "$FIX/asset/agent-relay-$REAL_PLATFORM.gz"
     make_fake_broker "$FIX/asset/agent-relay-broker-$REAL_PLATFORM" "$1" newbroker
     if [ "${3:-yes}" = yes ]; then make_fake_cli "$INSTALL_DIR/bin/agent-relay" "1.0.0"; fi
@@ -460,6 +461,7 @@ e2e_setup() { # e2e_setup <broker-mode> <digests: yes|no> [old-cli: yes|no]
     } > "$FIX/release.json"
     OLD_BROKER_HASH="$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")"
 }
+# Run the installer in a subshell so exit and transaction state cannot leak between cases.
 run_main() { ( export AGENT_RELAY_TELEMETRY_DISABLED=1; main ) > "$WORK/main.out" 2>&1; }
 
 e2e_setup ok yes
@@ -468,13 +470,13 @@ check "all good: installer exits 0" test "$rc" -eq 0
 check "all good: CLI upgraded" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
 check "all good: no .prev left" test ! -e "$INSTALL_DIR/bin/agent-relay.prev"
 
-e2e_setup ok yes
+e2e_setup ok yes yes "$VERSION"
 AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
 check "strict update: verified CLI and broker install" test "$rc" -eq 0
-check "strict update: CLI upgraded" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
+check "strict update: CLI upgraded" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "$VERSION"
 check "strict update: optional ACP install is skipped" bash -c '! grep -q "relay-acp\|ACP bridge" "$1"' _ "$WORK/main.out"
 
-e2e_setup ok yes
+e2e_setup ok yes yes "$VERSION"
 saved_launcher="$(declare -f install_binary_launcher)"
 install_binary_launcher() { printf '#!/bin/bash\nexit 1\n' > "$BIN_DIR/agent-relay"; chmod +x "$BIN_DIR/agent-relay"; }
 AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
@@ -484,12 +486,32 @@ check "strict update: broken launcher restores CLI" test "$("$INSTALL_DIR/bin/ag
 check "strict update: broken launcher restores broker" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
 check "strict update: broken launcher is removed" test ! -e "$BIN_DIR/agent-relay"
 
+e2e_setup ok yes
+AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
+check "strict update: wrong release version fails" test "$rc" -ne 0
+check "strict update: wrong version restores CLI" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+check "strict update: wrong version preserves broker" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+
+for launcher_mode in failed-write stale-target; do
+    e2e_setup ok yes yes "$VERSION"
+    make_fake_cli "$BIN_DIR/agent-relay" "0.9.0"
+    cp -p "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+    install_binary_launcher() { [ "$launcher_mode" = stale-target ]; }
+    AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
+    eval "$saved_launcher"
+    check "strict update: $launcher_mode fails" test "$rc" -ne 0
+    check "strict update: $launcher_mode restores CLI" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+    check "strict update: $launcher_mode restores broker" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+    check "strict update: $launcher_mode preserves launcher" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+done
+
 e2e_setup ok no
 AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
 check "strict update: missing digest fails" test "$rc" -ne 0
 check "strict update: previous CLI preserved" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
 check "strict update: previous broker preserved" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
 check "strict update: no npm fallback" bash -c '! grep -q "Installing via npm" "$1"' _ "$WORK/main.out"
+check "strict update: no misleading fallback message" bash -c '! grep -qi "falling back to npm" "$1"' _ "$WORK/main.out"
 
 e2e_setup ok yes
 TMPDIR="$WORK/missing-directory" run_main; rc=$?

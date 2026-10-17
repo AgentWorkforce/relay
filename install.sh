@@ -111,11 +111,12 @@ write_executable_file() {
     local target="$1"
     local temp="${target}.tmp.$$"
 
-    mkdir -p "$(dirname "$target")"
-    safe_remove_path "$temp"
-    cat > "$temp"
-    chmod +x "$temp"
-    mv -f "$temp" "$target"
+    mkdir -p "$(dirname "$target")" || return 1
+    safe_remove_path "$temp" || return 1
+    if ! cat > "$temp" || ! chmod +x "$temp" || ! mv -f "$temp" "$target"; then
+        rm -f "$temp"
+        return 1
+    fi
 }
 
 install_binary_launcher() {
@@ -640,6 +641,7 @@ check_broker_binary() {
     smoke_test_broker "$1"
 }
 
+# Smoke-test the CLI; strict updates also require the selected release version.
 check_cli_binary() {
     local log
     log=$(mktemp "${TMPDIR:-/tmp}/agent-relay-verify.XXXXXX") || {
@@ -647,6 +649,11 @@ check_cli_binary() {
         return 1
     }
     if "$1" --version >"$log" 2>&1; then
+        if [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" = "1" ] && [ "$(tr -d '\r' < "$log")" != "$VERSION" ]; then
+            CLI_CHECK_OUTPUT="CLI version does not match the requested version $VERSION"
+            rm -f "$log"
+            return 1
+        fi
         rm -f "$log"
         return 0
     fi
@@ -1048,7 +1055,7 @@ download_standalone_binary() {
         if fetch_release_asset "${binary_name}.gz" "$INSTALL_DIR/bin" gz; then
             CLI_CHECK_OUTPUT=""
             if install_binary_atomic "$FETCHED_TMP" "$target_path" check_cli_binary; then
-                install_binary_launcher "$target_path"
+                install_binary_launcher "$target_path" || abort_standalone_install "Could not install the CLI launcher"
                 prepend_bin_dir_to_path
                 success "Downloaded standalone agent-relay binary"
                 return 0
@@ -1074,7 +1081,7 @@ download_standalone_binary() {
         if [ "$file_size" -gt 1000000 ]; then
             CLI_CHECK_OUTPUT=""
             if install_binary_atomic "$FETCHED_TMP" "$target_path" check_cli_binary; then
-                install_binary_launcher "$target_path"
+                install_binary_launcher "$target_path" || abort_standalone_install "Could not install the CLI launcher"
                 prepend_bin_dir_to_path
                 success "Downloaded standalone agent-relay binary (no Node.js required!)"
                 return 0
@@ -1088,7 +1095,11 @@ download_standalone_binary() {
         fi
     fi
 
-    info "No standalone binary available for $PLATFORM, falling back to npm"
+    if [ "${AGENT_RELAY_INSTALL_STANDALONE_ONLY:-}" = "1" ]; then
+        info "No verified standalone binary available for $PLATFORM"
+    else
+        info "No standalone binary available for $PLATFORM, falling back to npm"
+    fi
     return 1
 }
 

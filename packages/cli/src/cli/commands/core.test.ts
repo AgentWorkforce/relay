@@ -2825,24 +2825,41 @@ describe('registerCoreCommands', () => {
 
     expect(await runCommand(program, ['update'])).toBeUndefined();
     expect(execCommand).toHaveBeenCalledWith(
-      `AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 AGENT_RELAY_VERSION='2.0.0' bash -c 'installer=$(curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh) && bash -c "$installer"'`
+      `AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 AGENT_RELAY_INSTALL_DIR='${nodePath.join(home, '.agentworkforce', 'relay')}' AGENT_RELAY_VERSION='2.0.0' bash -c 'installer=$(curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh) && bash -c "$installer"'`
     );
     expect(deps.log).toHaveBeenCalledWith('Successfully updated to 2.0.0');
   });
 
-  it('updates a standalone binary in a custom install directory', async () => {
-    const installDir = nodePath.resolve('/custom directory/relay');
+  it.each([{}, { AGENT_RELAY_INSTALL_DIR: '/another-install' }])(
+    'updates a standalone binary in its actual custom directory with env %j',
+    async (env) => {
+      const installDir = nodePath.resolve("/custom directory/relay's install");
+      const { deps } = createHarness({
+        execPath: nodePath.join(installDir, 'bin', 'agent-relay'),
+        env,
+        checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      });
+      const program = new Command();
+      registerCoreMaintenance(program, deps);
+
+      expect(await runCommand(program, ['update'])).toBeUndefined();
+      expect(deps.execCommand).toHaveBeenCalledWith(
+        expect.stringContaining(`AGENT_RELAY_INSTALL_DIR='${installDir.replace(/'/g, `'"'"'`)}'`)
+      );
+    }
+  );
+
+  it('updates a standalone binary in the legacy install directory', async () => {
+    const installDir = nodePath.join(os.homedir(), '.agent-relay');
     const { deps } = createHarness({
       execPath: nodePath.join(installDir, 'bin', 'agent-relay'),
-      env: { AGENT_RELAY_INSTALL_DIR: installDir },
       checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
     });
     const program = new Command();
     registerCoreMaintenance(program, deps);
-
     expect(await runCommand(program, ['update'])).toBeUndefined();
     expect(deps.execCommand).toHaveBeenCalledWith(
-      expect.stringContaining('AGENT_RELAY_INSTALL_STANDALONE_ONLY=1')
+      expect.stringContaining(`AGENT_RELAY_INSTALL_DIR='${installDir}'`)
     );
   });
 

@@ -20,6 +20,7 @@ const runnerPath = fileURLToPath(import.meta.url);
 if (path.relative(harnessDir, runnerPath).startsWith('..'))
   throw new Error('Runner is outside the head checkout.');
 
+/** Build the exact target checkout, treating setup failures as proof errors. */
 function run(command, args) {
   const result = spawnSync(command, args, {
     cwd: targetDir,
@@ -39,12 +40,13 @@ const { runUpdateCommand } = await import(pathToFileURL(modulePath).href);
 
 const installDir = path.join(targetDir, '.tmp', 'proof-1963-standalone');
 let command = '';
+/** Model a custom standalone install in a fresh shell with no install override. */
 const makeDeps = (fail) => ({
   getVersion: () => '1.0.0',
   checkForUpdates: async () => ({ updateAvailable: true, latestVersion: '2.0.0' }),
   log: () => {},
   error: () => {},
-  env: { AGENT_RELAY_INSTALL_DIR: installDir },
+  env: {},
   execPath: path.join(installDir, 'bin', 'agent-relay'),
   fs: { realpathSync: (value) => value },
   execCommand: async (value) => {
@@ -72,6 +74,7 @@ if (command !== selectedCommand || failureExit !== 1) {
 
 const standalone =
   selectedCommand.includes('AGENT_RELAY_INSTALL_STANDALONE_ONLY=1') &&
+  selectedCommand.includes(`AGENT_RELAY_INSTALL_DIR='${installDir.replace(/'/g, `'"'"'`)}'`) &&
   selectedCommand.includes("AGENT_RELAY_VERSION='2.0.0'") &&
   selectedCommand.includes('install.sh') &&
   !selectedCommand.includes('npm install');
