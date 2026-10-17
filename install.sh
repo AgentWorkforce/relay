@@ -107,18 +107,47 @@ safe_remove_path() {
     fi
 }
 
+# Privileged installs must not write through directories another user can replace.
+check_privileged_directory() {
+    [ "$EUID" -eq 0 ] || return 0
+    local dir="$1" metadata owner mode physical destination
+    case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
+    destination="$dir"
+    while [ ! -d "$dir" ]; do dir=$(dirname "$dir"); done
+    physical=$(cd "$dir" && pwd -P) || return 1
+    if [ "$physical" != "$dir" ]; then
+        check_privileged_directory "$physical" || return 1
+    fi
+    while :; do
+        metadata=$(stat -L -c '%u %a' "$dir" 2>/dev/null) || metadata=$(stat -L -f '%u %Lp' "$dir") || return 1
+        read -r owner mode <<< "$metadata"
+        # A root-owned sticky ancestor (e.g. /tmp) cannot replace root-owned children.
+        if [ "$owner" != 0 ] || { [ $((8#$mode & 0022)) -ne 0 ] && { [ "$dir" = "$destination" ] || [ $((8#$mode & 01000)) -eq 0 ]; }; }; then
+            warn "Unsafe directory for a privileged install: $dir"
+            return 1
+        fi
+        [ "$dir" != / ] || break
+        dir=$(dirname "$dir")
+    done
+}
+
+# Publish a launcher from a registered, unpredictable temp file in its destination directory.
 write_executable_file() {
     local target="$1"
-    local temp="${target}.tmp.$$"
+    local temp dir
+    dir=$(dirname "$target")
 
-    mkdir -p "$(dirname "$target")" || return 1
-    safe_remove_path "$temp" || return 1
-    if ! cat > "$temp" || ! chmod +x "$temp" || ! mv -f "$temp" "$target"; then
+    check_privileged_directory "$dir" || return 1
+    mkdir -p "$dir" || return 1
+    make_temp_file "$dir" "launcher-write" || return 1
+    temp="$MADE_TEMP"
+    if ! cat > "$temp" || ! chmod 755 "$temp" || ! mv -f "$temp" "$target"; then
         rm -f "$temp"
         return 1
     fi
 }
 
+# Write the shell entry point that forwards arguments to the standalone executable.
 install_binary_launcher() {
     local target_binary="$1"
 
@@ -278,6 +307,7 @@ EOT
 # run in the caller's shell so that register_temp updates the TEMP_FILES that
 # the EXIT/INT/TERM cleanup reads (a $(...) subshell would lose the entry).
 MADE_TEMP=""
+# Allocate and register a destination-local temp file, reporting failures to the caller.
 make_temp_file() {
     local dir="$1"
     local label="$2"
@@ -1359,6 +1389,12 @@ main() {
 
     detect_platform
     get_latest_version
+
+    check_privileged_directory "$BIN_DIR" && check_privileged_directory "$INSTALL_DIR/bin" || error "Install directories must be trusted by the installing user."
+    mkdir -p "$BIN_DIR" "$INSTALL_DIR/bin" || error "Could not create install directories."
+    if [ "$BIN_DIR" -ef "$INSTALL_DIR/bin" ]; then
+        error "The launcher directory and standalone binary directory must differ; set AGENT_RELAY_BIN_DIR to a separate directory. Nothing was upgraded."
+    fi
 
     # Track install started
     track_event "install_started"

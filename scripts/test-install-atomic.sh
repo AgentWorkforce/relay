@@ -437,6 +437,7 @@ echo "== transactional standalone install (CLI + broker) =="
 
 detect_platform >/dev/null 2>&1
 REAL_PLATFORM="$PLATFORM"
+# Create a runnable fixture reporting a chosen CLI version.
 make_fake_cli() { # make_fake_cli <path> <version>
     printf '#!/bin/bash\n[ "$1" = "--version" ] && { echo "%s"; exit 0; }\nexit 0\n' "$2" > "$1"; chmod +x "$1"
 }
@@ -463,6 +464,43 @@ e2e_setup() { # e2e_setup <broker-mode> <digests: yes|no> [old-cli: yes|no] [new
 }
 # Run the installer in a subshell so exit and transaction state cannot leak between cases.
 run_main() { ( export AGENT_RELAY_TELEMETRY_DISABLED=1; main ) > "$WORK/main.out" 2>&1; }
+
+for layout in same-directory symlink-directory; do
+    e2e_setup ok yes yes "$VERSION"
+    if [ "$layout" = same-directory ]; then
+        BIN_DIR="$INSTALL_DIR/bin"
+    else
+        BIN_DIR="$WORK/linked-bin"
+        ln -s "$INSTALL_DIR/bin" "$BIN_DIR"
+    fi
+    AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
+    check "overlapping $layout: exits non-zero" test "$rc" -ne 0
+    check "overlapping $layout: CLI remains executable" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+    check "overlapping $layout: broker preserved" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+    check "overlapping $layout: explains directory conflict" contains "$(cat "$WORK/main.out")" "must differ"
+done
+
+D="$(newdir)"
+printf 'untouched\n' > "$D/victim"
+ln -s "$D/victim" "$D/agent-relay.tmp.$$"
+write_executable_file "$D/agent-relay" <<< '#!/bin/bash'; rc=$?
+check "launcher: secure temporary write succeeds" test "$rc" -eq 0
+check "launcher: published script is readable and executable" test "$(stat -c %a "$D/agent-relay" 2>/dev/null || stat -f %Lp "$D/agent-relay")" = 755
+check "launcher: predictable symlink target untouched" test "$(cat "$D/victim")" = untouched
+
+if [ "$EUID" -eq 0 ]; then
+    D="$(newdir)"
+    chmod 777 "$D"
+    check_privileged_directory "$D"; rc=$?
+    check "privileged launcher: rejects shared directory" test "$rc" -ne 0
+    chmod 700 "$D"
+    check_privileged_directory "$D"; rc=$?
+    check "privileged launcher: accepts private root-owned directory" test "$rc" -eq 0
+    chown 65534 "$D"
+    check_privileged_directory "$D"; rc=$?
+    check "privileged launcher: rejects another owner's directory" test "$rc" -ne 0
+    chown 0 "$D"
+fi
 
 e2e_setup ok yes
 run_main; rc=$?
