@@ -144,20 +144,18 @@ pub(crate) struct PendingVerification {
 }
 
 impl PendingVerification {
-    /// Native receipts can complete immediately. Known MCP harnesses get the
-    /// full acceptance budget to read, while generic harnesses keep the short fallback.
-    pub(crate) fn ready_to_assess(&self, cli: &str, window: Duration) -> bool {
+    /// Check parked composers on the short interval even while waiting for a receipt.
+    pub(crate) fn ready_to_assess(&self, _cli: &str, window: Duration) -> bool {
         self.native_ack.as_ref().is_some_and(|ack| ack.confirmed())
-            || if self.native_ack.is_some()
-                && matches!(
-                    crate::cli::command_parse::normalize_cli_name(cli).as_str(),
-                    "claude" | "codex"
-                )
-            {
-                self.acceptance_expired()
-            } else {
-                self.injected_at.elapsed() >= window
-            }
+            || self.injected_at.elapsed() >= window
+    }
+
+    /// Defer only inconclusive outcomes while a native recipient can still acknowledge.
+    pub(crate) fn waiting_for_native_ack(&self, cli: &str) -> bool {
+        let name = crate::cli::command_parse::normalize_cli_name(cli).to_ascii_lowercase();
+        self.native_ack.is_some()
+            && matches!(name.trim_end_matches(".exe"), "claude" | "codex")
+            && !self.acceptance_expired()
     }
 
     pub(crate) fn observe_raw_process_receipt(&mut self, output: &VerificationOutput, cli: &str) {
@@ -1518,6 +1516,22 @@ mod tests {
         verification.verification_started_at = Instant::now() - MAX_ACCEPTANCE_LIFETIME;
         verification.injected_at = Instant::now();
         assert!(verification.acceptance_expired());
+    }
+
+    #[test]
+    fn native_receipt_wait_preserves_short_recovery_checks_and_total_deadline() {
+        let inbox = crate::pty_delivery_ack::NativeAckInbox::new().unwrap();
+        for cli in ["claude", "codex", "Claude.exe", "Codex.exe"] {
+            let mut verification = codex_verification("bounded delivery");
+            verification.native_ack = Some(inbox.register(cli, "worker").unwrap());
+            verification.injected_at = Instant::now() - VERIFICATION_WINDOW;
+            assert!(verification.ready_to_assess(cli, VERIFICATION_WINDOW));
+            assert!(verification.waiting_for_native_ack(cli));
+            verification.injected_at = Instant::now();
+            assert!(!verification.ready_to_assess(cli, VERIFICATION_WINDOW));
+            verification.verification_started_at = Instant::now() - MAX_ACCEPTANCE_LIFETIME;
+            assert!(!verification.waiting_for_native_ack(cli));
+        }
     }
 
     #[cfg(unix)]

@@ -33,10 +33,12 @@ import os, tty, time, select, json, pathlib
 # Canonical mode silently discards input after MAX_CANON. Real TUIs use raw mode.
 tty.setraw(0)
 mode=os.environ['FIXTURE_MODE']
+if mode == 'ack-failure': os.rmdir(os.environ['RELAY_PTY_ACK_DIR'])
 time.sleep(0.2)
 os.write(1,b'\x1b[?2004h\x1b[?2004l' if mode != 'typed' else b'')
 os.write(1,('OpenAI Codex\r\n› ' if os.environ['FIXTURE_CLI']=='codex' else 'Claude Code v2.1.261\r\n❯ ').encode())
 data=b''
+swallowed=False
 while True:
  chunk=os.read(0,65536)
  with open(os.environ['TRANSCRIPT'],'ab') as f: f.write(chunk)
@@ -49,6 +51,13 @@ while True:
   if shown: os.write(1,shown)
   continue
  data+=chunk
+ if mode == 'recover' and not swallowed:
+  shown=chunk.replace(b'\x1b[200~',b'').replace(b'\x1b[201~',b'').replace(b'\r',b'').replace(b'\n',b'')
+  if shown: os.write(1,shown)
+  if data.endswith(b'\r'):
+   swallowed=True
+   data=data.rstrip(b'\r')
+  continue
  if mode == 'hostile' and b'\x1b\x1b' in data:
   os.write(1,b'\x1b[2J\x1b[HTrust prompt, no composer')
   data=b''
@@ -205,6 +214,42 @@ fn prompt_repaints_without_native_reads_are_unconfirmed() {
     );
     assert_eq!(frame["type"], "delivery_unconfirmed", "{frame}");
     assert_eq!(frame["payload"]["terminal"], true);
+}
+
+#[test]
+fn native_harnesses_recover_a_swallowed_submit_before_the_receipt_deadline() {
+    for cli in ["claude", "codex"] {
+        let mut fixture = Fixture::new_for_cli("recover", cli);
+        fixture.deliver("recover_one", "Recover the swallowed submit");
+        let recovery = fixture.wait_any(&["delivery_resubmitted", "delivery_failed"], 20);
+        assert_eq!(
+            recovery["type"], "delivery_resubmitted",
+            "{cli}: {recovery}"
+        );
+        let receipt = fixture.wait_any(&["delivery_verified", "delivery_failed"], 20);
+        assert_eq!(receipt["type"], "delivery_verified", "{cli}: {receipt}");
+        assert_eq!(receipt["payload"]["evidence"], "native_mcp_ack");
+        assert_eq!(receipt["payload"]["attempts"], 2);
+        let transcript = String::from_utf8_lossy(&fixture.transcript()).into_owned();
+        assert_eq!(
+            transcript.matches("Recover the swallowed submit").count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn missing_receipt_directory_does_not_end_the_worker_or_drop_delivery() {
+    let mut fixture = Fixture::new("ack-failure");
+    for id in ["first_no_receipt", "second_no_receipt"] {
+        fixture.deliver(id, "The worker must keep delivering");
+        let frame = fixture.wait_any(
+            &["delivery_unconfirmed", "delivery_failed", "worker_exited"],
+            20,
+        );
+        assert_eq!(frame["type"], "delivery_unconfirmed", "{frame}");
+        assert_eq!(frame["payload"]["terminal"], true);
+    }
 }
 #[test]
 fn over_limit_and_typed_fallback_reject_before_writing() {

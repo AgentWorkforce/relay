@@ -2429,7 +2429,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.auto_suggestion_visible = false;
                         let include_mcp_reminder = !suppress_multiline_mcp_reminder
                             && mcp_reminder_throttle.should_include(Instant::now());
-                        inj.native_ack = Some(native_acks.register(&inj.pending.delivery.event_id, &worker_name)?);
+                        inj.native_ack = native_acks.register(&inj.pending.delivery.event_id, &worker_name)
+                            .inspect_err(|error| tracing::warn!(%error,
+                                "native receipt registration failed; continuing without a receipt"))
+                            .ok();
                         let injection = format_injection_for_worker_with_workspace(
                             &inj.pending.delivery.from,
                             &inj.pending.delivery.event_id,
@@ -3056,6 +3059,10 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                     // wall-clock bounded.
                                     pv.verification_started_at = Instant::now();
                                 }
+                                pv.injected_at = Instant::now();
+                                pending_verifications.push_back(pv);
+                            }
+                            HarnessAcceptance::Inconclusive if pv.waiting_for_native_ack(&resolved_cli) => {
                                 pv.injected_at = Instant::now();
                                 pending_verifications.push_back(pv);
                             }

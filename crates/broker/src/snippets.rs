@@ -18,7 +18,12 @@ use crate::types::AgentResultMcpConfig;
 
 const AGENT_RELAY_MCP_PACKAGE: &str = "agent-relay";
 const AGENT_RELAY_MCP_SUBCOMMAND: &str = "mcp";
-const REQUIRED_AGENT_RELAY_MCP_TOOLS: [&str; 3] = ["send_dm", "post_message", "check_inbox"];
+const REQUIRED_AGENT_RELAY_MCP_TOOLS: [&str; 4] = [
+    "send_dm",
+    "post_message",
+    "check_inbox",
+    "acknowledge_delivery",
+];
 
 const MCP_FILE: &str = ".mcp.json";
 const AGENT_RELAY_MCP_SERVER: &str = "agent-relay";
@@ -3147,7 +3152,7 @@ mod tests {
             r#"#!/bin/sh
 cat >/dev/null &
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"agent-relay","version":"test"}}}'
-printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"send_dm"},{"name":"post_message"},{"name":"check_inbox"}]}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"send_dm"},{"name":"post_message"},{"name":"check_inbox"},{"name":"acknowledge_delivery"}]}}'
 "#,
         )
         .expect("write fake MCP executable");
@@ -3176,7 +3181,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"send_dm"},{"n
             r#"#!/bin/sh
 cat >/dev/null &
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"agent-relay","version":"test"}}}'
-printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"check_inbox"}]}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"send_dm"},{"name":"post_message"},{"name":"check_inbox"}]}}'
 "#,
         )
         .expect("write fake MCP executable");
@@ -3194,7 +3199,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"check_inbox"}
         .await
         .expect_err("incomplete MCP tool list must fail");
 
-        assert!(error.to_string().contains("send_dm, post_message"));
+        assert!(error.to_string().contains("acknowledge_delivery"));
     }
 
     #[cfg(unix)]

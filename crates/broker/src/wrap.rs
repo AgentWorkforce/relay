@@ -272,7 +272,7 @@ pub(crate) struct PendingWrapInjection {
 /// and its harness-specific submit sequence were written and flushed.
 enum PendingWrapWrite {
     Initial {
-        native_ack: crate::pty_delivery_ack::NativeAck,
+        native_ack: Option<crate::pty_delivery_ack::NativeAck>,
         pending: PendingWrapInjection,
         injection: String,
         output_boundary: u64,
@@ -1537,6 +1537,28 @@ pub(crate) async fn run_wrap(
     }
     let native_acks = crate::pty_delivery_ack::NativeAckInbox::new()?;
     native_acks.expose_to_child();
+    if matches!(
+        crate::cli::command_parse::normalize_cli_name(&resolved_cli).as_str(),
+        "claude" | "codex"
+    ) {
+        // Wrap sessions also need an explicit MCP server environment. Claude
+        // does not reliably forward the parent's environment to .mcp.json servers.
+        effective_cli_args = crate::snippets::configure_agent_relay_mcp_with_token(
+            &resolved_cli,
+            &default_workspace.self_name,
+            Some(&default_workspace.relay_workspace_key),
+            child_base_url.as_deref(),
+            &effective_cli_args,
+            &runtime_cwd,
+            default_workspace
+                .http_client
+                .cached_agent_token(&default_workspace.self_name)
+                .as_deref(),
+            Some(&child_workspaces_json),
+            Some(&default_workspace.workspace_id),
+        )
+        .await?;
+    }
     native_acks.configure_harness(&resolved_cli, &mut effective_cli_args)?;
     let _devin_state = crate::devin::prepare_worker_config(&resolved_cli).await?;
 
@@ -2325,7 +2347,10 @@ pub(crate) async fn run_wrap(
                         pending.workspace_alias.as_deref(),
                     );
                     let bytes = crate::injection_wire::injection_bytes(crate::injection_wire::injection_wire(&resolved_cli, &pty), &injection);
-                    let native_ack = native_acks.register(&pending.event_id, &default_workspace.self_name)?;
+                    let native_ack = native_acks.register(&pending.event_id, &default_workspace.self_name)
+                        .inspect_err(|error| tracing::warn!(%error,
+                            "wrap: native receipt registration failed; continuing without a receipt"))
+                        .ok();
                     let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
                         Ok((ack_rx, output_boundary)) => {
@@ -2418,7 +2443,7 @@ pub(crate) async fn run_wrap(
                         );
                         pty_auto.note_completed_injection(&resolved_cli);
                         let verification = PendingVerification {
-                            native_ack: Some(native_ack),
+                            native_ack,
                             delivery_id: DeliveryId::new(format!("wrap_{}", pending.event_id)),
                             event_id: pending.event_id,
                             expected_echo: injection,
@@ -2597,6 +2622,10 @@ pub(crate) async fn run_wrap(
                                 throttle.record(DeliveryOutcome::Failed);
                                 // Parked is the positive evidence.
                                 wrap_failed_draft = Some(pv.expected_echo.clone());
+                            }
+                            HarnessAcceptance::Inconclusive if pv.waiting_for_native_ack(&resolved_cli) => {
+                                pv.injected_at = Instant::now();
+                                pending_verifications.push_back(pv);
                             }
                             HarnessAcceptance::Inconclusive => {
                                 tracing::info!(
