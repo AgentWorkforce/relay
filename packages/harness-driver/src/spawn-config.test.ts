@@ -151,7 +151,12 @@ describe('buildBrokerSpawnConfig', () => {
   });
   describe('run-token mode', () => {
     const RUN_FILE = '/home/agent/.relay/run-access/relaycast-run.json';
-    const KEY_VARS = ['RELAY_API_KEY', 'RELAY_WORKSPACE_KEY', 'AGENT_RELAY_WORKSPACE_KEY', 'RELAY_WORKSPACES_JSON'];
+    const KEY_VARS = [
+      'RELAY_API_KEY',
+      'RELAY_WORKSPACE_KEY',
+      'AGENT_RELAY_WORKSPACE_KEY',
+      'RELAY_WORKSPACES_JSON',
+    ];
 
     function expectNoWorkspaceCredentials(config: ReturnType<typeof buildBrokerSpawnConfig>) {
       for (const name of KEY_VARS) {
@@ -164,7 +169,11 @@ describe('buildBrokerSpawnConfig', () => {
     }
 
     it('passes only the run token file path to the broker for an explicit runTokenFile', () => {
-      const config = buildBrokerSpawnConfig({ cwd: '/tmp/my-project', runTokenFile: RUN_FILE }, 'br_test', {});
+      const config = buildBrokerSpawnConfig(
+        { cwd: '/tmp/my-project', runTokenFile: RUN_FILE },
+        'br_test',
+        {}
+      );
 
       expect(config.runTokenFile).toBe(RUN_FILE);
       expect(config.env.RELAY_RUN_TOKEN_FILE).toBe(RUN_FILE);
@@ -208,7 +217,11 @@ describe('buildBrokerSpawnConfig', () => {
 
     it('allows a run token file in an isolated explicit environment', () => {
       const config = buildBrokerSpawnConfig(
-        { cwd: '/tmp/p', inheritParentEnv: false, env: { PATH: '/safe/bin', RELAY_RUN_TOKEN_FILE: RUN_FILE } },
+        {
+          cwd: '/tmp/p',
+          inheritParentEnv: false,
+          env: { PATH: '/safe/bin', RELAY_RUN_TOKEN_FILE: RUN_FILE },
+        },
         'br_test',
         { RELAY_API_KEY: 'rk_live_parent' }
       );

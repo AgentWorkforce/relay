@@ -171,11 +171,11 @@ export function buildBrokerSpawnConfig(
     nonEmptyString(inheritedEnv.RELAY_RUN_TOKEN_FILE);
   const workspaceKey = runTokenFile
     ? undefined
-    : nonEmptyString(options?.workspaceKey) ??
-    nonEmptyString(options?.env?.RELAY_WORKSPACE_KEY) ??
-    nonEmptyString(options?.env?.AGENT_RELAY_WORKSPACE_KEY) ??
-    nonEmptyString(inheritedEnv.RELAY_WORKSPACE_KEY) ??
-    nonEmptyString(inheritedEnv.AGENT_RELAY_WORKSPACE_KEY);
+    : (nonEmptyString(options?.workspaceKey) ??
+      nonEmptyString(options?.env?.RELAY_WORKSPACE_KEY) ??
+      nonEmptyString(options?.env?.AGENT_RELAY_WORKSPACE_KEY) ??
+      nonEmptyString(inheritedEnv.RELAY_WORKSPACE_KEY) ??
+      nonEmptyString(inheritedEnv.AGENT_RELAY_WORKSPACE_KEY));
   const channels = options?.channels ?? ['general'];
   const timeoutMs = options?.startupTimeoutMs ?? 45_000;
   const userArgs = buildBrokerInitArgs(options?.binaryArgs);
