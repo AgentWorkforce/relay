@@ -28,7 +28,7 @@ use tokio::{
 use crate::broker::{
     continuity::parse_continuity_command,
     delivery_verification::{
-        assess_harness_acceptance, current_timestamp_ms, delivery_injected_event_payload,
+        assess_delivery_acceptance, current_timestamp_ms, delivery_injected_event_payload,
         delivery_queued_event_payload, draft_visible_at_cursor, failed_draft_released,
         DeliveryOutcome, HarnessAcceptance, PendingActivity, PendingVerification, ThrottleState,
         VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
@@ -262,6 +262,7 @@ enum InjectionStage {
 /// be used as the expected echo when the submit command is confirmed).
 #[derive(Debug)]
 struct ActiveInjection {
+    native_ack: Option<crate::pty_delivery_ack::NativeAck>,
     pending: PendingWorkerInjection,
     stage: InjectionStage,
     prompt_wait_started: Instant,
@@ -1126,6 +1127,9 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
     let mut effective_args = inline_cli_args;
     effective_args.extend(cmd.args.clone());
 
+    let native_acks = crate::pty_delivery_ack::NativeAckInbox::new()?;
+    native_acks.expose_to_child();
+    native_acks.configure_harness(&resolved_cli, &mut effective_args)?;
     let _devin_state = crate::devin::prepare_worker_config(&resolved_cli).await?;
     let (init_rows, init_cols) = get_terminal_size().unwrap_or((24, 80));
     let (pty, mut pty_rx) =
@@ -2092,7 +2096,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 pv.observe_raw_process_receipt(&echo_buffer, &resolved_cli);
                                 pv.observe_visible_composer(&snapshot, &resolved_cli);
                                 if let HarnessAcceptance::Accepted(evidence) =
-                                    assess_harness_acceptance(&resolved_cli, pv, &snapshot)
+                                    assess_delivery_acceptance(&resolved_cli, pv, &snapshot)
                                 {
                                     verified_indices.push((i, evidence));
                                 }
@@ -2321,6 +2325,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             let hold_exempt = targeted_hold_exemption || hold_exempt_injections > 0;
                             hold_exempt_injections = hold_exempt_injections.saturating_sub(1);
                             active_injection = Some(ActiveInjection {
+                                native_ack: None,
                                 pending,
                                 stage: InjectionStage::Escape,
                                 prompt_wait_started: Instant::now(),
@@ -2424,6 +2429,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.auto_suggestion_visible = false;
                         let include_mcp_reminder = !suppress_multiline_mcp_reminder
                             && mcp_reminder_throttle.should_include(Instant::now());
+                        inj.native_ack = Some(native_acks.register(&inj.pending.delivery.event_id)?);
                         let injection = format_injection_for_worker_with_workspace(
                             &inj.pending.delivery.from,
                             &inj.pending.delivery.event_id,
@@ -2621,6 +2627,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                             // composer before broker custody is released.
                             let injection = inj.injection_text.take().unwrap_or_default();
                             let mut verification = PendingVerification {
+                                native_ack: inj.native_ack.take(),
                                 delivery_id: inj.pending.delivery.delivery_id.clone(),
                                 event_id: inj.pending.delivery.event_id.clone(),
                                 expected_echo: injection,
@@ -2645,7 +2652,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                                 .since(verification.output_boundary)
                                 .into_owned();
                             verification.observe(&echo_buffer, &raced_output);
-                            let acceptance = assess_harness_acceptance(
+                            let acceptance = assess_delivery_acceptance(
                                 &resolved_cli,
                                 &verification,
                                 &Snapshot::capture(&pty),
@@ -2762,7 +2769,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pv.observe_raw_process_receipt(&echo_buffer, &resolved_cli);
                         let snapshot = Snapshot::capture(&pty);
                         pv.observe_visible_composer(&snapshot, &resolved_cli);
-                        match assess_harness_acceptance(
+                        match assess_delivery_acceptance(
                             &resolved_cli,
                             &pv,
                             &snapshot,
@@ -2908,14 +2915,14 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
                 let mut i = 0;
                 while i < pending_verifications.len() {
-                    if pending_verifications[i].injected_at.elapsed() >= verification_window {
+                    if pending_verifications[i].ready_to_assess(&resolved_cli, verification_window) {
                         let mut pv = pending_verifications.remove(i).unwrap();
                         let delivery_id = pv.delivery_id.clone();
                         let event_id = pv.event_id.clone();
                         pv.observe_raw_process_receipt(&echo_buffer, &resolved_cli);
                         let snapshot = Snapshot::capture(&pty);
                         pv.observe_visible_composer(&snapshot, &resolved_cli);
-                        match assess_harness_acceptance(
+                        match assess_delivery_acceptance(
                             &resolved_cli,
                             &pv,
                             &snapshot,
@@ -3348,10 +3355,12 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::broker::delivery_verification::assess_harness_acceptance;
 
     #[test]
     fn post_acceptance_activity_is_seeded_only_from_post_echo_output() {
         let verification = PendingVerification {
+            native_ack: None,
             delivery_id: "delivery-current".into(),
             event_id: "event-current".into(),
             expected_echo: "current request".into(),
@@ -3828,6 +3837,7 @@ mod tests {
             .expect("PTY drainer exited")
             .expect("initial injection write failed");
         let mut verification = PendingVerification {
+            native_ack: None,
             delivery_id: "live-codex-delivery".into(),
             event_id: "live-codex-event".into(),
             expected_echo: body.to_string(),
@@ -4003,6 +4013,7 @@ mod tests {
             .unwrap();
         ack_rx.await.unwrap().unwrap();
         let mut verification = PendingVerification {
+            native_ack: None,
             delivery_id: "live-codex-parked".into(),
             event_id: "live-codex-parked-event".into(),
             expected_echo: body.to_string(),
@@ -4936,6 +4947,7 @@ mod tests {
         let mut count = 0usize;
         let mut event_ids = HashSet::new();
         let targeted = ActiveInjection {
+            native_ack: None,
             pending: test_pending_injection("init_task"),
             stage: InjectionStage::Escape,
             prompt_wait_started: Instant::now(),
@@ -4952,6 +4964,7 @@ mod tests {
 
         // A blanket exemption still goes back to the counter.
         let blanket = ActiveInjection {
+            native_ack: None,
             targeted_hold_exemption: false,
             ..targeted
         };
@@ -4962,6 +4975,7 @@ mod tests {
 
         // An injection popped without any exemption restores nothing.
         let unexempt = ActiveInjection {
+            native_ack: None,
             hold_exempt: false,
             ..blanket
         };
@@ -4977,6 +4991,7 @@ mod tests {
         // requeue would then hand the credit to whatever else is queued instead
         // of back to this delivery.
         let mut injection = ActiveInjection {
+            native_ack: None,
             pending: test_pending_injection("init_task"),
             stage: InjectionStage::Escape,
             prompt_wait_started: Instant::now(),

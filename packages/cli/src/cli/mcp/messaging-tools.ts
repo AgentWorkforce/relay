@@ -25,6 +25,7 @@ import { jsonContent, jsonResult, textContent } from './tool-results.js';
 import { identityOverrideInputShape, messageResult } from './tool-shapes.js';
 import { McpRequestReplay, replayScopeOf } from './request-replay.js';
 import type { AgentClientLike } from './types.js';
+import { acknowledgePtyMessageRead } from './pty-delivery-ack.js';
 
 const directMessageResult = z.looseObject({
   id: z.string().optional().describe('Message ID, for "get_message_readers"'),
@@ -669,6 +670,32 @@ export function registerMessagingTools(
   );
 
   server.registerTool(
+    'acknowledge_delivery',
+    {
+      title: 'Acknowledge PTY Delivery',
+      description:
+        'Confirm that you received a broker-injected message or task. Call before acting on the message, using its bracketed message ID. Only confirms a pending delivery to this worker.',
+      inputSchema: {
+        message_id: z.string().describe('Message ID from the delivery'),
+        ...identityOverrideInputShape,
+      },
+      outputSchema: messageResult,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async ({ message_id, as }) => {
+      if (!(await acknowledgePtyMessageRead(message_id, as))) {
+        return { ...textContent('No matching pending PTY delivery for this worker'), isError: true };
+      }
+      return textContent(`Acknowledged delivery ${message_id}`);
+    }
+  );
+
+  server.registerTool(
     'mark_message_read',
     {
       title: 'Mark as Read',
@@ -684,6 +711,7 @@ export function registerMessagingTools(
     },
     async ({ message_id, as }) => {
       await getAgentClient(as).markRead(message_id);
+      await acknowledgePtyMessageRead(message_id, as);
       return textContent(`Marked message ${message_id} as read`);
     }
   );

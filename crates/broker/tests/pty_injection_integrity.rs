@@ -21,18 +21,21 @@ impl Drop for Fixture {
 }
 impl Fixture {
     fn new(mode: &str) -> Self {
+        Self::new_for_cli(mode, "claude-fixture")
+    }
+    fn new_for_cli(mode: &str, cli: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let script = dir.path().join("claude-fixture");
+        let script = dir.path().join(cli);
         std::fs::write(
             &script,
             r#"#!/usr/bin/env python3
-import os, tty, time, select
+import os, tty, time, select, json, pathlib
 # Canonical mode silently discards input after MAX_CANON. Real TUIs use raw mode.
 tty.setraw(0)
 mode=os.environ['FIXTURE_MODE']
 time.sleep(0.2)
 os.write(1,b'\x1b[?2004h\x1b[?2004l' if mode != 'typed' else b'')
-os.write(1,'Claude Code v2.1.261\r\n❯ '.encode())
+os.write(1,('OpenAI Codex\r\n› ' if os.environ['FIXTURE_CLI']=='codex' else 'Claude Code v2.1.261\r\n❯ ').encode())
 data=b''
 while True:
  chunk=os.read(0,65536)
@@ -51,8 +54,14 @@ while True:
   data=b''
  if data.endswith(b'\r'):
   body=data.replace(b'\x1b[200~',b'').replace(b'\x1b[201~',b'').rstrip(b'\r')
-  os.write(1,b'\r\n'+body+b'\r\n')
-  os.write(1,'\r\n❯ '.encode())
+  if mode != 'echo-only' and os.environ.get('RELAY_PTY_ACK_DIR'):
+   for pending in pathlib.Path(os.environ['RELAY_PTY_ACK_DIR']).glob('*.pending'):
+    receipt=json.loads(pending.read_text())
+    if receipt['messageId'].encode() in body:
+     pending.with_name(pending.stem+'.'+receipt['nonce']+'.read').write_text(receipt['nonce'])
+  if mode != 'native':
+   os.write(1,b'\r\n'+body+b'\r\n')
+   os.write(1,'\r\n❯ '.encode())
   data=b''
 "#,
         )
@@ -61,6 +70,7 @@ while True:
         let mut child = Command::new(env!("CARGO_BIN_EXE_agent-relay-broker"))
             .args(["pty", "--agent-name", "integrity", script.to_str().unwrap()])
             .env("FIXTURE_MODE", mode)
+            .env("FIXTURE_CLI", cli)
             .env("RELAY_FAILED_DRAFT_ESCALATION_MS", "2000")
             .env("TRANSCRIPT", dir.path().join("transcript"))
             .env("AGENT_RELAY_LOCAL_ONLY", "1")
@@ -84,6 +94,7 @@ while True:
             }
         });
         let mut f = Self { child, rx, dir };
+        f.send("resize_pty", json!({"rows": 24, "cols": 80}));
         f.send("init_worker", json!({"agent":{"name":"integrity"}}));
         assert_eq!(f.wait("worker_ready")["payload"]["readiness_proven"], true);
         f
@@ -157,6 +168,43 @@ fn long_pair() {
 #[test]
 fn ten_kib_task_and_relay_message_are_intact() {
     long_pair();
+}
+
+#[test]
+fn claude_and_codex_native_reads_confirm_without_prompt_repaints() {
+    for cli in ["claude", "codex"] {
+        let mut fixture = Fixture::new_for_cli("native", cli);
+        fixture.deliver("native_one", "No screen echo or prompt repaint needed");
+        let frame = fixture.wait_any(
+            &[
+                "delivery_verified",
+                "delivery_unconfirmed",
+                "delivery_failed",
+            ],
+            40,
+        );
+        assert_eq!(frame["type"], "delivery_verified", "{cli}: {frame}");
+        assert_eq!(
+            frame["payload"]["evidence"], "native_mcp_ack",
+            "{cli}: {frame}"
+        );
+    }
+}
+
+#[test]
+fn prompt_repaints_without_native_reads_are_unconfirmed() {
+    let mut fixture = Fixture::new("echo-only");
+    fixture.deliver("echo_one", "Echo alone must not confirm reading");
+    let frame = fixture.wait_any(
+        &[
+            "delivery_verified",
+            "delivery_unconfirmed",
+            "delivery_failed",
+        ],
+        30,
+    );
+    assert_eq!(frame["type"], "delivery_unconfirmed", "{frame}");
+    assert_eq!(frame["payload"]["terminal"], true);
 }
 #[test]
 fn over_limit_and_typed_fallback_reject_before_writing() {

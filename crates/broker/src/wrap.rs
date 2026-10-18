@@ -27,9 +27,9 @@ use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::broker::{
     delivery_verification::{
-        assess_harness_acceptance, draft_visible_at_cursor, failed_draft_released, DeliveryOutcome,
-        HarnessAcceptance, PendingActivity, PendingVerification, ThrottleState, VerificationOutput,
-        ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+        assess_delivery_acceptance, draft_visible_at_cursor, failed_draft_released,
+        DeliveryOutcome, HarnessAcceptance, PendingActivity, PendingVerification, ThrottleState,
+        VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
         MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
     },
     injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
@@ -272,6 +272,7 @@ pub(crate) struct PendingWrapInjection {
 /// and its harness-specific submit sequence were written and flushed.
 enum PendingWrapWrite {
     Initial {
+        native_ack: crate::pty_delivery_ack::NativeAck,
         pending: PendingWrapInjection,
         injection: String,
         output_boundary: u64,
@@ -425,7 +426,7 @@ fn queue_or_confirm_wrap_verification(
     verification.observe_raw_process_receipt(output, resolved_cli);
     verification.observe_visible_composer(&Snapshot::capture(pty), resolved_cli);
     if let HarnessAcceptance::Accepted(evidence) =
-        assess_harness_acceptance(resolved_cli, &verification, &Snapshot::capture(pty))
+        assess_delivery_acceptance(resolved_cli, &verification, &Snapshot::capture(pty))
     {
         tracing::info!(
             target = "agent_relay::worker::wrap",
@@ -1534,6 +1535,9 @@ pub(crate) async fn run_wrap(
             std::env::set_var("RELAY_BASE_URL", base);
         }
     }
+    let native_acks = crate::pty_delivery_ack::NativeAckInbox::new()?;
+    native_acks.expose_to_child();
+    native_acks.configure_harness(&resolved_cli, &mut effective_cli_args)?;
     let _devin_state = crate::devin::prepare_worker_config(&resolved_cli).await?;
 
     // --- Spawn CLI in PTY ---
@@ -1838,7 +1842,7 @@ pub(crate) async fn run_wrap(
                                 pv.observe_raw_process_receipt(&echo_buffer, &resolved_cli);
                                 pv.observe_visible_composer(&snapshot, &resolved_cli);
                                 if let HarnessAcceptance::Accepted(evidence) =
-                                    assess_harness_acceptance(&resolved_cli, pv, &snapshot)
+                                    assess_delivery_acceptance(&resolved_cli, pv, &snapshot)
                                 {
                                     verified_indices.push((i, evidence));
                                 }
@@ -2321,10 +2325,12 @@ pub(crate) async fn run_wrap(
                         pending.workspace_alias.as_deref(),
                     );
                     let bytes = crate::injection_wire::injection_bytes(crate::injection_wire::injection_wire(&resolved_cli, &pty), &injection);
+                    let native_ack = native_acks.register(&pending.event_id)?;
                     let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
                         Ok((ack_rx, output_boundary)) => {
                             let pending_write = PendingWrapWrite::Initial {
+                                native_ack,
                                 pending,
                                 injection,
                                 output_boundary,
@@ -2370,6 +2376,7 @@ pub(crate) async fn run_wrap(
 
                 match pending_write {
                     PendingWrapWrite::Initial {
+                        native_ack,
                         pending,
                         injection,
                         output_boundary,
@@ -2411,6 +2418,7 @@ pub(crate) async fn run_wrap(
                         );
                         pty_auto.note_completed_injection(&resolved_cli);
                         let verification = PendingVerification {
+                            native_ack: Some(native_ack),
                             delivery_id: DeliveryId::new(format!("wrap_{}", pending.event_id)),
                             event_id: pending.event_id,
                             expected_echo: injection,
@@ -2494,12 +2502,12 @@ pub(crate) async fn run_wrap(
             _ = verification_tick.tick() => {
                 let mut i = 0;
                 while i < pending_verifications.len() {
-                    if pending_verifications[i].injected_at.elapsed() >= VERIFICATION_WINDOW {
+                    if pending_verifications[i].ready_to_assess(&resolved_cli, VERIFICATION_WINDOW) {
                         let mut pv = pending_verifications.remove(i).unwrap();
                         pv.observe_raw_process_receipt(&echo_buffer, &resolved_cli);
                         let snapshot = Snapshot::capture(&pty);
                         pv.observe_visible_composer(&snapshot, &resolved_cli);
-                        match assess_harness_acceptance(
+                        match assess_delivery_acceptance(
                             &resolved_cli,
                             &pv,
                             &snapshot,
@@ -2973,6 +2981,7 @@ sys.stdout.flush()"#;
     #[test]
     fn busy_devin_deferrals_preserve_retry_budget_and_reset_deadline() {
         let mut verification = PendingVerification {
+            native_ack: None,
             delivery_id: DeliveryId::new("delivery"),
             event_id: EventId::new("event"),
             expected_echo: String::new(),

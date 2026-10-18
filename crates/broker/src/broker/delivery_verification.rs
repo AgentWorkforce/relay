@@ -109,6 +109,7 @@ pub(crate) const MAX_ACCEPTANCE_LIFETIME: std::time::Duration = std::time::Durat
 /// A pending delivery waiting for echo verification in PTY output.
 #[derive(Debug)]
 pub(crate) struct PendingVerification {
+    pub native_ack: Option<crate::pty_delivery_ack::NativeAck>,
     pub delivery_id: DeliveryId,
     pub event_id: EventId,
     pub expected_echo: String,
@@ -143,6 +144,22 @@ pub(crate) struct PendingVerification {
 }
 
 impl PendingVerification {
+    /// Native receipts can complete immediately. Known MCP harnesses get the
+    /// full acceptance budget to read, while generic harnesses keep the short fallback.
+    pub(crate) fn ready_to_assess(&self, cli: &str, window: Duration) -> bool {
+        self.native_ack.as_ref().is_some_and(|ack| ack.confirmed())
+            || if self.native_ack.is_some()
+                && matches!(
+                    crate::cli::command_parse::normalize_cli_name(cli).as_str(),
+                    "claude" | "codex"
+                )
+            {
+                self.acceptance_expired()
+            } else {
+                self.injected_at.elapsed() >= window
+            }
+    }
+
     pub(crate) fn observe_raw_process_receipt(&mut self, output: &VerificationOutput, cli: &str) {
         if self.echo_seen || !is_cat_process(cli) || self.body.is_empty() {
             return;
@@ -603,6 +620,25 @@ pub(crate) fn assess_harness_acceptance(
     HarnessAcceptance::Inconclusive
 }
 
+/// Recipient read receipts prove acceptance; terminal output only guides recovery.
+pub(crate) fn assess_delivery_acceptance(
+    cli: &str,
+    verification: &PendingVerification,
+    snapshot: &Snapshot,
+) -> HarnessAcceptance {
+    if verification
+        .native_ack
+        .as_ref()
+        .is_some_and(|ack| ack.confirmed())
+    {
+        return HarnessAcceptance::Accepted("native_mcp_ack".to_string());
+    }
+    match assess_harness_acceptance(cli, verification, snapshot) {
+        HarnessAcceptance::Parked => HarnessAcceptance::Parked,
+        _ => HarnessAcceptance::Inconclusive,
+    }
+}
+
 #[derive(Debug)]
 struct VerificationSegment {
     sequence: u64,
@@ -819,6 +855,7 @@ mod tests {
 
     fn codex_verification(expected: &str) -> PendingVerification {
         PendingVerification {
+            native_ack: None,
             delivery_id: "delivery-acceptance".into(),
             event_id: "event-acceptance".into(),
             expected_echo: expected.to_string(),
@@ -1599,6 +1636,7 @@ mod tests {
         output.push_str(expected);
         let output_boundary = output.boundary();
         let verification = PendingVerification {
+            native_ack: None,
             delivery_id: "delivery-repeat".into(),
             event_id: "evt-repeat".into(),
             expected_echo: expected.to_string(),
@@ -1636,6 +1674,7 @@ mod tests {
         // producer watermark rather than the consumer's older boundary.
         let output_boundary = 2;
         let verification = PendingVerification {
+            native_ack: None,
             delivery_id: "delivery-queued".into(),
             event_id: "evt-queued".into(),
             expected_echo: expected.to_string(),
@@ -1694,6 +1733,7 @@ mod tests {
         output.push_str(expected);
         output.push_str("\nTool: Write(review.md)\n");
         let verification = PendingVerification {
+            native_ack: None,
             delivery_id: "delivery-activity".into(),
             event_id: "evt-activity".into(),
             expected_echo: expected.to_string(),
@@ -1735,6 +1775,7 @@ mod tests {
         let output_boundary = output.boundary();
         output.push_str(expected);
         let verification = PendingVerification {
+            native_ack: None,
             delivery_id: "delivery-pending".into(),
             event_id: "evt-pending".into(),
             expected_echo: expected.to_string(),
