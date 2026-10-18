@@ -152,9 +152,8 @@ impl PendingVerification {
 
     /// Defer only inconclusive outcomes while a native recipient can still acknowledge.
     pub(crate) fn waiting_for_native_ack(&self, cli: &str) -> bool {
-        let name = crate::cli::command_parse::normalize_cli_name(cli).to_ascii_lowercase();
         self.native_ack.is_some()
-            && matches!(name.trim_end_matches(".exe"), "claude" | "codex")
+            && crate::pty_delivery_ack::native_harness_name(cli).is_some()
             && !self.acceptance_expired()
     }
 

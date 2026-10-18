@@ -1416,6 +1416,36 @@ async fn register_broker_actions(workspace: &RelayWorkspace) {
     }
 }
 
+/// Add native MCP configuration while preserving every user-supplied launch argument.
+async fn configure_wrap_mcp_args(
+    cli: &str,
+    args: &mut Vec<String>,
+    workspace: &RelayWorkspace,
+    base_url: Option<&str>,
+    workspaces_json: &str,
+    cwd: &std::path::Path,
+) -> Result<()> {
+    if let Some(harness) = crate::pty_delivery_ack::native_harness_name(cli) {
+        let mcp_args = crate::snippets::configure_agent_relay_mcp_with_token(
+            harness,
+            &workspace.self_name,
+            Some(&workspace.relay_workspace_key),
+            base_url,
+            args,
+            cwd,
+            workspace
+                .http_client
+                .cached_agent_token(&workspace.self_name)
+                .as_deref(),
+            Some(workspaces_json),
+            Some(&workspace.workspace_id),
+        )
+        .await?;
+        args.extend(mcp_args);
+    }
+    Ok(())
+}
+
 /// Interactive wrap mode: wraps a CLI in a PTY with terminal passthrough
 /// while connecting to Relaycast for relay message injection.
 /// Usage: `agent-relay codex --full-auto`
@@ -1537,28 +1567,15 @@ pub(crate) async fn run_wrap(
     }
     let native_acks = crate::pty_delivery_ack::NativeAckInbox::new()?;
     native_acks.expose_to_child();
-    if matches!(
-        crate::cli::command_parse::normalize_cli_name(&resolved_cli).as_str(),
-        "claude" | "codex"
-    ) {
-        // Wrap sessions also need an explicit MCP server environment. Claude
-        // does not reliably forward the parent's environment to .mcp.json servers.
-        effective_cli_args = crate::snippets::configure_agent_relay_mcp_with_token(
-            &resolved_cli,
-            &default_workspace.self_name,
-            Some(&default_workspace.relay_workspace_key),
-            child_base_url.as_deref(),
-            &effective_cli_args,
-            &runtime_cwd,
-            default_workspace
-                .http_client
-                .cached_agent_token(&default_workspace.self_name)
-                .as_deref(),
-            Some(&child_workspaces_json),
-            Some(&default_workspace.workspace_id),
-        )
-        .await?;
-    }
+    configure_wrap_mcp_args(
+        &resolved_cli,
+        &mut effective_cli_args,
+        &default_workspace,
+        child_base_url.as_deref(),
+        &child_workspaces_json,
+        &runtime_cwd,
+    )
+    .await?;
     native_acks.configure_harness(&resolved_cli, &mut effective_cli_args)?;
     let _devin_state = crate::devin::prepare_worker_config(&resolved_cli).await?;
 
@@ -2750,6 +2767,86 @@ mod tests {
     use std::collections::VecDeque;
     use std::io;
     use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn wrap_native_mcp_setup_preserves_launch_options_and_custom_servers() {
+        let (ws_control_tx, _rx) = tokio::sync::mpsc::channel(1);
+        let workspace = super::RelayWorkspace {
+            workspace_id: "test-workspace".into(),
+            workspace_alias: None,
+            relay_workspace_key: "test-key".into(),
+            self_name: "worker".into(),
+            self_agent_id: "test-agent".into(),
+            self_names: Default::default(),
+            self_agent_ids: Default::default(),
+            http_client: crate::relaycast::RelaycastHttpClient::local_only("worker"),
+            ws_control_tx,
+        };
+        for cli in ["claude", "/opt/Claude.EXE", "codex", "/opt/Codex.exe"] {
+            let claude = crate::pty_delivery_ack::native_harness_name(cli) == Some("claude");
+            for custom in [false, true] {
+                let inbox = crate::pty_delivery_ack::NativeAckInbox::new().unwrap();
+                let cwd = tempfile::tempdir().unwrap();
+                let mut args: Vec<String> = if claude {
+                    [
+                        "--model",
+                        "sonnet",
+                        "--resume",
+                        "session-id",
+                        "--dangerously-skip-permissions",
+                    ]
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+                } else {
+                    ["--model", "test-model", "--profile", "work", "--full-auto"]
+                        .into_iter()
+                        .map(String::from)
+                        .collect()
+                };
+                if custom {
+                    if claude {
+                        args.extend(["--mcp-config".into(), serde_json::json!({"mcpServers": {
+                            "relaycast": {"command": "custom-relay", "env": {"RELAY_AGENT_NAME": "worker"}},
+                            "other": {"command": "other-server"}
+                        }}).to_string()]);
+                    } else {
+                        args.extend([
+                            "--config".into(),
+                            "mcp_servers.relaycast.command=\"custom-relay\"".into(),
+                        ]);
+                    }
+                }
+                let original = args.clone();
+                super::configure_wrap_mcp_args(cli, &mut args, &workspace, None, "[]", cwd.path())
+                    .await
+                    .unwrap();
+                assert_eq!(&args[..original.len()], &original, "{cli}, custom={custom}");
+                inbox.configure_harness(cli, &mut args).unwrap();
+                assert_eq!(&args[..5], &original[..5]);
+                if claude {
+                    let index = args.iter().position(|arg| arg == "--mcp-config").unwrap() + 1;
+                    let config: serde_json::Value =
+                        serde_json::from_str(&std::fs::read_to_string(&args[index]).unwrap())
+                            .unwrap();
+                    let server = if custom { "relaycast" } else { "agent-relay" };
+                    assert!(config["mcpServers"][server]["env"]["RELAY_PTY_ACK_DIR"].is_string());
+                    assert_eq!(
+                        config["mcpServers"][server]["env"]["RELAY_AGENT_NAME"],
+                        "worker"
+                    );
+                    if custom {
+                        assert_eq!(config["mcpServers"]["other"]["command"], "other-server");
+                        assert_eq!(config["mcpServers"]["relaycast"]["command"], "custom-relay");
+                    }
+                } else {
+                    let server = if custom { "relaycast" } else { "agent-relay" };
+                    assert!(args.iter().any(|arg| arg
+                        .starts_with(&format!("mcp_servers.{server}.env.RELAY_PTY_ACK_DIR="))));
+                }
+            }
+        }
+    }
 
     #[cfg(unix)]
     #[tokio::test]

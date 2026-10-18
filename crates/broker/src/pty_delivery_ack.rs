@@ -13,6 +13,16 @@ use sha2::{Digest, Sha256};
 
 pub(crate) const ACK_DIR_ENV: &str = "RELAY_PTY_ACK_DIR";
 
+/// Canonical MCP harness name, independent of executable case and `.exe` suffix.
+pub(crate) fn native_harness_name(cli: &str) -> Option<&'static str> {
+    let name = crate::cli::command_parse::normalize_cli_name(cli).to_ascii_lowercase();
+    match name.strip_suffix(".exe").unwrap_or(&name) {
+        "claude" => Some("claude"),
+        "codex" => Some("codex"),
+        _ => None,
+    }
+}
+
 /// Owns pending receipts and private harness configs for one PTY session.
 pub(crate) struct NativeAckInbox(tempfile::TempDir);
 
@@ -34,9 +44,9 @@ impl NativeAckInbox {
     /// MCP subprocesses do not reliably inherit the harness environment.
     /// Forward only this worker's acknowledgement directory in their existing config.
     pub(crate) fn configure_harness(&self, cli: &str, args: &mut Vec<String>) -> io::Result<()> {
-        let cli = crate::cli::command_parse::normalize_cli_name(cli).to_ascii_lowercase();
+        let cli = native_harness_name(cli);
         let directory = self.0.path().to_string_lossy().to_string();
-        if cli == "codex" || cli == "codex.exe" {
+        if cli == Some("codex") {
             let names: Vec<_> = ["agent-relay", "relaycast"]
                 .into_iter()
                 .filter(|name| {
@@ -53,7 +63,7 @@ impl NativeAckInbox {
                     ),
                 ]);
             }
-        } else if cli == "claude" || cli == "claude.exe" {
+        } else if cli == Some("claude") {
             for index in 0..args.len() {
                 let equals = args[index].strip_prefix("--mcp-config=");
                 let value = if let Some(value) = equals {
