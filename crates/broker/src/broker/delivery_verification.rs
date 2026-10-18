@@ -145,7 +145,7 @@ pub(crate) struct PendingVerification {
 
 impl PendingVerification {
     /// Check parked composers on the short interval even while waiting for a receipt.
-    pub(crate) fn ready_to_assess(&self, _cli: &str, window: Duration) -> bool {
+    pub(crate) fn ready_to_assess(&self, window: Duration) -> bool {
         self.native_ack.as_ref().is_some_and(|ack| ack.confirmed())
             || self.injected_at.elapsed() >= window
     }
@@ -1524,10 +1524,10 @@ mod tests {
             let mut verification = codex_verification("bounded delivery");
             verification.native_ack = Some(inbox.register(cli, "worker").unwrap());
             verification.injected_at = Instant::now() - VERIFICATION_WINDOW;
-            assert!(verification.ready_to_assess(cli, VERIFICATION_WINDOW));
+            assert!(verification.ready_to_assess(VERIFICATION_WINDOW));
             assert!(verification.waiting_for_native_ack(cli));
             verification.injected_at = Instant::now();
-            assert!(!verification.ready_to_assess(cli, VERIFICATION_WINDOW));
+            assert!(!verification.ready_to_assess(VERIFICATION_WINDOW));
             verification.verification_started_at = Instant::now() - MAX_ACCEPTANCE_LIFETIME;
             assert!(!verification.waiting_for_native_ack(cli));
         }

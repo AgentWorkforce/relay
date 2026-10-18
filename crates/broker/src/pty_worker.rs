@@ -2918,7 +2918,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
 
                 let mut i = 0;
                 while i < pending_verifications.len() {
-                    if pending_verifications[i].ready_to_assess(&resolved_cli, verification_window) {
+                    if pending_verifications[i].ready_to_assess(verification_window) {
                         let mut pv = pending_verifications.remove(i).unwrap();
                         let delivery_id = pv.delivery_id.clone();
                         let event_id = pv.event_id.clone();
@@ -4971,7 +4971,6 @@ mod tests {
 
         // A blanket exemption still goes back to the counter.
         let blanket = ActiveInjection {
-            native_ack: None,
             targeted_hold_exemption: false,
             ..targeted
         };
@@ -4982,7 +4981,6 @@ mod tests {
 
         // An injection popped without any exemption restores nothing.
         let unexempt = ActiveInjection {
-            native_ack: None,
             hold_exempt: false,
             ..blanket
         };

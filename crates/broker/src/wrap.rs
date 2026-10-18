@@ -2544,7 +2544,7 @@ pub(crate) async fn run_wrap(
             _ = verification_tick.tick() => {
                 let mut i = 0;
                 while i < pending_verifications.len() {
-                    if pending_verifications[i].ready_to_assess(&resolved_cli, VERIFICATION_WINDOW) {
+                    if pending_verifications[i].ready_to_assess(VERIFICATION_WINDOW) {
                         let mut pv = pending_verifications.remove(i).unwrap();
                         pv.observe_raw_process_receipt(&echo_buffer, &resolved_cli);
                         let snapshot = Snapshot::capture(&pty);
