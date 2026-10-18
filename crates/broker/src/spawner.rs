@@ -527,14 +527,16 @@ pub fn spawn_env_vars(
     default_workspace: Option<&str>,
     harness: Option<&str>,
 ) -> Vec<(String, String)> {
-    let mut env = vec![
-        ("RELAY_AGENT_NAME".to_string(), name.to_string()),
-        ("AGENT_RELAY_WORKSPACE_KEY".to_string(), api_key.to_string()),
-        ("RELAY_WORKSPACE_KEY".to_string(), api_key.to_string()),
-        ("RELAY_API_KEY".to_string(), api_key.to_string()),
-        ("RELAY_CHANNELS".to_string(), channels.to_string()),
-        ("RELAY_STRICT_AGENT_NAME".to_string(), "1".to_string()),
-    ];
+    let mut env = vec![("RELAY_AGENT_NAME".to_string(), name.to_string())];
+    // An empty key means run-token mode: no workspace credential is delegated
+    // and the child relies solely on its own agent token.
+    if !api_key.trim().is_empty() {
+        env.push(("AGENT_RELAY_WORKSPACE_KEY".to_string(), api_key.to_string()));
+        env.push(("RELAY_WORKSPACE_KEY".to_string(), api_key.to_string()));
+        env.push(("RELAY_API_KEY".to_string(), api_key.to_string()));
+    }
+    env.push(("RELAY_CHANNELS".to_string(), channels.to_string()));
+    env.push(("RELAY_STRICT_AGENT_NAME".to_string(), "1".to_string()));
     // Pass RELAY_BASE_URL to the child only when an override is configured; when
     // unset, the child inherits the SDK default.
     if let Some(base_url) = base_url.map(str::trim).filter(|value| !value.is_empty()) {
@@ -553,6 +555,7 @@ pub fn spawn_env_vars(
     if let Some(workspaces_json) = workspaces_json
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .filter(|_| !api_key.trim().is_empty())
     {
         env.push((
             "RELAY_WORKSPACES_JSON".to_string(),
@@ -738,6 +741,58 @@ mod tests {
     fn spawn_env_vars_omits_origin_actor_when_absent() {
         let env = spawn_env_vars("a", "rk_live_x", Some("https://gw"), "#c", None, None, None);
         assert!(env.iter().all(|(k, _)| k != "AGENT_RELAY_ORIGIN_ACTOR"));
+    }
+
+    #[test]
+    fn spawn_env_vars_in_run_token_mode_delegates_no_workspace_credential() {
+        // Run-token mode hands the child an empty workspace key.
+        let env = spawn_env_vars(
+            "a",
+            "",
+            Some("https://gw"),
+            "#c",
+            Some(r#"[{"workspace_id":"ws_1","api_key":""}]"#),
+            Some("ws_1"),
+            Some("codex"),
+        );
+        for (key, value) in &env {
+            assert!(
+                !matches!(
+                    key.as_str(),
+                    "RELAY_API_KEY"
+                        | "RELAY_WORKSPACE_KEY"
+                        | "AGENT_RELAY_WORKSPACE_KEY"
+                        | "RELAY_WORKSPACES_JSON"
+                        | "RELAY_RUN_TOKEN_FILE"
+                ),
+                "{key} must not be delegated in run-token mode"
+            );
+            assert!(!value.contains("rk_") && !value.contains("rt_"), "{key}");
+        }
+        assert!(env
+            .iter()
+            .any(|(k, v)| k == "RELAY_WORKSPACE_ID" && v == "ws_1"));
+    }
+
+    #[test]
+    fn spawn_env_vars_legacy_mode_still_delegates_the_workspace_key() {
+        let env = spawn_env_vars("a", "rk_live_x", None, "#c", Some("[]"), None, None);
+        for key in [
+            "RELAY_API_KEY",
+            "RELAY_WORKSPACE_KEY",
+            "AGENT_RELAY_WORKSPACE_KEY",
+        ] {
+            assert!(
+                env.iter().any(|(k, v)| k == key && v == "rk_live_x"),
+                "{key}"
+            );
+        }
+        assert!(env.iter().any(|(k, _)| k == "RELAY_WORKSPACES_JSON"));
+    }
+
+    #[test]
+    fn inherited_relay_credentials_cover_the_run_token_file() {
+        assert!(INHERITED_RELAY_CREDENTIAL_ENV_KEYS.contains(&"RELAY_RUN_TOKEN_FILE"));
     }
 
     #[test]

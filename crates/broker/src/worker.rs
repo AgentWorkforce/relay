@@ -3503,6 +3503,82 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
+    async fn run_token_mode_worker_holds_only_its_own_agent_token() {
+        let dir = tempfile::tempdir().expect("worker cwd");
+        // Record credential variable NAMES the worker sees, plus how many env
+        // values look like a workspace key or run token (never the values).
+        let keys = format!(
+            "{} RELAY_NODE_ID AGENT_RELAY_ENROLLED_NODE_ID",
+            crate::spawner::INHERITED_RELAY_CREDENTIAL_ENV_KEYS.join(" ")
+        );
+        let script = format!(
+            "for k in {keys}; do if printenv \"$k\" >/dev/null; then echo \"$k\"; fi; done > names.tmp; \
+             env | grep -cE '(rk|rt)_(live|test)_' > leaks.tmp; \
+             mv leaks.tmp leaks.txt; mv names.tmp names.txt; sleep 30"
+        );
+        let mut spec = sleeping_native_worker("run-token-worker", None);
+        spec.harness_config = Some(ResolvedHarnessConfig::Native(NativeHarnessConfig {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), script],
+            cwd: Some(dir.path().to_string_lossy().into_owned()),
+            env: None,
+            session_id: "session-run-token-worker".to_string(),
+            metadata: None,
+        }));
+        // Exactly what the broker hands workers in run-token mode.
+        let mut registry = make_registry(crate::runtime::init::base_worker_relay_env(
+            "",
+            r#"[{"workspace_id":"ws_run","api_key":""}]"#,
+            "http://127.0.0.1:1/api/agent-result".to_string(),
+            true,
+        ));
+
+        registry
+            .spawn(
+                spec,
+                None,
+                None,
+                Some("at_live_worker_own".to_string()),
+                false,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("run-token worker should spawn");
+
+        let names_path = dir.path().join("names.txt");
+        let mut names = None;
+        for _ in 0..50 {
+            if let Ok(value) = std::fs::read_to_string(&names_path) {
+                names = Some(value);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let leaks = std::fs::read_to_string(dir.path().join("leaks.txt"));
+        registry
+            .release("run-token-worker")
+            .await
+            .expect("release run-token worker");
+
+        let mut observed: Vec<String> = names
+            .expect("worker recorded its credential names")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        observed.sort();
+        assert_eq!(observed, vec!["RELAY_AGENT_TOKEN"]);
+        assert_eq!(
+            leaks.expect("worker recorded its leak count").trim(),
+            "0",
+            "no rk_/rt_ value may reach a run-token-mode worker"
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
     async fn spawned_worker_process_uses_requested_cwd() {
         let requested = tempfile::tempdir().expect("requested worker cwd");
         let requested_cwd = requested.path().to_string_lossy().into_owned();

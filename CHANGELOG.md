@@ -5,7 +5,16 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- Broker run-token mode: with `RELAY_RUN_TOKEN_FILE` set and no `rk_` workspace key, the broker registers itself and its workers, mints its node, and releases workers with a short-lived Relaycast run token (`rt_live_`) that it reads from the file on each request. It never creates a workspace in this mode, and workers get only their own agent token.
+- `HarnessDriverClient.spawn({ runTokenFile })` (or `RELAY_RUN_TOKEN_FILE`) starts the broker in run-token mode and passes it the file path only, with no workspace-key variables.
+
+### Security
+
+- Spawned workers no longer inherit `RELAY_RUN_TOKEN_FILE`, and log redaction now masks `rt_live_` run tokens.
 
 ## [14.0.0] - 2026-10-13
 

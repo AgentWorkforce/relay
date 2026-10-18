@@ -51,6 +51,7 @@ impl MultiWorkspaceSession {
     ) -> Self {
         let (merged_tx, inbound_rx) = mpsc::channel(1024);
         let mut handles = Vec::with_capacity(sessions.memberships.len());
+        let run_token = sessions.run_token.clone();
 
         for session in sessions.memberships {
             let workspace_id = WorkspaceId::new(session.credentials.workspace_id.clone());
@@ -90,12 +91,22 @@ impl MultiWorkspaceSession {
             let mut self_agent_ids = HashSet::new();
             self_agent_ids.insert(self_agent_id.clone());
 
-            let http_client = RelaycastHttpClient::new(
-                http_base.clone(),
-                relay_workspace_key.clone(),
-                self_name.clone(),
-                "claude",
-            );
+            let http_client = match run_token.as_ref() {
+                // Run-token mode: no workspace key exists. Run-token-capable
+                // calls read the token from the file per request.
+                Some(source) => RelaycastHttpClient::new_with_run_token(
+                    http_base.clone(),
+                    source.clone(),
+                    self_name.clone(),
+                    "claude",
+                ),
+                None => RelaycastHttpClient::new(
+                    http_base.clone(),
+                    relay_workspace_key.clone(),
+                    self_name.clone(),
+                    "claude",
+                ),
+            };
             http_client.seed_agent_token(&self_name, &self_token);
 
             // Node-only delivery (v5.0.1): messages flow over /v1/node/ws and are

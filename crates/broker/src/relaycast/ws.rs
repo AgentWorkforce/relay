@@ -20,6 +20,11 @@ use uuid::Uuid;
 
 use crate::{fleet_wire::AgentRegistrationMetadata, protocol::MessageInjectionMode};
 
+use super::run_token::{
+    call_with_run_token, relay_error_is_unauthorized, RunTokenCallError, RunTokenSource,
+    RUN_TOKEN_MODE_PLACEHOLDER_BEARER,
+};
+
 #[cfg(test)]
 use relaycast::registration_is_retryable;
 
@@ -66,6 +71,10 @@ pub struct RelaycastHttpClient {
     takeover_locks: Arc<StdMutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     pub agent_name: String,
     pub default_cli: String,
+    /// Run-token mode (`RELAY_RUN_TOKEN_FILE`, no `rk_` key): `api_key` is
+    /// empty and the run-token-capable endpoints (`POST /v1/agents`,
+    /// `DELETE /v1/agents/:name`) read the token from this file per request.
+    run_token: Option<RunTokenSource>,
 }
 
 pub type RelaycastRegistrationError = AgentRegistrationError;
@@ -346,6 +355,7 @@ impl RelaycastHttpClient {
             takeover_locks: Arc::new(StdMutex::new(HashMap::new())),
             agent_name: agent_name.into(),
             default_cli: String::new(),
+            run_token: None,
         }
     }
 
@@ -372,6 +382,196 @@ impl RelaycastHttpClient {
             takeover_locks: Arc::new(StdMutex::new(HashMap::new())),
             agent_name: agent_name.into(),
             default_cli,
+            run_token: None,
+        }
+    }
+
+    /// A client for run-token mode. It holds no workspace key: the SDK's
+    /// workspace-scoped client carries a non-secret placeholder bearer (so
+    /// agent-token clients can still be derived from it), registration and
+    /// release read the run token from `source` per request, and lookups use
+    /// agent tokens because `GET /v1/agents/:name` is not open to run tokens.
+    pub fn new_with_run_token(
+        base_url: Option<String>,
+        source: RunTokenSource,
+        agent_name: impl Into<String>,
+        default_cli: impl Into<String>,
+    ) -> Self {
+        let mut client = Self::new(
+            base_url,
+            RUN_TOKEN_MODE_PLACEHOLDER_BEARER,
+            agent_name,
+            default_cli,
+        );
+        client.api_key = String::new();
+        client.run_token = Some(source);
+        client
+    }
+
+    /// The run token file this client reads, when in run-token mode.
+    pub(crate) fn run_token_source(&self) -> Option<&RunTokenSource> {
+        self.run_token.as_ref()
+    }
+
+    /// Bearer for workspace-scoped reads that agents may also perform
+    /// (attachment downloads): the workspace key in legacy mode, the broker's
+    /// own agent token in run-token mode. Never the run token.
+    pub(crate) fn workspace_read_bearer(&self) -> String {
+        if self.run_token.is_some() {
+            self.cached_agent_token(&self.agent_name)
+                .unwrap_or_default()
+        } else {
+            self.api_key.clone()
+        }
+    }
+
+    /// `POST /v1/agents` with the broker's registration credential: the
+    /// workspace key in legacy mode, or the run token (read per request, one
+    /// re-read and retry on 401) in run-token mode.
+    async fn post_create_agent(
+        &self,
+        relay: &RelayCast,
+        body: &Value,
+        options: RequestOptions,
+    ) -> std::result::Result<CreateAgentResponse, RelayError> {
+        let Some(source) = self.run_token.as_ref() else {
+            let client = relay.as_agent(&self.api_key)?;
+            return client
+                .http_client()
+                .post::<CreateAgentResponse>("/v1/agents", Some(body), Some(options))
+                .await;
+        };
+        call_with_run_token(source, relay_error_is_unauthorized, |token| {
+            let options = options.clone();
+            async move {
+                let client = relay.as_agent(token)?;
+                client
+                    .http_client()
+                    .post::<CreateAgentResponse>("/v1/agents", Some(body), Some(options))
+                    .await
+            }
+        })
+        .await
+        .map_err(run_token_call_error_to_relay_error)
+    }
+
+    /// Run-token mode release: `DELETE /v1/agents/:name` with the run token.
+    /// Relaycast only deletes agents created under the same run (another run's
+    /// agent answers 404), so a 404 means there is nothing of ours to delete.
+    async fn delete_agent_with_run_token(
+        &self,
+        source: &RunTokenSource,
+        agent_name: &str,
+        expected_token_hash: Option<&str>,
+    ) -> Result<()> {
+        let relay = (*self.relay)
+            .as_ref()
+            .context("SDK relay client not initialized")?;
+        // The legacy owned-cleanup route compares the credential hash
+        // server-side. DELETE has no such guard, so refuse locally when the
+        // cache proves the name now belongs to a replacement identity.
+        if let Some(expected) = expected_token_hash {
+            if let Some(cached) = self.cached_agent_token(agent_name) {
+                if format!("{:x}", Sha256::digest(cached.as_bytes())) != expected {
+                    tracing::info!(
+                        agent = %agent_name,
+                        "run-token release skipped: the name was re-registered by a replacement"
+                    );
+                    return Ok(());
+                }
+            }
+        }
+        // Invalidate first, as the legacy path does: an ambiguous response
+        // must never leave a released token cached for reuse.
+        self.invalidate_cached_registration(agent_name);
+        let path = format!("/v1/agents/{}", urlencoding::encode(agent_name));
+        let result = call_with_run_token(source, relay_error_is_unauthorized, |token| {
+            let path = path.clone();
+            async move {
+                let client = relay.as_agent(token)?;
+                client.http_client().delete(&path, None).await
+            }
+        })
+        .await;
+        match result {
+            Ok(()) => {
+                tracing::info!(agent = %agent_name, "released agent identity with run token");
+                Ok(())
+            }
+            Err(RunTokenCallError::Call(error)) if error.is_not_found() => {
+                tracing::info!(
+                    agent = %agent_name,
+                    "run-token release found no agent of this run to delete"
+                );
+                Ok(())
+            }
+            Err(error) => Err(anyhow::anyhow!(
+                "failed to release agent '{agent_name}' with run token: {error}"
+            )),
+        }
+    }
+
+    /// Run-token mode registration of a spawned worker (or the broker's own
+    /// name after a cache miss). A collision fails closed: run tokens cannot
+    /// look up or take over an existing identity.
+    async fn register_agent_token_with_run_token(
+        &self,
+        agent_name: &str,
+        cli_hint: Option<&str>,
+        waiter_id: Option<&str>,
+    ) -> std::result::Result<String, RelaycastRegistrationError> {
+        let relay =
+            self.relay
+                .as_ref()
+                .as_ref()
+                .ok_or_else(|| RelaycastRegistrationError::Transport {
+                    agent_name: agent_name.to_string(),
+                    detail: "SDK relay client not initialized".to_string(),
+                })?;
+        if let Some(cached) = self.cached_agent_token(agent_name) {
+            return Ok(cached);
+        }
+        let body = serde_json::json!({
+            "name": agent_name,
+            "type": "agent",
+            "auto_join_general": false,
+            "metadata": {"cli": cli_hint.unwrap_or(&self.default_cli)},
+        });
+        let headers = waiter_id.map(|waiter_id| {
+            vec![
+                ("Idempotency-Key".to_string(), waiter_id.to_string()),
+                (
+                    "X-Workspace-Write-Waiter".to_string(),
+                    waiter_id.to_string(),
+                ),
+            ]
+        });
+        match self
+            .post_create_agent(
+                relay,
+                &body,
+                RequestOptions {
+                    headers,
+                    idempotency_key: None,
+                },
+            )
+            .await
+        {
+            Ok(response) if response.token.trim().is_empty() => {
+                Err(RelaycastRegistrationError::MissingToken {
+                    agent_name: agent_name.to_string(),
+                })
+            }
+            Ok(response) => {
+                self.seed_agent_token(agent_name, &response.token);
+                Ok(response.token)
+            }
+            Err(RelayError::Api { status: 409, .. }) => {
+                Err(RelaycastRegistrationError::AlreadyExists {
+                    agent_name: agent_name.to_string(),
+                })
+            }
+            Err(error) => Err(registration_metadata_error(agent_name, error)),
         }
     }
 
@@ -411,8 +611,31 @@ impl RelaycastHttpClient {
             return RecipientReachability::unknown();
         };
 
-        match tokio::time::timeout(SEND_RECIPIENT_PROBE_TIMEOUT, relay.get_agent(agent_name)).await
-        {
+        // Run tokens cannot read `GET /v1/agents/:name`; probe with the
+        // broker's own agent token instead.
+        let lookup = async {
+            if self.run_token.is_some() {
+                let token = self.cached_agent_token(&self.agent_name).ok_or_else(|| {
+                    RelayError::api(
+                        "agent_token_unavailable",
+                        "broker agent token is not cached",
+                        401,
+                    )
+                })?;
+                relay
+                    .as_agent(token)?
+                    .http_client()
+                    .get::<relaycast::Agent>(
+                        &format!("/v1/agents/{}", urlencoding::encode(agent_name)),
+                        None,
+                        None,
+                    )
+                    .await
+            } else {
+                relay.get_agent(agent_name).await
+            }
+        };
+        match tokio::time::timeout(SEND_RECIPIENT_PROBE_TIMEOUT, lookup).await {
             Ok(Ok(agent)) => {
                 let live = if agent_is_reachable(&agent) {
                     Some(true)
@@ -519,6 +742,14 @@ impl RelaycastHttpClient {
         cli_hint: Option<&str>,
     ) -> std::result::Result<String, RelaycastRegistrationError> {
         let trimmed_name = agent_name.trim();
+        if self.run_token.is_some() {
+            if trimmed_name.is_empty() {
+                return Err(RelaycastRegistrationError::InvalidAgentName);
+            }
+            return self
+                .register_agent_token_with_run_token(trimmed_name, cli_hint, None)
+                .await;
+        }
         let registration = self.registration.as_ref().as_ref().ok_or_else(|| {
             RelaycastRegistrationError::Transport {
                 agent_name: trimmed_name.to_string(),
@@ -558,6 +789,11 @@ impl RelaycastHttpClient {
         waiter_id: &str,
     ) -> std::result::Result<String, RelaycastRegistrationError> {
         let trimmed_name = agent_name.trim();
+        if self.run_token.is_some() {
+            return self
+                .register_agent_token_with_run_token(trimmed_name, cli_hint, Some(waiter_id))
+                .await;
+        }
         let relay =
             self.relay
                 .as_ref()
@@ -627,6 +863,12 @@ impl RelaycastHttpClient {
         known_agent_id: Option<&str>,
         waiter_id: Option<&str>,
     ) -> std::result::Result<String, RelaycastRegistrationError> {
+        // Takeover needs the workspace key; run tokens cannot reclaim a name.
+        if self.run_token.is_some() {
+            return Err(RelaycastRegistrationError::AlreadyExists {
+                agent_name: agent_name.to_string(),
+            });
+        }
         // Singleflight per agent name. Two concurrent cache misses would
         // otherwise both take the name over, and the second response would
         // invalidate the token already returned to the first caller —
@@ -844,6 +1086,16 @@ impl RelaycastHttpClient {
                 .register_agent_token(trimmed_name, cli_hint)
                 .await
                 .map_err(ImpersonationAwareRegistrationError::Sdk),
+            RegisterIntent::ImpersonateExisting if self.run_token.is_some() => {
+                // The presence probe is `GET /v1/agents/:name`, which run
+                // tokens cannot call, and without a probe this intent refuses.
+                Err(ImpersonationAwareRegistrationError::ProbeFailed {
+                    agent_name: trimmed_name.to_string(),
+                    detail: "run-token mode cannot probe or take over an agent it did not \
+                             register in this run"
+                        .to_string(),
+                })
+            }
             RegisterIntent::ImpersonateExisting => {
                 let relay = self
                     .relay_client()
@@ -1342,6 +1594,19 @@ impl RelaycastHttpClient {
         visibility_backoffs_ms: &[u64],
         total_budget: Duration,
     ) -> Result<()> {
+        if let Some(source) = self.run_token.as_ref() {
+            // Run tokens may only release via `DELETE /v1/agents/:name`.
+            let _ = (
+                reason,
+                delete_identity,
+                expected_agent_id,
+                visibility_backoffs_ms,
+                total_budget,
+            );
+            return self
+                .delete_agent_with_run_token(source, agent_name, expected_token_hash)
+                .await;
+        }
         if let Some(relay) = (*self.relay).as_ref() {
             let reason = reason
                 .map(str::trim)
@@ -1932,7 +2197,16 @@ impl RelaycastHttpClient {
             .as_ref()
             .as_ref()
             .context("SDK relay client not initialized")?;
-        let client = relay.as_agent(&self.api_key)?;
+        // Run tokens cannot read `GET /v1/agents/:name`; the worker's own
+        // agent token can.
+        let client = if self.run_token.is_some() {
+            let token = self.cached_agent_token(name).with_context(|| {
+                format!("run-token mode has no cached agent token for worker '{name}'")
+            })?;
+            relay.as_agent(token)?
+        } else {
+            relay.as_agent(&self.api_key)?
+        };
         let path = format!("/v1/agents/{name}");
         let mut agent: Option<Value> = None;
         let total_budget =
@@ -2387,6 +2661,21 @@ async fn mute_self_channel(agent_client: &AgentClient, channel: &str) {
             error = %error,
             "failed to mute channel for broker-self agent; channel deliveries will queue for its offline node"
         );
+    }
+}
+
+/// Collapse a run-token call failure into the SDK error type the registration
+/// paths classify. An unreadable/expired run token file is reported as a 401
+/// with a dedicated code: there is no usable credential, and retrying the
+/// request cannot fix that.
+fn run_token_call_error_to_relay_error(error: RunTokenCallError<RelayError>) -> RelayError {
+    match error {
+        RunTokenCallError::Call(error) => error,
+        RunTokenCallError::Read(error) => RelayError::api(
+            "run_token_unavailable",
+            format!("run token unavailable: {error:#}"),
+            401,
+        ),
     }
 }
 
@@ -3033,9 +3322,8 @@ async fn register_new_spawn_identity_inner(
     })?;
     // Use the SDK transport with the extended registration contract. Do not
     // consult the identity cache: success must prove a newly created identity.
-    let client = relay
-        .as_agent(&http.api_key)
-        .map_err(|error| RegRetryOutcome::Fatal(registration_metadata_error(name, error)))?;
+    // The credential (workspace key, or the run token read per request) is
+    // resolved by `post_create_agent` on every attempt.
     let body = serde_json::json!({
         "name": name, "type": "agent", "auto_join_general": false,
         "metadata": {"cli": cli.unwrap_or(&http.default_cli)}
@@ -3075,13 +3363,8 @@ async fn register_new_spawn_identity_inner(
         // cancels it mid-flight still reports it; a terminal error below
         // corrects the total to what the SDK actually sent.
         total_attempts.fetch_add(1, Ordering::Relaxed);
-        match client
-            .http_client()
-            .post::<relaycast::CreateAgentResponse>(
-                "/v1/agents",
-                Some(&body),
-                Some(request_options()),
-            )
+        match http
+            .post_create_agent(relay, &body, request_options())
             .await
         {
             Ok(agent) if !agent.token.trim().is_empty() => {
@@ -7008,5 +7291,210 @@ mod tests {
         presence.assert_hits(1);
         register.assert_hits(1);
         rotate.assert_hits(1);
+    }
+}
+
+#[cfg(test)]
+mod run_token_mode_tests {
+    use httpmock::{
+        Method::{DELETE, GET, POST},
+        MockServer,
+    };
+    use serde_json::json;
+
+    use super::{register_new_spawn_identity, RelaycastHttpClient, RelaycastRegistrationError};
+    use crate::relaycast::run_token::{
+        test_support::{future_expiry, write_run_token_file},
+        RunTokenSource,
+    };
+
+    fn agent_created(name: &str, token: &str) -> serde_json::Value {
+        json!({"ok": true, "data": {
+            "id": format!("agent-{name}"),
+            "workspace_id": "ws_run",
+            "run_id": "run_1",
+            "name": name,
+            "token": token,
+            "status": "online",
+            "created_at": "2026-10-17T00:00:00Z"
+        }})
+    }
+
+    fn run_token_client(server: &MockServer, source: RunTokenSource) -> RelaycastHttpClient {
+        let client = RelaycastHttpClient::new_with_run_token(
+            Some(server.base_url()),
+            source,
+            "broker",
+            "codex",
+        );
+        client.seed_agent_token("broker", "at_live_broker");
+        client
+    }
+
+    #[test]
+    fn run_token_client_holds_no_workspace_key() {
+        let server = MockServer::start();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relaycast-run.json");
+        let client = run_token_client(&server, RunTokenSource::new(&path));
+        assert!(client.api_key.is_empty());
+        assert_eq!(client.run_token_source().unwrap().path(), path.as_path());
+        // Workspace-scoped reads use the broker's own agent token, never the
+        // run token.
+        assert_eq!(client.workspace_read_bearer(), "at_live_broker");
+    }
+
+    #[tokio::test]
+    async fn spawned_workers_register_with_the_run_token_read_fresh_per_request() {
+        let server = MockServer::start();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relaycast-run.json");
+        write_run_token_file(&path, "rt_live_first", &future_expiry());
+        let client = run_token_client(&server, RunTokenSource::new(&path));
+
+        let first = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rt_live_first")
+                .json_body_partial(r#"{"name":"worker-1"}"#);
+            then.status(201)
+                .json_body(agent_created("worker-1", "at_live_w1"));
+        });
+        let token = register_new_spawn_identity(&client, "worker-1", Some("codex"))
+            .await
+            .expect("worker registers with the run token");
+        assert_eq!(token, "at_live_w1");
+        first.assert_hits(1);
+
+        // The launcher rotates the file; the very next request must use it.
+        write_run_token_file(&path, "rt_live_rotated", &future_expiry());
+        let stale = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rt_live_first")
+                .json_body_partial(r#"{"name":"worker-2"}"#);
+            then.status(401).json_body(json!({"ok": false, "error": {
+                "code": "run_token_invalid", "message": "stale"}}));
+        });
+        let rotated = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rt_live_rotated")
+                .json_body_partial(r#"{"name":"worker-2"}"#);
+            then.status(201)
+                .json_body(agent_created("worker-2", "at_live_w2"));
+        });
+        let token = client
+            .register_agent_token("worker-2", Some("codex"))
+            .await
+            .expect("second worker registers with the rotated token");
+        assert_eq!(token, "at_live_w2");
+        rotated.assert_hits(1);
+        stale.assert_hits(0);
+        assert_eq!(
+            client.cached_agent_token("worker-2").as_deref(),
+            Some("at_live_w2")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_name_collision_fails_closed_without_lookup_or_takeover() {
+        let server = MockServer::start();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relaycast-run.json");
+        write_run_token_file(&path, "rt_live_cur", &future_expiry());
+        let client = run_token_client(&server, RunTokenSource::new(&path));
+
+        let create = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409).json_body(json!({"ok": false, "error": {
+                "code": "agent_already_exists", "message": "taken"}}));
+        });
+        let lookup = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/worker-1");
+            then.status(200).json_body(json!({"ok": true, "data": {}}));
+        });
+        let takeover = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/worker-1/takeover");
+            then.status(200).json_body(json!({"ok": true, "data": {}}));
+        });
+
+        let error = client
+            .register_agent_token("worker-1", None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, RelaycastRegistrationError::AlreadyExists { .. }),
+            "{error:?}"
+        );
+        create.assert_hits(1);
+        lookup.assert_hits(0);
+        takeover.assert_hits(0);
+    }
+
+    #[tokio::test]
+    async fn workers_are_released_with_delete_and_the_run_token() {
+        let server = MockServer::start();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relaycast-run.json");
+        write_run_token_file(&path, "rt_live_cur", &future_expiry());
+        let client = run_token_client(&server, RunTokenSource::new(&path));
+        client.seed_agent_token("worker-1", "at_live_w1");
+
+        let delete = server.mock(|when, then| {
+            when.method(DELETE)
+                .path("/v1/agents/worker-1")
+                .header("authorization", "Bearer rt_live_cur");
+            then.status(204);
+        });
+        let legacy_release = server.mock(|when, then| {
+            when.method(POST).path_contains("/v1/agents/release");
+            then.status(200).json_body(json!({"ok": true, "data": {}}));
+        });
+
+        client
+            .release_agent_identity("worker-1", Some("done"), true)
+            .await
+            .expect("release succeeds via DELETE");
+        delete.assert_hits(1);
+        legacy_release.assert_hits(0);
+        assert!(client.cached_agent_token("worker-1").is_none());
+
+        // An agent that belongs to another run (404) is nothing of ours.
+        client.seed_agent_token("worker-2", "at_live_w2");
+        let other_run = server.mock(|when, then| {
+            when.method(DELETE).path("/v1/agents/worker-2");
+            then.status(404).json_body(json!({"ok": false, "error": {
+                "code": "agent_not_found", "message": "not in this run"}}));
+        });
+        client
+            .release_agent_identity("worker-2", None, false)
+            .await
+            .expect("a 404 release is terminal success");
+        other_run.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn channel_scope_lookup_uses_the_workers_own_agent_token() {
+        let server = MockServer::start();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relaycast-run.json");
+        write_run_token_file(&path, "rt_live_cur", &future_expiry());
+        let client = run_token_client(&server, RunTokenSource::new(&path));
+        client.seed_agent_token("worker-a", "at_live_worker_a");
+
+        let detail = server.mock(|when, then| {
+            when.method(GET)
+                .path("/v1/agents/worker-a")
+                .header("authorization", "Bearer at_live_worker_a");
+            then.status(200).json_body(json!({"ok": true, "data": {
+                "channels": [{"name": "general"}]
+            }}));
+        });
+        client
+            .verify_agent_channel_scope("worker-a", &["general".into()])
+            .await
+            .expect("lookup with the worker's own token");
+        detail.assert_hits(1);
     }
 }

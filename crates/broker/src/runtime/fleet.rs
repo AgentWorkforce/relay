@@ -1129,7 +1129,9 @@ impl BrokerRuntime {
                 .base_url
                 .as_deref()
                 .unwrap_or(crate::relaycast::auth::DEFAULT_RELAYCAST_BASE_URL),
-            &self.relaycast_http.api_key,
+            // The workspace key in legacy mode; the broker's own agent token
+            // in run-token mode (run tokens cannot read attachments).
+            &self.relaycast_http.workspace_read_bearer(),
         );
         tracing::info!(
             target = "relay_broker::fleet",

@@ -30,6 +30,9 @@ pub const INHERITED_RELAY_CREDENTIAL_ENV_KEYS: &[&str] = &[
     "RELAY_WORKSPACE_KEY",
     "AGENT_RELAY_WORKSPACE_KEY",
     "RELAY_WORKSPACES_JSON",
+    // Run-scoped Relaycast credential file (`rt_live_`). Only the broker reads
+    // it; workers hold their own agent token instead.
+    "RELAY_RUN_TOKEN_FILE",
 ];
 
 /// Remove [`INHERITED_RELAY_CREDENTIAL_ENV_KEYS`] from a command's inherited
