@@ -1570,6 +1570,32 @@ pub(crate) fn handler_unavailable_result(invocation_id: &str) -> ActionResult {
     }
 }
 
+/// `metadata.configured.node_kind` this broker declares on its spawn capacity.
+/// Cloud placement refuses an unclaimed node that states no kind.
+const BROKER_NODE_KIND: &str = "broker";
+
+/// Declare `configured.node_kind: "broker"` on a `spawn:<harness>` capability,
+/// leaving any kind the manifest already states (e.g. `"desktop"`) untouched.
+/// Non-spawn capabilities, and a non-object `configured`, pass through as-is.
+fn spawn_capability_metadata(
+    name: &str,
+    metadata: Option<BTreeMap<String, serde_json::Value>>,
+) -> Option<BTreeMap<String, serde_json::Value>> {
+    if !name.starts_with("spawn:") {
+        return metadata;
+    }
+    let mut metadata = metadata.unwrap_or_default();
+    let configured = metadata
+        .entry("configured".to_owned())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let serde_json::Value::Object(configured) = configured {
+        configured
+            .entry("node_kind")
+            .or_insert_with(|| serde_json::Value::String(BROKER_NODE_KIND.to_owned()));
+    }
+    Some(metadata)
+}
+
 pub(crate) fn build_node_register(
     manifest: &NodeManifest,
     default_node_id: &str,
@@ -1587,12 +1613,15 @@ pub(crate) fn build_node_register(
             kind: capability.kind.clone(),
             global: (capability.name == "task.run").then_some(true),
             queue: None,
-            metadata: capability.metadata.as_ref().map(|metadata| {
-                metadata
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect::<BTreeMap<_, _>>()
-            }),
+            metadata: spawn_capability_metadata(
+                &capability.name,
+                capability.metadata.as_ref().map(|metadata| {
+                    metadata
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect::<BTreeMap<_, _>>()
+                }),
+            ),
         })
         .collect::<Vec<_>>();
     capabilities.push(FleetCapability {
@@ -6759,6 +6788,103 @@ mod tests {
             "the pending registration must remain in flight"
         );
     }
+    fn spawn_manifest(capabilities: Vec<crate::protocol::NodeCapabilityManifest>) -> NodeManifest {
+        NodeManifest {
+            name: "builder".to_string(),
+            node_id: Some("node-manifest".to_string()),
+            capabilities,
+            max_agents: None,
+            tags: None,
+            repo_keys: None,
+            version: None,
+        }
+    }
+
+    fn capability(
+        name: &str,
+        metadata: Option<HashMap<String, Value>>,
+    ) -> crate::protocol::NodeCapabilityManifest {
+        crate::protocol::NodeCapabilityManifest {
+            name: name.to_string(),
+            kind: Some("capacity".to_string()),
+            metadata,
+        }
+    }
+
+    #[test]
+    fn build_node_register_declares_broker_node_kind_on_every_spawn_capability() {
+        let manifest = spawn_manifest(vec![
+            capability("spawn:claude", None),
+            capability("spawn:codex", None),
+            capability("release", None),
+        ]);
+        let register =
+            build_node_register(&manifest, "node-default", "host-default", "broker/1", None);
+        let wire = serde_json::to_value(&register).expect("register serializes");
+        for capability in wire["capabilities"].as_array().unwrap() {
+            let name = capability["name"].as_str().unwrap();
+            if name.starts_with("spawn:") {
+                assert_eq!(
+                    capability["metadata"]["configured"]["node_kind"], "broker",
+                    "{name} must declare node_kind broker on the wire"
+                );
+            } else {
+                assert!(
+                    capability.get("metadata").is_none(),
+                    "{name} must not gain spawn metadata"
+                );
+            }
+        }
+        // The heartbeat descriptor reuses the registered capabilities.
+        let heartbeat = FleetLoadSnapshot::default().heartbeat(&register);
+        let spawn = heartbeat
+            .capabilities
+            .iter()
+            .find(|capability| capability.name == "spawn:claude")
+            .unwrap();
+        assert_eq!(
+            spawn.metadata.as_ref().unwrap()["configured"]["node_kind"],
+            "broker"
+        );
+    }
+
+    #[test]
+    fn build_node_register_preserves_declared_node_kind_and_configured_facts() {
+        let manifest = spawn_manifest(vec![capability(
+            "spawn:codex",
+            Some(HashMap::from([
+                (
+                    "configured".to_string(),
+                    json!({"node_kind": "desktop", "machine": "Finn-Mac-Mini"}),
+                ),
+                ("live".to_string(), json!({"version": "1.0.0"})),
+            ])),
+        )]);
+        let register =
+            build_node_register(&manifest, "node-default", "host-default", "broker/1", None);
+        let metadata = register.capabilities[0].metadata.as_ref().unwrap();
+        assert_eq!(
+            metadata["configured"],
+            json!({"node_kind": "desktop", "machine": "Finn-Mac-Mini"})
+        );
+        assert_eq!(metadata["live"], json!({"version": "1.0.0"}));
+
+        // Facts without a kind keep their values and gain the broker default.
+        let manifest = spawn_manifest(vec![capability(
+            "spawn:codex",
+            Some(HashMap::from([(
+                "configured".to_string(),
+                json!({"teammates": true}),
+            )])),
+        )]);
+        let register =
+            build_node_register(&manifest, "node-default", "host-default", "broker/1", None);
+        assert_eq!(
+            register.capabilities[0].metadata.as_ref().unwrap()["configured"],
+            json!({"teammates": true, "node_kind": "broker"})
+        );
+    }
+
     #[test]
     fn build_node_register_prefers_manifest_identity() {
         let manifest = NodeManifest {
@@ -6789,10 +6915,10 @@ mod tests {
         );
         assert_eq!(
             register.capabilities[0].metadata,
-            Some(BTreeMap::from([(
-                "cli".to_string(),
-                Value::String("codex".to_string())
-            )]))
+            Some(BTreeMap::from([
+                ("cli".to_string(), Value::String("codex".to_string())),
+                ("configured".to_string(), json!({"node_kind": "broker"})),
+            ]))
         );
         assert_eq!(
             register.capabilities.last(),
