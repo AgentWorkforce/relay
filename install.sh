@@ -110,8 +110,9 @@ safe_remove_path() {
 # Privileged installs must not write through directories another user can replace.
 check_privileged_directory() {
     [ "$EUID" -eq 0 ] || return 0
-    local dir="$1" metadata owner mode physical destination
+    local dir="$1" metadata owner mode physical destination link_target
     case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
+    while [ "$dir" != / ] && [ "${dir%/}" != "$dir" ]; do dir="${dir%/}"; done
     destination="$dir"
     while [ ! -d "$dir" ]; do dir=$(dirname "$dir"); done
     physical=$(cd "$dir" && pwd -P) || return 1
@@ -119,6 +120,17 @@ check_privileged_directory() {
         check_privileged_directory "$physical" || return 1
     fi
     while :; do
+        if [ -L "$dir" ]; then
+            owner=$(stat -c '%u' "$dir" 2>/dev/null) || owner=$(stat -f '%u' "$dir") || return 1
+            if [ "$owner" != 0 ]; then
+                warn "Unsafe symlink for a privileged install: $dir"
+                return 1
+            fi
+            # Validate each link in a chain, not just its fully resolved destination.
+            link_target=$(readlink "$dir") || return 1
+            case "$link_target" in /*) ;; *) link_target="$(dirname "$dir")/$link_target" ;; esac
+            check_privileged_directory "$link_target" || return 1
+        fi
         metadata=$(stat -L -c '%u %a' "$dir" 2>/dev/null) || metadata=$(stat -L -f '%u %Lp' "$dir") || return 1
         read -r owner mode <<< "$metadata"
         # A root-owned sticky ancestor (e.g. /tmp) cannot replace root-owned children.

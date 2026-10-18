@@ -500,6 +500,22 @@ if [ "$EUID" -eq 0 ]; then
     check_privileged_directory "$D"; rc=$?
     check "privileged launcher: rejects another owner's directory" test "$rc" -ne 0
     chown 0 "$D"
+
+    mkdir "$D/target"
+    ln -s "$D/target" "$D/link"
+    check_privileged_directory "$D/link"; rc=$?
+    check "privileged launcher: accepts trusted symlink" test "$rc" -eq 0
+    chown -h 65534 "$D/link"
+    for candidate in "$D/link" "$D/link/" "$D/link/new-child"; do
+        check_privileged_directory "$candidate"; rc=$?
+        check "privileged launcher: rejects untrusted symlink at $candidate" test "$rc" -ne 0
+    done
+    ln -s link "$D/trusted-link"
+    check_privileged_directory "$D/trusted-link"; rc=$?
+    check "privileged launcher: rejects untrusted link inside a chain" test "$rc" -ne 0
+    write_executable_file "$D/link/launcher" <<< '#!/bin/bash'; rc=$?
+    check "privileged launcher: refuses write through untrusted symlink" test "$rc" -ne 0
+    check "privileged launcher: target remains untouched" test ! -e "$D/target/launcher"
 fi
 
 e2e_setup ok yes
