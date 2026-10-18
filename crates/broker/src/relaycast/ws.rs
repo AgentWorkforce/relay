@@ -20,6 +20,10 @@ use uuid::Uuid;
 
 use crate::{fleet_wire::AgentRegistrationMetadata, protocol::MessageInjectionMode};
 
+use super::agent_token_rotation::{
+    parse_token_expiry, rotation_delay, write_agent_token_file, RotateTokenResponse, RotationClock,
+    SystemRotationClock, ROTATION_RETRY_BACKOFFS, UNKNOWN_EXPIRY_PROBE_DELAY,
+};
 use super::run_token::{
     call_with_run_token, relay_error_is_unauthorized, RunTokenCallError, RunTokenSource,
     RUN_TOKEN_MODE_PLACEHOLDER_BEARER,
@@ -75,6 +79,54 @@ pub struct RelaycastHttpClient {
     /// empty and the run-token-capable endpoints (`POST /v1/agents`,
     /// `DELETE /v1/agents/:name`) read the token from this file per request.
     run_token: Option<RunTokenSource>,
+    /// Run-token mode: agent token rotation state shared by every clone.
+    rotation: Arc<AgentTokenRotationState>,
+}
+
+/// Proactive agent token rotation bookkeeping (run-token mode only).
+struct AgentTokenRotationState {
+    /// Known `token_expires_at` per agent name; `None` means issued without a
+    /// known expiry (probe-rotated once to learn it).
+    expiries: StdMutex<HashMap<String, Option<chrono::DateTime<chrono::Utc>>>>,
+    /// Running rotation task per agent name, plus the worker token file it
+    /// maintains (removed when rotation stops).
+    tasks: StdMutex<HashMap<String, (tokio::task::AbortHandle, Option<std::path::PathBuf>)>>,
+    /// SHA-256 hashes of tokens this broker superseded by rotating them. Lets
+    /// owned-identity cleanup recognize a token hash captured before a
+    /// rotation as still ours.
+    lineage: StdMutex<HashMap<String, std::collections::HashSet<String>>>,
+    clock: Arc<dyn RotationClock>,
+}
+
+impl Default for AgentTokenRotationState {
+    fn default() -> Self {
+        Self {
+            expiries: StdMutex::new(HashMap::new()),
+            tasks: StdMutex::new(HashMap::new()),
+            lineage: StdMutex::new(HashMap::new()),
+            clock: Arc::new(SystemRotationClock),
+        }
+    }
+}
+
+/// `POST /v1/agents` response including the #550 `token_expires_at` the SDK
+/// type does not yet carry.
+#[derive(serde::Deserialize)]
+struct CreateAgentWithExpiry {
+    #[serde(flatten)]
+    agent: CreateAgentResponse,
+    #[serde(default)]
+    token_expires_at: Option<String>,
+}
+
+fn lock_unpoisoned<T>(mutex: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn token_hash(token: &str) -> String {
+    format!("{:x}", Sha256::digest(token.as_bytes()))
 }
 
 pub type RelaycastRegistrationError = AgentRegistrationError;
@@ -356,6 +408,7 @@ impl RelaycastHttpClient {
             agent_name: agent_name.into(),
             default_cli: String::new(),
             run_token: None,
+            rotation: Arc::new(AgentTokenRotationState::default()),
         }
     }
 
@@ -383,6 +436,7 @@ impl RelaycastHttpClient {
             agent_name: agent_name.into(),
             default_cli,
             run_token: None,
+            rotation: Arc::new(AgentTokenRotationState::default()),
         }
     }
 
@@ -441,18 +495,224 @@ impl RelaycastHttpClient {
                 .post::<CreateAgentResponse>("/v1/agents", Some(body), Some(options))
                 .await;
         };
-        call_with_run_token(source, relay_error_is_unauthorized, |token| {
+        let created = call_with_run_token(source, relay_error_is_unauthorized, |token| {
             let options = options.clone();
             async move {
                 let client = relay.as_agent(token)?;
                 client
                     .http_client()
-                    .post::<CreateAgentResponse>("/v1/agents", Some(body), Some(options))
+                    .post::<CreateAgentWithExpiry>("/v1/agents", Some(body), Some(options))
                     .await
             }
         })
         .await
-        .map_err(run_token_call_error_to_relay_error)
+        .map_err(run_token_call_error_to_relay_error)?;
+        // A fresh identity: record its expiry for proactive rotation and drop
+        // any rotation lineage left by an earlier identity under this name.
+        self.record_token_expiry(
+            &created.agent.name,
+            parse_token_expiry(created.token_expires_at.as_deref()),
+        );
+        lock_unpoisoned(&self.rotation.lineage).remove(&created.agent.name);
+        Ok(created.agent)
+    }
+
+    /// Record a token's expiry (run-token mode rotation input).
+    pub(crate) fn record_token_expiry(
+        &self,
+        agent_name: &str,
+        expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) {
+        lock_unpoisoned(&self.rotation.expiries).insert(agent_name.to_string(), expires_at);
+    }
+
+    fn token_expiry(&self, agent_name: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+        lock_unpoisoned(&self.rotation.expiries)
+            .get(agent_name)
+            .copied()
+            .flatten()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_rotation_clock_for_test(&mut self, clock: Arc<dyn RotationClock>) {
+        let mut state = AgentTokenRotationState::default();
+        state.clock = clock;
+        self.rotation = Arc::new(state);
+    }
+
+    /// Run-token mode: start proactive rotation of `agent_name`'s agent token
+    /// (idempotent while a rotation task is running). With `token_file`, the
+    /// worker's access-only file is written now from the cached token and
+    /// atomically replaced on every rotation. Legacy mode is a no-op.
+    pub(crate) fn ensure_agent_token_rotation(
+        &self,
+        agent_name: &str,
+        token_file: Option<std::path::PathBuf>,
+    ) -> Result<()> {
+        if self.run_token.is_none() {
+            return Ok(());
+        }
+        let mut tasks = lock_unpoisoned(&self.rotation.tasks);
+        if let Some((handle, _)) = tasks.get(agent_name) {
+            if !handle.is_finished() {
+                // The running task owns the file; never write a possibly
+                // stale cached token over a fresher rotation.
+                return Ok(());
+            }
+        }
+        let token = self.cached_agent_token(agent_name).with_context(|| {
+            format!("cannot rotate agent '{agent_name}': no cached agent token")
+        })?;
+        if let Some(path) = token_file.as_deref() {
+            write_agent_token_file(path, &token, self.token_expiry(agent_name))
+                .with_context(|| format!("failed to write agent token file for '{agent_name}'"))?;
+        }
+        drop(token);
+        let client = self.clone();
+        let name = agent_name.to_string();
+        let file = token_file.clone();
+        let handle =
+            tokio::spawn(async move { client.agent_token_rotation_loop(name, file).await });
+        tasks.insert(agent_name.to_string(), (handle.abort_handle(), token_file));
+        Ok(())
+    }
+
+    /// Stop rotating `agent_name` and remove its worker token file.
+    pub(crate) fn stop_agent_token_rotation(&self, agent_name: &str) {
+        if let Some((handle, file)) = lock_unpoisoned(&self.rotation.tasks).remove(agent_name) {
+            handle.abort();
+            if let Some(path) = file {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        lock_unpoisoned(&self.rotation.expiries).remove(agent_name);
+    }
+
+    async fn agent_token_rotation_loop(self, name: String, token_file: Option<std::path::PathBuf>) {
+        let clock = Arc::clone(&self.rotation.clock);
+        loop {
+            let delay = match self.token_expiry(&name) {
+                Some(expires_at) => rotation_delay(clock.now(), expires_at),
+                None => UNKNOWN_EXPIRY_PROBE_DELAY,
+            };
+            clock.sleep(delay).await;
+            // Read the current token at rotation time: a re-registration
+            // since the last rotation reseeds the cache.
+            let Some(current) = self.cached_agent_token(&name) else {
+                tracing::info!(agent = %name, "agent token no longer cached; stopping rotation");
+                return;
+            };
+            let Some(rotated) = self.rotate_agent_token_with_retries(&name, &current).await else {
+                return;
+            };
+            let expires_at = parse_token_expiry(rotated.token_expires_at.as_deref());
+            lock_unpoisoned(&self.rotation.lineage)
+                .entry(name.clone())
+                .or_default()
+                .insert(token_hash(&current));
+            drop(current);
+            // Publish to the broker's cache first, then the worker's file.
+            // The previous token stays valid for Relaycast's 60-second grace
+            // window, so requests in flight with it still succeed.
+            self.seed_agent_token(&name, &rotated.token);
+            self.record_token_expiry(&name, expires_at);
+            if let Some(path) = token_file.as_deref() {
+                if let Err(error) = write_agent_token_file(path, &rotated.token, expires_at) {
+                    tracing::error!(
+                        agent = %name,
+                        path = %path.display(),
+                        error = %error,
+                        "failed to publish rotated agent token to the worker's token file"
+                    );
+                }
+            }
+            tracing::info!(
+                agent = %name,
+                expires_at = ?expires_at,
+                "rotated agent token before expiry"
+            );
+            if expires_at.is_none() {
+                tracing::info!(
+                    agent = %name,
+                    "rotated token carries no expiry (engine predates token expiry); stopping rotation"
+                );
+                return;
+            }
+        }
+    }
+
+    /// One logical rotation via `POST /v1/agents/:name/rotate-token`,
+    /// authenticated by the agent's own current token. Transient failures are
+    /// retried while the token can still authenticate; a 401/403 fails closed
+    /// (no takeover, no re-registration), as does a vanished agent.
+    async fn rotate_agent_token_with_retries(
+        &self,
+        name: &str,
+        current: &str,
+    ) -> Option<RotateTokenResponse> {
+        let clock = Arc::clone(&self.rotation.clock);
+        let relay = (*self.relay).as_ref()?;
+        let path = format!("/v1/agents/{}/rotate-token", urlencoding::encode(name));
+        // One more attempt than there are backoffs; the last returns instead.
+        #[allow(clippy::needless_range_loop)]
+        for attempt in 0..=ROTATION_RETRY_BACKOFFS.len() {
+            let result = match relay.as_agent(current) {
+                Ok(client) => {
+                    client
+                        .http_client()
+                        .post::<RotateTokenResponse>(&path, Some(serde_json::json!({})), None)
+                        .await
+                }
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(rotated) if !rotated.token.trim().is_empty() => return Some(rotated),
+                Ok(_) => {
+                    tracing::error!(agent = %name, "agent token rotation returned a blank token; failing closed");
+                    return None;
+                }
+                Err(RelayError::Api {
+                    status: status @ (401 | 403),
+                    ref code,
+                    ..
+                }) => {
+                    tracing::error!(
+                        agent = %name,
+                        http_status = status,
+                        code = %code,
+                        "agent token rotation was rejected; failing closed (run-token mode never \
+                         takes over or re-registers an identity)"
+                    );
+                    return None;
+                }
+                Err(RelayError::Api { status: 404, .. }) => {
+                    tracing::warn!(agent = %name, "agent no longer exists; stopping token rotation");
+                    return None;
+                }
+                Err(error) => {
+                    let expired = self
+                        .token_expiry(name)
+                        .is_some_and(|expires_at| expires_at <= clock.now());
+                    if attempt >= ROTATION_RETRY_BACKOFFS.len() || expired {
+                        tracing::error!(
+                            agent = %name,
+                            attempts = attempt + 1,
+                            error = %error,
+                            "agent token rotation failed; giving up"
+                        );
+                        return None;
+                    }
+                    tracing::warn!(
+                        agent = %name,
+                        attempt = attempt + 1,
+                        error = %error,
+                        "agent token rotation failed; retrying"
+                    );
+                    clock.sleep(ROTATION_RETRY_BACKOFFS[attempt]).await;
+                }
+            }
+        }
+        None
     }
 
     /// Run-token mode release: `DELETE /v1/agents/:name` with the run token.
@@ -471,8 +731,11 @@ impl RelaycastHttpClient {
         // server-side. DELETE has no such guard, so refuse locally when the
         // cache proves the name now belongs to a replacement identity.
         if let Some(expected) = expected_token_hash {
+            let rotated_from_ours = lock_unpoisoned(&self.rotation.lineage)
+                .get(agent_name)
+                .is_some_and(|hashes| hashes.contains(expected));
             if let Some(cached) = self.cached_agent_token(agent_name) {
-                if format!("{:x}", Sha256::digest(cached.as_bytes())) != expected {
+                if token_hash(&cached) != expected && !rotated_from_ours {
                     tracing::info!(
                         agent = %agent_name,
                         "run-token release skipped: the name was re-registered by a replacement"
@@ -482,7 +745,10 @@ impl RelaycastHttpClient {
             }
         }
         // Invalidate first, as the legacy path does: an ambiguous response
-        // must never leave a released token cached for reuse.
+        // must never leave a released token cached for reuse. A released
+        // identity is no longer rotated, and its token file is removed.
+        self.stop_agent_token_rotation(agent_name);
+        lock_unpoisoned(&self.rotation.lineage).remove(agent_name);
         self.invalidate_cached_registration(agent_name);
         let path = format!("/v1/agents/{}", urlencoding::encode(agent_name));
         let result = call_with_run_token(source, relay_error_is_unauthorized, |token| {
@@ -7496,5 +7762,179 @@ mod run_token_mode_tests {
             .await
             .expect("lookup with the worker's own token");
         detail.assert_hits(1);
+    }
+
+    // ── Proactive agent token rotation ──────────────────────────────────
+
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use crate::relaycast::agent_token_rotation::test_support::FakeRotationClock;
+
+    fn start_instant() -> chrono::DateTime<chrono::Utc> {
+        // Whole seconds so RFC 3339 round trips exactly.
+        let now = chrono::Utc::now().timestamp();
+        chrono::DateTime::from_timestamp(now, 0).unwrap()
+    }
+
+    async fn wait_for(mut condition: impl FnMut() -> bool) {
+        for _ in 0..200 {
+            if condition() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("condition not met in time");
+    }
+
+    fn file_token(path: &std::path::Path) -> Option<String> {
+        let raw = std::fs::read_to_string(path).ok()?;
+        let body: serde_json::Value = serde_json::from_str(&raw).ok()?;
+        body["token"].as_str().map(str::to_string)
+    }
+
+    #[tokio::test]
+    async fn worker_token_is_rotated_before_expiry_and_its_file_replaced() {
+        let server = MockServer::start();
+        let dir = tempfile::tempdir().unwrap();
+        let run_file = dir.path().join("relaycast-run.json");
+        write_run_token_file(&run_file, "rt_live_cur", &future_expiry());
+        let start = start_instant();
+        let clock = Arc::new(FakeRotationClock::new(start, 1));
+        let mut client = run_token_client(&server, RunTokenSource::new(&run_file));
+        client.set_rotation_clock_for_test(clock.clone());
+        client.seed_agent_token("broker", "at_live_broker");
+
+        let expires = start + chrono::Duration::minutes(15);
+        let mut created = agent_created("worker-1", "at_live_w1");
+        created["data"]["token_expires_at"] = json!(expires.to_rfc3339());
+        server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rt_live_cur");
+            then.status(201).json_body(created.clone());
+        });
+        let rotated_expiry = start + chrono::Duration::minutes(25);
+        let rotate = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents/worker-1/rotate-token")
+                .header("authorization", "Bearer at_live_w1");
+            then.status(200).json_body(json!({"ok": true, "data": {
+                "name": "worker-1",
+                "token": "at_live_w1_rotated",
+                "token_expires_at": rotated_expiry.to_rfc3339()
+            }}));
+        });
+        let token = register_new_spawn_identity(&client, "worker-1", Some("codex"))
+            .await
+            .unwrap();
+        assert_eq!(token, "at_live_w1");
+
+        let token_file = dir.path().join("agent-tokens").join("worker-1.json");
+        client
+            .ensure_agent_token_rotation("worker-1", Some(token_file.clone()))
+            .unwrap();
+        assert_eq!(file_token(&token_file).as_deref(), Some("at_live_w1"));
+
+        wait_for(|| file_token(&token_file).as_deref() == Some("at_live_w1_rotated")).await;
+        rotate.assert_hits(1);
+        // Rotation was scheduled 10 minutes in: before the 15-minute expiry.
+        let first_sleep = clock.sleeps.lock().unwrap()[0];
+        assert_eq!(first_sleep, Duration::from_secs(600));
+        assert!(first_sleep < Duration::from_secs(15 * 60));
+        assert_eq!(
+            client.cached_agent_token("worker-1").as_deref(),
+            Some("at_live_w1_rotated")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&token_file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        // The next rotation is scheduled against the new expiry.
+        wait_for(|| clock.sleeps.lock().unwrap().len() >= 2).await;
+        assert!(clock.sleeps.lock().unwrap()[1] <= Duration::from_secs(10 * 60));
+
+        // Owned cleanup captured the pre-rotation token hash; the rotation
+        // lineage still proves the identity is ours, so DELETE proceeds and
+        // the token file is removed.
+        let original_hash = super::token_hash("at_live_w1");
+        let delete = server.mock(|when, then| {
+            when.method(DELETE)
+                .path("/v1/agents/worker-1")
+                .header("authorization", "Bearer rt_live_cur");
+            then.status(204);
+        });
+        client
+            .release_agent_identity_guarded("worker-1", None, true, Some(&original_hash))
+            .await
+            .unwrap();
+        delete.assert_hits(1);
+        assert!(!token_file.exists());
+    }
+
+    #[tokio::test]
+    async fn a_rejected_rotation_fails_closed_without_takeover_or_reregistration() {
+        let server = MockServer::start();
+        let dir = tempfile::tempdir().unwrap();
+        let run_file = dir.path().join("relaycast-run.json");
+        write_run_token_file(&run_file, "rt_live_cur", &future_expiry());
+        let start = start_instant();
+        let clock = Arc::new(FakeRotationClock::new(start, 1));
+        let mut client = run_token_client(&server, RunTokenSource::new(&run_file));
+        client.set_rotation_clock_for_test(clock.clone());
+        client.seed_agent_token("broker", "at_live_broker");
+        client.record_token_expiry("broker", Some(start + chrono::Duration::minutes(15)));
+
+        let rotate = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/broker/rotate-token");
+            then.status(401).json_body(json!({"ok": false, "error": {
+                "code": "agent_token_expired", "message": "expired"}}));
+        });
+        let register = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(201)
+                .json_body(agent_created("broker", "at_live_new"));
+        });
+        let takeover = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents/broker/takeover");
+            then.status(200).json_body(json!({"ok": true, "data": {}}));
+        });
+
+        client.ensure_agent_token_rotation("broker", None).unwrap();
+        wait_for(|| rotate.hits() == 1).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        rotate.assert_hits(1);
+        register.assert_hits(0);
+        takeover.assert_hits(0);
+        // The loop exited instead of sleeping for another rotation.
+        assert_eq!(clock.sleeps.lock().unwrap().len(), 1);
+        assert_eq!(
+            client.cached_agent_token("broker").as_deref(),
+            Some("at_live_broker")
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_mode_never_starts_rotation() {
+        let server = MockServer::start();
+        let client =
+            RelaycastHttpClient::new(Some(server.base_url()), "rk_live_test", "broker", "codex");
+        client.seed_agent_token("worker-1", "at_live_w1");
+        let dir = tempfile::tempdir().unwrap();
+        let token_file = dir.path().join("worker-1.json");
+        client
+            .ensure_agent_token_rotation("worker-1", Some(token_file.clone()))
+            .unwrap();
+        assert!(!token_file.exists());
+        let rotate = server.mock(|when, then| {
+            when.method(POST).path_contains("rotate-token");
+            then.status(200);
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        rotate.assert_hits(0);
     }
 }

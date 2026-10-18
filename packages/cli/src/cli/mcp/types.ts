@@ -15,6 +15,12 @@ export interface AgentRelayMcpServerOptions {
   apiKey?: string;
   baseUrl?: string;
   agentToken?: string;
+  /**
+   * Broker-rotated agent token file (`RELAY_AGENT_TOKEN_FILE`, run-token mode).
+   * Re-read on every request so a rotated token is used immediately; no
+   * workspace key is required.
+   */
+  agentTokenFile?: string;
   agentName?: string;
   agentType?: AgentType;
   strictAgentName?: boolean;

@@ -2451,3 +2451,74 @@ describe('startAgentRelayMcpStdio', () => {
     });
   });
 });
+
+describe('run-token mode agent token file', () => {
+  beforeEach(() => {
+    // An earlier entrypoint test may have left a partial node:fs mock behind.
+    vi.doUnmock('node:fs');
+  });
+
+  async function tokenFile(token: string) {
+    const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const os = await vi.importActual<typeof import('node:os')>('node:os');
+    const path = await vi.importActual<typeof import('node:path')>('node:path');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-token-file-'));
+    const file = path.join(dir, 'worker.json');
+    const write = (value: string) => {
+      // The broker's atomic replacement: 0600 temp file, then rename.
+      const tmp = path.join(dir, `.worker.${Math.random().toString(16).slice(2)}.tmp`);
+      fs.writeFileSync(tmp, JSON.stringify({ token: value, expiresAt: '2099-01-01T00:00:00Z' }), {
+        mode: 0o600,
+      });
+      fs.renameSync(tmp, file);
+    };
+    write(token);
+    return { file, write };
+  }
+
+  it('reads the token from RELAY_AGENT_TOKEN_FILE without a workspace key', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule({
+      persistedWorkspaceKey: 'rk_live_unrelated_persisted',
+    });
+    const { file } = await tokenFile('at_live_from_file');
+    vi.stubEnv('RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('AGENT_RELAY_WORKSPACE_KEY', '');
+    vi.stubEnv('RELAY_API_KEY', '');
+    vi.stubEnv('RELAY_AGENT_TOKEN', '');
+    vi.stubEnv('RELAY_AGENT_TOKEN_FILE', file);
+    vi.stubEnv('RELAY_AGENT_NAME', 'TokenWorker');
+
+    const options = mod.optionsFromEnv();
+    expect(options).toMatchObject({
+      workspaceKey: undefined,
+      agentToken: 'at_live_from_file',
+      agentTokenFile: file,
+      agentName: 'TokenWorker',
+    });
+    // A token file never pairs with a persisted project workspace.
+    expect(mocks.resolveWorkspaceSessionKey).not.toHaveBeenCalled();
+    // Bootstrap is skipped: the file already holds a Relaycast agent token.
+    await expect(mod.resolveStdioBootstrapOptions(options)).resolves.toBe(options);
+  });
+
+  it('uses a rotated token on the very next request', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    const { file, write } = await tokenFile('at_live_file_one');
+
+    mod.createAgentRelayMcpServer({ agentTokenFile: file, agentName: 'TokenWorker' });
+    const server = mocks.serverInstances[0];
+    const send = () => server.tools.get('send_dm')?.handler({ to: 'chief', text: 'hello' });
+
+    await send();
+    expect(mocks.relayInstances.some((instance) => instance.config.apiKey === 'at_live_file_one')).toBe(
+      true
+    );
+
+    write('at_live_file_two');
+    const before = mocks.relayInstances.length;
+    await send();
+    const used = mocks.relayInstances.slice(before).map((instance) => instance.config.apiKey);
+    expect(used).toContain('at_live_file_two');
+    expect(used).not.toContain('at_live_file_one');
+  });
+});

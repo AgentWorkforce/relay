@@ -679,6 +679,17 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         .state
         .parent()
         .map(|parent| parent.join("owned-cleanups.json"));
+    if run_token_mode {
+        // Broker-owned 0700 directory of per-worker agent token files; the
+        // broker rotates each worker's short-lived token into its file.
+        let dir = paths
+            .state
+            .parent()
+            .expect("state path should always have a parent")
+            .join("agent-tokens");
+        crate::relaycast::agent_token_rotation::ensure_agent_token_dir(&dir)?;
+        workers.agent_token_dir = Some(dir);
+    }
 
     // Load crash insights from previous session
     let crash_insights_path = paths.state.parent().unwrap().join("crash-insights.json");

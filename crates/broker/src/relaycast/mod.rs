@@ -1,3 +1,4 @@
+pub(crate) mod agent_token_rotation;
 pub(crate) mod auth;
 pub(crate) mod bridge;
 pub(crate) mod dm_participants;

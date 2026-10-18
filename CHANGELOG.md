@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Broker run-token mode: with `RELAY_RUN_TOKEN_FILE` set and no `rk_` workspace key, the broker registers itself and its workers, mints its node, and releases workers with a short-lived Relaycast run token (`rt_live_`) that it reads from the file on each request. It never creates a workspace in this mode, and workers get only their own agent token.
+- In run-token mode the broker rotates its own and every worker's 15-minute Relaycast agent token before it expires. Workers get a `RELAY_AGENT_TOKEN_FILE` that the broker replaces atomically on each rotation, and the Agent Relay MCP server and CLI read that file on every request, with no workspace key required.
 - `HarnessDriverClient.spawn({ runTokenFile })` (or `RELAY_RUN_TOKEN_FILE`) starts the broker in run-token mode and passes it the file path only, with no workspace-key variables.
 
 ### Security

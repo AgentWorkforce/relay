@@ -62,6 +62,9 @@ pub struct AuthSession {
     pub credentials: CredentialCache,
     pub token: String,
     pub created_new: bool,
+    /// `token_expires_at` of `token` when the server reported one (#550).
+    /// Run-token mode rotates the broker's own token before this deadline.
+    pub token_expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -636,6 +639,7 @@ impl AuthClient {
             credentials: creds,
             token,
             created_new: false,
+            token_expires_at: None,
         })
     }
 
@@ -848,7 +852,7 @@ impl AuthClient {
             preferred_name = %name,
             "attempting registration with run token (run-token mode)"
         );
-        let registration = register_agent_with_run_token(
+        let (registration, token_expires_at) = register_agent_with_run_token(
             self.base_url.as_deref(),
             source,
             &name,
@@ -864,7 +868,8 @@ impl AuthClient {
             .filter(|value| !value.is_empty());
         // `api_key` stays empty: run-token mode holds no workspace key, and an
         // empty key keeps every legacy key-injection path inert.
-        let session = self.finish_session(String::new(), workspace_id_hint, registration)?;
+        let mut session = self.finish_session(String::new(), workspace_id_hint, registration)?;
+        session.token_expires_at = token_expires_at;
         Ok(AuthSessionSet {
             default_workspace_id: Some(session.credentials.workspace_id.clone()),
             memberships: vec![session],
@@ -956,6 +961,7 @@ impl AuthClient {
             credentials: creds,
             token,
             created_new,
+            token_expires_at: None,
         })
     }
 
@@ -1958,7 +1964,19 @@ async fn register_agent_with_run_token(
     identity_key: Option<&str>,
     waiter_id: Option<&str>,
     startup_deadline: Option<tokio::time::Instant>,
-) -> Result<(String, String, String, Option<String>, bool)> {
+) -> Result<(
+    (String, String, String, Option<String>, bool),
+    Option<DateTime<Utc>>,
+)> {
+    /// The #550 expiry rides alongside the SDK's registration shape.
+    #[derive(Deserialize)]
+    struct CreatedWithExpiry {
+        #[serde(flatten)]
+        agent: relaycast::CreateAgentResponse,
+        #[serde(default)]
+        token_expires_at: Option<String>,
+    }
+
     let metadata = identity_key.map(|key| {
         let mut map = serde_json::Map::new();
         map.insert(
@@ -1988,7 +2006,7 @@ async fn register_agent_with_run_token(
                     "registering the broker agent with the run token",
                     startup_deadline,
                     || {
-                        http.post::<relaycast::CreateAgentResponse>(
+                        http.post::<CreatedWithExpiry>(
                             "/v1/agents",
                             Some(request),
                             Some(relaycast::RequestOptions {
@@ -2007,16 +2025,19 @@ async fn register_agent_with_run_token(
         .await;
 
     match result {
-        Ok(response) if response.token.trim().is_empty() => {
+        Ok(response) if response.agent.token.trim().is_empty() => {
             anyhow::bail!("run-token registration for '{name}' returned a blank agent token")
         }
-        Ok(response) => Ok((
-            response.id,
-            response.name,
-            response.token,
-            response.workspace_id,
-            true,
-        )),
+        Ok(response) => {
+            let expires_at = super::agent_token_rotation::parse_token_expiry(
+                response.token_expires_at.as_deref(),
+            );
+            let agent = response.agent;
+            Ok((
+                (agent.id, agent.name, agent.token, agent.workspace_id, true),
+                expires_at,
+            ))
+        }
         Err(super::run_token::RunTokenCallError::Read(error)) => {
             Err(error).context("run-token mode could not read the run token file")
         }
@@ -5769,7 +5790,7 @@ mod tests {
                 .path("/v1/agents")
                 .header("authorization", "Bearer rt_live_startup");
             then.status(201).header("content-type", "application/json").body(
-                r#"{"ok":true,"data":{"id":"a_rt","workspace_id":"ws_run","run_id":"run_1","name":"lead","token":"at_live_rt","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#,
+                r#"{"ok":true,"data":{"id":"a_rt","workspace_id":"ws_run","run_id":"run_1","name":"lead","token":"at_live_rt","token_expires_at":"2026-10-17T12:15:00.000Z","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#,
             );
         });
 
@@ -5782,6 +5803,11 @@ mod tests {
         let session = sessions.default_session().unwrap();
         assert_eq!(session.token, "at_live_rt");
         assert_eq!(session.credentials.workspace_id, "ws_run");
+        // The broker rotates its own token against this deadline.
+        assert_eq!(
+            session.token_expires_at.map(|at| at.to_rfc3339()),
+            Some("2026-10-17T12:15:00+00:00".to_string())
+        );
         assert!(
             session.credentials.api_key.is_empty(),
             "run-token mode must hold no workspace key"

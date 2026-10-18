@@ -22,6 +22,7 @@ pub const INHERITED_RELAY_CREDENTIAL_ENV_KEYS: &[&str] = &[
     "RELAY_AGENT_IDENTITY_KEY",
     // Whoever launched the broker; each worker gets its own.
     "RELAY_AGENT_TOKEN",
+    "RELAY_AGENT_TOKEN_FILE",
     "AGENT_RELAY_RESULT_TOKEN",
     // Workspace credentials. Re-added from the broker's explicit worker
     // environment when the broker delegates them; never taken from ambient

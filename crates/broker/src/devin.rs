@@ -164,11 +164,19 @@ pub(crate) async fn prepare_worker_config(cli: &str) -> Result<Option<tempfile::
         }
     }
     let env = |key| std::env::var(key).ok();
+    // Run-token mode hands the worker a rotated token file, not a token.
+    let agent_credential = env("RELAY_AGENT_TOKEN").or_else(|| {
+        env(crate::relaycast::agent_token_rotation::AGENT_TOKEN_FILE_ENV).map(|path| {
+            crate::relaycast::agent_token_rotation::agent_token_file_ref(std::path::Path::new(
+                &path,
+            ))
+        })
+    });
     let config = crate::snippets::agent_relay_mcp_config_json_with_result(
         env("RELAY_API_KEY").as_deref(),
         env("RELAY_BASE_URL").as_deref(),
         env("RELAY_AGENT_NAME").as_deref(),
-        env("RELAY_AGENT_TOKEN").as_deref(),
+        agent_credential.as_deref(),
         env("RELAY_WORKSPACES_JSON").as_deref(),
         env("RELAY_DEFAULT_WORKSPACE").as_deref(),
         None,
