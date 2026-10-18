@@ -22,7 +22,7 @@ describe('PTY native inbox receipts', () => {
     vi.stubEnv('RELAY_AGENT_NAME', 'recipient');
     await writeFile(
       path.join(directory, `${key}.pending`),
-      JSON.stringify({ messageId, nonce: '11111111-1111-4111-8111-111111111111' })
+      JSON.stringify({ messageId, agentName: 'recipient', nonce: '11111111-1111-4111-8111-111111111111' })
     );
   });
   afterEach(async () => {
@@ -44,10 +44,19 @@ describe('PTY native inbox receipts', () => {
     ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('rejects an inherited receipt directory belonging to another worker', async () => {
+    vi.stubEnv('RELAY_AGENT_NAME', 'child-worker');
+    expect(await acknowledgePtyMessageRead(messageId)).toBe(false);
+  });
+
   it('ignores receipts without a matching pending message', async () => {
     await writeFile(
       path.join(directory, `${key}.pending`),
-      JSON.stringify({ messageId: 'different', nonce: '11111111-1111-4111-8111-111111111111' })
+      JSON.stringify({
+        messageId: 'different',
+        agentName: 'recipient',
+        nonce: '11111111-1111-4111-8111-111111111111',
+      })
     );
     await acknowledgePtyMessageRead(messageId);
     await expect(

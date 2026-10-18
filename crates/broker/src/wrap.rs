@@ -2325,7 +2325,7 @@ pub(crate) async fn run_wrap(
                         pending.workspace_alias.as_deref(),
                     );
                     let bytes = crate::injection_wire::injection_bytes(crate::injection_wire::injection_wire(&resolved_cli, &pty), &injection);
-                    let native_ack = native_acks.register(&pending.event_id)?;
+                    let native_ack = native_acks.register(&pending.event_id, &default_workspace.self_name)?;
                     let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
                         Ok((ack_rx, output_boundary)) => {

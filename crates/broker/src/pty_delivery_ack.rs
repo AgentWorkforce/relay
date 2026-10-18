@@ -71,14 +71,14 @@ impl NativeAckInbox {
         Ok(())
     }
 
-    pub(crate) fn register(&self, event_id: &str) -> io::Result<NativeAck> {
+    pub(crate) fn register(&self, event_id: &str, agent_name: &str) -> io::Result<NativeAck> {
         let key = format!("{:x}", Sha256::digest(event_id.as_bytes()));
         let pending = self.0.path().join(format!("{key}.pending"));
         let nonce = uuid::Uuid::new_v4().to_string();
         let receipt = self.0.path().join(format!("{key}.{nonce}.read"));
         fs::write(
             &pending,
-            json!({"messageId": event_id, "nonce": nonce}).to_string(),
+            json!({"messageId": event_id, "agentName": agent_name, "nonce": nonce}).to_string(),
         )?;
         Ok(NativeAck {
             pending,
@@ -116,7 +116,7 @@ mod tests {
     fn native_receipt_requires_this_delivery_nonce_and_is_cleaned_up() {
         // Construct directly so parallel tests do not mutate process environment.
         let inbox = NativeAckInbox(tempfile::tempdir().unwrap());
-        let ack = inbox.register("msg/../one").unwrap();
+        let ack = inbox.register("msg/../one", "worker").unwrap();
         assert!(!ack.confirmed());
         fs::write(&ack.receipt, "old-or-wrong-nonce").unwrap();
         assert!(!ack.confirmed());
@@ -127,7 +127,7 @@ mod tests {
         drop(ack);
         assert!(!pending.exists());
         assert!(!receipt.exists());
-        assert!(!inbox.register("msg/../one").unwrap().confirmed());
+        assert!(!inbox.register("msg/../one", "worker").unwrap().confirmed());
     }
 
     #[test]

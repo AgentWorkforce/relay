@@ -2429,7 +2429,7 @@ pub(crate) async fn run_pty_worker(cmd: PtyCommand) -> Result<()> {
                         pty_auto.auto_suggestion_visible = false;
                         let include_mcp_reminder = !suppress_multiline_mcp_reminder
                             && mcp_reminder_throttle.should_include(Instant::now());
-                        inj.native_ack = Some(native_acks.register(&inj.pending.delivery.event_id)?);
+                        inj.native_ack = Some(native_acks.register(&inj.pending.delivery.event_id, &worker_name)?);
                         let injection = format_injection_for_worker_with_workspace(
                             &inj.pending.delivery.from,
                             &inj.pending.delivery.event_id,

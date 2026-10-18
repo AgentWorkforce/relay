@@ -10,7 +10,12 @@ export async function acknowledgePtyMessageRead(messageId: string, as?: string):
   const temporary = path.join(directory, `${key}.${randomUUID()}.tmp`);
   try {
     const pending = JSON.parse(await readFile(path.join(directory, `${key}.pending`), 'utf8'));
-    if (pending.messageId !== messageId || !/^[a-f0-9-]{36}$/.test(pending.nonce)) return false;
+    if (
+      pending.messageId !== messageId ||
+      pending.agentName !== process.env.RELAY_AGENT_NAME ||
+      !/^[a-f0-9-]{36}$/.test(pending.nonce)
+    )
+      return false;
     await writeFile(temporary, pending.nonce, { flag: 'wx', mode: 0o600 });
     await rename(temporary, path.join(directory, `${key}.${pending.nonce}.read`));
     return true;
