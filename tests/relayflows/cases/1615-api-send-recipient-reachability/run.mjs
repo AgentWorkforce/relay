@@ -48,23 +48,15 @@ const positiveNonce = `R${expectedSha.slice(0, 8)}${arm[0]}`;
 const negativeNonce = `U${expectedSha.slice(0, 8)}${arm[0]}`;
 const selfNonce = `S${expectedSha.slice(0, 8)}${arm[0]}`;
 const fakeClaudeSource = String.raw`#!/usr/bin/env node
-const fs = require('node:fs');
-const path = require('node:path');
 process.stdin.setRawMode?.(true);
 process.stdin.resume();
 process.stdout.write('RELAYFLOW_RECIPIENT_READY\r\n❯');
-let submitted = '';
-// Confirm consumption natively; no echo or prompt repaint is needed.
+// Like the real composer, redraw the prompt after Enter submits a line, so
+// the broker's pre-write composer check can prove readiness for the next
+// message instead of seeing only the previous message's echo at the cursor.
 process.stdin.on('data', (chunk) => {
-  submitted = (submitted + chunk.toString()).slice(-65536);
-  const directory = process.env.RELAY_PTY_ACK_DIR;
-  if (directory && chunk.includes(13)) {
-    for (const name of fs.readdirSync(directory).filter((name) => name.endsWith('.pending'))) {
-      const receipt = JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8'));
-      if (submitted.includes(receipt.messageId)) fs.writeFileSync(path.join(directory, name.slice(0, -8) + '.' + receipt.nonce + '.read'), receipt.nonce);
-    }
-    submitted = '';
-  }
+  process.stdout.write(chunk);
+  if (chunk.includes(13)) process.stdout.write('\r\n❯');
 });
 `;
 
