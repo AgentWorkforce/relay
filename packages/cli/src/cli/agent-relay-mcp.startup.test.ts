@@ -2510,9 +2510,7 @@ describe('run-token mode agent token file', () => {
     const send = () => server.tools.get('send_dm')?.handler({ to: 'chief', text: 'hello' });
 
     await send();
-    expect(mocks.relayInstances.some((instance) => instance.config.apiKey === 'at_live_file_one')).toBe(
-      true
-    );
+    expect(mocks.relayInstances.some((instance) => instance.config.apiKey === 'at_live_file_one')).toBe(true);
 
     write('at_live_file_two');
     const before = mocks.relayInstances.length;
