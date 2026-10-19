@@ -35,6 +35,30 @@ function standaloneInstallDir(deps: CoreDependencies): string | undefined {
   return path.dirname(path.dirname(runningBinary));
 }
 
+/** Preserve a custom launcher directory only when PATH selects this installation. */
+function standaloneLauncherDir(deps: CoreDependencies, installDir: string): string | undefined {
+  if (deps.env.PATH === undefined) return undefined;
+  for (const directory of deps.env.PATH.split(path.delimiter)) {
+    const launcher = path.resolve(directory || '.', 'agent-relay');
+    try {
+      deps.fs.accessSync(launcher, 1);
+    } catch {
+      continue;
+    }
+    // Inspect only the first executable entry; another installation must stay untouched.
+    try {
+      const target = deps.fs.readFileSync(launcher, 'utf8').match(/^exec "([^"\r\n]+)" "\$@"$/m)?.[1];
+      if (!target || !path.isAbsolute(target)) return undefined;
+      const current = path.join(installDir, 'bin', 'agent-relay');
+      const resolve = (value: string) => deps.fs.realpathSync?.(value) ?? path.resolve(value);
+      return resolve(target) === resolve(current) ? path.dirname(launcher) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
 /** Quote one environment value for the POSIX installer shell. */
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -202,8 +226,10 @@ export async function runUpdateCommand(options: { check?: boolean }, deps: CoreD
   deps.log('Installing update...');
   const toVersion = info.latestVersion ?? 'latest';
   const installDir = standaloneInstallDir(deps);
+  const launcherDir = installDir ? standaloneLauncherDir(deps, installDir) : undefined;
+  const launcherEnv = launcherDir ? ` AGENT_RELAY_BIN_DIR=${shellQuote(launcherDir)}` : '';
   const installCommand = installDir
-    ? `AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 AGENT_RELAY_INSTALL_DIR=${shellQuote(installDir)} AGENT_RELAY_VERSION=${shellQuote(toVersion)} bash -c 'installer=$(curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh) && bash -c "$installer"'`
+    ? `AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 AGENT_RELAY_INSTALL_DIR=${shellQuote(installDir)}${launcherEnv} AGENT_RELAY_VERSION=${shellQuote(toVersion)} bash -c 'installer=$(curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh) && bash -c "$installer"'`
     : 'npm install -g agent-relay@latest';
   try {
     const { stdout, stderr } = await deps.execCommand(installCommand);

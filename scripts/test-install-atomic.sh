@@ -516,6 +516,20 @@ if [ "$EUID" -eq 0 ]; then
     write_executable_file "$D/link/launcher" <<< '#!/bin/bash'; rc=$?
     check "privileged launcher: refuses write through untrusted symlink" test "$rc" -ne 0
     check "privileged launcher: target remains untouched" test ! -e "$D/target/launcher"
+
+    D="$(newdir)"
+    mkdir -p "$D/real/parent" "$D/final" "$D/destination"
+    ln -s real/parent "$D/alias"
+    ln -s ../destination "$D/real/parent/link"
+    ln -s ../final "$D/real/destination"
+    # Logical `cd` would inspect this decoy instead of the kernel's real path.
+    chown 65534 "$D/destination"
+    check_privileged_directory "$D/alias/link"; rc=$?
+    check "privileged launcher: resolves relative hops from the physical parent" test "$rc" -eq 0
+    chown 0 "$D/destination"
+    chown -h 65534 "$D/real/destination"
+    check_privileged_directory "$D/alias/link"; rc=$?
+    check "privileged launcher: rejects an untrusted hop on the physical chain" test "$rc" -ne 0
 fi
 
 e2e_setup ok yes

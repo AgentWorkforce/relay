@@ -111,6 +111,15 @@ jobs:
           bash scripts/test-install-atomic.sh
           echo "✓ Atomic install tests passed"
 
+      - name: Run privileged atomic install tests in isolation
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 'with-node'
+        run: |
+          docker run --rm --network none --cap-drop ALL --cap-add CHOWN \
+            --security-opt no-new-privileges \
+            --mount type=bind,source="$PWD",target=/workspace,readonly \
+            --tmpfs /tmp:rw,exec,mode=1777 --workdir /workspace \
+            ubuntu:24.04 bash scripts/test-install-atomic.sh
+
       - name: Test install script with Node.js
         if: matrix.node == 'with-node'
         env:
