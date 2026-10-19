@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 
 const CASE_ID = 'workflow-node-file-surfaces';
 const COMMAND_TIMEOUT_MS = 12 * 60 * 1000;
+const LOCAL_ROUTE = { ts: 'relayflows', yaml: 'relayflows', js: 'node', sh: 'shell' };
 
 const targetDir = requiredDirectory('RELAY_PR_PROOF_TARGET_DIR');
 const harnessDir = requiredDirectory('RELAY_PR_PROOF_HARNESS_DIR');
@@ -274,8 +275,6 @@ try {
   await rm(configPath, { force: true });
   await rm(observationPath, { force: true });
 }
-
-const LOCAL_ROUTE = { ts: 'relayflows', yaml: 'relayflows', js: 'node', sh: 'shell' };
 
 function supportedLocal(result, fileType) {
   return (
