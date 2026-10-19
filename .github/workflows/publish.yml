@@ -12,7 +12,6 @@ on:
           - main
           - cli-prerelease
           - sdk
-          - sdk-py
           - brand
         default: 'all'
       version:
@@ -82,7 +81,7 @@ jobs:
     # version through health/session/telemetry payloads.
     needs: build
     runs-on: ${{ matrix.os }}
-    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk' || github.event.inputs.package == 'sdk-py'
+    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk'
     strategy:
       fail-fast: false
       matrix:
@@ -187,8 +186,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path release-binaries | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_file }}" "release-binaries/${{ matrix.binary_name }}"
 
-      # Ad-hoc sign macOS binaries at build time so the Python SDK wheel
-      # doesn't have to invoke codesign at install time.
+      # Ad-hoc sign macOS binaries at build time.
       - name: Ad-hoc sign macOS broker
         if: runner.os == 'macOS'
         run: codesign --force --sign - release-binaries/${{ matrix.binary_name }}
@@ -392,10 +390,6 @@ jobs:
             echo "This is a STABLE version"
           fi
 
-          # Sync Python SDK version in pyproject.toml
-          sed -i "s/^version = .*/version = \"$NEW_VERSION\"/" packages/sdk-py/pyproject.toml
-          echo "Python SDK version set to $NEW_VERSION"
-
           # Sync all package versions and internal dependencies using node script
           # (avoids npm version which validates dependencies against registry)
           node -e "
@@ -518,7 +512,6 @@ jobs:
             package.json
             package-lock.json
             packages/*/package.json
-            packages/sdk-py/pyproject.toml
             packages/*/dist/
             dist/
           retention-days: 1
@@ -1338,129 +1331,6 @@ jobs:
         working-directory: packages/sdk
         run: npm publish --access public --provenance --tag "$NPM_TAG" --ignore-scripts
 
-  # Publish Python SDK to PyPI as per-platform wheels with the broker binary
-  # embedded. One wheel per (broker_artifact, plat_tag) — see issue #769.
-  publish-sdk-py:
-    name: Publish Python SDK wheel (${{ matrix.plat_tag }})
-    needs: [build, build-broker]
-    runs-on: ubuntu-latest
-    if: github.event.inputs.package == 'all' || github.event.inputs.package == 'sdk-py'
-    environment:
-      name: pypi
-      url: https://pypi.org/project/agent-relay-sdk/
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - binary_name: agent-relay-broker-darwin-arm64
-            plat_tag: macosx_11_0_arm64
-          - binary_name: agent-relay-broker-darwin-x64
-            plat_tag: macosx_10_12_x86_64
-          - binary_name: agent-relay-broker-linux-x64
-            plat_tag: manylinux_2_17_x86_64.manylinux2014_x86_64
-          - binary_name: agent-relay-broker-linux-arm64
-            plat_tag: manylinux_2_17_aarch64.manylinux2014_aarch64
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-output
-          path: .
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install build tools
-        run: pip install hatchling build wheel
-
-      - name: Download broker binary
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ matrix.binary_name }}
-          path: /tmp/broker
-
-      - name: Stage broker binary into wheel tree
-        run: |
-          mkdir -p packages/sdk-py/src/agent_relay/bin
-          cp /tmp/broker/${{ matrix.binary_name }} packages/sdk-py/src/agent_relay/bin/agent-relay-broker
-          chmod +x packages/sdk-py/src/agent_relay/bin/agent-relay-broker
-
-      - name: Build wheel
-        working-directory: packages/sdk-py
-        run: python -m build --wheel
-
-      # `python -m build` produces a `py3-none-any` wheel. Retag it with the
-      # actual platform we just embedded a binary for; --remove drops the old
-      # any-platform wheel atomically.
-      - name: Retag wheel to ${{ matrix.plat_tag }}
-        working-directory: packages/sdk-py
-        run: |
-          python -m wheel tags --platform-tag=${{ matrix.plat_tag }} --remove dist/*.whl
-          ls -lh dist/
-
-      - name: Dry run summary
-        if: github.event.inputs.dry_run == 'true'
-        working-directory: packages/sdk-py
-        run: |
-          echo "Dry run - would publish agent-relay-sdk==${{ needs.build.outputs.new_version }} (${{ matrix.plat_tag }}) to PyPI"
-          ls -lh dist/
-
-      - name: Publish to PyPI (attempt 1)
-        id: pypi_publish_1
-        if: github.event.inputs.dry_run != 'true'
-        continue-on-error: true
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: packages/sdk-py/dist/
-          skip-existing: true
-
-      - name: Clean up stale attestations before retry
-        if: github.event.inputs.dry_run != 'true' && steps.pypi_publish_1.outcome == 'failure'
-        run: |
-          # pypa/gh-action-pypi-publish writes <wheel>.publish.attestation
-          # next to each wheel on first attempt. If upload then fails, the
-          # attestation file is left behind and the next attempt aborts with
-          # "already have publish attestations". Clear them so we can retry.
-          rm -f packages/sdk-py/dist/*.publish.attestation
-          sleep 60
-
-      - name: Publish to PyPI (attempt 2)
-        id: pypi_publish_2
-        if: github.event.inputs.dry_run != 'true' && steps.pypi_publish_1.outcome == 'failure'
-        continue-on-error: true
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: packages/sdk-py/dist/
-          skip-existing: true
-
-      - name: Clean up stale attestations before final retry
-        if: github.event.inputs.dry_run != 'true' && steps.pypi_publish_2.outcome == 'failure'
-        run: |
-          rm -f packages/sdk-py/dist/*.publish.attestation
-          sleep 120
-
-      - name: Publish to PyPI (attempt 3)
-        id: pypi_publish_3
-        if: github.event.inputs.dry_run != 'true' && steps.pypi_publish_2.outcome == 'failure'
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          packages-dir: packages/sdk-py/dist/
-          skip-existing: true
-
-      - name: Fail if all PyPI publish attempts failed
-        if: >-
-          github.event.inputs.dry_run != 'true' &&
-          steps.pypi_publish_1.outcome == 'failure' &&
-          steps.pypi_publish_2.outcome == 'failure' &&
-          steps.pypi_publish_3.outcome == 'failure'
-        run: exit 1
-
   # Verify standalone binaries on Linux
   verify-standalone-linux:
     name: Verify Standalone (Linux)
@@ -2099,7 +1969,7 @@ jobs:
 
           # Stage version-bumped files (must be separate from optional paths
           # because git add fails entirely if any path doesn't exist)
-          git add package.json package-lock.json packages/*/package.json packages/sdk-py/pyproject.toml CHANGELOG.md
+          git add package.json package-lock.json packages/*/package.json CHANGELOG.md
           # Stage optional paths that may not exist (trajectories already committed in prior step)
           git add .trajectories/ 2>/dev/null || true
           TAG_TARGET=""
@@ -2263,7 +2133,6 @@ jobs:
         publish-packages,
         publish-harnesses,
         publish-brand-only,
-        publish-sdk-py,
         publish-main,
         verify-publish,
         verify-publish-sdk,
@@ -2306,7 +2175,6 @@ jobs:
           echo "| Publish Packages | ${{ needs.publish-packages.result == 'success' && '✅' || (needs.publish-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Harnesses | ${{ needs.publish-harnesses.result == 'success' && '✅' || (needs.publish-harnesses.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-harnesses.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Brand | ${{ needs.publish-brand-only.result == 'success' && '✅' || (needs.publish-brand-only.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-brand-only.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Publish Python SDK | ${{ needs.publish-sdk-py.result == 'success' && '✅' || (needs.publish-sdk-py.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-sdk-py.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Main | ${{ needs.publish-main.result == 'success' && '✅' || (needs.publish-main.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-main.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Post-Publish Verify | ${{ needs.verify-publish.result == 'success' && '✅' || (needs.verify-publish.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-publish.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Post-Publish Verify SDK (cross-platform) | ${{ needs.verify-publish-sdk.result == 'success' && '✅' || (needs.verify-publish-sdk.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-publish-sdk.result }} |" >> $GITHUB_STEP_SUMMARY

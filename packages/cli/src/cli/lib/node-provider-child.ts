@@ -11,8 +11,7 @@ import type { CoreDependencies, SpawnedProcess } from '../commands/core.js';
 import { describeError } from './describe-error.js';
 
 /**
- * Credentials handed to an out-of-process node provider, mirroring the env
- * contract the Python provider already uses.
+ * Credentials handed to an out-of-process node provider.
  */
 export type NodeProviderCredentials = {
   nodeToken: string;
@@ -52,7 +51,7 @@ export function packageRootFromEntry(entry: string, packageName: string): string
  *
  * `@agent-relay/fleet` and `@agent-relay/sdk` are resolved from the *config's*
  * directory — the only copies on disk, since the compiled binary's own are
- * sealed inside it — mirroring how the Python provider uses the user's own SDK.
+ * sealed inside it. The child uses the user's installed SDK.
  * That makes the user's fleet version part of the contract: `serveNode`'s
  * connection shape changed in fleet 10 (`{nodeToken, nodeId}`; fleet 9 took
  * `{url, apiKey}`), so an older fleet is rejected up front rather than left to
@@ -337,7 +336,7 @@ export function descriptorCapacitySource(descriptor: NodeDefinitionDescriptor): 
 const JS_NODE_DEFINITION_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs']);
 const TS_NODE_DEFINITION_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts']);
 
-/** Whether `configPath` is a JS/TS node definition (as opposed to `agent-relay.py`). */
+/** Whether `configPath` is a JS/TS node definition. */
 export function isJsNodeDefinition(configPath: string): boolean {
   return JS_NODE_DEFINITION_EXTENSIONS.has(path.extname(configPath).toLowerCase());
 }

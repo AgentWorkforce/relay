@@ -178,7 +178,7 @@ export type WorkspaceSecretRecord = {
   [key: string]: unknown;
 };
 
-export type WorkflowFileType = 'yaml' | 'ts' | 'py';
+export type WorkflowFileType = 'yaml' | 'ts';
 export type RelayflowVersion = 'v1' | 'v2';
 
 export type PathSubmission = {
