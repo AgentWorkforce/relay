@@ -117,16 +117,38 @@ async function runLocal(cwd, argv, runId) {
   }
 
   let fileType = null;
+  let route = null;
   try {
     const raw = await readFile(
       path.join(cwd, '.agentworkforce', 'relay', 'local-runs', runId, 'run.json'),
       'utf8'
     );
-    fileType = JSON.parse(raw).fileType ?? null;
+    const record = JSON.parse(raw);
+    fileType = record.fileType ?? null;
+    route = runnerRoute(record, path.resolve(cwd, argv[1]));
   } catch {
     fileType = null;
+    route = null;
   }
-  return { error, spawned: spawned.length === 1, fileType };
+  return { error, spawned: spawned.length === 1, fileType, route };
+}
+
+function runnerRoute(record, workflowPath) {
+  if (!record || typeof record.command !== 'string' || !Array.isArray(record.args)) return null;
+  const command = record.command;
+  const args = record.args;
+  if (
+    command === process.execPath &&
+    args.length === 3 &&
+    args[0] === '/proof/relayflows-cli.mjs' &&
+    args[1] === 'run' &&
+    args[2] === workflowPath
+  ) {
+    return 'relayflows';
+  }
+  if (command === process.execPath && args.length === 1 && args[0] === workflowPath) return 'node';
+  if (command === '/bin/sh' && args.length === 1 && args[0] === workflowPath) return 'shell';
+  return 'other';
 }
 
 test('observe workflow and node file surfaces', async () => {
@@ -253,8 +275,15 @@ try {
   await rm(observationPath, { force: true });
 }
 
+const LOCAL_ROUTE = { ts: 'relayflows', yaml: 'relayflows', js: 'node', sh: 'shell' };
+
 function supportedLocal(result, fileType) {
-  return result?.error === null && result?.spawned === true && result?.fileType === fileType;
+  return (
+    result?.error === null &&
+    result?.spawned === true &&
+    result?.fileType === fileType &&
+    result?.route === LOCAL_ROUTE[fileType]
+  );
 }
 
 function messageIncludes(result, text) {
@@ -287,9 +316,11 @@ function classifyObservation(observation) {
     local.inferPy?.fileType === 'py' &&
     local.inferPy?.spawned === true &&
     local.inferPy?.error === null &&
+    local.inferPy?.route === 'relayflows' &&
     local.explicitPy?.fileType === 'py' &&
     local.explicitPy?.spawned === true &&
     local.explicitPy?.error === null &&
+    local.explicitPy?.route === 'relayflows' &&
     node.python === 'agent-relay.py';
 
   const headObserved =
@@ -299,9 +330,11 @@ function classifyObservation(observation) {
     messageIncludes(worker.py, 'Resolved worker workflow payload is invalid.') &&
     local.inferPy?.fileType === null &&
     local.inferPy?.spawned === false &&
+    local.inferPy?.route === null &&
     messageIncludes(local.inferPy, 'Could not infer workflow type') &&
     local.explicitPy?.fileType === null &&
     local.explicitPy?.spawned === false &&
+    local.explicitPy?.route === null &&
     messageIncludes(local.explicitPy, 'Expected workflow type to be one of: ts, js, sh, yaml') &&
     node.python === null;
 
@@ -310,7 +343,7 @@ function classifyObservation(observation) {
       outcome: 'absent',
       signature: 'py_workflow_and_node_surface_present',
       details:
-        'Cloud inference, worker payloads, and local workflow runs accept a .py workflow, and node discovery selects agent-relay.py. YAML, TypeScript, JavaScript, and shell local runs still start.',
+        'Cloud inference, worker payloads, and local workflow runs accept a .py workflow through Relayflows, and node discovery selects agent-relay.py. YAML and TypeScript local runs start through Relayflows, JavaScript runs on Node, and shell runs on /bin/sh.',
     };
   }
   if (headObserved) {
@@ -318,7 +351,7 @@ function classifyObservation(observation) {
       outcome: 'fixed',
       signature: 'yaml_ts_js_sh_workflow_surface',
       details:
-        'Cloud inference and worker payloads accept YAML and TypeScript. Local runs accept YAML, TypeScript, JavaScript, and shell. A .py path is not a workflow or node file, and node discovery selects agent-relay.ts.',
+        'Cloud inference and worker payloads accept YAML and TypeScript. YAML and TypeScript local runs start through Relayflows, JavaScript runs on Node, and shell runs on /bin/sh. A .py path is not a workflow or node file, and node discovery selects agent-relay.ts.',
     };
   }
   throw new Error(`Unexpected workflow surface observation: ${JSON.stringify(observation)}`);
