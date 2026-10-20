@@ -947,7 +947,7 @@ describe('startFleetNodeAttachProxy view target lifecycle', () => {
     expect(requests).toEqual([
       {
         url: 'https://cast.agentrelay.com/v1/nodes/node-expired/terminal/sessions',
-        body: { agent: 'view-expired', mode: 'view' },
+        body: { agent: 'view-expired', mode: 'view', recent_spawn: true },
       },
       {
         url: 'https://cast.agentrelay.com/v1/nodes/node-expired/terminal/sessions',
