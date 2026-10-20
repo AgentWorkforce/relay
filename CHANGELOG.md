@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- Broker PTY delivery to Claude no longer stalls forever behind a failed draft: the `❯` + no-break-space prompt is recognised, blank line-break residue left in the composer is erased, and deliveries re-sent to a `blocked_on_send` worker now count against the retry budget and dead-letter instead of being retried indefinitely.
 
 ## [14.0.0] - 2026-10-13
 
