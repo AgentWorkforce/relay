@@ -377,10 +377,7 @@ export function parseWorkflowPaths(content: string, fileType: WorkflowFileType):
   if (fileType === 'yaml') {
     return parseYamlWorkflowPaths(content);
   }
-  if (fileType === 'ts') {
-    return parseTypeScriptWorkflowPaths(content);
-  }
-  return [];
+  return parseTypeScriptWorkflowPaths(content);
 }
 
 export function inferWorkflowFileType(filePath: string): WorkflowFileType | null {
@@ -393,8 +390,6 @@ export function inferWorkflowFileType(filePath: string): WorkflowFileType | null
     case '.mts':
     case '.cts':
       return 'ts';
-    case '.py':
-      return 'py';
     default:
       return null;
   }

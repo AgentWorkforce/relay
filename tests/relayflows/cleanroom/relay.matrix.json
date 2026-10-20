@@ -646,12 +646,11 @@
     },
     {
       "id": "polyglot-plugins",
-      "title": "Python/Swift SDK parity and provider plugins",
+      "title": "Swift SDK and provider plugins",
       "requiredArtifacts": [],
       "routingPriority": 50,
       "issueNumbers": [1509, 1564],
       "featureCategories": [
-        "python-sdk",
         "swift-sdk",
         "skills",
         "opencode-plugin",
@@ -659,7 +658,6 @@
         "gemini-relay-extension"
       ],
       "issueMatch": [
-        "Python",
         "Swift",
         "plugin",
         "skill",
@@ -673,25 +671,6 @@
         "Grok"
       ],
       "setup": [
-        {
-          "id": "create-python-venv",
-          "command": ["python3", "-m", "venv", "{{laneRoot}}/python-venv"],
-          "requiredCommands": ["python3"],
-          "timeoutSeconds": 120
-        },
-        {
-          "id": "install-python-sdk-dev",
-          "command": [
-            "{{laneRoot}}/python-venv/bin/python",
-            "-m",
-            "pip",
-            "install",
-            "--disable-pip-version-check",
-            "-e",
-            "packages/sdk-py[dev]"
-          ],
-          "timeoutSeconds": 600
-        },
         {
           "id": "install-opencode-plugin",
           "command": [
@@ -707,15 +686,6 @@
         }
       ],
       "scenarios": [
-        {
-          "id": "python-sdk-tests",
-          "title": "Python SDK orchestration and broker lifecycle contracts",
-          "command": ["{{laneRoot}}/python-venv/bin/python", "-m", "pytest", "packages/sdk-py/tests", "-q"],
-          "requiredCommands": ["python3"],
-          "timeoutSeconds": 900,
-          "evidence": "contract",
-          "coversCategories": ["python-sdk"]
-        },
         {
           "id": "swift-sdk-tests",
           "title": "Swift hosted and broker SDK contracts",
@@ -754,11 +724,11 @@
         },
         {
           "id": "native-sdk-ci-wiring",
-          "title": "Python and Swift SDK suites are mandatory in pull-request CI",
+          "title": "Swift SDK suite is mandatory in pull-request CI",
           "kind": "coverage-gap",
-          "reason": "The clean-room lane runs native suites directly but does not prove that repository CI cannot omit them.",
+          "reason": "The clean-room lane runs the native suite directly but does not prove that repository CI cannot omit it.",
           "evidence": "integration",
-          "coversCategories": ["python-sdk", "swift-sdk"],
+          "coversCategories": ["swift-sdk"],
           "issues": [1509]
         }
       ]

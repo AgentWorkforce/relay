@@ -634,7 +634,7 @@ of polling `gh`. `--to self` cannot be combined with `--spawn`.
 
 `local` remains as a deprecated hidden alias of `node` (it prints a one-time warning).
 
-Node workflow runs use Relayflows for YAML, TypeScript, and Python workflow files.
+Node workflow runs use Relayflows for YAML and TypeScript workflow files.
 
 Hosted equivalents live under `agent-relay cloud …`.
 
