@@ -297,13 +297,18 @@ pub(crate) fn format_injection_for_worker_with_workspace(
         )
     };
 
+    let read_hint = format!("Before acting on this message, acknowledge receipt with mcp__agent-relay__acknowledge_delivery or agent-relay.acknowledge_delivery (message_id: {}).", serde_json::to_string(event_id).expect("message id is serializable"));
     if !include_reminder {
         let short_hint =
             build_mcp_short_hint(from, target, &relay_line, pre_registered, assigned_name);
-        return format!("{short_hint}\n{relay_line}");
+        return format!("{short_hint}\n{read_hint}\n{relay_line}");
     }
 
     let mut reminder = build_mcp_reminder(from, target, &relay_line, pre_registered, assigned_name);
+    reminder = reminder.replace(
+        "</system-reminder>",
+        &format!("- {read_hint}\n</system-reminder>"),
+    );
     if let Some(label) = workspace_label {
         reminder = reminder.replace(
             "</system-reminder>",
