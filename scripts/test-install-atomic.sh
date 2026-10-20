@@ -363,6 +363,22 @@ exec 8<&-
 kill "$RUNNING" 2>/dev/null; { wait "$RUNNING"; } 2>/dev/null
 
 # ---------------------------------------------------------------------------
+echo "== strict standalone update requires a digest and a writable temp directory =="
+reset_release
+D="$(newdir)"
+make_fake_broker "$FIX/asset/agent-relay-broker-test-test" ok new
+make_release_json "$FIX/release.json" "agent-relay-broker-test-test" ""
+AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 fetch_release_asset agent-relay-broker-test-test "$D" raw; rc=$?
+check "strict update rejects a missing published digest" test "$rc" -eq 2
+check "strict update explains the missing digest" contains "$(cat "$LOG")" "published SHA-256 digest is required"
+check "strict update leaves no new binary" test -z "$(leftovers "$D")"
+
+STANDALONE_TEMP_FAILURE=""
+TMPDIR="$WORK/missing-directory" check_cli_binary "$WORK/hello"; rc=$?
+check "unwritable temp directory rejects CLI verification" test "$rc" -ne 0
+check "temp failure names the directory" contains "$STANDALONE_TEMP_FAILURE" "$WORK/missing-directory"
+STANDALONE_TEMP_FAILURE=""
+
 echo "== (d) missing digest warns instead of silently passing =="
 
 reset_release
@@ -421,14 +437,16 @@ echo "== transactional standalone install (CLI + broker) =="
 
 detect_platform >/dev/null 2>&1
 REAL_PLATFORM="$PLATFORM"
+# Create a runnable fixture reporting a chosen CLI version.
 make_fake_cli() { # make_fake_cli <path> <version>
     printf '#!/bin/bash\n[ "$1" = "--version" ] && { echo "%s"; exit 0; }\nexit 0\n' "$2" > "$1"; chmod +x "$1"
 }
-e2e_setup() { # e2e_setup <broker-mode> <digests: yes|no> [old-cli: yes|no]
+# Prepare an isolated release and installation, optionally overriding the CLI version.
+e2e_setup() { # e2e_setup <broker-mode> <digests: yes|no> [old-cli: yes|no] [new-version]
     reset_release
     INSTALL_DIR="$(newdir)"; BIN_DIR="$(newdir)"; mkdir -p "$INSTALL_DIR/bin"
     make_fake_broker "$INSTALL_DIR/bin/agent-relay-broker" ok oldbroker
-    make_fake_cli "$FIX/cli-new" "9.9.9"
+    make_fake_cli "$FIX/cli-new" "${4:-9.9.9}"
     gzip -c "$FIX/cli-new" > "$FIX/asset/agent-relay-$REAL_PLATFORM.gz"
     make_fake_broker "$FIX/asset/agent-relay-broker-$REAL_PLATFORM" "$1" newbroker
     if [ "${3:-yes}" = yes ]; then make_fake_cli "$INSTALL_DIR/bin/agent-relay" "1.0.0"; fi
@@ -444,13 +462,132 @@ e2e_setup() { # e2e_setup <broker-mode> <digests: yes|no> [old-cli: yes|no]
     } > "$FIX/release.json"
     OLD_BROKER_HASH="$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")"
 }
+# Run the installer in a subshell so exit and transaction state cannot leak between cases.
 run_main() { ( export AGENT_RELAY_TELEMETRY_DISABLED=1; main ) > "$WORK/main.out" 2>&1; }
+
+for layout in same-directory symlink-directory; do
+    e2e_setup ok yes yes "$VERSION"
+    if [ "$layout" = same-directory ]; then
+        BIN_DIR="$INSTALL_DIR/bin"
+    else
+        BIN_DIR="$WORK/linked-bin"
+        ln -s "$INSTALL_DIR/bin" "$BIN_DIR"
+    fi
+    AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
+    check "overlapping $layout: exits non-zero" test "$rc" -ne 0
+    check "overlapping $layout: CLI remains executable" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+    check "overlapping $layout: broker preserved" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+    check "overlapping $layout: explains directory conflict" contains "$(cat "$WORK/main.out")" "must differ"
+done
+
+D="$(newdir)"
+printf 'untouched\n' > "$D/victim"
+ln -s "$D/victim" "$D/agent-relay.tmp.$$"
+write_executable_file "$D/agent-relay" <<< '#!/bin/bash'; rc=$?
+check "launcher: secure temporary write succeeds" test "$rc" -eq 0
+check "launcher: published script is readable and executable" test "$(stat -c %a "$D/agent-relay" 2>/dev/null || stat -f %Lp "$D/agent-relay")" = 755
+check "launcher: predictable symlink target untouched" test "$(cat "$D/victim")" = untouched
+
+if [ "$EUID" -eq 0 ]; then
+    D="$(newdir)"
+    chmod 777 "$D"
+    check_privileged_directory "$D"; rc=$?
+    check "privileged launcher: rejects shared directory" test "$rc" -ne 0
+    chmod 700 "$D"
+    check_privileged_directory "$D"; rc=$?
+    check "privileged launcher: accepts private root-owned directory" test "$rc" -eq 0
+    chown 65534 "$D"
+    check_privileged_directory "$D"; rc=$?
+    check "privileged launcher: rejects another owner's directory" test "$rc" -ne 0
+    chown 0 "$D"
+
+    mkdir "$D/target"
+    ln -s "$D/target" "$D/link"
+    check_privileged_directory "$D/link"; rc=$?
+    check "privileged launcher: accepts trusted symlink" test "$rc" -eq 0
+    chown -h 65534 "$D/link"
+    for candidate in "$D/link" "$D/link/" "$D/link/new-child"; do
+        check_privileged_directory "$candidate"; rc=$?
+        check "privileged launcher: rejects untrusted symlink at $candidate" test "$rc" -ne 0
+    done
+    ln -s link "$D/trusted-link"
+    check_privileged_directory "$D/trusted-link"; rc=$?
+    check "privileged launcher: rejects untrusted link inside a chain" test "$rc" -ne 0
+    write_executable_file "$D/link/launcher" <<< '#!/bin/bash'; rc=$?
+    check "privileged launcher: refuses write through untrusted symlink" test "$rc" -ne 0
+    check "privileged launcher: target remains untouched" test ! -e "$D/target/launcher"
+
+    D="$(newdir)"
+    mkdir -p "$D/real/parent" "$D/final" "$D/destination"
+    ln -s real/parent "$D/alias"
+    ln -s ../destination "$D/real/parent/link"
+    ln -s ../final "$D/real/destination"
+    # Logical `cd` would inspect this decoy instead of the kernel's real path.
+    chown 65534 "$D/destination"
+    check_privileged_directory "$D/alias/link"; rc=$?
+    check "privileged launcher: resolves relative hops from the physical parent" test "$rc" -eq 0
+    chown 0 "$D/destination"
+    chown -h 65534 "$D/real/destination"
+    check_privileged_directory "$D/alias/link"; rc=$?
+    check "privileged launcher: rejects an untrusted hop on the physical chain" test "$rc" -ne 0
+fi
 
 e2e_setup ok yes
 run_main; rc=$?
 check "all good: installer exits 0" test "$rc" -eq 0
 check "all good: CLI upgraded" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
 check "all good: no .prev left" test ! -e "$INSTALL_DIR/bin/agent-relay.prev"
+
+e2e_setup ok yes yes "$VERSION"
+AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
+check "strict update: verified CLI and broker install" test "$rc" -eq 0
+check "strict update: CLI upgraded" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "$VERSION"
+check "strict update: optional ACP install is skipped" bash -c '! grep -q "relay-acp\|ACP bridge" "$1"' _ "$WORK/main.out"
+
+e2e_setup ok yes yes "$VERSION"
+saved_launcher="$(declare -f install_binary_launcher)"
+install_binary_launcher() { printf '#!/bin/bash\nexit 1\n' > "$BIN_DIR/agent-relay"; chmod +x "$BIN_DIR/agent-relay"; }
+AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
+eval "$saved_launcher"
+check "strict update: broken launcher fails" test "$rc" -ne 0
+check "strict update: broken launcher restores CLI" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+check "strict update: broken launcher restores broker" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+check "strict update: broken launcher is removed" test ! -e "$BIN_DIR/agent-relay"
+
+e2e_setup ok yes
+AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
+check "strict update: wrong release version fails" test "$rc" -ne 0
+check "strict update: wrong version restores CLI" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+check "strict update: wrong version preserves broker" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+
+for launcher_mode in failed-write stale-target; do
+    e2e_setup ok yes yes "$VERSION"
+    make_fake_cli "$BIN_DIR/agent-relay" "0.9.0"
+    cp -p "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+    install_binary_launcher() { [ "$launcher_mode" = stale-target ]; }
+    AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
+    eval "$saved_launcher"
+    check "strict update: $launcher_mode fails" test "$rc" -ne 0
+    check "strict update: $launcher_mode restores CLI" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+    check "strict update: $launcher_mode restores broker" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+    check "strict update: $launcher_mode preserves launcher" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+done
+
+e2e_setup ok no
+AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 run_main; rc=$?
+check "strict update: missing digest fails" test "$rc" -ne 0
+check "strict update: previous CLI preserved" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+check "strict update: previous broker preserved" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+check "strict update: no npm fallback" bash -c '! grep -q "Installing via npm" "$1"' _ "$WORK/main.out"
+check "strict update: no misleading fallback message" bash -c '! grep -qi "falling back to npm" "$1"' _ "$WORK/main.out"
+
+e2e_setup ok yes
+TMPDIR="$WORK/missing-directory" run_main; rc=$?
+check "bad temp directory: installer exits non-zero" test "$rc" -ne 0
+check "bad temp directory: previous CLI preserved" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+check "bad temp directory: reports temp failure" contains "$(cat "$WORK/main.out")" "Cannot create a temporary file"
+check "bad temp directory: no misleading verification failure" bash -c '! grep -qi "verification.*failed" "$1"' _ "$WORK/main.out"
+check "bad temp directory: no npm fallback" bash -c '! grep -q "Installing via npm" "$1"' _ "$WORK/main.out"
 
 e2e_setup crash no
 run_main; rc=$?
