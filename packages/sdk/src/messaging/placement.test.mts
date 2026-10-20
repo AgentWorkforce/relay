@@ -131,6 +131,102 @@ describe('RelaycastMessagingClient placement', () => {
     });
   });
 
+  it.each(['grok', 'claude'])(
+    'dispatches a targeted served spawn:%s action directly and confirms readiness',
+    async (cli) => {
+      const capability = `spawn:${cli}`;
+      const { client, invoke, getInvocation } = createClient(
+        [
+          {
+            id: 'node_sf_frame',
+            name: 'sf-frame',
+            status: 'online',
+            live: true,
+            capabilities: [{ name: capability, kind: 'action' }],
+          },
+        ],
+        {
+          getInvocation: async () => ({
+            invocation_id: 'inv-1',
+            action_name: capability,
+            status: 'completed',
+            output: { spawned: true, ready: true },
+          }),
+        }
+      );
+
+      const ack = await client.placement.spawn({
+        capability,
+        node: 'sf-frame',
+        confirm: true,
+        input: { name: 'worker-1', cli, task: 'ship' },
+      });
+
+      expect(invoke).toHaveBeenCalledExactlyOnceWith(capability, {
+        name: 'worker-1',
+        cli,
+        task: 'ship',
+        capability,
+        node: 'sf-frame',
+        target_node: 'sf-frame',
+        verify_ready: true,
+        ttl_override_ms: 60,
+      });
+      expect(getInvocation).toHaveBeenCalledWith(capability, 'inv-1');
+      expect(ack.placement).toMatchObject({ state: 'ready', confirmed: true, node: 'sf-frame' });
+    }
+  );
+
+  it.each(['capacity', 'spawn', undefined])(
+    'keeps targeted native Grok capacity on generic spawn (%s)',
+    async (kind) => {
+      const { client, invoke } = createClient([
+        {
+          ...LIVE_NODE_A,
+          capabilities: [{ name: 'spawn:grok', kind }],
+        },
+      ]);
+      await client.placement.spawn({ capability: 'spawn:grok', node: 'node-a', input: { name: 'worker-1' } });
+      expect(invoke).toHaveBeenCalledExactlyOnceWith(
+        'spawn',
+        expect.objectContaining({
+          capability: 'spawn:grok',
+          cli: 'grok',
+          target_node: 'node-a',
+        })
+      );
+    }
+  );
+
+  it('keeps automatic placement on engine spawn even when the snapshot advertises a served action', async () => {
+    const { client, invoke } = createClient([
+      {
+        ...LIVE_NODE_A,
+        capabilities: [{ name: 'spawn:grok', kind: 'action' }],
+      },
+    ]);
+    await client.placement.spawn({ capability: 'spawn:grok', input: { name: 'worker-1' } });
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('spawn', expect.objectContaining({ cli: 'grok' }));
+    expect(invoke.mock.calls[0][1]).not.toHaveProperty('target_node');
+    expect(invoke.mock.calls[0][1]).not.toHaveProperty('node');
+  });
+
+  it('preserves an explicit action override for a targeted served spawn', async () => {
+    const { client, invoke } = createClient([
+      {
+        ...LIVE_NODE_A,
+        capabilities: [{ name: 'spawn:grok', kind: 'action' }],
+      },
+    ]);
+    await client.placement.spawn({
+      capability: 'spawn:grok',
+      node: 'node-a',
+      actionName: 'custom-spawn',
+      input: { name: 'worker-1' },
+    });
+    expect(invoke).toHaveBeenCalledWith('custom-spawn', expect.objectContaining({ cli: 'grok' }));
+  });
+
   it('rejects a spawn whose input cli does not match the spawn: capability', async () => {
     const { client, invoke } = createClient([
       {
