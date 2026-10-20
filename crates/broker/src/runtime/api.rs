@@ -777,6 +777,34 @@ impl BrokerRuntime {
                 // agent_spawned broadcast would erase valid current-generation
                 // history. A duplicate live name is not a replacement attempt
                 // and must retain its existing history.
+                // Run-token mode: the worker reads its short-lived agent token
+                // from a broker-rotated file. Start rotation (writing the file)
+                // before the worker can launch; a failure is an admission failure.
+                if let (Some(_), Some(token_file)) = (
+                    worker_relay_key.as_deref(),
+                    workers.agent_token_file_for(&name),
+                ) {
+                    if let Err(error) =
+                        relaycast_http.ensure_agent_token_rotation(&name, Some(token_file))
+                    {
+                        super::identity_cleanup::schedule_identity_cleanup(
+                            workers,
+                            fleet_control_tx,
+                            fleet_delivery_book,
+                            fleet_inventory,
+                            relaycast_http,
+                            &name,
+                            owns_identity,
+                            Some(super::identity_cleanup::CleanupCompletion::Api(
+                                reply,
+                                Err(format!(
+                                    "worker agent token file could not be prepared: {error:#}"
+                                )),
+                            )),
+                        );
+                        return;
+                    }
+                }
                 if !workers.has_worker(&name) {
                     replay_buffer.reset_agent_event_history(&name).await;
                 }

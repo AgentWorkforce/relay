@@ -13,6 +13,7 @@ import {
   type WorkspaceSelection,
   type WorkspaceKeySource,
 } from '@agent-relay/cloud/workspace-key';
+import { AGENT_TOKEN_FILE_ENV, readAgentTokenFile } from './agent-token-file.js';
 
 /** Options shared by the SDK-backed (Relaycast) CLI command groups. */
 export interface SdkClientOptions {
@@ -234,7 +235,13 @@ export function persistWorkspaceRelaycastTarget(
 }
 
 export function resolveAgentToken(options: SdkClientOptions = {}): string | undefined {
-  return trimOrUndefined(options.token) ?? trimOrUndefined(env(options).RELAY_AGENT_TOKEN);
+  const environment = env(options);
+  return (
+    trimOrUndefined(options.token) ??
+    trimOrUndefined(environment.RELAY_AGENT_TOKEN) ??
+    // Run-token mode: the broker hands workers a rotated token file instead.
+    readAgentTokenFile(environment[AGENT_TOKEN_FILE_ENV])
+  );
 }
 
 /** Workspace-scoped client (no agent token). */

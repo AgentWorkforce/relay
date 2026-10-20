@@ -11,6 +11,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::run_token::{
+    relay_error_is_unauthorized, RunTokenSource, RUN_TOKEN_NO_WORKSPACE_CREATION,
+};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceCredential {
     pub workspace_id: String,
@@ -47,6 +51,10 @@ pub struct CredentialSet {
 pub struct AuthSessionSet {
     pub memberships: Vec<AuthSession>,
     pub default_workspace_id: Option<String>,
+    /// Set in run-token mode: the session holds no workspace key
+    /// (`credentials.api_key` is empty) and run-token-capable Relaycast calls
+    /// read the token from this file per request.
+    pub run_token: Option<RunTokenSource>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +62,9 @@ pub struct AuthSession {
     pub credentials: CredentialCache,
     pub token: String,
     pub created_new: bool,
+    /// `token_expires_at` of `token` when the server reported one (#550).
+    /// Run-token mode rotates the broker's own token before this deadline.
+    pub token_expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -403,6 +414,18 @@ impl AuthClient {
         waiter_id: Option<&str>,
         startup_deadline: Option<tokio::time::Instant>,
     ) -> Result<AuthSessionSet> {
+        if let Some(source) = RunTokenSource::from_env() {
+            return self
+                .startup_run_token_session_set(
+                    &source,
+                    requested_name,
+                    agent_type,
+                    identity_key,
+                    waiter_id,
+                    startup_deadline,
+                )
+                .await;
+        }
         if let Some((sources, default_hint)) = self.load_workspace_sources_from_env()? {
             let preferred_name = requested_name;
             // Validate every source before starting requests so malformed
@@ -522,6 +545,7 @@ impl AuthClient {
                     &memberships,
                 ),
                 memberships,
+                run_token: None,
             });
         }
 
@@ -615,6 +639,7 @@ impl AuthClient {
             credentials: creds,
             token,
             created_new: false,
+            token_expires_at: None,
         })
     }
 
@@ -682,6 +707,7 @@ impl AuthClient {
                     return Ok(AuthSessionSet {
                         default_workspace_id: Some(session.credentials.workspace_id.clone()),
                         memberships: vec![session],
+                        run_token: None,
                     });
                 }
                 Err(error) if is_workspace_busy_anyhow(&error) => {
@@ -747,6 +773,9 @@ impl AuthClient {
         waiter_id: Option<&str>,
         startup_deadline: Option<tokio::time::Instant>,
     ) -> Result<AuthSessionSet> {
+        if RunTokenSource::configured_path_from_env().is_some() {
+            anyhow::bail!(RUN_TOKEN_NO_WORKSPACE_CREATION);
+        }
         let ws_name = deterministic_workspace_name();
         let (workspace_id, api_key) = match startup_deadline {
             Some(deadline) => tokio::time::timeout_at(deadline, self.create_workspace(&ws_name))
@@ -796,6 +825,55 @@ impl AuthClient {
         Ok(AuthSessionSet {
             default_workspace_id: Some(session.credentials.workspace_id.clone()),
             memberships: vec![session],
+            run_token: None,
+        })
+    }
+
+    /// Run-token mode startup: register the broker itself via
+    /// `POST /v1/agents` with the run token read from `source`. No workspace
+    /// key is involved, no workspace is ever created, and a name collision
+    /// fails closed because the reclaim path (`GET /v1/agents/:name` plus
+    /// takeover) is not open to run tokens.
+    pub(crate) async fn startup_run_token_session_set(
+        &self,
+        source: &RunTokenSource,
+        requested_name: Option<&str>,
+        agent_type: Option<&str>,
+        identity_key: Option<&str>,
+        waiter_id: Option<&str>,
+        startup_deadline: Option<tokio::time::Instant>,
+    ) -> Result<AuthSessionSet> {
+        let name = requested_name
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("agent-{}", Uuid::new_v4().simple()));
+        tracing::info!(
+            target = "relay_broker::auth",
+            run_token_file = %source.path().display(),
+            preferred_name = %name,
+            "attempting registration with run token (run-token mode)"
+        );
+        let (registration, token_expires_at) = register_agent_with_run_token(
+            self.base_url.as_deref(),
+            source,
+            &name,
+            agent_type,
+            identity_key,
+            waiter_id,
+            startup_deadline,
+        )
+        .await?;
+        let workspace_id_hint = std::env::var("RELAY_WORKSPACE_ID")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        // `api_key` stays empty: run-token mode holds no workspace key, and an
+        // empty key keeps every legacy key-injection path inert.
+        let mut session = self.finish_session(String::new(), workspace_id_hint, registration)?;
+        session.token_expires_at = token_expires_at;
+        Ok(AuthSessionSet {
+            default_workspace_id: Some(session.credentials.workspace_id.clone()),
+            memberships: vec![session],
+            run_token: Some(source.clone()),
         })
     }
 
@@ -883,10 +961,17 @@ impl AuthClient {
             credentials: creds,
             token,
             created_new,
+            token_expires_at: None,
         })
     }
 
     async fn create_workspace(&self, name: &str) -> Result<(String, String)> {
+        // Defense in depth for the guard in
+        // `startup_fresh_workspace_session_set`: no path may mint a workspace
+        // while a run token is configured.
+        if RunTokenSource::configured_path_from_env().is_some() {
+            anyhow::bail!(RUN_TOKEN_NO_WORKSPACE_CREATION);
+        }
         // Workspace creation is an unkeyed POST, so a 5xx is ambiguous:
         // Relaycast may have committed the workspace before failing to answer.
         // Replaying is still right — `workspace_storage_unavailable` is a
@@ -1864,6 +1949,138 @@ async fn admit_agent_registration(
     }
 }
 
+/// Register `name` via `POST /v1/agents` authenticated with the run token.
+///
+/// Reads the token from `source` per attempt and, on a 401, re-reads the file
+/// and retries once. Transient/`workspace_busy` retries reuse the same typed
+/// startup budget as the legacy path. A 409 is terminal: run tokens cannot
+/// read (`GET /v1/agents/:name`) or take over an existing agent, so there is
+/// no safe reclaim and the broker fails closed.
+async fn register_agent_with_run_token(
+    base_url: Option<&str>,
+    source: &RunTokenSource,
+    name: &str,
+    agent_type: Option<&str>,
+    identity_key: Option<&str>,
+    waiter_id: Option<&str>,
+    startup_deadline: Option<tokio::time::Instant>,
+) -> Result<(
+    (String, String, String, Option<String>, bool),
+    Option<DateTime<Utc>>,
+)> {
+    /// The #550 expiry rides alongside the SDK's registration shape.
+    #[derive(Deserialize)]
+    struct CreatedWithExpiry {
+        #[serde(flatten)]
+        agent: relaycast::CreateAgentResponse,
+        #[serde(default)]
+        token_expires_at: Option<String>,
+    }
+
+    let metadata = identity_key.map(|key| {
+        let mut map = serde_json::Map::new();
+        map.insert(
+            IDENTITY_METADATA_KEY.to_string(),
+            Value::String(hash_identity_key(key)),
+        );
+        map
+    });
+    let request = CreateAgentRequest {
+        name: name.to_string(),
+        agent_type: Some(agent_type.unwrap_or("agent").to_string()),
+        persona: None,
+        metadata,
+    };
+    let waiter_id = waiter_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("relay-register:{}", Uuid::new_v4()));
+
+    let result =
+        super::run_token::call_with_run_token(source, relay_error_is_unauthorized, |token| {
+            let request = &request;
+            let waiter_id = &waiter_id;
+            async move {
+                let client = build_relay_client_with_bearer(&token, base_url)?;
+                let http = client.http_client();
+                retry_typed_startup_registration_error(
+                    "registering the broker agent with the run token",
+                    startup_deadline,
+                    || {
+                        http.post::<CreatedWithExpiry>(
+                            "/v1/agents",
+                            Some(request),
+                            Some(relaycast::RequestOptions {
+                                headers: Some(vec![(
+                                    "X-Workspace-Write-Waiter".to_string(),
+                                    waiter_id.clone(),
+                                )]),
+                                idempotency_key: None,
+                            }),
+                        )
+                    },
+                )
+                .await
+            }
+        })
+        .await;
+
+    match result {
+        Ok(response) if response.agent.token.trim().is_empty() => {
+            anyhow::bail!("run-token registration for '{name}' returned a blank agent token")
+        }
+        Ok(response) => {
+            let expires_at = super::agent_token_rotation::parse_token_expiry(
+                response.token_expires_at.as_deref(),
+            );
+            let agent = response.agent;
+            Ok((
+                (agent.id, agent.name, agent.token, agent.workspace_id, true),
+                expires_at,
+            ))
+        }
+        Err(super::run_token::RunTokenCallError::Read(error)) => {
+            Err(error).context("run-token mode could not read the run token file")
+        }
+        Err(super::run_token::RunTokenCallError::Call(RelayError::Api {
+            code,
+            status,
+            request_id,
+            attempts,
+            ..
+        })) if is_conflict_code(&code) || status == 409 => {
+            Err(relay_error_to_anyhow(RelayError::Api {
+                code: "agent_identity_mismatch".to_string(),
+                status: 409,
+                retry_after_ms: None,
+                message: format!(
+                    "agent name '{name}' is already registered and run-token mode cannot look up \
+                     or take over an existing agent (GET /v1/agents/:name and takeover are not \
+                     open to run tokens); use a name unique to this run"
+                ),
+                request_id,
+                attempts,
+            }))
+        }
+        Err(super::run_token::RunTokenCallError::Call(error)) => Err(relay_error_to_anyhow(error))
+            .context("registering the broker agent with the run token failed"),
+    }
+}
+
+/// An SDK agent-scoped client whose bearer is `bearer`. Used for run-token
+/// requests, where the bearer is read fresh per request and never stored.
+pub(crate) fn build_relay_client_with_bearer(
+    bearer: &str,
+    base_url: Option<&str>,
+) -> std::result::Result<relaycast::AgentClient, RelayError> {
+    let mut opts = RelayCastOptions::new(bearer)
+        .with_base_url(resolve_relaycast_base_url(base_url))
+        .with_origin_actor(crate::telemetry::BROKER_ORIGIN_ACTOR);
+    if let Some(distinct_id) = crate::telemetry::agent_relay_distinct_id() {
+        opts = opts.with_agent_relay_distinct_id(distinct_id);
+    }
+    RelayCast::new(opts)?.as_agent(bearer)
+}
+
 /// Outcome of a successful [`reclaim_legacy_identity`] call, returned as a
 /// value (not just formatted text) so CLI output and tests can assert on it
 /// precisely.
@@ -2314,6 +2531,8 @@ mod tests {
             std::env::remove_var("RELAY_DEFAULT_WORKSPACE");
             std::env::remove_var("RELAY_AGENT_IDENTITY_KEY");
             std::env::remove_var("RELAY_NODE_ID");
+            std::env::remove_var("RELAY_RUN_TOKEN_FILE");
+            std::env::remove_var("RELAY_WORKSPACE_ID");
         }
         guard
     }
@@ -5521,5 +5740,294 @@ mod tests {
         unsafe {
             std::env::remove_var("RELAY_API_KEY");
         }
+    }
+
+    // ── Run-token mode (RELAY_RUN_TOKEN_FILE, no rk_ key) ──────────────────
+
+    /// Removes run-token env on drop so other test modules never observe it.
+    struct RunTokenEnvGuard(std::path::PathBuf);
+
+    impl Drop for RunTokenEnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                std::env::remove_var("RELAY_RUN_TOKEN_FILE");
+                std::env::remove_var("RELAY_WORKSPACE_ID");
+                std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
+            }
+        }
+    }
+
+    fn set_run_token_file(dir: &tempfile::TempDir, token: &str) -> RunTokenEnvGuard {
+        let path = dir.path().join("relaycast-run.json");
+        crate::relaycast::run_token::test_support::write_run_token_file(
+            &path,
+            token,
+            &crate::relaycast::run_token::test_support::future_expiry(),
+        );
+        unsafe {
+            std::env::set_var("RELAY_RUN_TOKEN_FILE", &path);
+        }
+        RunTokenEnvGuard(path)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_token_mode_registers_the_broker_and_never_creates_a_workspace() {
+        let _env_guard = clear_relay_env();
+        let dir = tempfile::tempdir().unwrap();
+        let _run_token_env = set_run_token_file(&dir, "rt_live_startup");
+        unsafe {
+            std::env::set_var("RELAY_WORKSPACE_ID", "ws_run");
+        }
+        let server = MockServer::start();
+        let workspace = server.mock(|when, then| {
+            when.method(POST).path("/v1/workspaces");
+            then.status(200).header("content-type", "application/json").body(
+                r#"{"ok":true,"data":{"workspace_id":"ws_bad","api_key":"rk_live_bad","created_at":"2025-01-01T00:00:00Z"}}"#,
+            );
+        });
+        let register = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rt_live_startup");
+            then.status(201).header("content-type", "application/json").body(
+                r#"{"ok":true,"data":{"id":"a_rt","workspace_id":"ws_run","run_id":"run_1","name":"lead","token":"at_live_rt","token_expires_at":"2026-10-17T12:15:00.000Z","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#,
+            );
+        });
+
+        let sessions = AuthClient::new(Some(server.base_url()))
+            .startup_session_set(Some("lead"))
+            .await
+            .expect("run-token startup registers with the run token");
+
+        assert!(sessions.run_token.is_some());
+        let session = sessions.default_session().unwrap();
+        assert_eq!(session.token, "at_live_rt");
+        assert_eq!(session.credentials.workspace_id, "ws_run");
+        // The broker rotates its own token against this deadline.
+        assert_eq!(
+            session.token_expires_at.map(|at| at.to_rfc3339()),
+            Some("2026-10-17T12:15:00+00:00".to_string())
+        );
+        assert!(
+            session.credentials.api_key.is_empty(),
+            "run-token mode must hold no workspace key"
+        );
+        register.assert_hits(1);
+        workspace.assert_hits(0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_token_mode_rereads_the_file_after_a_401_and_retries_once() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        use axum::{
+            extract::State,
+            http::{HeaderMap, StatusCode as AxumStatusCode},
+            routing::post,
+            Json, Router,
+        };
+
+        #[derive(Clone)]
+        struct RotatingState {
+            path: std::path::PathBuf,
+            bearers: Arc<std::sync::Mutex<Vec<String>>>,
+            workspace_attempts: Arc<AtomicUsize>,
+        }
+
+        async fn register(
+            State(state): State<RotatingState>,
+            headers: HeaderMap,
+        ) -> (AxumStatusCode, Json<Value>) {
+            let bearer = headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            state.bearers.lock().unwrap().push(bearer.clone());
+            if bearer == "Bearer rt_live_old" {
+                // Cloud rotated the token after the broker read the file.
+                crate::relaycast::run_token::test_support::write_run_token_file(
+                    &state.path,
+                    "rt_live_new",
+                    &crate::relaycast::run_token::test_support::future_expiry(),
+                );
+                return (
+                    AxumStatusCode::UNAUTHORIZED,
+                    Json(
+                        json!({"ok": false, "error": {"code": "run_token_expired", "message": "expired"}}),
+                    ),
+                );
+            }
+            (
+                AxumStatusCode::CREATED,
+                Json(json!({"ok": true, "data": {
+                    "id": "a_rt", "workspace_id": "ws_run", "run_id": "run_1",
+                    "name": "lead", "token": "at_live_rt", "status": "online",
+                    "created_at": "2025-01-01T00:00:00Z"
+                }})),
+            )
+        }
+
+        async fn create_workspace(State(state): State<RotatingState>) -> AxumStatusCode {
+            state.workspace_attempts.fetch_add(1, Ordering::SeqCst);
+            AxumStatusCode::INTERNAL_SERVER_ERROR
+        }
+
+        let _env_guard = clear_relay_env();
+        let dir = tempfile::tempdir().unwrap();
+        let run_token_env = set_run_token_file(&dir, "rt_live_old");
+        let state = RotatingState {
+            path: run_token_env.0.clone(),
+            bearers: Arc::new(std::sync::Mutex::new(Vec::new())),
+            workspace_attempts: Arc::new(AtomicUsize::new(0)),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_state = state.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/v1/agents", post(register))
+                    .route("/v1/workspaces", post(create_workspace))
+                    .with_state(server_state),
+            )
+            .await
+        });
+
+        let session = AuthClient::new(Some(format!("http://{address}")))
+            .startup_session(Some("lead"))
+            .await
+            .expect("a 401 re-reads the rotated file and succeeds");
+        assert_eq!(session.token, "at_live_rt");
+        assert_eq!(
+            *state.bearers.lock().unwrap(),
+            vec![
+                "Bearer rt_live_old".to_string(),
+                "Bearer rt_live_new".to_string()
+            ]
+        );
+        assert_eq!(state.workspace_attempts.load(Ordering::SeqCst), 0);
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_token_mode_rejected_token_fails_closed_without_creating_a_workspace() {
+        let _env_guard = clear_relay_env();
+        let dir = tempfile::tempdir().unwrap();
+        let _run_token_env = set_run_token_file(&dir, "rt_live_revoked");
+        let server = MockServer::start();
+        let workspace = server.mock(|when, then| {
+            when.method(POST).path("/v1/workspaces");
+            then.status(200).header("content-type", "application/json").body(
+                r#"{"ok":true,"data":{"workspace_id":"ws_bad","api_key":"rk_live_bad","created_at":"2025-01-01T00:00:00Z"}}"#,
+            );
+        });
+        let register =
+            server.mock(|when, then| {
+                when.method(POST).path("/v1/agents");
+                then.status(401).header("content-type", "application/json").body(
+                r#"{"ok":false,"error":{"code":"run_authority_revoked","message":"revoked"}}"#,
+            );
+            });
+
+        let error = AuthClient::new(Some(server.base_url()))
+            .startup_session(Some("lead"))
+            .await
+            .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(!message.contains("rt_live_revoked"), "{message}");
+        // One request plus exactly one re-read retry.
+        register.assert_hits(2);
+        workspace.assert_hits(0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_token_mode_fresh_workspace_path_is_refused() {
+        let _env_guard = clear_relay_env();
+        let dir = tempfile::tempdir().unwrap();
+        let _run_token_env = set_run_token_file(&dir, "rt_live_any");
+        let server = MockServer::start();
+        let workspace = server.mock(|when, then| {
+            when.method(POST).path("/v1/workspaces");
+            then.status(200).header("content-type", "application/json").body(
+                r#"{"ok":true,"data":{"workspace_id":"ws_bad","api_key":"rk_live_bad","created_at":"2025-01-01T00:00:00Z"}}"#,
+            );
+        });
+
+        let error = AuthClient::new(Some(server.base_url()))
+            .startup_fresh_workspace_session_set(Some("lead"), false, None, None, None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to create a Relaycast workspace"),
+            "{error:#}"
+        );
+        workspace.assert_hits(0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_token_mode_name_conflict_fails_closed_without_agent_lookup() {
+        let _env_guard = clear_relay_env();
+        let dir = tempfile::tempdir().unwrap();
+        let _run_token_env = set_run_token_file(&dir, "rt_live_cur");
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(409)
+                .header("content-type", "application/json")
+                .body(r#"{"ok":false,"error":{"code":"agent_already_exists","message":"taken"}}"#);
+        });
+        let lookup = server.mock(|when, then| {
+            when.method(GET).path("/v1/agents/lead");
+            then.status(200).header("content-type", "application/json").body(
+                r#"{"ok":true,"data":{"id":"a","name":"lead","status":"offline","metadata":{}}}"#,
+            );
+        });
+
+        let error = AuthClient::new(Some(server.base_url()))
+            .startup_session(Some("lead"))
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("run-token mode cannot look up"),
+            "{error:#}"
+        );
+        lookup.assert_hits(0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rk_workspace_key_keeps_legacy_mode_even_with_a_run_token_file() {
+        let _env_guard = clear_relay_env();
+        let dir = tempfile::tempdir().unwrap();
+        let _run_token_env = set_run_token_file(&dir, "rt_live_ignored");
+        unsafe {
+            std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", "rk_live_env");
+        }
+        let server = MockServer::start();
+        let legacy = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/agents")
+                .header("authorization", "Bearer rk_live_env");
+            then.status(200).header("content-type", "application/json").body(
+                r#"{"ok":true,"data":{"id":"a2","workspace_id":"ws_env","name":"lead","token":"at_live_2","status":"online","created_at":"2025-01-01T00:00:00Z"}}"#,
+            );
+        });
+
+        let sessions = AuthClient::new(Some(server.base_url()))
+            .startup_session_set(Some("lead"))
+            .await
+            .unwrap();
+        assert!(sessions.run_token.is_none());
+        assert_eq!(
+            sessions.default_session().unwrap().credentials.api_key,
+            "rk_live_env"
+        );
+        legacy.assert_hits(1);
     }
 }

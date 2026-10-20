@@ -40,6 +40,7 @@ import {
   withDeadline,
 } from './lib/agent-registration.js';
 import { attributableReleaseReason } from './lib/release-reason.js';
+import { AGENT_TOKEN_FILE_ENV, AgentTokenFile } from './lib/agent-token-file.js';
 import {
   sanitizedSpawnReceipt,
   spawnPlacementReceipt,
@@ -1684,9 +1685,14 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     requireCompleteSharedSessionToolset(options.sharedSessionTools ?? []);
   }
 
+  // Run-token mode: the broker rotates this agent's short-lived token into a
+  // file. The Relaycast SDK takes a static token string, so the adapter is to
+  // re-read the file (stat-cached) before every request and rebuild the
+  // per-request agent client with whatever token is current.
+  const agentTokenFile = options.agentTokenFile ? new AgentTokenFile(options.agentTokenFile) : null;
   const session = createInitialSession({
     workspaceKey: options.workspaceKey ?? options.apiKey ?? null,
-    agentToken: options.agentToken ?? null,
+    agentToken: options.agentToken ?? agentTokenFile?.read() ?? null,
     agentName: options.agentName ?? null,
   });
   const actionToolNames = new Set<string>();
@@ -1714,7 +1720,10 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     return mcpServer;
   }
 
-  const getSession = (): SessionState => session;
+  const getSession = (): SessionState => {
+    refreshAgentTokenFromFile();
+    return session;
+  };
   const getRelay = (): RelayCastLike => {
     const workspaceKey = session.workspaceKey;
     if (!workspaceKey) {
@@ -1771,6 +1780,38 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     }
   };
 
+  /**
+   * Adopt a rotated token from the agent token file, if it changed. The
+   * identity is unchanged, so resource subscriptions are kept and only the
+   * realtime connection is re-established with the new token.
+   */
+  function refreshAgentTokenFromFile(): void {
+    if (!agentTokenFile) return;
+    const identity = session.agentName ?? options.agentName ?? null;
+    if (!identity) return;
+    const latest = agentTokenFile.read();
+    if (!latest || latest === session.agentToken) return;
+    const nextAgents = new Map(session.agents);
+    nextAgents.set(identity, createRegisteredAgent(identity, latest));
+    Object.assign(session, { agentToken: latest, agentName: identity, agents: nextAgents });
+    if (session.wsBridge && session.subscriptions) {
+      session.wsBridge.stop();
+      try {
+        const wsBridge = new RealtimeResourceBridge(
+          createRealtimeClient({ agentToken: latest, baseUrl: options.baseUrl }),
+          session.subscriptions,
+          (uri) => {
+            mcpServer.server.sendResourceUpdated({ uri }).catch(() => undefined);
+          }
+        );
+        wsBridge.start();
+        session.wsBridge = wsBridge;
+      } catch {
+        session.wsBridge = null;
+      }
+    }
+  }
+
   const invalidateAgentToken = (asIdentity?: string): void => {
     const partial: Partial<SessionState> = {};
     const targetName = asIdentity ?? session.agentName ?? null;
@@ -1796,6 +1837,7 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
   };
 
   const resolveAgentToken = (asIdentity?: string): string => {
+    refreshAgentTokenFromFile();
     if (asIdentity) {
       const registered = session.agents.get(asIdentity);
       if (!registered) {
@@ -1996,7 +2038,10 @@ export function optionsFromEnv(): AgentRelayMcpServerOptions {
     process.env.RELAY_API_KEY,
   ].some((value) => value !== undefined && isUnresolvedEnvTemplate(value));
 
-  if (!workspaceKey && !hasUnresolvedWorkspacePlaceholder) {
+  const agentTokenFile = resolveEnv(AGENT_TOKEN_FILE_ENV);
+  // A broker-rotated token file binds this process to the broker's workspace;
+  // never pair it with a persisted project workspace.
+  if (!workspaceKey && !hasUnresolvedWorkspacePlaceholder && !agentTokenFile) {
     try {
       workspaceKey = resolveWorkspaceSessionKey();
       resumedPersistedWorkspace = Boolean(workspaceKey);
@@ -2016,7 +2061,11 @@ export function optionsFromEnv(): AgentRelayMcpServerOptions {
     // when the workspace was selected alongside it through the environment;
     // a persisted project/store fallback must register into that workspace
     // instead of silently pairing it with a possibly stale ambient token.
-    agentToken: resumedPersistedWorkspace ? undefined : resolveEnv('RELAY_AGENT_TOKEN'),
+    agentToken: resumedPersistedWorkspace
+      ? undefined
+      : (resolveEnv('RELAY_AGENT_TOKEN') ??
+        (agentTokenFile ? (new AgentTokenFile(agentTokenFile).read() ?? undefined) : undefined)),
+    agentTokenFile,
     agentName,
     agentType: normalizeAgentType(resolveEnv('RELAY_AGENT_TYPE')),
     strictAgentName: envFlagEnabled(resolveEnv('RELAY_STRICT_AGENT_NAME')),

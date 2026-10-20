@@ -21,6 +21,15 @@ export interface RuntimeSpawnOptions {
   binaryArgs?: BrokerInitArgs;
   /** Existing Relay workspace key to join. Defaults to env when omitted. */
   workspaceKey?: string;
+  /**
+   * Absolute path to a run-scoped Relaycast access file
+   * (`{"token":"rt_live_...","expiresAt":"<ISO8601>"}`), refreshed outside the
+   * sandbox. Defaults to `RELAY_RUN_TOKEN_FILE` from env when omitted. When a
+   * run token file is in effect it wins over any workspace key: the broker
+   * receives only `RELAY_RUN_TOKEN_FILE` (the path, never the token value) and
+   * every workspace-key variable is removed from its environment.
+   */
+  runTokenFile?: string;
   /** Broker name. Defaults to cwd basename. */
   brokerName?: string;
   /** Default channels for spawned agents. */
@@ -76,6 +85,8 @@ export interface BrokerSpawnConfig {
   cwd: string;
   brokerName: string;
   workspaceKey?: string;
+  /** Run token file path handed to the broker, when run-token mode is in effect. */
+  runTokenFile?: string;
   channels: string[];
   timeoutMs: number;
   args: string[];
@@ -119,6 +130,17 @@ const UNSAFE_ISOLATED_ENV_KEYS = [
   'RELAY_API_KEY',
 ] as const;
 
+/**
+ * Static workspace credentials that must never reach a broker started in
+ * run-token mode, whether they come from the caller's env or the parent env.
+ */
+const WORKSPACE_CREDENTIAL_ENV_KEYS = [
+  'RELAY_API_KEY',
+  'RELAY_WORKSPACE_KEY',
+  'AGENT_RELAY_WORKSPACE_KEY',
+  'RELAY_WORKSPACES_JSON',
+] as const;
+
 /** @internal */
 export function buildBrokerSpawnConfig(
   options: RuntimeSpawnOptions | undefined,
@@ -143,17 +165,22 @@ export function buildBrokerSpawnConfig(
     nonEmptyString(options?.env?.AGENT_RELAY_BROKER_NAME) ??
     nonEmptyString(inheritedEnv.AGENT_RELAY_BROKER_NAME) ??
     (path.basename(cwd) || 'project');
-  const workspaceKey =
-    nonEmptyString(options?.workspaceKey) ??
-    nonEmptyString(options?.env?.RELAY_WORKSPACE_KEY) ??
-    nonEmptyString(options?.env?.AGENT_RELAY_WORKSPACE_KEY) ??
-    nonEmptyString(inheritedEnv.RELAY_WORKSPACE_KEY) ??
-    nonEmptyString(inheritedEnv.AGENT_RELAY_WORKSPACE_KEY);
+  const runTokenFile =
+    nonEmptyString(options?.runTokenFile) ??
+    nonEmptyString(options?.env?.RELAY_RUN_TOKEN_FILE) ??
+    nonEmptyString(inheritedEnv.RELAY_RUN_TOKEN_FILE);
+  const workspaceKey = runTokenFile
+    ? undefined
+    : (nonEmptyString(options?.workspaceKey) ??
+      nonEmptyString(options?.env?.RELAY_WORKSPACE_KEY) ??
+      nonEmptyString(options?.env?.AGENT_RELAY_WORKSPACE_KEY) ??
+      nonEmptyString(inheritedEnv.RELAY_WORKSPACE_KEY) ??
+      nonEmptyString(inheritedEnv.AGENT_RELAY_WORKSPACE_KEY));
   const channels = options?.channels ?? ['general'];
   const timeoutMs = options?.startupTimeoutMs ?? 45_000;
   const userArgs = buildBrokerInitArgs(options?.binaryArgs);
 
-  const env = {
+  const env: NodeJS.ProcessEnv = {
     ...inheritedEnv,
     ...options?.env,
     AGENT_RELAY_STARTUP_DEBUG:
@@ -169,11 +196,21 @@ export function buildBrokerSpawnConfig(
     AGENT_RELAY_BROKER_NAME: brokerName,
   };
 
+  if (runTokenFile) {
+    // Run-token mode: the broker reads the short-lived `rt_live_` from this
+    // file on every Relaycast request. Strip every static workspace
+    // credential so the broker can never fall back to (or leak) an `rk_` key.
+    for (const name of WORKSPACE_CREDENTIAL_ENV_KEYS) {
+      delete env[name];
+    }
+    env.RELAY_RUN_TOKEN_FILE = runTokenFile;
+  }
+
   // The workspace key travels only in the env block above — the broker's
   // `resolved_workspace_key()` falls back to AGENT_RELAY_WORKSPACE_KEY — so it
   // never appears on the child argv (visible in `ps`) or in startup error
   // strings that embed the spawn command line.
   const args = ['init', '--instance-name', brokerName, '--channels', channels.join(','), ...userArgs];
 
-  return { cwd, brokerName, workspaceKey, channels, timeoutMs, args, env };
+  return { cwd, brokerName, workspaceKey, runTokenFile, channels, timeoutMs, args, env };
 }

@@ -79,7 +79,7 @@ mod fleet;
 mod headless;
 mod identity_cleanup;
 mod identity_recovery;
-mod init;
+pub(crate) mod init;
 mod io;
 mod maintenance;
 mod messages;
