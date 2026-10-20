@@ -5356,6 +5356,85 @@ describe('fleet command support', () => {
     expect(createAgentRelay).not.toHaveBeenCalled();
   });
 
+  describe('fleet release sandbox warning', () => {
+    function fixture(status = 'dispatched') {
+      const stdout: string[] = [];
+      const stderr: string[] = [];
+      const receipt = { invocationId: 'inv_release', actionName: 'agent.release', status };
+      const release = vi.fn(async () => receipt);
+      const deleteSandbox = vi.fn();
+      const program = new Command();
+      program.exitOverride();
+      registerFleetCommands(program, {
+        sdk: {
+          createAgentRelay: vi.fn() as never,
+          createWorkspaceRelay: (() => ({
+            agents: {
+              get: async () => {
+                throw { status: 404 };
+              },
+              list: vi.fn(),
+            },
+          })) as never,
+          createWorkspace: vi.fn() as never,
+          log: (message: unknown) => stdout.push(String(message)),
+          error: (message: unknown) => stderr.push(String(message)),
+          exit: ((code: number) => {
+            throw new Error(`CLI exit ${code}`);
+          }) as never,
+        },
+        createFleetWorkspaceClient: (() => ({ agents: { release } })) as never,
+        deleteCloudFleetSandbox: deleteSandbox as never,
+        retireOwnedBindings: vi.fn(async () => undefined),
+        warn: (message: unknown) => stderr.push(String(message)),
+      });
+      return { program, stdout, stderr, receipt, release, deleteSandbox };
+    }
+
+    it.each([{ options: [] }, { options: ['--delete-agent'] }, { options: ['--delete-agent', '--wait'] }])(
+      'warns once for a dispatched release with options $options and preserves JSON stdout',
+      async ({ options }) => {
+        const { program, stdout, stderr, receipt, deleteSandbox } = fixture();
+        await program.parseAsync(['fleet', 'release', 'worker', '--workspace-key', 'rk_test', ...options], {
+          from: 'user',
+        });
+
+        expect(stdout).toHaveLength(1);
+        expect(JSON.parse(stdout[0]!)).toMatchObject(receipt);
+        expect(stderr).toHaveLength(1);
+        expect(stderr[0]).toContain('Release was dispatched');
+        expect(stderr[0]).toContain('Cloud/provider sandbox may keep running and incurring cost');
+        expect(stderr[0]).toContain('`fleet release` does not tear it down');
+        expect(deleteSandbox).not.toHaveBeenCalled();
+      }
+    );
+
+    it.each(['pending', 'completed', 'failed'])(
+      'does not claim dispatch for a %s release acknowledgement',
+      async (status) => {
+        const { program, stdout, stderr, receipt } = fixture(status);
+        await program.parseAsync(['fleet', 'release', 'worker', '--workspace-key', 'rk_test'], {
+          from: 'user',
+        });
+        expect(stdout).toHaveLength(1);
+        expect(JSON.parse(stdout[0]!)).toEqual(receipt);
+        expect(stderr).toEqual([]);
+      }
+    );
+
+    it('does not claim dispatch when release fails', async () => {
+      const { program, stdout, stderr, release } = fixture();
+      release.mockRejectedValueOnce(new Error('release unavailable'));
+      await expect(
+        program.parseAsync(['fleet', 'release', 'worker', '--workspace-key', 'rk_test'], {
+          from: 'user',
+        })
+      ).rejects.toThrow('CLI exit 1');
+      expect(stdout).toEqual([]);
+      expect(stderr).toEqual(['release unavailable']);
+    });
+  });
+
   it('fleet release delegates to the workspace lifecycle API with a default reason and actor', async () => {
     const release = vi.fn(async () => ({
       name: 'api-worker',
