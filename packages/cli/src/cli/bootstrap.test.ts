@@ -505,6 +505,7 @@ describe('install.sh quick start', () => {
     expect(usageFunction).not.toBe('');
     const commands = quickStartCommands('latest');
     expect(commands).toContain('node up --background');
+    expect(commands).toContain('cloud login');
     const program = createProgram();
     for (const command of commands) {
       let current: Command = program;
@@ -521,8 +522,8 @@ describe('install.sh quick start', () => {
   });
 
   it('keeps the top-level up/down forms for pinned installs older than 9.2.2', () => {
-    expect(quickStartCommands('9.2.1')).toEqual(['up --background', 'status', 'down']);
-    expect(quickStartCommands('9.2.2')).toEqual(['node up --background', 'status', 'node down']);
-    expect(quickStartCommands('13.1.5')).toEqual(['node up --background', 'status', 'node down']);
+    expect(quickStartCommands('9.2.1')).toEqual(['cloud login', 'up --background', 'status', 'down']);
+    expect(quickStartCommands('9.2.2')).toEqual(['cloud login', 'node up --background', 'status', 'node down']);
+    expect(quickStartCommands('13.1.5')).toEqual(['cloud login', 'node up --background', 'status', 'node down']);
   });
 });
