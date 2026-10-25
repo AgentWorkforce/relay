@@ -13,7 +13,7 @@
     "url": "git+https://github.com/AgentWorkforce/relay.git",
     "directory": "packages/broker-darwin-x64"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "publishConfig": {
     "access": "public"
   }
