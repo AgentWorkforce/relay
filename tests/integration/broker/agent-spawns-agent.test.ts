@@ -49,7 +49,7 @@ function getRelayInboundFromAgent(events: BrokerEvent[], agentName: string): Bro
  * send it a message, and verify it can respond using MCP tools.
  */
 async function testAgentAddSpawn(
-  cli: 'claude' | 'codex' | 'gemini' | 'aider' | 'goose',
+  cli: 'claude' | 'codex',
   harness: BrokerHarness,
   opts: { initWaitMs?: number; responseWaitMs?: number } = {}
 ): Promise<void> {
@@ -151,26 +151,3 @@ test('agent-spawns-agent: codex via Agent Relay API has MCP tools', { timeout: 1
     await harness.stop();
   }
 });
-
-// ══════════════════════════════════════════════════════════════════════════════
-// GEMINI
-// ══════════════════════════════════════════════════════════════════════════════
-
-test('agent-spawns-agent: gemini via Agent Relay API has MCP tools', { timeout: 180_000 }, async (t) => {
-  if (skipIfMissing(t)) return;
-  if (skipIfNotRealCli(t)) return;
-  if (skipIfCliMissing(t, 'gemini')) return;
-
-  const harness = new BrokerHarness();
-  await harness.start();
-  try {
-    await testAgentAddSpawn('gemini', harness);
-  } finally {
-    await harness.stop();
-  }
-});
-
-// Note: opencode and droid are not in the Relaycast API's cli enum,
-// so they can't be spawned via agent_add. They are only spawnable via
-// the SDK's spawnPty (which uses the broker's spawn_agent frame path).
-// Those paths are covered by the existing mcp-injection.test.ts tests.

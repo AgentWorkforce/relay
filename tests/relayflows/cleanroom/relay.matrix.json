@@ -638,7 +638,7 @@
           "id": "real-provider-harness-matrix",
           "title": "Authenticated provider lifecycle and message consumption matrix",
           "kind": "coverage-gap",
-          "reason": "Requires isolated provider credentials and real Claude, Codex, Gemini, OpenCode, Droid, Cursor, Aider, Goose and Grok runs.",
+          "reason": "Requires isolated provider credentials and real Claude, Codex, OpenCode and Grok runs.",
           "evidence": "integration",
           "coversCategories": ["harnesses"]
         }

@@ -2,7 +2,7 @@
  * CLI availability helpers for real CLI integration tests.
  *
  * Provides skip logic, CLI detection, and shared test utilities
- * for spawning actual AI CLI tools (claude, codex, gemini, aider, goose, droid, opencode).
+ * for spawning supported AI CLI tools.
  */
 import { execSync } from 'node:child_process';
 import type { TestContext } from 'node:test';
@@ -51,7 +51,7 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const PREFERRED_CLIS = ['claude', 'codex', 'gemini', 'aider', 'goose', 'droid', 'opencode'];
+const PREFERRED_CLIS = ['claude', 'codex', 'opencode', 'grok', 'muse', 'devin'];
 
 /**
  * Return the first available CLI from the preference list, or null.

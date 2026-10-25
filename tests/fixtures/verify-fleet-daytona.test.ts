@@ -226,11 +226,9 @@ function operationRecord(operation: {
   const commandLeaves = Object.entries(fixtureMatrix.commandSurface)
     .filter(([, ids]) => (ids as string[]).includes(operation.id))
     .map(([commandLeaf]) => commandLeaf);
-  const fleetProvider = operation.id.match(
-    /^fleet-spawn-provider-(claude|codex|gemini|aider|goose|grok|opencode)$/
-  )?.[1];
+  const fleetProvider = operation.id.match(/^fleet-spawn-provider-(claude|codex|grok|opencode)$/)?.[1];
   const nodeProvider = operation.id.match(
-    /^node-agent-spawn-provider-(claude|codex|gemini|aider|goose|grok|opencode|droid|cursor|pi|deepagents)(?:-native)?$/
+    /^node-agent-spawn-provider-(claude|codex|grok|opencode|pi|deepagents)(?:-native)?$/
   )?.[1];
   const fleetPlacement = operation.id.startsWith('fleet-spawn-') && !operation.id.includes('reject');
   const identityLane =
@@ -300,13 +298,14 @@ function operationRecord(operation: {
           observedIdentitySource: 'node-agent-list',
         }
       : {}),
-    ...(['fleet-spawn-reject-droid', 'fleet-spawn-reject-unavailable-provider'].includes(operation.id)
+    ...(/^(?:fleet-spawn|node-agent-spawn)-reject-(?:gemini|cursor|aider|goose|droid)$/.test(operation.id) ||
+    operation.id === 'fleet-spawn-reject-unavailable-provider'
       ? {
           partialCreationProof: {
             targetName:
-              (operation.id === 'fleet-spawn-reject-droid'
-                ? 'fleet-spawn-provider-droid'
-                : 'fleet-spawn-unavailable-provider') + `-${NONCE.slice(0, 16)}`,
+              (operation.id === 'fleet-spawn-reject-unavailable-provider'
+                ? 'fleet-spawn-unavailable-provider'
+                : operation.id) + `-${NONCE.slice(0, 16)}`,
             before: {
               agentNames: [],
               fleetNodeKeys: [],
@@ -1045,7 +1044,7 @@ describe('complete Daytona Fleet board', () => {
         'fleet-spawn-provider-opencode',
         'node-agent-spawn-codex-auto-a',
         'node-agent-spawn-codex-auto-b',
-        'node-agent-spawn-provider-droid',
+        'node-agent-spawn-reject-droid',
         'node-agent-spawn-provider-claude-native',
         'node-agent-spawn-provider-opencode-native',
         'node-agent-spawn-provider-pi-native',
@@ -1396,7 +1395,7 @@ describe('complete Daytona Fleet board', () => {
     const partialCreation = structuredClone(evidence);
     partialCreation.operations
       .find(({ id }) => id === 'fleet-spawn-reject-droid')
-      .partialCreationProof.after.agentNames.push('fleet-spawn-provider-droid-aaaaaaaaaaaaaaaa');
+      .partialCreationProof.after.agentNames.push('fleet-spawn-reject-droid-aaaaaaaaaaaaaaaa');
     expect(() => validateFleetEvidence(partialCreation, matrix)).toThrow(/no agent, worker process/);
 
     const forgedIdentity = structuredClone(evidence);
@@ -2141,7 +2140,7 @@ describe('complete Daytona Fleet board', () => {
 
     const incomplete = structuredClone(matrix);
     incomplete.operations = incomplete.operations.filter(
-      ({ id }: { id: string }) => id !== 'fleet-spawn-provider-gemini'
+      ({ id }: { id: string }) => id !== 'fleet-spawn-reject-gemini'
     );
     incomplete.operations.push({ id: 'unmapped-replacement', group: 'fixture', expect: 'success' });
     expect(() => validateFleetMatrix(incomplete)).toThrow(

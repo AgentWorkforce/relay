@@ -48,7 +48,7 @@ To delegate work, call:
 Required fields: name (unique string), cli (which AI tool to use), task (full instructions for the relay worker).
 The relay worker will DM you "ACK: <understanding>" when it starts and "DONE: <result>" when complete.
 
-**CLI options**: cli: "claude" (Claude Code), cli: "codex" (OpenAI Codex), cli: "gemini" (Google Gemini), cli: "opencode".
+**CLI options**: cli: "claude" (Claude Code), cli: "codex" (OpenAI Codex), cli: "opencode".
 **Model pinning** (Claude only): add model to specify a tier — "claude-opus-4-8" (Opus, most capable), "claude-sonnet-4-6" (Sonnet, balanced), "claude-haiku-4-5-20251001" (Haiku, fast).
 Examples: add_agent({ name: "CodexWorker", cli: "codex", task: "..." }) · add_agent({ name: "OpusWorker", cli: "claude", model: "claude-opus-4-8", task: "..." })
 

@@ -53,7 +53,7 @@ npm run eval:toolcheck
 # Live evals (spawn real agent CLIs) — gated, needs the broker binary + CLIs
 npm run eval                 # realistic tier, default harness matrix
 npm run eval:claude          # claude only, realistic tier
-npm run eval:matrix          # claude, codex, gemini, grok
+npm run eval:matrix          # claude, codex, grok, opencode
 
 # Direct runner flags (after `npm run eval:build`)
 cd tests/integration/broker

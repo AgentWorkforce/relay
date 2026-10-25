@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { AgentRelayClient, RelayCast } from '@agent-relay/sdk';
 
-const ALLOWED_CLIS = ['claude', 'codex', 'gemini', 'aider', 'goose'];
+const ALLOWED_CLIS = ['claude', 'codex', 'opencode', 'grok', 'muse', 'devin'];
 const DELIVERY_PROGRESS_KINDS = new Set([
   'delivery_queued',
   'delivery_injected',
@@ -58,7 +58,7 @@ function normalizeCli(requestedCli) {
   if (ALLOWED_CLIS.includes(requestedCli)) {
     return requestedCli;
   }
-  return 'gemini';
+  return 'claude';
 }
 
 async function ensureApiKey() {
@@ -145,7 +145,7 @@ export async function runCurrentSdkScenario(fileUrl, requestedCli = process.argv
     throw new Error(`No current SDK scenario registered for ${fileName}`);
   }
 
-  const cli = normalizeCli(requestedCli ?? 'gemini');
+  const cli = normalizeCli(requestedCli ?? 'claude');
   const runId = uniqueId(fileName.replace(/\.[^.]+$/, ''));
   const channelName = `ch-${runId}`;
   const senderName = `orchestrator-${runId}`;

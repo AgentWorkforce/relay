@@ -6,7 +6,9 @@
 
 version: '1.0'
 
-# CLI tools with their versions and model configurations
+# CLI tools with their versions and model configurations. Retired entries remain
+# as source-history metadata with spawn_supported: false; codegen and version
+# maintenance publish only active spawn providers.
 clis:
   claude:
     name: 'Claude Code'
@@ -76,6 +78,7 @@ clis:
         default_reasoning_effort: 'high'
 
   gemini:
+    spawn_supported: false
     name: 'Gemini CLI'
     package: '@google/gemini-cli'
     npm_link: 'https://www.npmjs.com/package/@google/gemini-cli'
@@ -100,6 +103,7 @@ clis:
         label: 'Gemini 2.5 Flash Lite'
 
   cursor:
+    spawn_supported: false
     name: 'Cursor'
     package: 'cursor'
     version: '2026.02.27-e7d2ef6'
@@ -400,6 +404,7 @@ clis:
         label: 'SWE-1.6'
 
   droid:
+    spawn_supported: false
     name: 'Droid'
     package: 'droid'
     version: '0.1.0'
@@ -590,6 +595,7 @@ clis:
         label: 'Grok Composer 2.5 Fast'
 
   aider:
+    spawn_supported: false
     name: 'Aider'
     package: 'aider-chat'
     version: '0.72.1'
@@ -597,6 +603,7 @@ clis:
     models: {}
 
   goose:
+    spawn_supported: false
     name: 'Goose'
     package: 'goose-ai'
     version: '1.0.16'

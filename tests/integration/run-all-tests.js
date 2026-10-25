@@ -33,10 +33,10 @@ for (const arg of args) {
     const value = arg.split('=')[1];
     if (value === 'both') {
       cliTypes = ['claude', 'codex'];
-    } else if (['claude', 'codex', 'gemini'].includes(value)) {
+    } else if (['claude', 'codex'].includes(value)) {
       cliTypes = [value];
     } else {
-      console.error(`Invalid CLI: ${value}. Must be one of: claude, codex, gemini, both`);
+      console.error(`Invalid CLI: ${value}. Must be one of: claude, codex, both`);
       process.exit(1);
     }
   }

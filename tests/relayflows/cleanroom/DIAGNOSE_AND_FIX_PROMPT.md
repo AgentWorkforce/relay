@@ -339,13 +339,17 @@ ID or private credential file, but it cannot manufacture ownership after an
 unknown POST outcome.
 
 The stable failures were: topology/snapshot parity; `fleet spawn` via node
-alias, automatic owned placement, and session reference; Fleet Claude, Gemini,
-Aider, Goose, and Grok providers; root Relayfile mount; `fleet release
+alias, automatic owned placement, and session reference; Fleet Claude and Grok
+providers; root Relayfile mount; `fleet release
 --delete-agent`; Fleet config; post-ready steer on node A; `node up` while
 running and after down; direct Codex native, task-exit, and exit-after-task;
-direct Claude, Gemini, Droid, Aider, Goose, Grok, Cursor, Pi native, and
-DeepAgents native providers; attach passthrough; message hold, flush, and auto;
+direct Claude, Grok, Pi native, and DeepAgents native providers; attach
+passthrough; message hold, flush, and auto;
 direct node-agent release; and final agent-identity reconciliation.
+
+Gemini, local Cursor CLI, Aider, Goose, and Droid now have expected-rejection
+operations that require `provider_removed` and prove no agent, worker process,
+Cloud record, or sandbox was created.
 
 The flaky operations were: node A provisioning and initial sentinel; targeted
 Fleet spawn by `--node`; Fleet `--no-confirm` and metadata/channel/model/cwd;

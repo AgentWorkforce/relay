@@ -51,6 +51,9 @@ const CANDIDATE_SURFACES = new Set([
   'operator-and-daytona-candidate',
 ]);
 const OPTION_COVERAGE_STATUSES = new Set(['supported', 'unsupported', 'skipped']);
+const ACTIVE_FLEET_PROVIDERS = ['claude', 'codex', 'grok', 'opencode'];
+const ACTIVE_DIRECT_NODE_PROVIDERS = ['claude', 'grok', 'opencode'];
+const RETIRED_LOCAL_PROVIDERS = ['gemini', 'cursor', 'aider', 'goose', 'droid'];
 const SECRET_OPTION_NAMES = new Set(['--api-key', '--join-ticket', '--token', '--wk', '--workspace-key']);
 // Kept local and dependency-free (like scripts/pr-proof/run-cloud.mjs's
 // LIVE_CREDENTIAL and scripts/verify-features/escalation-status.mjs's
@@ -82,7 +85,6 @@ const KNOWN_SECRET_ENV = [
   'DAYTONA_API_KEY',
   'OPENAI_API_KEY',
   'ANTHROPIC_API_KEY',
-  'GEMINI_API_KEY',
   'CLOUD_API_ACCESS_TOKEN',
   'CLOUD_API_REFRESH_TOKEN',
 ];
@@ -1626,27 +1628,22 @@ export function validateFleetMatrix(matrix) {
   ]) {
     if (!ids.has(required)) throw new Error(`matrix is missing required operation ${required}`);
   }
-  const fleetProviders = ['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode'];
-  const nodeProviders = [
-    'claude',
-    'gemini',
-    'droid',
-    'aider',
-    'goose',
-    'grok',
-    'opencode',
-    'cursor',
-    'pi-native',
-    'deepagents-native',
-  ];
-  for (const provider of fleetProviders) {
+  for (const provider of ACTIVE_FLEET_PROVIDERS) {
     if (!ids.has(`fleet-spawn-provider-${provider}`)) {
       throw new Error(`matrix is missing fleet provider ${provider}`);
     }
   }
-  for (const provider of nodeProviders) {
+  for (const provider of [...ACTIVE_DIRECT_NODE_PROVIDERS, 'pi-native', 'deepagents-native']) {
     if (!ids.has(`node-agent-spawn-provider-${provider}`)) {
       throw new Error(`matrix is missing node agent provider ${provider}`);
+    }
+  }
+  for (const provider of RETIRED_LOCAL_PROVIDERS) {
+    const scope = provider === 'cursor' ? ['node-agent-spawn'] : ['fleet-spawn', 'node-agent-spawn'];
+    for (const prefix of scope) {
+      if (!ids.has(`${prefix}-reject-${provider}`)) {
+        throw new Error(`matrix is missing ${prefix} retirement check for ${provider}`);
+      }
     }
   }
   return matrix;
@@ -3516,14 +3513,16 @@ export function validateFleetEvidence(evidence, matrix) {
       }
     }
 
+    const isRejectedProviderSpawn =
+      /^(?:fleet-spawn|node-agent-spawn)-reject-(?:gemini|cursor|aider|goose|droid)$/.test(operation.id);
     if (
-      ['fleet-spawn-reject-droid', 'fleet-spawn-reject-unavailable-provider'].includes(operation.id) &&
+      (isRejectedProviderSpawn || operation.id === 'fleet-spawn-reject-unavailable-provider') &&
       operation.status === 'pass'
     ) {
       const targetName =
-        operation.id === 'fleet-spawn-reject-droid'
-          ? `fleet-spawn-provider-droid-${evidence.nonce.slice(0, 16)}`
-          : `fleet-spawn-unavailable-provider-${evidence.nonce.slice(0, 16)}`;
+        operation.id === 'fleet-spawn-reject-unavailable-provider'
+          ? `fleet-spawn-unavailable-provider-${evidence.nonce.slice(0, 16)}`
+          : `${operation.id}-${evidence.nonce.slice(0, 16)}`;
       if (!noPartialCreationProofPass(operation.partialCreationProof, targetName)) {
         throw new Error(
           `${operation.id} did not prove no agent, worker process, Cloud record, or Daytona sandbox was created`
@@ -3537,11 +3536,12 @@ export function validateFleetEvidence(evidence, matrix) {
         operation.group === 'node-agent-provider' ||
         operation.group === 'node-agent-spawn') &&
       (operation.group !== 'node-agent-spawn' || operation.expect !== 'sentinel-and-exit') &&
-      !['fleet-spawn-reject-droid', 'fleet-spawn-reject-unavailable-provider'].includes(operation.id)
+      !isRejectedProviderSpawn &&
+      operation.id !== 'fleet-spawn-reject-unavailable-provider'
     ) {
       const expectedProvider =
         operation.id.match(
-          /^(?:fleet-spawn-provider|node-agent-spawn-provider)-(claude|codex|gemini|aider|goose|grok|opencode|droid|cursor|pi|deepagents)(?:-native)?$/
+          /^(?:fleet-spawn-provider|node-agent-spawn-provider)-(claude|codex|grok|opencode|pi|deepagents)(?:-native)?$/
         )?.[1] ?? 'codex';
       const expectedRuntime =
         (operation.group === 'node-agent-provider' || operation.group === 'node-agent-spawn') &&
@@ -5408,14 +5408,13 @@ class FleetBoard {
   async fleetProviderMatrix() {
     const availableNodes = this.availableBoardNodes();
     if (availableNodes.length === 0) {
-      for (const provider of ['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode']) {
+      for (const provider of ACTIVE_FLEET_PROVIDERS) {
         await this.derived(`fleet-spawn-provider-${provider}`, {
           blockedReason: 'no live owned board node was available',
         });
       }
     } else {
-      const providers = ['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'opencode'];
-      for (const [index, provider] of providers.entries()) {
+      for (const [index, provider] of ACTIVE_FLEET_PROVIDERS.entries()) {
         const node = availableNodes[index % availableNodes.length];
         const id = `fleet-spawn-provider-${provider}`;
         const agentName = `${id}-${this.short}`;
@@ -5433,28 +5432,31 @@ class FleetBoard {
         await this.releaseSupport(agentName, node);
       }
     }
-    const rejectedName = `fleet-spawn-provider-droid-${this.short}`;
-    await this.record('fleet-spawn-reject-droid', async () => {
-      const before = await this.captureNoPartialCreationProof(rejectedName);
-      const result = await execute(
-        this.cliArgv(
-          'fleet',
-          'spawn',
-          'droid',
-          '--name',
-          rejectedName,
-          '--task',
-          'This must be rejected by the public Fleet parser.'
-        ),
-        { timeoutMs: 15_000 }
-      );
-      const after = await this.captureNoPartialCreationProof(rejectedName);
-      return {
-        ...stripPrivateExecution(result),
-        partialCreationProof: { targetName: rejectedName, before, after },
-        summary: `${result.stderr}\nnoPartialCreation=${noPartialCreationProofPass({ targetName: rejectedName, before, after }, rejectedName)}`,
-      };
-    });
+    for (const provider of RETIRED_LOCAL_PROVIDERS.filter((candidate) => candidate !== 'cursor')) {
+      const id = `fleet-spawn-reject-${provider}`;
+      const rejectedName = `${id}-${this.short}`;
+      await this.record(id, async () => {
+        const before = await this.captureNoPartialCreationProof(rejectedName);
+        const result = await execute(
+          this.cliArgv(
+            'fleet',
+            'spawn',
+            provider,
+            '--name',
+            rejectedName,
+            '--task',
+            'This retired provider must be rejected before any spawn side effect.'
+          ),
+          { timeoutMs: 15_000 }
+        );
+        const after = await this.captureNoPartialCreationProof(rejectedName);
+        return {
+          ...stripPrivateExecution(result),
+          partialCreationProof: { targetName: rejectedName, before, after },
+          summary: `${result.stderr}\nnoPartialCreation=${noPartialCreationProofPass({ targetName: rejectedName, before, after }, rejectedName)}`,
+        };
+      });
+    }
     await this.record('fleet-spawn-reject-unavailable-provider', async () => {
       const rejectedName = `fleet-spawn-unavailable-provider-${this.short}`;
       const before = await this.captureNoPartialCreationProof(rejectedName);
@@ -6027,6 +6029,29 @@ class FleetBoard {
     });
   }
 
+  async directNodeSpawnRejection(node, provider) {
+    const id = `node-agent-spawn-reject-${provider}`;
+    if (!node?.id || this.taintedNodeIds.has(node.id)) {
+      return this.derived(id, { blockedReason: `board node ${node?.letter ?? '?'} unavailable` });
+    }
+    const rejectedName = `${id}-${this.short}`;
+    return this.record(id, async () => {
+      const before = await this.captureNoPartialCreationProof(rejectedName);
+      const { args } = buildDirectNodeSpawnPlan(
+        provider,
+        rejectedName,
+        `${id.replace(/-/g, '_').toUpperCase()}_${this.short.toUpperCase()}_MUST_NOT_RUN`
+      );
+      const result = await execute(this.inside(node.id, ...args), { timeoutMs: 15_000 });
+      const after = await this.captureNoPartialCreationProof(rejectedName);
+      return {
+        ...stripPrivateExecution(result),
+        partialCreationProof: { targetName: rejectedName, before, after },
+        summary: `${result.stderr}\nnoPartialCreation=${noPartialCreationProofPass({ targetName: rejectedName, before, after }, rejectedName)}`,
+      };
+    });
+  }
+
   async nodeSpawnMatrix() {
     const nodes = this.availableBoardNodes();
     if (nodes.length === 0) {
@@ -6071,19 +6096,13 @@ class FleetBoard {
       expectExit: true,
     });
     await this.releaseSupport(`node-agent-spawn-exit-after-task-${this.short}`, exitAfterNode, 'node');
-    for (const [index, provider] of [
-      'claude',
-      'gemini',
-      'droid',
-      'aider',
-      'goose',
-      'grok',
-      'opencode',
-      'cursor',
-    ].entries()) {
+    for (const [index, provider] of ACTIVE_DIRECT_NODE_PROVIDERS.entries()) {
       const node = nodeAt(index);
       await this.directNodeSpawn(`node-agent-spawn-provider-${provider}`, node, provider);
       await this.releaseSupport(`node-agent-spawn-provider-${provider}-${this.short}`, node, 'node');
+    }
+    for (const [index, provider] of RETIRED_LOCAL_PROVIDERS.entries()) {
+      await this.directNodeSpawnRejection(nodeAt(index + ACTIVE_DIRECT_NODE_PROVIDERS.length), provider);
     }
     for (const [index, provider] of ['claude', 'opencode', 'pi', 'deepagents'].entries()) {
       const node = nodeAt(index + 8);

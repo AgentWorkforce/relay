@@ -6,7 +6,7 @@
  *   RELAY_INTEGRATION_REAL_CLI=1 node dist/evals/runner.js [flags]
  *
  * Flags:
- *   --harness=claude,codex              Harnesses to run (default: claude,codex,gemini,grok)
+ *   --harness=claude,codex              Harnesses to run (default: claude,codex,grok,opencode)
  *   --harness=opencode:mimo-v2-flash-free  OpenCode with a specific model (free tier)
  *   --scenario=01-dm-roundtrip          Run a single scenario by id
  *   --tier=smoke|realistic|all          Default: realistic
@@ -49,7 +49,7 @@ import {
 import { SCHEMA_VERSION } from './types.js';
 import type { EvalReport, EvalScenario, EvalTier, MatrixReport, MetricSet, ScenarioResult } from './types.js';
 
-const DEFAULT_HARNESSES = ['claude', 'codex', 'gemini', 'grok'];
+const DEFAULT_HARNESSES = ['claude', 'codex', 'grok', 'opencode'];
 
 /** Shorthand aliases for Claude model ids. */
 const CLAUDE_MODEL_ALIASES: Record<string, string> = {

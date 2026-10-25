@@ -6,6 +6,12 @@ describe('CLI auth config', () => {
     expect(validateAllProviderConfigs()).toEqual([]);
   });
 
+  it('does not advertise retired local providers for cloud connect', () => {
+    for (const provider of ['google', 'cursor', 'droid', 'aider', 'goose']) {
+      expect(CLI_AUTH_CONFIG).not.toHaveProperty(provider);
+    }
+  });
+
   it('configures grok (xai) with a device-code flow and the grok auth file', () => {
     const xai = CLI_AUTH_CONFIG.xai;
     expect(xai.command).toBe('grok');

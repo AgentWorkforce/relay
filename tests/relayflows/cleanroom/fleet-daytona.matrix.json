@@ -39,9 +39,9 @@
       "fleet-spawn-metadata-channel-model-cwd",
       "fleet-spawn-provider-claude",
       "fleet-spawn-provider-codex",
-      "fleet-spawn-provider-gemini",
-      "fleet-spawn-provider-aider",
-      "fleet-spawn-provider-goose",
+      "fleet-spawn-reject-gemini",
+      "fleet-spawn-reject-aider",
+      "fleet-spawn-reject-goose",
       "fleet-spawn-provider-grok",
       "fleet-spawn-provider-opencode",
       "fleet-spawn-reject-droid",
@@ -67,15 +67,15 @@
       "node-agent-spawn-task-exit",
       "node-agent-spawn-exit-after-task",
       "node-agent-spawn-provider-claude",
-      "node-agent-spawn-provider-gemini",
-      "node-agent-spawn-provider-droid",
-      "node-agent-spawn-provider-aider",
-      "node-agent-spawn-provider-goose",
+      "node-agent-spawn-reject-gemini",
+      "node-agent-spawn-reject-droid",
+      "node-agent-spawn-reject-aider",
+      "node-agent-spawn-reject-goose",
       "node-agent-spawn-provider-grok",
       "node-agent-spawn-provider-opencode",
       "node-agent-spawn-provider-claude-native",
       "node-agent-spawn-provider-opencode-native",
-      "node-agent-spawn-provider-cursor",
+      "node-agent-spawn-reject-cursor",
       "node-agent-spawn-provider-pi-native",
       "node-agent-spawn-provider-deepagents-native",
       "node-agent-set-model-app-server-a",
@@ -1247,9 +1247,9 @@
       "fleet-spawn-metadata-channel-model-cwd": "targeted-fleet-spawn",
       "fleet-spawn-provider-claude": "provider-spawn",
       "fleet-spawn-provider-codex": "provider-spawn",
-      "fleet-spawn-provider-gemini": "provider-spawn",
-      "fleet-spawn-provider-aider": "provider-spawn",
-      "fleet-spawn-provider-goose": "provider-spawn",
+      "fleet-spawn-reject-gemini": "expected-rejection",
+      "fleet-spawn-reject-aider": "expected-rejection",
+      "fleet-spawn-reject-goose": "expected-rejection",
       "fleet-spawn-provider-grok": "provider-spawn",
       "fleet-spawn-provider-opencode": "provider-spawn",
       "fleet-spawn-reject-droid": "expected-rejection",
@@ -1293,15 +1293,15 @@
       "node-agent-spawn-task-exit": "task-exit-spawn",
       "node-agent-spawn-exit-after-task": "task-exit-spawn",
       "node-agent-spawn-provider-claude": "direct-node-spawn",
-      "node-agent-spawn-provider-gemini": "direct-node-spawn",
-      "node-agent-spawn-provider-droid": "direct-node-spawn",
-      "node-agent-spawn-provider-aider": "direct-node-spawn",
-      "node-agent-spawn-provider-goose": "direct-node-spawn",
+      "node-agent-spawn-reject-gemini": "expected-rejection",
+      "node-agent-spawn-reject-droid": "expected-rejection",
+      "node-agent-spawn-reject-aider": "expected-rejection",
+      "node-agent-spawn-reject-goose": "expected-rejection",
       "node-agent-spawn-provider-grok": "direct-node-spawn",
       "node-agent-spawn-provider-opencode": "direct-node-spawn",
       "node-agent-spawn-provider-claude-native": "direct-node-spawn",
       "node-agent-spawn-provider-opencode-native": "direct-node-spawn",
-      "node-agent-spawn-provider-cursor": "direct-node-spawn",
+      "node-agent-spawn-reject-cursor": "expected-rejection",
       "node-agent-spawn-provider-pi-native": "direct-node-spawn",
       "node-agent-spawn-provider-deepagents-native": "direct-node-spawn",
       "node-agent-new-view": "direct-node-spawn",
@@ -1437,21 +1437,24 @@
       "argvMustContain": ["codex"]
     },
     {
-      "id": "fleet-spawn-provider-gemini",
+      "id": "fleet-spawn-reject-gemini",
       "group": "fleet-provider",
-      "expect": "sentinel",
+      "expect": "expected-failure",
+      "mustContain": "provider_removed",
       "argvMustContain": ["gemini"]
     },
     {
-      "id": "fleet-spawn-provider-aider",
+      "id": "fleet-spawn-reject-aider",
       "group": "fleet-provider",
-      "expect": "sentinel",
+      "expect": "expected-failure",
+      "mustContain": "provider_removed",
       "argvMustContain": ["aider"]
     },
     {
-      "id": "fleet-spawn-provider-goose",
+      "id": "fleet-spawn-reject-goose",
       "group": "fleet-provider",
-      "expect": "sentinel",
+      "expect": "expected-failure",
+      "mustContain": "provider_removed",
       "argvMustContain": ["goose"]
     },
     {
@@ -1470,7 +1473,7 @@
       "id": "fleet-spawn-reject-droid",
       "group": "fleet-provider",
       "expect": "expected-failure",
-      "mustContain": "unsupported CLI",
+      "mustContain": "provider_removed",
       "argvMustContain": ["droid"]
     },
     {
@@ -1632,27 +1635,31 @@
       "argvMustContain": ["claude"]
     },
     {
-      "id": "node-agent-spawn-provider-gemini",
+      "id": "node-agent-spawn-reject-gemini",
       "group": "node-agent-provider",
-      "expect": "sentinel",
+      "expect": "expected-failure",
+      "mustContain": "provider_removed",
       "argvMustContain": ["gemini"]
     },
     {
-      "id": "node-agent-spawn-provider-droid",
+      "id": "node-agent-spawn-reject-droid",
       "group": "node-agent-provider",
-      "expect": "sentinel",
+      "expect": "expected-failure",
+      "mustContain": "provider_removed",
       "argvMustContain": ["droid"]
     },
     {
-      "id": "node-agent-spawn-provider-aider",
+      "id": "node-agent-spawn-reject-aider",
       "group": "node-agent-provider",
-      "expect": "sentinel",
+      "expect": "expected-failure",
+      "mustContain": "provider_removed",
       "argvMustContain": ["aider"]
     },
     {
-      "id": "node-agent-spawn-provider-goose",
+      "id": "node-agent-spawn-reject-goose",
       "group": "node-agent-provider",
-      "expect": "sentinel",
+      "expect": "expected-failure",
+      "mustContain": "provider_removed",
       "argvMustContain": ["goose"]
     },
     {
@@ -1680,9 +1687,10 @@
       "argvMustContain": ["opencode", "--runtime", "native"]
     },
     {
-      "id": "node-agent-spawn-provider-cursor",
+      "id": "node-agent-spawn-reject-cursor",
       "group": "node-agent-provider",
-      "expect": "sentinel",
+      "expect": "expected-failure",
+      "mustContain": "provider_removed",
       "argvMustContain": ["cursor"]
     },
     {

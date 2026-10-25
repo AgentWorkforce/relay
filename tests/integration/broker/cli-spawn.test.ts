@@ -1,7 +1,7 @@
 /**
  * Real CLI spawn + delivery integration tests.
  *
- * Tests that actual AI CLI tools (claude, codex, gemini, aider, goose, droid, opencode)
+ * Tests that supported AI CLI tools (Claude, Codex, and OpenCode)
  * can be spawned via the broker, stay alive, and receive messages through
  * the full delivery pipeline (queued → injected → ack → verified).
  *
@@ -118,65 +118,27 @@ test('cli-spawn: codex — spawn, deliver, release', { timeout: 60_000 }, async 
   }
 });
 
-test('cli-spawn: gemini — spawn, deliver, release', { timeout: 60_000 }, async (t) => {
-  if (skipIfMissing(t)) return;
-  if (skipIfNotRealCli(t)) return;
-  if (skipIfCliMissing(t, 'gemini')) return;
-
-  const harness = new BrokerHarness();
-  await harness.start();
-
-  try {
-    await testCliSpawnAndDeliver(harness, 'gemini', `gemini-test-${uniqueSuffix()}`);
-  } finally {
-    await harness.stop();
-  }
-});
-
-test('cli-spawn: aider — spawn, deliver, release', { timeout: 60_000 }, async (t) => {
-  if (skipIfMissing(t)) return;
-  if (skipIfNotRealCli(t)) return;
-  if (skipIfCliMissing(t, 'aider')) return;
-
-  const harness = new BrokerHarness();
-  await harness.start();
-
-  try {
-    await testCliSpawnAndDeliver(harness, 'aider', `aider-test-${uniqueSuffix()}`);
-  } finally {
-    await harness.stop();
-  }
-});
-
-test('cli-spawn: goose — spawn, deliver, release', { timeout: 60_000 }, async (t) => {
-  if (skipIfMissing(t)) return;
-  if (skipIfNotRealCli(t)) return;
-  if (skipIfCliMissing(t, 'goose')) return;
-
-  const harness = new BrokerHarness();
-  await harness.start();
-
-  try {
-    await testCliSpawnAndDeliver(harness, 'goose', `goose-test-${uniqueSuffix()}`);
-  } finally {
-    await harness.stop();
-  }
-});
-
-test('cli-spawn: droid — spawn, deliver, release', { timeout: 60_000 }, async (t) => {
-  if (skipIfMissing(t)) return;
-  if (skipIfNotRealCli(t)) return;
-  if (skipIfCliMissing(t, 'droid')) return;
-
-  const harness = new BrokerHarness();
-  await harness.start();
-
-  try {
-    await testCliSpawnAndDeliver(harness, 'droid', `droid-test-${uniqueSuffix()}`);
-  } finally {
-    await harness.stop();
-  }
-});
+for (const [cli, guidance] of [
+  ['gemini', 'supported native provider'],
+  ['cursor-agent', 'cursor-cloud'],
+  ['aider', 'supported native provider'],
+  ['goose', 'supported native provider'],
+  ['droid', 'supported native provider'],
+] as const) {
+  test(`cli-spawn: ${cli} returns provider_removed before launch`, { timeout: 30_000 }, async (t) => {
+    if (skipIfMissing(t)) return;
+    const harness = new BrokerHarness();
+    await harness.start();
+    try {
+      await assert.rejects(
+        harness.spawnAgent(`removed-${cli}-${uniqueSuffix()}`, cli, ['general']),
+        new RegExp(`provider_removed:.*${guidance}`)
+      );
+    } finally {
+      await harness.stop();
+    }
+  });
+}
 
 test('cli-spawn: opencode — spawn, deliver, release', { timeout: 60_000 }, async (t) => {
   if (skipIfMissing(t)) return;

@@ -16,6 +16,7 @@ const registryPath = join(__dirname, 'cli-registry.yaml');
 const outputPath = join(__dirname, '../config/src/cli-registry.generated.ts');
 
 const registry = parse(readFileSync(registryPath, 'utf8'));
+const spawnClis = Object.entries(registry.clis).filter(([, config]) => config.spawn_supported !== false);
 
 function toPascalCase(str) {
   return str.replace(/(^|[-_])(\w)/g, (_, __, c) => c.toUpperCase());
@@ -56,7 +57,7 @@ output += `/**
  */
 export const CLIVersions = {
 `;
-for (const [cli, config] of Object.entries(registry.clis)) {
+for (const [cli, config] of spawnClis) {
   output += `  /** ${config.name} v${config.version} */\n`;
   output += `  ${toConstantCase(cli)}: '${config.version}',\n`;
 }
@@ -70,7 +71,7 @@ output += `/**
  */
 export const CLIs = {
 `;
-for (const [cli, config] of Object.entries(registry.clis)) {
+for (const [cli, config] of spawnClis) {
   output += `  ${toConstantCase(cli)}: '${cli}',\n`;
 }
 output += `} as const;
@@ -80,7 +81,7 @@ export type CLI = (typeof CLIs)[keyof typeof CLIs];
 `;
 
 // Generate models per CLI (constants)
-for (const [cli, config] of Object.entries(registry.clis)) {
+for (const [cli, config] of spawnClis) {
   const pascalCli = toPascalCase(cli);
   const models = config.models || {};
 
@@ -124,7 +125,7 @@ export interface ModelOption {
 
 `;
 
-for (const [cli, config] of Object.entries(registry.clis)) {
+for (const [cli, config] of spawnClis) {
   const constantCli = toConstantCase(cli);
   const models = config.models || {};
 
@@ -144,7 +145,7 @@ export const ${constantCli}_MODEL_OPTIONS: ModelOption[] = [
 }
 
 // Generate model metadata per CLI (keyed by model id)
-for (const [cli, config] of Object.entries(registry.clis)) {
+for (const [cli, config] of spawnClis) {
   const pascalCli = toPascalCase(cli);
   const constantCli = toConstantCase(cli);
   const models = config.models || {};
@@ -178,7 +179,7 @@ output += `/**
  */
 export const Models = {
 `;
-for (const [cli, config] of Object.entries(registry.clis)) {
+for (const [cli, config] of spawnClis) {
   const pascalCli = toPascalCase(cli);
   const models = config.models || {};
   if (Object.keys(models).length > 0) {
@@ -204,7 +205,7 @@ output += `/**
  */
 export const ModelOptions = {
 `;
-for (const [cli, config] of Object.entries(registry.clis)) {
+for (const [cli, config] of spawnClis) {
   const pascalCli = toPascalCase(cli);
   const constantCli = toConstantCase(cli);
   const models = config.models || {};
@@ -221,7 +222,7 @@ output += `/**
  */
 export const ModelMetadata = {
 `;
-for (const [cli, config] of Object.entries(registry.clis)) {
+for (const [cli, config] of spawnClis) {
   const pascalCli = toPascalCase(cli);
   const constantCli = toConstantCase(cli);
   const models = config.models || {};
@@ -233,7 +234,7 @@ output += `} as const;
 
 const MODEL_METADATA_BY_CLI: Record<CLI, Record<string, ModelOption>> = {
 `;
-for (const [cli, config] of Object.entries(registry.clis)) {
+for (const [cli, config] of spawnClis) {
   const constantCli = toConstantCase(cli);
   const models = config.models || {};
   if (Object.keys(models).length > 0) {
@@ -295,7 +296,7 @@ output += `/**
  */
 export const CLIRegistry = {
 `;
-for (const [cli, config] of Object.entries(registry.clis)) {
+for (const [cli, config] of spawnClis) {
   output += `  ${cli}: {
     name: '${config.name}',
     package: '${config.package}',
@@ -315,7 +316,7 @@ output += `/**
  */
 export const DefaultModels = {
 `;
-for (const [cli, config] of Object.entries(registry.clis)) {
+for (const [cli, config] of spawnClis) {
   const models = config.models || {};
   const defaultModel = Object.values(models).find((m) => m.default);
   if (defaultModel) {
