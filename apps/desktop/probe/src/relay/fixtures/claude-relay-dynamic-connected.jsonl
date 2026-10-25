@@ -1,0 +1,2 @@
+{"type":"system","subtype":"session_state_changed"}
+{"type":"system","subtype":"init","session_id":"redacted-session","claude_code_version":"2.1.299","mcp_servers":[{"name":"agent-relay-sessions","status":"connected","source":"dynamic"}],"tools":["mcp__agent-relay-sessions__list_relay_agents","mcp__agent-relay-sessions__send_relay_message","mcp__agent-relay-sessions__list_relay_spawn_targets","mcp__agent-relay-sessions__spawn_relay_agent","mcp__agent-relay-sessions__get_relay_spawn_status","mcp__agent-relay-sessions__release_relay_agent"]}

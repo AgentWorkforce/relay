@@ -1,0 +1,12 @@
+[
+  {
+    "provider": "muse",
+    "source": "oauth",
+    "usage": {
+      "primary": { "usedPercent": 20, "windowMinutes": 300, "resetsAt": "2026-10-14T06:00:00Z" },
+      "secondary": { "usedPercent": 40, "windowMinutes": 10080, "resetsAt": "2026-10-20T00:00:00Z" },
+      "updatedAt": "2026-10-14T02:00:00Z",
+      "identity": { "providerID": "muse", "accountEmail": "person@example.test" }
+    }
+  }
+]

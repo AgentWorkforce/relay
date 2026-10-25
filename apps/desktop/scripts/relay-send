@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""Send a message into a running Claude or Codex session, natively.
+
+A development tool for trying the delivery routes documented in docs/plan.md
+(§9, §10) by hand. No PTY wrapping: every route hands the message to the
+vendor's own queue. It is NOT the durable path -- the app's outbox is; this
+sends once and reports what the vendor said.
+
+  relay-send list
+  relay-send codex   <thread-id|name>   "message"   # codex terminal: `codex queue`
+  relay-send claude  <name|pid|session> "message"   # claude terminal: peer socket
+  relay-send claude-app <session_...|folder> "message"  # Claude desktop: `claude --print --cloud`
+
+  relay-send watch <folder>                         # deliver what an agent writes to <folder>/.relay-outbox
+
+`watch` is for an agent that can write files but not run commands on this Mac
+-- the Claude desktop app's folder sessions run their shell in a Linux sandbox.
+The agent writes one JSON file per message into <folder>/.relay-outbox/:
+
+  {"to": "codex:<thread-id>", "text": "...", "from": "Claude"}
+
+where "to" is codex:<thread>, claude:<session name> or claude-app:<folder|id>.
+Delivered files move to .relay-outbox/sent/, refused ones to .relay-outbox/failed/.
+
+Add --from NAME to label the sender (default: $USER). The message may also come
+on stdin. Reading a Claude terminal session's key file is what lets this talk
+to it; only sessions owned by your own user are reachable.
+"""
+import argparse, glob, json, os, re, shutil, socket, sqlite3, subprocess, sys, time, uuid
+
+HOME = os.path.expanduser("~")
+CLAUDE_SESSIONS = os.path.join(HOME, ".claude", "sessions")
+CODEX_STATE = os.path.join(HOME, ".codex", "state_5.sqlite")
+CLAUDE_APP_SESSIONS = os.path.join(HOME, "Library", "Application Support", "Claude", "local-agent-mode-sessions")
+CLOUD_ID = re.compile(r"^(session|cse)_[A-Za-z0-9]{8,64}$")
+PEER_PROTOCOL = 1
+SETTLE_SECONDS = 5  # how long a half-written outbox file gets to be finished
+
+
+def tool(name, *fallbacks):
+    """An agent's shell often lacks the user's PATH: look in the usual places too."""
+    found = shutil.which(name) or next((p for p in map(os.path.expanduser, fallbacks) if os.access(p, os.X_OK)), None)
+    return found or fail(f"cannot find the {name} command line")
+
+
+def fail(message):
+    sys.exit(f"relay-send: {message}")
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+# -- discovery ---------------------------------------------------------------
+
+def claude_terminals():
+    found = []
+    for path in glob.glob(os.path.join(CLAUDE_SESSIONS, "*.json")):
+        try:
+            record = json.load(open(path))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record.get("pid"), int) and record.get("messagingSocketPath") and alive(record["pid"]):
+            found.append(record)
+    return sorted(found, key=lambda r: r.get("startedAt", 0))
+
+
+def codex_threads(limit=12):
+    if not os.path.exists(CODEX_STATE):
+        return []
+    database = sqlite3.connect(f"file:{CODEX_STATE}?mode=ro", uri=True)
+    try:
+        rows = database.execute(
+            "select id, source, title, cwd from threads order by updated_at desc limit ?", (limit,)
+        ).fetchall()
+    finally:
+        database.close()
+    return rows
+
+
+def claude_app_sessions():
+    found = []
+    for path in glob.glob(os.path.join(CLAUDE_APP_SESSIONS, "*", "*", "remote-session-spaces.json")):
+        try:
+            entries = json.load(open(path)).get("entries", [])
+        except (OSError, ValueError):
+            continue
+        for entry in entries:
+            if CLOUD_ID.match(entry.get("sessionId", "")):
+                found.append((entry["sessionId"], entry.get("folders") or []))
+    return found
+
+
+def first_line(text, width=48):
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip() and not line.strip().startswith("<")]
+    return (lines[0] if lines else "")[:width]
+
+
+def command_list(_):
+    print("claude terminal sessions   (relay-send claude <name>)")
+    for record in claude_terminals():
+        print(f"  {record.get('name', '?'):<24} pid {record['pid']:<7} {record.get('status', '?'):<5} {record.get('cwd', '')}")
+    print("\ncodex threads, newest first   (relay-send codex <id>)   cli = terminal, vscode = desktop app")
+    for thread_id, source, title, cwd in codex_threads():
+        print(f"  {thread_id}  {source:<7} {first_line(title):<48} {os.path.basename(cwd or '')}")
+    print("\nclaude desktop app sessions   (relay-send claude-app <folder|id>)")
+    for session_id, folders in claude_app_sessions():
+        print(f"  {session_id}  {', '.join(os.path.basename(f) for f in folders)}")
+
+
+# -- sending -----------------------------------------------------------------
+
+def send_codex(target, text):
+    # `codex queue` is Codex's own durable per-thread queue; a running TUI
+    # picks the message up as a user turn when the thread is idle.
+    result = subprocess.run([tool("codex", "/Applications/ChatGPT.app/Contents/Resources/codex", "~/.local/bin/codex", "/opt/homebrew/bin/codex"), "queue", "--thread", target, f"--message={text}"], capture_output=True, text=True)
+    output = (result.stdout + result.stderr).strip()
+    if result.returncode != 0:
+        fail(f"codex refused: {output}")
+    print(output)
+
+
+def send_claude_terminal(target, text):
+    sessions = claude_terminals()
+    matches = [r for r in sessions if target in (r.get("name"), str(r["pid"]), r.get("sessionId"))]
+    if len(matches) != 1:
+        names = ", ".join(r.get("name", "?") for r in sessions) or "none running"
+        fail(f"no single Claude terminal session matches {target!r} (running: {names})")
+    record = matches[0]
+    if record.get("peerProtocol") != PEER_PROTOCOL:
+        fail(f"session speaks peer protocol {record.get('peerProtocol')!r}, this tool knows {PEER_PROTOCOL}; refusing")
+    keys = glob.glob(os.path.join(CLAUDE_SESSIONS, f"{record['pid']}.*.key"))
+    if len(keys) != 1:
+        fail("could not find that session's key file")
+    token = json.load(open(keys[0]))["peerToken"]
+
+    message_id = str(uuid.uuid4())
+    frames = [
+        {"type": "auth", "token": token},
+        {"type": "user", "msg_id": message_id, "uuid": str(uuid.uuid4()), "priority": "next",
+         "message": {"role": "user", "content": text}},
+    ]
+    connection = socket.socket(socket.AF_UNIX)
+    connection.settimeout(5)
+    try:
+        connection.connect(record["messagingSocketPath"])
+        connection.sendall("".join(json.dumps(frame) + "\n" for frame in frames).encode())
+    except OSError as error:
+        fail(f"could not reach {record.get('name')}: {error}")
+    finally:
+        connection.close()
+    # The socket does not answer: this confirms the write, not the turn.
+    print(f"Handed message {message_id[:8]} to Claude session {record.get('name')} (pid {record['pid']}, was {record.get('status')}).")
+
+
+def send_claude_app(target, text):
+    session_id = target
+    if not CLOUD_ID.match(target):
+        matches = [sid for sid, folders in claude_app_sessions() if target in [os.path.basename(f) for f in folders]]
+        if len(matches) != 1:
+            fail(f"{target!r} is neither a session id nor the folder of exactly one desktop session (try: relay-send list)")
+        session_id = matches[0]
+    # Text on stdin, from a neutral directory: never argv, no project hooks.
+    result = subprocess.run([tool("claude", "~/.local/bin/claude", "/opt/homebrew/bin/claude"), "--print", "--cloud", session_id], input=text, capture_output=True, text=True, cwd="/tmp", timeout=90)
+    if result.returncode != 0 or "Sent to cloud session." not in result.stdout:
+        fail(f"claude refused: {(result.stderr or result.stdout).strip()}")
+    print(f"Sent to Claude desktop session {session_id}.")
+
+
+def command_watch(args):
+    outbox = os.path.join(os.path.abspath(os.path.expanduser(args.folder)), ".relay-outbox")
+    for sub in ("", "sent", "failed"):
+        os.makedirs(os.path.join(outbox, sub), exist_ok=True)
+    senders = {"codex": send_codex, "claude": send_claude_terminal, "claude-app": send_claude_app}
+    print(f"watching {outbox}  (ctrl-c to stop)", flush=True)
+    while True:
+        for path in sorted(glob.glob(os.path.join(outbox, "*.json"))):
+            name = os.path.basename(path)
+            try:
+                message = json.load(open(path))
+                kind, _, target = str(message["to"]).partition(":")
+                text = str(message["text"]).strip()
+                if kind not in senders or not target or not text:
+                    raise ValueError('needs "to": "codex:|claude:|claude-app:<target>" and a non-empty "text"')
+                sender = str(message.get("from") or "an agent")
+                senders[kind](target, f"[via Agent Relay — from {sender}]\n\n{text}")
+                os.replace(path, os.path.join(outbox, "sent", name))
+                print(f"  {name}: delivered to {kind}:{target}", flush=True)
+            except ValueError as error:
+                # Unreadable JSON may just be a file still being written: an
+                # agent's file tool need not write atomically. Give it time
+                # before calling it bad.
+                if isinstance(error, json.JSONDecodeError) and time.time() - os.path.getmtime(path) < SETTLE_SECONDS:
+                    continue
+                print(f"  {name}: not delivered: {error}", flush=True)
+                os.replace(path, os.path.join(outbox, "failed", name))
+            except (SystemExit, Exception) as error:  # fail() exits; keep watching
+                print(f"  {name}: not delivered: {error}", flush=True)
+                os.replace(path, os.path.join(outbox, "failed", name))
+        time.sleep(1)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("list").set_defaults(run=command_list)
+    watch = commands.add_parser("watch")
+    watch.add_argument("folder")
+    watch.set_defaults(run=command_watch)
+    for name, sender in (("codex", send_codex), ("claude", send_claude_terminal), ("claude-app", send_claude_app)):
+        sub = commands.add_parser(name)
+        sub.add_argument("target")
+        sub.add_argument("message", nargs="?")
+        sub.add_argument("--from", dest="sender", default=os.environ.get("USER", "someone"))
+        sub.set_defaults(run=lambda args, sender=sender: sender(args.target, attributed(args)))
+    args = parser.parse_args()
+    args.run(args)
+
+
+def attributed(args):
+    body = args.message if args.message is not None else sys.stdin.read()
+    if not body.strip():
+        fail("empty message")
+    return f"[via Agent Relay — from {args.sender}]\n\n{body.strip()}"
+
+
+if __name__ == "__main__":
+    main()

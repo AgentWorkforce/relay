@@ -1,0 +1,27 @@
+# SwiftPM build products
+macos/.build/
+macos/.swiftpm/
+*.xcodeproj
+
+# Packaging output (scripts/*.sh and the CI workflows write these at the root)
+/dist/
+/out/
+/probe-build/
+/probe/target/
+*.dmg
+*.icns
+*.iconset/
+*.zip
+
+# Tool caches an agent or editor may place in the checkout
+.npm-cache/
+
+# Python scripts
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Local git worktrees, never committed
+.worktrees/

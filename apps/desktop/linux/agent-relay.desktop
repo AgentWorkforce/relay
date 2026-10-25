@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Agent Relay
+Comment=Connect your coding sessions to Agent Relay
+Exec=agent-relay-desktop %u
+Icon=agent-relay
+Terminal=false
+Categories=Development;
+MimeType=x-scheme-handler/agentrelay;x-scheme-handler/agentrelay-dev;
+StartupNotify=true

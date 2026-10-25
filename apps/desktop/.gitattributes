@@ -1,0 +1,4 @@
+# Shell scripts run under bash on every platform, including MSYS2 on Windows,
+# where a CRLF checkout would break them.
+*.sh text eol=lf
+linux/agent-relay.postinst text eol=lf

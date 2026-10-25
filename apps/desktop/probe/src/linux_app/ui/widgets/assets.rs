@@ -1,0 +1,116 @@
+//! The app's artwork, embedded at build time.
+pub const MARK: &[u8] = include_bytes!("../../../../../assets/agent-relay-mark.svg");
+pub const SYMBOLIC: &[u8] = include_bytes!("../../../../resources/linux/agent-relay-symbolic.svg");
+pub const WORDMARK: &[u8] = include_bytes!("../../../../../assets/agent-relay-wordmark.svg");
+pub const PASEO: &[u8] = include_bytes!("../../../../resources/linux/agents/paseo.png");
+/// The harness marks the Mac app bundles, by file name.
+pub const AGENT_MARKS: [(&str, &[u8]); 11] = [
+    (
+        "capy",
+        include_bytes!("../../../../resources/linux/agents/capy.svg"),
+    ),
+    (
+        "claude",
+        include_bytes!("../../../../resources/linux/agents/claude.svg"),
+    ),
+    (
+        "codex",
+        include_bytes!("../../../../resources/linux/agents/codex.svg"),
+    ),
+    (
+        "devin",
+        include_bytes!("../../../../resources/linux/agents/devin.svg"),
+    ),
+    (
+        "openclaw",
+        include_bytes!("../../../../resources/linux/agents/openclaw.svg"),
+    ),
+    (
+        "hermes",
+        include_bytes!("../../../../resources/linux/agents/hermes.svg"),
+    ),
+    (
+        "cursor",
+        include_bytes!("../../../../resources/linux/agents/cursor.svg"),
+    ),
+    (
+        "grok",
+        include_bytes!("../../../../resources/linux/agents/grok.svg"),
+    ),
+    (
+        "muse",
+        include_bytes!("../../../../resources/linux/agents/muse.svg"),
+    ),
+    (
+        "openai",
+        include_bytes!("../../../../resources/linux/agents/openai.svg"),
+    ),
+    (
+        "opencode",
+        include_bytes!("../../../../resources/linux/agents/opencode.svg"),
+    ),
+];
+/// Single-color glyphs drawn in `currentColor`, named for the SF Symbols
+/// the Mac draws in their place.
+pub const GLYPHS: [(&str, &[u8]); 15] = [
+    (
+        "sparkles",
+        include_bytes!("../../../../resources/linux/glyphs/sparkles.svg"),
+    ),
+    (
+        "square.and.pencil",
+        include_bytes!("../../../../resources/linux/glyphs/square.and.pencil.svg"),
+    ),
+    (
+        "rectangle.split.3x1",
+        include_bytes!("../../../../resources/linux/glyphs/rectangle.split.3x1.svg"),
+    ),
+    (
+        "checkmark.circle.fill",
+        include_bytes!("../../../../resources/linux/glyphs/checkmark.circle.fill.svg"),
+    ),
+    (
+        "arrow.up.circle.fill",
+        include_bytes!("../../../../resources/linux/glyphs/arrow.up.circle.fill.svg"),
+    ),
+    (
+        "clock",
+        include_bytes!("../../../../resources/linux/glyphs/clock.svg"),
+    ),
+    (
+        "desktopcomputer",
+        include_bytes!("../../../../resources/linux/glyphs/desktopcomputer.svg"),
+    ),
+    (
+        "tray.and.arrow.up",
+        include_bytes!("../../../../resources/linux/glyphs/tray.and.arrow.up.svg"),
+    ),
+    (
+        "arrow.triangle.2.circlepath",
+        include_bytes!("../../../../resources/linux/glyphs/arrow.triangle.2.circlepath.svg"),
+    ),
+    (
+        "pause.circle",
+        include_bytes!("../../../../resources/linux/glyphs/pause.circle.svg"),
+    ),
+    (
+        "stop.circle",
+        include_bytes!("../../../../resources/linux/glyphs/stop.circle.svg"),
+    ),
+    (
+        "exclamationmark.circle",
+        include_bytes!("../../../../resources/linux/glyphs/exclamationmark.circle.svg"),
+    ),
+    (
+        "questionmark.circle",
+        include_bytes!("../../../../resources/linux/glyphs/questionmark.circle.svg"),
+    ),
+    (
+        "folder",
+        include_bytes!("../../../../resources/linux/glyphs/folder.svg"),
+    ),
+    (
+        "arrow.triangle.branch",
+        include_bytes!("../../../../resources/linux/glyphs/arrow.triangle.branch.svg"),
+    ),
+];

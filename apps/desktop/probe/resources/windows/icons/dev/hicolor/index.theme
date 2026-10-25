@@ -1,0 +1,11 @@
+[Icon Theme]
+Name=Hicolor
+Comment=The Agent Relay mark for builds from a checkout
+Directories=scalable/apps
+
+[scalable/apps]
+Size=48
+MinSize=16
+MaxSize=512
+Type=Scalable
+Context=Applications

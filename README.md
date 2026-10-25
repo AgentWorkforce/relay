@@ -60,6 +60,16 @@ Or install with npm:
 npm install -g agent-relay
 ```
 
+### Desktop
+
+[Agent Relay Desktop](apps/desktop/README.md) is the native companion app for
+connecting local coding sessions, messaging agents, and sharing session history.
+See the platform guides for [macOS](apps/desktop/macos/README.md),
+[Linux](apps/desktop/linux/README.md), and
+[Windows](apps/desktop/windows/README.md), or follow the
+[agent-driven installation guide](apps/desktop/docs/agent-driven-setup.md) for
+unattended macOS and headless Ubuntu setup.
+
 ### Self Hosting
 
 Agent Relay has self hosting options for each primitive; start with the [self-hosting guide](docs/self-hosting/README.md). We're happy to help you set up the whole system on your environment, just reach out to our team hi(at)agentrelay.com and we'll walk you through it.

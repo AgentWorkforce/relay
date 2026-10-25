@@ -1,0 +1,9 @@
+[
+  {"query":"title: \"Fix login\"", "field":"is", "value":"active", "expected":"title:\"Fix login\" is:active"},
+  {"query":"title:Foo source:claude -harness:grok", "field":"harness", "value":"codex", "expected":"title:Foo harness:codex"},
+  {"query":"title:Foo source:claude harness:codex", "field":"harness", "value":"", "expected":"title:Foo"},
+  {"query":"is:active before:2026-10-11 after:2026-10-01 updated:2026-10-05", "field":"updated", "value":">=2026-10-04", "expected":"is:active updated:>=2026-10-04"},
+  {"query":"is:active before:2026-10-11 after:2026-10-01 updated:2026-10-05", "field":"updated", "value":"", "expected":"is:active"},
+  {"query":"is:active upload:local harness:codex", "field":"upload", "value":"uploaded", "expected":"is:active harness:codex upload:uploaded"},
+  {"query":"is:active upload:local harness:codex", "field":"is", "value":"", "expected":"upload:local harness:codex"}
+]

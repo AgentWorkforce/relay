@@ -1,0 +1,749 @@
+name: Desktop Release
+
+# Tag desktop-vYYYY.MM.N (or dispatch, optionally with a version override) to build,
+# sign and notarize the macOS disk images, build Linux packages and Windows
+# zips, and publish all architectures together. A dispatch without a version defaults to YYYY.MM.N
+# for the current month. No job writes to the source repository; a promoted
+# changelog is uploaded after publishing and lands through a normal PR.
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, without the leading v (for example 2026.09.1). Empty uses the CalVer default YYYY.MM.N.'
+        required: false
+        default: ''
+        type: string
+
+# One group for every release run: versions allocate from the shared releases
+# list, so overlapping runs serialize instead of picking the same default N.
+# GitHub keeps at most one pending run per group: a third overlapping trigger
+# cancels the pending run (never the running one), so re-dispatch if your run
+# shows Canceled and it will allocate the next N.
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: apps/desktop
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TAG_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASES_REPOSITORY: AgentWorkforce/relay-desktop-releases
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            version="${INPUT_VERSION#v}"
+            if [ -z "$version" ]; then
+              prefix="$(date -u +%Y.%m)"
+              if ! tags="$(gh api "repos/$RELEASES_REPOSITORY/releases?per_page=100" --paginate --jq '.[].tag_name')"; then
+                echo "::error::Could not list releases in $RELEASES_REPOSITORY to compute the default version; pass an explicit version input instead." >&2
+                exit 1
+              fi
+              max_n=0
+              while IFS= read -r tag; do
+                [ -n "$tag" ] || continue
+                case "$tag" in
+                  "v$prefix."*) ;;
+                  *) continue ;;
+                esac
+                n="${tag#v$prefix.}"
+                n="${n%%[-+]*}"
+                if printf '%s' "$n" | grep -Eq '^[0-9]+$'; then
+                  if [ "$n" -gt "$max_n" ]; then
+                    max_n="$n"
+                  fi
+                fi
+              done <<< "$tags"
+              version="$prefix.$((10#$max_n + 1))"
+              echo "No version input; defaulting to $version"
+            fi
+          else
+            version="${TAG_NAME#desktop-v}"
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$version' is not a X.Y.Z version; tag releases as desktop-vYYYY.MM.N (for example desktop-v2026.09.1)" >&2
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+          } >> "$GITHUB_OUTPUT"
+
+          # Fail before the expensive builds if neither the versioned section
+          # nor a promotable Unreleased section has release notes.
+          python3 scripts/release-notes.py "$version" --check
+
+          echo "Releasing v$version"
+
+      - name: Require analytics release configuration
+        env:
+          POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+        run: |
+          set -euo pipefail
+          for name in POSTHOG_API_KEY POSTHOG_HOST; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required release secret: $name"
+              exit 1
+            fi
+          done
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            rust_target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            arch: x64
+            rust_target: x86_64-apple-darwin
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Require signing and notarization credentials
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_API_KEY_BASE64 APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing required release secret: $name"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Build the Swift package
+        run: swift build -c release --package-path macos
+
+      - name: Test the Swift package
+        run: swift test --package-path macos
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache the probe build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: probe-${{ matrix.arch }}
+          workspaces: apps/desktop/probe
+
+      - name: Build the probe
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          AGENT_RELAY_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          AGENT_RELAY_POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+        run: scripts/build-probe.sh --target '${{ matrix.rust_target }}' --version "$VERSION" --out probe-build
+
+      # Public releases require Developer ID signing and notarization above.
+      # Local builds and PR CI may still use the ad-hoc build-app.sh fallback.
+      - name: Assemble and sign the app bundle
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          scripts/build-app.sh \
+            --arch '${{ matrix.arch }}' \
+            --version "$VERSION" \
+            --build "$GITHUB_RUN_NUMBER" \
+            --probe probe-build \
+            --out dist
+
+      - name: Set up Python for disk image tooling
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install disk image tooling
+        run: |
+          python3 -m venv "$RUNNER_TEMP/dmg-tools"
+          "$RUNNER_TEMP/dmg-tools/bin/python" -m pip install -r scripts/dmg-requirements.txt
+          echo "$RUNNER_TEMP/dmg-tools/bin" >> "$GITHUB_PATH"
+
+      - name: Package the disk image
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          scripts/package-dmg.sh \
+            --app 'dist/Agent Relay.app' \
+            --out "out/AgentRelay-$VERSION-macOS-${{ matrix.arch }}.dmg"
+          # Recorded so the release body can name the exact probe that shipped.
+          cp probe-build/probe-version.txt "out/probe-version-${{ matrix.arch }}.txt"
+          # The .sha256 that package-dmg.sh wrote next to the image rides along
+          # but is regenerated in the publish job, where the stable-named copies
+          # are made, so every published checksum names its own file.
+
+      - name: Package the standalone signed and notarized probe
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          scripts/package-macos-probe.sh \
+            --app 'dist/Agent Relay.app' \
+            --out "out/AgentRelay-$VERSION-macOS-${{ matrix.arch }}-probe.tar.gz"
+
+      - name: Upload the disk image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dmg-${{ matrix.arch }}
+          path: apps/desktop/out/
+          if-no-files-found: error
+          retention-days: 7
+
+  build-linux:
+    name: Build Linux ${{ matrix.arch }}
+    needs: version
+    # Ubuntu 22.04 ships GTK 4.6, the oldest the app runs on; the app links
+    # against it, natively for each architecture.
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ${{ vars.CI_LINUX_2204_RUNNER || 'ubuntu-22.04' }}
+            arch: x64
+            rust_target: x86_64-unknown-linux-gnu
+            zig_host: x86_64-linux
+            zig_sha256: d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea
+          - runner: ${{ vars.CI_LINUX_2204_ARM64_RUNNER || 'ubuntu-22.04-arm' }}
+            arch: arm64
+            rust_target: aarch64-unknown-linux-gnu
+            zig_host: aarch64-linux
+            zig_sha256: 041ac42323837eb5624068acd8b00cd5777dac4cf91179e8dad7a7e90dd0c556
+    env:
+      # The oldest glibc the Linux probe and app run on (Amazon Linux 2023,
+      # RHEL 9 and Ubuntu 22.04 and newer). A probe linked on a newer glibc
+      # needs that glibc (std's weak pidfd_spawnp reference becomes a hard
+      # GLIBC_2.39 need), so the probe links against 2.34 with zig; the app
+      # links against the runner's GTK and glibc, and is checked.
+      GLIBC_FLOOR: '2.34'
+      ZIG_VERSION: '0.13.0'
+      CARGO_ZIGBUILD_VERSION: '0.23.4'
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install GTK 4 and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libgtk-4-dev librsvg2-common pkg-config xvfb
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache the probe build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: release-linux-gtk4-v1-${{ matrix.arch }}
+          workspaces: apps/desktop/probe
+
+      - name: Install zig and cargo-zigbuild
+        env:
+          ZIG_HOST: ${{ matrix.zig_host }}
+          ZIG_SHA256: ${{ matrix.zig_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="zig-linux-${ZIG_HOST%-linux}-$ZIG_VERSION.tar.xz"
+          curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/$archive" -o "$RUNNER_TEMP/$archive"
+          echo "$ZIG_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/${archive%.tar.xz}" >> "$GITHUB_PATH"
+          cargo install --locked cargo-zigbuild --version "$CARGO_ZIGBUILD_VERSION"
+
+      - name: Build the probe
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          AGENT_RELAY_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          AGENT_RELAY_POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+        run: scripts/build-probe.sh --target '${{ matrix.rust_target }}' --version "$VERSION" --glibc "$GLIBC_FLOOR" --out probe-build
+
+      - name: Build the app
+        env:
+          AGENT_RELAY_PROBE_VERSION: ${{ needs.version.outputs.version }}
+          AGENT_RELAY_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          AGENT_RELAY_POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+        run: cargo build --manifest-path probe/Cargo.toml --locked --release --features gtk --bin agent-relay-desktop
+
+      - name: Test the app
+        run: |
+          cargo build --manifest-path probe/Cargo.toml --locked --features gtk --bin agent-relay-desktop --bin agent-relay-fake-core
+          cargo test --manifest-path probe/Cargo.toml --locked --features gtk --lib linux_app
+          xvfb-run -a cargo test --manifest-path probe/Cargo.toml --locked --features gtk --test linux_app_gtk
+
+      - name: Test the app against the real core
+        env:
+          RELAY_E2E_PROBE: ${{ github.workspace }}/apps/desktop/probe-build/agent-relay-probe
+        run: cargo test --manifest-path probe/Cargo.toml --locked --features gtk --test linux_app_core_e2e -- --nocapture
+
+      - name: Build packages
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          scripts/build-linux.sh --version "$VERSION" --arch '${{ matrix.arch }}' \
+            --app probe/target/release/agent-relay-desktop --probe probe-build/agent-relay-probe --out out
+
+      # The bytes the packages ship, checked again after packaging.
+      - name: Check the packaged binaries' glibc floor
+        run: |
+          tree='out/AgentRelay-linux-${{ matrix.arch }}'
+          scripts/check-glibc-floor.sh "$tree/usr/lib/agent-relay/agent-relay-probe" --max "$GLIBC_FLOOR"
+          scripts/check-glibc-floor.sh "$tree/usr/bin/agent-relay-desktop" --max "$GLIBC_FLOOR"
+
+      - name: Package the standalone probe
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          scripts/package-linux-probe.sh \
+            --probe probe-build/agent-relay-probe \
+            --glibc "$GLIBC_FLOOR" \
+            --out "out/AgentRelay-$VERSION-Linux-${{ matrix.arch }}-probe.tar.gz"
+
+      - name: Record probe version
+        run: cp probe-build/probe-version.txt 'out/probe-version-linux-${{ matrix.arch }}.txt'
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: apps/desktop/out/
+          if-no-files-found: error
+          retention-days: 7
+
+  build-windows:
+    name: Build Windows ${{ matrix.arch }}
+    needs: version
+    # The GTK app and the core, built natively with MSYS2's clang toolchain
+    # and GTK 4; the zip carries the GTK runtime beside them.
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+            msystem: CLANG64
+          - runner: windows-11-arm
+            arch: arm64
+            msystem: CLANGARM64
+    defaults:
+      run:
+        shell: msys2 {0}
+        working-directory: apps/desktop
+    env:
+      # A short cargo home and git-CLI fetches, as in desktop-ci.yml: RelayHistory's
+      # fixtures hold paths close to Windows' 260-character limit.
+      CARGO_HOME: C:\ch
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: '1'
+    steps:
+      - name: Keep line endings and allow long paths
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install MSYS2, Rust and GTK 4
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          # git: cargo fetches its git dependencies through it, inside this
+          # shell (CARGO_NET_GIT_FETCH_WITH_CLI above).
+          install: zip unzip git
+          pacboy: >-
+            toolchain:p
+            rust:p
+            gtk4:p
+            pkgconf:p
+            librsvg:p
+            ntldd:p
+
+      # MSYS2's git has a home and config of its own: long paths again.
+      - name: Allow long paths in the MSYS2 shell
+        run: git config --global core.longpaths true
+
+      - name: Cache cargo and the probe build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            C:\ch\registry\index
+            C:\ch\registry\cache
+            C:\ch\git\db
+            apps/desktop/probe/target
+          key: release-windows-${{ matrix.arch }}-${{ hashFiles('apps/desktop/probe/Cargo.lock') }}
+          restore-keys: release-windows-${{ matrix.arch }}-
+
+      - name: Test the app
+        run: |
+          cargo build --manifest-path probe/Cargo.toml --locked --features gtk --bin agent-relay-desktop --bin agent-relay-fake-core
+          cargo test --manifest-path probe/Cargo.toml --locked --features gtk --lib linux_app
+          cargo test --manifest-path probe/Cargo.toml --locked --features gtk --test linux_app_gtk
+          cargo test --manifest-path probe/Cargo.toml --locked --features gtk --test linux_app_hosting
+
+      # The Setup .exe is compiled with Inno Setup 6, as in desktop-ci.yml.
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            if (Get-Command choco -ErrorAction SilentlyContinue) {
+              choco install innosetup --no-progress -y
+            } else {
+              winget install --id JRSoftware.InnoSetup -e --scope machine --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
+            }
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Get-Item $iscc | Format-List FullName, VersionInfo
+
+      # Builds the release core and app (icon and version embedded) and
+      # packages them with the GTK runtime, as zips and the Setup .exe.
+      - name: Build the Windows package
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          AGENT_RELAY_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          AGENT_RELAY_POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+        run: |
+          scripts/build-windows.sh --version "$VERSION" --arch '${{ matrix.arch }}' --out out --installer
+          # Recorded so the release body can name the exact probe that shipped.
+          printf '%s\n' "$VERSION" > 'out/probe-version-windows-${{ matrix.arch }}.txt'
+          # The tree itself is in the zip.
+          rm -rf 'out/AgentRelay-Windows-${{ matrix.arch }}'
+
+      - name: Check the core's bridge commands
+        run: bash scripts/check-probe-bridge.sh probe/target/release/agent-relay-probe.exe
+
+      - name: Upload the Windows package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: apps/desktop/out/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to relay-desktop-releases
+    needs:
+      - version
+      - build
+      - build-linux
+      - build-windows
+    runs-on: ${{ vars.DEPLOY_LINUX_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    env:
+      RELEASES_REPOSITORY: AgentWorkforce/relay-desktop-releases
+    steps:
+      - name: Check out release notes
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check publishing access
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Set RELEASES_TOKEN with Contents read/write access to $RELEASES_REPOSITORY. The source repo's GITHUB_TOKEN cannot publish there."
+            exit 1
+          fi
+          gh api "repos/$RELEASES_REPOSITORY" > repository.json
+          jq -e '.private == false and .permissions.push == true' repository.json > /dev/null || {
+            echo "::error::The releases repo must be public and RELEASES_TOKEN must have write access."
+            exit 1
+          }
+          gh api "repos/$RELEASES_REPOSITORY/commits/main" --jq .sha > /dev/null || {
+            echo "::error::Initialize the releases repo with its README before publishing."
+            exit 1
+          }
+
+      - name: Download the disk images
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: dmg-*
+          path: apps/desktop/downloads
+          merge-multiple: true
+
+      - name: Download the Linux packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: linux-*
+          path: apps/desktop/linux-downloads
+          merge-multiple: true
+
+      - name: Download the Windows packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: windows-*
+          path: apps/desktop/windows-downloads
+          merge-multiple: true
+
+      - name: Stage the release assets
+        id: stage
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          for arch in arm64 x64; do
+            versioned="AgentRelay-$VERSION-macOS-$arch.dmg"
+            stable="AgentRelay-macOS-$arch.dmg"
+            if [ ! -f "downloads/$versioned" ]; then
+              echo "::error::missing build artifact downloads/$versioned" >&2
+              exit 1
+            fi
+            cp "downloads/$versioned" "assets/$versioned"
+            # Identical bytes under the name agentrelay.com links to.
+            cp "downloads/$versioned" "assets/$stable"
+
+            probe_versioned="AgentRelay-$VERSION-macOS-$arch-probe.tar.gz"
+            probe_stable="AgentRelay-macOS-$arch-probe.tar.gz"
+            test -f "downloads/$probe_versioned" || { echo "::error::missing $probe_versioned"; exit 1; }
+            cp "downloads/$probe_versioned" "assets/$probe_versioned"
+            cp "downloads/$probe_versioned" "assets/$probe_stable"
+
+            linux_tar="AgentRelay-$VERSION-Linux-$arch.tar.gz"
+            linux_deb="AgentRelay-$VERSION-Linux-$arch.deb"
+            test -f "linux-downloads/$linux_tar" || { echo "::error::missing $linux_tar"; exit 1; }
+            test -f "linux-downloads/$linux_deb" || { echo "::error::missing $linux_deb"; exit 1; }
+            cp "linux-downloads/$linux_tar" "assets/$linux_tar"
+            cp "linux-downloads/$linux_deb" "assets/$linux_deb"
+            cp "linux-downloads/$linux_tar" "assets/AgentRelay-Linux-$arch.tar.gz"
+            cp "linux-downloads/$linux_deb" "assets/AgentRelay-Linux-$arch.deb"
+
+            linux_probe="AgentRelay-$VERSION-Linux-$arch-probe.tar.gz"
+            test -f "linux-downloads/$linux_probe" || { echo "::error::missing $linux_probe"; exit 1; }
+            cp "linux-downloads/$linux_probe" "assets/$linux_probe"
+            cp "linux-downloads/$linux_probe" "assets/AgentRelay-Linux-$arch-probe.tar.gz"
+
+            windows_zip="AgentRelay-$VERSION-Windows-$arch.zip"
+            windows_probe="AgentRelay-$VERSION-Windows-$arch-probe.zip"
+            windows_setup="AgentRelay-$VERSION-Windows-$arch-Setup.exe"
+            test -f "windows-downloads/$windows_zip" || { echo "::error::missing $windows_zip"; exit 1; }
+            test -f "windows-downloads/$windows_probe" || { echo "::error::missing $windows_probe"; exit 1; }
+            test -f "windows-downloads/$windows_setup" || { echo "::error::missing $windows_setup"; exit 1; }
+            cp "windows-downloads/$windows_zip" "assets/$windows_zip"
+            cp "windows-downloads/$windows_zip" "assets/AgentRelay-Windows-$arch.zip"
+            cp "windows-downloads/$windows_probe" "assets/$windows_probe"
+            cp "windows-downloads/$windows_probe" "assets/AgentRelay-Windows-$arch-probe.zip"
+            cp "windows-downloads/$windows_setup" "assets/$windows_setup"
+            cp "windows-downloads/$windows_setup" "assets/AgentRelay-Windows-$arch-Setup.exe"
+          done
+          # The headless installer is served from the public releases repo so
+          # its one-line install keeps working wherever the source lives.
+          cp linux/install.sh assets/install.sh
+          ( cd assets && for package in *.dmg *.tar.gz *.deb *.zip *.exe install.sh; do sha256sum "$package" > "$package.sha256"; done )
+
+          probe_version=""
+          for record in \
+            downloads/probe-version-arm64.txt \
+            downloads/probe-version-x64.txt \
+            linux-downloads/probe-version-linux-arm64.txt \
+            linux-downloads/probe-version-linux-x64.txt \
+            windows-downloads/probe-version-windows-arm64.txt \
+            windows-downloads/probe-version-windows-x64.txt; do
+            test -f "$record" || { echo "::error::missing $record"; exit 1; }
+            recorded="$(tr -d '\n\r' < "$record")"
+            test -n "$recorded" || { echo "::error::empty probe version in $record"; exit 1; }
+            if [ -z "$probe_version" ]; then
+              probe_version="$recorded"
+            elif [ "$recorded" != "$probe_version" ]; then
+              echo "::error::probe version mismatch: $record contains $recorded, expected $probe_version"
+              exit 1
+            fi
+          done
+          echo "probe_version=$probe_version" >> "$GITHUB_OUTPUT"
+
+          ls -l assets
+
+      - name: Prepare release notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          PROBE_VERSION: ${{ steps.stage.outputs.probe_version }}
+        run: |
+          python3 scripts/release-notes.py "$VERSION" \
+            --repository "$RELEASES_REPOSITORY" \
+            --probe-version "$PROBE_VERSION" \
+            --output release-notes.md
+
+      - name: Create the release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          repository: ${{ env.RELEASES_REPOSITORY }}
+          token: ${{ secrets.RELEASES_TOKEN }}
+          # Tags belong to the distribution repo, never the source SHA.
+          target_commitish: main
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: ${{ needs.version.outputs.tag }}
+          draft: false
+          prerelease: ${{ contains(needs.version.outputs.version, '-') }}
+          make_latest: ${{ !contains(needs.version.outputs.version, '-') }}
+          # Generated notes would describe the distribution repo, not the app.
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          files: |
+            apps/desktop/assets/install.sh
+            apps/desktop/assets/install.sh.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-macOS-arm64.dmg
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-macOS-arm64.dmg.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-macOS-x64.dmg
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-macOS-x64.dmg.sha256
+            apps/desktop/assets/AgentRelay-macOS-arm64.dmg
+            apps/desktop/assets/AgentRelay-macOS-arm64.dmg.sha256
+            apps/desktop/assets/AgentRelay-macOS-x64.dmg
+            apps/desktop/assets/AgentRelay-macOS-x64.dmg.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-macOS-arm64-probe.tar.gz
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-macOS-arm64-probe.tar.gz.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-macOS-x64-probe.tar.gz
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-macOS-x64-probe.tar.gz.sha256
+            apps/desktop/assets/AgentRelay-macOS-arm64-probe.tar.gz
+            apps/desktop/assets/AgentRelay-macOS-arm64-probe.tar.gz.sha256
+            apps/desktop/assets/AgentRelay-macOS-x64-probe.tar.gz
+            apps/desktop/assets/AgentRelay-macOS-x64-probe.tar.gz.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Linux-arm64.tar.gz
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Linux-arm64.tar.gz.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Linux-arm64.deb
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Linux-arm64.deb.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Linux-x64.tar.gz
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Linux-x64.tar.gz.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Linux-x64.deb
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Linux-x64.deb.sha256
+            apps/desktop/assets/AgentRelay-Linux-arm64.tar.gz
+            apps/desktop/assets/AgentRelay-Linux-arm64.tar.gz.sha256
+            apps/desktop/assets/AgentRelay-Linux-arm64.deb
+            apps/desktop/assets/AgentRelay-Linux-arm64.deb.sha256
+            apps/desktop/assets/AgentRelay-Linux-x64.tar.gz
+            apps/desktop/assets/AgentRelay-Linux-x64.tar.gz.sha256
+            apps/desktop/assets/AgentRelay-Linux-x64.deb
+            apps/desktop/assets/AgentRelay-Linux-x64.deb.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Linux-arm64-probe.tar.gz
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Linux-arm64-probe.tar.gz.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Linux-x64-probe.tar.gz
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Linux-x64-probe.tar.gz.sha256
+            apps/desktop/assets/AgentRelay-Linux-arm64-probe.tar.gz
+            apps/desktop/assets/AgentRelay-Linux-arm64-probe.tar.gz.sha256
+            apps/desktop/assets/AgentRelay-Linux-x64-probe.tar.gz
+            apps/desktop/assets/AgentRelay-Linux-x64-probe.tar.gz.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Windows-arm64.zip
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Windows-arm64.zip.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Windows-x64.zip
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Windows-x64.zip.sha256
+            apps/desktop/assets/AgentRelay-Windows-arm64.zip
+            apps/desktop/assets/AgentRelay-Windows-arm64.zip.sha256
+            apps/desktop/assets/AgentRelay-Windows-x64.zip
+            apps/desktop/assets/AgentRelay-Windows-x64.zip.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Windows-arm64-probe.zip
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Windows-arm64-probe.zip.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Windows-x64-probe.zip
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Windows-x64-probe.zip.sha256
+            apps/desktop/assets/AgentRelay-Windows-arm64-probe.zip
+            apps/desktop/assets/AgentRelay-Windows-arm64-probe.zip.sha256
+            apps/desktop/assets/AgentRelay-Windows-x64-probe.zip
+            apps/desktop/assets/AgentRelay-Windows-x64-probe.zip.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Windows-arm64-Setup.exe
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Windows-arm64-Setup.exe.sha256
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Windows-x64-Setup.exe
+            apps/desktop/assets/AgentRelay-${{ needs.version.outputs.version }}-Windows-x64-Setup.exe.sha256
+            apps/desktop/assets/AgentRelay-Windows-arm64-Setup.exe
+            apps/desktop/assets/AgentRelay-Windows-arm64-Setup.exe.sha256
+            apps/desktop/assets/AgentRelay-Windows-x64-Setup.exe
+            apps/desktop/assets/AgentRelay-Windows-x64-Setup.exe.sha256
+          body_path: apps/desktop/release-notes.md
+
+  changelog:
+    name: Prepare changelog pull request
+    needs:
+      - version
+      - publish
+    runs-on: ${{ vars.DEPLOY_LINUX_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the released snapshot
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Promote Unreleased in the artifact
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: python3 scripts/release-notes.py "$VERSION" --promote
+
+      - name: Upload the promoted changelog
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: promoted-changelog-v${{ needs.version.outputs.version }}
+          path: apps/desktop/CHANGELOG.md
+          if-no-files-found: error
+          retention-days: 30

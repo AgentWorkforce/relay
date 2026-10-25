@@ -9,3 +9,4 @@ packages/config/src/cli-registry.generated.ts
 tests/benchmarks/head-to-head.ts
 .agentworkforce/trajectories/
 .trajectories/
+apps/desktop/

@@ -1,0 +1,221 @@
+{
+  "rows": [
+    {
+      "session": {
+        "source": "claude",
+        "session_id": "a",
+        "title": "Beta",
+        "cwd": "/w/Zulu",
+        "last_activity_ms": 100,
+        "is_agent": false,
+        "included": false,
+        "status": "not_shared",
+        "models": [
+          "Zulu"
+        ],
+        "reasoning_effort": "HIGH",
+        "first_activity_ms": 300
+      },
+      "status": "Idle",
+      "relay": true,
+      "upload": false
+    },
+    {
+      "session": {
+        "source": "codex",
+        "session_id": "b",
+        "title": "alpha",
+        "cwd": "/w/Alpha",
+        "last_activity_ms": 200,
+        "is_agent": false,
+        "included": false,
+        "status": "not_shared",
+        "models": [
+          "alpha"
+        ],
+        "reasoning_effort": "low",
+        "first_activity_ms": 100
+      },
+      "status": "Active",
+      "relay": false,
+      "upload": true
+    },
+    {
+      "session": {
+        "source": "codex",
+        "session_id": "c",
+        "title": "Alpha",
+        "cwd": null,
+        "last_activity_ms": null,
+        "is_agent": false,
+        "included": false,
+        "status": "not_shared",
+        "models": [
+          "unknown"
+        ],
+        "reasoning_effort": "unknown"
+      },
+      "status": null,
+      "relay": null,
+      "upload": null
+    }
+  ],
+  "cases": [
+    {
+      "column": "Session",
+      "ascending": [
+        "codex:b",
+        "codex:c",
+        "claude:a"
+      ],
+      "descending": [
+        "claude:a",
+        "codex:b",
+        "codex:c"
+      ]
+    },
+    {
+      "column": "Project",
+      "ascending": [
+        "codex:b",
+        "claude:a",
+        "codex:c"
+      ],
+      "descending": [
+        "claude:a",
+        "codex:b",
+        "codex:c"
+      ]
+    },
+    {
+      "column": "Status",
+      "ascending": [
+        "codex:b",
+        "claude:a",
+        "codex:c"
+      ],
+      "descending": [
+        "claude:a",
+        "codex:b",
+        "codex:c"
+      ]
+    },
+    {
+      "column": "Updated",
+      "ascending": [
+        "claude:a",
+        "codex:b",
+        "codex:c"
+      ],
+      "descending": [
+        "codex:b",
+        "claude:a",
+        "codex:c"
+      ]
+    },
+    {
+      "column": "Messages",
+      "ascending": [
+        "codex:b",
+        "claude:a",
+        "codex:c"
+      ],
+      "descending": [
+        "claude:a",
+        "codex:b",
+        "codex:c"
+      ]
+    },
+    {
+      "column": "Upload",
+      "ascending": [
+        "claude:a",
+        "codex:b",
+        "codex:c"
+      ],
+      "descending": [
+        "codex:b",
+        "claude:a",
+        "codex:c"
+      ]
+    },
+    {
+      "column": "Harness",
+      "ascending": [
+        "claude:a",
+        "codex:b",
+        "codex:c"
+      ],
+      "descending": [
+        "codex:b",
+        "codex:c",
+        "claude:a"
+      ]
+    },
+    {
+      "column": "Model",
+      "ascending": [
+        "codex:b",
+        "claude:a",
+        "codex:c"
+      ],
+      "descending": [
+        "claude:a",
+        "codex:b",
+        "codex:c"
+      ]
+    },
+    {
+      "column": "Reasoning",
+      "ascending": [
+        "codex:b",
+        "claude:a",
+        "codex:c"
+      ],
+      "descending": [
+        "claude:a",
+        "codex:b",
+        "codex:c"
+      ]
+    },
+    {
+      "column": "Created",
+      "ascending": [
+        "codex:b",
+        "claude:a",
+        "codex:c"
+      ],
+      "descending": [
+        "claude:a",
+        "codex:b",
+        "codex:c"
+      ]
+    },
+    {
+      "column": "Directory",
+      "ascending": [
+        "codex:b",
+        "claude:a",
+        "codex:c"
+      ],
+      "descending": [
+        "claude:a",
+        "codex:b",
+        "codex:c"
+      ]
+    },
+    {
+      "column": "Session ID",
+      "ascending": [
+        "claude:a",
+        "codex:b",
+        "codex:c"
+      ],
+      "descending": [
+        "codex:c",
+        "codex:b",
+        "claude:a"
+      ]
+    }
+  ]
+}

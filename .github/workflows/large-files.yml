@@ -14,6 +14,7 @@ jobs:
             -not -path './target/*' \
             -not -path './dist/*' \
             -not -path './bin/*' \
+            -not -path './apps/desktop/assets/dmg-background.png' \
             -not -name '*.lock' | \
           while read file; do
             echo "::warning file=$file::Large file detected (>1MB)"

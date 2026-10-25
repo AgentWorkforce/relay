@@ -1,0 +1,614 @@
+name: Desktop CI
+
+# Builds "Agent Relay.app" for both macOS architectures the way desktop-release.yml
+# does, minus signing, so a pull request fails here rather than at tag time.
+
+on:
+  pull_request:
+    # Default types only: an `edited` event whose jobs all skip would replace a
+    # failed run's checks on the same commit. A PR retargeted onto main gets CI
+    # on its next push, or by closing and reopening it.
+    branches:
+      - main
+    paths:
+      - 'apps/desktop/**'
+      - '.github/workflows/desktop-ci.yml'
+      - '.github/workflows/desktop-release.yml'
+      - '.github/workflows/ios-testflight.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'apps/desktop/**'
+      - '.github/workflows/desktop-ci.yml'
+      - '.github/workflows/desktop-release.yml'
+      - '.github/workflows/ios-testflight.yml'
+
+concurrency:
+  # PR runs collapse per pull request; push runs key off the commit sha so two
+  # merges landing together cannot cancel each other.
+  group: desktop-ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('push-{0}', github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Nothing in CI writes to the repository.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: apps/desktop
+
+jobs:
+  # Never run untrusted fork code on repository-configured runners. This small
+  # GitHub-hosted lane still gives outside contributors useful checks.
+  fork-checks:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+    name: Public contribution checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      - name: Check the relay core
+        run: cargo check --manifest-path probe/Cargo.toml --locked
+
+      - name: Test the release notes tooling
+        run: python3 scripts/test_release_notes.py
+
+      - name: Check nothing internal is in the public source
+        run: bash scripts/check-open-source.sh
+
+  shellcheck:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    name: Shell scripts
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends shellcheck
+
+      - name: Lint the packaging scripts
+        run: shellcheck scripts/*.sh linux/agent-relay.postinst
+
+      - name: Check nothing internal is in the public source
+        run: bash scripts/check-open-source.sh
+
+      - name: Test probe bridge validation
+        run: bash scripts/test-probe-bridge.sh
+
+      - name: Test the release notes tooling
+        run: python3 scripts/test_release_notes.py
+
+      - name: Test the Linux probe glibc floor check
+        run: bash scripts/test-glibc-floor.sh
+
+      - name: Test the Linux installer
+        run: bash scripts/test-linux-install.sh
+
+  probe:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    name: Probe
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      - name: Cache the probe build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: apps/desktop/probe
+
+      - name: Set up Node for Pi compatibility tests
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Test live Pi sessions (legacy and current packages)
+        run: bash scripts/test-pi-live.sh
+
+      - name: Test the probe
+        run: cargo test --manifest-path probe/Cargo.toml --locked
+
+      # Code-quality ratchet: probe/rust-oleum.toml grandfathers existing
+      # violations; a new one, or a regression past its ceiling, fails here.
+      - name: Install rust-oleum
+        run: cargo install rust-oleum --version 0.1.3 --locked
+
+      - name: Check the code-quality ratchet
+        working-directory: apps/desktop/probe
+        run: rust-oleum --github-summary "$GITHUB_STEP_SUMMARY"
+
+      # The Swift contract types are generated from the Rust registry; a
+      # stale checked-in file fails here.
+      - name: Check the generated contract
+        run: |
+          scripts/generate-contract.sh
+          git diff --exit-code
+
+  linux-probe-glibc:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    name: Linux probe glibc 2.34 (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+            arch: x64
+            rust_target: x86_64-unknown-linux-gnu
+            zig_host: x86_64-linux
+            zig_sha256: d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea
+          - runner: ${{ vars.CI_LINUX_ARM64_RUNNER || 'ubuntu-24.04-arm' }}
+            arch: arm64
+            rust_target: aarch64-unknown-linux-gnu
+            zig_host: aarch64-linux
+            zig_sha256: 041ac42323837eb5624068acd8b00cd5777dac4cf91179e8dad7a7e90dd0c556
+    env:
+      GLIBC_FLOOR: '2.34'
+      ZIG_VERSION: '0.13.0'
+      CARGO_ZIGBUILD_VERSION: '0.23.4'
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache the Zig-built probe
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: ci-linux-probe-zig-v1-${{ matrix.arch }}
+          workspaces: apps/desktop/probe
+
+      - name: Install zig and cargo-zigbuild
+        env:
+          ZIG_HOST: ${{ matrix.zig_host }}
+          ZIG_SHA256: ${{ matrix.zig_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="zig-linux-${ZIG_HOST%-linux}-$ZIG_VERSION.tar.xz"
+          curl -fsSL "https://ziglang.org/download/$ZIG_VERSION/$archive" -o "$RUNNER_TEMP/$archive"
+          echo "$ZIG_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xJf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/${archive%.tar.xz}" >> "$GITHUB_PATH"
+          cargo install --locked cargo-zigbuild --version "$CARGO_ZIGBUILD_VERSION"
+
+      - name: Build the probe against glibc 2.34
+        run: |
+          scripts/build-probe.sh \
+            --target '${{ matrix.rust_target }}' \
+            --version 0.0.0 \
+            --glibc "$GLIBC_FLOOR" \
+            --out probe-build
+
+      - name: Check the probe's glibc floor
+        run: scripts/check-glibc-floor.sh probe-build/agent-relay-probe --max "$GLIBC_FLOOR"
+
+  macos:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            rust_target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            arch: x64
+            rust_target: x86_64-apple-darwin
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Build the Swift package
+        run: swift build -c release --package-path macos
+
+      - name: Test the Swift package
+        env:
+          REQUEST_RENDER_DIR: ${{ runner.temp }}/desktop-ui-fixtures
+          SESSION_COLUMNS_PREVIEW: ${{ runner.temp }}/desktop-ui-fixtures
+        run: |
+          mkdir -p "$SESSION_COLUMNS_PREVIEW"
+          swift test --package-path macos
+
+      - name: Upload Swift rendering fixtures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Swift-rendering-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-ui-fixtures
+          if-no-files-found: ignore
+          retention-days: 1
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache the probe build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: probe-${{ matrix.arch }}
+          workspaces: apps/desktop/probe
+
+      - name: Test managed Muse MSP delivery
+        run: cargo test --manifest-path probe/Cargo.toml --locked --test muse_msp
+
+      - name: Test core diagnostic logs
+        run: cargo test --manifest-path probe/Cargo.toml --locked --lib relay::diagnostics
+
+      - name: Set up Node for Pi compatibility tests
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Test live Pi sessions (legacy and current packages)
+        run: bash scripts/test-pi-live.sh
+
+      - name: Build the probe
+        run: scripts/build-probe.sh --target '${{ matrix.rust_target }}' --version 0.0.0 --out probe-build
+
+      # No signing secrets in CI: build-app.sh ad-hoc signs and says so.
+      - name: Assemble the app bundle
+        run: |
+          set -euo pipefail
+          scripts/build-app.sh \
+            --arch '${{ matrix.arch }}' \
+            --version 0.0.0 \
+            --probe probe-build \
+            --out dist
+
+      - name: Set up Python for disk image tooling
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install disk image tooling
+        run: |
+          python3 -m venv "$RUNNER_TEMP/dmg-tools"
+          "$RUNNER_TEMP/dmg-tools/bin/python" -m pip install -r scripts/dmg-requirements.txt
+          echo "$RUNNER_TEMP/dmg-tools/bin" >> "$GITHUB_PATH"
+
+      - name: Package a disk image (smoke test)
+        run: |
+          set -euo pipefail
+          scripts/package-dmg.sh \
+            --app 'dist/Agent Relay.app' \
+            --out 'dist/AgentRelay-CI-${{ matrix.arch }}.dmg'
+
+      - name: Zip the app bundle
+        run: ditto -c -k --keepParent 'dist/Agent Relay.app' "AgentRelay-macOS-${{ matrix.arch }}.zip"
+
+      - name: Upload the app bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: AgentRelay-macOS-${{ matrix.arch }}
+          path: apps/desktop/AgentRelay-macOS-${{ matrix.arch }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    name: Windows ${{ matrix.arch }}
+    # The Linux GTK app, built natively with MSYS2's clang toolchain and GTK 4
+    # for each architecture. Windows runners have a desktop session, so the
+    # GTK harness runs without a virtual display.
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+            msystem: CLANG64
+          - runner: windows-11-arm
+            arch: arm64
+            msystem: CLANGARM64
+    defaults:
+      run:
+        shell: msys2 {0}
+        working-directory: apps/desktop
+    env:
+      # A short cargo home: RelayHistory's fixtures hold paths close to
+      # Windows' 260-character limit, which a cargo home inside the
+      # workspace pushed over it when cargo checked the dependency out.
+      CARGO_HOME: C:\ch
+      # Git itself fetches the git dependencies, honouring core.longpaths.
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: '1'
+    steps:
+      # Scripts and fixtures keep their LF line endings, and long paths
+      # check out.
+      - name: Keep line endings and allow long paths
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install MSYS2, Rust and GTK 4
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          # git: cargo fetches its git dependencies through it (see
+          # CARGO_NET_GIT_FETCH_WITH_CLI above), inside this shell.
+          install: zip unzip git
+          pacboy: >-
+            toolchain:p
+            rust:p
+            gtk4:p
+            pkgconf:p
+            librsvg:p
+            ntldd:p
+
+      # MSYS2's git has a home and config of its own: long paths again.
+      - name: Show the toolchain and allow long paths
+        run: |
+          git config --global core.longpaths true
+          git --version
+          rustc -vV
+          cargo -V
+          pkgconf --modversion gtk4
+
+      - name: Cache cargo and the probe build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            C:\ch\registry\index
+            C:\ch\registry\cache
+            C:\ch\git\db
+            apps/desktop/probe/target
+          key: windows-${{ matrix.arch }}-${{ hashFiles('apps/desktop/probe/Cargo.lock') }}
+          restore-keys: windows-${{ matrix.arch }}-
+
+      # The Setup .exe is compiled with Inno Setup 6. windows-latest carries
+      # it; windows-11-arm may not, so it is installed there.
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) {
+            if (Get-Command choco -ErrorAction SilentlyContinue) {
+              choco install innosetup --no-progress -y
+            } else {
+              winget install --id JRSoftware.InnoSetup -e --scope machine --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
+            }
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          Get-Item $iscc | Format-List FullName, VersionInfo
+
+      # Builds the release core and app (icon and version embedded) and
+      # packages them with the GTK runtime, as zips and the Setup .exe.
+      - name: Build the Windows package
+        run: scripts/build-windows.sh --version 0.0.0 --arch '${{ matrix.arch }}' --out out --installer
+
+      - name: Check the core's bridge commands
+        run: bash scripts/check-probe-bridge.sh probe/target/release/agent-relay-probe.exe
+
+      # The packaged core runs with only the DLLs the zip carries.
+      - name: Smoke test the packaged core
+        run: |
+          unzip -l 'out/AgentRelay-0.0.0-Windows-${{ matrix.arch }}.zip' | tail -n 1
+          unpacked="$(cygpath -u "$RUNNER_TEMP")/unpacked"
+          rm -rf "$unpacked" && mkdir -p "$unpacked"
+          unzip -q 'out/AgentRelay-0.0.0-Windows-${{ matrix.arch }}.zip' -d "$unpacked"
+          PATH=/c/Windows/System32 "$unpacked/AgentRelay-Windows-${{ matrix.arch }}/bin/agent-relay-probe.exe" --version
+
+      # Setup installs per user where the updater expects the tree, and its
+      # uninstaller removes the install, the shortcut and the entry.
+      - name: Install and uninstall with Setup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = "out\AgentRelay-0.0.0-Windows-${{ matrix.arch }}-Setup.exe"
+          Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          $root = "$env:LOCALAPPDATA\Programs\AgentRelay"
+          $shortcut = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Agent Relay.lnk"
+          $entry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{C5377993-AE99-466F-A519-676A299A6C6D}_is1'
+          foreach ($path in "$root\0.0.0\AgentRelay-Windows-${{ matrix.arch }}\bin\agent-relay-desktop.exe", "$root\unins000.exe", $shortcut, $entry) {
+            if (-not (Test-Path $path)) { throw "Setup did not create $path" }
+          }
+          Get-ItemProperty $entry | Format-List DisplayName, DisplayVersion, InstallLocation
+          Start-Process "$root\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          # The uninstaller finishes removing its own folder just after it exits.
+          for ($i = 0; $i -lt 30 -and (Test-Path $root); $i++) { Start-Sleep -Seconds 1 }
+          foreach ($path in $root, $shortcut, $entry, 'HKCU:\Software\Classes\agentrelay') {
+            if (Test-Path $path) { throw "The uninstaller left $path" }
+          }
+
+      - name: Upload the Windows package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: AgentRelay-Windows-${{ matrix.arch }}
+          path: |
+            apps/desktop/out/*.zip
+            apps/desktop/out/*.zip.sha256
+            apps/desktop/out/*-Setup.exe
+            apps/desktop/out/*-Setup.exe.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Build the app and the fake core
+        run: cargo build --manifest-path probe/Cargo.toml --locked --features gtk --bin agent-relay-desktop --bin agent-relay-fake-core
+
+      - name: Test the platform file helpers
+        run: 'cargo test --manifest-path probe/Cargo.toml --locked --lib platform::'
+
+      - name: Test the app's wording and state
+        run: cargo test --manifest-path probe/Cargo.toml --locked --features gtk --lib linux_app
+
+      - name: Test the app's window
+        run: cargo test --manifest-path probe/Cargo.toml --locked --features gtk --test linux_app_gtk
+
+      - name: Test the app's hosting of the core
+        run: cargo test --manifest-path probe/Cargo.toml --locked --features gtk --test linux_app_hosting
+
+  linux:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    name: Linux ${{ matrix.arch }}
+    # Ubuntu 22.04 ships GTK 4.6, the oldest the app runs on: the app is
+    # built and tested against it, natively for each architecture.
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ${{ vars.CI_LINUX_2204_RUNNER || 'ubuntu-22.04' }}
+            arch: x64
+            rust_target: x86_64-unknown-linux-gnu
+          - runner: ${{ vars.CI_LINUX_2204_ARM64_RUNNER || 'ubuntu-22.04-arm' }}
+            arch: arm64
+            rust_target: aarch64-unknown-linux-gnu
+    env:
+      GLIBC_FLOOR: '2.34'
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install GTK 4 and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libgtk-4-dev librsvg2-common pkg-config xvfb
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache the probe build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          key: linux-gtk4-${{ matrix.arch }}
+          workspaces: apps/desktop/probe
+
+      - name: Build the probe
+        run: scripts/build-probe.sh --target '${{ matrix.rust_target }}' --version 0.0.0 --out probe-build
+
+      - name: Build the app
+        env:
+          AGENT_RELAY_PROBE_VERSION: 0.0.0
+        run: cargo build --manifest-path probe/Cargo.toml --locked --release --features gtk --bin agent-relay-desktop
+
+      - name: Check the app's glibc floor
+        run: scripts/check-glibc-floor.sh probe/target/release/agent-relay-desktop --max "$GLIBC_FLOOR"
+
+      - name: Test the app
+        run: |
+          cargo build --manifest-path probe/Cargo.toml --locked --features gtk --bin agent-relay-desktop --bin agent-relay-fake-core
+          cargo test --manifest-path probe/Cargo.toml --locked --features gtk --lib linux_app
+          xvfb-run -a cargo test --manifest-path probe/Cargo.toml --locked --features gtk --test linux_app_gtk
+
+      # The real core binary, driven by the app's bridge client against fake
+      # Relaycast and Cloud in an empty home.
+      - name: Test the app against the real core
+        env:
+          RELAY_E2E_PROBE: ${{ github.workspace }}/apps/desktop/probe-build/agent-relay-probe
+        run: cargo test --manifest-path probe/Cargo.toml --locked --features gtk --test linux_app_core_e2e -- --nocapture
+
+      # The app starts with no display server of its own, hosts the fake
+      # core, and subscribes to it.
+      - name: Smoke test the app's startup
+        env:
+          RELAY_DESKTOP_PROBE: ${{ github.workspace }}/apps/desktop/probe/target/debug/agent-relay-fake-core
+          AGENT_RELAY_CORE_SOCKET: ${{ runner.temp }}/gtk-core/core.sock
+          FAKE_CORE_LOG: ${{ runner.temp }}/gtk-fake-core-calls.txt
+        # The app runs in its own process group with its display, and the
+        # group stops afterwards: an app left running keeps
+        # com.agentrelay.desktop on the session bus, so the next app to start
+        # hands its command line to it and exits. The hosted core has its own
+        # group and stops when the app's end closes its stdin.
+        run: |
+          setsid xvfb-run --auto-servernum ./probe/target/debug/agent-relay-desktop --background &
+          app=$!
+          for _ in $(seq 240); do
+            grep -qx subscribe "$FAKE_CORE_LOG" 2>/dev/null && grep -qx telemetry.record "$FAKE_CORE_LOG" && break
+            kill -0 "$app" || break
+            sleep 0.25
+          done
+          cat "$FAKE_CORE_LOG" || true
+          grep -qx subscribe "$FAKE_CORE_LOG"
+          grep -qx telemetry.record "$FAKE_CORE_LOG"
+          # Still running: startup did not crash after the handshake.
+          sleep 2
+          kill -0 "$app"
+          kill -- -"$app"
+          wait "$app" || true
+          # The app is xvfb-run's child: it ends, and is reaped, after
+          # xvfb-run does.
+          for _ in $(seq 40); do
+            pgrep -f 'probe/target/debug/agent-relay-desktop' >/dev/null || break
+            sleep 0.25
+          done
+          ! pgrep -f 'probe/target/debug/agent-relay-desktop'
+
+      - name: Build Linux packages
+        run: |
+          scripts/build-linux.sh --version 0.0.0 --arch '${{ matrix.arch }}' \
+            --app probe/target/release/agent-relay-desktop --probe probe-build/agent-relay-probe --out out
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: AgentRelay-Linux-${{ matrix.arch }}
+          path: |
+            apps/desktop/out/*.tar.gz
+            apps/desktop/out/*.tar.gz.sha256
+            apps/desktop/out/*.deb
+            apps/desktop/out/*.deb.sha256
+          if-no-files-found: error
+          retention-days: 7

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  Agent Relay runs with the hardened runtime and without the App Sandbox: it
+  launches the bundled agent-relay-probe helper and writes the command-line
+  copy of it to ~/.local/bin. Neither needs an entitlement, so this file is
+  intentionally empty apart from the explicit "not sandboxed" declaration.
+-->
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>

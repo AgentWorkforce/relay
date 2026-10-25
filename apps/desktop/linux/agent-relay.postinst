@@ -1,0 +1,12 @@
+#!/bin/sh
+# A running user manager keeps the agent-relay.service definition it loaded
+# until it reloads, so a unit whose core moved would restart the old path.
+set -e
+if [ "$1" = configure ] && command -v systemctl >/dev/null 2>&1; then
+  for runtime in /run/user/*; do
+    [ -d "$runtime" ] || continue
+    user="$(id -nu "${runtime##*/}" 2>/dev/null)" || continue
+    systemctl --user --machine="$user@" daemon-reload >/dev/null 2>&1 || true
+  done
+fi
+exit 0

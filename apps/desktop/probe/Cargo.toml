@@ -1,0 +1,129 @@
+[package]
+name = "agent-relay-probe"
+# Internal crate only; build.rs stamps the desktop release or development revision.
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "Apache-2.0"
+
+[[bin]]
+name = "agent-relay-probe"
+path = "src/probe/main.rs"
+
+[[bin]]
+name = "agent-relay-desktop"
+path = "src/bin/agent-relay-desktop.rs"
+
+[[test]]
+name = "linux_app_gtk"
+path = "tests/linux_app_gtk.rs"
+# GTK runs on the process's main thread, which libtest's runner never is.
+harness = false
+required-features = ["gtk"]
+
+[features]
+# The Linux and Windows app's GTK window (`agent-relay-desktop`); the macOS build never enables it.
+gtk = ["dep:gtk4", "dep:ksni"]
+
+[workspace]
+
+[dependencies]
+# Pinned to the 0.45.2 release tag, which keeps Grok Bot transcripts
+# readable when an entry or roster shape is unmapped. It stays a git pin, not crates.io:
+# `history-provider-sources` is not published to crates.io and its helper
+# surface carries ai-hist types (`Arguments.observation`), so both deps
+# must resolve to one ai-hist package — registry + git would build two.
+ai-hist = { git = "https://github.com/AgentWorkforce/relayhistory", tag = "sdk-ts-v0.50.1", features = ["opencode-backup", "git-hooks", "fs-events"] }
+# The remote source connectors probe composes (`devin-cloud`). Not on
+# crates.io — the same pin keeps it on the ai-hist above.
+history-provider-sources = { git = "https://github.com/AgentWorkforce/relayhistory", tag = "sdk-ts-v0.50.1" }
+# The watcher ai-hist's own watch is built on, for selected mode's catalog
+# (src/probe/inventory.rs), which ai-hist's sync-driven watch cannot serve.
+notify = "8"
+# Safe PTY ownership and shutdown signals for native Muse spawning.
+portable-pty = "=0.8.1"
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+atomicwrites = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+flate2 = "1.1"
+fs2 = "0.4"
+futures-util = "0.3"
+getrandom = "0.2"
+hostname = "0.4"
+libc = "0.2"
+# Gravatar addresses avatars by the MD5 of an email; nothing else uses it.
+md-5 = "0.10"
+rusqlite = { version = "0.32", features = ["backup", "bundled", "functions"] }
+relaycast = "10.0.0"
+ryu-js = "1.0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+# Release tarballs the Linux app's updater unpacks (src/linux_app/updates.rs).
+tar = "0.4"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process"] }
+# The version and TLS stack the relaycast SDK already links, for the node
+# socket it does not expose (see src/relay/sdk_gaps.rs).
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+# The local OpenClaw Gateway (src/relay/openclaw.rs): a blocking WebSocket
+# client on the version tokio-tungstenite already links, Ed25519 device
+# signatures from the TLS stack's ring, and its JSON5 config file.
+tungstenite = "0.24"
+ring = "0.17"
+json5 = "0.4"
+unicode-normalization = "0.1"
+ureq = { version = "2", features = ["json"] }
+url = "2"
+# Delivery request bodies, when the receiver publishes zstd (src/destination/encoding.rs).
+zstd = { version = "0.13", default-features = false }
+schemars = { version = "1", default-features = false, features = ["derive", "std"] }
+# GTK 4.6, as Ubuntu 22.04 ships it, is the oldest the window runs on.
+gtk4 = { version = "0.11", features = ["v4_6"], optional = true }
+
+# Signals, process groups, uids and file modes, which Windows has no
+# counterpart for; the modules that use them gate the Windows build.
+[target.'cfg(unix)'.dependencies]
+signal-hook = "=0.3.18"
+nix = { version = "=0.25.1", default-features = false, features = ["signal", "process", "fs", "user"] }
+
+# The Linux app's tray icon: a StatusNotifierItem over D-Bus.
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", optional = true }
+
+# Codex is trusted on macOS only with OpenAI's code signature (see
+# src/relay/process.rs), and the desktop mailbox credential lives in the
+# login Keychain; these crates are already linked by the TLS stack.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+security-framework = "3"
+security-framework-sys = "2"
+
+# The Windows app's platform modules (src/linux_app: service, install,
+# updates, prefs, ui/{tray,desktop,theme}, bin/agent-relay-desktop.rs): the
+# registry, ShellExecute and consoles; the notification-area icon; toast
+# notifications; and the release `.zip` the updater unpacks.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_NetworkManagement_IpHelper", "Win32_System_ProcessStatus", "Wdk_System_SystemInformation"] }
+tray-icon = "0.21"
+tauri-winrt-notification = "0.7"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# End of the Windows app's platform modules.
+
+# The core's Windows platform shims (src/platform, src/relay/process/windows.rs,
+# src/relay/login_item.rs): stopping processes and job objects; the process
+# table's start times, executables, open files (the system handle table) and
+# loopback listeners; and the launch-at-login Run key. sysinfo reads another
+# process's command line, folder and environment from its PEB, which
+# windows-sys alone would need hand-kept structure offsets for. The
+# windows-sys features these need (Storage_FileSystem, IpHelper,
+# ProcessStatus, Wdk SystemInformation) are on the entry above.
+[target.'cfg(target_os = "windows")'.dependencies]
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+# End of the core's Windows platform shims.
+
+[dev-dependencies]
+rusqlite = { version = "0.32", features = ["hooks"] }
+tokio = { version = "1", features = ["test-util"] }

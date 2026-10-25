@@ -88,7 +88,13 @@ jobs:
 
             if (files.length === 0) unknownScope = true;
 
-            const isCi = (file) => file.startsWith('.github/');
+            const desktopWorkflows = new Set([
+              '.github/workflows/desktop-ci.yml',
+              '.github/workflows/desktop-release.yml',
+              '.github/workflows/ios-testflight.yml',
+            ]);
+            const isCi = (file) =>
+              file.startsWith('.github/') && !desktopWorkflows.has(file);
             const isSwift = (file) =>
               file.startsWith('packages/sdk-swift/') || file === 'Package.swift';
             const isRust = (file) =>
@@ -102,6 +108,8 @@ jobs:
               file.startsWith('.agentworkforce/agents/');
             // Files no build, test, or lint job consumes.
             const isInert = (file) =>
+              file.startsWith('apps/desktop/') ||
+              desktopWorkflows.has(file) ||
               file.startsWith('web/') ||
               file.startsWith('docs/') ||
               file.startsWith('specs/') ||
@@ -137,6 +145,23 @@ jobs:
               agentRuntimeProbe.sdkSwiftChanged
             ) {
               throw new Error('Agent-only scope probe must select only Node jobs');
+            }
+
+            // Desktop has its own cross-platform workflow and must not fan out
+            // into the root Rust, Node, or Swift SDK jobs.
+            const desktopProbe = classifyFiles([
+              'apps/desktop/probe/src/main.rs',
+              '.github/workflows/desktop-ci.yml',
+            ]);
+            core.info(
+              `desktop_probe rust_changed=${desktopProbe.rustChanged} node_changed=${desktopProbe.nodeChanged} sdk_swift_changed=${desktopProbe.sdkSwiftChanged}`
+            );
+            if (
+              desktopProbe.rustChanged ||
+              desktopProbe.nodeChanged ||
+              desktopProbe.sdkSwiftChanged
+            ) {
+              throw new Error('Desktop-only scope probe must not select root jobs');
             }
 
             const detectedScope = classifyFiles(files);

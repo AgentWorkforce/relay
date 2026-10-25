@@ -1,0 +1,28 @@
+Generator: built-in image_gen
+Selected direction: #1, subdued archival relay runners on white (approved by user).
+
+Edit reference: the approved Agent Relay installer concept with four faint
+relay-runner poses, pale cool-gray background, and the Agent Relay branding.
+
+Final background-only prompt:
+Precise-object-edit. Convert the supplied approved installer mockup into a
+production BACKGROUND-ONLY asset. Preserve the exact 4:3 composition, pale cool
+gray nearly white background and the four faint archival relay runner silhouettes
+in the lower band at exactly their original size, positions, contrast and texture.
+REMOVE the top-left Agent Relay logo and wordmark; REMOVE the large app icon at
+left and its shadow and label; REMOVE the Applications folder at right with its
+arrow badge, shadow and label; REMOVE the center dashed arrow; REMOVE the bottom
+instruction text. Fill those removed areas seamlessly with the same pale
+background. Final image contains ONLY the pale background and the unchanged four
+runner illustrations in the lower band. No text, no logo, no app icons, no folder,
+no arrow, no UI. Do not crop, reframe, move or redesign the runners. This is
+production artwork, not a mockup.
+
+Composition:
+- assets/dmg-background.png contains only the pale background and runner strip.
+- scripts/render-dmg-background.swift renders the original agent-relay-mark.svg
+  and agent-relay-wordmark.svg geometry, with dark lettering on the pale surface,
+  plus the dashed arrow and the instruction at both standard and Retina sizes.
+- scripts/dmg-settings.py places native Finder icons and their filename labels.
+- The final content area is 768 x 576 points; runners occupy the lower band.
+- This is a macOS DMG-specific presentation; Linux packages have no Finder view.
