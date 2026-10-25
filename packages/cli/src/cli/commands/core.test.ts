@@ -2833,6 +2833,46 @@ describe('registerCoreCommands', () => {
     });
   });
 
+  it.each([
+    ['dry-run', true],
+    ['normal uninstall', false],
+  ])('uninstall %s handles a recorded broker process safely', async (_mode, dryRun) => {
+    const projectRoot = nodeFs.mkdtempSync(nodePath.join(os.tmpdir(), 'relay-uninstall-process-'));
+    const dataDir = nodePath.join(projectRoot, '.agentworkforce', 'relay');
+    const connectionPath = nodePath.join(dataDir, 'connection.json');
+    nodeFs.mkdirSync(dataDir, { recursive: true });
+    nodeFs.writeFileSync(connectionPath, connectionFile(54321));
+
+    try {
+      const { deps } = createHarness();
+      vi.mocked(deps.getProjectPaths).mockReturnValue({
+        projectRoot,
+        dataDir,
+        teamDir: nodePath.join(dataDir, 'teams'),
+        dbPath: nodePath.join(dataDir, 'messages.db'),
+        projectId: 'test-uninstall',
+      });
+      const program = new Command();
+      registerCoreMaintenance(program, deps);
+
+      const exitCode = await runCommand(program, ['uninstall', ...(dryRun ? ['--dry-run'] : [])]);
+
+      expect(exitCode).toBeUndefined();
+      if (dryRun) {
+        expect(deps.log).toHaveBeenCalledWith('[dry-run] Would send SIGTERM to broker (pid: 54321)');
+        expect(deps.killProcess).not.toHaveBeenCalled();
+        expect(deps.fs.rmSync).not.toHaveBeenCalled();
+        expect(deps.fs.unlinkSync).not.toHaveBeenCalled();
+        expect(deps.execCommand).not.toHaveBeenCalled();
+        expect(nodeFs.existsSync(connectionPath)).toBe(true);
+      } else {
+        expect(deps.killProcess).toHaveBeenCalledExactlyOnceWith(54321, 'SIGTERM');
+      }
+    } finally {
+      nodeFs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it('uninstall dry-run covers renamed and legacy installer bin directories', async () => {
     const { deps } = createHarness();
     const program = new Command();

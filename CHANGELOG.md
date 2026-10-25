@@ -5,11 +5,15 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Major]
 
 ### Removed
 
 - Python workflows, the `agent-relay.py` node provider, and the `agent-relay-sdk` package. Local workflows are YAML, TypeScript, JavaScript, or shell. Cloud and worker workflows are YAML or TypeScript. Node definitions are TypeScript or JavaScript. SDKs are TypeScript and Swift.
+
+### Fixed
+
+- `agent-relay uninstall --dry-run` previews broker termination without sending a signal to the running process.
 
 ## [14.0.0] - 2026-10-13
 
