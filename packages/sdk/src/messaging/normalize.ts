@@ -448,9 +448,19 @@ export function normalizeMessage(input: unknown, context: MessageContext = {}): 
   const channelId = context.channelId ?? message.channel_id;
   const conversationId = context.conversationId ?? message.conversation_id;
   const parentId = context.parentId ?? message.parent_id;
+  // Relaycast stores one-to-one DMs in internal channels with dmch_ IDs.
+  // Generic message reads can omit conversation_id, so don't expose those
+  // backing channels as public channel messages. Explicit context wins.
+  const dmBackingChannel = channelId?.startsWith('dmch_') ?? false;
   const kind =
     context.kind ??
-    (parentId ? 'thread_reply' : conversationId ? 'dm' : channelId || channelName ? 'channel' : 'unknown');
+    (parentId
+      ? 'thread_reply'
+      : conversationId || dmBackingChannel
+        ? 'dm'
+        : channelId || channelName
+          ? 'channel'
+          : 'unknown');
   const id = message.id ?? '';
 
   return compact<RelayMessage>({
