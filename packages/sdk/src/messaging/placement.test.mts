@@ -914,6 +914,34 @@ describe('RelaycastMessagingClient placement', () => {
       expect((error as Error).message).toContain('/tmp/worker-dead.log');
     });
 
+    it('preserves provider_removed as a stable non-retryable placement code', async () => {
+      const { client } = createClient([LIVE_NODE_A], {
+        getInvocation: async (name, invocationId) => ({
+          invocation_id: invocationId,
+          action_name: name,
+          status: 'failed',
+          error:
+            "provider_removed: provider 'gemini' has been removed; switch to a supported native provider (claude, codex, or opencode).",
+        }),
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          confirm: true,
+          confirmTimeoutMs: 1_000,
+          confirmPollIntervalMs: 10,
+          input: { name: 'worker-removed' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('provider_removed');
+      expect((error as Error).message).toContain("provider 'gemini' has been removed");
+    });
+
     // relay#1563: dispatch evidence comes from the ack's node id, not from
     // however the confirmation later resolves. A `pending` ack with no
     // `dispatchedNodeId`/`handlerNodeId` never actually routed — timing out

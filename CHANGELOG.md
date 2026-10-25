@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - Python workflows, the `agent-relay.py` node provider, and the `agent-relay-sdk` package. Local workflows are YAML, TypeScript, JavaScript, or shell. Cloud and worker workflows are YAML or TypeScript. Node definitions are TypeScript or JavaScript. SDKs are TypeScript and Swift.
+- Gemini, local Cursor CLI, Aider, Goose, and Droid are no longer spawn providers. CLI, MCP, SDK, Fleet, and broker compatibility paths return `provider_removed` instead of starting them.
+
+### Breaking Changes
+
+- Node capacity no longer advertises `spawn:gemini`, `spawn:cursor`, `spawn:cursor-agent`, `spawn:aider`, `spawn:goose`, or `spawn:droid`, including when old teams, node definitions, or environment overrides name them.
+
+### Migration Guidance
+
+- Replace local Cursor CLI spawns with `cursor-cloud`. Move Gemini, Aider, Goose, and Droid workloads to a supported native provider such as Claude, Codex, or OpenCode.
 
 ## [14.0.0] - 2026-10-13
 

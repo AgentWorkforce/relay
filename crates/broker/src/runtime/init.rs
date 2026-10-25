@@ -988,7 +988,7 @@ fn bracket_ipv6_host(host: &str) -> String {
 
 /// The harnesses the broker advertises `spawn:<harness>` capacity for when
 /// `AGENT_RELAY_NODE_HARNESSES` is unset.
-const DEFAULT_NODE_HARNESSES: &[&str] = &["claude", "codex", "gemini", "opencode", "muse", "devin"];
+const DEFAULT_NODE_HARNESSES: &[&str] = &["claude", "codex", "opencode", "muse", "devin"];
 
 /// Build the node descriptor the broker registers as the `broker` provider.
 ///
@@ -1082,6 +1082,7 @@ fn node_capacity_harnesses() -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
     source
         .into_iter()
+        .filter(|h| crate::provider_policy::removed_provider(h).is_none())
         .filter(|h| seen.insert(h.clone()))
         .collect()
 }
@@ -1204,11 +1205,44 @@ mod tests {
             "default node capacity must include muse, got {harnesses:?}"
         );
         assert!(
+            !harnesses
+                .iter()
+                .any(|harness| crate::provider_policy::removed_provider(harness).is_some()),
+            "default node capacity must omit removed providers, got {harnesses:?}"
+        );
+        assert!(
             manifest
                 .capabilities
                 .iter()
                 .any(|cap| cap.name == "spawn:muse"),
             "broker manifest must advertise spawn:muse capacity"
+        );
+    }
+
+    #[test]
+    fn configured_node_harnesses_filter_removed_providers() {
+        let _lock = NODE_HARNESSES_ENV_MUTEX
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let saved = std::env::var_os("AGENT_RELAY_NODE_HARNESSES");
+        // SAFETY: NODE_HARNESSES_ENV_MUTEX serializes mutations in this module.
+        unsafe {
+            std::env::set_var(
+                "AGENT_RELAY_NODE_HARNESSES",
+                "claude,gemini,cursor-agent,aider,goose,droid,opencode",
+            );
+        }
+        let harnesses = node_capacity_harnesses();
+        // SAFETY: same lock held; restore the ambient value before releasing it.
+        unsafe {
+            match saved {
+                Some(value) => std::env::set_var("AGENT_RELAY_NODE_HARNESSES", value),
+                None => std::env::remove_var("AGENT_RELAY_NODE_HARNESSES"),
+            }
+        }
+        assert_eq!(
+            harnesses,
+            vec!["claude".to_string(), "opencode".to_string()]
         );
     }
 

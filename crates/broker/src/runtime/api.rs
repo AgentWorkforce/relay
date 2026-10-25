@@ -3100,12 +3100,6 @@ fn channel_in_list(channels: &[ChannelName], channel: &str) -> bool {
         .any(|existing| existing.as_str().eq_ignore_ascii_case(channel))
 }
 
-/// One-line skill text prepended for CLI harnesses that need a minimal relay lifecycle hint.
-const RELAY_WORKER_ONE_LINER: &str = "\
-Call mcp__agent-relay__add_agent(name, cli, task) to spawn a relay worker \
-(cli: \"claude\", \"codex\", \"gemini\", \"aider\", \"goose\", \"grok\", \"muse\", \"opencode\", or \"devin\"; add model for Claude tier, \
-e.g. model: \"claude-opus-4-8\"), and mcp__agent-relay__remove_agent(name) to release when done.";
-
 /// Skill text prepended to the task for small/fast models (haiku, mini, flash) that need
 /// explicit tool guidance to reliably call mcp__agent-relay__add_agent.
 /// Eval data: haiku achieves 0/5 spawn reliability without guidance, 5/5 with this text.
@@ -3116,7 +3110,7 @@ const SMALL_MODEL_RELAY_SKILL: &str = "\
 ### Spawn a relay worker
 To delegate a task to a dedicated relay worker agent, call:
   mcp__agent-relay__add_agent(name: \"WorkerName\", cli: \"claude\", task: \"full task instructions\")
-Required: name (unique string), cli (\"claude\", \"codex\", \"gemini\", \"aider\", \"goose\", \"grok\", \"muse\", \"opencode\", or \"devin\"), task (complete instructions).
+Required: name (unique string), cli (\"claude\", \"codex\", \"grok\", \"muse\", \"opencode\", or \"devin\"), task (complete instructions).
 To pin a Claude model: add model: \"claude-opus-4-8\" (Opus), \"claude-sonnet-4-6\" (Sonnet), or \"claude-haiku-4-5-20251001\" (Haiku).
 The relay worker will DM you \"ACK: <understanding>\" when it starts and \"DONE: <result>\" when complete.
 
@@ -3143,31 +3137,10 @@ fn model_skill_prefix(model: Option<&str>) -> Option<&'static str> {
         .map(|_| SMALL_MODEL_RELAY_SKILL)
 }
 
-/// Returns the CLI-specific relay skill prefix, if that harness needs one.
-fn cli_skill_prefix(cli: &str) -> Option<&'static str> {
-    let command = shlex::split(cli)
-        .and_then(|parts| parts.into_iter().next())
-        .or_else(|| cli.split_whitespace().next().map(ToOwned::to_owned))
-        .unwrap_or_else(|| cli.to_string());
-    let cli = Path::new(&command)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(command.as_str())
-        .to_lowercase();
-    if cli == "gemini" {
-        Some(RELAY_WORKER_ONE_LINER)
-    } else {
-        None
-    }
-}
-
 /// Returns the combined relay skill prefix for a spawned agent.
-pub(super) fn relay_skill_prefix(cli: &str, model: Option<&str>) -> Option<String> {
+pub(super) fn relay_skill_prefix(_cli: &str, model: Option<&str>) -> Option<String> {
     let mut parts = Vec::new();
     if let Some(prefix) = model_skill_prefix(model) {
-        parts.push(prefix);
-    }
-    if let Some(prefix) = cli_skill_prefix(cli) {
         parts.push(prefix);
     }
     if parts.is_empty() {
@@ -3180,8 +3153,7 @@ pub(super) fn relay_skill_prefix(cli: &str, model: Option<&str>) -> Option<Strin
 #[cfg(test)]
 mod skill_injection_tests {
     use super::{
-        cli_skill_prefix, is_small_model_tier, model_skill_prefix, relay_skill_prefix,
-        RELAY_WORKER_ONE_LINER, SMALL_MODEL_RELAY_SKILL,
+        is_small_model_tier, model_skill_prefix, relay_skill_prefix, SMALL_MODEL_RELAY_SKILL,
     };
 
     #[test]
@@ -3215,9 +3187,11 @@ mod skill_injection_tests {
         assert!(text.contains("mcp__agent-relay__remove_agent"));
         assert!(text.contains("relay worker"));
         assert!(text.contains("\"muse\""));
-        assert!(text.contains("\"aider\""));
-        assert!(text.contains("\"goose\""));
         assert!(text.contains("\"grok\""));
+        assert!(!text.contains("\"gemini\""));
+        assert!(!text.contains("\"aider\""));
+        assert!(!text.contains("\"goose\""));
+        assert!(!text.contains("\"droid\""));
         assert!(!text.contains("Do it yourself"));
     }
 
@@ -3225,47 +3199,27 @@ mod skill_injection_tests {
     fn relay_skill_guidance_lists_every_spawnable_cli() {
         // Both guidance strings must stay aligned with the add_agent schema:
         // every accepted cli value is named so guided callers use valid ones.
-        for text in [RELAY_WORKER_ONE_LINER, SMALL_MODEL_RELAY_SKILL] {
-            for cli in [
-                "\"claude\"",
-                "\"codex\"",
-                "\"gemini\"",
-                "\"aider\"",
-                "\"goose\"",
-                "\"grok\"",
-                "\"muse\"",
-                "\"opencode\"",
-            ] {
-                assert!(text.contains(cli), "relay skill guidance must name {cli}");
-            }
+        for cli in [
+            "\"claude\"",
+            "\"codex\"",
+            "\"grok\"",
+            "\"muse\"",
+            "\"opencode\"",
+            "\"devin\"",
+        ] {
+            assert!(
+                SMALL_MODEL_RELAY_SKILL.contains(cli),
+                "relay skill guidance must name {cli}"
+            );
         }
     }
 
     #[test]
-    fn cli_specific_harnesses_receive_prefixes() {
-        assert_eq!(cli_skill_prefix("gemini"), Some(RELAY_WORKER_ONE_LINER));
-        assert_eq!(
-            cli_skill_prefix("gemini --model pro"),
-            Some(RELAY_WORKER_ONE_LINER)
-        );
-        assert_eq!(
-            cli_skill_prefix("/usr/local/bin/gemini --model pro"),
-            Some(RELAY_WORKER_ONE_LINER)
-        );
-        // droid: no injection — broker injection kills s03 bare (0/5 vs 5/5 baseline without it)
-        assert_eq!(cli_skill_prefix("droid"), None);
-        assert_eq!(cli_skill_prefix("/opt/homebrew/bin/droid --foo"), None);
-        assert_eq!(cli_skill_prefix("codex"), None);
-        assert_eq!(cli_skill_prefix("claude"), None);
-    }
-
-    #[test]
-    fn relay_skill_prefix_combines_model_and_cli_guidance() {
-        let prefix = relay_skill_prefix("gemini", Some("gemini-2.0-flash")).unwrap();
+    fn relay_skill_prefix_uses_only_active_small_model_guidance() {
+        let prefix = relay_skill_prefix("codex", Some("gpt-5-mini")).unwrap();
         assert!(prefix.contains("## Agent Relay"));
-        assert!(prefix.contains(RELAY_WORKER_ONE_LINER));
-
-        // droid gets no injection — broker-injected skill text suppresses relay tool use entirely
+        assert!(!prefix.contains("\"gemini\""));
+        assert!(!prefix.contains("\"droid\""));
         assert!(relay_skill_prefix("droid", None).is_none());
 
         assert!(relay_skill_prefix("codex", Some("gpt-5.5")).is_none());

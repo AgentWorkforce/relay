@@ -528,6 +528,23 @@ describe('agent-relay-mcp startup helpers', () => {
     expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    ['gemini', 'supported native provider'],
+    ['cursor-agent', "use 'cursor-cloud'"],
+    ['aider', 'supported native provider'],
+    ['goose', 'supported native provider'],
+    ['droid', 'supported native provider'],
+  ])('rejects removed MCP spawn provider %s before dispatch', async (cli, guidance) => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
+    const spawn = mocks.serverInstances[0].tools.get('spawn')!.handler;
+
+    await expect(spawn({ name: 'RemovedWorker', cli })).rejects.toThrow(
+      new RegExp(`provider_removed:.*${guidance.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`)
+    );
+    expect(mocks.agentRelayMessagingCommands.invoke).not.toHaveBeenCalled();
+  });
+
   it('allows a completed JSON-RPC request id to be reused for a later idempotency key', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });

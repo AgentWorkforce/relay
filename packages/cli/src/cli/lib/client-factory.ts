@@ -1,5 +1,6 @@
 import { HarnessDriverClient, type BrokerInitArgs } from '@agent-relay/harness-driver';
 import {
+  assertProviderActive,
   createNativeHarnessLaunch,
   resolveHarnessRuntime,
   type HarnessRuntime,
@@ -58,6 +59,7 @@ export function nativeSidecarLaunch(
 export function resolvedSpawnRuntime(
   options: Pick<ClientSpawnOptions, 'cli' | 'runtime'>
 ): SelectedHarnessRuntime {
+  assertProviderActive(options.cli);
   return resolveHarnessRuntime(options.cli, options.runtime);
 }
 
@@ -104,6 +106,7 @@ export async function spawnAgentWithClient(
   client: HarnessDriverClient,
   options: ClientSpawnOptions
 ): Promise<void> {
+  assertProviderActive(options.cli);
   const runtime = resolvedSpawnRuntime(options);
   if (runtime === 'pty') {
     const { runtime: _runtime, ...ptyOptions } = options;

@@ -205,9 +205,9 @@ describe('create({ relay }) — live PTY spawn', () => {
     });
   });
 
-  it('rejects native selection for unsupported PTY harnesses', async () => {
+  it('keeps removed harness exports as migration tombstones', async () => {
     await expect(gemini.create({ runtime: 'native' })).rejects.toThrow(
-      /No native harness adapter is registered/
+      /provider_removed: provider 'gemini'.*supported native provider/
     );
   });
 });

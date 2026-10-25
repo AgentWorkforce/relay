@@ -816,9 +816,14 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             // already known to have failed or been denied.
             const ackStatus = ack.status?.toLowerCase();
             if (ackStatus && CONFIRM_FAILURE_STATUSES.has(ackStatus)) {
+              const nodeError = (ack as unknown as { error?: string }).error?.trim();
+              const errorCode: RelayPlacementError['code'] = nodeError?.startsWith('provider_removed:')
+                ? 'provider_removed'
+                : 'spawn_failed';
               throw new RelayPlacementError(
-                'spawn_failed',
-                `node '${placedNodeLabel}' reported ${ackStatus} for ${actionName} immediately upon dispatch`,
+                errorCode,
+                nodeError ??
+                  `node '${placedNodeLabel}' reported ${ackStatus} for ${actionName} immediately upon dispatch`,
                 {
                   capability,
                   node: placedNodeLabel,
@@ -1089,8 +1094,13 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
               const retryablePressure =
                 errorContext.capability.startsWith('spawn:') &&
                 /^node agent\.register failed for agent '[^']+': d1_pressure:/.test(nodeError ?? '');
+              const errorCode: RelayPlacementError['code'] = nodeError?.startsWith('provider_removed:')
+                ? 'provider_removed'
+                : retryablePressure
+                  ? 'spawn_retryable'
+                  : 'spawn_failed';
               throw new RelayPlacementError(
-                retryablePressure ? 'spawn_retryable' : 'spawn_failed',
+                errorCode,
                 retryablePressure
                   ? `${nodeError}. No registration mutation was applied; retry the spawn.`
                   : nodeError || `node '${context.node}' reported ${status} for ${actionName}`,

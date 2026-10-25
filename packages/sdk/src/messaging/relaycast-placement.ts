@@ -94,6 +94,8 @@ export class RelayPlacementError extends Error {
     | 'node_unavailable'
     | 'sandbox_policy_mismatch'
     | 'unmapped_repo'
+    /** The requested provider was intentionally removed and must not be retried. */
+    | 'provider_removed'
     /** The node ran the action and reported a failure. */
     | 'spawn_failed'
     /** The node rejected spawn setup before mutation and a caller may retry. */

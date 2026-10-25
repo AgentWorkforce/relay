@@ -117,6 +117,20 @@ describe('spawn lifecycle receipts', () => {
 });
 
 describe('fleet command support', () => {
+  it.each(['gemini', 'cursor', 'cursor-agent', 'aider', 'goose', 'droid'])(
+    'rejects removed provider %s with provider_removed guidance before dispatch',
+    async (provider) => {
+      const program = new Command();
+      program.exitOverride();
+      registerFleetCommands(program);
+      await expect(
+        program.parseAsync(['fleet', 'spawn', provider, '--name', 'removed', '--task', 'noop'], {
+          from: 'user',
+        })
+      ).rejects.toThrow(/provider_removed:/);
+    }
+  );
+
   it.each(['config', 'enable', 'disable', 'inherit'])(
     'fleet %s is a hidden no-op without workspace access',
     async (command) => {

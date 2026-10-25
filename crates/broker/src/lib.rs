@@ -35,6 +35,7 @@ pub(crate) mod node_delivery_probe;
 #[allow(dead_code)]
 pub(crate) mod obligation;
 pub(crate) mod priorities;
+pub(crate) mod provider_policy;
 pub(crate) mod pty_worker;
 #[allow(dead_code)]
 pub(crate) mod redact;

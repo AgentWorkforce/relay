@@ -675,6 +675,7 @@ pub(super) async fn spawn_worker_from_request(
     };
     let (effective_cli, _) = crate::cli::command_parse::parse_cli_command(effective_cli)?;
     let normalized_cli = crate::cli::command_parse::normalize_cli_name(&effective_cli);
+    crate::provider_policy::ensure_provider_active(&normalized_cli)?;
     let clean_home = (workers.env_value("AGENT_RELAY_LOCAL_ONLY") != Some("1")).then(|| {
         crate::snippets::muse_clean_home_dir(
             std::path::Path::new(

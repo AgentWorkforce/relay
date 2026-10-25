@@ -7798,6 +7798,44 @@ fn http_api_spawn_spec_defaults_to_pty_runtime() {
 }
 
 #[test]
+fn http_api_spawn_spec_rejects_removed_providers_with_migration_guidance() {
+    for cli in [
+        "gemini",
+        "cursor",
+        "cursor-agent",
+        "aider",
+        "goose",
+        "droid",
+    ] {
+        let error = build_http_api_spawn_spec(
+            WorkerName::from("removed-worker"),
+            cli.to_string(),
+            None,
+            None,
+            vec![],
+            vec![ChannelName::from("general")],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect_err("removed provider must fail before spawn");
+        let message = error.to_string();
+        assert!(message.starts_with("provider_removed:"), "{cli}: {message}");
+        if cli.starts_with("cursor") {
+            assert!(message.contains("cursor-cloud"), "{cli}: {message}");
+        } else {
+            assert!(
+                message.contains("supported native provider"),
+                "{cli}: {message}"
+            );
+        }
+    }
+}
+
+#[test]
 fn http_api_spawn_spec_uses_headless_runtime_for_supported_providers() {
     let spec = build_http_api_spawn_spec(
         WorkerName::from("worker-a"),

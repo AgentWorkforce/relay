@@ -1,7 +1,14 @@
 import { isAbsolute } from 'node:path';
 
 import { z } from 'zod';
-import { claude, codex, definePtyHarness, gemini, muse, type PtyHarness } from '@agent-relay/harnesses';
+import {
+  assertProviderActive,
+  claude,
+  codex,
+  definePtyHarness,
+  muse,
+  type PtyHarness,
+} from '@agent-relay/harnesses';
 import { resolveStaticHarnessConfig, type StaticPtyHarnessDefinition } from '@agent-relay/harness-driver';
 import type {
   AgentSpec,
@@ -280,6 +287,7 @@ export function spawn(
   options: SpawnHandlerOptions = {}
 ): FleetSpawnDefinition<SpawnInput, unknown> {
   const definition = normalizePtyHarness(harness);
+  assertProviderActive(definition.command);
   const handler: FleetActionHandler<SpawnInput, unknown> = async (rawInput, ctx) => {
     const input = parseWithSchema(spawnInputSchema, rawInput);
     const name = input.name ?? input.agent;
@@ -452,12 +460,12 @@ export function defineDefaultLocalNode(input: {
   const harnesses = new Map<string, StaticPtyHarnessDefinition>([
     ['claude', claude],
     ['codex', codex],
-    ['gemini', gemini],
     ['muse', muse],
   ]);
   for (const agent of input.teams?.agents ?? []) {
     const cli = agent.cli?.trim();
     if (cli && !harnesses.has(cli)) {
+      assertProviderActive(cli);
       harnesses.set(cli, definePtyHarness({ runtime: 'pty', command: cli }));
     }
   }

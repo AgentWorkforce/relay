@@ -31,6 +31,7 @@ import {
   isInvalidAgentTokenError,
   safeRelayErrorMessage,
 } from '@agent-relay/sdk';
+import { assertProviderActive, providerRemovedMessage } from '@agent-relay/harnesses';
 import { z } from 'zod';
 import { declaredWorkforceMetadata } from './lib/registration-metadata.js';
 import { isBundledBunEntrypointPath } from './lib/agent-relay-mcp-command.js';
@@ -103,6 +104,20 @@ const VERIFIED_SPAWN_MISSING_READY_MESSAGE =
   'Spawn completed without broker registration and harness readiness proof. The resolved spawn handler must honor top-level verify_ready and return spawned:true and ready:true. For a broker handler, use a release containing Relay PR #1708.';
 const VERIFIED_SPAWN_SUCCESS_STATUSES = new Set(['completed', 'succeeded', 'success']);
 const VERIFIED_SPAWN_FAILURE_STATUSES = new Set(['failed', 'error', 'cancelled', 'canceled', 'denied']);
+const ACTIVE_RAW_SPAWN_CLIS = ['claude', 'codex', 'grok', 'muse', 'opencode', 'devin'] as const;
+const activeRawSpawnCliSchema = z.string().superRefine((value, context) => {
+  const removedMessage = providerRemovedMessage(value);
+  if (removedMessage) {
+    context.addIssue({ code: 'custom', message: removedMessage });
+    return;
+  }
+  if (!(ACTIVE_RAW_SPAWN_CLIS as readonly string[]).includes(value)) {
+    context.addIssue({
+      code: 'custom',
+      message: `unsupported CLI "${value}"; expected one of: ${ACTIVE_RAW_SPAWN_CLIS.join(', ')}`,
+    });
+  }
+});
 
 class VerifiedSpawnError extends Error {
   readonly code: 'spawn_unconfirmed' | 'spawn_failed';
@@ -831,6 +846,7 @@ function validateSpawnRequest({ cli, persona, model, sessionRef, cwd, personaCwd
   if (Boolean(cli) === Boolean(persona)) {
     throw new Error('spawn requires exactly one of `cli` or `persona`.');
   }
+  if (cli) assertProviderActive(cli);
   if (persona && model) {
     throw new Error('Persona harness and model come from the persona spec; omit `model`.');
   }
@@ -1383,13 +1399,11 @@ function registerAgentRelayTools(
         'Returns the registered worker name. Raw CLI spawns return only after the broker confirms registration and harness readiness. Persona spawns follow their registered handler completion contract.',
       inputSchema: {
         name: z.string().describe('Worker agent name'),
-        cli: z
-          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'muse', 'opencode', 'devin'])
-          .describe(
-            'Which AI CLI runs the worker: "codex agent" → codex, "gemini agent" → gemini, ' +
-              '"muse agent" → muse, "devin agent" → devin, ' +
-              '"claude/opus claude/sonnet claude agent" → claude (default).'
-          ),
+        cli: activeRawSpawnCliSchema.describe(
+          'Which supported AI CLI runs the worker: "codex agent" → codex, ' +
+            '"muse agent" → muse, "devin agent" → devin, ' +
+            '"claude/opus claude/sonnet claude agent" → claude (default).'
+        ),
         task: z.string().describe('Task instructions'),
         channel: z.string().optional().describe('Channel to join'),
         persona: z.string().optional().describe('Worker persona'),
@@ -1435,6 +1449,7 @@ function registerAgentRelayTools(
         extra,
         idempotency_key,
         async () => {
+          assertProviderActive(cli);
           const invocation = await getRelay().agents.spawn({
             name,
             cli,
@@ -1469,10 +1484,7 @@ function registerAgentRelayTools(
         'Persona requests route to a node exposing `spawn:persona` (for example, `defineWorkforcePersonaSpawnNode` from `@agentworkforce/local-surface`). Both forms wait for broker registration and harness readiness. Unconfirmed outcomes return error code `spawn_unconfirmed` with `state: "pending"` and `liveness` evidence; a fresh worker heartbeat is evidence, not readiness proof, so do not retry a pending spawn.',
       inputSchema: {
         name: z.string().describe('Agent name'),
-        cli: z
-          .enum(['claude', 'codex', 'gemini', 'aider', 'goose', 'grok', 'muse', 'opencode', 'devin'])
-          .optional()
-          .describe('AI CLI to launch; mutually exclusive with persona'),
+        cli: activeRawSpawnCliSchema.optional().describe('AI CLI to launch; mutually exclusive with persona'),
         persona: z
           .string()
           .optional()

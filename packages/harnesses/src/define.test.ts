@@ -32,9 +32,9 @@ describe('harness factories (Phase C)', () => {
   });
 
   it('new() builds synchronously and honors an explicit name', () => {
-    const agent = definePtyHarness({ runtime: 'pty', command: 'gemini' }).new({ name: 'reviewer' });
+    const agent = definePtyHarness({ runtime: 'pty', command: 'grok' }).new({ name: 'reviewer' });
     expect(agent.name).toBe('reviewer');
-    expect(agent.cli).toBe('gemini');
+    expect(agent.cli).toBe('grok');
   });
 
   it('agent handles expose status/tools predicate builders', async () => {
@@ -46,7 +46,7 @@ describe('harness factories (Phase C)', () => {
   });
 
   it('auto-generated names are unique per command', () => {
-    const harness = definePtyHarness({ runtime: 'pty', command: 'aider' });
+    const harness = definePtyHarness({ runtime: 'pty', command: 'muse' });
     const a = harness.new();
     const b = harness.new();
     expect(a.name).not.toBe(b.name);

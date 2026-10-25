@@ -1847,6 +1847,11 @@ impl BrokerRuntime {
                 return;
             }
         };
+        if let Err(error) = crate::provider_policy::ensure_provider_active(&cli) {
+            self.reply_action_error(&invoke.invocation_id, &error.to_string())
+                .await;
+            return;
+        }
         let task = action_invoke_string(&invoke.input, &["task", "initial_task", "prompt"]);
         let carries_task = task.is_some();
         // Reject before launching: an oversized task can only fail after the
@@ -2342,9 +2347,16 @@ fn fleet_spawn_action_result(
         Ok(()) => ActionResultPayload::Output(ActionResultOutput {
             output: json!({ "spawned": true, "ready": false, "name": name.as_str() }),
         }),
-        Err(error) => ActionResultPayload::Error(ActionResultError {
-            error: format!("spawn_failed: {error:#}"),
-        }),
+        Err(error) => {
+            let error = format!("{error:#}");
+            ActionResultPayload::Error(ActionResultError {
+                error: if error.starts_with("provider_removed:") {
+                    error
+                } else {
+                    format!("spawn_failed: {error}")
+                },
+            })
+        }
     };
     ActionResult {
         task: None,

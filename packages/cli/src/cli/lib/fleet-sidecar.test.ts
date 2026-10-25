@@ -33,7 +33,7 @@ import {
 
 describe('nodeCapacityHarnesses', () => {
   it('advertises the default harness set (matching the broker default) when there is no config', () => {
-    expect(nodeCapacityHarnesses(null)).toEqual(['claude', 'codex', 'gemini', 'opencode', 'muse', 'devin']);
+    expect(nodeCapacityHarnesses(null)).toEqual(['claude', 'codex', 'opencode', 'muse', 'devin']);
   });
 
   it('advertises spawn:muse capacity from the default set', () => {
@@ -44,56 +44,64 @@ describe('nodeCapacityHarnesses', () => {
     const teams: CoreTeamsConfig = {
       team: 't',
       agents: [
-        { name: 'a', cli: 'aider' },
+        { name: 'a', cli: 'custom-native' },
+        { name: 'removed', cli: 'aider' },
         { name: 'b', cli: 'claude' },
       ],
     };
     expect(nodeCapacityHarnesses(teams)).toEqual([
       'claude',
       'codex',
-      'gemini',
       'opencode',
       'muse',
       'devin',
-      'aider',
+      'custom-native',
     ]);
   });
 
   it('adds spawn:<harness> definitions from a discovered node config', () => {
     const definition = defineNode({
       name: 'p',
-      capabilities: { 'spawn:aider': spawn({ runtime: 'pty', command: 'aider' }) },
+      capabilities: { 'spawn:custom-native': spawn({ runtime: 'pty', command: 'custom-native' }) },
     });
     expect(nodeCapacityHarnesses(null, definition)).toEqual([
       'claude',
       'codex',
-      'gemini',
       'opencode',
       'muse',
       'devin',
-      'aider',
+      'custom-native',
     ]);
+  });
+
+  it('does not advertise removed providers from legacy node descriptors', () => {
+    expect(
+      nodeCapacityHarnesses(null, {
+        capabilities: { 'spawn:gemini': {}, 'spawn:cursor-agent': {}, 'spawn:custom-native': {} },
+      })
+    ).toEqual(['claude', 'codex', 'opencode', 'muse', 'devin', 'custom-native']);
   });
 });
 
 describe('resolveNodeCapacityHarnesses', () => {
-  it('uses a pre-set AGENT_RELAY_NODE_HARNESSES value verbatim (operator authority)', () => {
+  it('uses a pre-set AGENT_RELAY_NODE_HARNESSES value while filtering removed providers', () => {
     const teams: CoreTeamsConfig = { team: 't', agents: [{ name: 'a', cli: 'aider' }] };
     // A pinned value wins over the computed default+config set.
     expect(resolveNodeCapacityHarnesses('  claude  ', teams)).toBe('claude');
     expect(resolveNodeCapacityHarnesses('claude,codex', null)).toBe('claude,codex');
+    expect(resolveNodeCapacityHarnesses('claude,gemini,cursor-agent', null)).toBe('claude');
   });
 
   it('computes defaults ∪ config when no value is pre-set', () => {
     const definition = defineNode({
       name: 'p',
-      capabilities: { 'spawn:aider': spawn({ runtime: 'pty', command: 'aider' }) },
+      capabilities: { 'spawn:custom-native': spawn({ runtime: 'pty', command: 'custom-native' }) },
     });
     expect(resolveNodeCapacityHarnesses(undefined, null, definition)).toBe(
-      'claude,codex,gemini,opencode,muse,devin,aider'
+      'claude,codex,opencode,muse,devin,custom-native'
     );
     // A blank/whitespace value is treated as unset.
-    expect(resolveNodeCapacityHarnesses('   ', null)).toBe('claude,codex,gemini,opencode,muse,devin');
+    expect(resolveNodeCapacityHarnesses('   ', null)).toBe('claude,codex,opencode,muse,devin');
   });
 });
 
@@ -102,7 +110,7 @@ describe('resolveNodeMaxAgents', () => {
     const definition = defineNode({
       name: 'p',
       maxAgents: 15,
-      capabilities: { 'spawn:aider': spawn({ runtime: 'pty', command: 'aider' }) },
+      capabilities: { 'spawn:custom-native': spawn({ runtime: 'pty', command: 'custom-native' }) },
     });
     // A pinned value wins over the definition's cap.
     expect(resolveNodeMaxAgents('  32  ', definition)).toBe('32');
@@ -113,7 +121,7 @@ describe('resolveNodeMaxAgents', () => {
     const definition = defineNode({
       name: 'p',
       maxAgents: 15,
-      capabilities: { 'spawn:aider': spawn({ runtime: 'pty', command: 'aider' }) },
+      capabilities: { 'spawn:custom-native': spawn({ runtime: 'pty', command: 'custom-native' }) },
     });
     expect(resolveNodeMaxAgents(undefined, definition)).toBe('15');
     // A blank/whitespace value is treated as unset.
@@ -123,7 +131,7 @@ describe('resolveNodeMaxAgents', () => {
   it('returns undefined when neither a preset nor the definition declares a cap', () => {
     const definition = defineNode({
       name: 'p',
-      capabilities: { 'spawn:aider': spawn({ runtime: 'pty', command: 'aider' }) },
+      capabilities: { 'spawn:custom-native': spawn({ runtime: 'pty', command: 'custom-native' }) },
     });
     expect(resolveNodeMaxAgents(undefined, definition)).toBeUndefined();
     expect(resolveNodeMaxAgents(undefined, undefined)).toBeUndefined();

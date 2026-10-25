@@ -1,5 +1,6 @@
 import { AgentRelay } from '@agent-relay/sdk';
 import { MAX_FLEET_NODE_AGENTS, type FleetTriggerSyncClient } from '@agent-relay/fleet';
+import { removedProvider } from '@agent-relay/harnesses';
 
 import type { CoreTeamsConfig } from '../commands/core.js';
 
@@ -13,7 +14,7 @@ import type { CoreTeamsConfig } from '../commands/core.js';
 // Mirrors the broker's built-in default (crates/broker init `DEFAULT_NODE_HARNESSES`);
 // the CLI overrides `AGENT_RELAY_NODE_HARNESSES`, so omitting one would drop the
 // broker's default capacity for it.
-const DEFAULT_HARNESSES = ['claude', 'codex', 'gemini', 'opencode', 'muse', 'devin'] as const;
+const DEFAULT_HARNESSES = ['claude', 'codex', 'opencode', 'muse', 'devin'] as const;
 
 /**
  * The minimum a node config has to expose to contribute to the broker's
@@ -34,14 +35,14 @@ export function nodeCapacityHarnesses(
   const harnesses = new Set<string>(DEFAULT_HARNESSES);
   for (const agent of teamsConfig?.agents ?? []) {
     const cli = agent.cli?.trim();
-    if (cli) {
+    if (cli && !removedProvider(cli)) {
       harnesses.add(cli);
     }
   }
   for (const name of Object.keys(definition?.capabilities ?? {})) {
     if (name.startsWith('spawn:')) {
       const harness = name.slice('spawn:'.length).trim();
-      if (harness) {
+      if (harness && !removedProvider(harness)) {
         harnesses.add(harness);
       }
     }
@@ -52,8 +53,8 @@ export function nodeCapacityHarnesses(
 /**
  * Resolve the `AGENT_RELAY_NODE_HARNESSES` CSV the broker registers its capacity
  * from. A pre-set value is the operator's authoritative declaration of the node's
- * real capacity and is returned verbatim; otherwise it is computed from the project
- * via {@link nodeCapacityHarnesses}.
+ * real capacity except that removed providers are always filtered; otherwise it is
+ * computed from the project via {@link nodeCapacityHarnesses}.
  */
 export function resolveNodeCapacityHarnesses(
   preset: string | undefined,
@@ -62,7 +63,11 @@ export function resolveNodeCapacityHarnesses(
 ): string {
   const trimmed = preset?.trim();
   if (trimmed) {
-    return trimmed;
+    return trimmed
+      .split(',')
+      .map((harness) => harness.trim())
+      .filter((harness) => harness && !removedProvider(harness))
+      .join(',');
   }
   return nodeCapacityHarnesses(teamsConfig, definition).join(',');
 }

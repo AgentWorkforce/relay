@@ -1,8 +1,10 @@
 import { defineManagedHarness, definePtyHarness, type PtyHarness } from './define.js';
+import { assertProviderActive } from './provider-policy.js';
 
 export * from './define.js';
 export * from './create-human.js';
 export * from './observability.js';
+export * from './provider-policy.js';
 export * from './ai-sdk/index.js';
 
 // Custom (non-PTY) harnesses are defined with the SDK's harness contract;
@@ -19,21 +21,41 @@ export const claude = defineManagedHarness('claude', { runtime: 'pty', command: 
 
 export const codex = defineManagedHarness('codex', { runtime: 'pty', command: 'codex' });
 
-export const gemini: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'gemini' });
+function removedPtyHarness(command: string): PtyHarness {
+  const legacy = definePtyHarness({ runtime: 'pty', command });
+  return {
+    ...legacy,
+    create: async () => {
+      assertProviderActive(command);
+      throw new Error('unreachable');
+    },
+    new: () => {
+      assertProviderActive(command);
+      throw new Error('unreachable');
+    },
+  };
+}
 
-export const cursor: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'cursor-agent' });
+/** @deprecated Gemini spawning was removed; use a supported native provider. */
+export const gemini: PtyHarness = removedPtyHarness('gemini');
+
+/** @deprecated Local cursor-agent spawning was removed; use Cursor Cloud. */
+export const cursor: PtyHarness = removedPtyHarness('cursor-agent');
 
 export const devin: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'devin' });
 
-export const droid: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'droid' });
+/** @deprecated Droid spawning was removed; use a supported native provider. */
+export const droid: PtyHarness = removedPtyHarness('droid');
 
 export const opencode = defineManagedHarness('opencode', { runtime: 'pty', command: 'opencode' });
 
 export const muse: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'muse' });
 
-export const aider: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'aider' });
+/** @deprecated Aider spawning was removed; use a supported native provider. */
+export const aider: PtyHarness = removedPtyHarness('aider');
 
-export const goose: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'goose' });
+/** @deprecated Goose spawning was removed; use a supported native provider. */
+export const goose: PtyHarness = removedPtyHarness('goose');
 
 export const grok: PtyHarness = definePtyHarness({ runtime: 'pty', command: 'grok' });
 

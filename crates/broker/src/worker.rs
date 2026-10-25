@@ -83,6 +83,16 @@ const WORKER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// custody or immediate acceptance.
 const NATIVE_DELIVERY_CUSTODY_TIMEOUT: Duration = Duration::from_secs(10);
 
+fn ensure_agent_spec_provider_active(spec: &AgentSpec) -> Result<()> {
+    if let Some(cli) = spec.cli.as_deref() {
+        crate::provider_policy::ensure_provider_active(cli)?;
+    }
+    if let Some(ResolvedHarnessConfig::Pty(config)) = spec.harness_config.as_ref() {
+        crate::provider_policy::ensure_provider_active(&config.command)?;
+    }
+    Ok(())
+}
+
 /// A complete newline-delimited worker protocol frame. A dedicated task owns
 /// each worker's stdin and writes these frames in order, so cancelling a
 /// caller can never cancel an in-progress pipe write and leave a partial JSON
@@ -900,6 +910,7 @@ impl WorkerRegistry {
         task_generation: Option<Uuid>,
     ) -> Result<AgentSpec> {
         let mut spec = spec;
+        ensure_agent_spec_provider_active(&spec)?;
         if self.identity_cleanups.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' has pending owned cleanup", spec.name);
         }
@@ -4872,6 +4883,43 @@ sleep 30
         )
         .is_ok());
         assert!(validate_pty_initial_task_size(&spec("codex", AgentRuntime::Pty), None).is_ok());
+    }
+
+    #[test]
+    fn direct_agent_specs_reject_removed_cli_and_harness_commands() {
+        let spec = |cli: Option<&str>, harness_command: Option<&str>| AgentSpec {
+            name: WorkerName::from("removed-provider"),
+            runtime: AgentRuntime::Pty,
+            provider: None,
+            cli: cli.map(ToOwned::to_owned),
+            session_id: None,
+            harness_config: harness_command.map(|command| {
+                ResolvedHarnessConfig::Pty(crate::protocol::PtyHarnessConfig {
+                    command: command.to_string(),
+                    args: Vec::new(),
+                    cwd: None,
+                    env: None,
+                    session_id: None,
+                    delivery: None,
+                    metadata: None,
+                })
+            }),
+            model: None,
+            cwd: None,
+            team: None,
+            shadow_of: None,
+            shadow_mode: None,
+            args: Vec::new(),
+            channels: Vec::new(),
+            restart_policy: None,
+        };
+
+        for candidate in [spec(Some("aider"), None), spec(None, Some("cursor-agent"))] {
+            let error = ensure_agent_spec_provider_active(&candidate)
+                .expect_err("direct removed-provider specs must be rejected");
+            assert!(error.to_string().starts_with("provider_removed:"));
+        }
+        assert!(ensure_agent_spec_provider_active(&spec(Some("codex"), None)).is_ok());
     }
 
     #[test]

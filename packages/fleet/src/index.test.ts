@@ -279,19 +279,31 @@ describe('@agent-relay/fleet', () => {
     ]);
   });
 
-  it('includes configured teams CLIs in the implicit local node', () => {
+  it('includes active configured teams CLIs in the implicit local node', () => {
     const node = defineDefaultLocalNode({
       name: 'local',
-      teams: { agents: [{ cli: 'aider' }] },
+      teams: { agents: [{ cli: 'custom-native' }] },
     });
 
     expect(Object.keys(node.capabilities)).toEqual([
       'spawn:claude',
       'spawn:codex',
-      'spawn:gemini',
       'spawn:muse',
-      'spawn:aider',
+      'spawn:custom-native',
     ]);
+  });
+
+  it('rejects removed teams providers with stable migration guidance', () => {
+    expect(() =>
+      defineDefaultLocalNode({
+        name: 'local',
+        teams: { agents: [{ cli: 'aider' }] },
+      })
+    ).toThrow(/provider_removed: provider 'aider'.*supported native provider/);
+  });
+
+  it('rejects explicit removed spawn definitions', () => {
+    expect(() => spawn({ runtime: 'pty', command: 'droid' })).toThrow(/provider_removed: provider 'droid'/);
   });
 
   it('delegates Muse authentication environment and readiness to the broker spawn', async () => {

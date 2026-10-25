@@ -26,6 +26,7 @@ import {
   createPtyObservabilityTranslator,
   getPtyObservabilityProfile,
 } from './observability.js';
+import { assertProviderActive } from './provider-policy.js';
 
 export type HarnessRuntime = 'auto' | 'native' | 'pty';
 export type SelectedHarnessRuntime = Exclude<HarnessRuntime, 'auto'>;
@@ -129,6 +130,7 @@ export interface PtyHarness
 /** Wrap a static PTY harness definition in a factory with `create`/`new`. */
 export function definePtyHarness(definition: StaticPtyHarnessDefinition): PtyHarness {
   const build = (input: HarnessCreateInput = {}): HarnessAgent => {
+    assertProviderActive(definition.command);
     const name = nextHarnessName(definition.command, input.name);
     const handle = createAgentHandle({ id: `harness:${definition.command}:${name}`, name });
     return {
@@ -148,6 +150,7 @@ export function definePtyHarness(definition: StaticPtyHarnessDefinition): PtyHar
   };
 
   const spawnLive = async (input: HarnessCreateInput, relay: AgentRelay): Promise<HarnessAgent> => {
+    assertProviderActive(definition.command);
     const driver = getHarnessDriver(relay);
     const cwd = input.cwd ?? definition.cwd;
     const runtime = await driver.spawn({
@@ -255,6 +258,7 @@ export function resolveHarnessRuntime(
   harness: string,
   requested: HarnessRuntime = 'auto'
 ): SelectedHarnessRuntime {
+  assertProviderActive(harness);
   const adapter = aiSdkAdapterRegistry.get(harness);
   if (!adapter) {
     if (requested === 'native') {
@@ -318,6 +322,7 @@ export function createNativeHarnessLaunch(
   input: HarnessCreateInput = {},
   sidecarLaunch?: NativeHarnessSidecarLaunch
 ): SpawnRuntimeInput {
+  assertProviderActive(adapterName);
   const adapter = aiSdkAdapterRegistry.require(adapterName);
   const name = nextHarnessName(adapter.name, input.name);
   const cwd = path.resolve(input.cwd ?? process.cwd());

@@ -22,6 +22,7 @@ pub(crate) fn build_http_api_spawn_spec(
     restart_policy: Option<Value>,
     harness_config: Option<ResolvedHarnessConfig>,
 ) -> Result<AgentSpec> {
+    crate::provider_policy::ensure_provider_active(&cli)?;
     let requested_runtime = match transport
         .as_deref()
         .map(str::trim)

@@ -28,6 +28,11 @@ vi.mock('@agent-relay/harness-driver', () => {
 });
 
 vi.mock('@agent-relay/harnesses', () => ({
+  assertProviderActive: (cli: string) => {
+    if (['gemini', 'cursor', 'cursor-agent', 'aider', 'goose', 'droid'].includes(cli)) {
+      throw new Error(`provider_removed: provider '${cli}' has been removed`);
+    }
+  },
   resolveHarnessRuntime: (cli: string, runtime = 'auto') => {
     if (runtime === 'native') {
       if (!['claude', 'codex', 'opencode', 'pi', 'deepagents'].includes(cli)) {
@@ -181,7 +186,7 @@ describe('client-factory', () => {
         channels: ['general'],
         runtime: 'native',
       })
-    ).rejects.toThrow(/No native harness adapter/);
+    ).rejects.toThrow(/provider_removed/);
 
     await expect(
       spawnAgentWithClient({} as any, {

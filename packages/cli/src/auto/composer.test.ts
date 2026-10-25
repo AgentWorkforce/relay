@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { classifyTask } from './classifier.js';
-import { composeTeam } from './composer.js';
+import { composeTeam, HARNESS_ONBOARDING, HARNESS_ROLE_MAP } from './composer.js';
 
 describe('composeTeam', () => {
   it('selects sonnet lead for low complexity', () => {
@@ -55,5 +55,13 @@ describe('composeTeam', () => {
     const team = composeTeam(assessment, 'build the full feature');
     const hasSynth = team.workers.some((w) => w.role === 'reducer');
     expect(hasSynth).toBe(true);
+  });
+
+  it('does not offer removed local providers for automatic team composition', () => {
+    expect(HARNESS_ONBOARDING).not.toHaveProperty('gemini');
+    expect(HARNESS_ONBOARDING).not.toHaveProperty('droid');
+    expect(HARNESS_ROLE_MAP.map(({ harness }) => harness)).not.toEqual(
+      expect.arrayContaining(['gemini', 'droid', 'cursor-agent'])
+    );
   });
 });

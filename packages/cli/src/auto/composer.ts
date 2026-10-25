@@ -21,7 +21,7 @@ export type OnboardingVariant = 'bare' | 'one-liner' | 'brief' | 'skill';
  * Which CLI harness to use for an agent.
  * Extend as opencode model evals complete and confirm role fitness.
  */
-export type WorkerCli = 'claude' | 'codex' | 'opencode' | 'gemini' | 'droid' | 'devin';
+export type WorkerCli = 'claude' | 'codex' | 'opencode' | 'devin';
 
 /**
  * Roles from the choosing-swarm-patterns skill.
@@ -124,8 +124,6 @@ export const HARNESS_ONBOARDING: Record<string, OnboardingVariant> = {
   claude: 'one-liner', // sonnet: 100% s03; haiku: needs skill (broker injects SMALL_MODEL_RELAY_SKILL)
   codex: 'bare', // relay-native; bare s03=80%, one-liner=100% — bare saves tokens
   opencode: 'bare', // relay-native; bare s03=100% (best bare of all harnesses)
-  gemini: 'one-liner', // bare s03=60% (release failures); one-liner=100%
-  droid: 'bare', // droid 0.148.1: all variants s03=0/5 (add_agent never called); skill s03=0/5 FAIL (injection suppresses relay); s04=0/5 all variants
 };
 
 // ── Role-fit map (from eval data 2026-06-12/13) ───────────────────────────────
@@ -397,52 +395,7 @@ export const HARNESS_ROLE_MAP: HarnessRoleMap[] = [
     },
   },
   {
-    harness: 'gemini',
-    defaultModel: undefined,
-    bestOnboarding: 'one-liner',
-    relayNative: false,
-    roles: {
-      worker: { fitness: 'confirmed', notes: 'one-liner s03=100%; bare=60%' },
-      planner: { fitness: 'provisional', notes: 'relay-native when prompted; avoid relay-agent vocab' },
-      mapper: { fitness: 'confirmed', notes: 'one-liner+ reliable' },
-      reducer: { fitness: 'provisional' },
-      coordinator: { fitness: 'provisional', notes: 's04=60-80%; occasional native fallback' },
-      reviewer: { fitness: 'provisional' },
-    },
-  },
-  {
-    harness: 'droid',
-    defaultModel: undefined,
-    bestOnboarding: 'bare',
-    relayNative: false,
-    roles: {
-      worker: {
-        fitness: 'not-viable',
-        notes:
-          'droid 0.148.1: s03=0/5 all variants (add_agent never called); skill injection s03=0/5 (suppresses relay). Was 5/5 on older version (June 12). s04=0/5.',
-      },
-      mapper: { fitness: 'provisional', notes: 'Leaf work only — do not give spawning or delegation tasks.' },
-      planner: {
-        fitness: 'provisional',
-        notes: 'No delegation tasks; droid routes delegation to native Task, not relay.',
-      },
-      // NEVER use for roles that involve spawning: s03=0%, s04=0% with droid 0.148.1.
-      coordinator: { fitness: 'not-viable', notes: 's03/s04=0%; routes to native Task tool' },
-      supervisor: { fitness: 'not-viable', notes: 'would use native Task, not relay' },
-    },
-  },
-  {
     harness: 'grok',
-    defaultModel: undefined,
-    bestOnboarding: 'bare',
-    relayNative: false,
-    roles: {
-      worker: { fitness: 'not-viable', notes: '0/48 — model does not call relay MCP tools' },
-      coordinator: { fitness: 'not-viable' },
-    },
-  },
-  {
-    harness: 'cursor-agent',
     defaultModel: undefined,
     bestOnboarding: 'bare',
     relayNative: false,

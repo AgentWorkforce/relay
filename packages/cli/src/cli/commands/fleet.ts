@@ -19,6 +19,7 @@ import {
   type EnsureCloudFleetSandboxResult,
 } from '@agent-relay/cloud';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
+import { providerRemovedMessage } from '@agent-relay/harnesses';
 import {
   createWorkspaceClient,
   RelayPlacementError,
@@ -84,17 +85,7 @@ const SERVE_REPLACEMENT_MESSAGE =
   "'fleet serve' has been replaced. Run 'relay node up' (with an optional --config <file>); " +
   "for Cloud-managed nodes run 'relay cloud enroll --token <token>' first.";
 
-const FLEET_CLIS = new Set([
-  'claude',
-  'codex',
-  'gemini',
-  'aider',
-  'goose',
-  'grok',
-  'muse',
-  'opencode',
-  'devin',
-]);
+const FLEET_CLIS = new Set(['claude', 'codex', 'grok', 'muse', 'opencode', 'devin']);
 /**
  * Floor for `--confirm-timeout` on a verified targeted spawn.
  *
@@ -1557,6 +1548,10 @@ export function registerFleetCommands(
 
 function parseFleetCli(value: string): string {
   const cli = value.trim().toLowerCase();
+  const removedMessage = providerRemovedMessage(cli);
+  if (removedMessage) {
+    throw new InvalidArgumentError(removedMessage);
+  }
   if (!FLEET_CLIS.has(cli)) {
     throw new InvalidArgumentError(
       `unsupported CLI "${value}"; expected one of: ${[...FLEET_CLIS].join(', ')}`

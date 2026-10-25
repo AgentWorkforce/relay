@@ -882,8 +882,24 @@ describe('local agent subtree', () => {
     expect(unsupported.client.spawnPty).not.toHaveBeenCalled();
     expect(unsupported.client.spawnHeadless).not.toHaveBeenCalled();
     expect(unsupported.error).toHaveBeenCalledWith(
-      expect.stringContaining('No native harness adapter is registered for gemini')
+      expect.stringContaining("provider_removed: provider 'gemini'")
     );
+  });
+
+  it.each([
+    ['gemini', 'supported native provider'],
+    ['cursor', 'cursor-cloud'],
+    ['cursor-agent', 'cursor-cloud'],
+    ['aider', 'supported native provider'],
+    ['goose', 'supported native provider'],
+    ['droid', 'supported native provider'],
+  ])('spawn rejects removed provider %s before contacting the broker', async (provider, guidance) => {
+    const fixture = harness();
+    await fixture.program.parseAsync(['local', 'agent', 'spawn', provider], { from: 'user' });
+    expect(fixture.client.spawnPty).not.toHaveBeenCalled();
+    expect(fixture.client.spawnHeadless).not.toHaveBeenCalled();
+    expect(fixture.error).toHaveBeenCalledWith(expect.stringContaining('provider_removed:'));
+    expect(fixture.error).toHaveBeenCalledWith(expect.stringContaining(guidance));
   });
 
   it('does not accept the removed --backend option', async () => {
