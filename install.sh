@@ -789,15 +789,10 @@ download_broker_binary() {
     rc=0
     fetch_release_asset "$probe_name" "$INSTALL_DIR/bin" raw || rc=$?
     if [ "$rc" -eq 1 ]; then
-        case "$VERSION" in
-            1[4-9].*|[2-9][0-9].*)
-                warn "No native messaging probe for $PLATFORM in v${VERSION}"
-                return 2
-                ;;
-            *)
-                warn "No native messaging probe for this older Relay release; continuing with its broker"
-                ;;
-        esac
+        # Releases published before the native relay command do not carry this
+        # asset. Release CI hard-requires it for new releases, while the
+        # installer remains able to install older versions such as 14.0.0.
+        warn "No native messaging probe in v${VERSION}; continuing with its broker"
     elif [ "$rc" -ne 0 ]; then
         warn "probe binary failed integrity verification"
         return 2
