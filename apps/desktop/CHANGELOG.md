@@ -8,6 +8,7 @@ publishing; land that artifact through a normal pull request. A release whose
 
 ## Unreleased
 
+- **Install the Pi extension without following replaced links.** The installer now validates and reads an existing Agent Relay extension through one no-follow file handle before its atomic update, so a swapped symbolic link is refused.
 - **Preview session-history retention controls.** Settings › General › **Session history** shows the planned 7, 30 or 90 day and forever choices, but keeps the control disabled until relayhistory can enforce deletion. Agent Relay does not remove older sessions automatically yet. Same on macOS, Linux and Windows.
 
 - **A simpler sign-in screen.** The logged-out screen on macOS, Linux and Windows now offers **Sign in with Google** without the redundant **Use another account** button. Signing in always opens Google's account chooser instead of silently reusing a saved app or CLI session.
