@@ -173,9 +173,13 @@ impl ConfigStore {
         self.root.join("config.json")
     }
 
-    pub fn inbox_path(&self, agent: &str) -> PathBuf {
+    pub fn inbox_path(&self, workspace_id: &str, agent: &str) -> PathBuf {
+        let workspace_digest = sha256_hex(workspace_id.as_bytes());
         let digest = sha256_hex(agent.as_bytes());
-        self.root.join("inbox").join(format!("{digest}.jsonl"))
+        self.root
+            .join("inbox")
+            .join(workspace_digest)
+            .join(format!("{digest}.jsonl"))
     }
 
     pub fn read(&self) -> Result<Config> {
@@ -359,5 +363,19 @@ mod tests {
         fs::write(store.path(), b"{not json").unwrap();
         let error = store.read().unwrap_err().to_string();
         assert!(error.contains("refusing to guess a hosted destination"));
+    }
+
+    #[test]
+    fn inbox_paths_are_partitioned_by_workspace() {
+        let store = ConfigStore::new(PathBuf::from("/tmp/relay-home"));
+        let first = store.inbox_path("rw_first", "reviewer");
+        let second = store.inbox_path("rw_second", "reviewer");
+
+        assert_ne!(first, second);
+        assert_eq!(
+            first.parent().unwrap().parent(),
+            Some(store.root().join("inbox").as_path())
+        );
+        assert!(!first.to_string_lossy().contains("reviewer"));
     }
 }

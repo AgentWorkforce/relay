@@ -70,7 +70,29 @@ impl AppState {
                 }
                 if let Ok(messages) = relaycast_client::take_deliveries(&config, &name).await {
                     if !messages.is_empty() {
-                        let _ = state.append_inbox(&name, &messages).await;
+                        match state.append_inbox(&name, &messages).await {
+                            Ok(()) => {
+                                for message in messages {
+                                    if let Err(error) = relaycast_client::ack_delivery(
+                                        &config,
+                                        &name,
+                                        &message.delivery_id,
+                                    )
+                                    .await
+                                    {
+                                        eprintln!(
+                                            "Could not acknowledge delivery {} for {name}: {error}",
+                                            message.delivery_id
+                                        );
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                eprintln!(
+                                    "Could not persist deliveries for {name}; leaving them pending: {error}"
+                                );
+                            }
+                        }
                     }
                 }
                 tokio::select! {
@@ -95,12 +117,13 @@ impl AppState {
 
     async fn append_inbox(&self, name: &str, messages: &[InboxMessage]) -> Result<()> {
         let _guard = self.0.inbox_write.lock().await;
-        let path = self.0.store.inbox_path(name);
+        let workspace_id = self.0.config.read().await.workspace_id.clone();
+        let path = self.0.store.inbox_path(&workspace_id, name);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
             set_private_dir(parent)?;
         }
-        let seen = read_inbox_path(&path)?
+        let mut seen = read_inbox_path(&path)?
             .into_iter()
             .map(|message| message.delivery_id)
             .collect::<HashSet<_>>();
@@ -112,6 +135,7 @@ impl AppState {
             }
             serde_json::to_writer(&mut file, message)?;
             file.write_all(b"\n")?;
+            seen.insert(message.delivery_id.clone());
         }
         file.sync_all()?;
         Ok(())
@@ -119,7 +143,8 @@ impl AppState {
 
     async fn inbox(&self, name: &str) -> Result<Vec<InboxMessage>> {
         let _guard = self.0.inbox_write.lock().await;
-        read_inbox_path(&self.0.store.inbox_path(name))
+        let workspace_id = self.0.config.read().await.workspace_id.clone();
+        read_inbox_path(&self.0.store.inbox_path(&workspace_id, name))
     }
 }
 
@@ -298,7 +323,7 @@ async fn local_send(
     }
     let message_id = random_secret("msg_");
     let delivery_id = random_secret("del_");
-    let conversation_id = random_secret("dm_");
+    let conversation_id = local_conversation_id(&config.workspace_id, from, to);
     let created_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -322,6 +347,18 @@ async fn local_send(
         to: to.to_string(),
         status: DeliveryStatus::Delivered,
     })
+}
+
+fn local_conversation_id(workspace_id: &str, from: &str, to: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let (first, second) = if from <= to { (from, to) } else { (to, from) };
+    let mut digest = Sha256::new();
+    for part in [workspace_id, first, second] {
+        digest.update((part.len() as u64).to_be_bytes());
+        digest.update(part.as_bytes());
+    }
+    format!("dm_{:x}", digest.finalize())
 }
 
 async fn inbox(
@@ -566,6 +603,27 @@ mod tests {
             .unwrap();
         let receipt: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(receipt["status"], "delivered");
+        let conversation_id = receipt["conversation_id"].as_str().unwrap().to_string();
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/send")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"from":"b","to":"a","text":"reply"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let reply: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(reply["conversation_id"], conversation_id);
 
         let response = router
             .oneshot(

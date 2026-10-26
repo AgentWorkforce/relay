@@ -264,15 +264,6 @@ pub async fn take_deliveries(config: &Config, name: &str) -> Result<Vec<InboxMes
                 text: required_string(message, "text")?,
                 created_at: required_string(message, "created_at")?,
             });
-            custom_ca_request(
-                &config.origin,
-                &credential.token,
-                ca_cert,
-                reqwest::Method::POST,
-                &format!("/v1/deliveries/{}/ack", urlencoding::encode(&delivery_id)),
-                None,
-            )
-            .await?;
         }
         return Ok(messages);
     }
@@ -290,13 +281,33 @@ pub async fn take_deliveries(config: &Config, name: &str) -> Result<Vec<InboxMes
             text: message.text,
             created_at: message.created_at,
         };
-        agent
-            .ack_delivery(&item.delivery.id)
-            .await
-            .map_err(public_error)?;
         messages.push(inbox);
     }
     Ok(messages)
+}
+
+pub async fn ack_delivery(config: &Config, name: &str, delivery_id: &str) -> Result<()> {
+    let name = valid_name(name)?;
+    let credential = config.agents.get(name).ok_or_else(|| {
+        anyhow!("Agent `{name}` is not stored on this machine. Run `relay agent register {name}` first.")
+    })?;
+    if let Some(ca_cert) = config.ca_cert.as_deref() {
+        custom_ca_request(
+            &config.origin,
+            &credential.token,
+            ca_cert,
+            reqwest::Method::POST,
+            &format!("/v1/deliveries/{}/ack", urlencoding::encode(delivery_id)),
+            None,
+        )
+        .await?;
+        return Ok(());
+    }
+    AgentClient::new(credential.token.clone(), Some(config.origin.clone()))?
+        .ack_delivery(delivery_id)
+        .await
+        .map_err(public_error)?;
+    Ok(())
 }
 
 fn workspace_client(origin: &str, key: &str) -> Result<RelayCast> {
@@ -393,6 +404,7 @@ async fn custom_ca_request(
         reqwest::Certificate::from_pem(&pem).context("Custom CA certificate is not valid PEM.")?;
     let client = reqwest::Client::builder()
         .add_root_certificate(certificate)
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(30))
         .build()?;
     let mut request = client

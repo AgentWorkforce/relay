@@ -1261,6 +1261,18 @@ install_from_source() {
     info "Building..."
     npm run build
 
+    # The source path must expose the same native messaging command as release
+    # and npm installs. build:rust places the probe in target/release when a
+    # Rust toolchain is available; fail clearly instead of reporting a partial
+    # installation when it is not.
+    local source_probe="$INSTALL_DIR/target/release/agent-relay-probe"
+    if [ ! -x "$source_probe" ]; then
+        error "Source installation could not build the native relay command. Install Rust, then retry."
+    fi
+    mkdir -p "$INSTALL_DIR/bin" "$BIN_DIR"
+    install_binary_atomic "$source_probe" "$INSTALL_DIR/bin/agent-relay-probe" check_probe_binary || +        error "Source installation built a probe that failed verification."
+    copy_binary_atomic "$INSTALL_DIR/bin/agent-relay-probe" "$BIN_DIR/relay" || +        error "Source installation could not expose the relay command in $BIN_DIR."
+
     # Create wrapper script
     install_node_launcher "$INSTALL_DIR"
     prepend_bin_dir_to_path
