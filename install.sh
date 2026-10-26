@@ -1288,8 +1288,10 @@ install_from_source() {
         error "Source installation could not build the native relay command. Install Rust, then retry."
     fi
     mkdir -p "$INSTALL_DIR/bin" "$BIN_DIR"
-    install_binary_atomic "$source_probe" "$INSTALL_DIR/bin/agent-relay-probe" check_probe_binary || +        error "Source installation built a probe that failed verification."
-    copy_binary_atomic "$INSTALL_DIR/bin/agent-relay-probe" "$BIN_DIR/relay" || +        error "Source installation could not expose the relay command in $BIN_DIR."
+    install_binary_atomic "$source_probe" "$INSTALL_DIR/bin/agent-relay-probe" check_probe_binary || \
+        error "Source installation built a probe that failed verification."
+    copy_binary_atomic "$INSTALL_DIR/bin/agent-relay-probe" "$BIN_DIR/relay" || \
+        error "Source installation could not expose the relay command in $BIN_DIR."
 
     # Create wrapper script
     install_node_launcher "$INSTALL_DIR"

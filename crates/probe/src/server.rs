@@ -4,7 +4,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -13,9 +13,9 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
-    io::{BufRead, BufReader, Write},
+    io::Write,
     net::{Ipv4Addr, SocketAddrV4},
     sync::Arc,
     time::Duration,
@@ -30,6 +30,7 @@ struct Inner {
     config: RwLock<Config>,
     pollers: Mutex<HashSet<String>>,
     inbox_write: Mutex<()>,
+    inbox_seen: Mutex<HashMap<String, HashSet<String>>>,
     shutdown: Notify,
 }
 
@@ -40,6 +41,7 @@ impl AppState {
             config: RwLock::new(config),
             pollers: Mutex::new(HashSet::new()),
             inbox_write: Mutex::new(()),
+            inbox_seen: Mutex::new(HashMap::new()),
             shutdown: Notify::new(),
         }))
     }
@@ -62,36 +64,48 @@ impl AppState {
         }
         let state = self.clone();
         tokio::spawn(async move {
+            let mut last_receive_error = None;
             loop {
                 let config = state.0.config.read().await.clone();
                 if !config.agents.contains_key(&name) {
                     state.0.pollers.lock().await.remove(&name);
                     return;
                 }
-                if let Ok(messages) = relaycast_client::take_deliveries(&config, &name).await {
-                    if !messages.is_empty() {
-                        match state.append_inbox(&name, &messages).await {
-                            Ok(()) => {
-                                for message in messages {
-                                    if let Err(error) = relaycast_client::ack_delivery(
-                                        &config,
-                                        &name,
-                                        &message.delivery_id,
-                                    )
-                                    .await
-                                    {
-                                        eprintln!(
-                                            "Could not acknowledge delivery {} for {name}: {error}",
-                                            message.delivery_id
-                                        );
+                match relaycast_client::take_deliveries(&config, &name).await {
+                    Ok(messages) => {
+                        if !messages.is_empty() {
+                            match state.append_inbox(&name, &messages).await {
+                                Ok(()) => {
+                                    for message in messages {
+                                        if let Err(error) = relaycast_client::ack_delivery(
+                                            &config,
+                                            &name,
+                                            &message.delivery_id,
+                                        )
+                                        .await
+                                        {
+                                            eprintln!(
+                                                "Could not acknowledge delivery {} for {name}: {error}",
+                                                message.delivery_id
+                                            );
+                                        }
                                     }
                                 }
+                                Err(error) => {
+                                    eprintln!(
+                                        "Could not persist deliveries for {name}; leaving them pending: {error}"
+                                    );
+                                }
                             }
-                            Err(error) => {
-                                eprintln!(
-                                    "Could not persist deliveries for {name}; leaving them pending: {error}"
-                                );
-                            }
+                        }
+                    }
+                    Err(error) => {
+                        let now = std::time::Instant::now();
+                        if last_receive_error
+                            .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(30))
+                        {
+                            eprintln!("Could not receive deliveries for {name}: {error}");
+                            last_receive_error = Some(now);
                         }
                     }
                 }
@@ -119,25 +133,44 @@ impl AppState {
         let _guard = self.0.inbox_write.lock().await;
         let workspace_id = self.0.config.read().await.workspace_id.clone();
         let path = self.0.store.inbox_path(&workspace_id, name);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-            set_private_dir(parent)?;
+        ensure_inbox_directory(&self.0.store, &path)?;
+        let cache_key = format!("{workspace_id}\0{name}");
+        let mut seen_cache = self.0.inbox_seen.lock().await;
+        if !seen_cache.contains_key(&cache_key) {
+            seen_cache.insert(
+                cache_key.clone(),
+                read_inbox_path(&path)?
+                    .into_iter()
+                    .map(|message| message.delivery_id)
+                    .collect(),
+            );
         }
-        let mut seen = read_inbox_path(&path)?
-            .into_iter()
-            .map(|message| message.delivery_id)
-            .collect::<HashSet<_>>();
+        let seen = seen_cache
+            .get_mut(&cache_key)
+            .expect("inbox delivery index was just initialized");
+        let file_is_new = !path.exists();
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
         set_private_file(&path)?;
+        let original_len = file.metadata()?.len();
+        let mut records = Vec::new();
+        let mut appended_ids = Vec::new();
         for message in messages {
             if seen.contains(&message.delivery_id) {
                 continue;
             }
-            serde_json::to_writer(&mut file, message)?;
-            file.write_all(b"\n")?;
-            seen.insert(message.delivery_id.clone());
+            records.extend(serde_json::to_vec(message)?);
+            records.push(b'\n');
+            appended_ids.push(message.delivery_id.clone());
         }
-        file.sync_all()?;
+        if let Err(error) = file.write_all(&records).and_then(|()| file.sync_all()) {
+            file.set_len(original_len)?;
+            file.sync_all()?;
+            return Err(error.into());
+        }
+        if file_is_new {
+            sync_dir(path.parent().expect("inbox paths always have a parent"))?;
+        }
+        seen.extend(appended_ids);
         Ok(())
     }
 
@@ -162,14 +195,14 @@ pub fn app(state: AppState) -> Router {
 
 pub async fn serve(store: ConfigStore) -> Result<()> {
     let mut config = store.read()?;
-    config.api.pid = Some(std::process::id());
-    store.write(&config)?;
     let port = config.api.port;
-    let state = AppState::new(store, config);
-    state.start_pollers().await;
     let listener = tokio::net::TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))
         .await
         .with_context(|| format!("Could not bind the Relay probe API on 127.0.0.1:{port}."))?;
+    config.api.pid = Some(std::process::id());
+    store.write(&config)?;
+    let state = AppState::new(store, config);
+    state.start_pollers().await;
     let shutdown_state = state.clone();
     axum::serve(listener, app(state))
         .with_graceful_shutdown(async move {
@@ -182,8 +215,55 @@ pub async fn serve(store: ConfigStore) -> Result<()> {
     Ok(())
 }
 
-async fn health() -> Json<Value> {
-    Json(json!({"ok": true, "service": "relay-probe", "version": env!("CARGO_PKG_VERSION")}))
+#[derive(Deserialize)]
+struct HealthQuery {
+    challenge: Option<String>,
+}
+
+async fn health(State(state): State<AppState>, Query(query): Query<HealthQuery>) -> Json<Value> {
+    let proof = query.challenge.map(|challenge| {
+        let state = state.clone();
+        async move {
+            let token = state.0.config.read().await.api.token.clone();
+            health_proof(&token, &challenge)
+        }
+    });
+    let proof = match proof {
+        Some(proof) => Some(proof.await),
+        None => None,
+    };
+    Json(json!({
+        "ok": true,
+        "service": "relay-probe",
+        "version": env!("CARGO_PKG_VERSION"),
+        "proof": proof,
+    }))
+}
+
+pub(crate) fn health_proof(token: &str, challenge: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    const BLOCK: usize = 64;
+    let mut key = [0_u8; BLOCK];
+    if token.len() > BLOCK {
+        key[..32].copy_from_slice(&Sha256::digest(token.as_bytes()));
+    } else {
+        key[..token.len()].copy_from_slice(token.as_bytes());
+    }
+    let mut inner_pad = [0x36_u8; BLOCK];
+    let mut outer_pad = [0x5c_u8; BLOCK];
+    for index in 0..BLOCK {
+        inner_pad[index] ^= key[index];
+        outer_pad[index] ^= key[index];
+    }
+    let mut inner = Sha256::new();
+    inner.update(inner_pad);
+    inner.update(challenge.as_bytes());
+    let inner = inner.finalize();
+    let mut outer = Sha256::new();
+    outer.update(outer_pad);
+    outer.update(inner);
+    format!("{:x}", outer.finalize())
 }
 
 async fn status(
@@ -404,20 +484,65 @@ async fn authorize(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError
 }
 
 fn read_inbox_path(path: &std::path::Path) -> Result<Vec<InboxMessage>> {
-    let file = match fs::File::open(path) {
-        Ok(file) => file,
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error.into()),
     };
     let mut messages = Vec::new();
-    for line in BufReader::new(file).lines() {
-        let line = line?;
-        if line.trim().is_empty() {
+    let complete_len = bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index + 1);
+    for line in bytes[..complete_len].split(|byte| *byte == b'\n') {
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        messages.push(serde_json::from_str(&line).context("Stored Relay inbox is unreadable.")?);
+        messages.push(serde_json::from_slice(line).context("Stored Relay inbox is unreadable.")?);
+    }
+    if complete_len < bytes.len() {
+        let trailing = &bytes[complete_len..];
+        match serde_json::from_slice(trailing) {
+            Ok(message) => {
+                messages.push(message);
+                let mut file = OpenOptions::new().append(true).open(path)?;
+                file.write_all(b"\n")?;
+                file.sync_all()?;
+            }
+            Err(_) => {
+                let file = OpenOptions::new().write(true).open(path)?;
+                file.set_len(complete_len as u64)?;
+                file.sync_all()?;
+            }
+        }
     }
     Ok(messages)
+}
+
+fn ensure_inbox_directory(store: &ConfigStore, path: &std::path::Path) -> Result<()> {
+    let inbox_root = store.root().join("inbox");
+    if !inbox_root.exists() {
+        fs::create_dir(&inbox_root)?;
+        set_private_dir(&inbox_root)?;
+        sync_dir(store.root())?;
+    } else {
+        set_private_dir(&inbox_root)?;
+    }
+    let workspace_dir = path.parent().expect("inbox paths always have a parent");
+    if !workspace_dir.exists() {
+        fs::create_dir(workspace_dir)?;
+        set_private_dir(workspace_dir)?;
+        sync_dir(&inbox_root)?;
+    } else {
+        set_private_dir(workspace_dir)?;
+    }
+    Ok(())
+}
+
+fn sync_dir(path: &std::path::Path) -> Result<()> {
+    #[cfg(unix)]
+    fs::File::open(path)?.sync_all()?;
+    Ok(())
 }
 
 fn set_private_dir(path: &std::path::Path) -> Result<()> {
@@ -515,18 +640,28 @@ mod tests {
     #[tokio::test]
     async fn health_is_public_but_status_requires_the_local_token() {
         let state = state();
+        let token = state.0.config.read().await.api.token.clone();
         let router = app(state.clone());
         let response = router
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/health")
+                    .uri("/health?challenge=fresh-challenge")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["proof"], health_proof(&token, "fresh-challenge"));
+        assert_ne!(
+            value["proof"],
+            health_proof("a listener that does not know the token", "fresh-challenge")
+        );
         let response = router
             .oneshot(
                 Request::builder()
@@ -642,5 +777,46 @@ mod tests {
         let inbox: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(inbox["messages"][0]["from"], "a");
         assert_eq!(inbox["messages"][0]["text"], "hi");
+    }
+
+    #[test]
+    fn inbox_repairs_only_an_incomplete_final_record() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("inbox.jsonl");
+        let message = InboxMessage {
+            delivery_id: "del_one".into(),
+            message_id: "msg_one".into(),
+            from: "a".into(),
+            text: "hello".into(),
+            created_at: "1".into(),
+        };
+        let mut contents = serde_json::to_vec(&message).unwrap();
+        contents.push(b'\n');
+        let valid_len = contents.len();
+        contents.extend(b"{\"delivery_id\":\"interrupted");
+        fs::write(&path, contents).unwrap();
+
+        let messages = read_inbox_path(&path).unwrap();
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].delivery_id, "del_one");
+        assert_eq!(fs::metadata(&path).unwrap().len(), valid_len as u64);
+    }
+
+    #[test]
+    fn inbox_normalizes_a_complete_record_missing_its_newline() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("inbox.jsonl");
+        let message = InboxMessage {
+            delivery_id: "del_one".into(),
+            message_id: "msg_one".into(),
+            from: "a".into(),
+            text: "hello".into(),
+            created_at: "1".into(),
+        };
+        fs::write(&path, serde_json::to_vec(&message).unwrap()).unwrap();
+
+        assert_eq!(read_inbox_path(&path).unwrap().len(), 1);
+        assert!(fs::read(&path).unwrap().ends_with(b"\n"));
     }
 }

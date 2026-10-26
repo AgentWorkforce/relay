@@ -388,7 +388,7 @@ async fn start_server(store: &ConfigStore) -> Result<()> {
     drop(child);
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
-        if api_health(config.api.port).await {
+        if api_health(&config).await {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -399,13 +399,27 @@ async fn start_server(store: &ConfigStore) -> Result<()> {
     )
 }
 
-async fn api_health(port: u16) -> bool {
-    reqwest::Client::new()
-        .get(format!("http://127.0.0.1:{port}/health"))
+async fn api_health(config: &Config) -> bool {
+    let challenge = crate::config::random_secret("hc_");
+    let expected = server::health_proof(&config.api.token, &challenge);
+    let response = match reqwest::Client::new()
+        .get(format!(
+            "http://127.0.0.1:{}/health?challenge={}",
+            config.api.port,
+            urlencoding::encode(&challenge)
+        ))
         .timeout(Duration::from_millis(500))
         .send()
         .await
-        .is_ok_and(|response| response.status().is_success())
+    {
+        Ok(response) if response.status().is_success() => response,
+        _ => return false,
+    };
+    let value = match response.json::<Value>().await {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+    value.get("proof").and_then(Value::as_str) == Some(expected.as_str())
 }
 
 async fn api_call<T: DeserializeOwned>(
@@ -415,7 +429,7 @@ async fn api_call<T: DeserializeOwned>(
     body: Option<Value>,
 ) -> Result<T> {
     let config = store.read()?;
-    if !api_health(config.api.port).await {
+    if !api_health(&config).await {
         start_server(store).await?;
     }
     let client = reqwest::Client::new();
