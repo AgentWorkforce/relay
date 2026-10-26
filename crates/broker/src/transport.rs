@@ -261,6 +261,7 @@ fn is_hosted_base_url(base_url: &str) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
     use std::{
         fs,
         io::{Read, Write},
@@ -268,11 +269,40 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    #[derive(Deserialize)]
+    struct SharedOriginVector {
+        credential: String,
+        fingerprint: String,
+        base_url_input: String,
+        normalized_base_url: String,
+        binding_file: serde_json::Value,
+    }
+
+    fn shared_origin_vector() -> SharedOriginVector {
+        serde_json::from_str(include_str!(
+            "../../../packages/contracts/fixtures/relaycast-origin-binding.json"
+        ))
+        .expect("shared Relaycast origin vector must be valid JSON")
+    }
+
     #[test]
-    fn fingerprint_matches_the_typescript_binding_contract() {
+    fn fingerprint_and_binding_file_match_the_shared_typescript_contract() {
+        let vector = shared_origin_vector();
         assert_eq!(
-            credential_fingerprint(" rk_live_self_hosted "),
-            "0dcecdc46ef84167c45e73cf1e859dd4"
+            credential_fingerprint(&vector.credential),
+            vector.fingerprint
+        );
+        assert_eq!(
+            normalize_base_url(&vector.base_url_input, "url").unwrap(),
+            vector.normalized_base_url
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(ORIGIN_BINDINGS_FILE);
+        fs::write(&path, serde_json::to_vec(&vector.binding_file).unwrap()).unwrap();
+        assert_eq!(
+            resolve_bound_base_url(&[vector.credential], &path).unwrap(),
+            Some(vector.normalized_base_url)
         );
     }
 
