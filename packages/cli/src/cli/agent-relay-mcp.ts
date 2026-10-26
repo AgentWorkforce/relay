@@ -1484,7 +1484,11 @@ function registerAgentRelayTools(
         'Persona requests route to a node exposing `spawn:persona` (for example, `defineWorkforcePersonaSpawnNode` from `@agentworkforce/local-surface`). Both forms wait for broker registration and harness readiness. Unconfirmed outcomes return error code `spawn_unconfirmed` with `state: "pending"` and `liveness` evidence; a fresh worker heartbeat is evidence, not readiness proof, so do not retry a pending spawn.',
       inputSchema: {
         name: z.string().describe('Agent name'),
-        cli: activeRawSpawnCliSchema.optional().describe('AI CLI to launch; mutually exclusive with persona'),
+        cli: activeRawSpawnCliSchema
+          .optional()
+          .describe(
+            'Supported AI CLI to launch: claude, codex, grok, muse, opencode, or devin; mutually exclusive with persona'
+          ),
         persona: z
           .string()
           .optional()

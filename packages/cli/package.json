@@ -82,8 +82,7 @@
     "relay",
     "real-time",
     "claude",
-    "codex",
-    "gemini"
+    "codex"
   ],
   "author": "AgentWorkforce <hello@agentrelay.com>",
   "license": "Apache-2.0",

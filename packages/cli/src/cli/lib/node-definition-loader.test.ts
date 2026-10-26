@@ -12,6 +12,7 @@ describe('loadNodeDefinition', () => {
 
     expect(node.name).toBe('local-builder');
     expect(Object.keys(node.capabilities)).toContain('spawn:codex');
+    expect(Object.keys(node.capabilities)).not.toContain('spawn:gemini');
   });
 
   it('loads a plain JS node file through native import', async () => {

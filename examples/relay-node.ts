@@ -2,7 +2,7 @@
 // (or drop it at the project root as `agent-relay.ts` and run `agent-relay node up`
 // to have it auto-discovered).
 import { z } from 'zod';
-import { claude, codex, gemini } from '@agent-relay/harnesses';
+import { claude, codex } from '@agent-relay/harnesses';
 import { action, defineNode, onMessage, spawn } from '@agent-relay/fleet';
 
 export default defineNode({
@@ -11,7 +11,6 @@ export default defineNode({
   capabilities: {
     'spawn:claude': spawn(claude),
     'spawn:codex': spawn(codex),
-    'spawn:gemini': spawn(gemini),
     echo: action({ input: z.object({ text: z.string() }) }, async (input, ctx) => {
       await ctx.relay.sendMessage({
         to: 'general',
