@@ -23,7 +23,30 @@ set -e
 REPO_RELAY="AgentWorkforce/relay"
 VERSION="${AGENT_RELAY_VERSION:-latest}"
 DEFAULT_INSTALL_DIR="$HOME/.agentworkforce/relay"
-INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-${AGENT_RELAY_HOME:-$DEFAULT_INSTALL_DIR}}"
+
+# Normalise an install root exactly as the runtime resolver does
+# (packages/harness-driver/src/install-paths.ts): surrounding whitespace is
+# trimmed, a blank value counts as unset (prints nothing), and a relative path
+# is made absolute against the current directory, so launchers never embed a
+# path that only works from where the installer ran.
+normalize_install_root() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    [ -n "$value" ] || return 0
+    case "$value" in
+        /*) ;;
+        *) value="$PWD/$value" ;;
+    esac
+    while [ "${#value}" -gt 1 ] && [ "${value%/}" != "$value" ]; do
+        value="${value%/}"
+    done
+    printf '%s\n' "$value"
+}
+
+INSTALL_DIR="$(normalize_install_root "${AGENT_RELAY_INSTALL_DIR:-}")"
+[ -n "$INSTALL_DIR" ] || INSTALL_DIR="$(normalize_install_root "${AGENT_RELAY_HOME:-}")"
+[ -n "$INSTALL_DIR" ] || INSTALL_DIR="$DEFAULT_INSTALL_DIR"
 BIN_DIR="${AGENT_RELAY_BIN_DIR:-$HOME/.local/bin}"
 ORIGINAL_PATH="${PATH:-}"
 
@@ -157,6 +180,7 @@ install_node_launcher() {
 
     write_executable_file "$BIN_DIR/agent-relay" << WRAPPER
 #!/usr/bin/env bash
+$(launcher_env_lines)
 cd "$target_dir" && exec node dist/src/cli/index.js "\$@"
 WRAPPER
 }
@@ -1070,14 +1094,15 @@ install_relaycast_engine() {
     mkdir -p "$INSTALL_DIR/bin"
     make_temp_file "$INSTALL_DIR/bin" "relaycast-engine" || return 0
     dl="$MADE_TEMP"
-    if ! curl -fsSL "$base/$asset" -o "$dl" 2>/dev/null; then
+    # Bounded: this step is optional and must never hold up a finished install.
+    if ! curl -fsSL --connect-timeout 15 --max-time 300 "$base/$asset" -o "$dl" 2>/dev/null; then
         rm -f "$dl"
-        info "relaycast-engine v${RELAYCAST_ENGINE_VERSION} is not published for $PLATFORM yet (no release asset $asset); skipping. The local Relaycast server is optional."
+        info "relaycast-engine v${RELAYCAST_ENGINE_VERSION} could not be downloaded for $PLATFORM (no release asset $asset, or the download failed or timed out); skipping. The local Relaycast server is optional."
         return 0
     fi
     make_temp_file "$INSTALL_DIR/bin" "relaycast-engine-sha256" || { rm -f "$dl"; return 0; }
     sums="$MADE_TEMP"
-    if ! curl -fsSL "$base/$asset.sha256" -o "$sums" 2>/dev/null; then
+    if ! curl -fsSL --connect-timeout 15 --max-time 60 "$base/$asset.sha256" -o "$sums" 2>/dev/null; then
         rm -f "$dl" "$sums"
         warn "relaycast-engine v${RELAYCAST_ENGINE_VERSION} publishes no $asset.sha256; not installing an unverified binary."
         return 0
@@ -1301,29 +1326,38 @@ install_from_source() {
         error "Node.js 22+ is required for source installation"
     fi
 
+    # The checkout lives in its own directory, never the install root itself:
+    # the root also holds bin/ and, when it doubles as AGENT_RELAY_HOME (the
+    # default), saved workspaces and Relaycast credentials, so replacing the
+    # checkout must not delete it. Older installers cloned straight into the
+    # root; keep updating such a checkout in place.
+    local source_dir="$INSTALL_DIR/source"
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        source_dir="$INSTALL_DIR"
+    fi
     mkdir -p "$INSTALL_DIR"
 
     if command -v git &> /dev/null; then
-        if [ -d "$INSTALL_DIR/.git" ]; then
+        if [ -d "$source_dir/.git" ]; then
             info "Updating existing installation..."
-            cd "$INSTALL_DIR" && git fetch && git checkout "v$VERSION" 2>/dev/null || git pull
+            cd "$source_dir" && git fetch && git checkout "v$VERSION" 2>/dev/null || git pull
         else
             info "Cloning repository..."
-            rm -rf "$INSTALL_DIR"
-            git clone --depth 1 --branch "v$VERSION" "https://github.com/$REPO_RELAY.git" "$INSTALL_DIR" 2>/dev/null || \
-            git clone --depth 1 "https://github.com/$REPO_RELAY.git" "$INSTALL_DIR"
+            rm -rf "$source_dir"
+            git clone --depth 1 --branch "v$VERSION" "https://github.com/$REPO_RELAY.git" "$source_dir" 2>/dev/null || \
+            git clone --depth 1 "https://github.com/$REPO_RELAY.git" "$source_dir"
         fi
     else
         info "Downloading source tarball..."
         curl -fsSL "https://github.com/$REPO_RELAY/archive/v$VERSION.tar.gz" -o /tmp/relay.tar.gz 2>/dev/null || \
         curl -fsSL "https://github.com/$REPO_RELAY/archive/main.tar.gz" -o /tmp/relay.tar.gz
-        rm -rf "$INSTALL_DIR"
-        mkdir -p "$INSTALL_DIR"
-        tar -xzf /tmp/relay.tar.gz -C "$INSTALL_DIR" --strip-components=1
+        rm -rf "$source_dir"
+        mkdir -p "$source_dir"
+        tar -xzf /tmp/relay.tar.gz -C "$source_dir" --strip-components=1
         rm /tmp/relay.tar.gz
     fi
 
-    cd "$INSTALL_DIR"
+    cd "$source_dir"
 
     # Install dependencies and build
     info "Installing dependencies..."
@@ -1337,7 +1371,7 @@ install_from_source() {
     npm run build
 
     # Create wrapper script
-    install_node_launcher "$INSTALL_DIR"
+    install_node_launcher "$source_dir"
     prepend_bin_dir_to_path
 
     success "Installed from source"

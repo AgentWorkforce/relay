@@ -238,28 +238,39 @@ describe('broker binary path resolution', () => {
     const optionalDepBinary = path.join('/mock/node_modules', pkgName, 'bin', `agent-relay-broker${ext}`);
     const pathBinary = '/current/bin/agent-relay-broker';
 
-    async function loadWith(existing: string[]) {
+    async function loadWith(existing: string[], options: { unusable?: string[] } = {}) {
       const execFileSync = vi.fn(() => `${pathBinary}\n`);
+      const unusable = options.unusable ?? [];
+      const missing = (candidate: string): Error =>
+        Object.assign(new Error(`ENOENT: ${candidate}`), { code: 'ENOENT' });
       vi.doMock('node:fs', async () => ({
         ...(await vi.importActual<typeof import('node:fs')>('node:fs')),
         existsSync: vi.fn((candidate: string) => existing.includes(candidate)),
+        statSync: vi.fn((candidate: string) => {
+          if (!existing.includes(candidate)) throw missing(candidate);
+          return { isFile: () => true, size: unusable.includes(candidate) ? 0 : 1024 };
+        }),
+        accessSync: vi.fn((candidate: string) => {
+          if (!existing.includes(candidate)) throw missing(candidate);
+        }),
+      }));
+      const createRequire = vi.fn(() => ({
+        resolve: vi.fn((specifier: string) => {
+          if (specifier === `${pkgName}/package.json`) {
+            return path.join('/mock/node_modules', pkgName, 'package.json');
+          }
+          throw new Error(`unresolved ${specifier}`);
+        }),
       }));
       vi.doMock('node:module', async () => ({
         ...(await vi.importActual<typeof import('node:module')>('node:module')),
-        createRequire: vi.fn(() => ({
-          resolve: vi.fn((specifier: string) => {
-            if (specifier === `${pkgName}/package.json`) {
-              return path.join('/mock/node_modules', pkgName, 'package.json');
-            }
-            throw new Error(`unresolved ${specifier}`);
-          }),
-        })),
+        createRequire,
       }));
       vi.doMock('node:child_process', async () => ({
         ...(await vi.importActual<typeof import('node:child_process')>('node:child_process')),
         execFileSync,
       }));
-      return { mod: await loadBrokerPathModule(), execFileSync };
+      return { mod: await loadBrokerPathModule(), execFileSync, createRequire };
     }
 
     it('prefers ~/.agentworkforce/relay/bin over the npm optional dependency and PATH', async () => {
@@ -325,6 +336,39 @@ describe('broker binary path resolution', () => {
       });
       expect(mod.getOptionalDepBrokerPath()).toBe(optionalDepBinary);
       expect(execFileSync).not.toHaveBeenCalled();
+    });
+
+    it('skips an empty canonical broker so a working npm broker still resolves', async () => {
+      const canonical = path.join(
+        os.homedir(),
+        '.agentworkforce',
+        'relay',
+        'bin',
+        `agent-relay-broker${ext}`
+      );
+      const { mod } = await loadWith([canonical, optionalDepBinary], { unusable: [canonical] });
+
+      expect(mod.resolveBrokerBinary()).toEqual({
+        path: optionalDepBinary,
+        source: 'npm-optional-dependency',
+      });
+    });
+
+    it('can resolve the npm broker without consulting the current project', async () => {
+      const { mod, createRequire } = await loadWith([optionalDepBinary]);
+      const cwdRef = path.join(process.cwd(), 'package.json');
+
+      mod.getOptionalDepBrokerPath({ includeCwd: false });
+      expect(createRequire.mock.calls.map((call) => call[0])).not.toContain(cwdRef);
+
+      createRequire.mockClear();
+      createRequire.mockImplementation(() => ({
+        resolve: vi.fn((specifier: string) => {
+          throw new Error(`unresolved ${specifier}`);
+        }),
+      }));
+      mod.getOptionalDepBrokerPath();
+      expect(createRequire.mock.calls.map((call) => call[0])).toContain(cwdRef);
     });
 
     it('falls back to PATH when neither the canonical nor the npm broker exists', async () => {

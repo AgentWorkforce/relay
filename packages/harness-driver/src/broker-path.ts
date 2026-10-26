@@ -17,10 +17,17 @@ import {
   findExecutableOnPath,
   getCanonicalBrokerPath,
   getRelayBinDir,
+  isUsableBinary,
 } from './install-paths.js';
 
 const BROKER_NAME = BROKER_BINARY_NAME;
 
+/**
+ * npm package name of the platform broker, e.g. `@agent-relay/broker-linux-x64`.
+ * @param platform - Target platform
+ * @param arch - Target architecture
+ * @returns The optional-dependency package name
+ */
 export function getOptionalDepPackageName(
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch
@@ -90,7 +97,7 @@ function getCurrentModuleReference(): string | null {
   return getImportMetaUrl();
 }
 
-function getResolutionReferences(): string[] {
+function getResolutionReferences(includeCwd = true): string[] {
   const refs: string[] = [];
   addResolutionReference(refs, getCurrentModuleReference());
 
@@ -111,7 +118,9 @@ function getResolutionReferences(): string[] {
   // some vite/webpack bundling configurations, repl experimentation), but
   // the consumer's cwd is inside their own project. We only use this
   // reference to run require.resolve; no file I/O is triggered on misses.
-  addResolutionReference(refs, join(process.cwd(), 'package.json'));
+  if (includeCwd) {
+    addResolutionReference(refs, join(process.cwd(), 'package.json'));
+  }
 
   return refs;
 }
@@ -154,11 +163,11 @@ function getInstalledBinaryPaths(ext: string): string[] {
  * --no-optional / --omit=optional / --include= omits optional, or when the
  * broker hasn't been published for their platform yet).
  */
-function getOptionalDepBinaryPath(ext: string): string | null {
+function getOptionalDepBinaryPath(ext: string, includeCwd = true): string | null {
   const pkgName = getOptionalDepPackageName();
   const binaryFile = `${BROKER_NAME}${ext}`;
 
-  for (const ref of getResolutionReferences()) {
+  for (const ref of getResolutionReferences(includeCwd)) {
     try {
       const pkgJsonPath = createRequire(ref).resolve(`${pkgName}/package.json`);
       const binPath = join(dirname(pkgJsonPath), 'bin', binaryFile);
@@ -239,6 +248,7 @@ export type BrokerBinarySource =
   | 'path'
   | 'legacy-install';
 
+/** A resolved broker binary and where it was found. */
 export interface ResolvedBrokerBinary {
   path: string;
   source: BrokerBinarySource;
@@ -257,29 +267,45 @@ function getStandaloneCliBinDir(): string | null {
   return dirname(resolve(process.execPath));
 }
 
-/** Step 3 of {@link resolveBrokerBinary}: the canonical bin dir, then a standalone CLI's own bin dir. */
+/**
+ * Step 3 of {@link resolveBrokerBinary}: the canonical bin dir, then a
+ * standalone CLI's own bin dir. A file there that is empty, not a regular
+ * file or not executable is skipped, so a damaged shared install cannot hide
+ * a working npm broker from SDK callers that never run the CLI's repair step.
+ */
 function findCanonicalBroker(ext: string): ResolvedBrokerBinary | null {
   const canonical = getCanonicalBrokerPath();
-  if (existsSync(canonical)) {
+  if (existsSync(canonical) && isUsableBinary(canonical)) {
     return { path: canonical, source: 'canonical' };
   }
   const standaloneBinDir = getStandaloneCliBinDir();
   if (standaloneBinDir) {
     const standaloneBroker = join(standaloneBinDir, `${BROKER_NAME}${ext}`);
-    if (existsSync(standaloneBroker)) {
+    if (existsSync(standaloneBroker) && isUsableBinary(standaloneBroker)) {
       return { path: standaloneBroker, source: 'standalone' };
     }
   }
   return null;
 }
 
+export interface OptionalDepBrokerPathOptions {
+  /**
+   * Also resolve through `<cwd>/package.json` (default true). The CLI passes
+   * false when choosing a broker to copy into the shared bin directory, so a
+   * project's own (possibly different) broker version never lands there.
+   */
+  includeCwd?: boolean;
+}
+
 /**
  * The broker shipped by the npm optional dependency
  * `@agent-relay/broker-<platform>-<arch>`, or null when it is not installed.
  * Exposed so the CLI can copy it into the canonical bin directory.
+ * @param options - Resolution options
+ * @returns Absolute path to the npm broker, or null
  */
-export function getOptionalDepBrokerPath(): string | null {
-  return getOptionalDepBinaryPath(process.platform === 'win32' ? '.exe' : '');
+export function getOptionalDepBrokerPath(options: OptionalDepBrokerPathOptions = {}): string | null {
+  return getOptionalDepBinaryPath(process.platform === 'win32' ? '.exe' : '', options.includeCwd ?? true);
 }
 
 /**

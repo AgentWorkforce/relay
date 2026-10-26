@@ -54,7 +54,7 @@ Kick the tires yourself by installing the CLI. The install script is the recomme
 curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
 ```
 
-Every Agent Relay binary lives in one place, `~/.agentworkforce/relay/bin`:
+The install script puts every Agent Relay binary in one place, `~/.agentworkforce/relay/bin`:
 
 | Binary               | What it is                                                   |
 | -------------------- | ------------------------------------------------------------ |
@@ -70,7 +70,7 @@ npm also works:
 npm install -g agent-relay
 ```
 
-On its first run, an npm-installed CLI copies its broker into `~/.agentworkforce/relay/bin`. It never replaces a newer broker that is already there.
+npm links the `agent-relay` CLI into its own global bin directory (`$(npm prefix -g)/bin`), not into `~/.agentworkforce/relay/bin`. On its first run, the npm-installed CLI copies only its broker (`agent-relay-broker`) into `~/.agentworkforce/relay/bin`, so the CLI, the desktop app and SDK callers share one broker. It never replaces a newer broker that is already there.
 
 ### Self Hosting
 

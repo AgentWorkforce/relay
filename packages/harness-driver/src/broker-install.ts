@@ -14,7 +14,14 @@
  *   - Integrity: when the npm package ships `<binary>.sha256`, the source must
  *     match it; the temp copy must always hash identically to the source.
  *   - No races: a lock file in the bin directory serialises concurrent CLI
- *     processes; a process that finds the lock held skips this run.
+ *     processes; a process that finds the lock held skips this run. An
+ *     abandoned lock is broken by renaming it aside and confirming the renamed
+ *     file is the one judged abandoned, so a contender can never delete a
+ *     replacement lock another process just took. The owner re-checks that it
+ *     still holds the lock immediately before the final rename.
+ *   - Integrity of the sidecar itself: a present but unparseable `.sha256`
+ *     rejects the install (only an absent sidecar falls back to copy-hash
+ *     verification, for older packages).
  *   - No downgrades: a canonical broker whose version is equal to or newer than
  *     the npm one (for example from install.sh or the desktop app) is left
  *     alone. A canonical file that cannot report a version is replaced.
@@ -27,6 +34,7 @@ import {
   closeSync,
   copyFileSync,
   existsSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -177,12 +185,18 @@ function sha256File(filePath: string): string {
   return createHash('sha256').update(readFileSync(filePath)).digest('hex');
 }
 
-/** Expected digest from a `<binary>.sha256` sidecar (`<hex>` or `<hex>  <name>`), or null. */
-function readSidecarSha256(binaryPath: string): string | null {
+type Sidecar = { present: false } | { present: true; digest: string | null };
+
+/**
+ * Expected digest from a `<binary>.sha256` sidecar (`<hex>` or `<hex>  <name>`).
+ * `digest` is null when the sidecar exists but holds no SHA-256 digest
+ * (empty, truncated, corrupt), which callers must treat as a failed check.
+ */
+function readSidecarSha256(binaryPath: string): Sidecar {
   const sidecar = `${binaryPath}.sha256`;
-  if (!existsSync(sidecar)) return null;
+  if (!existsSync(sidecar)) return { present: false };
   const match = /\b([0-9a-fA-F]{64})\b/u.exec(readFileSync(sidecar, 'utf-8'));
-  return match ? match[1].toLowerCase() : null;
+  return { present: true, digest: match ? match[1].toLowerCase() : null };
 }
 
 interface VersionCache {
@@ -239,14 +253,122 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+/** What identifies one particular lock file, so a takeover can tell it apart from a replacement. */
+interface LockIdentity {
+  token?: string;
+  ino: number;
+  size: number;
+  mtimeMs: number;
+}
+
+/** A held lock. */
+export interface LockHandle {
+  /** Remove the lock if it is still ours. */
+  release: () => void;
+  /** True while the lock file on disk is still the one this process created. */
+  isHeld: () => boolean;
+}
+
+function readLockToken(lockPath: string): string | undefined {
+  try {
+    const held = JSON.parse(readFileSync(lockPath, 'utf-8')) as { token?: unknown };
+    return typeof held.token === 'string' ? held.token : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function lockIdentity(lockPath: string): LockIdentity {
+  const stat = statSync(lockPath);
+  return { token: readLockToken(lockPath), ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs };
+}
+
+function sameLock(a: LockIdentity, b: LockIdentity): boolean {
+  if (a.token !== undefined || b.token !== undefined) return a.token === b.token;
+  return a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs;
+}
+
 /**
- * Take an exclusive lock file. Returns a release function, or null when a
- * live process holds the lock. An abandoned lock (owner dead, or older than
- * `staleMs`) is removed and taken once.
+ * Inspect an existing lock. Returns null when it vanished (retry), otherwise
+ * whether it is abandoned (owner dead, unparseable and old, or older than
+ * `staleMs`) together with its identity.
  */
-function acquireLock(lockPath: string, staleMs: number): (() => void) | null {
+function inspectLock(lockPath: string, staleMs: number): { stale: boolean; identity: LockIdentity } | null {
+  let identity: LockIdentity;
+  let pid = NaN;
+  try {
+    identity = lockIdentity(lockPath);
+    const held = JSON.parse(readFileSync(lockPath, 'utf-8')) as { pid?: unknown };
+    if (typeof held.pid === 'number') pid = held.pid;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    // Unparseable, probably while being written: held unless it is also old.
+    try {
+      identity = lockIdentity(lockPath);
+    } catch {
+      return null;
+    }
+    return { stale: Date.now() - identity.mtimeMs > staleMs, identity };
+  }
+  const old = Date.now() - identity.mtimeMs > staleMs;
+  return { stale: old || !Number.isInteger(pid) || !isProcessAlive(pid), identity };
+}
+
+/**
+ * Remove the abandoned lock described by `expected` without ever deleting a
+ * different (replacement) lock. The lock is atomically renamed aside first;
+ * if the renamed file turns out to be a live replacement that another
+ * contender created after the abandoned one was removed, it is linked back
+ * into place (no-clobber) and the takeover is abandoned.
+ *
+ * @returns true when the abandoned lock is gone and the caller may race to create one
+ */
+function breakStaleLock(lockPath: string, expected: LockIdentity): boolean {
+  const aside = `${lockPath}.${process.pid}.${Math.random().toString(36).slice(2)}.stale`;
+  try {
+    renameSync(lockPath, aside);
+  } catch (err) {
+    // ENOENT: someone else already removed it; race to create a fresh one.
+    return (err as NodeJS.ErrnoException).code === 'ENOENT';
+  }
+  let moved: LockIdentity | null = null;
+  try {
+    moved = lockIdentity(aside);
+  } catch {
+    // Unreadable; treat as not the lock we judged.
+  }
+  if (moved && sameLock(moved, expected)) {
+    try {
+      unlinkSync(aside);
+    } catch {
+      // Best effort.
+    }
+    return true;
+  }
+  // We moved someone else's fresh lock. Restore it unless a newer lock already
+  // exists (link never overwrites). If restoring fails, its owner notices
+  // through isHeld() before committing and backs off.
+  try {
+    linkSync(aside, lockPath);
+  } catch {
+    // A newer lock is in place, or the filesystem has no hard links.
+  }
+  try {
+    unlinkSync(aside);
+  } catch {
+    // Best effort.
+  }
+  return false;
+}
+
+/**
+ * Take an exclusive lock file. Returns a handle, or null when a live process
+ * holds the lock (or a concurrent takeover won). An abandoned lock is broken
+ * with {@link breakStaleLock}.
+ */
+function acquireLock(lockPath: string, staleMs: number): LockHandle | null {
   const token = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       const fd = openSync(lockPath, 'wx', 0o644);
       try {
@@ -254,41 +376,24 @@ function acquireLock(lockPath: string, staleMs: number): (() => void) | null {
       } finally {
         closeSync(fd);
       }
-      return () => {
-        try {
-          const held = JSON.parse(readFileSync(lockPath, 'utf-8')) as { token?: string };
-          if (held.token === token) unlinkSync(lockPath);
-        } catch {
-          // Already gone.
-        }
+      return {
+        isHeld: () => readLockToken(lockPath) === token,
+        release: () => {
+          try {
+            if (readLockToken(lockPath) === token) unlinkSync(lockPath);
+          } catch {
+            // Already gone.
+          }
+        },
       };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     }
 
-    let stale: boolean;
-    try {
-      const stat = statSync(lockPath);
-      const held = JSON.parse(readFileSync(lockPath, 'utf-8')) as { pid?: unknown };
-      const pid = typeof held.pid === 'number' ? held.pid : NaN;
-      stale = Date.now() - stat.mtimeMs > staleMs || !Number.isInteger(pid) || !isProcessAlive(pid);
-    } catch (err) {
-      // Vanished between open and stat: retry. Unparseable while being
-      // written: treat as held unless it is also old.
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'ENOENT') continue;
-      try {
-        stale = Date.now() - statSync(lockPath).mtimeMs > staleMs;
-      } catch {
-        continue;
-      }
-    }
-    if (!stale) return null;
-    try {
-      unlinkSync(lockPath);
-    } catch {
-      // Another process removed it first; fall through and race for it.
-    }
+    const existing = inspectLock(lockPath, staleMs);
+    if (existing === null) continue;
+    if (!existing.stale) return null;
+    if (!breakStaleLock(lockPath, existing.identity)) return null;
   }
   return null;
 }
@@ -311,7 +416,11 @@ function resolveInputs(
   // populate the canonical slot behind their back.
   if (env.BROKER_BINARY_PATH?.trim() || env.AGENT_RELAY_BIN?.trim()) return { skip: 'override' };
 
-  const sourcePath = options.sourcePath === undefined ? getOptionalDepBrokerPath() : options.sourcePath;
+  // Only the broker that ships with this CLI's own package tree may populate
+  // the shared slot; never one found through the current project's
+  // node_modules (that broker may be a different version).
+  const sourcePath =
+    options.sourcePath === undefined ? getOptionalDepBrokerPath({ includeCwd: false }) : options.sourcePath;
   if (!sourcePath || !existsSync(sourcePath)) return { skip: 'no-source' };
   if (sameFile(sourcePath, targetPath)) return { skip: 'source-is-canonical' };
 
@@ -322,15 +431,29 @@ function resolveInputs(
   return { sourcePath, sourceVersion };
 }
 
+type CopyOutcome = { ok: true } | { ok: false; reason: 'checksum-mismatch' | 'locked'; detail: string };
+
 /**
  * Copy `sourcePath` over `targetPath` through a verified temp file in the
- * target directory. Returns a checksum-mismatch description, or null on success.
+ * target directory. `canCommit` is consulted immediately before the final
+ * rename; when it returns false the copy is discarded.
  */
-function copyAtomically(sourcePath: string, targetPath: string): string | null {
+function copyAtomically(sourcePath: string, targetPath: string, canCommit: () => boolean): CopyOutcome {
   const sourceHash = sha256File(sourcePath);
-  const expected = readSidecarSha256(sourcePath);
-  if (expected && expected !== sourceHash) {
-    return `expected ${expected}, got ${sourceHash}`;
+  const sidecar = readSidecarSha256(sourcePath);
+  if (sidecar.present && sidecar.digest === null) {
+    return {
+      ok: false,
+      reason: 'checksum-mismatch',
+      detail: `${sourcePath}.sha256 is present but holds no SHA-256 digest`,
+    };
+  }
+  if (sidecar.present && sidecar.digest !== sourceHash) {
+    return {
+      ok: false,
+      reason: 'checksum-mismatch',
+      detail: `expected ${sidecar.digest}, got ${sourceHash}`,
+    };
   }
 
   const tempPath = join(
@@ -342,10 +465,17 @@ function copyAtomically(sourcePath: string, targetPath: string): string | null {
     chmodSync(tempPath, 0o755);
     const copiedHash = sha256File(tempPath);
     if (copiedHash !== sourceHash) {
-      return `copy hashed ${copiedHash}, source ${sourceHash}`;
+      return {
+        ok: false,
+        reason: 'checksum-mismatch',
+        detail: `copy hashed ${copiedHash}, source ${sourceHash}`,
+      };
+    }
+    if (!canCommit()) {
+      return { ok: false, reason: 'locked', detail: 'install lock was taken over before commit' };
     }
     renameSync(tempPath, targetPath);
-    return null;
+    return { ok: true };
   } finally {
     try {
       unlinkSync(tempPath);
@@ -386,18 +516,18 @@ export function ensureCanonicalBroker(
 
     const binDir = dirname(targetPath);
     mkdirSync(binDir, { recursive: true, mode: 0o755 });
-    const release = acquireLock(
+    const lock = acquireLock(
       join(binDir, `.${basename(targetPath)}.lock`),
       options.lockStaleMs ?? DEFAULT_LOCK_STALE_MS
     );
-    if (!release) return skip('locked');
+    if (!lock) return skip('locked');
     try {
       // Re-check under the lock: another process may have just converged.
       const decision = decide(targetPath, sourceVersion, readVersion);
       if (decision.kind !== 'install') return skip(decision.kind, decision.version);
 
-      const mismatch = copyAtomically(sourcePath, targetPath);
-      if (mismatch) return skip('checksum-mismatch', mismatch);
+      const copied = copyAtomically(sourcePath, targetPath, lock.isHeld);
+      if (!copied.ok) return skip(copied.reason, copied.detail);
       writeVersionCache(targetPath, sourceVersion);
 
       if (decision.previous === undefined) {
@@ -410,7 +540,7 @@ export function ensureCanonicalBroker(
         ...(decision.previous ? { previousVersion: decision.previous } : {}),
       };
     } finally {
-      release();
+      lock.release();
     }
   } catch (err) {
     return skip('error', err instanceof Error ? err.message : String(err));
@@ -448,4 +578,4 @@ function sameFile(a: string, b: string): boolean {
 }
 
 /** @internal Exposed for tests. */
-export const testInternals = { acquireLock, versionCachePath };
+export const testInternals = { acquireLock, breakStaleLock, copyAtomically, inspectLock, versionCachePath };

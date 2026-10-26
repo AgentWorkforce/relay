@@ -265,8 +265,19 @@ try {
     console.log('resolved:', p);
     if (!p) { console.log('BROKER_FAIL: resolver returned null'); process.exit(0); }
     // npm installs resolve through the optional-dep package until the CLI's
-    // first run copies the broker into ~/.agentworkforce/relay/bin.
-    const canonical = path.join(os.homedir(), '.agentworkforce', 'relay', 'bin', path.basename(p));
+    // first run copies the broker into the install root's bin dir.
+    // Accept the install-root bin dir the resolver itself uses (honours
+    // AGENT_RELAY_INSTALL_DIR / AGENT_RELAY_HOME); mirror its rule for
+    // releases published before install-paths existed.
+    let canonicalBinDir;
+    try {
+      const { getRelayBinDir } = await import('@agent-relay/harness-driver/install-paths');
+      canonicalBinDir = getRelayBinDir();
+    } catch {
+      const root = (process.env.AGENT_RELAY_INSTALL_DIR || '').trim() || (process.env.AGENT_RELAY_HOME || '').trim();
+      canonicalBinDir = path.join(root ? path.resolve(root) : path.join(os.homedir(), '.agentworkforce', 'relay'), 'bin');
+    }
+    const canonical = path.join(canonicalBinDir, path.basename(p));
     if (!p.replace(/\\\\/g, '/').includes(expected) && p !== canonical) {
         console.log('BROKER_FAIL: neither via optional-dep package nor the canonical bin dir');
         process.exit(0);

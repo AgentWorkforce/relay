@@ -730,6 +730,13 @@ root_of() { # root_of <INSTALL_DIR-or-empty> <HOME-or-empty>
 check "default install root" test "$(root_of "" "")" = "$HOME/.agentworkforce/relay"
 check "AGENT_RELAY_HOME relocates the install root" test "$(root_of "" /srv/relay-home)" = "/srv/relay-home"
 check "AGENT_RELAY_INSTALL_DIR wins over AGENT_RELAY_HOME" test "$(root_of /opt/relay /srv/relay-home)" = "/opt/relay"
+check "whitespace-only AGENT_RELAY_INSTALL_DIR counts as unset" test "$(root_of "   " /srv/relay-home)" = "/srv/relay-home"
+check "whitespace-only roots fall back to the default" test "$(root_of "  " "  ")" = "$HOME/.agentworkforce/relay"
+check "surrounding whitespace and trailing slashes are trimmed" test "$(root_of " /opt/relay// " "")" = "/opt/relay"
+# shellcheck disable=SC2016
+rel_root="$(cd "$WORK" && env -u AGENT_RELAY_INSTALL_DIR -u AGENT_RELAY_HOME AGENT_RELAY_INSTALL_DIR=rel/relay HOME="$HOME" AGENT_RELAY_INSTALL_SOURCE_ONLY=1 \
+    bash -c '. "$1/install.sh"; printf "%s" "$INSTALL_DIR"' _ "$ROOT")"
+check "a relative install root is made absolute" test "$rel_root" = "$(cd "$WORK" && pwd)/rel/relay"
 # shellcheck disable=SC2016
 launcher_of() { # launcher_of <INSTALL_DIR>
     env -u AGENT_RELAY_INSTALL_DIR -u AGENT_RELAY_HOME AGENT_RELAY_INSTALL_DIR="$1" HOME="$HOME" AGENT_RELAY_INSTALL_SOURCE_ONLY=1 \
@@ -738,6 +745,36 @@ launcher_of() { # launcher_of <INSTALL_DIR>
 check "default launcher sets no install root" test -z "$(launcher_of "$HOME/.agentworkforce/relay" | grep AGENT_RELAY_INSTALL_DIR)"
 # shellcheck disable=SC2016
 check "relocated launcher exports its install root" contains "$(launcher_of /opt/relay)" 'export AGENT_RELAY_INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-/opt/relay}"'
+# shellcheck disable=SC2016
+node_launcher_of() { # node_launcher_of <INSTALL_DIR>
+    env -u AGENT_RELAY_INSTALL_DIR -u AGENT_RELAY_HOME AGENT_RELAY_INSTALL_DIR="$1" HOME="$HOME" AGENT_RELAY_INSTALL_SOURCE_ONLY=1 \
+        bash -c '. "$1/install.sh"; BIN_DIR="$2"; install_node_launcher /x/source; cat "$2/agent-relay"' _ "$ROOT" "$(newdir)"
+}
+check "default source launcher sets no install root" test -z "$(node_launcher_of "$HOME/.agentworkforce/relay" | grep AGENT_RELAY_INSTALL_DIR)"
+# shellcheck disable=SC2016
+check "relocated source launcher exports its install root" contains "$(node_launcher_of /opt/relay)" 'export AGENT_RELAY_INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-/opt/relay}"'
+
+echo "== source fallback keeps the install root's state =="
+SRC_ROOT="$(newdir)"
+mkdir -p "$SRC_ROOT/bin"
+echo '{"active":"w"}' > "$SRC_ROOT/workspaces.json"
+echo '{"k":"v"}' > "$SRC_ROOT/relaycast-credentials.json"
+: > "$SRC_ROOT/bin/agent-relay-broker"
+# shellcheck disable=SC2016
+src_out="$(env -u AGENT_RELAY_INSTALL_DIR AGENT_RELAY_HOME="$SRC_ROOT" HOME="$HOME" AGENT_RELAY_INSTALL_SOURCE_ONLY=1 PATH="$PATH" \
+    bash -c '. "$1/install.sh"; set +e
+        check_node() { return 0; }
+        step() { :; }; info() { :; }; success() { :; }
+        git() { if [ "$1" = clone ]; then for last; do :; done; mkdir -p "$last/.git"; fi; return 0; }
+        npm() { return 0; }; pnpm() { return 0; }
+        BIN_DIR="$2"
+        install_from_source >/dev/null 2>&1
+        printf "%s" "$(cat "$BIN_DIR/agent-relay")"' _ "$ROOT" "$(newdir)")"
+check "source fallback: workspaces.json survives" test -f "$SRC_ROOT/workspaces.json"
+check "source fallback: relaycast-credentials.json survives" test -f "$SRC_ROOT/relaycast-credentials.json"
+check "source fallback: bin/ survives" test -e "$SRC_ROOT/bin/agent-relay-broker"
+check "source fallback: checkout lives in <root>/source" test -d "$SRC_ROOT/source/.git"
+check "source fallback: launcher runs the checkout" contains "$src_out" "cd \"$SRC_ROOT/source\""
 
 echo "== relaycast-engine: optional, checksum-verified, never downgraded =="
 SAVED_OS="$OS"
@@ -770,7 +807,7 @@ rc_reset
 install_relaycast_engine; rc=$?
 check "unpublished asset: returns 0" test "$rc" -eq 0
 check "unpublished asset: nothing installed" test ! -e "$INSTALL_DIR/bin/relaycast-engine"
-check "unpublished asset: clear message" contains "$(cat "$LOG")" "is not published for linux-x64 yet"
+check "unpublished asset: clear message" contains "$(cat "$LOG")" "could not be downloaded for linux-x64"
 check "unpublished asset: no temp files" rc_no_temps
 
 rc_reset; rc_publish 11.0.0

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -41,7 +41,10 @@ function fakeBrokerScript(version: string, label = version): string {
 }
 
 /** Lay out an npm optional-dependency package: <root>/<pkg>/{package.json,bin/agent-relay-broker}. */
-function makeNpmBroker(version: string, options: { sidecar?: 'match' | 'mismatch' } = {}): string {
+function makeNpmBroker(
+  version: string,
+  options: { sidecar?: 'match' | 'mismatch' | 'malformed' | 'empty' } = {}
+): string {
   const pkgDir = path.join(makeTempDir(), 'node_modules', '@agent-relay', 'broker-test');
   mkdirSync(path.join(pkgDir, 'bin'), { recursive: true });
   writeFileSync(
@@ -51,7 +54,11 @@ function makeNpmBroker(version: string, options: { sidecar?: 'match' | 'mismatch
   const bin = path.join(pkgDir, 'bin', 'agent-relay-broker');
   writeFileSync(bin, fakeBrokerScript(version, 'npm'));
   chmodSync(bin, 0o755);
-  if (options.sidecar) {
+  if (options.sidecar === 'malformed') {
+    writeFileSync(`${bin}.sha256`, 'truncated\n');
+  } else if (options.sidecar === 'empty') {
+    writeFileSync(`${bin}.sha256`, '');
+  } else if (options.sidecar) {
     const digest =
       options.sidecar === 'match'
         ? createHash('sha256').update(readFileSync(bin)).digest('hex')
@@ -203,6 +210,20 @@ sh('ensureCanonicalBroker', () => {
     expect(readdirSync(path.dirname(badTarget))).toEqual([]);
   });
 
+  it('rejects a present but malformed or empty sha256 sidecar', () => {
+    for (const sidecar of ['malformed', 'empty'] as const) {
+      const source = makeNpmBroker('14.0.0', { sidecar });
+      const target = makeCanonical(null);
+
+      const result = ensureCanonicalBroker({ sourcePath: source, targetPath: target, env: {} });
+
+      expect(result).toMatchObject({ action: 'skipped', reason: 'checksum-mismatch' });
+      expect(result.action === 'skipped' && result.detail).toContain('holds no SHA-256 digest');
+      expect(existsSync(target)).toBe(false);
+      expect(readdirSync(path.dirname(target))).toEqual([]);
+    }
+  });
+
   it('skips when disabled, when a broker override is set, or when there is no npm broker', () => {
     const source = makeNpmBroker('14.0.0');
     const target = makeCanonical(null);
@@ -230,6 +251,22 @@ sh('ensureCanonicalBroker', () => {
     expect(existsSync(target)).toBe(false);
   });
 
+  it("copies only the CLI's own npm broker, never one resolved through the current project", async () => {
+    const getOptionalDepBrokerPath = vi.fn(() => null);
+    vi.resetModules();
+    vi.doMock('./broker-path.js', () => ({ getOptionalDepBrokerPath }));
+    try {
+      const mod = await import('./broker-install.js');
+      expect(mod.ensureCanonicalBroker({ targetPath: makeCanonical(null), env: {} })).toMatchObject({
+        reason: 'no-source',
+      });
+      expect(getOptionalDepBrokerPath).toHaveBeenCalledWith({ includeCwd: false });
+    } finally {
+      vi.doUnmock('./broker-path.js');
+      vi.resetModules();
+    }
+  });
+
   it('skips when the npm broker already is the canonical file', () => {
     const target = makeCanonical('14.0.0');
     expect(ensureCanonicalBroker({ sourcePath: target, targetPath: target, env: {} })).toMatchObject({
@@ -242,8 +279,9 @@ sh('ensureCanonicalBroker', () => {
       const source = makeNpmBroker('14.0.0');
       const target = makeCanonical(null);
       const lockPath = path.join(path.dirname(target), '.agent-relay-broker.lock');
-      const release = testInternals.acquireLock(lockPath, 60_000);
-      expect(release).not.toBeNull();
+      const lock = testInternals.acquireLock(lockPath, 60_000);
+      expect(lock).not.toBeNull();
+      expect(lock?.isHeld()).toBe(true);
 
       expect(ensureCanonicalBroker({ sourcePath: source, targetPath: target, env: {} })).toMatchObject({
         action: 'skipped',
@@ -251,7 +289,7 @@ sh('ensureCanonicalBroker', () => {
       });
       expect(existsSync(target)).toBe(false);
 
-      release?.();
+      lock?.release();
       expect(existsSync(lockPath)).toBe(false);
       expect(ensureCanonicalBroker({ sourcePath: source, targetPath: target, env: {} })).toMatchObject({
         action: 'installed',
@@ -284,6 +322,50 @@ sh('ensureCanonicalBroker', () => {
       expect(
         ensureCanonicalBroker({ sourcePath: source, targetPath: target, env: {}, lockStaleMs: -1 })
       ).toMatchObject({ action: 'installed' });
+    });
+
+    it('never deletes a replacement lock when two processes recover the same abandoned lock', () => {
+      const dir = makeTempDir();
+      const lockPath = path.join(dir, '.agent-relay-broker.lock');
+      writeFileSync(lockPath, JSON.stringify({ pid: 4_194_400, token: 'dead' }));
+
+      // Both contenders inspect the abandoned lock before either acts.
+      const seenByA = testInternals.inspectLock(lockPath, 60_000);
+      const seenByB = testInternals.inspectLock(lockPath, 60_000);
+      expect(seenByA?.stale).toBe(true);
+      expect(seenByB?.stale).toBe(true);
+
+      // A breaks it and takes a fresh lock.
+      expect(testInternals.breakStaleLock(lockPath, seenByA!.identity)).toBe(true);
+      const lockA = testInternals.acquireLock(lockPath, 60_000);
+      expect(lockA?.isHeld()).toBe(true);
+
+      // B acts on its outdated view: it must not remove A's live lock.
+      expect(testInternals.breakStaleLock(lockPath, seenByB!.identity)).toBe(false);
+      expect(lockA?.isHeld()).toBe(true);
+      expect(testInternals.acquireLock(lockPath, 60_000)).toBeNull();
+      expect(readdirSync(dir).filter((f) => f.endsWith('.stale'))).toEqual([]);
+      lockA?.release();
+    });
+
+    it('does not commit a copy after its lock was taken over', () => {
+      const source = makeNpmBroker('14.0.0');
+      const target = makeCanonical(null);
+      const lockPath = path.join(path.dirname(target), '.agent-relay-broker.lock');
+      const lock = testInternals.acquireLock(lockPath, 60_000);
+      // Simulate a takeover: the lock file now belongs to someone else.
+      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, token: 'someone-else' }));
+      expect(lock?.isHeld()).toBe(false);
+
+      expect(testInternals.copyAtomically(source, target, lock!.isHeld)).toMatchObject({
+        ok: false,
+        reason: 'locked',
+      });
+      expect(existsSync(target)).toBe(false);
+      expect(readdirSync(path.dirname(target)).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+
+      lock?.release();
+      expect(existsSync(lockPath)).toBe(true); // release never removes someone else's lock
     });
 
     it('lets exactly one of many concurrent CLI processes install', async () => {

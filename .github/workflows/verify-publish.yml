@@ -201,15 +201,26 @@ jobs:
             console.log('expected package:', expected);
             console.log('resolved:', p);
             if (!p) { console.error('FAIL: resolver returned null'); process.exit(1); }
-            // npm installs resolve through the optional-dep package until the
-            // CLI's first run copies the broker into ~/.agentworkforce/relay/bin.
-            const canonical = path.join(os.homedir(), '.agentworkforce', 'relay', 'bin', path.basename(p));
+            // The npx runs above already started the CLI, whose first run
+            // copies the broker into the install root's bin dir.
+            // Accept the install-root bin dir the resolver itself uses (honours
+            // AGENT_RELAY_INSTALL_DIR / AGENT_RELAY_HOME); mirror its rule for
+            // releases published before install-paths existed.
+            let canonicalBinDir;
+            try {
+              const { getRelayBinDir } = await import('@agent-relay/harness-driver/install-paths');
+              canonicalBinDir = getRelayBinDir();
+            } catch {
+              const root = (process.env.AGENT_RELAY_INSTALL_DIR || '').trim() || (process.env.AGENT_RELAY_HOME || '').trim();
+              canonicalBinDir = path.join(root ? path.resolve(root) : path.join(os.homedir(), '.agentworkforce', 'relay'), 'bin');
+            }
+            const canonical = path.join(canonicalBinDir, path.basename(p));
             if (!p.replace(/\\\\/g, '/').includes(expected) && p !== canonical) {
               console.error('FAIL: resolution went through neither the optional-dep package nor the canonical bin dir; got', p);
               process.exit(1);
             }
             accessSync(p, constants.X_OK);
-            console.log('OK: resolver returned executable binary from optional-dep package');
+            console.log('OK: resolver returned an executable broker (optional-dep package or canonical bin dir)');
           "
 
       # Test 3: Local project install
@@ -251,10 +262,14 @@ jobs:
       - name: 'Test: broker binary resolves and runs'
         run: |
           cd /tmp/test-project
+          # Isolate the home directory: the earlier npx runs copied a broker
+          # into ~/.agentworkforce/relay/bin, which would otherwise mask a
+          # local project that lacks its own platform broker package.
+          HOME="$(mktemp -d)"
+          export HOME
+          unset AGENT_RELAY_INSTALL_DIR AGENT_RELAY_HOME
           node --input-type=module -e "
             import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
-            import os from 'node:os';
-            import path from 'node:path';
             import { accessSync, constants } from 'node:fs';
             import { execFileSync } from 'node:child_process';
             const expected = getOptionalDepPackageName();
@@ -262,11 +277,10 @@ jobs:
             console.log('expected package:', expected);
             console.log('resolved:', p);
             if (!p) { console.error('FAIL: resolver returned null'); process.exit(1); }
-            // npm installs resolve through the optional-dep package until the
-            // CLI's first run copies the broker into ~/.agentworkforce/relay/bin.
-            const canonical = path.join(os.homedir(), '.agentworkforce', 'relay', 'bin', path.basename(p));
-            if (!p.replace(/\\\\/g, '/').includes(expected) && p !== canonical) {
-              console.error('FAIL: resolution went through neither the optional-dep package nor the canonical bin dir; got', p);
+            // HOME is isolated, so only the local project's own optional
+            // dependency can satisfy this.
+            if (!p.replace(/\\\\/g, '/').includes(expected)) {
+              console.error('FAIL: resolution did not go through the local optional-dep package; got', p);
               process.exit(1);
             }
             accessSync(p, constants.X_OK);
@@ -360,10 +374,13 @@ jobs:
       - name: 'Test: broker binary resolves and runs (macOS arm64)'
         run: |
           cd /tmp/test-project
+          # Isolated home: the earlier npx run copied a broker into
+          # ~/.agentworkforce/relay/bin; this must find the project's own.
+          HOME="$(mktemp -d)"
+          export HOME
+          unset AGENT_RELAY_INSTALL_DIR AGENT_RELAY_HOME
           node --input-type=module -e "
             import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
-            import os from 'node:os';
-            import path from 'node:path';
             import { accessSync, constants } from 'node:fs';
             import { execFileSync } from 'node:child_process';
             const expected = getOptionalDepPackageName();
@@ -375,9 +392,8 @@ jobs:
               console.error('FAIL: expected darwin-arm64 optional-dep, got', expected);
               process.exit(1);
             }
-            const canonical = path.join(os.homedir(), '.agentworkforce', 'relay', 'bin', path.basename(p));
-            if (!p.includes(expected) && p !== canonical) {
-              console.error('FAIL: resolution went through neither the optional-dep package nor the canonical bin dir; got', p);
+            if (!p.includes(expected)) {
+              console.error('FAIL: resolution did not go through the local optional-dep package; got', p);
               process.exit(1);
             }
             accessSync(p, constants.X_OK);

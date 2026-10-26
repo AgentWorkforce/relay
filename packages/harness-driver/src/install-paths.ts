@@ -21,7 +21,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { accessSync, constants, existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -102,6 +102,24 @@ export function getCanonicalRelaycastEnginePath(
 }
 
 /**
+ * Whether `filePath` looks runnable: a non-empty regular file that is
+ * executable (the execute bit is not checked on Windows). Cheap enough for
+ * every resolve; it does not execute the file.
+ * @param filePath - Candidate binary
+ * @returns true when the file can plausibly be launched
+ */
+export function isUsableBinary(filePath: string): boolean {
+  try {
+    const stat = statSync(filePath);
+    if (!stat.isFile() || stat.size === 0) return false;
+    if (process.platform !== 'win32') accessSync(filePath, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * First match for `name` on PATH (`which` / `where`), or null.
  * @param name - Command name to look up
  * @returns Absolute path, or null when the command is not on PATH
@@ -141,7 +159,7 @@ export function getRelaycastEnginePath(env: Env = process.env): string | null {
   }
 
   const canonical = getCanonicalRelaycastEnginePath(env);
-  if (existsSync(canonical)) return canonical;
+  if (existsSync(canonical) && isUsableBinary(canonical)) return canonical;
 
   return findExecutableOnPath(RELAYCAST_ENGINE_BINARY_NAME);
 }

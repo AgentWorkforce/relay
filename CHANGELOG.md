@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Every Agent Relay binary now lives in `~/.agentworkforce/relay/bin` (or `$AGENT_RELAY_INSTALL_DIR/bin`, else `$AGENT_RELAY_HOME/bin`), however the CLI is installed. An npm-installed CLI copies its broker there on first run. The copy is atomic and checksum-verified, and it never replaces a newer broker from `install.sh` or the desktop app. Set `AGENT_RELAY_SKIP_BROKER_INSTALL=1` to opt out.
+- The broker now lives in `~/.agentworkforce/relay/bin` (or `$AGENT_RELAY_INSTALL_DIR/bin`, else `$AGENT_RELAY_HOME/bin`), however the CLI is installed; `install.sh` also puts the standalone CLI there. An npm-installed CLI stays in npm's global bin directory and copies only its broker there on first run. The copy is atomic and checksum-verified, and it never replaces a newer broker from `install.sh` or the desktop app. Set `AGENT_RELAY_SKIP_BROKER_INSTALL=1` to opt out.
 - `install.sh` installs the local Relaycast server (`relaycast-engine`) into the same directory when the pinned release publishes it for your platform. If it is not published, the step is skipped. Set `AGENT_RELAY_SKIP_RELAYCAST_ENGINE=1` to skip it.
 
 ### Changed
@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - Python workflows, the `agent-relay.py` node provider, and the `agent-relay-sdk` package. Local workflows are YAML, TypeScript, JavaScript, or shell. Cloud and worker workflows are YAML or TypeScript. Node definitions are TypeScript or JavaScript. SDKs are TypeScript and Swift.
+
+### Fixed
+
+- `install.sh`'s source-build fallback no longer deletes the install root (and with it saved workspaces and Relaycast credentials); the checkout now lives in its `source/` subdirectory.
 
 ## [14.0.0] - 2026-10-13
 
