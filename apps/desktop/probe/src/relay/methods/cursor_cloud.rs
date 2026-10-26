@@ -181,7 +181,7 @@ fn runs_query(params: CursorCloudRunsListParams) -> Result<String, RpcError> {
     })
 }
 
-pub(super) async fn call(
+async fn listing_call(
     core: &Arc<Core>,
     method: &str,
     raw: &Value,
@@ -233,6 +233,29 @@ pub(super) async fn call(
             })
             .await
         }
+        method::CursorCloudRunsList::NAME => {
+            answer::<method::CursorCloudRunsList, _>(raw.clone(), |params| async move {
+                request::<CursorCloudRuns>(
+                    core,
+                    "GET",
+                    &runs_query(params)?,
+                    None,
+                    "Cursor Cloud runs",
+                )
+                .await
+            })
+            .await
+        }
+        _ => return None,
+    })
+}
+
+async fn mutation_call(
+    core: &Arc<Core>,
+    method: &str,
+    raw: &Value,
+) -> Option<Result<Value, RpcError>> {
+    Some(match method {
         method::CursorCloudAgentsSpawn::NAME => {
             answer::<method::CursorCloudAgentsSpawn, _>(raw.clone(), |params| async move {
                 client_request_id(&params.client_request_id)?;
@@ -292,19 +315,6 @@ pub(super) async fn call(
             })
             .await
         }
-        method::CursorCloudRunsList::NAME => {
-            answer::<method::CursorCloudRunsList, _>(raw.clone(), |params| async move {
-                request::<CursorCloudRuns>(
-                    core,
-                    "GET",
-                    &runs_query(params)?,
-                    None,
-                    "Cursor Cloud runs",
-                )
-                .await
-            })
-            .await
-        }
         method::CursorCloudRunsCancel::NAME => {
             answer::<method::CursorCloudRunsCancel, _>(raw.clone(), |params| async move {
                 let agent = identifier(&params.agent_id, "agent id")?;
@@ -350,6 +360,17 @@ pub(super) async fn call(
         }
         _ => return None,
     })
+}
+
+pub(super) async fn call(
+    core: &Arc<Core>,
+    method: &str,
+    raw: &Value,
+) -> Option<Result<Value, RpcError>> {
+    match listing_call(core, method, raw).await {
+        Some(result) => Some(result),
+        None => mutation_call(core, method, raw).await,
+    }
 }
 
 #[cfg(test)]

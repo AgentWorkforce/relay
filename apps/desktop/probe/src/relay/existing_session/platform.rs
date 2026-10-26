@@ -37,8 +37,7 @@ mod unix {
     pub use std::os::unix::fs::{
         DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt,
     };
-    #[allow(unused_imports)]
-    pub use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
+    pub use std::os::unix::net::UnixStream;
     pub use std::os::unix::process::CommandExt;
 
     /// `open(2)`'s `O_NOFOLLOW`, for `OpenOptionsExt::custom_flags`.

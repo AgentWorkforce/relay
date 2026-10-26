@@ -47,3 +47,42 @@ pub(super) fn history_session_id(metadata: &Value) -> Option<String> {
         .filter(|id| !id.is_empty() && id.len() <= 512)
         .map(str::to_string)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn native_title_is_a_description_fallback_without_overriding_the_objective() {
+        assert_eq!(
+            describe(
+                &json!({"session_title": "Fix login", "objective": "Review only"}),
+                &Value::Null,
+            ),
+            "Review only"
+        );
+        assert_eq!(
+            describe(&json!({"session_title": "Fix login"}), &Value::Null),
+            "Fix login"
+        );
+    }
+
+    #[test]
+    fn gateway_agent_identifiers_are_not_linked_to_history() {
+        for metadata in [
+            json!({"source": "relay-desktop", "session_kind": "openclaw", "session_id": "main"}),
+            json!({"source": "relay-desktop", "session_kind": "hermes", "session_id": "default"}),
+            json!({"session_scope": "agent", "session_id": "main"}),
+        ] {
+            assert_eq!(history_session_id(&metadata), None);
+        }
+        assert_eq!(
+            history_session_id(
+                &json!({"session_kind": "openclaw", "session_id": "real-history-id"})
+            )
+            .as_deref(),
+            Some("real-history-id")
+        );
+    }
+}

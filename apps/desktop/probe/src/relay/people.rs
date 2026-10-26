@@ -852,37 +852,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn native_title_is_a_description_fallback_without_overriding_the_objective() {
-        let items = vec![json!({"name": "builder", "status": "active", "metadata": {
-            "session_title": "Fix login", "objective": "Review only"
-        }})];
-        let agents = decode_roster(&items, &HashMap::new(), None, NOW);
-        assert_eq!(agents[0].description, "Review only");
-        let items = vec![json!({"name": "builder", "status": "active", "metadata": {
-            "session_title": "Fix login"
-        }})];
-        let agents = decode_roster(&items, &HashMap::new(), None, NOW);
-        assert_eq!(agents[0].description, "Fix login");
-    }
-
-    #[test]
-    fn gateway_agent_identifiers_are_not_linked_to_history() {
-        let items = vec![
-            json!({"name": "openclaw", "metadata": {"source": "relay-desktop", "session_kind": "openclaw", "session_id": "main"}}),
-            json!({"name": "hermes", "metadata": {"source": "relay-desktop", "session_kind": "hermes", "session_id": "default"}}),
-            json!({"name": "explicit-agent", "metadata": {"session_scope": "agent", "session_id": "main"}}),
-            json!({"name": "transcript", "metadata": {"session_kind": "openclaw", "session_id": "real-history-id"}}),
-        ];
-        let agents = decode_roster(&items, &HashMap::new(), None, NOW);
-        for agent in agents {
-            assert_eq!(
-                agent.session_id.as_deref(),
-                (agent.name == "transcript").then_some("real-history-id")
-            );
-        }
-    }
-
     // RelaycastReplyClientTests.testActiveRosterUsesWorkspaceKeyAndRedactsMetadata.
     #[test]
     fn the_roster_is_reduced_to_public_fields() {
