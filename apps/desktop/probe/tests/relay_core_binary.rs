@@ -151,7 +151,7 @@ fn the_headless_service_removes_the_apps_login_entry_and_stops_on_sigterm() {
     let entry = temp.path().join("config/autostart/agent-relay.desktop");
     std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
     let owned = "[Desktop Entry]\nType=Application\nName=Agent Relay\n\
-                 Exec=/usr/bin/agent-relay --background\nIcon=agent-relay\n";
+                 Exec=/usr/bin/agent-relay-desktop --background\nIcon=agent-relay\n";
     let foreign = "[Desktop Entry]\nType=Application\nName=Agent Relay\n\
                    Exec=/opt/mine --background\nIcon=agent-relay\n";
     for (text, removed) in [(owned, true), (foreign, false)] {
