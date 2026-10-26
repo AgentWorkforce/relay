@@ -183,6 +183,28 @@ describe('agent identity lifecycle commands', () => {
     );
   });
 
+  it('says when the old token could not be retired at once', async () => {
+    const { program, takeOverAgent, error } = createHarness();
+    takeOverAgent.mockResolvedValueOnce({
+      id: 'agent_rotated',
+      name: 'chief',
+      token: 'at_live_rotated',
+      oldTokenGraceRemains: true,
+    } as never);
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'agent',
+      'rotate',
+      'chief',
+      '--workspace-key',
+      'rk_live_test',
+    ]);
+
+    expect(error.mock.calls.flat().join('\n')).toContain('stops working within a minute');
+  });
+
   it('register recovers an existing name with a new token instead of failing', async () => {
     const { program, workspaceRelay, takeOverAgent, log } = createHarness();
     workspaceRelay.workspace.register.mockRejectedValueOnce(

@@ -16,7 +16,7 @@ import {
 } from '../lib/agent-removal.js';
 
 import { withAgentRegistrationDeadline, withDeadline } from '../lib/agent-registration.js';
-import { isAgentAlreadyExists, takeOverAgent } from '../lib/agent-takeover.js';
+import { isAgentAlreadyExists, takeOverAgent, type AgentTokenGrant } from '../lib/agent-takeover.js';
 import { saveAgentToken } from '../lib/agent-token-store.js';
 import { guardCredentialOrigin } from '../lib/relaycast-origin-binding.js';
 import { resolveWorkspaceTransport } from '../lib/sdk-client.js';
@@ -32,9 +32,15 @@ function rememberToken(
   deps: AgentCommandDependencies,
   opts: Record<string, unknown>,
   name: string,
-  token: string | undefined
+  token: string | undefined,
+  registration?: unknown
 ): void {
   if (!token) return;
+  if ((registration as Partial<AgentTokenGrant> | undefined)?.oldTokenGraceRemains) {
+    deps.error(
+      `Issued a new token for "${name}", but could not retire the old one at once; it stops working within a minute.`
+    );
+  }
   try {
     const { workspaceKey, baseUrl } = resolveWorkspaceTransport(sdkOptionsFromOpts(opts));
     saveAgentToken(workspaceKey, baseUrl, name, token);
@@ -98,7 +104,7 @@ export function registerAgentCommands(
           'agent-relay agent register: issue a new token for an existing agent'
         );
       }
-      rememberToken(deps, opts, registration.name, registration.token);
+      rememberToken(deps, opts, registration.name, registration.token, registration);
       printJson(deps, { id: registration.id, name: registration.name, token: registration.token });
     });
   });
@@ -126,7 +132,7 @@ export function registerAgentCommands(
         throw new Error(`Agent "${name}" does not exist; use "agent register" to create it. (${detail})`);
       });
       // An owner rotation needs only the workspace key, so a lost token can
-      // always be replaced. It revokes the agent's previous token.
+      // always be replaced. It retires the agent's previous token.
       const registration = await withAgentRegistrationDeadline(
         () =>
           deps.takeOverAgent(
@@ -137,7 +143,7 @@ export function registerAgentCommands(
           ),
         name
       );
-      rememberToken(deps, opts, registration.name, registration.token);
+      rememberToken(deps, opts, registration.name, registration.token, registration);
       printJson(deps, { id: registration.id, name: registration.name, token: registration.token });
     });
   });

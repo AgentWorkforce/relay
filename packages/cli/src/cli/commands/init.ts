@@ -6,7 +6,12 @@ import path from 'node:path';
 import type { Command } from 'commander';
 import { InvalidArgumentError } from 'commander';
 
-import { boundOrigin, configuredOrigin, guardCredentialOrigin } from '../lib/relaycast-origin-binding.js';
+import {
+  assertOriginBindingsWritable,
+  boundOrigin,
+  configuredOrigin,
+  guardCredentialOrigin,
+} from '../lib/relaycast-origin-binding.js';
 import { runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import { persistWorkspaceSession } from '../lib/workspace-session.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
@@ -17,6 +22,7 @@ const DEFAULT_LOCAL_PORT = 8787;
 const HOSTED_ORIGIN = 'https://cast.agentrelay.com';
 const START_TIMEOUT_MS = 120_000;
 
+/** Injectable effects for `relay init`, replaced in tests. */
 export interface InitCommandDependencies extends SdkCommandDeps {
   fetch: typeof fetch;
   /** Start the local engine detached; returns its pid. */
@@ -45,12 +51,23 @@ function statePath(): string {
   return path.join(localDir(), 'server.json');
 }
 
+/**
+ * The local server `relay init` started, if its record is sane. A pid of 0 or
+ * 1 would make `--stop` signal this CLI's own process group or every process
+ * the user owns, so anything but an integer above 1 is ignored.
+ */
 function readState(): LocalServerState | undefined {
+  let parsed: unknown;
   try {
-    return JSON.parse(fs.readFileSync(statePath(), 'utf8')) as LocalServerState;
+    parsed = JSON.parse(fs.readFileSync(statePath(), 'utf8'));
   } catch {
     return undefined;
   }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  const state = parsed as Partial<LocalServerState>;
+  if (typeof state.pid !== 'number' || !Number.isInteger(state.pid) || state.pid <= 1) return undefined;
+  if (typeof state.origin !== 'string' || typeof state.port !== 'number') return undefined;
+  return state as LocalServerState;
 }
 
 function defaultStartEngine({ dataDir, port, logFile }: { dataDir: string; port: number; logFile: string }) {
@@ -84,6 +101,12 @@ function defaultStop(pid: number): void {
   }
 }
 
+/**
+ * Fill in the real effects for any dependency a caller did not override.
+ *
+ * @param overrides - Dependencies to replace, typically in tests.
+ * @returns A complete dependency set.
+ */
 export function withInitDefaults(overrides: Partial<InitCommandDependencies> = {}): InitCommandDependencies {
   return {
     ...withSdkDefaults(overrides),
@@ -141,10 +164,13 @@ async function ensureLocalServer(deps: InitCommandDependencies, port: number): P
   deps.stop(pid);
   const tail = logTail(logFile);
   throw new Error(
-    `The local Relaycast server did not start. It needs Node.js 20, 22 or 24 with npm install scripts enabled.` +
+    `The local Relaycast server did not start. It needs Node.js 22 or 24 with npm install scripts enabled.` +
       (tail ? `\nLast lines of ${logFile}:\n${tail}` : '')
   );
 }
+
+/** The server answered and refused the key, as opposed to being unreachable or failing. */
+class WorkspaceKeyRejectedError extends Error {}
 
 async function verifyWorkspace(deps: InitCommandDependencies, origin: string, key: string): Promise<void> {
   let response: Response;
@@ -163,7 +189,7 @@ async function verifyWorkspace(deps: InitCommandDependencies, origin: string, ke
     );
   }
   if (response.status === 401 || response.status === 403) {
-    throw new Error(`${origin} rejected the workspace key.`);
+    throw new WorkspaceKeyRejectedError(`${origin} rejected the workspace key.`);
   }
   if (!response.ok) throw new Error(`${origin} answered ${response.status} when checking the workspace.`);
 }
@@ -183,6 +209,13 @@ function parsePort(value: string): number {
   return port;
 }
 
+/**
+ * Register `relay init`: a private server on this machine (default), the
+ * hosted service (`--hosted`), or your own server (`--url` and `--key`).
+ *
+ * @param program - The commander program to add the command to.
+ * @param overrides - Dependencies to replace, typically in tests.
+ */
 export function registerInitCommand(
   program: Command,
   overrides: Partial<InitCommandDependencies> = {}
@@ -250,11 +283,16 @@ export function registerInitCommand(
         const stored = readWorkspaceStore().workspaces[name]?.key;
         let workspaceKey = stored && boundOrigin(stored) === origin ? stored : undefined;
         if (workspaceKey) {
-          await verifyWorkspace(deps, origin, workspaceKey).catch(() => {
+          // Only a key the server refuses is replaced. A timeout or server
+          // error is reported instead, so a hiccup never swaps the workspace
+          // (and its agents and messages) for a new one.
+          await verifyWorkspace(deps, origin, workspaceKey).catch((error: unknown) => {
+            if (!(error instanceof WorkspaceKeyRejectedError)) throw error;
             workspaceKey = undefined;
           });
         }
         if (!workspaceKey) {
+          assertOriginBindingsWritable(origin);
           const relay = await deps.createWorkspace(name, origin);
           if (!relay.workspaceKey) throw new Error('The local server did not return a workspace key.');
           workspaceKey = relay.workspaceKey;

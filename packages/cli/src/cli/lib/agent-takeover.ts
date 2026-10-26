@@ -2,10 +2,13 @@ import os from 'node:os';
 
 const HOSTED_DEFAULT_ORIGIN = 'https://cast.agentrelay.com';
 
+/** A token issued by {@link takeOverAgent}. */
 export interface AgentTokenGrant {
   id: string;
   name: string;
   token: string;
+  /** The old token stays valid until the server's grace window ends. */
+  oldTokenGraceRemains?: boolean;
 }
 
 interface Envelope<T> {
@@ -44,10 +47,35 @@ async function call<T>(
 }
 
 /**
+ * The local user for the audit trail. `os.userInfo()` throws when the UID has
+ * no passwd entry (common with `docker run --user` and random container UIDs).
+ */
+function localUsername(): string {
+  try {
+    return os.userInfo().username;
+  } catch {
+    return process.env.USER ?? process.env.USERNAME ?? 'unknown';
+  }
+}
+
+/**
  * Issue a fresh token for an existing agent using the workspace key. This is
  * how a lost token is recovered; Relaycast only lets an agent rotate its own
- * token with that token. The audited takeover alone leaves earlier tokens
- * valid, so they are revoked first: afterwards only the new token works.
+ * token with that token.
+ *
+ * Each audited takeover issues a new token and keeps only the token it
+ * replaced valid, for the server's short grace window (60s in Relaycast).
+ * Taking over twice therefore retires the agent's old token at once, while
+ * the agent always has a working token: if the first takeover fails nothing
+ * changed, and if the second fails the first replacement still works and the
+ * old token lapses when its grace window ends.
+ *
+ * @param options - Workspace key, server and optional fetch implementation.
+ * @param name - The existing agent's name.
+ * @param reason - Recorded in the server's audit log.
+ * @param expectedAgentId - The agent id, when the caller already looked it up.
+ * @returns The new token grant; `oldTokenGraceRemains` is set when the old
+ *   token could not be retired at once.
  */
 export async function takeOverAgent(
   options: { workspaceKey: string; baseUrl?: string; fetch?: typeof fetch },
@@ -60,30 +88,37 @@ export async function takeOverAgent(
   const agent = expectedAgentId
     ? { id: expectedAgentId }
     : await call<{ id: string }>(fetchFn, options.baseUrl, options.workspaceKey, 'GET', route);
-  const actor = `agent-relay-cli:${os.userInfo().username}@${os.hostname()}`;
-  await call(fetchFn, options.baseUrl, options.workspaceKey, 'POST', `${route}/revoke-token`, {
-    expected_agent_id: agent.id,
-    actor,
-    reason,
-  });
-  const granted = await call<{ agent_id: string; name: string; token: string }>(
-    fetchFn,
-    options.baseUrl,
-    options.workspaceKey,
-    'POST',
-    `${route}/takeover`,
-    {
-      expected_agent_id: agent.id,
-      actor,
-      reason,
-      session_ref: 'agent-relay-cli',
-      node_id: 'agent-relay-cli',
-    }
-  );
-  return { id: granted.agent_id, name: granted.name, token: granted.token };
+  const actor = `agent-relay-cli:${localUsername()}@${os.hostname()}`;
+  const takeover = (why: string) =>
+    call<{ agent_id: string; name: string; token: string }>(
+      fetchFn,
+      options.baseUrl,
+      options.workspaceKey,
+      'POST',
+      `${route}/takeover`,
+      {
+        expected_agent_id: agent.id,
+        actor,
+        reason: why,
+        session_ref: 'agent-relay-cli',
+        node_id: 'agent-relay-cli',
+      }
+    );
+  const first = await takeover(reason);
+  try {
+    const second = await takeover(`${reason} (retire the previous token)`);
+    return { id: second.agent_id, name: second.name, token: second.token };
+  } catch {
+    return { id: first.agent_id, name: first.name, token: first.token, oldTokenGraceRemains: true };
+  }
 }
 
-/** Whether a registration failed only because the name is already taken. */
+/**
+ * Whether a registration failed only because the name is already taken.
+ *
+ * @param error - The registration failure.
+ * @returns `true` for Relaycast's "agent already exists" refusal.
+ */
 export function isAgentAlreadyExists(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const candidate = error as { code?: unknown; message?: unknown; status?: unknown };

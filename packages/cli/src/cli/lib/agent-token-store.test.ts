@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -22,6 +23,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   fs.rmSync(home, { recursive: true, force: true });
   fs.rmSync(project, { recursive: true, force: true });
 });
@@ -69,37 +71,128 @@ describe('saved agent tokens', () => {
   });
 });
 
+describe('saved agent token file', () => {
+  it('fails closed on a malformed file instead of forgetting tokens', () => {
+    fs.mkdirSync(home, { recursive: true });
+    for (const contents of [
+      { version: 1, tokens: ['at_live_x'] },
+      { version: 1, tokens: { k: null } },
+      [{ version: 1, tokens: {} }],
+    ]) {
+      fs.writeFileSync(agentTokensPath(env()), JSON.stringify(contents));
+      expect(() => savedAgentToken('rk', undefined, 'alice', env())).toThrow(/not a valid agent token file/);
+    }
+  });
+
+  it('does not drop a token another process saves while this one waits for the lock', async () => {
+    const file = agentTokensPath(env());
+    const other = spawn(
+      process.execPath,
+      [
+        '-e',
+        `const fs = require('node:fs');
+         const path = require('node:path');
+         const file = process.argv[1];
+         fs.mkdirSync(file + '.lock');
+         fs.writeFileSync(path.join(file + '.lock', 'owner'), String(process.pid));
+         console.log('locked');
+         setTimeout(() => {
+           fs.writeFileSync(file, JSON.stringify({ version: 1, tokens: { other: 'at_live_other' } }));
+           fs.rmSync(file + '.lock', { recursive: true, force: true });
+         }, 300);`,
+        file,
+      ],
+      { stdio: ['ignore', 'pipe', 'inherit'] }
+    );
+    await new Promise<void>((resolve) => other.stdout.once('data', () => resolve()));
+    saveAgentToken('rk_live_a', undefined, 'alice', 'at_live_alice', env());
+    await new Promise((resolve) => other.once('exit', resolve));
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as { tokens: Record<string, string> };
+    expect(saved.tokens.other).toBe('at_live_other');
+    expect(savedAgentToken('rk_live_a', undefined, 'alice', env())).toBe('at_live_alice');
+  });
+});
+
 describe('owner takeover', () => {
-  it('looks up the agent id and issues a new token through the audited takeover', async () => {
-    const calls: Array<{ url: string; method: string; body?: unknown }> = [];
+  function takeoverServer(failOnTakeover?: number) {
+    const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> = [];
+    let takeovers = 0;
     const fetchFn = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       calls.push({
         url,
         method: init?.method ?? 'GET',
-        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        body: init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined,
       });
-      const data = url.endsWith('/takeover')
-        ? { agent_id: 'agent-1', name: 'alice', token: 'at_live_new' }
-        : url.endsWith('/revoke-token')
-          ? { agent_id: 'agent-1', name: 'alice' }
-          : { id: 'agent-1', name: 'alice' };
-      return new Response(JSON.stringify({ ok: true, data }), { status: 200 });
+      if (url.endsWith('/takeover')) {
+        takeovers += 1;
+        if (takeovers === failOnTakeover) throw new TypeError('fetch failed');
+        const data = { agent_id: 'agent-1', name: 'alice', token: `at_live_new_${takeovers}` };
+        return new Response(JSON.stringify({ ok: true, data }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true, data: { id: 'agent-1', name: 'alice' } }), {
+        status: 200,
+      });
     });
+    const paths = () => calls.map((call) => `${call.method} ${new URL(call.url).pathname}`);
+    return { calls, fetchFn, paths };
+  }
+
+  it('takes over twice, so the old token is retired at once and never revoked first', async () => {
+    const { calls, fetchFn, paths } = takeoverServer();
     const grant = await takeOverAgent(
       { workspaceKey: 'rk_live_a', baseUrl: 'http://127.0.0.1:8787', fetch: fetchFn as never },
       'alice',
       'test'
     );
-    expect(grant).toEqual({ id: 'agent-1', name: 'alice', token: 'at_live_new' });
-    expect(calls.map((call) => `${call.method} ${new URL(call.url).pathname}`)).toEqual([
+    expect(grant).toEqual({ id: 'agent-1', name: 'alice', token: 'at_live_new_2' });
+    expect(paths()).toEqual([
       'GET /v1/agents/alice',
-      'POST /v1/agents/alice/revoke-token',
+      'POST /v1/agents/alice/takeover',
       'POST /v1/agents/alice/takeover',
     ]);
-    // Revoke before issuing, so the previous token stops working.
     expect(calls[1]?.body).toMatchObject({ expected_agent_id: 'agent-1', reason: 'test' });
-    expect(calls[2]?.body).toMatchObject({ expected_agent_id: 'agent-1', reason: 'test' });
+    expect(calls[2]?.body).toMatchObject({ expected_agent_id: 'agent-1' });
+  });
+
+  it('keeps the agent working when the first takeover fails: nothing was changed', async () => {
+    const { fetchFn, paths } = takeoverServer(1);
+    await expect(
+      takeOverAgent(
+        { workspaceKey: 'rk', baseUrl: 'http://127.0.0.1:1', fetch: fetchFn as never },
+        'alice',
+        'x'
+      )
+    ).rejects.toThrow('fetch failed');
+    expect(paths()).not.toContain('POST /v1/agents/alice/revoke-token');
+  });
+
+  it('returns the first replacement when the second takeover fails', async () => {
+    const { fetchFn } = takeoverServer(2);
+    const grant = await takeOverAgent(
+      { workspaceKey: 'rk', baseUrl: 'http://127.0.0.1:1', fetch: fetchFn as never },
+      'alice',
+      'x'
+    );
+    expect(grant).toEqual({
+      id: 'agent-1',
+      name: 'alice',
+      token: 'at_live_new_1',
+      oldTokenGraceRemains: true,
+    });
+  });
+
+  it('still takes over when the local user has no passwd entry', async () => {
+    vi.spyOn(os, 'userInfo').mockImplementation(() => {
+      throw new Error('ENOENT: no such file or directory, uv_os_get_passwd');
+    });
+    const { calls, fetchFn } = takeoverServer();
+    await takeOverAgent(
+      { workspaceKey: 'rk', baseUrl: 'http://127.0.0.1:1', fetch: fetchFn as never },
+      'alice',
+      'x'
+    );
+    expect(String(calls[1]?.body?.actor)).toMatch(/^agent-relay-cli:.+@/);
   });
 
   it('reports a missing agent with its status so callers can say so', async () => {

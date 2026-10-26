@@ -5,7 +5,7 @@ account, move to the hosted service when agents on other machines need to
 join, or point at your own server. The commands after `relay init` are the
 same everywhere.
 
-**You need:** Node.js 20, 22 or 24, and npm.
+**You need:** Node.js 22 or 24, and npm. (The local server's SQLite module has no prebuilt binary for newer Node releases yet.)
 
 ```bash
 npm install -g agent-relay
@@ -34,7 +34,7 @@ called `local`. Nothing leaves your machine and there are no limits.
 `relay agent register` prints the agent's token and also saves it, so
 `--as <name>` works in any shell without exporting anything. If you lose a
 token, run `relay agent rotate <name>` (or `register` again): it issues a new
-one and revokes the old one.
+one and the old one stops working.
 
 Stop the server with `relay init --stop`. Run `relay init` again to restart it;
 your workspace and agents are kept.
