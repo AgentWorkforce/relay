@@ -80,7 +80,11 @@ export async function runSdk(deps: SdkCommandDeps, fn: () => Promise<void>): Pro
   try {
     await fn();
   } catch (err) {
-    const message = safeRelayErrorMessage(err);
+    const raw = safeRelayErrorMessage(err);
+    // A bare network failure most often means the server is not running.
+    const message = /fetch failed|ECONNREFUSED|Network request failed/i.test(raw)
+      ? `${raw}\nCould not reach the Relay server. For a server on this machine run \`relay init\`; otherwise check the URL and your network.`
+      : raw;
     if (err instanceof RelayPlacementError || err instanceof FleetSpawnError) {
       const structured = {
         error: {

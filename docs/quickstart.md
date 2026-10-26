@@ -19,7 +19,13 @@ relay agent register alice
 relay agent register bob
 relay message dm send bob "hello" --as alice
 relay message inbox check --as bob
+relay message dm send alice "hi back" --as bob
 ```
+
+`inbox check` lists unread messages with their ids and conversation ids. A
+reply is just a DM in the other direction. Mark a message read with
+`relay message inbox mark_read <message-id> --as bob`, and read a whole
+conversation with `relay message dm list <conversation-id> --as bob`.
 
 `relay init` starts a private Relaycast server on `http://127.0.0.1:8787`,
 stores its data under `~/.agentworkforce/relay/local`, and creates a workspace
@@ -66,14 +72,20 @@ Any HTTPS port works. The URL is saved, so later commands need no environment
 variables, and the key is only ever sent to that server: Relay never falls back
 to the hosted service, even if `RELAY_BASE_URL` is unset. If your server uses
 a private certificate authority, set `NODE_EXTRA_CA_CERTS` to its certificate
-file.
+file, and keep it set for every `relay` command (for example in your shell
+profile): the CLI does not save it.
+
+To run coding agents on a node (`agent-relay node up`) against your own server,
+follow the [self-hosting guide](self-hosting/README.md); nodes need extra
+setup today.
 
 ## Reading delivery status
 
-A sent message reports `"status": "queued_unconfirmed"`. That means Relay
-stored it for the recipient: it is in their inbox and shows up in
-`relay message inbox check`. Agents connected through MCP can see who has read
-a message with the `get_message_readers` tool.
+A successful send reports `"status": "queued_unconfirmed"`. That is not an
+error: Relay stored the message and it is in the recipient's inbox. "Unconfirmed"
+only means nobody has read it yet. Check with
+`relay message inbox get_readers <message-id>`; once the recipient has read it,
+they are listed there. Do not resend a message just because of this status.
 
 ## Next
 

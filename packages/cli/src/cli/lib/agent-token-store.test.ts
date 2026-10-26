@@ -81,7 +81,9 @@ describe('owner takeover', () => {
       });
       const data = url.endsWith('/takeover')
         ? { agent_id: 'agent-1', name: 'alice', token: 'at_live_new' }
-        : { id: 'agent-1', name: 'alice' };
+        : url.endsWith('/revoke-token')
+          ? { agent_id: 'agent-1', name: 'alice' }
+          : { id: 'agent-1', name: 'alice' };
       return new Response(JSON.stringify({ ok: true, data }), { status: 200 });
     });
     const grant = await takeOverAgent(
@@ -92,9 +94,12 @@ describe('owner takeover', () => {
     expect(grant).toEqual({ id: 'agent-1', name: 'alice', token: 'at_live_new' });
     expect(calls.map((call) => `${call.method} ${new URL(call.url).pathname}`)).toEqual([
       'GET /v1/agents/alice',
+      'POST /v1/agents/alice/revoke-token',
       'POST /v1/agents/alice/takeover',
     ]);
+    // Revoke before issuing, so the previous token stops working.
     expect(calls[1]?.body).toMatchObject({ expected_agent_id: 'agent-1', reason: 'test' });
+    expect(calls[2]?.body).toMatchObject({ expected_agent_id: 'agent-1', reason: 'test' });
   });
 
   it('reports a missing agent with its status so callers can say so', async () => {

@@ -126,7 +126,7 @@ async function ensureLocalServer(deps: InitCommandDependencies, port: number): P
   }
   fs.mkdirSync(localDir(), { recursive: true, mode: 0o700 });
   const logFile = path.join(localDir(), 'server.log');
-  deps.log(`Starting a local Relaycast server on ${origin} (first start downloads it)…`);
+  deps.log(`Starting a local Relaycast server on ${origin} (the very first start downloads it)…`);
   const pid = deps.startEngine({ dataDir: localDir(), port, logFile });
   const deadline = Date.now() + START_TIMEOUT_MS;
   while (Date.now() < deadline) {

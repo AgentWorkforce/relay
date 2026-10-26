@@ -44,10 +44,10 @@ async function call<T>(
 }
 
 /**
- * Issue a fresh token for an existing agent using the workspace key: the
- * audited owner takeover, which revokes the agent's previous token. This is
+ * Issue a fresh token for an existing agent using the workspace key. This is
  * how a lost token is recovered; Relaycast only lets an agent rotate its own
- * token with that token.
+ * token with that token. The audited takeover alone leaves earlier tokens
+ * valid, so they are revoked first: afterwards only the new token works.
  */
 export async function takeOverAgent(
   options: { workspaceKey: string; baseUrl?: string; fetch?: typeof fetch },
@@ -61,6 +61,11 @@ export async function takeOverAgent(
     ? { id: expectedAgentId }
     : await call<{ id: string }>(fetchFn, options.baseUrl, options.workspaceKey, 'GET', route);
   const actor = `agent-relay-cli:${os.userInfo().username}@${os.hostname()}`;
+  await call(fetchFn, options.baseUrl, options.workspaceKey, 'POST', `${route}/revoke-token`, {
+    expected_agent_id: agent.id,
+    actor,
+    reason,
+  });
   const granted = await call<{ agent_id: string; name: string; token: string }>(
     fetchFn,
     options.baseUrl,
