@@ -85,8 +85,12 @@ public struct StatusViewModel: Equatable {
         lastUpload = BridgeTime.date(milliseconds: delivery.lastAcknowledgedMs)
         isPaused = status.paused
         isJournalFull = status.journalFull
-        canRetryUploads = status.stage == .needsAttention && delivery.stopped
-            && delivery.failureCode != .authenticationRequired
+        // A stop, or a transient failure that has lasted: Retry tries the
+        // receiver again at once instead of after the backoff. A rate limit
+        // waits as the receiver asked, and a sign-in is fixed by signing in.
+        canRetryUploads = status.stage == .needsAttention
+            && ((delivery.stopped && delivery.failureCode != .authenticationRequired)
+                || delivery.failureCode == .transient)
     }
 
     public var symbol: String {

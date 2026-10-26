@@ -181,6 +181,7 @@ fn allowed(key: &str) -> Option<Value> {
             "minimum": 0,
             "maximum": crate::relay::spawn::lifecycle::MAX_AGENTS_LIMIT,
         })),
+        "history_retention_days" => Some(json!(crate::relay::history_retention::CHOICES)),
         _ => None,
     }
 }
@@ -237,6 +238,10 @@ mod tests {
         assert_eq!(general["value"], true);
         assert_eq!(listed["spawn_max_agents"]["type"], "integer");
         assert_eq!(listed["spawn_max_agents"]["allowed"]["maximum"], 32);
+        assert_eq!(
+            listed["history_retention_days"]["allowed"],
+            json!([7, 30, 90, 0])
+        );
         assert_eq!(
             listed["spawn_billing_codex"]["allowed"],
             json!(["unspecified", "subscription", "api"])

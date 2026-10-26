@@ -198,7 +198,6 @@ fn legacy_and_ambiguous_sessions_fail_closed() {
     );
 }
 
-
 #[test]
 fn durable_command_ids_are_uuidv7() {
     let first = uuid_v7().unwrap();

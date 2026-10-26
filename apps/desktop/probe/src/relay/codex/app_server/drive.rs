@@ -143,12 +143,17 @@ fn choices(params: &Value) -> Vec<String> {
     let Some([question]) = params["questions"].as_array().map(Vec::as_slice) else {
         return Vec::new();
     };
-    let options = question["options"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let options = question["options"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     let safe = |option: &Value| {
         option["isOther"] != true
-            && option["label"]
-                .as_str()
-                .is_some_and(|label| SAFE_LABELS.iter().any(|known| label.eq_ignore_ascii_case(known)))
+            && option["label"].as_str().is_some_and(|label| {
+                SAFE_LABELS
+                    .iter()
+                    .any(|known| label.eq_ignore_ascii_case(known))
+            })
     };
     if question["isSecret"] == true
         || options.is_empty()
@@ -160,7 +165,13 @@ fn choices(params: &Value) -> Vec<String> {
     options
         .iter()
         .enumerate()
-        .map(|(index, option)| format!("{}: {}", index + 1, option["label"].as_str().unwrap_or_default()))
+        .map(|(index, option)| {
+            format!(
+                "{}: {}",
+                index + 1,
+                option["label"].as_str().unwrap_or_default()
+            )
+        })
         .collect()
 }
 
@@ -195,7 +206,11 @@ fn register(thread: &str, connection: &str, request: Value) {
         // MCP forms and device verification may require values or a proof
         // that must never be copied through Relay. They can be canceled.
         approvable: !question && method != "mcpServer/elicitation/request",
-        options: if question { choices(params) } else { Vec::new() },
+        options: if question {
+            choices(params)
+        } else {
+            Vec::new()
+        },
     };
     pending().insert(
         reference,
@@ -374,7 +389,9 @@ fn settled(connection: &str) -> Vec<(Value, Value)> {
 }
 
 fn holds_requests(connection: &str) -> bool {
-    pending().values().any(|entry| entry.connection == connection)
+    pending()
+        .values()
+        .any(|entry| entry.connection == connection)
 }
 
 /// Drives one connection until its turn completed and its requests are
@@ -468,7 +485,13 @@ mod tests {
                 "no verified owner, no answer"
             );
             assert_eq!(
-                answer(thread, &notice.reference, Some("owner"), Some("owner"), true),
+                answer(
+                    thread,
+                    &notice.reference,
+                    Some("owner"),
+                    Some("owner"),
+                    true
+                ),
                 ReplyResult::Answered
             );
         }
@@ -506,7 +529,11 @@ mod tests {
             notifications: vec![json!({"method": "turn/completed",
                 "params": {"threadId": "thread-fast", "turn": {"id": "t1"}}})],
         };
-        start(Box::new(Idle(closed.clone())), state, claim("thread-fast").unwrap());
+        start(
+            Box::new(Idle(closed.clone())),
+            state,
+            claim("thread-fast").unwrap(),
+        );
         let deadline = Instant::now() + Duration::from_secs(5);
         while !closed.load(std::sync::atomic::Ordering::SeqCst) || driving("thread-fast") {
             assert!(Instant::now() < deadline, "the proxy stayed open");
@@ -596,12 +623,24 @@ mod tests {
         assert!(!notice.approvable);
         assert!(!notice.description.contains("Potential secret"));
         assert_eq!(
-            answer(thread, &notice.reference, Some("owner"), Some("owner"), true),
+            answer(
+                thread,
+                &notice.reference,
+                Some("owner"),
+                Some("owner"),
+                true
+            ),
             ReplyResult::InvalidChoice
         );
         expire(&notice.reference);
         assert_eq!(
-            answer(thread, &notice.reference, Some("owner"), Some("owner"), false),
+            answer(
+                thread,
+                &notice.reference,
+                Some("owner"),
+                Some("owner"),
+                false
+            ),
             ReplyResult::Unknown
         );
         pending().remove(&notice.reference);

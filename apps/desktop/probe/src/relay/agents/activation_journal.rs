@@ -225,7 +225,20 @@ impl Core {
                 .unwrap_or_default()),
         );
         let mut published = true;
-        for registration in self.store.read(|s| s.registrations.clone()) {
+        for name in self.store.read(|s| {
+            s.registrations
+                .iter()
+                .map(|r| r.name.clone())
+                .collect::<Vec<_>>()
+        }) {
+            let lock = self.roster_locks.get(&name);
+            let _publishing = lock.lock().await;
+            let Some(registration) = self
+                .store
+                .read(|s| s.registration_answering(&name).cloned())
+            else {
+                continue;
+            };
             let Some(key) = self.key_for(&registration) else {
                 continue;
             };
@@ -235,7 +248,7 @@ impl Core {
                 continue;
             }
             // An absent registration stays idle through the update.
-            let status = registration.missing_since.is_some().then_some("idle");
+            let status = Some(self.roster_status(&registration, &name));
             let result = client::update_agent_metadata(
                 &registration.base_url,
                 &key,

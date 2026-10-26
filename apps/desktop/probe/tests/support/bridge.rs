@@ -111,6 +111,8 @@ pub struct FakeSessions(
     pub Mutex<Duration>,
     /// The targets their provider records as archived.
     pub Mutex<HashSet<Target>>,
+    /// Listed sessions that require manual activation.
+    pub Mutex<HashSet<Target>>,
 );
 
 impl Default for FakeSessions {
@@ -125,6 +127,7 @@ impl FakeSessions {
             Mutex::new(sessions),
             Mutex::default(),
             Mutex::new(Ok(Vec::new())),
+            Mutex::default(),
             Mutex::default(),
             Mutex::default(),
             Mutex::default(),
@@ -156,6 +159,24 @@ impl SessionDirectory for FakeSessions {
             std::thread::sleep(delay);
         }
         self.0.lock().unwrap().clone()
+    }
+
+    fn auto_activation_sessions(&self) -> Vec<DiscoveredSession> {
+        let excluded = self.7.lock().unwrap();
+        self.sessions()
+            .into_iter()
+            .filter(|s| s.live && !excluded.contains(&s.target))
+            .collect()
+    }
+
+    fn set_title(&self, source: &str, id: &str, title: &str) -> Result<String, String> {
+        let mut sessions = self.0.lock().unwrap();
+        let session = sessions
+            .iter_mut()
+            .find(|s| s.target.kind.source() == source && s.target.id == id)
+            .ok_or("session missing")?;
+        session.title = title.to_owned();
+        Ok(title.to_owned())
     }
 
     fn archived(&self, targets: &[Target]) -> HashSet<Target> {

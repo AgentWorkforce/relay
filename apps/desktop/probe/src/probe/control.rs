@@ -13,7 +13,7 @@ use std::path::Path;
 pub(super) enum Control {
     Pause(Target),
     Resume(Target),
-    /// Retry uploads stopped by a problem. Only a stopped job changes.
+    /// Retry uploads stopped by a problem, or waiting out a transient failure.
     Retry(Target),
     /// Release settled upload receipts.
     Compact(Target),
@@ -54,17 +54,17 @@ pub(super) fn pause(directory: &Path, paused: bool) -> Result<Value> {
     Ok(json!({"paused":paused}))
 }
 
-/// Retry a job a non-retryable verdict stopped. A stopped job otherwise waits
-/// for a new build or sign-in; an active or paused job is left as it is.
+/// Retry a job a non-retryable verdict stopped (it otherwise waits for a new
+/// build or sign-in), or wake an active job waiting out a transient failure's
+/// backoff. A paused job, a rate-limited wait and a batch in flight are left
+/// as they are (see `delivery::retry_requested`).
 pub(super) fn retry_value(directory: &Path) -> Result<Value> {
     let _control = control_lock(directory)?;
     let config = read_config(directory)?;
     sharing_settled(directory)?;
     let conn = control_db(directory)?;
-    let retried = delivery::status(&conn, &config.job_id)?.state == "blocked";
-    if retried {
-        delivery::retry_job(&conn, &config.job_id)?;
-    }
+    let retried =
+        delivery::retry_requested(&conn, &config.job_id, chrono::Utc::now().timestamp_millis())?;
     Ok(json!({"retried":retried}))
 }
 
@@ -86,5 +86,6 @@ pub(super) fn compact_value(directory: &Path) -> Result<Value> {
     }
     // With no live job, nothing can consume what upload state remains.
     delivery::release_decommissioned(&conn)?;
+    delivery::reconcile_status_counters(&conn)?;
     Ok(json!({"removed_records":removed_records}))
 }

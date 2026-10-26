@@ -9,6 +9,37 @@ use crate::relay::store::Registration;
 use crate::relay::workspace::Secret;
 
 impl Core {
+    pub(super) async fn deliver_session_text(
+        &self,
+        registration: &Registration,
+        delivery: &Delivery,
+        text: String,
+        native: bool,
+    ) -> crate::relay::inject::InjectOutcome {
+        use crate::relay::inject::{DeliveryRoute, InjectOutcome};
+        if let Some(outcome) = self
+            .previous_mobile_delivery(registration, delivery, native)
+            .await
+        {
+            return outcome;
+        }
+        if native && self.mobile_handoff_enabled(registration) {
+            return self
+                .deliver_mobile_owner(registration, delivery, &text)
+                .await;
+        }
+        let injector = self.plugins.injector.clone();
+        let spawner = self.plugins.spawner.clone();
+        let registered = registration.clone();
+        let routed = delivery.clone();
+        tokio::task::spawn_blocking(move || {
+            let route = DeliveryRoute::of(&routed).native(native);
+            spawner.deliver_registered(&*injector, &registered, &route, &text)
+        })
+        .await
+        .unwrap_or_else(|_| InjectOutcome::InDoubt("the injection stopped unexpectedly".into()))
+    }
+
     /// Whether `delivery` was the owner's reply to a pending Codex or Claude
     /// request, or a message to a spawned Claude that has ended, settled
     /// (acknowledged and recorded) or left for the next pass when its record

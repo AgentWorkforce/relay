@@ -509,8 +509,9 @@ impl Desktop for FakeDesktop {
         self.opened.borrow_mut().push(command.to_string());
         Ok(())
     }
-    fn open_uri(&self, uri: &str) {
+    fn open_uri(&self, uri: &str) -> bool {
         self.opened.borrow_mut().push(uri.to_string());
+        true
     }
 
     fn notify(&self, notification: &CoreNotification) {
@@ -862,6 +863,95 @@ fn stylesheets_and_marks_load(runtime: &tokio::runtime::Runtime) {
 
 // Signed out.
 
+fn usage_telemetry_tracks_navigation_and_debounces_search(runtime: &tokio::runtime::Runtime) {
+    let case = Case::new(runtime);
+    case.sign_in();
+    case.app.go(Page::Team);
+    case.app.set_agent_search("private query");
+    case.app.set_agent_search("private query revised");
+    case.pump(|case| {
+        case.called("telemetry.record")
+            .iter()
+            .any(|e| e["operation"] == "search")
+    });
+    case.app.set_agent_search("");
+    case.app.go(Page::Settings(Pane::General));
+    case.app.go(Page::Settings(Pane::General));
+    case.app.show_message_composer("");
+    case.pump(|case| {
+        case.called("telemetry.record")
+            .iter()
+            .any(|e| e["operation"] == "message_composer")
+    });
+    case.settle();
+    case.settle();
+    let events = case.called("telemetry.record");
+    let searches: Vec<_> = events
+        .iter()
+        .filter(|e| e["operation"] == "search")
+        .collect();
+    assert_eq!(searches.len(), 1, "{events:?}");
+    assert_eq!(searches[0]["surface"], "team");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e["operation"] == "settings")
+            .count(),
+        1
+    );
+    assert!(events
+        .iter()
+        .any(|e| e["operation"] == "page_view" && e["surface"] == "team"));
+    assert!(!serde_json::to_string(&events).unwrap().contains("private"));
+}
+
+fn destination_search_applied_before_navigation_is_recorded(runtime: &tokio::runtime::Runtime) {
+    let case = Case::new(runtime);
+    case.sign_in();
+    case.app.go(Page::Team);
+    case.app.set_agent_search("private old page");
+    case.app.set_session_search("private destination");
+    case.app.go(Page::Sessions);
+    case.pump(|case| {
+        case.called("telemetry.record")
+            .iter()
+            .any(|event| event["operation"] == "search")
+    });
+    let deadline = Instant::now() + Duration::from_millis(100);
+    case.pump(|_| Instant::now() >= deadline);
+    let searches: Vec<_> = case
+        .called("telemetry.record")
+        .into_iter()
+        .filter(|event| event["operation"] == "search")
+        .collect();
+    assert_eq!(searches.len(), 1);
+    assert_eq!(searches[0]["surface"], "sessions");
+}
+
+fn navigation_cancels_pending_search_usage_even_after_returning(runtime: &tokio::runtime::Runtime) {
+    let case = Case::new(runtime);
+    case.sign_in();
+    for page in [Page::Sessions, Page::Agents, Page::Team] {
+        case.app.go(page);
+        if page == Page::Sessions {
+            case.app.set_session_search("private sessions");
+        } else {
+            case.app.set_agent_search(&format!("private {page:?}"));
+        }
+        case.app.go(Page::Settings(Pane::General));
+        case.app.go(page); // Returning must not revive the cancelled debounce.
+    }
+    case.app.set_agent_search("private composer transition");
+    case.app.show_message_composer("");
+    case.app.go(Page::Team);
+    let deadline = Instant::now() + Duration::from_millis(650);
+    case.pump(|_| Instant::now() >= deadline);
+    assert!(!case
+        .called("telemetry.record")
+        .iter()
+        .any(|event| event["operation"] == "search"));
+}
+
 fn signed_out_shows_sign_in_and_records_the_launch(runtime: &tokio::runtime::Runtime) {
     let case = Case::new(runtime);
     case.pump(|case| case.app.with_state(|state| state.preview_count == 1));
@@ -978,7 +1068,7 @@ fn sign_in_uses_the_browser_with_new_sessions_shared_as_on_the_mac(
     let request = &case.called("account.sign_in")[0];
     assert_eq!(
         (&request["sharing"], &request["flow"]),
-        (&json!("selected"), &Value::Null)
+        (&json!("selected"), &json!("browser"))
     );
     let (heading, _, code) = case.app.signing_labels().unwrap();
     assert_eq!(
@@ -988,11 +1078,33 @@ fn sign_in_uses_the_browser_with_new_sessions_shared_as_on_the_mac(
     case.app.open_approval_again();
     assert_eq!(case.desktop.opened.borrow().len(), 2);
     case.app.cancel_sign_in();
-    case.pump(|case| !case.called("account.sign_in.cancel").is_empty());
-    assert!(case
+    // Calls use independent connections: seeing cancellation does not mean
+    // the earlier browser-usage calls have reached the core yet.
+    case.pump(|case| {
+        !case.called("account.sign_in.cancel").is_empty()
+            && case
+                .called("telemetry.record")
+                .iter()
+                .filter(|event| {
+                    event["operation"] == "browser_approval" && event["outcome"] == "succeeded"
+                })
+                .count()
+                >= 2
+    });
+    // Cancellation belongs to the core; the UI must not double-count it.
+    assert!(!case
         .called("telemetry.record")
         .iter()
         .any(|event| event["operation"] == "sign_in" && event["outcome"] == "cancelled"));
+    assert_eq!(
+        case.called("telemetry.record")
+            .iter()
+            .filter(
+                |event| event["operation"] == "browser_approval" && event["outcome"] == "succeeded"
+            )
+            .count(),
+        2
+    );
 }
 
 fn native_workspace_picker_sends_the_selected_id(runtime: &tokio::runtime::Runtime) {
@@ -1017,9 +1129,11 @@ fn native_workspace_picker_sends_the_selected_id(runtime: &tokio::runtime::Runti
     assert!(case.called("account.sign_in").is_empty());
 }
 
-fn use_another_account_requests_google_selection(runtime: &tokio::runtime::Runtime) {
+fn signed_out_offers_only_google_sign_in(runtime: &tokio::runtime::Runtime) {
     let case = Case::new(runtime);
-    buttons(case.app.window(), "Use another account")[0].emit_clicked();
+    assert!(buttons(case.app.window(), "Use another account").is_empty());
+    assert_eq!(buttons(case.app.window(), "Sign in with Google").len(), 1);
+    buttons(case.app.window(), "Sign in with Google")[0].emit_clicked();
     case.pump(|case| !case.called("account.sign_in").is_empty());
     assert_eq!(case.called("account.sign_in")[0]["flow"], "browser");
 }
@@ -1415,7 +1529,11 @@ fn the_tray_counts_follow_show_hidden(runtime: &tokio::runtime::Runtime) {
         .set_sessions_hidden(vec!["codex:thread-1".into()], true);
     case.pump(|case| shown(case) == all - 1);
     case.app.set_show_hidden_sessions(true);
-    assert_eq!(shown(&case), all, "showing hidden sessions counts them again");
+    assert_eq!(
+        shown(&case),
+        all,
+        "showing hidden sessions counts them again"
+    );
     case.app.set_show_hidden_sessions(false);
     assert_eq!(shown(&case), all - 1);
 }
@@ -1504,6 +1622,156 @@ fn general_settings_come_from_the_core(runtime: &tokio::runtime::Runtime) {
     assert!(!case.service.calls.lock().unwrap().contains(&"stop"));
 }
 
+fn session_history_retention_is_chosen_and_warns(runtime: &tokio::runtime::Runtime) {
+    use agent_relay_probe::linux_app::models::history_retention_warning;
+    let case = Case::new(runtime);
+    let mut kept = settings();
+    kept["history_retention_days"] = json!(30);
+    case.answer("settings.get", check::<method::SettingsGet>(kept));
+    case.answer(
+        "settings.set",
+        Answer::with(|params| async move {
+            let mut values = settings();
+            values["history_retention_days"] = params["history_retention_days"].clone();
+            Ok(values)
+        }),
+    );
+    case.sign_in();
+    case.app.go(Page::Settings(Pane::General));
+    let choice = || {
+        let mut found = None;
+        walk(
+            case.app.shell().unwrap().settings.column.upcast_ref(),
+            &mut |widget| {
+                if widget.widget_name() == "history-retention" {
+                    found = widget.downcast_ref::<gtk::DropDown>().cloned();
+                }
+            },
+        );
+        found
+    };
+    case.pump(|_| choice().is_some());
+    assert_eq!(choice().unwrap().selected(), 1, "30 days unless changed");
+    let warning = history_retention_warning(7, false).unwrap();
+    let held = history_retention_warning(30, true).unwrap();
+    let labels = case.settings_labels();
+    assert!(
+        labels.contains(&"Session history".to_string()),
+        "{labels:?}"
+    );
+    assert!(labels.contains(&"Keep session history".to_string()));
+    assert!(!labels.contains(&warning));
+    assert!(
+        !labels.contains(&held),
+        "uploads run: 30 days does not warn"
+    );
+    render_session_history(&case, "session-history-gtk-30-days-default");
+
+    // Pausing from the status bar while General shows warns at the default
+    // too, and resuming clears it, without leaving the pane.
+    let uploads = |paused: bool| {
+        let mut status = uploader();
+        status["paused"] = json!(paused);
+        check::<method::UploaderStatus>(status)
+    };
+    case.pump(|case| !case.app.with_state(|state| state.busy));
+    let pause = case.app.shell().unwrap().pause_button.clone();
+    case.answer("uploader.status", uploads(true));
+    pause.emit_clicked();
+    case.pump(|case| !case.called("uploader.pause").is_empty());
+    case.pump(|case| {
+        !case.app.with_state(|state| state.busy) && case.settings_labels().contains(&held)
+    });
+    case.settle();
+    assert!(
+        case.settings_labels().contains(&held),
+        "still paused once confirmed"
+    );
+    render_session_history(&case, "session-history-gtk-30-days-uploads-paused");
+    case.answer("uploader.status", uploads(false));
+    pause.emit_clicked();
+    case.pump(|case| !case.called("uploader.resume").is_empty());
+    case.pump(|case| !case.settings_labels().contains(&held));
+
+    choice().unwrap().set_selected(0);
+    case.pump(|case| {
+        case.called("settings.set")
+            .iter()
+            .any(|v| *v == json!({"history_retention_days": 7}))
+    });
+    case.pump(|case| {
+        case.app.with_state(|state| {
+            state
+                .settings
+                .as_ref()
+                .and_then(|s| s.history_retention_days)
+                == Some(7)
+                && !state.setting_pending("history_retention_days")
+        })
+    });
+    case.settle();
+    assert_eq!(choice().unwrap().selected(), 0);
+    assert!(case.settings_labels().contains(&warning));
+    render_session_history(&case, "session-history-gtk-7-days-warning");
+
+    choice().unwrap().set_selected(3);
+    case.pump(|case| {
+        case.called("settings.set")
+            .iter()
+            .any(|v| *v == json!({"history_retention_days": 0}))
+    });
+    case.pump(|case| {
+        case.app.with_state(|state| {
+            state
+                .settings
+                .as_ref()
+                .and_then(|s| s.history_retention_days)
+                == Some(0)
+        })
+    });
+    case.settle();
+    assert!(!case.settings_labels().contains(&warning));
+}
+
+/// With `SETTINGS_RENDER_DIR` set, saves the General pane scrolled to
+/// Session history as `<name>.png`, for the change's description.
+fn render_session_history(case: &Case, name: &str) {
+    let Ok(dir) = std::env::var("SETTINGS_RENDER_DIR") else {
+        return;
+    };
+    case.app.show_window();
+    case.app.window().set_default_size(1100, 900);
+    case.settle();
+    let adjustment = case.app.shell().unwrap().settings.scroller.vadjustment();
+    adjustment.set_value(adjustment.upper());
+    case.settle();
+    std::fs::create_dir_all(&dir).unwrap();
+    let window = case.app.window();
+    let paintable = gtk::WidgetPaintable::new(Some(window));
+    let snapshot = gtk::Snapshot::new();
+    paintable.snapshot(&snapshot, window.width() as f64, window.height() as f64);
+    let node = snapshot
+        .to_node()
+        .expect("The mapped shell has a render node");
+    window
+        .renderer()
+        .unwrap()
+        .render_texture(&node, None)
+        .save_to_png(std::path::Path::new(&dir).join(format!("{name}.png")))
+        .unwrap();
+}
+
+/// A core without the setting shows no row for it.
+fn session_history_retention_is_absent_in_older_cores(runtime: &tokio::runtime::Runtime) {
+    let case = Case::new(runtime);
+    case.sign_in();
+    case.app.go(Page::Settings(Pane::General));
+    case.pump(|case| case.app.with_state(|state| state.settings.is_some()));
+    case.settle();
+    let labels = case.settings_labels();
+    assert!(!labels.contains(&"Keep session history".to_string()));
+}
+
 fn appearance_is_remembered(runtime: &tokio::runtime::Runtime) {
     let case = Case::new(runtime);
     case.sign_in();
@@ -1540,6 +1808,10 @@ fn a_spawned_agent_is_joined_and_taken_over(runtime: &tokio::runtime::Runtime) {
                 spawned("grok", "grok-7", "g1",
                         json!({"harness": "grok", "can_take_over": false, "taken_over": false})),
             ]})),
+        );
+        core.answer(
+            "sessions.transcript",
+            check::<method::SessionsTranscript>(json!({"entries": [], "next_cursor": null})),
         );
         core.answer(
             "agents.transcript",
@@ -1616,6 +1888,17 @@ fn a_spawned_agent_is_joined_and_taken_over(runtime: &tokio::runtime::Runtime) {
         upload: None,
         relay: session("thread-9"),
     });
+    case.pump(|case| case.called("sessions.transcript").len() >= 2);
+    let reads = case.called("sessions.transcript");
+    assert_eq!(reads[0]["following"], false);
+    assert_eq!(reads[1]["following"], true);
+    assert!(reads[1].get("cursor").is_none_or(Value::is_null));
+    page.refresh.emit_clicked();
+    case.pump(|case| case.called("sessions.transcript").len() > reads.len());
+    assert_eq!(
+        case.called("sessions.transcript")[reads.len()]["following"],
+        false
+    );
     assert!(!page.join.take_over.is_visible());
     assert!(page.join.composer.is_visible());
     assert_eq!(page.open.label().as_deref(), Some("Open in Codex"));
@@ -2767,6 +3050,46 @@ fn claude_delivery_refresh_reports_and_clears_errors(runtime: &tokio::runtime::R
     });
 }
 
+fn claude_delivery_refusal_survives_reconciliation(runtime: &tokio::runtime::Runtime) {
+    let case = Case::new(runtime);
+    case.sign_in();
+    case.app.go(Page::Settings(Pane::Relay));
+    case.pump(|case| case.app.with_state(|state| state.claude_delivery.is_some()));
+    case.settle();
+    case.answer(
+        "claude_delivery.restrict",
+        fail(ErrorKind::Refused, "Could not save."),
+    );
+    let reads = case.called("claude_delivery.status").len();
+    case.app.update_state(|state| {
+        state
+            .settings_details_open
+            .insert("settings.claude-message-approvals".into());
+    });
+    case.app.render_settings();
+    let mut restriction = None;
+    walk(
+        case.app.shell().unwrap().settings.column.upcast_ref(),
+        &mut |widget| {
+            if let Some(check) = widget.downcast_ref::<gtk::CheckButton>() {
+                if check.label().as_deref() == Some("Only allowed members may deliver directly") {
+                    restriction = Some(check.clone());
+                }
+            }
+        },
+    );
+    restriction.expect("restriction control").set_active(false);
+    case.pump(|case| case.called("claude_delivery.status").len() > reads);
+    case.settle();
+    case.app.with_state(|state| {
+        assert!(state.claude_delivery.as_ref().unwrap().restricted);
+        assert_eq!(
+            state.claude_delivery_error.as_deref(),
+            Some("Could not save.")
+        );
+    });
+}
+
 fn connecting_the_account_workspace(runtime: &tokio::runtime::Runtime) {
     let case = Case::new(runtime);
     case.sign_in();
@@ -2865,10 +3188,35 @@ fn a_message_link_opens_messages_to_its_agent(runtime: &tokio::runtime::Runtime)
         json!({"kind": "message", "endpoint": "web@desk", "address": true}),
     );
     case.sign_in();
+    case.app.go(Page::Team);
+    case.settle();
+    let before = case.called("telemetry.record").len();
     case.app.open_link("agentrelay://message?to=web%40desk");
     case.pump(|case| case.app.page() == Page::Messages);
     assert_eq!(case.app.shown_chat().as_deref(), Some("web@desk"));
     assert_eq!(case.app.open_chats(), ["web@desk"]);
+    case.app.go(Page::Settings(Pane::General));
+    case.pump(|case| {
+        case.called("telemetry.record")
+            .iter()
+            .any(|event| event["operation"] == "settings")
+    });
+    case.settle();
+    let events = case.called("telemetry.record");
+    let events = &events[before..];
+    let surfaces: Vec<_> = events
+        .iter()
+        .filter(|event| event["operation"] == "page_view")
+        .map(|event| event["surface"].as_str().unwrap())
+        .collect();
+    assert_eq!(surfaces, ["messages", "settings_general"]);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["operation"] == "message_composer")
+            .count(),
+        1
+    );
 }
 
 fn notify_events_become_notifications(runtime: &tokio::runtime::Runtime) {
@@ -3280,6 +3628,18 @@ const TESTS: &[(&str, Test)] = &[
     ),
     ("stylesheets_and_marks_load", stylesheets_and_marks_load),
     (
+        "destination_search_applied_before_navigation_is_recorded",
+        destination_search_applied_before_navigation_is_recorded,
+    ),
+    (
+        "navigation_cancels_pending_search_usage_even_after_returning",
+        navigation_cancels_pending_search_usage_even_after_returning,
+    ),
+    (
+        "usage_telemetry_tracks_navigation_and_debounces_search",
+        usage_telemetry_tracks_navigation_and_debounces_search,
+    ),
+    (
         "workspace_menu_offers_sign_out_to_switch",
         workspace_menu_offers_sign_out_to_switch,
     ),
@@ -3308,8 +3668,8 @@ const TESTS: &[(&str, Test)] = &[
         first_run_keeps_managed_settings_out_of_sign_in,
     ),
     (
-        "use_another_account_requests_google_selection",
-        use_another_account_requests_google_selection,
+        "signed_out_offers_only_google_sign_in",
+        signed_out_offers_only_google_sign_in,
     ),
     (
         "sign_in_uses_the_browser_with_new_sessions_shared_as_on_the_mac",
@@ -3413,12 +3773,24 @@ const TESTS: &[(&str, Test)] = &[
         spawned_agents_have_an_optional_cap,
     ),
     (
+        "session_history_retention_is_chosen_and_warns",
+        session_history_retention_is_chosen_and_warns,
+    ),
+    (
+        "session_history_retention_is_absent_in_older_cores",
+        session_history_retention_is_absent_in_older_cores,
+    ),
+    (
         "spawned_agents_can_let_teammates_spawn_here",
         spawned_agents_can_let_teammates_spawn_here,
     ),
     (
         "an_old_openclaw_says_relay_sessions_are_not_limited",
         an_old_openclaw_says_relay_sessions_are_not_limited,
+    ),
+    (
+        "claude_delivery_refusal_survives_reconciliation",
+        claude_delivery_refusal_survives_reconciliation,
     ),
     (
         "claude_delivery_refresh_reports_and_clears_errors",

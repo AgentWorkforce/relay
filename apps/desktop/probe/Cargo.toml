@@ -9,10 +9,17 @@ license = "Apache-2.0"
 [[bin]]
 name = "agent-relay-probe"
 path = "src/probe/main.rs"
+required-features = ["production-binaries"]
+
+[[bin]]
+name = "relay-contract-codegen"
+path = "src/bin/relay-contract-codegen.rs"
+required-features = ["production-binaries"]
 
 [[bin]]
 name = "agent-relay-desktop"
 path = "src/bin/agent-relay-desktop.rs"
+required-features = ["production-binaries"]
 
 [[test]]
 name = "linux_app_gtk"
@@ -22,6 +29,11 @@ harness = false
 required-features = ["gtk"]
 
 [features]
+# Ordinary builds keep every production executable. Targeted Windows GTK
+# tests opt out with --no-default-features: integration tests otherwise make
+# Cargo build all binaries, even though they only spawn the fake core there.
+default = ["production-binaries"]
+production-binaries = []
 # The Linux and Windows app's GTK window (`agent-relay-desktop`); the macOS build never enables it.
 gtk = ["dep:gtk4", "dep:ksni"]
 
@@ -55,6 +67,7 @@ hostname = "0.4"
 libc = "0.2"
 # Gravatar addresses avatars by the MD5 of an email; nothing else uses it.
 md-5 = "0.10"
+same-file = "1"
 rusqlite = { version = "0.32", features = ["backup", "bundled", "functions"] }
 relaycast = "10.0.0"
 ryu-js = "1.0.3"

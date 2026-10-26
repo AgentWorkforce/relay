@@ -37,8 +37,8 @@ final class PersonPhotoLoaderTests: XCTestCase {
         XCTAssertEqual(exactLimit?.count, PersonPhotoLoader.maximumBytes)
     }
 
-    func testOversizedHeaderCompletesWithoutWaitingForBody() async {
-        let finished = expectation(description: "Reject the headers before waiting for a body")
+    func testOversizedHeaderCompletesWithoutWaitingForRemainingBody() async {
+        let finished = expectation(description: "Reject the declared size before waiting for the remaining body")
         let task = Task {
             let data = await self.download("oversized-header-stall")
             XCTAssertNil(data)
@@ -170,7 +170,14 @@ private final class ProfilePhotoURLProtocol: URLProtocol {
         headers["Content-Type"] = type
         let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        if url.lastPathComponent == "oversized-header-stall" { return }
+        if url.lastPathComponent == "oversized-header-stall" {
+            // Foundation buffers a custom protocol's response until it has a
+            // small body prefix (or completion). Flush that response delivery,
+            // then stall without finishing or approaching the cumulative limit.
+            // The download can finish only by rejecting the declared size.
+            client?.urlProtocol(self, didLoad: Data(repeating: 0, count: 512))
+            return
+        }
         if url.lastPathComponent == "stall" || url.lastPathComponent == "partial-error" {
             client?.urlProtocol(self, didLoad: Data(body.prefix(8)))
             if url.lastPathComponent == "stall" {

@@ -182,6 +182,8 @@ pub struct Account {
     disconnecting: tokio::sync::Mutex<()>,
     /// Operation telemetry, when this daemon reports it.
     pub telemetry: Option<Arc<Telemetry>>,
+    pub(crate) upload_observations: Mutex<telemetry::UploadObservations>,
+    pub(crate) upload_sample: AtomicU64,
     /// Incoming messages from the desktop mailbox.
     pub incoming: Option<Arc<crate::relay::incoming::Incoming>>,
     /// This binary and where its command-line copy goes, when the daemon
@@ -246,6 +248,8 @@ impl Account {
             pending_disconnect: Mutex::new(None),
             disconnecting: tokio::sync::Mutex::new(()),
             telemetry: None,
+            upload_observations: Mutex::default(),
+            upload_sample: AtomicU64::new(0),
             incoming: None,
             command_line_copy: None,
             launch_at_login_after_sign_in: true,
@@ -277,22 +281,6 @@ impl Account {
         });
         if kept.is_ok() {
             self.legacy_session.remove();
-        }
-    }
-
-    /// Records one operation, when telemetry is on.
-    pub fn track(
-        &self,
-        operation: TelemetryOperation,
-        outcome: TelemetryOutcome,
-        failure: Option<TelemetryFailure>,
-    ) {
-        if let Some(telemetry) = &self.telemetry {
-            let mut event = TelemetryEvent::new(operation, outcome);
-            if let Some(failure) = failure {
-                event = event.failure(failure);
-            }
-            telemetry.record(event);
         }
     }
 
@@ -803,7 +791,7 @@ impl Account {
 
     // Sign-in.
 
-    fn busy(&self) -> bool {
+    pub(super) fn busy(&self) -> bool {
         matches!(
             self.status().state,
             SignInState::PendingApproval | SignInState::Preparing
@@ -2200,7 +2188,7 @@ impl CloudAccess for Account {
 /// `plugins` with this account as the Cloud access: the uploader over this
 /// very binary, PostHog telemetry (production site only; a release build
 /// carries the project key), and the settings
-/// telemetry and contractor access own.
+/// telemetry, contractor access and session history retention own.
 pub fn with_account(
     mut plugins: crate::relay::daemon::Plugins,
     config: &crate::relay::daemon::Config,
@@ -2250,11 +2238,15 @@ pub fn with_account(
     let account = Arc::new(account);
     plugins.cloud = account.clone();
     plugins.settings.push(telemetry);
+    let app_data = &config.app_data_dir;
     plugins
         .settings
         .push(Arc::new(crate::relay::contractor_access::Setting::new(
-            &config.app_data_dir,
+            app_data,
         )));
+    plugins
+        .settings
+        .push(crate::relay::history_retention::setting(app_data));
     plugins.account = Some(account);
     plugins
 }

@@ -12,6 +12,30 @@ final class ConversationRosterTests: XCTestCase {
         return RelayAgent(relay: data)
     }
 
+    func testNativeTitleDoesNotReplaceAnExplicitObjective() {
+        let row = RelayAgent(relay: ["name": "builder", "metadata": [
+            "session_kind": "claude-terminal", "session_id": "session-1",
+            "session_title": "Fix login", "objective": "Review only"
+        ]])
+        XCTAssertEqual(row.sessionTitle, "Fix login")
+        XCTAssertEqual(row.objective, "Review only")
+        XCTAssertEqual(row.sessionID, "session-1")
+    }
+
+    func testGatewayAgentIDsAreNotHistorySessionIDs() {
+        for kind in ["openclaw", "hermes"] {
+            let row = RelayAgent(relay: ["name": "gateway", "metadata": [
+                "source": "relay-desktop", "session_kind": kind, "session_id": "main", "session_title": "OpenClaw · Main"
+            ]])
+            XCTAssertTrue(row.sessionID.isEmpty, kind)
+            XCTAssertFalse(row.sessionTitle.isEmpty)
+        }
+        let row = RelayAgent(relay: ["name": "gateway", "metadata": [
+            "session_scope": "agent", "session_id": "main"
+        ]])
+        XCTAssertTrue(row.sessionID.isEmpty)
+    }
+
     func testOwnIdentityIsExcludedFromBothListsWithoutHidingOtherPeople() {
         let me = RelayAgent(relay: ["name": "ada", "type": "human", "status": "online"])
         let person = RelayAgent(relay: ["name": "sam", "type": "human", "status": "online"])

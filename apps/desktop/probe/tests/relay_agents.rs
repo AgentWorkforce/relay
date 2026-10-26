@@ -33,6 +33,15 @@ const CODEX: &str = "01a0c221-6806-7210-af25-97e104b15049";
 const CLAUDE: &str = "727cce8d-8074-4ea3-94a0-dea144bf8747";
 const PERSON: &str = "ada-lovelace";
 
+#[derive(Default)]
+struct UsageRecorder(std::sync::Mutex<Vec<Value>>);
+impl agent_relay_probe::relay::telemetry::TelemetrySender for UsageRecorder {
+    fn send(&self, events: Vec<Value>) -> Result<(), String> {
+        self.0.lock().unwrap().extend(events);
+        Ok(())
+    }
+}
+
 struct Harness {
     fake: FakeRelaycast,
     _temp: tempfile::TempDir,
@@ -100,6 +109,15 @@ impl Harness {
         prepare: impl FnOnce(&Path, &FakeRelaycast),
         delivery_timing: DeliveryTiming,
     ) -> Harness {
+        Self::start_with_usage(cloud, prepare, delivery_timing, None).await
+    }
+
+    async fn start_with_usage(
+        cloud: impl FnOnce(&FakeRelaycast) -> Option<Arc<FakeCloud>>,
+        prepare: impl FnOnce(&Path, &FakeRelaycast),
+        delivery_timing: DeliveryTiming,
+        usage: Option<Arc<UsageRecorder>>,
+    ) -> Harness {
         let fake = FakeRelaycast::start(Behaviour::default()).await;
         let cloud = cloud(&fake);
         let temp = tempfile::tempdir().unwrap();
@@ -151,6 +169,32 @@ impl Harness {
         };
         if let Some(cloud) = &cloud {
             plugins.cloud = cloud.clone() as Arc<dyn CloudAccess>;
+        }
+        if let Some(sender) = usage {
+            use agent_relay_probe::relay::{
+                account::Account,
+                telemetry::{PostHogProject, Telemetry, TelemetryConfig},
+                uploader::{ProcessRunner, Uploader},
+            };
+            let mut telemetry_config = TelemetryConfig::new(
+                config.app_data_dir.clone(),
+                home.clone(),
+                BTreeMap::new(),
+                "test".into(),
+            );
+            telemetry_config.project =
+                PostHogProject::new("phc_test", "https://analytics.example.com");
+            let mut account = Account::new(
+                None,
+                &home,
+                &BTreeMap::new(),
+                &config.app_data_dir,
+                Arc::new(Uploader::new(Arc::new(ProcessRunner::new(
+                    home.join("nonexistent-test-probe"),
+                )))),
+            );
+            account.telemetry = Some(Telemetry::new(telemetry_config, sender));
+            plugins.account = Some(Arc::new(account));
         }
         let (core, signals) = Core::with_plugins(config, plugins);
         let task = tokio::spawn(daemon::run(core.clone(), bound, signals));
@@ -1739,6 +1783,148 @@ async fn a_rename_s_roster_marker_is_retried_until_relaycast_has_it() {
 }
 
 #[tokio::test]
+async fn title_refresh_keeps_an_ended_unaliased_session_idle() {
+    let h = Harness::start(|_| {}).await;
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("title-idle"))
+        .await;
+    h.sessions.0.lock().unwrap()[0].live = false;
+    h.core.poll_once().await;
+    assert_eq!(h.fake.agent("title-idle").unwrap().status, "idle");
+    h.sessions.0.lock().unwrap()[0].title = "An ended session".into();
+    h.core.poll_once().await;
+    eventually("ended title published", || {
+        h.fake.agent("title-idle").unwrap().metadata["session_title"] == "An ended session"
+    })
+    .await;
+    assert_eq!(h.fake.agent("title-idle").unwrap().status, "idle");
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn title_refresh_includes_manually_registered_provider_inventory() {
+    let h = Harness::start(|_| {}).await;
+    let mut client = h.client().await;
+    // Model providers whose full inventory is deliberately excluded from
+    // automatic admission (Pi, OpenCode and Claude cloud).
+    let target = Target::new(SessionKind::Codex, CODEX);
+    h.sessions.7.lock().unwrap().insert(target);
+    h.register(&mut client, "codex", CODEX, Some("manual-title"))
+        .await;
+    h.core.poll_once().await;
+    client
+        .ok("subscribe", json!({"topics": ["invalidated"]}))
+        .await;
+    client.events.clear();
+    h.sessions.0.lock().unwrap()[0].title = "Renamed in provider".into();
+    h.core.poll_once().await;
+    eventually("manual provider title published", || {
+        h.fake.agent("manual-title").unwrap().metadata["session_title"] == "Renamed in provider"
+    })
+    .await;
+    assert_eq!(
+        h.store()["registrations"][0]["title"],
+        "Renamed in provider"
+    );
+    client.ok("agents.list", json!({})).await;
+    assert!(
+        client
+            .events
+            .iter()
+            .any(|e| e["params"]["data"]["what"] == "agents"),
+        "title-only change must invalidate agents: {:?}",
+        client.events
+    );
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn title_refresh_retains_a_native_rename_while_an_older_patch_is_in_flight() {
+    let h = Harness::start(|_| {}).await;
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("title-race"))
+        .await;
+    h.core.poll_once().await;
+    let release = h.fake.hold("PATCH /v1/agents/title-race");
+    client
+        .ok(
+            "sessions.title.set",
+            json!({"source": "codex", "session_id": CODEX, "title": "Older title"}),
+        )
+        .await;
+    let core = h.core.clone();
+    let poll = tokio::spawn(async move { core.poll_once().await });
+    eventually("older title PATCH held", || {
+        h.fake.held("PATCH /v1/agents/title-race") > 0
+    })
+    .await;
+    client
+        .ok(
+            "sessions.title.set",
+            json!({"source": "codex", "session_id": CODEX, "title": "Newest title"}),
+        )
+        .await;
+    assert_eq!(h.store()["registrations"][0]["title"], "Newest title");
+    release.send(true).unwrap();
+    poll.await.unwrap();
+    h.core.poll_once().await;
+    eventually("newest title reaches roster", || {
+        h.fake.agent("title-race").unwrap().metadata["session_title"] == "Newest title"
+    })
+    .await;
+    eventually("latest title acknowledged", || {
+        h.store().get("pendingNameMarkers").is_none()
+    })
+    .await;
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn title_refresh_finishes_before_a_newer_idle_presence_write() {
+    let h = Harness::start(|_| {}).await;
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("title-presence-old"))
+        .await;
+    client
+        .ok(
+            "agents.rename",
+            json!({"name": "title-presence-old", "new_name": "title-presence"}),
+        )
+        .await;
+    h.core.poll_once().await;
+    let release = h.fake.hold("PATCH /v1/agents/title-presence");
+    client
+        .ok(
+            "sessions.title.set",
+            json!({"source": "codex", "session_id": CODEX, "title": "In flight"}),
+        )
+        .await;
+    let core = h.core.clone();
+    let old_poll = tokio::spawn(async move { core.poll_once().await });
+    eventually("active metadata PATCH held", || {
+        h.fake.held("PATCH /v1/agents/title-presence") > 0
+    })
+    .await;
+    h.sessions.0.lock().unwrap()[0].live = false;
+    let core = h.core.clone();
+    let new_poll = tokio::spawn(async move { core.poll_once().await });
+    eventually("session absence recorded", || {
+        h.store()["registrations"][0]["missingSince"].is_string()
+    })
+    .await;
+    assert_eq!(
+        h.fake.held("PATCH /v1/agents/title-presence"),
+        1,
+        "new presence must wait for the older metadata write"
+    );
+    release.send(true).unwrap();
+    old_poll.await.unwrap();
+    new_poll.await.unwrap();
+    assert_eq!(h.fake.agent("title-presence").unwrap().status, "idle");
+    h.stop().await;
+}
+
+#[tokio::test]
 async fn a_test_message_goes_to_the_current_name() {
     let h = Harness::start(|_| {}).await;
     let mut client = h.client().await;
@@ -2221,6 +2407,153 @@ async fn a_host_note_follows_the_reply_hint_before_the_message() {
 }
 
 #[tokio::test]
+async fn mobile_claude_handoff_reports_read_only_platform_support() {
+    let h = Harness::start(|_| {}).await;
+    let mut client = h.client().await;
+    let values = client.ok("settings.get", json!({})).await;
+    assert_eq!(values["mobile_claude_handoff_supported"], cfg!(unix));
+    assert_eq!(values["mobile_claude_handoff"], false);
+    let (kind, _) = client
+        .error(
+            "settings.set",
+            json!({"mobile_claude_handoff_supported": true}),
+        )
+        .await;
+    assert_eq!(kind, "invalid_params");
+    #[cfg(windows)]
+    {
+        let (kind, message) = client
+            .error("settings.set", json!({"mobile_claude_handoff": true}))
+            .await;
+        assert_eq!(kind, "refused");
+        assert!(
+            message.contains("unavailable on this platform"),
+            "{message}"
+        );
+        assert!(!h.home.join(".claude/skills/agent-relay-mobile").exists());
+    }
+    h.stop().await;
+}
+
+// Simulates the existing signed-in node claim, never a new production authority.
+fn mark_mobile_node_claimed(core: &Core) {
+    use agent_relay_probe::relay::state::{SpawnClaim, SpawnClaimState, SpawnState, SpawnStatus};
+    core.hub().update(|status| {
+        status.spawn = Some(SpawnStatus {
+            state: SpawnState::Live,
+            claim: Some(SpawnClaim {
+                state: SpawnClaimState::Claimed,
+                note: None,
+            }),
+            ..SpawnStatus::default()
+        })
+    });
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn mobile_claude_handoff_refuses_unclaimed_host_before_installing() {
+    let h = Harness::start(|_| {}).await;
+    let mut client = h.client().await;
+    let (kind, message) = client
+        .error("settings.set", json!({"mobile_claude_handoff": true}))
+        .await;
+    assert_eq!(kind, "refused");
+    assert!(
+        message.contains("Accept spawns from Agent Relay"),
+        "{message}"
+    );
+    assert_eq!(
+        client.ok("settings.get", json!({})).await["mobile_claude_handoff"],
+        false
+    );
+    assert!(!h.home.join(".claude/skills/agent-relay-mobile").exists());
+    h.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn mobile_claude_handoff_requires_an_explicit_persisted_opt_in() {
+    let h = Harness::start(|_| {}).await;
+    let mut client = h.client().await;
+    h.register(
+        &mut client,
+        "claude-terminal",
+        CLAUDE,
+        Some("claude-mobile"),
+    )
+    .await;
+    assert_eq!(
+        client.ok("settings.get", json!({})).await["mobile_claude_handoff"],
+        false
+    );
+    mark_mobile_node_claimed(&h.core);
+    client
+        .ok("settings.set", json!({"mobile_claude_handoff": true}))
+        .await;
+    assert_eq!(h.store()["mobileClaudeHandoff"], true);
+    let plugin = h.home.join(".claude/skills/agent-relay-mobile");
+    assert!(plugin.join(".agent-relay-managed").is_file());
+    assert!(plugin.join("hooks/register.mjs").is_file());
+    let (kind, _) = client
+        .error("settings.set", json!({"mobile_claude_handoff": "yes"}))
+        .await;
+    assert_eq!(kind, "invalid_params");
+    assert_eq!(
+        client.ok("settings.get", json!({})).await["mobile_claude_handoff"],
+        true
+    );
+    let patches = h.fake.calls("PATCH", "/v1/agents/claude-mobile").len();
+    client
+        .ok("settings.set", json!({"mobile_claude_handoff": false}))
+        .await;
+    eventually("opt-out republishes cleared handoff status", || {
+        h.fake
+            .calls("PATCH", "/v1/agents/claude-mobile")
+            .into_iter()
+            .skip(patches)
+            .any(|call| {
+                call.body["metadata"]["mobile_handoff_state"] == ""
+                    && call.body["metadata"]["mobile_handoff_enabled"] == false
+            })
+    })
+    .await;
+    assert_eq!(h.store()["mobileClaudeHandoff"], false);
+    assert!(
+        plugin.join("hooks/register.mjs").is_file(),
+        "turning off leaves the inert plugin installed"
+    );
+    h.stop().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn mobile_claude_handoff_install_failure_keeps_the_setting_off() {
+    let h = Harness::start(|home| {
+        let plugin = home.join(".claude/skills/agent-relay-mobile");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(plugin.join("user-data"), "keep").unwrap();
+    })
+    .await;
+    let mut client = h.client().await;
+    mark_mobile_node_claimed(&h.core);
+    let (kind, _) = client
+        .error("settings.set", json!({"mobile_claude_handoff": true}))
+        .await;
+    assert_eq!(kind, "refused");
+    assert_eq!(
+        client.ok("settings.get", json!({})).await["mobile_claude_handoff"],
+        false
+    );
+    assert_eq!(
+        std::fs::read_to_string(h.home.join(".claude/skills/agent-relay-mobile/user-data"))
+            .unwrap(),
+        "keep"
+    );
+    h.stop().await;
+}
+
+#[tokio::test]
 async fn settings_round_trip_and_refuse_unknown_keys() {
     let h = Harness::start(|_| {}).await;
     let mut client = h.client().await;
@@ -2229,7 +2562,7 @@ async fn settings_round_trip_and_refuse_unknown_keys() {
         settings,
         json!({
             "allow_self_registration": true, "auto_activate": false, "show_relay_messages": false,
-            "auto_join_general": false, "agent_changes": [],
+            "auto_join_general": false, "mobile_claude_handoff": false, "mobile_claude_handoff_supported": cfg!(unix), "agent_changes": [],
             "accept_spawns": true, "spawn_max_agents": 0,
             "spawn_full_access_codex": true, "spawn_full_access_claude": true,
             "spawn_allow_teammates": false,
@@ -4147,6 +4480,58 @@ async fn rename_plan_quota_preserves_the_existing_registration() {
     assert!(h.store()["registrations"][0].get("alias").is_none());
     assert!(h.fake.agent("old-name").is_some());
     assert!(h.fake.agent("new-name").is_none());
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn usage_records_new_and_existing_agents_and_sent_messages() {
+    let usage = Arc::new(UsageRecorder::default());
+    let h = Harness::start_with_usage(
+        |fake| Some(signed_in(fake)),
+        |_, _| {},
+        DeliveryTiming::default(),
+        Some(usage.clone()),
+    )
+    .await;
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("usage-agent"))
+        .await;
+    h.register(&mut client, "codex", CODEX, Some("usage-agent"))
+        .await;
+    client
+        .ok(
+            "messages.send",
+            json!({"to":"usage-agent", "text":"private message body"}),
+        )
+        .await;
+    eventually("message usage delivered", || {
+        usage.0.lock().unwrap().iter().any(|e| {
+            e["properties"]["operation"] == "message_send"
+                && e["properties"]["outcome"] == "succeeded"
+        })
+    })
+    .await;
+    let events = usage.0.lock().unwrap().clone();
+    let registrations: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            e["event"] == "desktop_operation"
+                && e["properties"]["operation"] == "agent_register"
+                && e["properties"]["outcome"] == "succeeded"
+        })
+        .collect();
+    assert_eq!(registrations.len(), 2, "{events:?}");
+    assert_eq!(registrations[0]["properties"]["already_registered"], false);
+    assert_eq!(registrations[1]["properties"]["already_registered"], true);
+    assert!(events
+        .iter()
+        .any(|e| e["properties"]["operation"] == "message_send"
+            && e["properties"]["outcome"] == "succeeded"
+            && e["properties"]["is_reply"] == false));
+    let encoded = serde_json::to_string(&events).unwrap();
+    for forbidden in ["usage-agent", CODEX, "private message body"] {
+        assert!(!encoded.contains(forbidden));
+    }
     h.stop().await;
 }
 

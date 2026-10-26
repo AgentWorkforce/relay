@@ -175,6 +175,60 @@ final class AppUpdateTests: XCTestCase {
         XCTAssertEqual(UpdateURLProtocol.requestCount, 2)
     }
 
+    func testFailedUpdateRecordsAttemptAndSafeFailureWithoutInstalling() async throws {
+        UpdateURLProtocol.reset(with: Data("private server diagnostic".utf8), statusCode: 503)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [UpdateURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let suite = "app-update-test-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var terminated = false
+        let updater = AppUpdater(defaults: defaults, session: session, currentVersion: "2026.09.3",
+                                 terminate: { terminated = true })
+        var events: [TelemetryEvent] = []
+        updater.recordTelemetry = { events.append($0) }
+        let release = try AppUpdateMetadata.release(from: releaseJSON(version: "2026.09.10"), architecture: .arm64)
+        await updater.downloadAndInstall(release)
+        XCTAssertFalse(terminated)
+        XCTAssertEqual(events.map(\.operation), [.updateInstall, .updateInstall])
+        XCTAssertEqual(events.map(\.outcome), [.started, .failed])
+        XCTAssertEqual(events.last?.failure, .updateFailed)
+        XCTAssertFalse(String(data: try JSONEncoder().encode(events), encoding: .utf8)!.contains("private"))
+    }
+
+    func testUpdateTelemetryDeadlineDoesNotWaitForUncooperativeRPC() async {
+        let updater = AppUpdater()
+        updater.telemetryTimeoutNanoseconds = 10_000_000
+        var reply: CheckedContinuation<Void, Never>?
+        var completed = false
+        updater.recordTelemetry = { _ in
+            await withCheckedContinuation { reply = $0 }
+            completed = true
+        }
+        let start = Date()
+        await updater.recordUpdateTelemetry(TelemetryEvent(operation: .updateInstall, outcome: .succeeded))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+        XCTAssertFalse(completed)
+        XCTAssertNotNil(reply)
+        // A late, cancellation-insensitive reply must not resume twice.
+        reply?.resume()
+        await Task.yield()
+        XCTAssertTrue(completed)
+    }
+
+    func testUpdateTelemetryWaitsForReplyBeforeContinuing() async {
+        let updater = AppUpdater()
+        var completed = false
+        updater.recordTelemetry = { _ in
+            await Task.yield()
+            completed = true
+        }
+        await updater.recordUpdateTelemetry(TelemetryEvent(operation: .updateInstall, outcome: .succeeded))
+        XCTAssertTrue(completed)
+    }
+
     func testInstallerRejectsNonAppDestinationBeforeMounting() {
         let image = URL(fileURLWithPath: "/nonexistent/update.dmg")
         let destination = URL(fileURLWithPath: "/Applications/Other.app")

@@ -4,7 +4,6 @@
 use super::{bridge, collector, history, read_config, save_json, Config};
 use agent_relay_probe::delivery::{self, SessionIdentity};
 use anyhow::{ensure, Result};
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fs, path::Path};
 
@@ -25,24 +24,25 @@ fn root() -> Result<std::path::PathBuf> {
 }
 
 /// Readers and reset share a process-independent lock, including the private caches.
-pub fn reader_lock() -> Result<fs::File> {
-    access_lock(false)
+pub fn reader_lock() -> Result<agent_relay_probe::history_access::Access> {
+    reader_lock_at(&root()?)
 }
-fn access_lock(exclusive: bool) -> Result<fs::File> {
-    let root = root()?;
-    super::private_directory(&root)?;
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(root.join("session-reset.lock"))?;
-    if exclusive {
-        file.lock_exclusive()?;
-    } else {
-        FileExt::lock_shared(&file)?;
+fn reader_lock_at(root: &Path) -> Result<agent_relay_probe::history_access::Access> {
+    match agent_relay_probe::history_access::try_reader(root) {
+        Ok(reader) => Ok(reader),
+        Err(error) if agent_relay_probe::platform::fs::lock_held(&error) => Err(super::user_error(
+            agent_relay_probe::history_access::RESET_BUSY,
+        )),
+        Err(error) => Err(error.into()),
     }
-    Ok(file)
+}
+fn access_lock(exclusive: bool) -> Result<agent_relay_probe::history_access::Access> {
+    let root = root()?;
+    Ok(if exclusive {
+        agent_relay_probe::history_access::writer(&root)?
+    } else {
+        agent_relay_probe::history_access::reader(&root)?
+    })
 }
 
 pub fn baseline() -> Result<HashSet<SessionIdentity>> {
@@ -275,6 +275,43 @@ fn remove_database(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn listing_reader_fails_fast_when_reset_intent_waits_for_its_daemon() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().to_owned();
+        let daemon = agent_relay_probe::history_access::reader(&root).unwrap();
+        let reset_root = root.clone();
+        let reset = std::thread::spawn(move || {
+            let _reset = agent_relay_probe::history_access::writer(&reset_root).unwrap();
+        });
+        let started = std::time::Instant::now();
+        while !agent_relay_probe::history_access::reset_requested(&root).unwrap() {
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let (entered, ready) = std::sync::mpsc::channel();
+        let (answer, result) = std::sync::mpsc::channel();
+        let helper = std::thread::spawn(move || {
+            entered.send(()).unwrap();
+            answer
+                .send(reader_lock_at(&root).err().map(|error| error.to_string()))
+                .unwrap();
+        });
+        ready
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let fast = result.recv_timeout(std::time::Duration::from_secs(2));
+        // Release every owned participant before asserting even on the old
+        // blocking implementation, so its negative control cannot leak work.
+        drop(daemon);
+        reset.join().unwrap();
+        helper.join().unwrap();
+        assert_eq!(
+            fast.unwrap(),
+            Some(agent_relay_probe::history_access::RESET_BUSY.into())
+        );
+    }
 
     #[test]
     fn a_failed_reset_plan_resumes_capture_but_preserves_the_error() {

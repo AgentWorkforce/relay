@@ -320,7 +320,7 @@ impl App {
 
     /// Opens Messages to `endpoint`; empty, to the field that opens one.
     pub fn show_message_composer(&self, endpoint: &str) {
-        self.go(Page::Messages);
+        self.open_message_composer();
         if !endpoint.trim().is_empty() {
             self.open_chat(endpoint);
         } else if let Some(shell) = self.shell() {

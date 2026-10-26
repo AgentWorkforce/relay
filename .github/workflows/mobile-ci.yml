@@ -1,0 +1,117 @@
+name: Mobile CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/desktop/ipad/native/**'
+      - 'apps/desktop/shared/RelaySessionOverview/**'
+      - '.github/workflows/mobile-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/desktop/ipad/native/**'
+      - 'apps/desktop/shared/RelaySessionOverview/**'
+      - '.github/workflows/mobile-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: apps/desktop
+
+concurrency:
+  group: mobile-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  simulator:
+    name: iPhone handoff and unit tests
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec ipad/native/project.yml
+
+      - name: Select an available iPhone simulator
+        id: simulator
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          inventory = json.loads(subprocess.check_output(
+              ["xcrun", "simctl", "list", "devices", "available", "--json"]))
+          phones = [device for runtime, devices in inventory["devices"].items()
+                    if ".iOS-" in runtime for device in devices
+                    if device.get("isAvailable") and device["name"].startswith("iPhone")]
+          if not phones:
+              raise SystemExit("No available iPhone simulator installed")
+          phone = phones[0]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("udid=" + phone["udid"] + "\n")
+          print("Testing on " + phone["name"])
+          PY
+
+      - name: Test mobile handoff without production credentials
+        env:
+          SIMULATOR_UDID: ${{ steps.simulator.outputs.udid }}
+        run: |
+          xcodebuild test \
+            -project ipad/native/AgentRelayiPad.xcodeproj \
+            -scheme AgentRelayiPad \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -resultBundlePath "$RUNNER_TEMP/MobileHandoff.xcresult" \
+            -parallel-testing-enabled NO \
+            -skipPackagePluginValidation \
+            -only-testing:AgentRelayUnitTests \
+            -only-testing:AgentRelayUITests/MobileHandoffUITests \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Export viewable interaction screenshots
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/MobileHandoff.xcresult" ]; then
+            mkdir -p "$RUNNER_TEMP/MobileHandoff-attachments"
+            xcrun xcresulttool export attachments --help
+            xcrun xcresulttool export attachments \
+              --path "$RUNNER_TEMP/MobileHandoff.xcresult" \
+              --output-path "$RUNNER_TEMP/MobileHandoff-attachments"
+          fi
+
+      - name: Export simulator diagnostics and app console
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/MobileHandoff.xcresult" ]; then
+            mkdir -p "$RUNNER_TEMP/MobileHandoff-diagnostics"
+            xcrun xcresulttool export diagnostics --help
+            xcrun xcresulttool export diagnostics \
+              --path "$RUNNER_TEMP/MobileHandoff.xcresult" \
+              --output-path "$RUNNER_TEMP/MobileHandoff-diagnostics"
+            xcrun xcresulttool get log --help
+            if ! xcrun xcresulttool get log \
+              --path "$RUNNER_TEMP/MobileHandoff.xcresult" --type console \
+              > "$RUNNER_TEMP/MobileHandoff-console.json"; then
+              echo "::warning::Bundle-wide console export unavailable; simulator diagnostics are preserved."
+            fi
+          fi
+
+      - name: Preserve test results and interaction screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mobile-handoff-test-results
+          path: |
+            ${{ runner.temp }}/MobileHandoff.xcresult
+            ${{ runner.temp }}/MobileHandoff-attachments
+            ${{ runner.temp }}/MobileHandoff-diagnostics
+            ${{ runner.temp }}/MobileHandoff-console.json
+          if-no-files-found: ignore
+          retention-days: 7

@@ -8,13 +8,45 @@ publishing; land that artifact through a normal pull request. A release whose
 
 ## Unreleased
 
+- **Choose how long this computer keeps session history.** Settings › General › **Session history** lets you choose 7, 30 or 90 days, or forever, for the local session history on this computer; it is 30 days unless you change it. Older sessions are removed from this computer only; copies already uploaded to your workspace stay. A warning shows for 7 days, and for any limit while you're signed out or uploads are paused, since sessions that haven't uploaded by then could be removed first. Agents can read and change it as `history_retention_days` (`0` keeps history forever). Same on macOS, Linux and Windows.
+
+- **A simpler sign-in screen.** The logged-out screen on macOS, Linux and Windows now offers **Sign in with Google** without the redundant **Use another account** button. Signing in always opens Google's account chooser instead of silently reusing a saved app or CLI session.
+
+- **History identity checks preserve active database locks.** On macOS and Linux, checking the local history file no longer releases SQLite locks held by another connection in the app or collector. New stores still use private file permissions. Windows keeps its existing file identity checks.
+
+- **Upload status stays responsive as local history grows.** On macOS, Linux and Windows, upload counters use transactional totals, delivery reuses its database connections, and unchanged status and session lists reuse shared snapshots.
+
 - **The desktop app no longer takes the `agent-relay` command name.** On Linux and Windows the GTK launcher is now `agent-relay-desktop` (`agent-relay-desktop.exe` on Windows), including app shortcuts, updates, launch at login and the Windows background task. `--headless` and `--install-launcher` keep working under the new name, while `agent-relay` remains available for the command-line tool. Existing Linux tarball and Windows installs need one manual upgrade to this release because their old in-app updater requires the former filename: install the new `.deb` or unpack the new Linux tarball, or run the new Windows Setup program. In-app updates resume afterward. macOS is unaffected.
 - **Muse access stays inside sessions Agent Relay starts.** On macOS and Linux, Agent Relay no longer discovers or messages Muse sessions opened in a terminal or hosted by another app. Relay-owned Muse spawns keep their existing sandbox, follow-up messaging and lifecycle behavior; Muse remains unavailable on Windows.
 - **Cursor Cloud agents join Agent Relay without the local `cursor-agent` CLI.** Agents can discover models, cached repositories and environments, list existing agents and runs, start one with an idempotency key, inject follow-ups while it works, read or cancel run results, and archive or restore it through the shared core on macOS, Linux and Windows. Agent Relay Cloud keeps the Cursor API key and registers each hosted agent as `cursor-cloud`, so messages become Cursor follow-ups and never expose credentials to the desktop or agent sandbox.
+
 - **Community builds no longer send analytics to Agent Relay's PostHog project.** Official macOS, Linux and Windows releases still support the same opt-out analytics, but their ingestion configuration now comes from protected release secrets instead of the source tree. Forks, local builds and tests contain no project configuration and send nothing.
+
 - **Public examples use generic people and computer names.** Documentation and the trusted-senders placeholder on macOS, Linux and Windows no longer expose names from Agent Relay's internal development environment.
+
 - **The Linux headless installer now downloads from the public releases page.** Install or update the core on a server with `curl -fsSL https://github.com/AgentWorkforce/relay-desktop-releases/releases/latest/download/install.sh | bash`; the old source-repository link no longer works once the source moves.
+
 - **Every download now includes the Apache 2.0 license.** The macOS app, the Linux tarball and `.deb`, the Windows zip and Setup program, and the standalone core archives ship `LICENSE` and the agent icons' license.
+
+## v2026.10.60
+
+- **Continue an open Claude conversation from your phone, experimentally.** Enable **Continue Claude from mobile (Experimental)** once in Relay Settings on macOS or Linux. Windows shows the setting as unavailable until its native connection is verified. Your messages reach a supported running Claude session as native user turns, preserving its conversation and permissions; reading it sends nothing. Tool prompts go only to the signed-in machine owner for one-action approval. Claude stays in its original session, and mobile shows connecting, queued or failed status without treating a queued message as delivered.
+
+- **macOS keeps the warning when a chat action is interrupted by a service restart.** A disconnect arriving after the action fails no longer clears its warning; your restored draft stays available so you can check whether the action completed before retrying.
+
+- **Agent lists keep the native session title across devices.** macOS, Linux and Windows publish existing titles and later renames to the roster, so iPhone, iPad and other clients can show them before a generated summary exists. OpenClaw and Hermes gateway agents no longer link their agent IDs to unrelated session history. Title refreshes keep ended sessions idle.
+
+- **Peer updates no longer ask agents to reapprove work you already authorized.** On macOS, Linux and Windows, Relay's message instructions let agents continue within the receiving session's existing scope and tool permissions. Requests outside that scope still need your approval; another agent cannot grant it on your behalf, and Claude's own peer-message restrictions still apply.
+
+## v2026.10.59
+
+- **Uploads resume within minutes after the history service recovers.** When session uploads kept failing because the service was down, Agent Relay waited longer and longer between tries, up to about twenty minutes after a long outage, so uploads stayed idle well after the service was back. It now waits at most about five minutes between tries after a server error or a dropped connection, and **Retry uploads** tries again at once instead of doing nothing while uploads wait out such a failure. A rate limit from the service is still honored: Retry leaves that wait alone. Uploads that keep failing this way now offer **Retry uploads** in the upload stage, and a wait an older version stored is shortened when Agent Relay updates. Same on macOS, Linux and Windows.
+
+- **"Reconnecting to its background service" no longer stays on screen.** If **Retry uploads** or **Compact now** could not reach Agent Relay's background service, the message under the button stayed until you clicked again, even after the service was back. It now clears as soon as the service answers, and the retry or compaction, which never reached the service, is sent once on its own. Errors from an action the service did receive stay until your next action, as before. Same on macOS, Linux and Windows.
+
+- **Diagnostics cannot indefinitely delay app updates.** On macOS, Linux and Windows, update diagnostics calls that must finish before proceeding have a three-second deadline. The GTK window stays responsive while that call finishes, and an unresponsive core cannot hold up the restart.
+
+- **Optional diagnostics cover more desktop activity.** When Share diagnostics is enabled, macOS, Linux and Windows report agent registration, messaging, navigation, searches and update handoffs with the same event schema. Search text, message contents, names and session IDs stay private. Following a transcript in the background does not count as opening it again.
 
 ## v2026.10.58
 

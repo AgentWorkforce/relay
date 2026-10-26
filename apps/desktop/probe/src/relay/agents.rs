@@ -8,7 +8,6 @@
 //! session. Removing it deletes the agent (freeing the name) with the
 //! workspace key it was registered with, never whichever key is current.
 
-use crate::relay::client;
 use crate::relay::cloud_session::AgentOwner;
 use crate::relay::contract::agents::{
     AgentIntegration, AgentWebhook, Agents, ArchivedAgent, LocalAgent,
@@ -26,6 +25,7 @@ use crate::relay::store::{
     Store, Target, TestSender, Webhook,
 };
 use crate::relay::workspace::{self, Secret};
+use crate::relay::{claude_dirs, client, history_retention as retention, trusted};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -34,6 +34,7 @@ use std::sync::{Arc, Mutex};
 mod activation_journal;
 mod naming;
 mod registration_routes;
+mod roster_publication;
 use activation_journal::auto_activation_allowance;
 pub use naming::suggested_name;
 use naming::suggested_name_numbered;
@@ -59,10 +60,11 @@ fn checked_by_owner(key: &str) -> bool {
     is_list_setting(key) || crate::relay::spawn::CONFIGURED_KEYS.contains(&key)
 }
 
-/// Settings whose value is a list its owner checks and saves as given,
-/// never an on/off choice a default pass could reverse.
+/// Settings whose value is a list (or, for session history, a number of
+/// days) its owner checks and saves as given, never an on/off choice a
+/// default pass could reverse.
 fn is_list_setting(key: &str) -> bool {
-    crate::relay::claude_dirs::is_folder_setting(key) || key == crate::relay::trusted::SETTING
+    claude_dirs::is_folder_setting(key) || [trusted::SETTING, retention::SETTING].contains(&key)
 }
 
 /// The registrations whose session runs now: the ones heartbeated and
@@ -308,6 +310,7 @@ impl Core {
     fn metadata(
         &self,
         target: &Target,
+        title: &str,
         description: Option<&str>,
         owner: Option<&AgentOwner>,
     ) -> Map<String, Value> {
@@ -316,6 +319,13 @@ impl Core {
         metadata.insert("injectable".into(), json!("true"));
         metadata.insert("session_kind".into(), json!(target.kind.as_str()));
         metadata.insert("session_id".into(), json!(target.id));
+        metadata.insert(
+            "session_title".into(),
+            json!(aliases::published_title(title)),
+        );
+        if matches!(target.kind, SessionKind::OpenClaw | SessionKind::Hermes) {
+            metadata.insert("session_scope".into(), json!("agent"));
+        }
         metadata.insert("host".into(), json!(self.host_label()));
         if let Some(description) = description.map(str::trim).filter(|d| !d.is_empty()) {
             let one_line = description.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -592,44 +602,6 @@ impl Core {
         Ok(())
     }
 
-    /// Tells Relaycast every presence change it has not confirmed yet. A
-    /// change for a registration that is gone is dropped; one that fails
-    /// stays pending for the next pass.
-    async fn announce_pending_presence(&self) {
-        let pending: Vec<(String, &'static str)> = self
-            .presence_pending
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(name, status)| (name.clone(), *status))
-            .collect();
-        for (name, status) in pending {
-            let registration = self
-                .store
-                .read(|s| s.registration_answering(&name).cloned());
-            let Some(registration) = registration else {
-                self.presence_pending.lock().unwrap().remove(&name);
-                continue;
-            };
-            let Some(key) = self.key_for(&registration) else {
-                continue;
-            };
-            let workspace = self.relaycast_scope(&registration.base_url, &key);
-            if !self.relaycast_write_allowed(&workspace) {
-                continue;
-            }
-            let result =
-                client::update_agent_status(&registration.base_url, &key, &name, status).await;
-            self.observe_relaycast_write_result(&workspace, &result);
-            if result.is_ok() {
-                let mut pending = self.presence_pending.lock().unwrap();
-                if pending.get(&name) == Some(&status) {
-                    pending.remove(&name);
-                }
-            }
-        }
-    }
-
     /// The signed-in workspace and owner a probe-owned binding is minted for
     /// and checked against.
     async fn registration_authority(&self) -> Result<ManagedAuthority, RpcError> {
@@ -694,7 +666,7 @@ impl Core {
             &workspace.key,
             name,
             self.joining(),
-            self.metadata(&session.target, description, owner.as_ref()),
+            self.metadata(&session.target, &session.title, description, owner.as_ref()),
         )
         .await;
         self.observe_relaycast_write_result(&workspace_scope, &result);
@@ -1524,12 +1496,15 @@ impl Core {
                 .map(|r| (r.name.clone(), r.target.clone()))
                 .collect()
         });
+        let title_revision = self
+            .roster_revision
+            .load(std::sync::atomic::Ordering::SeqCst);
         let discovered = tokio::task::spawn_blocking(move || {
-            let live: HashSet<Target> = sessions
-                .sessions()
-                .into_iter()
+            let all = sessions.sessions();
+            let live: HashSet<Target> = all
+                .iter()
                 .filter(|session| session.live)
-                .map(|session| session.target)
+                .map(|session| session.target.clone())
                 .collect();
             let targets: Vec<Target> = registered.iter().map(|(_, t)| t.clone()).collect();
             let archived = sessions.archived(&targets);
@@ -1538,14 +1513,14 @@ impl Core {
                 .filter(|(_, target)| archived.contains(target))
                 .map(|(name, _)| name)
                 .collect();
-            (sessions.auto_activation_sessions(), live, archived)
+            (sessions.auto_activation_sessions(), all, live, archived)
         })
         .await;
-        if let Ok((_, live, _)) = &discovered {
+        if let Ok((_, _, live, _)) = &discovered {
             // Relay Connect credentials follow the same running sessions.
             self.connect.lock().unwrap().observe_live_targets(live);
         }
-        let (found, mut live, archived) = discovered.unwrap_or_default();
+        let (found, all, mut live, archived) = discovered.unwrap_or_default();
         self.mark_sessions_archived(&archived);
         // A spawned agent is present while its spawner says it runs, and
         // its session is never activated a second time.
@@ -1564,10 +1539,13 @@ impl Core {
 
         let eligible: HashSet<Target> = found.keys().cloned().collect();
         let marked_before = self.store.read(present_registration_names);
-        let due = match self
-            .store
-            .update(|store| reconcile_lifecycle(store, &eligible, &live, now))
-        {
+        let due = match self.reconcile_discovered_registrations(
+            &all,
+            title_revision,
+            &eligible,
+            &live,
+            now,
+        ) {
             Ok(due) => due,
             Err(error) => {
                 return vec![format!(
@@ -1738,7 +1716,7 @@ impl Core {
 mod aliases;
 mod auto_activation;
 use aliases::already_registered;
-pub(crate) use aliases::{agent_push, is_listed};
+pub(crate) use aliases::{agent_push, is_listed, update_registered_title};
 
 #[cfg(test)]
 mod tests {
@@ -1926,7 +1904,10 @@ mod tests {
             ("Review", "claude-cloud-review"),
             ("Hermes", "claude-cloud-hermes"),
             ("Pi session", "claude-cloud-pi-session"),
-            ("Claude Code session diagnostics", "claude-cloud-claude-code"),
+            (
+                "Claude Code session diagnostics",
+                "claude-cloud-claude-code",
+            ),
             ("Plan plan support", "claude-cloud-plan-support"),
         ] {
             let mut task = session(THREAD, "/projects/cloud", SessionKind::ClaudeTerminal);
@@ -2262,6 +2243,100 @@ mod tests {
         let already = FakeIntegration::new("direct_delivery", true);
         already.on.store(true, Ordering::SeqCst);
         assert!(already.default_on().contains(&"direct_delivery"));
+    }
+
+    #[tokio::test]
+    async fn title_refresh_fences_a_discovery_snapshot_before_native_publication() {
+        use crate::relay::contract::agents::SessionTitleSetParams;
+        use crate::relay::sessions::SessionDirectory;
+        use std::sync::{mpsc, Mutex};
+
+        struct PausedDirectory {
+            title: Mutex<String>,
+            ready: mpsc::SyncSender<()>,
+            release: Mutex<mpsc::Receiver<()>>,
+        }
+        impl SessionDirectory for PausedDirectory {
+            fn sessions(&self) -> Vec<DiscoveredSession> {
+                vec![DiscoveredSession {
+                    target: Target::new(SessionKind::Codex, THREAD),
+                    title: self.title.lock().unwrap().clone(),
+                    directory: None,
+                    updated_at_ms: None,
+                    live: true,
+                    host: None,
+                    holder: None,
+                }]
+            }
+            fn auto_activation_sessions(&self) -> Vec<DiscoveredSession> {
+                self.ready.send(()).unwrap();
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap();
+                Vec::new()
+            }
+            fn set_title(&self, _: &str, _: &str, title: &str) -> Result<String, String> {
+                *self.title.lock().unwrap() = title.to_owned();
+                Ok(title.to_owned())
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let (release_tx, release_rx) = mpsc::channel();
+        let directory = Arc::new(PausedDirectory {
+            title: Mutex::new("Old title".into()),
+            ready: ready_tx,
+            release: Mutex::new(release_rx),
+        });
+        let config = crate::relay::daemon::Config {
+            paths: crate::relay::paths::CorePaths::for_socket(temp.path().join("core.sock"))
+                .unwrap(),
+            home: temp.path().into(),
+            app_data_dir: temp.path().join("app-data"),
+            env: std::collections::BTreeMap::new(),
+            version: "0.0.0-test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: crate::relay::push::PushTiming::default(),
+            delivery_timing: crate::relay::delivery::DeliveryTiming::default(),
+        };
+        let plugins = crate::relay::daemon::Plugins {
+            sessions: directory,
+            ..Default::default()
+        };
+        let (core, _signals) = Core::with_plugins(config, plugins);
+        let mut registration = automatic_registration("manual", THREAD, "2026-10-01T12:00:00Z");
+        registration.auto_activated = None;
+        registration.title = "Old title".into();
+        core.store
+            .update(|store| store.registrations.push(registration))
+            .unwrap();
+        let polling = core.clone();
+        let poll = tokio::spawn(async move { polling.activate_new_sessions().await });
+        tokio::task::spawn_blocking(move || {
+            ready_rx.recv_timeout(Duration::from_secs(10)).unwrap()
+        })
+        .await
+        .unwrap();
+        crate::relay::session_titles::set_native_title(
+            &core,
+            SessionTitleSetParams {
+                source: "codex".into(),
+                session_id: THREAD.into(),
+                title: "New title".into(),
+            },
+        )
+        .await
+        .unwrap();
+        release_tx.send(()).unwrap();
+        assert!(poll.await.unwrap().is_empty());
+        // No second discovery or daemon loop can repair an incorrect overwrite.
+        assert_eq!(
+            core.store.read(|s| s.registrations[0].title.clone()),
+            "New title"
+        );
     }
 
     #[tokio::test]

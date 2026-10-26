@@ -45,7 +45,9 @@ use crate::relay::delivery::policy::{Delivery, MessageRef};
 use crate::relay::links::Endpoint;
 use crate::relay::workspace::{Secret, DEFAULT_BASE_URL};
 use fs2::FileExt;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
+mod date_fields;
+use date_fields::{null_as_default, optional_timestamp, optional_timestamps, timestamp};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
@@ -853,6 +855,13 @@ pub struct Store {
         skip_serializing_if = "Option::is_none"
     )]
     pub auto_activate: Option<bool>,
+    /// Experimental owner-initiated Claude continuation from mobile. Off by default.
+    #[serde(
+        rename = "mobileClaudeHandoff",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub mobile_claude_handoff: Option<bool>,
     /// Missing means false: relay messages are hidden from agent chats, the
     /// agent reading each one from its hidden history.
     #[serde(
@@ -1992,52 +2001,6 @@ impl Legacy {
         }
         changed
     }
-}
-
-/// A string field older writers left out or wrote as `null`.
-fn null_as_default<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
-    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
-}
-
-/// `registeredAt` as ISO-8601: the string macOS wrote, or the Unix seconds
-/// the Linux app wrote.
-fn timestamp<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
-    match Value::deserialize(deserializer)? {
-        Value::String(text) => Ok(text),
-        Value::Number(number) => Ok(iso8601_from_seconds(number.as_f64().unwrap_or(0.0))),
-        Value::Null => Ok(iso8601_from_seconds(0.0)),
-        _ => Err(serde::de::Error::custom("registeredAt is not a date")),
-    }
-}
-
-fn optional_timestamp<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error> {
-    match Value::deserialize(deserializer)? {
-        Value::String(text) => Ok(Some(text)),
-        Value::Number(number) => Ok(Some(iso8601_from_seconds(number.as_f64().unwrap_or(0.0)))),
-        Value::Null => Ok(None),
-        _ => Err(serde::de::Error::custom("timestamp is not a date")),
-    }
-}
-
-fn optional_timestamps<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<Vec<String>>, D::Error> {
-    Option::<Vec<Value>>::deserialize(deserializer)?
-        .map(|items| {
-            items
-                .into_iter()
-                .map(|item| match item {
-                    Value::String(text) => Ok(text),
-                    Value::Number(number) => {
-                        Ok(iso8601_from_seconds(number.as_f64().unwrap_or(0.0)))
-                    }
-                    _ => Err(serde::de::Error::custom("timestamp is not a date")),
-                })
-                .collect()
-        })
-        .transpose()
 }
 
 /// Seconds since the epoch as `YYYY-MM-DDTHH:MM:SSZ`, the form Foundation's

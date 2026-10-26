@@ -15,6 +15,7 @@
 //! | `overview` | The Cloud session brief and the session's original request |
 //! | `capy_setup` | The Sessions page's Capy setup card |
 //! | `devin_setup` | The Sessions page's offer to turn on Devin's hooks |
+//! | `history_retention` | How long local session history is kept, and the warning a short choice gets |
 //! | `agent_settings` | New agents joining #general; the settings agents changed |
 //! | `settings` | Sign-in wording, Claude Code direct delivery, the SessionStart hook, workspace and incoming labels, diagnostics |
 //! | `spawn` | Spawned agents: the spawn node's status line and each harness's full-access row, from the core's descriptors |
@@ -27,9 +28,11 @@ mod agents;
 mod capy_setup;
 mod capy_spawn;
 mod devin_setup;
+mod history_retention;
 mod local_sessions;
 mod menu_summary;
 mod messages;
+mod mobile_claude_handoff;
 mod openclaw_tools;
 mod optimistic;
 mod overview;
@@ -56,9 +59,11 @@ pub use agents::*;
 pub use capy_setup::*;
 pub use capy_spawn::*;
 pub use devin_setup::*;
+pub use history_retention::*;
 pub use local_sessions::*;
 pub use menu_summary::*;
 pub use messages::*;
+pub use mobile_claude_handoff::*;
 pub use openclaw_tools::*;
 pub use overview::*;
 pub use pending::*;

@@ -799,7 +799,12 @@ mod tests {
             None
         );
         assert_eq!(
-            endpoint_binding(&conversation, &[], "other@linux-host-233378063229464576", ME),
+            endpoint_binding(
+                &conversation,
+                &[],
+                "other@linux-host-233378063229464576",
+                ME
+            ),
             None
         );
         let own = format!("{ME}@linux-host-agent_person");

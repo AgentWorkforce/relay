@@ -1088,6 +1088,8 @@ fn route(
             let Some(agent) = world.agents.get_mut(*name) else {
                 return error(404, "agent_not_found");
             };
+            // Match Relaycast: omission is an activation, not a no-op.
+            agent.status = body["status"].as_str().unwrap_or("active").to_owned();
             if let (Value::Object(metadata), Value::Object(update)) =
                 (&mut agent.metadata, &body["metadata"])
             {

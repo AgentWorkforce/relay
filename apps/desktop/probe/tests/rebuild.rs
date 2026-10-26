@@ -174,7 +174,8 @@ fn a_journal_install_rebuilds_onto_the_feed_keeping_its_origin_jobs_and_consent(
     let (_directory, path) = legacy_store();
     let conn = open_db(&path).unwrap();
 
-    // The journal and everything that fed it are gone.
+    // The journal and everything that fed it are gone. Only the new status
+    // accounting/projection triggers may remain on delivery-owned tables.
     let triggers: Vec<String> = conn
         .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND (name LIKE 'delivery%' OR tbl_name IN ('delivery_batches','delivery_journal','delivery_shadow','history_export_pages'))")
         .unwrap()
@@ -182,7 +183,21 @@ fn a_journal_install_rebuilds_onto_the_feed_keeping_its_origin_jobs_and_consent(
         .unwrap()
         .collect::<rusqlite::Result<_>>()
         .unwrap();
-    assert!(triggers.is_empty(), "{triggers:?}");
+    let mut triggers = triggers;
+    triggers.sort();
+    let mut expected = [
+        "delivery_batches_status_insert",
+        "delivery_batches_status_delete",
+        "delivery_batches_status_update",
+        "delivery_quarantine_status_insert",
+        "delivery_quarantine_status_delete",
+        "delivery_quarantine_status_update",
+        "delivery_pending_sessions_insert",
+        "delivery_pending_sessions_delete",
+        "delivery_pending_sessions_update",
+    ];
+    expected.sort();
+    assert_eq!(triggers, expected, "no retired journal trigger may remain");
     for table in [
         "delivery_journal",
         "delivery_shadow",

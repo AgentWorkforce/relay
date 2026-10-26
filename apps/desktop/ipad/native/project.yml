@@ -31,7 +31,7 @@ targets:
       properties:
         CFBundleDisplayName: Agent Relay
         CFBundleShortVersionString: "1.1"
-        CFBundleVersion: "37"
+        CFBundleVersion: "39"
         ITSAppUsesNonExemptEncryption: false
         UIBackgroundModes:
           - remote-notification
@@ -65,7 +65,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.agentworkforce.relayipad
         TARGETED_DEVICE_FAMILY: "1,2"
         MARKETING_VERSION: "1.1"
-        CURRENT_PROJECT_VERSION: "37"
+        CURRENT_PROJECT_VERSION: "39"
         CODE_SIGN_ENTITLEMENTS: Sources/AgentRelayiPad.entitlements
         INFOPLIST_KEY_CFBundleDisplayName: Agent Relay
         INFOPLIST_KEY_UIRequiresFullScreen: NO

@@ -3,6 +3,10 @@ name: iOS TestFlight
 on:
   workflow_dispatch:
     inputs:
+      inventory_only:
+        description: Read Apple build processing and Internal Devices status without uploading
+        type: boolean
+        default: false
       distribution:
         description: Distribution scope (upload does not submit for review)
         type: choice
@@ -23,7 +27,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  inventory:
+    name: Read Apple processing and Internal Devices status
+    if: ${{ inputs.inventory_only }}
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Test read-only transport and credential handling
+        run: node --test scripts/mobile-build-inventory.test.mjs
+      - name: Read inventory without changing distribution
+        env:
+          APPLE_MOBILE_API_KEY_BASE64: ${{ secrets.APPLE_MOBILE_API_KEY_BASE64 }}
+          APPLE_MOBILE_API_KEY_ID: ${{ secrets.APPLE_MOBILE_API_KEY_ID }}
+          APPLE_MOBILE_API_ISSUER: ${{ secrets.APPLE_MOBILE_API_ISSUER }}
+        run: node scripts/mobile-build-inventory.mjs
+
   upload:
+    if: ${{ !inputs.inventory_only }}
     name: Archive and upload iOS
     runs-on: macos-26
     steps:

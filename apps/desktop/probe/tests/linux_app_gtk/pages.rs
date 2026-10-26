@@ -1934,6 +1934,11 @@ fn sessions_paginate_on_scroll_without_controls(runtime: &tokio::runtime::Runtim
     assert!(adjustment.upper() > adjustment.page_size(),
         "Allocated pagination table must overflow: upper={}, page_size={}, list_height={}, scroller_height={}",
         adjustment.upper(), adjustment.page_size(), page.list.height(), scroller.height());
+    assert_eq!(
+        case.app.with_state(|s| s.session_limit),
+        500,
+        "The first laid-out viewport must not load older history before scrolling"
+    );
     adjustment.set_value(adjustment.upper() - adjustment.page_size());
     case.settle();
     case.pump(|case| {
@@ -2254,12 +2259,21 @@ fn groups_collapse_and_local_conversations_open(runtime: &tokio::runtime::Runtim
     let collapse: gtk::Button = named(&page.list, "session-group Codex").remove(0);
     collapse.emit_clicked();
     assert!(page.row_keys().iter().all(|key| !key.starts_with("codex:")));
+    let collapsed = page.row_keys();
+    assert_eq!(collapsed.len(), 2);
     case.app.set_session_search("API work");
-    case.settle();
+    // Search commits before its debounced redraw. The count is updated after
+    // rebuilding the filtered groups, even when a slow main-loop dispatch runs.
+    case.pump(|_| page.count.text() == "1 session on this machine");
     assert!(page.row_keys().is_empty());
     assert!(!labels(&page.root).contains(&"Active agents".into()));
     case.app.set_session_search("");
-    case.settle();
+    case.pump(|_| page.count.text() == "5 sessions on this machine");
+    assert_eq!(
+        page.row_keys(),
+        collapsed,
+        "Search preserves collapsed groups"
+    );
     let expand: gtk::Button = named(&page.list, "session-group Codex").remove(0);
     expand.emit_clicked();
     assert_eq!(page.row_keys(), before);

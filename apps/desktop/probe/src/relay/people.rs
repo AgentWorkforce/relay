@@ -35,6 +35,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
+mod roster_metadata;
+use roster_metadata::describe;
+
 /// An opaque, stable join key for a person on the roster.
 pub fn identity_hash(identifier: &str) -> String {
     Sha256::digest(identifier.as_bytes())
@@ -238,7 +241,7 @@ pub struct RosterAgent {
     /// Whether it is running now: a hint for whether a reply can come.
     pub liveness: Liveness,
     pub last_seen_ms: Option<i64>,
-    /// What it is for: its objective, else role and project, else persona.
+    /// Its objective, else native title, role and project, or persona.
     pub description: String,
     /// The desktop it runs on, as that desktop named itself.
     pub host: Option<String>,
@@ -307,28 +310,6 @@ fn provider_of(name: &str, metadata: &Value) -> Option<String> {
             KNOWN.into_iter().find(|known| *known == prefix)
         })
         .map(str::to_string)
-}
-
-fn one_line(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn describe(metadata: &Value, persona: &Value) -> String {
-    if let Some(objective) = metadata["objective"]
-        .as_str()
-        .filter(|o| !o.trim().is_empty())
-    {
-        return one_line(objective);
-    }
-    let parts: Vec<String> = ["role", "project"]
-        .iter()
-        .filter_map(|key| metadata[*key].as_str().filter(|v| !v.is_empty()))
-        .map(one_line)
-        .collect();
-    if !parts.is_empty() {
-        return parts.join(" · ");
-    }
-    persona.as_str().map(one_line).unwrap_or_default()
 }
 
 /// A Relaycast agent record's liveness at `now_ms`. `local_live` is set for
@@ -443,11 +424,7 @@ pub fn decode_roster(
                         Some("replicas") => Some("Replicas".to_string()),
                         _ => None,
                     }),
-                session_id: metadata["session_id"]
-                    .as_str()
-                    .map(str::trim)
-                    .filter(|id| !id.is_empty() && id.len() <= 512)
-                    .map(str::to_string),
+                session_id: roster_metadata::history_session_id(metadata),
                 is_self: own_hash.is_some() && owner_hash.as_deref() == own_hash,
                 owner_hash,
             })
@@ -873,6 +850,37 @@ mod tests {
             identity_hash("user-1"),
             "c6c289e49e9c05b2145860387b73bcb18df43fb09a1e4a4a9713c76c88bb541b"
         );
+    }
+
+    #[test]
+    fn native_title_is_a_description_fallback_without_overriding_the_objective() {
+        let items = vec![json!({"name": "builder", "status": "active", "metadata": {
+            "session_title": "Fix login", "objective": "Review only"
+        }})];
+        let agents = decode_roster(&items, &HashMap::new(), None, NOW);
+        assert_eq!(agents[0].description, "Review only");
+        let items = vec![json!({"name": "builder", "status": "active", "metadata": {
+            "session_title": "Fix login"
+        }})];
+        let agents = decode_roster(&items, &HashMap::new(), None, NOW);
+        assert_eq!(agents[0].description, "Fix login");
+    }
+
+    #[test]
+    fn gateway_agent_identifiers_are_not_linked_to_history() {
+        let items = vec![
+            json!({"name": "openclaw", "metadata": {"source": "relay-desktop", "session_kind": "openclaw", "session_id": "main"}}),
+            json!({"name": "hermes", "metadata": {"source": "relay-desktop", "session_kind": "hermes", "session_id": "default"}}),
+            json!({"name": "explicit-agent", "metadata": {"session_scope": "agent", "session_id": "main"}}),
+            json!({"name": "transcript", "metadata": {"session_kind": "openclaw", "session_id": "real-history-id"}}),
+        ];
+        let agents = decode_roster(&items, &HashMap::new(), None, NOW);
+        for agent in agents {
+            assert_eq!(
+                agent.session_id.as_deref(),
+                (agent.name == "transcript").then_some("real-history-id")
+            );
+        }
     }
 
     // RelaycastReplyClientTests.testActiveRosterUsesWorkspaceKeyAndRedactsMetadata.

@@ -133,6 +133,7 @@ impl ProbeRunner for FakeProbe {
                     "cwd": null, "git_branch": null, "first_activity_ms": null, "last_activity_ms": null,
                     "is_agent": false, "included": false, "status": "not_shared"}]}),
             ),
+            "sessions" if args[1] == "read" => Ok(json!({"entries": [], "next_cursor": null})),
             "sessions" if args[1] == "preview" => {
                 Ok(json!({"sharing_mode": "selected", "sessions": []}))
             }
@@ -218,10 +219,14 @@ const ORG: &str = "org-1";
 #[derive(Default)]
 struct FakeAnalytics {
     events: Mutex<Vec<Value>>,
+    delay: Mutex<Option<Duration>>,
 }
 
 impl TelemetrySender for FakeAnalytics {
     fn send(&self, batch: Vec<Value>) -> Result<(), String> {
+        if let Some(delay) = *self.delay.lock().unwrap() {
+            std::thread::sleep(delay);
+        }
         self.events.lock().unwrap().extend(batch);
         Ok(())
     }
@@ -1916,6 +1921,174 @@ fn operation<'a>(events: &'a [Value], operation: &str, outcome: &str) -> Option<
 }
 
 #[tokio::test]
+async fn usage_actions_keep_properties_and_failures_without_content() {
+    let harness = Harness::start_with(|cloud, setup| {
+        setup.probe.state.lock().unwrap().installs = vec![FakeProbe::connected(&cloud.site_url)];
+    })
+    .await;
+    eventually("discovered", || harness.account_state() == "signed_in").await;
+    let mut client = harness.client().await;
+    client
+        .error(
+            "agents.register",
+            json!({"target":{"kind":"codex","id":"private-session"}, "name":"private-agent"}),
+        )
+        .await;
+    client.error("messages.send", json!({"to":"private-agent", "address":"private@host", "text":"private-message", "reply_to":"private-reply"})).await;
+    client
+        .ok(
+            "uploader.sessions.include",
+            json!({"session_keys":["codex:private-session"]}),
+        )
+        .await;
+    client
+        .ok("uploader.sharing.set", json!({"mode":"selected"}))
+        .await;
+    client
+        .ok(
+            "uploader.sessions.delete",
+            json!({"session_keys":["codex:private-session"]}),
+        )
+        .await;
+    // A cursor-less background follow must not count as another open.
+    for _ in 0..3 {
+        client
+            .ok(
+                "sessions.transcript",
+                json!({"source":"codex", "session_id":"private-session", "following":true}),
+            )
+            .await;
+    }
+    assert!(operation(&harness.analytics(), "transcript_open", "started").is_none());
+    // Legacy initial opens and explicit refreshes retain their observations.
+    for _ in 0..2 {
+        client
+            .ok(
+                "sessions.transcript",
+                json!({"source":"codex", "session_id":"private-session"}),
+            )
+            .await;
+    }
+    let events = harness.analytics();
+    assert_eq!(
+        events
+            .iter()
+            .filter(
+                |event| event["properties"]["operation"] == "transcript_open"
+                    && event["properties"]["outcome"] == "started"
+            )
+            .count(),
+        2
+    );
+    assert!(operation(&events, "transcript_open", "succeeded").is_some());
+    assert_eq!(
+        operation(&events, "agent_register", "failed").unwrap()["properties"]["agent_kind"],
+        "codex"
+    );
+    assert!(operation(&events, "agent_register", "started").is_some());
+    assert_eq!(
+        operation(&events, "message_send", "failed").unwrap()["properties"]["is_reply"],
+        true
+    );
+    assert!(operation(&events, "message_send", "started").is_some());
+    assert_eq!(
+        operation(&events, "include_sessions", "succeeded").unwrap()["properties"]["session_count"],
+        1
+    );
+    assert_eq!(
+        operation(&events, "sharing_mode", "succeeded").unwrap()["properties"]["sharing_mode"],
+        "selected"
+    );
+    assert_eq!(
+        operation(&events, "delete_sessions", "succeeded").unwrap()["properties"]["session_count"],
+        1
+    );
+    assert!(!serde_json::to_string(&events).unwrap().contains("private-"));
+    harness.telemetry.set_enabled(false).unwrap();
+    client
+        .error(
+            "messages.send",
+            json!({"to":"private-agent", "address":"private@host", "text":"private-message"}),
+        )
+        .await;
+    assert_eq!(harness.analytics().len(), events.len());
+    harness.stop().await;
+}
+
+#[tokio::test]
+async fn cancelling_sign_in_is_recorded_once_by_the_core() {
+    let harness = Harness::start_with(|_, setup| {
+        setup.probe.state.lock().unwrap().hold_install = true;
+    })
+    .await;
+    let mut client = harness.client().await;
+    client
+        .ok("account.sign_in", json!({"sharing":"new", "flow":"device"}))
+        .await;
+    eventually("setup in flight", || {
+        !harness.probe.calls("cloud").is_empty()
+    })
+    .await;
+    client.ok("account.sign_in.cancel", json!({})).await;
+    client.ok("account.sign_in.cancel", json!({})).await;
+    let cancelled = harness
+        .analytics()
+        .into_iter()
+        .filter(|event| {
+            event["event"] == "desktop_operation"
+                && event["properties"]["operation"] == "sign_in"
+                && event["properties"]["outcome"] == "cancelled"
+        })
+        .count();
+    assert_eq!(cancelled, 1);
+    harness.stop().await;
+}
+
+#[tokio::test]
+async fn disconnect_during_sign_in_renewal_does_not_record_sign_in_cancellation() {
+    let harness = Harness::start_with(|cloud, setup| {
+        // An existing uploader with no renewable desktop login.
+        setup.probe.state.lock().unwrap().installs = vec![FakeProbe::connected(&cloud.site_url)];
+    })
+    .await;
+    eventually("existing connection discovered", || {
+        harness.account_state() == "signed_in"
+    })
+    .await;
+    let mut client = harness.client().await;
+    client
+        .ok(
+            "account.sign_in",
+            json!({"sharing":"new", "flow":"browser"}),
+        )
+        .await;
+    assert_eq!(harness.account_state(), "pending_approval");
+    assert!(harness.account.uploader.target().is_some());
+    client.ok("uploader.disconnect", json!({})).await;
+    let events = harness.analytics();
+    assert!(operation(&events, "disconnect", "succeeded").is_some());
+    assert!(operation(&events, "sign_in", "cancelled").is_none());
+    harness.stop().await;
+}
+
+#[tokio::test]
+async fn update_success_reaches_the_sender_before_the_rpc_allows_core_release() {
+    let harness = Harness::start().await;
+    *harness.analytics.delay.lock().unwrap() = Some(Duration::from_millis(100));
+    let mut client = harness.client().await;
+    client
+        .ok(
+            "telemetry.record",
+            json!({"operation":"update_install", "outcome":"succeeded"}),
+        )
+        .await;
+    // Do not use analytics(): its flush would mask an early RPC response.
+    let events = harness.analytics.events.lock().unwrap().clone();
+    assert!(operation(&events, "update_install", "succeeded").is_some());
+    harness.stop().await;
+}
+
+#[tokio::test]
 async fn analytics_belong_to_the_user_once_the_install_attaches_until_sign_out() {
     let harness = Harness::start().await;
     let mut client = harness.client().await;
@@ -2303,16 +2476,21 @@ async fn a_status_that_cannot_be_read_keeps_the_last_pause_for_incoming() {
         setup.probe.state.lock().unwrap().status = json!({"running": true, "paused": true});
     })
     .await;
-    // The start tick reads the person's pause; no session is kept yet.
-    eventually("the pause read", || {
-        !harness.probe.calls("status").is_empty()
+    // The upload watcher also reads status. Wait for supervision to apply
+    // its successful read and establish the inactive mailbox binding before
+    // making later reads fail; there is no kept session to activate it yet.
+    let incoming = harness.account.incoming.clone().unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while incoming.status().await.state != IncomingState::Unavailable {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     })
-    .await;
+    .await
+    .expect("supervision applied the initial paused status");
     harness.probe.state.lock().unwrap().status_fails = true;
     // The kept session wakes supervision, whose status read fails.
     keep_by_connect_workspace(&harness).await;
     assert!(mailbox_connected(&harness).await, "the mailbox activated");
-    let incoming = harness.account.incoming.clone().unwrap();
     assert_eq!(incoming.status().await.state, IncomingState::Paused);
     harness.stop().await;
 }

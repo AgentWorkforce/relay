@@ -70,10 +70,11 @@ final class FakeCore: @unchecked Sendable {
             return
         }
         stopped = true
-        let open = connections
         subscribers = []
+        // Serving threads remove and close under this lock. Keep their
+        // descriptors owned until all shutdown calls have completed.
+        for fd in connections { shutdown(fd, SHUT_RDWR) }
         lock.unlock()
-        for fd in open { shutdown(fd, SHUT_RDWR) }
         if let wake = try? CoreConnection(path: path) { wake.close() }
         unlink(path)
     }
@@ -106,6 +107,10 @@ final class FakeCore: @unchecked Sendable {
         lock.withLock { calls.filter { $0.method == method }.count }
     }
 
+    func allParams(_ method: String) -> [[String: Any]] {
+        lock.withLock { calls.filter { $0.method == method }.map { $0.params } }
+    }
+
     func lastParams(_ method: String) -> [String: Any]? {
         lock.withLock { calls.last { $0.method == method }?.params }
     }
@@ -135,9 +140,16 @@ final class FakeCore: @unchecked Sendable {
                 close(listener)
                 return
             }
-            var noSigPipe: Int32 = 1
-            setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
-            lock.withLock { connections.append(fd) }
+            let registered = lock.withLock { () -> Bool in
+                guard !stopped else { return false }
+                connections.append(fd)
+                return true
+            }
+            guard registered else {
+                close(fd)
+                close(listener)
+                return
+            }
             Thread { [weak self] in self?.serve(fd) }.start()
         }
     }
@@ -225,7 +237,8 @@ final class FakeCore: @unchecked Sendable {
                 guard var pointer = raw.baseAddress else { return }
                 var remaining = raw.count
                 while remaining > 0 {
-                    let written = write(fd, pointer, remaining)
+                    // A peer can disconnect while a reply/event is being sent.
+                    let written = Darwin.send(fd, pointer, remaining, MSG_NOSIGNAL)
                     if written < 0 {
                         if errno == EINTR { continue }
                         return

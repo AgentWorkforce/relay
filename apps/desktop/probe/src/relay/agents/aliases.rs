@@ -6,6 +6,50 @@ use crate::relay::contract::agents::Renamed;
 use crate::relay::store::RetiredAlias;
 use std::sync::PoisonError;
 
+/// A bounded native title is presentation metadata, never the agent's objective.
+pub(super) fn published_title(title: &str) -> String {
+    title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(200)
+        .collect()
+}
+
+/// Persist the latest native title and retry its publication for every alias.
+pub(crate) fn update_registered_title(
+    store: &mut Store,
+    source: &str,
+    id: &str,
+    title: &str,
+) -> bool {
+    // A partial discovery has no new title evidence; keep the last known one.
+    if title.trim().is_empty() {
+        return false;
+    }
+    let mut names = Vec::new();
+    for registration in &mut store.registrations {
+        if registration.target.kind.source() == source
+            && registration.target.id == id
+            && registration.title != title
+        {
+            registration.title = title.to_owned();
+            names.extend(registration.names());
+        }
+    }
+    let changed = !names.is_empty();
+    if changed {
+        let pending = store.pending_name_markers.get_or_insert_with(Vec::new);
+        for name in names {
+            if !pending.contains(&name) {
+                pending.push(name);
+            }
+        }
+    }
+    changed
+}
+
 /// An agent's push state across its name and its alias: the alias's when
 /// the name's is live but the alias's is not, so a failing alias channel is
 /// not shown as receiving.
@@ -40,6 +84,19 @@ pub(crate) fn is_listed(metadata: &Value) -> bool {
 }
 
 impl Core {
+    /// Compute after acquiring the name's roster lock and reloading its row.
+    pub(super) fn roster_status(&self, registration: &Registration, name: &str) -> &'static str {
+        let present = registration.archived_at.is_none()
+            && registration.missing_since.is_none()
+            && registration.display_name() == name
+            && (registration.spawn.is_none() || self.spawned_live().contains(&registration.target));
+        if present {
+            "active"
+        } else {
+            "idle"
+        }
+    }
+
     /// Gives the session a new name, its only shown name and sender, as an
     /// alias: a second Relaycast agent delivering into the same session. The
     /// registered name keeps forwarding until the agent leaves the relay; an
@@ -165,7 +222,12 @@ impl Core {
         let base = &registration.base_url;
         let workspace = self.relaycast_scope(base, key);
         let owner = self.agent_owner();
-        let mut metadata = self.metadata(&registration.target, None, owner.as_ref());
+        let mut metadata = self.metadata(
+            &registration.target,
+            &registration.title,
+            None,
+            owner.as_ref(),
+        );
         metadata.insert("alias_of".into(), json!(registration.name));
         let prefix = registration
             .machine_prefix
@@ -226,26 +288,55 @@ impl Core {
     /// it by) and is marked idle; the current name's marker is cleared.
     async fn publish_names(&self, registration: &Registration, key: &Secret) {
         for name in registration.names() {
-            self.publish_marker(registration, &name, key).await;
+            self.publish_marker(&name, key).await;
         }
     }
 
     /// Publishes `name`'s marker, or queues it to be tried again.
-    async fn publish_marker(&self, registration: &Registration, name: &str, key: &Secret) {
+    async fn publish_marker(&self, name: &str, key: &Secret) {
+        let lock = self.roster_locks.get(name);
+        let _publishing = lock.lock().await;
+        // A lifecycle pass may have completed while this write waited.
+        let Some(registration) = self.store.read(|s| s.registration_answering(name).cloned())
+        else {
+            return self.forget_name_marker(name);
+        };
         let current = registration.display_name();
         let renamed_to = if name == current { "" } else { current };
         let mut metadata = Map::new();
         metadata.insert("renamed_to".into(), json!(renamed_to));
-        let present = registration.missing_since.is_none() && renamed_to.is_empty();
-        let status = if present { "active" } else { "idle" };
+        metadata.insert(
+            "session_title".into(),
+            json!(published_title(&registration.title)),
+        );
+        let handoff_revision = self
+            .roster_revision
+            .load(std::sync::atomic::Ordering::SeqCst);
+        metadata.extend(self.mobile_handoff_metadata(&registration));
+        if matches!(
+            registration.target.kind,
+            SessionKind::OpenClaw | SessionKind::Hermes
+        ) {
+            metadata.insert("session_scope".into(), json!("agent"));
+        }
+        let status = self.roster_status(&registration, name);
         let base = &registration.base_url;
+        // Relaycast activates PATCHes with no status. Always send the current
+        // state, serialized with presence updates so older writes finish first.
         let result = client::update_agent_metadata(base, key, name, metadata, Some(status)).await;
         self.observe_relaycast_write_result(&self.relaycast_scope(base, key), &result);
         let name = name.to_owned();
         let _ = self.store.remember(|s| {
+            // A native title setter can publish while this PATCH is in flight.
+            // Only acknowledge the snapshot the server actually received.
+            let unchanged = s.registration_answering(&name) == Some(&registration)
+                && self
+                    .roster_revision
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    == handoff_revision;
             let list = s.pending_name_markers.get_or_insert_with(Vec::new);
             list.retain(|pending| pending != &name);
-            if result.is_err() {
+            if result.is_err() || !unchanged {
                 list.push(name);
             }
             if list.is_empty() {
@@ -254,14 +345,14 @@ impl Core {
         });
     }
 
-    /// Queues the markers of every renamed registration once after start:
-    /// one renamed by an earlier version has none on Relaycast yet.
+    /// Refresh titles and forwarding markers once after start, including
+    /// registrations created before titles were published to the roster.
     pub(super) fn backfill_name_markers(&self) {
         let _ = self.store.remember(|s| {
             let renamed: Vec<String> = s
                 .registrations
                 .iter()
-                .filter(|r| r.names().len() > 1)
+                .filter(|r| r.spawn.is_none() && r.archived_at.is_none())
                 .flat_map(Registration::names)
                 .collect();
             let list = s.pending_name_markers.get_or_insert_with(Vec::new);
@@ -311,7 +402,7 @@ impl Core {
             return;
         };
         if self.relaycast_write_allowed(&self.relaycast_scope(&registration.base_url, &key)) {
-            self.publish_marker(&registration, name, &key).await;
+            self.publish_marker(name, &key).await;
         }
     }
 
@@ -479,5 +570,47 @@ mod tests {
         assert_eq!(agent_push(&push, &aliased()), Some(waiting));
         let push = BTreeMap::from([("original".to_string(), PushState::Live)]);
         assert_eq!(agent_push(&push, &aliased()), Some(PushState::Live));
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+
+    fn registration(name: &str, kind: &str, id: &str) -> Registration {
+        serde_json::from_value(json!({
+            "name": name, "agentID": name, "target": {"kind": kind, "id": id},
+            "title": "Old title", "baseURL": "https://cast.example", "registeredAt": "2026-10-24T00:00:00Z"
+        })).unwrap()
+    }
+
+    #[test]
+    fn native_title_changes_queue_only_the_matching_provider_and_session() {
+        let mut store = Store::default();
+        store.registrations = vec![
+            registration("current", "codex", "same"),
+            registration("other", "claude-terminal", "same"),
+        ];
+        update_registered_title(&mut store, "codex", "same", "Fix delivery");
+        assert_eq!(store.registrations[0].title, "Fix delivery");
+        assert_eq!(store.registrations[1].title, "Old title");
+        assert_eq!(
+            store.pending_name_markers.as_deref(),
+            Some(["current".to_owned()].as_slice())
+        );
+        update_registered_title(&mut store, "codex", "same", "Fix delivery");
+        assert_eq!(store.pending_name_markers.as_ref().unwrap().len(), 1);
+        update_registered_title(&mut store, "codex", "same", "  ");
+        assert_eq!(store.registrations[0].title, "Fix delivery");
+        assert!(store
+            .registrations
+            .iter()
+            .all(|r| r.missing_since.is_none()));
+    }
+
+    #[test]
+    fn published_titles_are_bounded_single_line_metadata() {
+        assert_eq!(published_title("  Fix\n  delivery \t"), "Fix delivery");
+        assert_eq!(published_title(&"é".repeat(210)).chars().count(), 200);
     }
 }

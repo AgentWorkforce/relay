@@ -1,7 +1,7 @@
 import XCTest
+import Vision
 import SwiftUI
 import AppKit
-import Vision
 @testable import RelayDesktop
 @testable import RelayDesktopCore
 
@@ -62,6 +62,173 @@ final class AppModelTests: XCTestCase {
         core.on("uploader.sessions.include") { params in ["updated": (params["session_keys"] as? [String])?.count ?? 0] }
         core.on("uploader.pause") { _ in ["paused": true] }
         core.on("uploader.sharing.set") { params in ["sharing_mode": params["mode"] ?? "new"] }
+    }
+
+    func testInitialUsageWaitsForLegacyDiagnosticsOptOut() async {
+        defaults.set(false, forKey: LegacyMigration.analyticsEnabledKey)
+        let testCore = core!
+        core.on("telemetry.record") { [weak testCore] _ in
+            XCTAssertEqual(testCore?.lastParams("settings.set")?["analytics_enabled"] as? Bool, false,
+                           "Usage must not reach the core before the legacy opt-out")
+            return [:]
+        }
+        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))
+        let model = model()
+        await model.bootstrapIfNeeded()
+        defer { model.shutdown() }
+        let recorded = await eventually {
+            testCore.allParams("telemetry.record").contains { $0["operation"] as? String == "page_view" }
+        }
+        XCTAssertTrue(recorded)
+    }
+
+    func testUsageTelemetryTracksNavigationAndDebouncesSearchWithoutContent() async throws {
+        core.on("telemetry.record") { _ in [:] }
+        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))
+        let model = model()
+        await model.bootstrapIfNeeded()
+        defer { model.shutdown() }
+        let connected = await eventually { model.isCoreConnected && model.phase == .attached }
+        XCTAssertTrue(connected)
+        model.page = .team
+        model.agentSearch = "private query"
+        model.agentSearch = "private query revised"
+        let searched = await eventually {
+            self.core.allParams("telemetry.record").contains { $0["operation"] as? String == "search" }
+        }
+        XCTAssertTrue(searched)
+        model.agentSearch = ""
+        model.page = .settings(.general) // sidebar's direct assignment
+        model.showSettingsWindow(.general) // no duplicate view
+        model.agentsSheet = .message
+        let opened = await eventually {
+            self.core.allParams("telemetry.record").contains { $0["operation"] as? String == "message_composer" }
+        }
+        XCTAssertTrue(opened)
+        try await Task.sleep(nanoseconds: 650_000_000)
+        let events = core.allParams("telemetry.record")
+        let searches = events.filter { $0["operation"] as? String == "search" }
+        XCTAssertEqual(searches.count, 1)
+        XCTAssertEqual(searches.first?["surface"] as? String, "team")
+        XCTAssertEqual(events.filter { $0["operation"] as? String == "settings" }.count, 1)
+        XCTAssertTrue(events.contains { $0["operation"] as? String == "page_view" && $0["surface"] as? String == "team" })
+        let payload = String(data: try JSONSerialization.data(withJSONObject: events), encoding: .utf8)!
+        XCTAssertFalse(payload.contains("private"))
+    }
+
+    func testDestinationSearchAppliedBeforeNavigationIsRecorded() async throws {
+        core.on("telemetry.record") { _ in [:] }
+        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))
+        let model = model()
+        await model.bootstrapIfNeeded()
+        defer { model.shutdown() }
+        let launched = await eventually {
+            self.core.allParams("telemetry.record").contains { $0["operation"] as? String == "app_launch" }
+        }
+        XCTAssertTrue(launched)
+        model.page = .team
+        model.agentSearch = "private old page"
+        model.showLocalSessions(search: "private destination")
+        let searched = await eventually {
+            self.core.allParams("telemetry.record").contains { $0["operation"] as? String == "search" }
+        }
+        XCTAssertTrue(searched)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let events = core.allParams("telemetry.record").filter { $0["operation"] as? String == "search" }
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?["surface"] as? String, "sessions")
+    }
+
+    func testNavigationCancelsPendingSearchUsageEvenAfterReturning() async throws {
+        core.on("telemetry.record") { _ in [:] }
+        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))
+        let model = model()
+        await model.bootstrapIfNeeded()
+        defer { model.shutdown() }
+        let launched = await eventually {
+            self.core.allParams("telemetry.record").contains { $0["operation"] as? String == "app_launch" }
+        }
+        XCTAssertTrue(launched)
+        for page: DesktopPage in [.sessions, .agents, .team] {
+            model.page = page
+            if page == .sessions { model.sessionSearch = "private sessions" }
+            else { model.agentSearch = "private \(page)" }
+            model.showSettingsWindow(.general)
+            model.page = page // Returning must not revive the cancelled debounce.
+        }
+        model.agentSearch = "private composer transition"
+        model.agentsSheet = .message
+        model.agentsSheet = nil
+        try await Task.sleep(nanoseconds: 650_000_000)
+        XCTAssertFalse(core.allParams("telemetry.record").contains { $0["operation"] as? String == "search" })
+    }
+
+    func testMessageLinkAndSettingsRecordOnlyVisibleDestinations() async {
+        core.on("telemetry.record") { _ in [:] }
+        core.on("links.parse") { _ in ["kind": "message", "endpoint": "web@desk", "address": true] }
+        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))
+        let model = model()
+        await model.bootstrapIfNeeded()
+        defer { model.shutdown() }
+        let launched = await eventually {
+            self.core.allParams("telemetry.record").contains { $0["operation"] as? String == "app_launch" }
+        }
+        XCTAssertTrue(launched)
+        model.page = .team
+        let teamVisible = await eventually {
+            self.core.allParams("telemetry.record").contains { $0["surface"] as? String == "team" }
+        }
+        XCTAssertTrue(teamVisible)
+        let before = core.allParams("telemetry.record").count
+        model.openConnection(URL(string: "agentrelay://message?to=web%40desk")!)
+        let messageVisible = await eventually {
+            self.core.allParams("telemetry.record").contains {
+                $0["operation"] as? String == "page_view" && $0["surface"] as? String == "messages"
+            }
+        }
+        XCTAssertTrue(messageVisible)
+        model.showSettingsWindow(.general)
+        let settingsVisible = await eventually {
+            self.core.allParams("telemetry.record").contains { $0["operation"] as? String == "settings" }
+        }
+        XCTAssertTrue(settingsVisible)
+        let events = Array(core.allParams("telemetry.record").dropFirst(before))
+        XCTAssertEqual(events.filter { $0["operation"] as? String == "page_view" }
+            .compactMap { $0["surface"] as? String }, ["messages", "settings_general"])
+        XCTAssertEqual(events.filter { $0["operation"] as? String == "message_composer" }.count, 1)
+    }
+
+    func testColdMessageLinkRecordsComposerAfterDiagnosticsMigration() async {
+        let settingsGate = DispatchSemaphore(value: 0)
+        defer { settingsGate.signal() }
+        defaults.set(false, forKey: LegacyMigration.analyticsEnabledKey)
+        core.on("settings.get") { _ in
+            _ = settingsGate.wait(timeout: .now() + 5)
+            return Self.settings(analytics: true)
+        }
+        core.on("links.parse") { _ in ["kind": "message", "endpoint": "web@desk", "address": true] }
+        let testCore = core!
+        core.on("telemetry.record") { [weak testCore] _ in
+            XCTAssertEqual(testCore?.lastParams("settings.set")?["analytics_enabled"] as? Bool, false)
+            return [:]
+        }
+        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))
+        let model = model()
+        model.openConnection(URL(string: "agentrelay://message?to=web%40desk")!)
+        await model.bootstrapIfNeeded()
+        defer { model.shutdown() }
+        let opened = await eventually { model.agentsSheet == .message }
+        XCTAssertTrue(opened)
+        XCTAssertEqual(core.callCount("telemetry.record"), 0)
+        settingsGate.signal()
+        let recorded = await eventually {
+            self.core.allParams("telemetry.record").contains { $0["operation"] as? String == "message_composer" }
+        }
+        XCTAssertTrue(recorded)
+        await model.connectionRefresh?.value
+        let events = core.allParams("telemetry.record")
+        XCTAssertEqual(events.filter { $0["operation"] as? String == "message_composer" }.count, 1)
+        XCTAssertFalse(events.contains { $0["operation"] as? String == "page_view" && $0["surface"] as? String == "sessions" })
     }
 
     func testAccountMenuKeepsSettingsWithoutOfferingAgentThreadCreation() async throws {
@@ -521,6 +688,53 @@ final class AppModelTests: XCTestCase {
         await pause.value
     }
 
+    /// A Retry the core never received, because it could not be reached,
+    /// does not leave "reconnecting" on screen: once the core answers, the
+    /// message clears and the retry is sent, without another click.
+    func testARetryTheCoreNeverReceivedClearsAndIsSentOnceItAnswers() async {
+        core.on("uploader.retry") { _ in ["retried": true] }
+        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))
+        let model = model()
+        defer { model.shutdown() }
+        await model.bootstrapIfNeeded()
+        let attached = await eventually { model.phase == .attached && model.status != nil }
+        XCTAssertTrue(attached)
+        let path = core.path
+        core.stop()
+        let disconnected = await eventually { !model.isCoreConnected }
+        XCTAssertTrue(disconnected)
+        await model.retryUploads()
+        XCTAssertEqual(model.uploadActionError, CoreError.reconnecting.message)
+
+        core = FakeCore(path: path, pid: 4243)
+        core.on("uploader.retry") { _ in ["retried": true] }
+        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn, pid: 4243))
+        let recovered = await eventually(10) {
+            model.isCoreConnected && model.uploadActionError == nil && self.core.callCount("uploader.retry") == 1
+                && model.pendingUploadAction == nil
+        }
+        XCTAssertTrue(recovered)
+        // Sent once: later answers send nothing more.
+        await model.refreshStatus()
+        XCTAssertEqual(core.callCount("uploader.retry"), 1)
+
+        // A failure from a retry that reached the core keeps its message.
+        core.on("uploader.retry") { _ in throw FakeCore.Failure(kind: "internal", message: "The upload service refused.") }
+        await model.retryUploads()
+        XCTAssertEqual(model.uploadActionError, "The upload service refused.")
+        await model.refreshStatus()
+        XCTAssertEqual(model.uploadActionError, "The upload service refused.")
+        XCTAssertEqual(core.callCount("uploader.retry"), 2)
+    }
+
+    func testOnlyAFailureToReachTheCoreReadsAsNeverSent() {
+        XCTAssertTrue(CoreError.neverSent(CoreError.reconnecting.message))
+        XCTAssertTrue(CoreError.neverSent(CoreError.starting.message))
+        XCTAssertFalse(CoreError.neverSent(CoreError.interrupted.message))
+        XCTAssertFalse(CoreError.neverSent(CoreError.closed.message))
+        XCTAssertFalse(CoreError.neverSent("The upload service refused."))
+    }
+
     func testCoreRestartRestoresAnInterruptedChatDraft() async {
         let held = DispatchSemaphore(value: 0)
         defer { held.signal() }
@@ -543,6 +757,49 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(model.chat.error, CoreError.interrupted.message)
         held.signal()
         await send.value
+    }
+
+    func testChatInterruptionReportedBeforeDisconnectKeepsItsWarning() async {
+        core.on("chat.send") { _ in
+            throw FakeCore.Failure(kind: CoreError.interrupted.kind, message: CoreError.interrupted.message)
+        }
+        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))
+        let model = model()
+        defer { model.shutdown() }
+        await model.bootstrapIfNeeded()
+        let attached = await eventually { model.phase == .attached }
+        XCTAssertTrue(attached)
+        model.chat.draft = "Please check the restart"
+        // A write's pooled connection can report its failure before the
+        // subscription connection reports that the same core disconnected.
+        await model.chat.send()
+        XCTAssertFalse(model.chat.isSending)
+        XCTAssertEqual(model.chat.error, CoreError.interrupted.message)
+        model.chat.connectionInterrupted()
+        XCTAssertEqual(model.chat.draft, "Please check the restart")
+        XCTAssertEqual(model.chat.error, CoreError.interrupted.message)
+        core.on("chat.send") { _ in ["answered": true, "conversation": ["messages": [], "sending": false]] }
+        await model.chat.send()
+        XCTAssertNil(model.chat.error, "a new send clears the old interruption warning")
+    }
+
+    func testProjectsInterruptionReportedBeforeDisconnectKeepsItsWarning() async {
+        core.on("chat.projects.refresh") { _ in
+            throw FakeCore.Failure(kind: CoreError.interrupted.kind, message: CoreError.interrupted.message)
+        }
+        core.setStatus(FakeCore.snapshot(revision: 2, account: FakeCore.signedIn))
+        let model = model()
+        defer { model.shutdown() }
+        await model.bootstrapIfNeeded()
+        let attached = await eventually { model.phase == .attached }
+        XCTAssertTrue(attached)
+        model.chat.startProjectsRefresh()
+        let failed = await eventually { model.chat.projectsError == CoreError.interrupted.message }
+        XCTAssertTrue(failed)
+        model.chat.connectionInterrupted()
+        XCTAssertEqual(model.chat.projectsError, CoreError.interrupted.message)
+        model.chat.reset()
+        XCTAssertNil(model.chat.projectsError)
     }
 
     func testCachedHistoryAppearsWhileUploaderStatusIsHeld() async {
@@ -1699,7 +1956,7 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(core.callCount("account.sign_in"), 0)
     }
 
-    func testSignInReusesTheDefaultSessionFlow() async {
+    func testSignInRequestsGoogleAccountSelection() async {
         core.on("account.sign_in") { [core] _ in
             core!.setStatus(FakeCore.snapshot(revision: 5, account: ["state": "pending_approval", "phase": "waiting_for_browser"]))
             return ["state": "pending_approval", "phase": "waiting_for_browser",
@@ -1712,20 +1969,21 @@ final class AppModelTests: XCTestCase {
         let asked = await eventually { model.signInLink == "https://agentrelay.com/login?s=1" && model.phase == .waitingForBrowser }
         XCTAssertTrue(asked)
         let params = core.lastParams("account.sign_in")
-        XCTAssertNil(params?["flow"] as? String)
+        XCTAssertEqual(params?["flow"] as? String, "browser")
         XCTAssertEqual(params?["sharing"] as? String, "selected")
         XCTAssertEqual(params?["site_url"] as? String, "https://agentrelay.com")
         model.shutdown()
     }
 
-    func testUseAnotherAccountRequestsGoogleAccountSelection() async {
+    func testContinueAnywayStillRequestsGoogleAccountSelection() async {
         let model = model()
         await model.bootstrapIfNeeded()
         _ = await eventually { model.phase == .signedOut }
-        model.signIn(useAnotherAccount: true)
+        model.signIn(acknowledgeUninspectedSchedules: true)
         let asked = await eventually { self.core.callCount("account.sign_in") == 1 }
         XCTAssertTrue(asked)
         XCTAssertEqual(core.lastParams("account.sign_in")?["flow"] as? String, "browser")
+        XCTAssertEqual(core.lastParams("account.sign_in")?["acknowledge_uninspected_schedules"] as? Bool, true)
         model.shutdown()
     }
 

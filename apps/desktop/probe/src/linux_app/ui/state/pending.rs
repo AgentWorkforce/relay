@@ -1,19 +1,17 @@
 //! What the window shows before the core confirms a change: the settings
 //! with pending changes written over them, and the upload stage action
-//! asked for.
+//! asked for. A failure that only said the core could not be reached stops
+//! being true once the core answers: it clears without anyone dismissing it,
+//! and a retry or compact the core never received is sent then, as on the
+//! Mac (`AppModel.coreAnswered`).
 use super::*;
+use crate::linux_app::bridge::CoreError;
 use crate::linux_app::models::StageAction;
 
 impl State {
     /// The stage action the person asked for, until the uploader answers.
     pub fn pending_stage_action(&self) -> Option<StageAction> {
-        if self.retrying_uploads {
-            Some(StageAction::Retry)
-        } else if self.compacting_journal {
-            Some(StageAction::Compact)
-        } else {
-            None
-        }
+        self.pending_upload_action
     }
 
     // Settings as shown while changes are on their way.
@@ -232,5 +230,127 @@ mod pending_tests {
         assert!(state.is_paused());
         state.connection_interrupted();
         assert!(!state.is_paused());
+    }
+}
+
+impl State {
+    /// Record how an upload stage action ended. One the core never received
+    /// is sent again once it answers, at most once per click: `automatic`
+    /// marks that second send. Both actions are idempotent.
+    pub(crate) fn upload_action_finished(
+        &mut self,
+        action: StageAction,
+        error: Option<CoreError>,
+        automatic: bool,
+    ) {
+        self.unsent_upload_action = error
+            .as_ref()
+            .filter(|error| error.never_sent())
+            .map(|_| (action, !automatic));
+        self.upload_action_error = error.map(|error| error.message);
+    }
+
+    /// The core answered a call. Failures that only said it could not be
+    /// reached clear; failures from calls that reached it keep their message
+    /// until the next action. Returns the stage action to send again now.
+    pub(crate) fn core_answered(&mut self) -> Option<StageAction> {
+        if self
+            .upload_action_error
+            .as_deref()
+            .is_some_and(CoreError::never_sent_message)
+        {
+            self.upload_action_error = None;
+        }
+        self.upload_errors
+            .retain(|_, error| !CoreError::never_sent_message(error));
+        // Another change is under way: the next answer sends it instead.
+        if self.busy || self.pending_upload_action.is_some() {
+            return None;
+        }
+        let (action, replay) = self.unsent_upload_action.take()?;
+        replay.then_some(action)
+    }
+}
+
+#[cfg(test)]
+mod unsent_tests {
+    use super::*;
+    use crate::linux_app::bridge::Failure;
+    use crate::linux_app::install::InstallKind;
+
+    fn reconnecting() -> CoreError {
+        CoreError {
+            failure: Failure::Unavailable,
+            message:
+                "Agent Relay is reconnecting to its background service. Try again in a moment."
+                    .into(),
+            retryable: true,
+        }
+    }
+
+    #[test]
+    fn a_retry_that_never_reached_the_core_clears_and_is_sent_once_it_answers() {
+        let mut state = State::new(InstallKind::Source);
+        for error in [CoreError::unavailable(), reconnecting()] {
+            assert!(error.never_sent());
+            state.upload_action_finished(StageAction::Retry, Some(error), false);
+            assert!(state.upload_action_error.is_some());
+            state
+                .upload_errors
+                .insert("codex:a".into(), CoreError::unavailable().message);
+            assert_eq!(state.core_answered(), Some(StageAction::Retry));
+            assert_eq!(state.upload_action_error, None);
+            assert!(state.upload_errors.is_empty());
+            // Sent once: the next answer sends nothing more.
+            assert_eq!(state.core_answered(), None);
+        }
+
+        // The automatic send failing the same way clears, but is not sent a
+        // third time.
+        state.upload_action_finished(StageAction::Compact, Some(reconnecting()), true);
+        assert_eq!(state.core_answered(), None);
+        assert_eq!(state.upload_action_error, None);
+    }
+
+    #[test]
+    fn a_failure_from_the_core_keeps_its_message_and_is_not_sent_again() {
+        let mut state = State::new(InstallKind::Source);
+        for error in [
+            CoreError::interrupted(),
+            CoreError {
+                failure: Failure::Unavailable,
+                message: "The background service took too long to respond. Try again.".into(),
+                retryable: true,
+            },
+            CoreError {
+                failure: Failure::Core(crate::relay::protocol::ErrorKind::Internal),
+                message: "The upload service refused the batch.".into(),
+                retryable: false,
+            },
+        ] {
+            assert!(!error.never_sent(), "{}", error.message);
+            let message = error.message.clone();
+            state.upload_action_finished(StageAction::Retry, Some(error), false);
+            state
+                .upload_errors
+                .insert("codex:a".into(), message.clone());
+            assert_eq!(state.core_answered(), None);
+            assert_eq!(state.upload_action_error.as_deref(), Some(message.as_str()));
+            assert_eq!(state.upload_errors.len(), 1);
+        }
+        // A success clears nothing to send.
+        state.upload_action_finished(StageAction::Retry, None, false);
+        assert_eq!(state.core_answered(), None);
+    }
+
+    #[test]
+    fn an_unsent_action_waits_while_another_change_runs() {
+        let mut state = State::new(InstallKind::Source);
+        state.upload_action_finished(StageAction::Retry, Some(CoreError::unavailable()), false);
+        state.busy = true;
+        assert_eq!(state.core_answered(), None);
+        assert_eq!(state.upload_action_error, None);
+        state.busy = false;
+        assert_eq!(state.core_answered(), Some(StageAction::Retry));
     }
 }

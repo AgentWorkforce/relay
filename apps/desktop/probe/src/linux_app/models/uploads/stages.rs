@@ -170,5 +170,42 @@ mod tests {
             SessionUploadState::of(&queued, Some(&stalled)),
             SessionUploadState::Blocked
         );
+        assert!(!stalled.can_retry);
+    }
+
+    /// A transient failure that has lasted waits out its backoff on its own,
+    /// and Retry tries again at once; a rate limit only waits. As on the Mac.
+    #[test]
+    fn a_lasting_transient_failure_offers_a_retry_and_a_rate_limit_does_not() {
+        let transient = view(json!({"stage": "needs_attention",
+            "stage_message": "The upload service is temporarily unavailable.",
+            "delivery": {"stopped": false, "failure_code": "transient"}}));
+        assert!(transient.can_retry);
+        let queued = row(json!({"included": true, "status": "queued"}));
+        assert_eq!(
+            SessionUploadState::of(&queued, Some(&transient)),
+            SessionUploadState::Blocked
+        );
+        let summary = UploadSummary::new(&transient, &[], 0);
+        let stages = upload_stages(
+            true,
+            3,
+            1,
+            false,
+            None,
+            Some(&transient),
+            Some(&summary),
+            None,
+        );
+        assert_eq!(stages[2].action, Some(StageAction::Retry));
+
+        let limited = view(json!({"stage": "needs_attention",
+            "stage_message": "The upload service asked to slow down.",
+            "delivery": {"stopped": false, "failure_code": "rate_limited"}}));
+        assert!(!limited.can_retry);
+        // A transient failure still making progress is a calm upload.
+        let calm = view(json!({"stage": "uploading",
+            "delivery": {"stopped": false, "failure_code": "transient"}}));
+        assert!(!calm.can_retry);
     }
 }

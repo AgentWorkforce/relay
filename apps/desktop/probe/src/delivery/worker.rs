@@ -22,6 +22,9 @@
 //! both merely delays this drain; its result is still discarded when the lease
 //! was lost, and nothing is acknowledged.
 
+mod session;
+pub use session::DrainSession;
+
 use super::{
     claim_batch, claim_next, compact_receipts, job_ids, prepare_batch_from, record_failure,
     recover_conflict_classified, release_stopped_claim, renew_lease, renew_window, settle, status,
@@ -433,134 +436,7 @@ pub fn drain(
     clock: &(dyn Fn() -> i64 + Sync),
     cancelled: &(dyn Fn() -> bool + Sync),
 ) -> Result<DrainResult> {
-    let drain_started = Instant::now();
-    range(options.max_batches as i64, "max_batches", 1, 10_000)?;
-    range(
-        options.max_prepare_steps as i64,
-        "max_prepare_steps",
-        1,
-        10_000,
-    )?;
-    range(options.lease_ms, "lease_ms", 30, 86_400_000)?;
-    range(
-        options.request_timeout_ms,
-        "request_timeout_ms",
-        1,
-        3_600_000,
-    )?;
-    range(
-        options.max_in_flight as i64,
-        "max_in_flight",
-        1,
-        MAX_IN_FLIGHT as i64,
-    )?;
-    if let Some(limit) = options.max_elapsed {
-        range(
-            i64::try_from(limit.as_millis()).unwrap_or(i64::MAX),
-            "max_elapsed_ms",
-            1,
-            86_400_000,
-        )?;
-    }
-    let conn = super::open_db(db_path)?;
-    // The drain's own open above prepared the store; the keepalive only
-    // renews leases, so it is a plain connection, which reads the schema only
-    // if a renewal runs.
-    let keepalive = super::open_connection(db_path)?;
-    // The shared busy policy retries for about thirty seconds, which is right
-    // for a sync that must not give up and exactly wrong for a keepalive: a
-    // renewal that waits thirty seconds to protect a lease shorter than that
-    // has already lost the thing it was protecting, and it made the decision
-    // inside a busy handler that has never heard of the deadline. Bound it so
-    // contention comes back to the renewal loop, which does know.
-    keepalive.busy_timeout(Duration::from_millis(keepalive_busy_timeout_ms(
-        options.lease_ms,
-    )))?;
-    let keepalive = Mutex::new(keepalive);
-    // Only the ids: each chosen job's status is read once, when the drain
-    // ends.
-    let listed = job_ids(&conn)?;
-    let selection = options.job_ids.as_deref();
-    if let Some(ids) = selection {
-        if ids.iter().any(|id| !listed.contains(id)) {
-            bail!("INVALID_ARGUMENT: unknown delivery job selection");
-        }
-    }
-    let jobs: Vec<String> = listed
-        .into_iter()
-        .filter(|job_id| chosen(selection, job_id))
-        .collect();
-    // The budget covers delivery, so the clock starts once the drain's own
-    // maintenance is done: on a loaded host, setup alone can outlast a short
-    // budget and leave the drain no time to deliver anything.
-    let mut worker = Worker {
-        conn,
-        keepalive: &keepalive,
-        receivers,
-        options,
-        clock,
-        cancelled,
-        started: Instant::now(),
-        attempts: 0,
-        prepare_steps: 0,
-        issues: Vec::new(),
-        failure: None,
-        metrics: DrainMetrics::default(),
-        store: None,
-        shared_turns: jobs.len() > 1,
-    };
-    // Round-robin jobs: one failed destination never consumes another's cursor.
-    let mut progressed = true;
-    while progressed && worker.budget() && !cancelled() {
-        progressed = false;
-        for job_id in &jobs {
-            if !worker.budget() || cancelled() {
-                break;
-            }
-            match worker.step(job_id) {
-                Ok(Step::Progressed) => progressed = true,
-                Ok(Step::Idle) => {}
-                Ok(Step::Unregistered) => {
-                    worker.issue(job_id, DrainIssueCode::DestinationNotRegistered, None)
-                }
-                // A receiver verdict never reaches here: it is classified and
-                // recorded under the lease. Only local state errors escape.
-                Err(error) => {
-                    let (code, detail) = if preparation_failed(&error) {
-                        (
-                            DrainIssueCode::PreparationFailed,
-                            "preparing an upload batch failed",
-                        )
-                    } else {
-                        (
-                            DrainIssueCode::DeliveryStateFailed,
-                            "delivery state operation failed",
-                        )
-                    };
-                    worker.issue(job_id, code, Some(detail.into()));
-                    worker.failure.get_or_insert(error);
-                }
-            }
-        }
-    }
-    let statuses = jobs
-        .iter()
-        .map(|job_id| status(&worker.conn, job_id))
-        .collect::<Result<_>>()?;
-    // Receipts the drain settled are released as its closing work, so a
-    // spent batch budget does not skip it; only a host stop ends it early.
-    compact(&worker.conn, &|| !cancelled())?;
-    let mut metrics = worker.metrics;
-    metrics.elapsed_ms = millis(drain_started.elapsed());
-    Ok(DrainResult {
-        attempts: worker.attempts,
-        statuses,
-        issues: worker.issues,
-        failure: worker
-            .failure
-            .map(|error| LocalFailure(std::sync::Arc::new(error))),
-        metrics,
-    })
+    session::drain_once(db_path, receivers, options, clock, cancelled)
 }
 
 /// The most batches [`DrainOptions::max_in_flight`] may allow at once.
@@ -577,7 +453,7 @@ enum Step {
 }
 
 struct Worker<'a> {
-    conn: Connection,
+    conn: &'a Connection,
     keepalive: &'a Mutex<Connection>,
     receivers: &'a dyn Receivers,
     options: &'a DrainOptions,
@@ -592,7 +468,7 @@ struct Worker<'a> {
     /// The read-only store batches are prepared from, opened by the first
     /// step that prepares one and dropped after a failed preparation, so
     /// the next step opens it again.
-    store: Option<ai_hist::SessionStore>,
+    store: &'a mut Option<ai_hist::SessionStore>,
     /// Whether other jobs share this drain, which bounds a pipelined turn.
     shared_turns: bool,
 }
@@ -758,7 +634,7 @@ impl<'a> Worker<'a> {
             published,
         );
         if prepared.is_ok() {
-            self.store = Some(store);
+            *self.store = Some(store);
         }
         prepared
     }

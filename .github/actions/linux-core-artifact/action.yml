@@ -1,0 +1,38 @@
+name: Checked Linux core artifact
+description: Restore the same architecture, commit and version that passed Zig/glibc validation in this run.
+inputs:
+  arch:
+    description: x64 or arm64 artifact architecture
+    required: true
+  rust-target:
+    description: Expected native GNU Linux target
+    required: true
+  probe-version:
+    description: Expected embedded core version
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: ci-linux-core-${{ inputs.arch }}-${{ github.sha }}
+        path: apps/desktop/probe-build
+    - name: Verify the checked core and restore executable mode
+      shell: bash
+      working-directory: apps/desktop
+      env:
+        EXPECTED_TARGET: ${{ inputs.rust-target }}
+        EXPECTED_ARCH: ${{ inputs.arch }}
+        EXPECTED_VERSION: ${{ inputs.probe-version }}
+        EXPECTED_REVISION: ${{ github.sha }}
+      run: |
+        case "$EXPECTED_ARCH:$EXPECTED_TARGET" in
+          x64:x86_64-unknown-linux-gnu|arm64:aarch64-unknown-linux-gnu) ;;
+          *) echo 'Invalid Linux core architecture/target pair' >&2; exit 1 ;;
+        esac
+        test "$(cat probe-build/source-revision.txt)" = "$EXPECTED_REVISION"
+        test "$(cat probe-build/rust-target.txt)" = "$EXPECTED_TARGET"
+        test "$(cat probe-build/probe-version.txt)" = "$EXPECTED_VERSION"
+        (cd probe-build && sha256sum --check agent-relay-probe.sha256)
+        # Artifact downloads deliberately normalize permissions to 0644.
+        chmod 0755 probe-build/agent-relay-probe

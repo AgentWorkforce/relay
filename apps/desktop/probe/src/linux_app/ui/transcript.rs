@@ -354,7 +354,7 @@ impl App {
             let weak = self.downgrade();
             widget.connect_clicked(move |_| {
                 if let Some(app) = weak.upgrade() {
-                    app.load_transcript(more);
+                    app.load_transcript(more, false);
                 }
             });
         }
@@ -388,7 +388,7 @@ impl App {
         }
         page.scroll.vadjustment().set_value(0.0);
         self.render_transcript_controls();
-        self.load_transcript(false);
+        self.load_transcript(false, false);
         self.refresh_session_title_cells();
         let selected = page.selected.borrow().clone();
         if let Some(row) = selected {
@@ -542,7 +542,7 @@ impl App {
         self.render_spawn_join();
     }
 
-    pub(super) fn load_transcript(&self, more: bool) {
+    pub(super) fn load_transcript(&self, more: bool, following: bool) {
         let Some(shell) = self.shell() else {
             return;
         };
@@ -573,7 +573,7 @@ impl App {
         page.retry.set_visible(false);
         page.refresh.set_sensitive(false);
         let requested_cursor = cursor.clone();
-        self.transcript_page(agent.clone(), LocalTranscriptParams { source: row.source().into(), session_id, cursor }, move |app, result| {
+        self.transcript_page(agent.clone(), LocalTranscriptParams { source: row.source().into(), session_id, cursor, following }, move |app, result| {
             let Some(shell) = app.shell() else { return; };
             let page = &shell.pages.sessions.transcript;
             if page.generation.get() != generation { return; }
@@ -602,7 +602,7 @@ impl App {
                     page.notice.set_text("No local transcript available\nThis session’s contents are not available on this machine.");
                     page.notice.set_visible(empty);
                     let more = page.cursor.borrow().is_some();
-                    if more && page.root.get_visible() { app.load_transcript(true); }
+                    if more && page.root.get_visible() { app.load_transcript(true, following); }
                 }
                 Err(error) => {
                     page.notice.set_text(&format!("Couldn’t read this session\n{}", error.message));

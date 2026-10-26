@@ -292,11 +292,11 @@ pub(super) fn unqueued(
     cursor: i64,
     scoped: bool,
 ) -> Result<i64> {
-    let Ok(origin) = Origin::read(conn) else {
+    let Some(origin) = status::origin(conn)? else {
         return Ok(0);
     };
     let store = store(conn)?;
-    let head = store.head_revision()?;
+    let head = status::checked_head(conn, &store)?;
     let from = if !same_feed(conn, &store, origin.feed_epoch, head)? {
         // A replaced database: the next preparation restarts the job.
         Watermark::START

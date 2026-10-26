@@ -69,8 +69,7 @@ impl State {
         // for falls back to the last confirmed state.
         self.sharing_mode_wanted.clear();
         self.paused_wanted.clear();
-        self.retrying_uploads = false;
-        self.compacting_journal = false;
+        self.pending_upload_action = None;
         self.pending_settings.clear();
         self.settings = self.confirmed_settings.clone();
         self.releasing.clear();
@@ -141,6 +140,7 @@ impl State {
         self.session_selection.clear();
         self.hiding_sessions.clear();
         self.upload_action_error = None;
+        self.unsent_upload_action = None;
         self.session_error = None;
         self.people.clear();
         self.roster.clear();

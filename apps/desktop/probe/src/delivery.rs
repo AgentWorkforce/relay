@@ -29,9 +29,17 @@
 //! `revision_base`, which keeps every revision above the highest this origin
 //! has sent, including across a replaced database.
 
+mod counters;
+mod database;
+pub use counters::reconcile as reconcile_status_counters;
+pub(crate) use database::DatabaseIdentity;
+pub use database::{is_upgrade_pending, UpgradePending};
+pub use pending::read as pending_sessions;
 mod feed;
+mod pending;
 mod schema;
 mod sessions;
+mod status;
 use feed::record_from_change;
 pub use feed::{SessionStates, StatusCache, UploadPositions};
 pub use sessions::{
@@ -39,9 +47,16 @@ pub use sessions::{
     job_delegated_sessions, job_selected_sessions, job_session_included, job_sessions,
     native_grok_subagent, set_job_session, sync_delegated_members,
 };
+pub use status::{progress_status, status};
 
+mod retry;
 pub mod worker;
 use anyhow::{ensure, Context, Result};
+use retry::retry_backoff_ms;
+pub use retry::{
+    clamp_transient_wait, retry_job, retry_job_for_build, retry_requested,
+    RATE_LIMITED_BACKOFF_CEILING_MS, TRANSIENT_BACKOFF_CEILING_MS,
+};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -713,71 +728,6 @@ fn create_job_inner(
     }
     tx.commit()?;
     status(conn, &id)
-}
-
-pub fn status(conn: &Connection, job_id: &str) -> Result<DeliveryStatus> {
-    status_counting(conn, job_id, true)
-}
-
-/// [`status`] for a progress report, which reads `unqueued_changes` only to
-/// tell whether a job that finished its bootstrap has work left. Before the
-/// bootstrap completes the feed is not scanned and `unqueued_changes` is 0,
-/// so a report every few seconds during a backlog does not read hundreds of
-/// changes each time.
-pub fn progress_status(conn: &Connection, job_id: &str) -> Result<DeliveryStatus> {
-    status_counting(conn, job_id, false)
-}
-
-fn status_counting(conn: &Connection, job_id: &str, always: bool) -> Result<DeliveryStatus> {
-    let mut job = job(conn, job_id)?;
-    let scoped = is_session_job(conn, job_id)?;
-    if scoped {
-        job.caught_up = !conn.query_row("SELECT EXISTS(SELECT 1 FROM delivery_session_members WHERE job_id=? AND bootstrap_done=0)", [job_id], |r| r.get::<_, bool>(0))?;
-    }
-    let (pending_records,pending_bytes,oldest_pending_ms): (i64,i64,Option<i64>) = conn.query_row("SELECT COALESCE(SUM(records),0),COALESCE(SUM(bytes+COALESCE(length(CAST(prepared AS BLOB)),0)),0),MIN(created_ms) FROM delivery_batches WHERE job_id=? AND state IN ('pending','leased','retry_wait','blocked')", [job_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?;
-    let quarantined_records: i64 = if conn.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='delivery_quarantine')", [], |row| row.get::<_, bool>(0))? {
-        conn.query_row("SELECT COUNT(*) FROM delivery_quarantine WHERE job_id=?", [job_id], |row| row.get(0))?
-    } else { 0 };
-    // Status never fails on the feed, so an unreadable feed reads as none.
-    let unqueued_changes = if always || job.caught_up {
-        feed::unqueued(conn, &job.config.selection, job_id, job.cursor, scoped).unwrap_or(0)
-    } else {
-        0
-    };
-    // Read-only status can run beside an older collector before this build is
-    // allowed to migrate its store. That legacy schema has no skip counter.
-    let skipped = if schema::column_exists(conn, "delivery_jobs", "skipped_records")? {
-        "skipped_records"
-    } else {
-        "0"
-    };
-    let query = format!("SELECT acknowledged_cursor,next_attempt_ms,last_attempt_ms,attempts,last_acknowledged_ms,acceptance_level,failure,{skipped},suppressed_records,acknowledged_records FROM delivery_jobs WHERE id=?");
-    conn.query_row(&query, [job_id], |row| {
-        Ok(DeliveryStatus {
-            job_id: job.id.clone(),
-            config: job.config.clone(),
-            generation: job.generation,
-            state: job.state.clone(),
-            bootstrap_complete: job.caught_up,
-            journal_cursor: job.cursor,
-            acknowledged_cursor: row.get(0)?,
-            pending_records,
-            pending_bytes,
-            oldest_pending_ms,
-            unqueued_changes,
-            next_attempt_ms: row.get(1)?,
-            last_attempt_ms: row.get(2)?,
-            attempts: row.get(3)?,
-            last_acknowledged_ms: row.get(4)?,
-            acceptance_level: row.get(5)?,
-            failure: row.get(6)?,
-            skipped_records: row.get(7)?,
-            quarantined_records,
-            suppressed_records: row.get(8)?,
-            acknowledged_records: row.get(9)?,
-        })
-    })
-    .map_err(Into::into)
 }
 
 /// What a worker needs to decide whether to step a job: its state, when it
@@ -2279,19 +2229,16 @@ fn apply_failure(
         [&lease.job_id],
         |row| row.get(0),
     )?;
-    let backoff = 1_000_i64
-        .saturating_mul(1_i64 << attempts.clamp(0, 12))
-        .min(3_600_000);
-    let digest = Sha256::digest(format!("{}:{attempts}", lease.batch_id));
-    let jitter = (u16::from_be_bytes([digest[0], digest[1]]) as i64) * backoff / 327_675;
     let next = now_ms
-        .saturating_add(backoff + jitter)
+        .saturating_add(retry_backoff_ms(failure, attempts, &lease.batch_id))
         .max(retry_after_ms.unwrap_or(0));
     let retryable = failure.retryable();
     // Several batches of one window can fail. The latest retry deadline
     // stands, and a job one of them blocked stays blocked under the verdict
-    // that blocked it.
-    conn.execute("UPDATE delivery_jobs SET state=CASE WHEN ?1 AND state<>'blocked' THEN 'active' ELSE 'blocked' END,failure=CASE WHEN state='blocked' AND failure IS NOT NULL THEN failure ELSE ?2 END,next_attempt_ms=MAX(next_attempt_ms,?3) WHERE id=?4",params![retryable,failure.code(),next,lease.job_id])?;
+    // that blocked it. A rate limit whose wait still stands is not reported
+    // as a sibling's later transient failure: that wait is the receiver's,
+    // and an explicit retry must not end it (`retry_requested`).
+    conn.execute("UPDATE delivery_jobs SET state=CASE WHEN ?1 AND state<>'blocked' THEN 'active' ELSE 'blocked' END,failure=CASE WHEN state='blocked' AND failure IS NOT NULL THEN failure WHEN failure='rate_limited' AND ?2='transient' AND next_attempt_ms>?5 THEN failure ELSE ?2 END,next_attempt_ms=MAX(next_attempt_ms,?3) WHERE id=?4",params![retryable,failure.code(),next,lease.job_id,now_ms])?;
     conn.execute(
         "UPDATE delivery_batches SET state=? WHERE id=?",
         params![
@@ -2521,69 +2468,6 @@ pub fn pause_job(conn: &Connection, job_id: &str) -> Result<DeliveryStatus> {
 /// Resume only a paused job. State and failure checks share the write transaction.
 pub fn resume_job(conn: &Connection, job_id: &str) -> Result<DeliveryStatus> {
     change_state(conn, job_id, JobTransition::Resume)
-}
-pub fn retry_job(conn: &Connection, job_id: &str) -> Result<DeliveryStatus> {
-    let tx = write_transaction(conn)?;
-    reset_job_retry(&tx, job_id)?;
-    tx.commit()?;
-    status(conn, job_id)
-}
-
-/// Retry a blocked verdict once per build, atomically recording the build with
-/// the job transition. History retains every build, including after rollbacks.
-/// A legacy file marker may be imported only when it explicitly names this job.
-/// Active, paused and cancelled jobs record the build without changing state.
-pub fn retry_job_for_build(
-    conn: &Connection,
-    job_id: &str,
-    build: &str,
-    legacy_build: Option<&str>,
-) -> Result<()> {
-    let tx = write_transaction(conn)?;
-    let current = job(&tx, job_id)?;
-    let recorded: Option<String> = tx.query_row(
-        "SELECT retry_build FROM delivery_jobs WHERE id=?",
-        [job_id],
-        |row| row.get(0),
-    )?;
-    // Keep the former single-build column for older probes. Import it here as
-    // well as during migration in case an older probe has run since migration.
-    for previous in recorded.as_deref().into_iter().chain(legacy_build) {
-        tx.execute(
-            "INSERT OR IGNORE INTO delivery_job_builds(job_id,build) VALUES (?,?)",
-            params![job_id, previous],
-        )?;
-    }
-    let first_run = tx.execute(
-        "INSERT OR IGNORE INTO delivery_job_builds(job_id,build) VALUES (?,?)",
-        params![job_id, build],
-    )? == 1;
-    if first_run && current.state == "blocked" {
-        reset_job_retry(&tx, job_id)?;
-    }
-    tx.execute(
-        "UPDATE delivery_jobs SET retry_build=?1 WHERE id=?2 AND retry_build IS NOT ?1",
-        params![build, job_id],
-    )?;
-    tx.commit()?;
-    Ok(())
-}
-
-fn reset_job_retry(conn: &Connection, job_id: &str) -> Result<()> {
-    ensure!(
-        job(conn, job_id)?.state != "cancelled",
-        "delivery job is cancelled"
-    );
-    conn.execute("UPDATE delivery_jobs SET state='active',failure=NULL,next_attempt_ms=0,fence=fence+1,worker_id=NULL,lease_until_ms=NULL WHERE id=?",[job_id])?;
-    conn.execute("UPDATE delivery_batches SET state='pending' WHERE job_id=? AND state IN ('leased','blocked','retry_wait')",[job_id])?;
-    // Provisional singleton rejections may all have come from a receiver-wide
-    // or schema failure. An explicit/build retry re-tests them after the
-    // receiver or probe changes; accepted and proven-suppressed progress stays.
-    conn.execute(
-        "UPDATE delivery_batches SET rejected_revision_ids='[]',isolation_frontier='[]' WHERE job_id=?",
-        [job_id],
-    )?;
-    Ok(())
 }
 /// Explicit discard, separate from pause. Already accepted remote data is not
 /// deleted. A later create_job starts a new generation and historical backfill.
@@ -3022,30 +2906,6 @@ fn open_connection(path: &std::path::Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// Local history predates the schema this build reads, and the migration is
-/// waiting for the collector. On a large store it runs for minutes, so only
-/// the collector lock's holder, which no caller's timeout can kill, runs it:
-/// a killed migration rolls back, and every other process that tried it would
-/// hold the writer lock just long enough to starve the one that could finish.
-#[derive(Debug)]
-pub struct UpgradePending;
-impl std::fmt::Display for UpgradePending {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("local history is waiting for the collector to upgrade it")
-    }
-}
-impl std::error::Error for UpgradePending {}
-/// Whether `error` is local history waiting for its upgrade: [`UpgradePending`]
-/// or the store refusing a read the upgrade has not reached yet.
-pub fn is_upgrade_pending(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        cause.is::<UpgradePending>()
-            || cause
-                .downcast_ref::<ai_hist::Error>()
-                .is_some_and(ai_hist::Error::is_stale_schema)
-    })
-}
-
 /// Refuse, as [`UpgradePending`], a store the collector has not yet upgraded
 /// to the schema this build reads, including one that predates only the
 /// change feed, which opens and lists sessions as before.
@@ -3057,6 +2917,8 @@ pub fn ensure_current(path: &std::path::Path) -> Result<()> {
 /// the collector lock. Migrates the evidence store, creates the upload tables,
 /// and rebuilds an install whose uploads still ran on the export journal.
 pub fn open_db(path: &std::path::Path) -> Result<Connection> {
+    #[cfg(test)]
+    DATABASE_OPENS.with(|count| count.set(count.get() + 1));
     create_parent(path)?;
     let mut options = ai_hist::StoreOptions::default();
     options.db_path = Some(path.to_path_buf());
@@ -3066,8 +2928,15 @@ pub fn open_db(path: &std::path::Path) -> Result<Connection> {
     // writable open above has just migrated the store, so the read-only
     // check the feed's open makes cannot fail here.
     schema::rebuild(&conn, || feed::store(&conn))?;
+    // Derived baselines may read retained payloads or build historical indexes.
+    // Only the unkillable collector owner performs their first initialization.
+    counters::init(&conn)?;
+    pending::init(&conn)?;
     Ok(conn)
 }
+
+#[cfg(test)]
+thread_local! { static DATABASE_OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 /// Open evidence and upload state for a control action that may run beside a
 /// collector: pause, resume, compaction. Creates missing tables but never
 /// rebuilds or migrates, which only the collector lock's holder may do: a
@@ -3111,6 +2980,57 @@ pub fn open_db_readonly(path: &std::path::Path) -> Result<Connection> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_opens_leave_historical_derived_initialization_to_the_collector() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("history.db");
+        let control = open_control_db(&path).unwrap();
+        control.execute("INSERT INTO delivery_batches(id,job_id,state,payload,records,bytes,journal_end,created_ms) VALUES('batch','job','pending',?,3,80,1,10)", [r#"{"records":[{"source":"codex","session_id":"candidate"}]}"#]).unwrap();
+        control.execute_batch("INSERT INTO delivery_quarantine VALUES('job','parent','revision','record','payload','submitted','current',1);").unwrap();
+        drop(control);
+        let control = open_control_db(&path).unwrap();
+        reconcile_status_counters(&control).unwrap();
+        for name in [
+            "delivery_status_counters",
+            "delivery_pending_sessions",
+            "delivery_quarantine_job",
+        ] {
+            let exists: bool = control
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?)",
+                    [name],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(!exists, "control helper must not build historical {name}");
+        }
+        assert_eq!(
+            counters::read(&control, "job").unwrap(),
+            (3, 80, 1),
+            "legacy status remains readable"
+        );
+        assert!(pending_sessions(&control, "job", &[])
+            .unwrap_err()
+            .is::<UpgradePending>());
+        drop(control);
+        let owner = open_db(&path).unwrap();
+        assert_eq!(counters::read(&owner, "job").unwrap(), (3, 80, 1));
+        let candidate = SessionIdentity {
+            source: "codex".into(),
+            session_id: "candidate".into(),
+        };
+        assert_eq!(
+            pending_sessions(&owner, "job", &[candidate.clone()])
+                .unwrap()
+                .get(&candidate),
+            Some(&false)
+        );
+        owner
+            .execute("DELETE FROM delivery_batches WHERE id='batch'", [])
+            .unwrap();
+        assert_eq!(counters::read(&owner, "job").unwrap(), (0, 0, 1));
+    }
 
     /// A claude.ai cloud session has no folder of its own: its consent is
     /// its login's (`claude_dirs::cloud_sessions_shared`), never a place in
@@ -3747,6 +3667,270 @@ mod tests {
         assert_eq!(recovered.next_attempt_ms, 0);
         assert_eq!(recovered.acknowledged_records, 10);
         assert_eq!(recovered.acknowledged_cursor, recovered.journal_cursor);
+    }
+
+    /// A transient failure's backoff doubles from 1 s and stops at five
+    /// minutes plus jitter, so a receiver that recovers after an outage of
+    /// hours is tried again within six minutes. A rate limit keeps growing to
+    /// an hour.
+    #[test]
+    fn transient_backoff_stops_at_five_minutes_and_rate_limits_keep_growing() {
+        for attempts in 0..=20 {
+            let exact = 1_000_i64 << attempts.min(12);
+            let transient = retry_backoff_ms(DeliveryFailure::Transient, attempts, "batch");
+            let floor = exact.min(TRANSIENT_BACKOFF_CEILING_MS);
+            assert!(
+                (floor..=floor + floor / 5).contains(&transient),
+                "attempts {attempts}: {transient}"
+            );
+            let limited = retry_backoff_ms(DeliveryFailure::RateLimited, attempts, "batch");
+            let floor = exact.min(RATE_LIMITED_BACKOFF_CEILING_MS);
+            assert!(
+                (floor..=floor + floor / 5).contains(&limited),
+                "attempts {attempts}: {limited}"
+            );
+        }
+        // The incident: fifteen failures used to schedule the next attempt
+        // about twenty minutes out (2^10 s plus jitter, before the hour cap).
+        assert!(retry_backoff_ms(DeliveryFailure::Transient, 15, "batch") <= 360_000);
+        assert!(retry_backoff_ms(DeliveryFailure::RateLimited, 15, "batch") >= 3_600_000);
+        // Not every computer retries in the same instant.
+        let spread: HashSet<i64> = (0..8)
+            .map(|n| retry_backoff_ms(DeliveryFailure::Transient, 15, &format!("batch-{n}")))
+            .collect();
+        assert!(spread.len() > 1, "{spread:?}");
+    }
+
+    /// An explicit retry wakes an active job waiting out a transient backoff:
+    /// its batch is claimable at once and its attempts are kept. A live lease,
+    /// a rate-limited wait, a paused job and a cancelled one are left alone.
+    #[test]
+    fn an_explicit_retry_wakes_a_transient_backoff_and_nothing_else() {
+        let (_directory, conn, job_id) = windowed_job(4);
+        let store = feed::store(&conn).unwrap();
+        prepare_batch_from(&conn, &store, &job_id, 0, 3, PublishedLimits::default()).unwrap();
+        let clock = || 1_000;
+        let first = claim_batch(&conn, &job_id, "worker", 30_000, &clock)
+            .unwrap()
+            .unwrap();
+        persisted(&conn, &first, &clock);
+        record_failure(
+            &conn,
+            &first.lease,
+            DeliveryFailure::Transient,
+            None,
+            &clock,
+        )
+        .unwrap();
+        let waiting = status(&conn, &job_id).unwrap();
+        assert!(waiting.next_attempt_ms > 1_000);
+        assert!(claim_batch(&conn, &job_id, "worker", 30_000, &clock)
+            .unwrap()
+            .is_none());
+
+        assert!(retry_requested(&conn, &job_id, 1_000).unwrap());
+        let woken = status(&conn, &job_id).unwrap();
+        assert_eq!(woken.state, "active");
+        assert_eq!(woken.failure, None);
+        assert_eq!(woken.next_attempt_ms, 0);
+        assert_eq!(woken.attempts, waiting.attempts);
+        // Nothing is waiting any more, so a second retry changes nothing.
+        assert!(!retry_requested(&conn, &job_id, 1_000).unwrap());
+        let again = claim_batch(&conn, &job_id, "worker", 30_000, &clock)
+            .unwrap()
+            .unwrap();
+        assert_eq!(again.batch.batch_id, first.batch.batch_id);
+
+        // A batch in flight keeps its lease, whatever the job's failure says.
+        conn.execute(
+            "UPDATE delivery_jobs SET failure='transient',next_attempt_ms=999999 WHERE id=?",
+            [&job_id],
+        )
+        .unwrap();
+        assert!(!retry_requested(&conn, &job_id, 1_000).unwrap());
+        assert_eq!(holder(&conn, &job_id).as_deref(), Some("worker"));
+        conn.execute(
+            "UPDATE delivery_jobs SET failure=NULL,next_attempt_ms=0 WHERE id=?",
+            [&job_id],
+        )
+        .unwrap();
+
+        // A rate-limited wait stands.
+        record_failure(
+            &conn,
+            &again.lease,
+            DeliveryFailure::RateLimited,
+            Some(90_000),
+            &clock,
+        )
+        .unwrap();
+        assert!(!retry_requested(&conn, &job_id, 1_000).unwrap());
+        let limited = status(&conn, &job_id).unwrap();
+        assert_eq!(limited.failure.as_deref(), Some("rate_limited"));
+        assert_eq!(limited.next_attempt_ms, 90_000);
+
+        // A paused job waiting out a transient failure stays paused.
+        conn.execute(
+            "UPDATE delivery_jobs SET failure='transient' WHERE id=?",
+            [&job_id],
+        )
+        .unwrap();
+        pause_job(&conn, &job_id).unwrap();
+        assert!(!retry_requested(&conn, &job_id, 1_000).unwrap());
+        let paused = status(&conn, &job_id).unwrap();
+        assert_eq!(paused.state, "paused");
+        assert_eq!(paused.next_attempt_ms, 90_000);
+
+        cancel_job(&conn, &job_id).unwrap();
+        assert!(!retry_requested(&conn, &job_id, 1_000).unwrap());
+        assert_eq!(status(&conn, &job_id).unwrap().state, "cancelled");
+    }
+
+    /// Two batches of one window fail, a rate limit and a transient failure,
+    /// in either order: the rate limit's wait stands as the job's failure, so
+    /// an explicit retry cannot end a wait the receiver asked for.
+    #[test]
+    fn a_rate_limit_in_the_window_is_not_ended_by_an_explicit_retry() {
+        for rate_limited_first in [true, false] {
+            let (_directory, conn, job_id) = windowed_job(6);
+            let store = feed::store(&conn).unwrap();
+            for _ in 0..2 {
+                prepare_batch_from(&conn, &store, &job_id, 0, 3, PublishedLimits::default())
+                    .unwrap();
+            }
+            let clock = || 1_000;
+            let first = claim_batch(&conn, &job_id, "worker", 30_000, &clock)
+                .unwrap()
+                .unwrap();
+            let second = claimed(claim_next(&conn, &first.lease, &clock).unwrap());
+            for claim in [&first, &second] {
+                persisted(&conn, claim, &clock);
+            }
+            let outcomes = if rate_limited_first {
+                [
+                    (&first, DeliveryFailure::RateLimited, Some(1_800_000)),
+                    (&second, DeliveryFailure::Transient, None),
+                ]
+            } else {
+                [
+                    (&first, DeliveryFailure::Transient, None),
+                    (&second, DeliveryFailure::RateLimited, Some(1_800_000)),
+                ]
+            };
+            for (claim, failure, retry_after) in outcomes {
+                record_failure(&conn, &claim.lease, failure, retry_after, &clock).unwrap();
+            }
+            let waiting = status(&conn, &job_id).unwrap();
+            assert_eq!(
+                waiting.failure.as_deref(),
+                Some("rate_limited"),
+                "rate limited first: {rate_limited_first}"
+            );
+            assert_eq!(waiting.next_attempt_ms, 1_800_000);
+            assert_eq!(holder(&conn, &job_id), None);
+            assert!(!retry_requested(&conn, &job_id, 1_000).unwrap());
+            assert_eq!(status(&conn, &job_id).unwrap().next_attempt_ms, 1_800_000);
+
+            // Once that wait is over, a transient failure is reported as such.
+            let later = || 1_800_000;
+            let retried = claim_batch(&conn, &job_id, "worker", 30_000, &later)
+                .unwrap()
+                .unwrap();
+            record_failure(
+                &conn,
+                &retried.lease,
+                DeliveryFailure::Transient,
+                None,
+                &later,
+            )
+            .unwrap();
+            assert_eq!(
+                status(&conn, &job_id).unwrap().failure.as_deref(),
+                Some("transient")
+            );
+        }
+    }
+
+    /// An older build's rate limit mislabeled `transient` is shortened once,
+    /// but a 429 then backs off on the full rate-limit schedule again, from
+    /// the attempts the job kept: the clamp costs one early request.
+    #[test]
+    fn a_clamped_old_rate_limit_backs_off_fully_on_the_next_429() {
+        let (_directory, conn, job_id) = windowed_job(2);
+        let store = feed::store(&conn).unwrap();
+        prepare_batch_from(&conn, &store, &job_id, 0, 3, PublishedLimits::default()).unwrap();
+        // As an older build left it: ten attempts, an hour's wait, labeled
+        // transient.
+        conn.execute(
+            "UPDATE delivery_jobs SET failure='transient',attempts=10,next_attempt_ms=3600000 WHERE id=?",
+            [&job_id],
+        )
+        .unwrap();
+        assert!(clamp_transient_wait(&conn, &job_id, 0).unwrap());
+        let clock = || TRANSIENT_BACKOFF_CEILING_MS;
+        let claim = claim_batch(&conn, &job_id, "worker", 30_000, &clock)
+            .unwrap()
+            .unwrap();
+        persisted(&conn, &claim, &clock);
+        record_failure(
+            &conn,
+            &claim.lease,
+            DeliveryFailure::RateLimited,
+            None,
+            &clock,
+        )
+        .unwrap();
+        let limited = status(&conn, &job_id).unwrap();
+        assert_eq!(limited.failure.as_deref(), Some("rate_limited"));
+        assert_eq!(limited.attempts, 11);
+        // 2^11 s, past the transient ceiling, and never clamped again.
+        assert!(limited.next_attempt_ms - TRANSIENT_BACKOFF_CEILING_MS >= 2_048_000);
+        assert!(!clamp_transient_wait(&conn, &job_id, TRANSIENT_BACKOFF_CEILING_MS).unwrap());
+    }
+
+    /// A transient wait an older build stored, out to an hour, is brought
+    /// within the current ceiling when the collector starts; a rate-limited
+    /// wait, a short wait and a paused job are left alone.
+    #[test]
+    fn a_long_stored_transient_wait_is_clamped_to_the_ceiling() {
+        let (_directory, conn, job_id) = windowed_job(2);
+        let set = |failure: &str, next: i64| {
+            conn.execute(
+                "UPDATE delivery_jobs SET failure=?1,next_attempt_ms=?2 WHERE id=?3",
+                params![failure, next, &job_id],
+            )
+            .unwrap();
+        };
+        let now = 10_000;
+        set("transient", now + 3_600_000);
+        assert!(clamp_transient_wait(&conn, &job_id, now).unwrap());
+        assert_eq!(
+            status(&conn, &job_id).unwrap().next_attempt_ms,
+            now + TRANSIENT_BACKOFF_CEILING_MS
+        );
+        // Already within the ceiling.
+        assert!(!clamp_transient_wait(&conn, &job_id, now).unwrap());
+        set("transient", now + 60_000);
+        assert!(!clamp_transient_wait(&conn, &job_id, now).unwrap());
+        assert_eq!(
+            status(&conn, &job_id).unwrap().next_attempt_ms,
+            now + 60_000
+        );
+
+        set("rate_limited", now + 3_600_000);
+        assert!(!clamp_transient_wait(&conn, &job_id, now).unwrap());
+        assert_eq!(
+            status(&conn, &job_id).unwrap().next_attempt_ms,
+            now + 3_600_000
+        );
+
+        set("transient", now + 3_600_000);
+        pause_job(&conn, &job_id).unwrap();
+        assert!(!clamp_transient_wait(&conn, &job_id, now).unwrap());
+        assert_eq!(
+            status(&conn, &job_id).unwrap().next_attempt_ms,
+            now + 3_600_000
+        );
     }
 
     /// With a published limit of 500 records and enough eligible changes, a

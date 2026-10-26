@@ -38,12 +38,15 @@ pub use posthog::PostHogProject;
 
 use crate::relay::agents::SettingsExtension;
 use crate::relay::app_store::APP_ID;
-use crate::relay::uploader::SharingMode;
+
+mod usage;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
+pub(crate) use usage::UploadObservations;
+pub use usage::{action, record_for, TelemetryEvent};
 
 /// The `settings.get`/`settings.set` key for the opt-out.
 pub const SETTING: &str = "analytics_enabled";
@@ -135,6 +138,35 @@ vocabulary!(
         Disconnect = "disconnect",
         Settings = "settings",
         OpenLogs = "open_logs",
+        AgentRegister = "agent_register",
+        AgentUnregister = "agent_unregister",
+        MessageSend = "message_send",
+        MessageTest = "message_test",
+        MessageComposer = "message_composer",
+        PageView = "page_view",
+        Search = "search",
+        TranscriptOpen = "transcript_open",
+        DeleteSessions = "delete_sessions",
+        UploadCompleted = "upload_completed",
+        UpdateInstall = "update_install",
+    }
+);
+
+vocabulary!(
+    /// A fixed UI destination. Never a title, search query, endpoint or path.
+    TelemetrySurface {
+        Sessions = "sessions",
+        Agents = "agents",
+        Team = "team",
+        Messages = "messages",
+        Projects = "projects",
+        SettingsGeneral = "settings_general",
+        SettingsOpening = "settings_opening",
+        SettingsRelay = "settings_relay",
+        SettingsSharing = "settings_sharing",
+        SettingsAccount = "settings_account",
+        SettingsAbout = "settings_about",
+        SettingsDiagnostics = "settings_diagnostics",
     }
 );
 
@@ -175,6 +207,8 @@ vocabulary!(
         SystemSetting = "system_setting",
         BrowserOpen = "browser_open",
         ScheduleInspection = "schedule_inspection",
+        RequestFailed = "request_failed",
+        UpdateFailed = "update_failed",
     }
 );
 
@@ -190,46 +224,6 @@ impl TelemetryOperation {
                 | TelemetryOperation::StartUploader
                 | TelemetryOperation::UploadHealth
         )
-    }
-}
-
-/// One operation to record: `telemetry.record`'s parameters. Only these
-/// codes and numbers are ever sent.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
-)]
-pub struct TelemetryEvent {
-    pub operation: TelemetryOperation,
-    pub outcome: TelemetryOutcome,
-    pub failure: Option<TelemetryFailure>,
-    pub count: Option<i64>,
-    pub mode: Option<SharingMode>,
-}
-
-impl TelemetryEvent {
-    pub fn new(operation: TelemetryOperation, outcome: TelemetryOutcome) -> TelemetryEvent {
-        TelemetryEvent {
-            operation,
-            outcome,
-            failure: None,
-            count: None,
-            mode: None,
-        }
-    }
-
-    pub fn failure(mut self, failure: TelemetryFailure) -> TelemetryEvent {
-        self.failure = Some(failure);
-        self
-    }
-
-    pub fn count(mut self, count: i64) -> TelemetryEvent {
-        self.count = Some(count);
-        self
-    }
-
-    pub fn mode(mut self, mode: SharingMode) -> TelemetryEvent {
-        self.mode = Some(mode);
-        self
     }
 }
 
@@ -573,7 +567,9 @@ impl Telemetry {
         for path in [&self.identity, &self.shared.identified] {
             if let Err(error) = std::fs::remove_file(path) {
                 if error.kind() != std::io::ErrorKind::NotFound {
-                    crate::relay::diagnostics::write(format_args!("relay: could not remove a telemetry id: {error}"));
+                    crate::relay::diagnostics::write(format_args!(
+                        "relay: could not remove a telemetry id: {error}"
+                    ));
                 }
             }
         }
@@ -661,6 +657,7 @@ impl Telemetry {
         let mut object = self.base_properties(account.as_ref());
         object.insert("operation".into(), event.operation.as_str().into());
         object.insert("outcome".into(), event.outcome.as_str().into());
+        event.add_usage_properties(&mut object);
         if let Some(count) = event.count {
             object.insert(
                 "session_count".into(),
@@ -739,7 +736,9 @@ impl Telemetry {
             .unwrap_or_else(|| {
                 let fresh = new_uuid();
                 if let Err(error) = write_file(&self.identity, format!("{fresh}\n").as_bytes()) {
-                    crate::relay::diagnostics::write(format_args!("relay: could not save the telemetry id: {error}"));
+                    crate::relay::diagnostics::write(format_args!(
+                        "relay: could not save the telemetry id: {error}"
+                    ));
                 }
                 fresh
             });
@@ -822,7 +821,9 @@ fn drain(shared: &Shared, sender: &dyn TelemetrySender) {
                     if let Err(error) =
                         write_file(&shared.identified, format!("{user}\n").as_bytes())
                     {
-                        crate::relay::diagnostics::write(format_args!("relay: could not save the telemetry merge: {error}"));
+                        crate::relay::diagnostics::write(format_args!(
+                            "relay: could not save the telemetry merge: {error}"
+                        ));
                     }
                     state.identified = Some(user);
                 }
@@ -1002,6 +1003,7 @@ fn windows_version() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::relay::uploader::SharingMode;
 
     trait RecordParams {
         fn record_params(&self, params: Value) -> Result<(), crate::relay::protocol::RpcError>;
@@ -1398,6 +1400,87 @@ mod tests {
         ] {
             assert!(!body.contains(forbidden), "{forbidden}");
         }
+    }
+
+    #[test]
+    fn usage_properties_are_allowlisted_and_never_include_content() {
+        let fixture = Fixture::new();
+        let telemetry = fixture.telemetry();
+        telemetry
+            .record_params(
+                json!({"operation":"search", "outcome":"succeeded", "surface":"team",
+            "query":"secret search", "text":"private message", "endpoint":"private@host"}),
+            )
+            .unwrap();
+        telemetry
+            .record_params(json!({"operation":"agent_register", "outcome":"succeeded",
+            "agent_kind":"codex", "already_registered":false, "name":"private name"}))
+            .unwrap();
+        telemetry
+            .record_params(
+                json!({"operation":"message_send", "outcome":"succeeded", "is_reply":true}),
+            )
+            .unwrap();
+        let events = fixture.events(&telemetry);
+        assert_eq!(events[0]["properties"]["surface"], "team");
+        assert_eq!(events[1]["properties"]["agent_kind"], "codex");
+        assert_eq!(events[1]["properties"]["already_registered"], false);
+        assert_eq!(events[2]["properties"]["is_reply"], true);
+        let encoded = serde_json::to_string(&events).unwrap();
+        assert!(!encoded.contains("private"));
+        assert!(!encoded.contains("secret"));
+        for bad in [
+            json!({"surface":"private query"}),
+            json!({"agent_kind":"private path"}),
+            json!({"is_reply":"private"}),
+        ] {
+            let mut params = json!({"operation":"search", "outcome":"succeeded"});
+            params
+                .as_object_mut()
+                .unwrap()
+                .extend(bad.as_object().unwrap().clone());
+            assert!(telemetry.record_params(params).is_err());
+        }
+    }
+
+    #[test]
+    fn completed_actions_report_codes_not_error_messages() {
+        let fixture = Fixture::new();
+        let telemetry = fixture.telemetry();
+        let event = TelemetryEvent::new(TelemetryOperation::MessageSend, TelemetryOutcome::Started);
+        let failed: Result<(), _> = Err(crate::relay::protocol::RpcError::invalid_params(
+            "private message",
+        ));
+        telemetry.record(event.completed(&failed));
+        telemetry.record(event.completed(&Ok::<_, crate::relay::protocol::RpcError>(())));
+        let events = fixture.events(&telemetry);
+        assert_eq!(events[0]["properties"]["error_code"], "request_failed");
+        assert_eq!(events[1]["event"], "$exception");
+        assert_eq!(events[2]["properties"]["outcome"], "succeeded");
+        assert!(events[2]["properties"].get("error_code").is_none());
+        assert!(!serde_json::to_string(&events).unwrap().contains("private"));
+    }
+
+    #[test]
+    fn upload_completions_require_an_observed_pending_transition() {
+        let row = |status: &str| {
+            serde_json::from_value(json!({
+                "source":"codex", "session_id":"private id", "title":"private title",
+                "is_agent":false, "included":true, "status":status
+            }))
+            .unwrap()
+        };
+        let mut seen = UploadObservations::default();
+        assert_eq!(seen.observe(1, 1, &[row("uploaded")]), 0); // historical baseline
+        assert_eq!(seen.observe(1, 2, &[row("queued")]), 0);
+        assert_eq!(seen.observe(1, 3, &[row("checking")]), 0);
+        assert_eq!(seen.observe(1, 4, &[row("uploaded")]), 1);
+        assert_eq!(seen.observe(1, 3, &[row("queued")]), 0); // late response
+        assert_eq!(seen.observe(1, 5, &[row("uploaded")]), 0); // repeated poll
+        assert_eq!(seen.observe(1, 6, &[row("uploading")]), 0);
+        assert_eq!(seen.observe(2, 7, &[row("uploaded")]), 0); // another attachment
+        assert_eq!(seen.observe(2, 8, &[]), 0);
+        assert_eq!(seen.observe(2, 9, &[row("uploaded")]), 0); // pagination baseline
     }
 
     #[test]

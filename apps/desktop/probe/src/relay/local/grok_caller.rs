@@ -100,10 +100,13 @@ pub(super) fn session(
     Some(DiscoveredSession {
         target: target.clone(),
         title: crate::relay::grok::native_title(
-            &crate::relay::grok::GrokConfig { home: record.grok_home.clone() },
+            &crate::relay::grok::GrokConfig {
+                home: record.grok_home.clone(),
+            },
             record.binding.cwd.to_str()?,
             &record.binding.session_id,
-        ).unwrap_or_else(|| "Spawned Grok".into()),
+        )
+        .unwrap_or_else(|| "Spawned Grok".into()),
         directory: Some(record.binding.cwd.to_string_lossy().into_owned()),
         updated_at_ms: None,
         host: None,

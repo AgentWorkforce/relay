@@ -4,6 +4,30 @@ import XCTest
 
 final class LocalTranscriptTests: XCTestCase {
     @MainActor
+    func testCursorlessFollowIsDistinctFromOpenAndRefresh() async {
+        let core = FakeCore()
+        defer { core.stop() }
+        core.on("sessions.transcript") { _ in
+            ["entries": [], "next_cursor": NSNull()] as [String: Any]
+        }
+        let session = LocalSession(live: true,
+            registration: SessionRegistration(addedBySession: false, address: "c1@desk-desktop", name: "c1",
+                spawn: SessionSpawn(canTakeOver: false, harness: "codex", takenOver: false)),
+            suggestedName: "c1", target: Target(id: "thread-9", kind: .codex), title: "Work")
+        let model = LocalTranscriptModel(row: LocalSessionRow.merge(uploads: [], sessions: [session])[0], client: CoreClient(socketPath: core.path))
+        await model.load()
+        XCTAssertEqual(core.lastParams("sessions.transcript")?["following"] as? Bool, false)
+        for _ in 0..<3 {
+            await model.follow(session)
+            XCTAssertEqual(core.lastParams("sessions.transcript")?["following"] as? Bool, true)
+            XCTAssertNil(core.lastParams("sessions.transcript")?["cursor"])
+        }
+        await model.load()
+        XCTAssertEqual(core.lastParams("sessions.transcript")?["following"] as? Bool, false)
+        XCTAssertEqual(core.callCount("sessions.transcript"), 5)
+    }
+
+    @MainActor
     func testOpeningLocalTranscriptPaginatesAndRefreshesWithoutUploading() async throws {
         let core = FakeCore()
         defer { core.stop() }

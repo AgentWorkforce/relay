@@ -59,7 +59,7 @@ fn script(directory: &Path, name: &str, body: &str, windows: &str) -> PathBuf {
 /// Waits until `path`, a script this test just wrote, can be executed.
 ///
 /// The tests run on several threads at once. While one writes a script,
-/// another may fork a child (a hosted core, the isolated `agent-relay-desktop`);
+/// another may fork a child (a hosted core, the isolated `agent-relay`);
 /// the child inherits the script's write descriptor and keeps it open until
 /// its own `exec` closes it (the descriptor is close-on-exec). Executing the
 /// script before then fails with ETXTBSY ("Text file busy"), which the
@@ -582,11 +582,11 @@ async fn stopping_never_waits_for_a_ui_that_is_behind() {
     drop(events);
 }
 
-/// A copy of `agent-relay-desktop` with a stand-in `agent-relay-probe` beside it
+/// A copy of `agent-relay` with a stand-in `agent-relay-probe` beside it
 /// that prints `beside`. Cargo builds the real core beside the test binaries;
 /// the copy runs where no real core is within reach, so a probe lookup that
 /// misses `RELAY_DESKTOP_PROBE` runs the stand-in, never the real core.
-// The `agent-relay-desktop` binary's own modes run shell-script stand-ins and exec
+// The `agent-relay` binary's own modes run shell-script stand-ins and exec
 // into the core: Unix only here; the Windows app's modes are tested with
 // its own launcher (`bin/agent-relay-desktop.rs`).
 #[cfg(unix)]
@@ -595,7 +595,7 @@ fn isolated_app() -> (TempDir, PathBuf) {
         .prefix("app-")
         .tempdir_in("/tmp")
         .unwrap();
-    let app = directory.path().join("agent-relay-desktop");
+    let app = directory.path().join("agent-relay");
     std::fs::hard_link(APP, &app)
         .or_else(|_| std::fs::copy(APP, &app).map(drop))
         .unwrap();
@@ -603,7 +603,7 @@ fn isolated_app() -> (TempDir, PathBuf) {
     (directory, app)
 }
 
-/// Runs the isolated `agent-relay-desktop`; `probe` is its `RELAY_DESKTOP_PROBE`.
+/// Runs the isolated `agent-relay`; `probe` is its `RELAY_DESKTOP_PROBE`.
 #[cfg(unix)]
 fn app(arguments: &[&str], probe: Option<&Path>, home: &Path) -> (i32, String, String) {
     let (_isolated, isolated) = isolated_app();

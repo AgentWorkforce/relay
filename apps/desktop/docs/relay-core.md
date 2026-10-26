@@ -364,12 +364,13 @@ this document describes the finished system.
 
 Sign-in (`relay::account`):
 
-1. **A session.** With `flow` omitted, both desktop apps reuse an eligible
+1. **A session.** With `flow` omitted, clients reuse an eligible
    saved app or CLI session, otherwise open the browser's Cloud session. Cloud
    asks for Google sign-in only when the browser is signed out. The browser
    returns through a PKCE loopback receiver, without device-code confirmation.
-   **Use another account** explicitly sends `flow: "browser"`, bypassing saved
-   sessions and opening Google's account chooser. `flow: "device"` reuses an
+   Explicit `flow: "browser"` requests bypass saved sessions and open Google's
+   account chooser. The logged-out desktop **Sign in with Google** action
+   always sends this explicit browser flow on macOS, Linux and Windows. `flow: "device"` reuses an
    eligible session first, otherwise requests device approval for remote or
    headless clients. `/setup/sign-in` preserves that device default for existing
    callers; `flow: "browser"` there opts into the normal desktop continuation.
@@ -410,7 +411,7 @@ forgets it; a rate limit, timeout or outage keeps it for a later try.
 | Method | Params | Result | Lands in |
 |---|---|---|---|
 | `uploader.status` | — | `{"running","paused","sharing_mode","directory","collector_replacing","collector_outdated","delivery":{"bootstrap_complete","pending_records","acknowledged_records","skipped_records","unqueued_changes","last_acknowledged_ms","failure"},"sessions":{"total","shared","excluded"},"stage","stage_message","needs_start","journal_full","upgrading"}`, read from the probe's `status --json`; `stage` is `not_running`\|`paused`\|`needs_attention`\|`offline`\|`preparing`\|`uploading`\|`up_to_date`, `stage_message` the probe's sentence for that stage when it has one, `directory` the install's (it holds `collector.log`); `not_signed_in` when nothing is connected | 2c, 3 (`directory`) |
-| `uploader.start` / `uploader.pause` / `uploader.resume` / `uploader.retry` / `uploader.compact` / `uploader.disconnect` | — | `{"running","started"}`, `{"paused"}`, `{"paused"}`, `{"retried"}`, `{"removed_records"}`, `{"disconnected"}`, from the `--json` commands | 2c |
+| `uploader.start` / `uploader.pause` / `uploader.resume` / `uploader.retry` / `uploader.compact` / `uploader.disconnect` | — | `{"running","started"}`, `{"paused"}`, `{"paused"}`, `{"retried"}`, `{"removed_records"}`, `{"disconnected"}`, from the `--json` commands. `uploader.retry` restarts a job a non-retryable verdict blocked, or wakes an active job waiting out a `transient` failure's backoff (its attempt count is kept); `retried` is `true` when it did either. A paused or cancelled job, a batch in flight and a `rate_limited` wait (the receiver asked for less traffic, including when a sibling batch of the same window then failed transiently) are left as they are and answer `false`. Both apps offer Retry for a stop and for a lasting `transient` failure (`stage` `needs_attention`), and send a Retry or Compact the core never received (the bridge's "starting"/"reconnecting" failure) once on their own when the core next answers | 2c |
 | `uploader.sharing.set` | `{"mode":"all"\|"new"\|"selected"}` | `{"sharing_mode"}` | 2c |
 | `uploader.sessions.list` | `{"limit"?}` | `{"sharing_mode","sessions":[…]}` | 2c |
 | `uploader.sessions.preview` | `{"limit"?,"refresh"?}` | `{"sessions":[…]}` | 2c |
@@ -449,7 +450,7 @@ uploads already; an install a newer probe runs is left alone.
 
 | Method | Params | Result | Lands in |
 |---|---|---|---|
-| `sessions.transcript` | `{"source","session_id","cursor"?:{"ts_ms","id"}}` | `{"entries":[{"id","role","kind","text","timestamp_ms","truncated"}],"next_cursor"}`; local-only paged conversation. First page hydrates one session in a private reader cache, independent of upload selection. Up to 100 events, 64 KiB per entry and 512 KiB serialized entries per page; oversized text is marked truncated. Requires the account plugin, not an upload. | 2c |
+| `sessions.transcript` | `{"source","session_id","cursor"?:{"ts_ms","id"},"following"?:false}` | `{"entries":[{"id","role","kind","text","timestamp_ms","truncated"}],"next_cursor"}`; local-only paged conversation. First page hydrates one session in a private reader cache, independent of upload selection. Up to 100 events, 64 KiB per entry and 512 KiB serialized entries per page; oversized text is marked truncated. Requires the account plugin, not an upload. | 2c |
 | `sessions.list` | — | `{"sessions":[{"target":{"kind":"codex"\|"claude-terminal"\|"claude-cloud"\|"grok"\|"grok-open"\|"opencode","id"},"title","project","directory","live","updated_at_ms","registration":{"name","address","added_by_session","push","spawn"?:{"harness","can_take_over","taken_over"}}\|null,"suggested_name"}]}`; `spawn` is set on an agent Agent Relay spawned here (see `agents.take_over`); a registered session discovery no longer finds is listed with `live:false`; Grok/OpenCode rows come only from the verified probe-owned registry, plus `grok-open` rows from the already-open registry when `AGENT_RELAY_ENABLE_EXISTING_GROK=1`; a Grok session both registries claim is not listed under either kind | 2b |
 | `sessions.title.capability` | `{"source","session_id"}` | `{"supported","reason"}` (`reason` is null when supported); native title-edit support for the exact catalog identity, including history-only rows; unsupported providers or unavailable sessions include an explanation. Available without an account. | native session titles |
 | `sessions.title.set` | `{"source","session_id","title"}` | `{"title"}` after the native provider acknowledges the metadata change; trims outer whitespace, accepts 1–200 characters without control characters, and applies provider-specific limits. Uses trusted discovery to resolve the catalog identity; accepts no client paths or endpoints. Publishes sessions/uploader invalidations on success. Available without an account. See [native title support](session-title-editing.md). | native session titles |
@@ -524,7 +525,7 @@ dropped in the core. `identity_hash` joins a person to `roster.list`'s
 | Method | Params | Result | Lands in |
 |---|---|---|---|
 | `links.parse` | `{"url","site_url"?}` | `{"kind":"connect","site_url","account_id","workspace_id"}` or `{"kind":"message","endpoint","address"}`, else `invalid_params`; `site_url` is the site the app is built for (default: the signed-in site, else `https://agentrelay.com`) | 2a |
-| `telemetry.record` | `{"operation","outcome","failure"?,"count"?,"mode"?}` | `{}`; an unknown value is `invalid_params` | 2c |
+| `telemetry.record` | `{"operation","outcome","failure"?,"count"?,"mode"?,"surface"?,"agent_kind"?,"already_registered"?,"is_reply"?}` | `{}`; an unknown value is `invalid_params`. `update_install` success waits up to two seconds for the telemetry sender before replying, so a hosted core can be released after the reply. Desktop update callers bound each awaited telemetry RPC to three seconds; GTK awaits it off the UI thread. | 2c |
 | `login_item.set` (Linux) | `{"enabled"}` | `{}`; `refused` on macOS, where `SMAppService` is the app's | 2c |
 | `login_item.status` (Linux) | — | `{"enabled"}`; `refused` on macOS | 3 |
 
@@ -540,6 +541,19 @@ directory on macOS). Linux turns on
 launch at login at its first sign-in to the production site only
 (`launch-at-login-configured` in the app data directory), so a person who
 turns it off keeps it off.
+
+Explicit agent registration/removal and message sending are tracked at their
+shared bridge handlers, so both UIs produce the same attempts and outcomes.
+`surface` and `agent_kind` accept only contract enums; the remaining usage
+metadata is boolean or bounded numeric. Search text, recipients and message
+content are never telemetry properties. Initial transcript reads are tracked.
+Background readers set `following: true` even when no cursor is available,
+excluding those reads from open telemetry. Pagination and background conversation
+polling are also excluded. Upload completion is
+an observed queued/uploading-to-uploaded transition count, with an in-memory
+baseline scoped to the uploader attachment; it is not a durable delivery ledger.
+The full operation inventory and success semantics are in README's desktop
+analytics section.
 
 **Legacy incoming mailbox** — retired Room transport; not installed by desktop startup
 

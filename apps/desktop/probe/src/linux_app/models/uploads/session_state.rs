@@ -11,11 +11,15 @@ pub(super) fn stopped(status: &UploaderStatus) -> bool {
     status.stage == Stage::NeedsAttention && status.delivery.stopped
 }
 
-/// Retrying is what the person can do about the stop. A sign-in failure is
-/// fixed by signing in, not by retrying.
+/// Retrying is what the person can do about the stop, or about a transient
+/// failure that has lasted: Retry tries the receiver again at once instead of
+/// after the backoff. A rate limit waits as the receiver asked, and a sign-in
+/// failure is fixed by signing in, not by retrying.
 pub(super) fn can_retry(status: &UploaderStatus) -> bool {
     let sign_in = Some(DeliveryFailureCode::AuthenticationRequired);
-    stopped(status) && status.delivery.failure_code != sign_in
+    let transient = status.stage == Stage::NeedsAttention
+        && status.delivery.failure_code == Some(DeliveryFailureCode::Transient);
+    (stopped(status) && status.delivery.failure_code != sign_in) || transient
 }
 
 /// A session row's upload state. Delivery is separate from permission to

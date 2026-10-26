@@ -148,8 +148,12 @@ impl Core {
                 _ => super::SpawnError::from(failure.code()).redacted(),
             }
         };
-        crate::relay::diagnostics::write(format_args!("Agent Relay launch {} for @{} failed before cleanup: {}",
-            in_flight.intent.invocation_id, in_flight.intent.name, error.text()));
+        crate::relay::diagnostics::write(format_args!(
+            "Agent Relay launch {} for @{} failed before cleanup: {}",
+            in_flight.intent.invocation_id,
+            in_flight.intent.name,
+            error.text()
+        ));
         let request = super::SpawnRequest {
             invocation_id: in_flight.intent.invocation_id.clone(),
             name: in_flight.intent.name.clone(),

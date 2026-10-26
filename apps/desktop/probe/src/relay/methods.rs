@@ -2,6 +2,8 @@
 //! parameters in, results out. Every type is the registry's
 //! (`relay::contract`); see `docs/relay-core.md` for the contract.
 
+mod usage;
+
 use crate::relay::cloud_session::{segment, CloudError};
 use crate::relay::contract::agents::{
     ActivityLog, CreatedWebhook, IntegrationChange, IntegrationParams, RevokedWebhook,
@@ -12,7 +14,7 @@ use crate::relay::contract::capy::{
     CapyThreadSpawnParams,
 };
 use crate::relay::contract::claude_delivery::ClaudeDeliveryChanged;
-use crate::relay::contract::directory::{People, SentMessage, SessionOverviewParams};
+use crate::relay::contract::directory::{People, SessionOverviewParams};
 mod cursor_cloud;
 mod replicas;
 use crate::relay::contract::{answer, method, Done};
@@ -20,6 +22,9 @@ use crate::relay::daemon::Core;
 use crate::relay::links::{self, Endpoint, DEFAULT_SITE_URL};
 use crate::relay::people::RosterQuery;
 use crate::relay::protocol::{ErrorKind, RpcError};
+use crate::relay::telemetry::{
+    self, TelemetryEvent, TelemetryOperation as Op, TelemetryOutcome as Outcome,
+};
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
@@ -399,18 +404,13 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
         }
         method::AgentsRegister::NAME => {
             answer::<method::AgentsRegister, _>(raw, |request| async move {
-                core.register_target(
-                    &request.target,
-                    request.name.as_deref(),
-                    request.description.as_deref(),
-                )
-                .await
+                usage::register(core, request).await
             })
             .await
         }
         method::AgentsUnregister::NAME => {
             answer::<method::AgentsUnregister, _>(raw, |request| async move {
-                core.unregister(&request.name).await.map(|_| Done {})
+                usage::unregister(core, &request.name).await
             })
             .await
         }
@@ -422,9 +422,16 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
         }
         method::AgentsTestMessage::NAME => {
             answer::<method::AgentsTestMessage, _>(raw, |request| async move {
-                core.test_message(&request.name, request.text.as_deref())
-                    .await
-                    .map(|message_id| TestMessageSent { message_id })
+                telemetry::action(
+                    core,
+                    TelemetryEvent::new(Op::MessageTest, Outcome::Started),
+                    async {
+                        core.test_message(&request.name, request.text.as_deref())
+                            .await
+                            .map(|message_id| TestMessageSent { message_id })
+                    },
+                )
+                .await
             })
             .await
         }
@@ -566,17 +573,7 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
         }
         method::MessagesSend::NAME => {
             answer::<method::MessagesSend, _>(raw, |request| async move {
-                let target = recipient_endpoint(request.to.as_deref(), request.address.as_deref())?;
-                let sent = core
-                    .send_as_person(&target, &request.text, request.reply_to.as_deref())
-                    .await?;
-                let recipient = core.recipient_after_send(&target, &sent).await;
-                Ok(SentMessage {
-                    message_id: sent.message_id,
-                    conversation_id: sent.conversation_id,
-                    to: sent.to,
-                    recipient,
-                })
+                usage::send(core, request).await
             })
             .await
         }

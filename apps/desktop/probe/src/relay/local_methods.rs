@@ -32,16 +32,29 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
     match method {
         method::SessionsTitleCapability::NAME => Some(
             answer::<method::SessionsTitleCapability, _>(raw, |params| async move {
-                crate::relay::session_titles::validate_identity(&params.source, &params.session_id)?;
+                crate::relay::session_titles::validate_identity(
+                    &params.source,
+                    &params.session_id,
+                )?;
                 let sessions = core.plugins.sessions.clone();
-                tokio::task::spawn_blocking(move || sessions.title_capability(&params.source, &params.session_id))
-                    .await.map_err(|_| RpcError::new(crate::relay::protocol::ErrorKind::Internal, "Could not check session title editing."))
-            }).await,
+                tokio::task::spawn_blocking(move || {
+                    sessions.title_capability(&params.source, &params.session_id)
+                })
+                .await
+                .map_err(|_| {
+                    RpcError::new(
+                        crate::relay::protocol::ErrorKind::Internal,
+                        "Could not check session title editing.",
+                    )
+                })
+            })
+            .await,
         ),
         method::SessionsTitleSet::NAME => Some(
             answer::<method::SessionsTitleSet, _>(raw, |params| async move {
                 crate::relay::session_titles::set_native_title(core, params).await
-            }).await,
+            })
+            .await,
         ),
         method::SessionsList::NAME => Some(
             answer::<method::SessionsList, _>(raw, |_| async { Ok(sessions_list(core).await) })
@@ -315,30 +328,19 @@ pub async fn watch_uploads(core: Arc<Core>) {
         return;
     };
     let uploader = account.uploader.clone();
+    let mut refreshes = tokio::task::JoinSet::new();
+    let mut ticks = tokio::time::interval(WATCH_EVERY);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        if uploader.refresh_sessions_snapshot().await.unwrap_or(false) {
-            core.hub.invalidated(Listing::Uploader);
+        tokio::select! {
+            _ = ticks.tick() => {
+                let (uploader, core) = (uploader.clone(), core.clone());
+                refreshes.spawn(async move {
+                    uploader.refresh_background_snapshots_with(&|| core.hub.invalidated(Listing::Uploader)).await
+                });
+            }
+            Some(_) = refreshes.join_next(), if !refreshes.is_empty() => {}
         }
-        tokio::time::sleep(WATCH_EVERY).await;
-    }
-}
-
-/// Global upload counters have their own cadence; neither a large history
-/// scan nor a slow status helper blocks the other snapshot.
-pub async fn watch_upload_status(core: Arc<Core>) {
-    let Some(account) = &core.plugins.account else {
-        return;
-    };
-    let uploader = account.uploader.clone();
-    loop {
-        if uploader
-            .refresh_status_snapshot()
-            .await
-            .is_ok_and(|(changed, _)| changed)
-        {
-            core.hub.invalidated(Listing::Uploader);
-        }
-        tokio::time::sleep(WATCH_EVERY).await;
     }
 }
 

@@ -59,8 +59,12 @@ pub mod channels;
 mod connect_send;
 pub(crate) mod fetch;
 mod http;
+mod mobile_handoff;
+mod mobile_handoff_permission;
+mod mobile_handoff_result;
 mod settings;
 use connect_send::ConnectSendKey;
+use http::{connection, payload};
 
 pub const SOCKET_NAME: &str = "relay.sock";
 /// The largest request body.
@@ -468,6 +472,7 @@ pub struct Outbound {
     sent: Mutex<HashMap<String, VecDeque<Instant>>>,
     rosters: Arc<Mutex<Rosters>>,
     connect_broadcasts: connect_send::Broadcasts,
+    mobile_permissions: mobile_handoff_permission::Tickets,
 }
 
 /// A request: its query (for `GET /agents` and `?to=` sends) and body.
@@ -490,44 +495,6 @@ enum Purpose {
     Send,
     Register,
     Json,
-}
-
-fn payload(request: &Request, purpose: Purpose) -> Result<Map<String, Value>, OutboundError> {
-    if matches!(purpose, Purpose::Send) && !request.query.is_empty() {
-        let mut fields: Map<String, Value> = request
-            .query
-            .iter()
-            .map(|(k, v)| (k.clone(), Value::String(v.clone())))
-            .collect();
-        fields.insert(
-            "text".into(),
-            Value::String(String::from_utf8_lossy(&request.body).into_owned()),
-        );
-        return Ok(fields);
-    }
-    let body: &[u8] = if request.body.iter().all(u8::is_ascii_whitespace) {
-        b"{}"
-    } else {
-        &request.body
-    };
-    let value: Value = serde_json::from_slice(body).map_err(|_| {
-        let message = match purpose {
-            Purpose::Send => {
-                "Send JSON {\"address\"|\"to\"|\"channel\", \"text\", optional \"files\"}, or a destination query with the text as the body."
-            }
-            Purpose::Register => "Send JSON with optional \"name\" and \"description\".",
-            Purpose::Json => "Send a JSON object for this route.",
-        };
-        OutboundError::new(400, "invalid_json", message)
-    })?;
-    match value {
-        Value::Object(fields) => Ok(fields),
-        _ => Err(OutboundError::new(
-            400,
-            "invalid_json",
-            "Send a JSON object.",
-        )),
-    }
 }
 
 /// The local paths a send's optional `"files"` names: a list of one to
@@ -654,6 +621,7 @@ impl Outbound {
             sent: Mutex::default(),
             rosters: Arc::default(),
             connect_broadcasts: connect_send::Broadcasts::default(),
+            mobile_permissions: mobile_handoff_permission::Tickets::default(),
         }
     }
 
@@ -723,11 +691,7 @@ impl Outbound {
                 let route = format!("{} {}", request.method, request.path);
                 self.setup_route(pid, uid, &route, fields).await
             }
-            _ => Err(OutboundError::new(
-                404,
-                "not_found",
-                "Use a documented Agent Relay session-socket route.",
-            )),
+            _ => self.mobile_handoff_route(pid, uid, request).await,
         }
     }
 
@@ -1985,35 +1949,6 @@ async fn write_response(stream: &mut CoreStream, status: u16, payload: &Value) {
     );
     let _ = stream.write_all(response.as_bytes()).await;
     let _ = stream.shutdown().await;
-}
-
-async fn connection(outbound: Arc<Outbound>, mut stream: CoreStream) {
-    let request = match tokio::time::timeout(READ_TIMEOUT, read_request(&mut stream)).await {
-        Err(_) | Ok(Ok(None)) => return,
-        Ok(Err(error)) if error.code == "closed" => return,
-        Ok(Err(error)) => {
-            write_error(&mut stream, &error).await;
-            return;
-        }
-        Ok(Ok(Some(request))) => request,
-    };
-    let peer = match stream.peer_credentials() {
-        Ok(peer) => peer,
-        Err(_) => {
-            let error =
-                OutboundError::new(403, "not_this_user", "The caller could not be identified.");
-            write_error(&mut stream, &error).await;
-            return;
-        }
-    };
-    let Some(pid) = peer.pid else {
-        write_error(&mut stream, &OutboundError::not_a_session()).await;
-        return;
-    };
-    match outbound.handle(pid, peer.uid, &request).await {
-        Ok(data) => write_response(&mut stream, 200, &json!({"ok": true, "data": data})).await,
-        Err(error) => write_error(&mut stream, &error).await,
-    }
 }
 
 /// A credential-free description of a failed Relaycast call, for the log.

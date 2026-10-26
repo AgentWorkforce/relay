@@ -116,8 +116,10 @@ final class ChatModel: ObservableObject {
         }
         pendingActions = []
         pendingPushes = []
-        error = interruptedWrite ? CoreError.interrupted.message : nil
-        projectsError = interruptedProjectWrite ? CoreError.interrupted.message : nil
+        // A pooled write can fail before the subscription notices the same
+        // disconnect. Keep its warning after its in-flight flag has cleared.
+        error = interruptedWrite || error == CoreError.interrupted.message ? CoreError.interrupted.message : nil
+        projectsError = interruptedProjectWrite || projectsError == CoreError.interrupted.message ? CoreError.interrupted.message : nil
     }
 
     private func record(_ error: Error, projects: Bool = false) {

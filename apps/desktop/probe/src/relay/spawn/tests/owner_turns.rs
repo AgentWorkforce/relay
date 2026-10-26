@@ -57,13 +57,27 @@ async fn a_requesters_dm_stays_peer_framed_and_cannot_answer_an_approval() {
         core.owner_reply(&registration, &approval).await,
         OwnerReply::NotOne
     ));
-    assert!(!core.store.read(|store| store.injected_delivery_ids.contains(&"d1".to_string())));
+    assert!(!core
+        .store
+        .read(|store| store.injected_delivery_ids.contains(&"d1".to_string())));
     assert_eq!(
-        drive::answer(THREAD, &notice.reference, Some("agent_grokbot"), Some("agent_owner"), true),
+        drive::answer(
+            THREAD,
+            &notice.reference,
+            Some("agent_grokbot"),
+            Some("agent_owner"),
+            true
+        ),
         drive::ReplyResult::Unauthorized
     );
     assert_eq!(
-        drive::answer(THREAD, &notice.reference, Some("agent_owner"), Some("agent_owner"), true),
+        drive::answer(
+            THREAD,
+            &notice.reference,
+            Some("agent_owner"),
+            Some("agent_owner"),
+            true
+        ),
         drive::ReplyResult::Answered,
         "still open for the owner"
     );
@@ -96,6 +110,9 @@ fn the_approval_dm_says_only_the_owner_may_answer() {
     );
     let text = approval_text("w1", &notice);
     assert!(text.starts_with(&format!("[Codex approval {} for @w1]", notice.reference)));
-    assert!(text.ends_with("Only the signed-in machine owner may answer."), "{text}");
+    assert!(
+        text.ends_with("Only the signed-in machine owner may answer."),
+        "{text}"
+    );
     assert!(!text.contains("requester"), "{text}");
 }

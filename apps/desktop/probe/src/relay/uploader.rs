@@ -30,6 +30,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::sync::mpsc;
 
+mod refresh;
+use refresh::{session_page, Changing};
+pub use refresh::{with_derived, HistoryReader};
 mod supervision;
 
 /// How long each command may run. `None` waits for the command to finish:
@@ -84,7 +87,12 @@ impl std::fmt::Display for UploaderError {
 
 impl From<UploaderError> for RpcError {
     fn from(error: UploaderError) -> RpcError {
-        RpcError::new(ErrorKind::UploaderFailed, error.message)
+        let kind = if error.message == crate::history_access::RESET_BUSY {
+            ErrorKind::Busy
+        } else {
+            ErrorKind::UploaderFailed
+        };
+        RpcError::new(kind, error.message)
     }
 }
 
@@ -146,6 +154,11 @@ pub struct InstallRun {
 
 /// Runs the probe's commands.
 pub trait ProbeRunner: Send + Sync + 'static {
+    /// The same home-scoped lock namespace used by reset helpers.
+    fn history_access_root(&self) -> Option<PathBuf> {
+        None
+    }
+
     /// Runs one `--json` command and returns its object.
     fn run(
         &self,
@@ -330,6 +343,10 @@ async fn wait_bounded(
 }
 
 impl ProbeRunner for ProcessRunner {
+    fn history_access_root(&self) -> Option<PathBuf> {
+        refresh::history_access_root(&self.env)
+    }
+
     fn run(
         &self,
         args: Vec<String>,
@@ -796,15 +813,6 @@ fn derive_at(status: &Value, now_ms: i64) -> Value {
     })
 }
 
-/// `status` with the derived fields merged in.
-pub fn with_derived(mut status: Value) -> Value {
-    let derived = derive(&status);
-    if let (Value::Object(object), Value::Object(derived)) = (&mut status, derived) {
-        object.extend(derived);
-    }
-    status
-}
-
 /// The connected install, as `installs` lists it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Install {
@@ -873,6 +881,8 @@ pub struct Uploader {
     /// the attachment changes, so no caller is handed a read that began
     /// before the change.
     changes: AtomicU64,
+    background: refresh::State,
+    sessions_demand: Mutex<Option<std::time::Instant>>,
 }
 
 struct SessionsSnapshot {
@@ -882,23 +892,7 @@ struct SessionsSnapshot {
     value: Value,
 }
 
-fn session_page(value: &Value, limit: usize) -> Value {
-    json!({
-        "sharing_mode": value["sharing_mode"].as_str().unwrap_or("selected"),
-        "sessions": value["sessions"].as_array().map(|rows| rows.iter().take(limit).cloned().collect::<Vec<_>>()).unwrap_or_default(),
-    })
-}
-
 type StatusRead = Shared<BoxFuture<'static, Result<Value, RpcError>>>;
-
-/// Marks a change command: bumps `changes` when it ends, however it ends.
-struct Changing<'a>(&'a AtomicU64);
-
-impl Drop for Changing<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_add(1, Ordering::SeqCst);
-    }
-}
 
 fn not_connected() -> RpcError {
     RpcError::new(
@@ -908,22 +902,6 @@ fn not_connected() -> RpcError {
 }
 
 impl Uploader {
-    pub fn new(runner: Arc<dyn ProbeRunner>) -> Uploader {
-        Uploader {
-            runner,
-            install: Mutex::new(None),
-            revision: AtomicU64::new(0),
-            starting: tokio::sync::Mutex::new(()),
-            status_read: Mutex::new(None),
-            status_snapshot: Mutex::new(None),
-            sessions_snapshot: Mutex::new(None),
-            sessions_read: Mutex::new(None),
-            sessions_refresh: tokio::sync::Mutex::new(()),
-            sessions_limit: Mutex::new(SESSION_LIST_LIMIT),
-            changes: AtomicU64::new(0),
-        }
-    }
-
     fn changing(&self) -> Changing<'_> {
         Changing(&self.changes)
     }
@@ -947,6 +925,10 @@ impl Uploader {
         if *current != install {
             self.revision.fetch_add(1, Ordering::SeqCst);
             self.changes.fetch_add(1, Ordering::SeqCst);
+            self.invalidate_history_readers();
+        }
+        if install.is_none() {
+            self.invalidate_history_readers();
         }
         *current = install;
     }
@@ -1026,7 +1008,7 @@ impl Uploader {
         self.attached()?;
         if let Some((began, value)) = self.status_snapshot.lock().unwrap().as_ref() {
             if *began == generation && self.changes.load(Ordering::SeqCst) == generation {
-                return Ok(value.clone());
+                return Ok(with_derived(value.clone()));
             }
         }
         let (_, value) = self.refresh_status_snapshot().await?;
@@ -1055,6 +1037,7 @@ impl Uploader {
         let target = self.attached()?;
         let _one = self.starting.lock().await;
         let _changing = self.changing();
+        let _readers = self.suspend_background_readers().await;
         Ok(self
             .runner
             .run(command::simple("start", &target), Some(timeouts::START))
@@ -1066,7 +1049,8 @@ impl Uploader {
         self.control(name, timeouts::PAUSE).await
     }
 
-    /// Retries uploads a problem stopped; the probe leaves any other job as it is.
+    /// Retries uploads a problem stopped, or wakes uploads waiting out a
+    /// transient failure's backoff; the probe leaves any other job as it is.
     pub async fn retry(&self) -> Result<Value, RpcError> {
         self.control("retry", timeouts::PAUSE).await
     }
@@ -1108,6 +1092,7 @@ impl Uploader {
         if install.as_ref().is_some_and(|i| &i.target == target) {
             *install = None;
             self.revision.fetch_add(1, Ordering::SeqCst);
+            self.invalidate_history_readers();
         }
         Ok(value)
     }
@@ -1156,6 +1141,10 @@ impl Uploader {
     /// collector's durable inventory without opening transcripts or scanning
     /// upload batches. Background enrichment never blocks an existing page.
     pub async fn sessions_list(&self, limit: Option<usize>) -> Result<Value, RpcError> {
+        *self
+            .sessions_demand
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
         let generation = self.changes.load(Ordering::SeqCst);
         let target = self.attached()?;
         let limit = limit.unwrap_or(SESSION_LIST_LIMIT).clamp(1, 10_000);
@@ -1323,6 +1312,7 @@ impl Uploader {
         let target = self.attached()?;
         let _starting = self.starting.lock().await;
         let _changing = self.changing();
+        let _readers = self.suspend_background_readers().await;
         let result = self
             .runner
             .run(command::sessions_reset(&target, confirmation), None)

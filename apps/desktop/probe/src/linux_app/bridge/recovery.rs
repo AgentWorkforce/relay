@@ -1,4 +1,5 @@
-//! Repeatable reads recover across a brief core interruption.
+//! Repeatable reads recover across a brief core interruption, and which
+//! failures mean a command never reached the core.
 
 use super::*;
 
@@ -190,5 +191,21 @@ impl Bridge {
                 }
             }
         }
+    }
+}
+
+impl CoreError {
+    /// Whether this failure is the bridge not reaching the core at all, as
+    /// the Mac's `CoreError.neverSent`. A command fails this way only when no
+    /// connection to the core could be opened or greeted, so it was never
+    /// sent; once the core answers again, the sentence is no longer true.
+    /// `interrupted` is not included: that command may have run.
+    pub fn never_sent(&self) -> bool {
+        self.failure == Failure::Unavailable && CoreError::never_sent_message(&self.message)
+    }
+
+    /// `never_sent`, for a failure kept only as its sentence.
+    pub fn never_sent_message(message: &str) -> bool {
+        message == CoreError::unavailable().message || message == CoreError::reconnecting().message
     }
 }

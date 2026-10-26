@@ -1,0 +1,76 @@
+name: Rust lane cache
+description: Save parallel build lanes independently and seed a new lane from the old shared cache.
+inputs:
+  legacy-key:
+    description: Complete former key plus job name (shared-key replaces both)
+    required: true
+  lane:
+    description: Package or tests lane
+    required: true
+  discard-profile:
+    description: Unused Cargo profile to drop from restored seeds (debug, release or none)
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Restore the lane cache
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      with:
+        shared-key: ${{ inputs.legacy-key }}-${{ inputs.lane }}
+        workspaces: apps/desktop/probe
+        # This marker distinguishes any restored lane cache, including a
+        # partial lockfile match, from a complete miss. cache-hit alone only
+        # reports exact matches and cannot safely guard the legacy restore.
+        cache-directories: ${{ runner.temp }}/relay-rust-cache/${{ inputs.legacy-key }}-${{ inputs.lane }}
+    - name: Check whether the lane needs its legacy seed
+      id: seed
+      shell: bash
+      env:
+        CACHE_MARKER: ${{ runner.temp }}/relay-rust-cache/${{ inputs.legacy-key }}-${{ inputs.lane }}/restored
+      run: |
+        if [ -f "$CACHE_MARKER" ]; then
+          echo 'needed=false' >> "$GITHUB_OUTPUT"
+        else
+          echo 'needed=true' >> "$GITHUB_OUTPUT"
+        fi
+    - name: Seed a new lane from the previous shared cache
+      if: steps.seed.outputs.needed == 'true'
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      with:
+        # Match the old cache namespace AND path list. It is read-only:
+        # parallel lanes must never compete to save this shared entry.
+        shared-key: ${{ inputs.legacy-key }}
+        workspaces: apps/desktop/probe
+        save-if: 'false'
+    - name: Prune the restored profile this lane never uses
+      shell: bash
+      working-directory: apps/desktop
+      env:
+        DISCARD_PROFILE: ${{ inputs.discard-profile }}
+      run: |
+        # Only known, ignored Cargo build directories may be removed. Never
+        # accept arbitrary paths or profiles from callers, and reject symlinks.
+        case "$DISCARD_PROFILE" in
+          debug|release)
+            for target_dir in probe/target \
+              probe/target/aarch64-apple-darwin \
+              probe/target/x86_64-apple-darwin \
+              probe/target/aarch64-unknown-linux-gnu \
+              probe/target/x86_64-unknown-linux-gnu; do
+              if [ -L "$target_dir" ] || ! git check-ignore --quiet -- "$target_dir/$DISCARD_PROFILE"; then
+                echo "Refusing to prune an untrusted build directory: $target_dir" >&2
+                exit 1
+              fi
+              rm -rf -- "${target_dir:?}/${DISCARD_PROFILE:?}"
+            done
+            ;;
+          none) ;;
+          *) echo "Unknown discard-profile: $DISCARD_PROFILE" >&2; exit 1 ;;
+        esac
+    - name: Mark the lane cache for future restores
+      shell: bash
+      env:
+        CACHE_MARKER: ${{ runner.temp }}/relay-rust-cache/${{ inputs.legacy-key }}-${{ inputs.lane }}/restored
+      run: |
+        mkdir -p "$(dirname "$CACHE_MARKER")"
+        echo 'lane-cache-v1' > "$CACHE_MARKER"

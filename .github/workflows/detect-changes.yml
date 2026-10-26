@@ -92,9 +92,13 @@ jobs:
               '.github/workflows/desktop-ci.yml',
               '.github/workflows/desktop-release.yml',
               '.github/workflows/ios-testflight.yml',
+              '.github/workflows/mobile-ci.yml',
             ]);
+            const isDesktopAction = (file) => file.startsWith('.github/actions/');
             const isCi = (file) =>
-              file.startsWith('.github/') && !desktopWorkflows.has(file);
+              file.startsWith('.github/') &&
+              !desktopWorkflows.has(file) &&
+              !isDesktopAction(file);
             const isSwift = (file) =>
               file.startsWith('packages/sdk-swift/') || file === 'Package.swift';
             const isRust = (file) =>
@@ -110,6 +114,7 @@ jobs:
             const isInert = (file) =>
               file.startsWith('apps/desktop/') ||
               desktopWorkflows.has(file) ||
+              isDesktopAction(file) ||
               file.startsWith('web/') ||
               file.startsWith('docs/') ||
               file.startsWith('specs/') ||
@@ -152,6 +157,8 @@ jobs:
             const desktopProbe = classifyFiles([
               'apps/desktop/probe/src/main.rs',
               '.github/workflows/desktop-ci.yml',
+              '.github/workflows/mobile-ci.yml',
+              '.github/actions/rust-lane-cache/action.yml',
             ]);
             core.info(
               `desktop_probe rust_changed=${desktopProbe.rustChanged} node_changed=${desktopProbe.nodeChanged} sdk_swift_changed=${desktopProbe.sdkSwiftChanged}`

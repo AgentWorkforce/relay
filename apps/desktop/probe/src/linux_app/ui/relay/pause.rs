@@ -32,6 +32,7 @@ impl App {
         if matches!(self.page(), Page::Sessions | Page::Agents) {
             self.render_page();
         }
+        self.refresh_history_retention();
         self.update_tray();
     }
 

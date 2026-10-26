@@ -22,7 +22,7 @@ use std::collections::HashSet;
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
-mod claude;
+pub(crate) mod claude;
 
 fn watching() -> MutexGuard<'static, HashSet<String>> {
     static WATCHING: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -172,7 +172,10 @@ impl Core {
     /// The signed-in person's relay identity, when this computer's node is
     /// claimed by them, `registration` is in their workspace, and Relaycast
     /// still gives the name their immutable id: (name, agent id).
-    async fn verified_owner(&self, registration: &Registration) -> Option<(String, String)> {
+    pub(crate) async fn verified_owner(
+        &self,
+        registration: &Registration,
+    ) -> Option<(String, String)> {
         let workspace = self.workspace()?;
         if !claimed_by_signed_in(self)
             || workspace.base_url != registration.base_url
@@ -209,6 +212,7 @@ impl Core {
         delivery: &Delivery,
     ) -> bool {
         self.owner_sent(registration, delivery).await.is_some()
+            || self.mobile_owner_turn(registration, delivery).await
     }
 
     /// Answers a pending request when `delivery` is the owner's
@@ -221,6 +225,9 @@ impl Core {
         registration: &Registration,
         delivery: &Delivery,
     ) -> OwnerReply {
+        if let Some(reply) = self.mobile_permission_reply(registration, delivery).await {
+            return reply;
+        }
         let text = delivery.text.as_deref().unwrap_or_default();
         let Some((decision, reference)) = parse_reply(text) else {
             return OwnerReply::NotOne;

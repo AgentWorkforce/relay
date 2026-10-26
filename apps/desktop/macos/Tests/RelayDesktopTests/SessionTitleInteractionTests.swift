@@ -106,8 +106,9 @@ private struct TitleEditorTestView: View {
 
 @MainActor final class SessionTitleInteractionTests: XCTestCase {
     func testTypingWaitsForDeferredOutsideFocusCommitAndSubmitsOnlyOnce() async throws {
-        let ui = TitleEditorWindow()
-        defer { ui.window.close() }
+        let gate = TitleBlurWaitGate()
+        let ui = TitleEditorWindow(waitForBlur: { await gate.wait() })
+        defer { gate.releaseAll(); ui.window.close() }
         try await ui.begin()
         try ui.type("Edited")
         try ui.type("Edited title")
@@ -115,9 +116,21 @@ private struct TitleEditorTestView: View {
         XCTAssertTrue(ui.fixture.saves.isEmpty)
         XCTAssertEqual(ui.fixture.preloads, 1, "Typing never performs lookups")
         try ui.focusOutside()
-        try await ui.settle(50)
-        XCTAssertTrue(ui.fixture.saves.isEmpty, "Focus loss has a short grace period for toolbar actions")
-        try await ui.settle(180)
+        let scheduled = await eventually {
+            ui.host.layoutSubtreeIfNeeded()
+            return gate.liveWaitIDs.count == 1
+        }
+        XCTAssertTrue(scheduled, "Focus loss must suspend the deferred commit before saving")
+        let pending = try XCTUnwrap(gate.liveWaitIDs.first)
+        XCTAssertTrue(ui.fixture.saves.isEmpty, "Focus loss must await the toolbar-action grace boundary")
+        XCTAssertFalse(gate.isCancelled(pending))
+        gate.release(pending)
+        let committed = await eventually {
+            ui.host.layoutSubtreeIfNeeded()
+            return gate.finishedWaits.contains(pending) && ui.fixture.saves.count == 1
+        }
+        XCTAssertTrue(committed, "Releasing the deferred focus-loss task must save the draft")
+        XCTAssertFalse(gate.cancelledWaits.contains(pending))
         XCTAssertEqual(ui.fixture.saves.map(\.1), ["Edited title"])
         try await ui.settle(200)
         XCTAssertEqual(ui.fixture.saves.count, 1)

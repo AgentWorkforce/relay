@@ -15,13 +15,18 @@ use crate::relay::daemon::Core;
 use crate::relay::incoming::IncomingState;
 use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::state::Listing;
-use crate::relay::telemetry::{TelemetryFailure, TelemetryOperation, TelemetryOutcome};
+use crate::relay::telemetry::{
+    self, TelemetryEvent, TelemetryFailure, TelemetryOperation, TelemetryOutcome,
+};
 use crate::relay::uploader::read_answer;
 use crate::relay::{cloud_chat, contractor_access, login_item};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::future::Future;
 use std::sync::Arc;
+
+mod usage;
+use usage::{sessions_with_usage, transcript_with_usage};
 
 /// The telemetry failure code for an uploader command's error.
 fn failure(error: &RpcError) -> TelemetryFailure {
@@ -38,15 +43,21 @@ fn failure(error: &RpcError) -> TelemetryFailure {
 /// uploader changed.
 async fn tracked<T: DeserializeOwned>(
     core: &Arc<Core>,
-    account: &Account,
-    operation: TelemetryOperation,
+    event: TelemetryEvent,
     work: impl Future<Output = Result<Value, RpcError>>,
 ) -> Result<T, RpcError> {
     let result = work.await.and_then(read_answer::<T>);
     match &result {
-        Ok(_) => account.track(operation, TelemetryOutcome::Succeeded, None),
+        Ok(_) => telemetry::record_for(core, event),
         Err(error) if error.data.kind == ErrorKind::NotSignedIn => {}
-        Err(error) => account.track(operation, TelemetryOutcome::Failed, Some(failure(error))),
+        Err(error) => telemetry::record_for(
+            core,
+            TelemetryEvent {
+                outcome: TelemetryOutcome::Failed,
+                failure: Some(failure(error)),
+                ..event
+            },
+        ),
     }
     if result.is_ok() {
         core.hub.invalidated(Listing::Uploader);
@@ -168,7 +179,7 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
         }
         method::AccountSignInCancel::NAME => {
             answer::<method::AccountSignInCancel, _>(raw, |_| async {
-                account.cancel();
+                account.cancel_sign_in();
                 Ok(Done {})
             })
             .await
@@ -201,8 +212,10 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
             answer::<method::UploaderStart, _>(raw, |_| {
                 tracked::<UploaderStarted>(
                     core,
-                    account,
-                    TelemetryOperation::StartUploader,
+                    TelemetryEvent::new(
+                        TelemetryOperation::StartUploader,
+                        TelemetryOutcome::Succeeded,
+                    ),
                     uploader.start(),
                 )
             })
@@ -212,8 +225,10 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
             answer::<method::UploaderDisconnect, _>(raw, |_| async {
                 let result = tracked::<UploaderDisconnected>(
                     core,
-                    account,
-                    TelemetryOperation::Disconnect,
+                    TelemetryEvent::new(
+                        TelemetryOperation::Disconnect,
+                        TelemetryOutcome::Succeeded,
+                    ),
                     uploader.disconnect(),
                 )
                 .await;
@@ -233,24 +248,25 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
             answer::<method::UploaderSharingSet, _>(raw, |request| {
                 tracked::<SharingChanged>(
                     core,
-                    account,
-                    TelemetryOperation::SharingMode,
+                    TelemetryEvent::new(
+                        TelemetryOperation::SharingMode,
+                        TelemetryOutcome::Succeeded,
+                    )
+                    .mode(request.mode),
                     uploader.sharing_set(request.mode),
                 )
             })
             .await
         }
         method::UploaderSessionsList::NAME => {
-            answer::<method::UploaderSessionsList, _>(raw, |request| {
-                upload_sessions(core, account, &uploader, request.limit)
+            answer::<method::UploaderSessionsList, _>(raw, |request| async move {
+                sessions_with_usage(core, account, request.limit).await
             })
             .await
         }
         method::SessionsTranscript::NAME => {
             answer::<method::SessionsTranscript, _>(raw, |request| async move {
-                uploader.transcript(request).await.and_then(
-                    read_answer::<crate::relay::contract::transcript::LocalTranscriptPage>,
-                )
+                transcript_with_usage(core, account, request).await
             })
             .await
         }
@@ -264,8 +280,11 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
             answer::<method::UploaderSessionsInclude, _>(raw, |request| async move {
                 tracked::<SessionsUpdated>(
                     core,
-                    account,
-                    TelemetryOperation::IncludeSessions,
+                    TelemetryEvent::new(
+                        TelemetryOperation::IncludeSessions,
+                        TelemetryOutcome::Succeeded,
+                    )
+                    .count(request.session_keys.len() as i64),
                     uploader.sessions_change(true, &request.session_keys),
                 )
                 .await
@@ -286,8 +305,11 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
             answer::<method::UploaderSessionsDelete, _>(raw, |request| async move {
                 tracked::<SessionsUpdated>(
                     core,
-                    account,
-                    TelemetryOperation::ExcludeSessions,
+                    TelemetryEvent::new(
+                        TelemetryOperation::DeleteSessions,
+                        TelemetryOutcome::Succeeded,
+                    )
+                    .count(request.session_keys.len() as i64),
                     uploader.sessions_delete(&request.session_keys),
                 )
                 .await
@@ -298,8 +320,11 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
             answer::<method::UploaderSessionsExclude, _>(raw, |request| async move {
                 tracked::<SessionsUpdated>(
                     core,
-                    account,
-                    TelemetryOperation::ExcludeSessions,
+                    TelemetryEvent::new(
+                        TelemetryOperation::ExcludeSessions,
+                        TelemetryOutcome::Succeeded,
+                    )
+                    .count(request.session_keys.len() as i64),
                     uploader.sessions_change(false, &request.session_keys),
                 )
                 .await
@@ -309,9 +334,7 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
         method::TelemetryRecord::NAME => {
             // Validated alike, then dropped, without telemetry.
             answer::<method::TelemetryRecord, _>(raw, |event| async move {
-                if let Some(telemetry) = &account.telemetry {
-                    telemetry.record(event);
-                }
+                account.record_usage(event).await;
                 Ok(Done {})
             })
             .await
@@ -398,14 +421,28 @@ async fn uploader_control(
         method::UploaderRetry::NAME => {
             answer::<method::UploaderRetry, _>(raw, |_| {
                 let work = uploader.retry();
-                tracked::<UploadsRetried>(core, account, TelemetryOperation::RetryUploads, work)
+                tracked::<UploadsRetried>(
+                    core,
+                    TelemetryEvent::new(
+                        TelemetryOperation::RetryUploads,
+                        TelemetryOutcome::Succeeded,
+                    ),
+                    work,
+                )
             })
             .await
         }
         method::UploaderCompact::NAME => {
             answer::<method::UploaderCompact, _>(raw, |_| {
                 let work = uploader.compact();
-                tracked::<JournalCompacted>(core, account, TelemetryOperation::CompactJournal, work)
+                tracked::<JournalCompacted>(
+                    core,
+                    TelemetryEvent::new(
+                        TelemetryOperation::CompactJournal,
+                        TelemetryOutcome::Succeeded,
+                    ),
+                    work,
+                )
             })
             .await
         }
@@ -423,8 +460,12 @@ async fn pause(
     } else {
         TelemetryOperation::ResumeUploader
     };
-    let result =
-        tracked::<UploaderPaused>(core, account, operation, account.uploader.pause(paused)).await;
+    let result = tracked::<UploaderPaused>(
+        core,
+        TelemetryEvent::new(operation, TelemetryOutcome::Succeeded),
+        account.uploader.pause(paused),
+    )
+    .await;
     if let Some(incoming) = &account.incoming {
         if paused || result.is_ok() {
             incoming.pause(paused);

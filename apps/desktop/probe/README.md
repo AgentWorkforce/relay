@@ -84,7 +84,12 @@ session is sent.
 Failures are `Transient`, `RateLimited`, `AuthenticationRequired`,
 `PermissionDenied`, `InvalidPayload`, `UnsupportedEvidence` or
 `MappingVersionMismatch`. Only transient and rate-limit failures retry
-automatically. HTTP 404 blocks rather than falling back to another protocol.
+automatically, after 1 s doubled per consecutive attempt plus up to a fifth of
+jitter: a transient failure's wait stops growing at five minutes
+(`TRANSIENT_BACKOFF_CEILING_MS`), so a receiver that recovers from a long
+outage is tried again within six, and a rate limit's at an hour, with a later
+`retry_after` still standing. An explicit retry (`retry`, the app's **Retry**)
+also ends a transient wait early; it leaves a rate-limited wait alone. HTTP 404 blocks rather than falling back to another protocol.
 Batches hold at most 100 records, the protocol default, until a receipt
 publishes the server's limits (`limits: {maxRecords, maxRequestBytes}`):
 `maxRecords` then sizes the batches prepared next, up to 500

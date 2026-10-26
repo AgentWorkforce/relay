@@ -1971,7 +1971,11 @@ impl App {
             let stages = upload_stages(
                 !state.sessions.is_empty() || state.sessions_refreshed.is_some(),
                 state.sessions.len(),
-                state.sessions.iter().filter(|session| session.included).count(),
+                state
+                    .sessions
+                    .iter()
+                    .filter(|session| session.included)
+                    .count(),
                 preparing,
                 capture,
                 state.status.as_ref(),

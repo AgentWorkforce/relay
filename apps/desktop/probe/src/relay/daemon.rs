@@ -14,7 +14,6 @@
 use crate::relay::agents::{KeyedLocks, SettingsExtension};
 use crate::relay::backoff::{BackoffNotice, RelaycastBackoff, WorkspaceScope};
 use crate::relay::claude_delivery_policy::ClaudeDeliveryPolicy;
-use crate::relay::{app_store, client};
 use crate::relay::cloud_session::{CloudAccess, SignedOut};
 use crate::relay::connect::{CloudJoinClient, ConnectJoinClient, ConnectState, CONNECT_STORE_FILE};
 use crate::relay::delivery::{DeliveryState, DeliveryTiming};
@@ -33,6 +32,7 @@ use crate::relay::state::{
 use crate::relay::store::{PublishedJournal, Registration, StoreHandle};
 use crate::relay::transport::CoreListener;
 use crate::relay::workspace::{self, Secret, Workspace};
+use crate::relay::{app_store, client};
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use std::collections::BTreeMap;
@@ -45,6 +45,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
 mod key_rotation;
+mod relaycast_writes;
 mod workspace_verification;
 
 /// A failure whose message is safe to print as is.
@@ -186,10 +187,14 @@ pub struct Core {
     pub(crate) project_names: crate::relay::project::Names,
     /// Last completed discovery pass. Bridge reads never scan providers.
     pub(crate) session_snapshot: Mutex<(u64, Vec<crate::relay::sessions::DiscoveredSession>)>,
+    /// Native title and mobile-state publications fence older roster snapshots.
+    pub(crate) roster_revision: std::sync::atomic::AtomicU64,
     /// One change at a time per session (`target.key()`).
     pub(crate) target_locks: KeyedLocks,
     /// One delivery at a time per agent name; a removal waits for it.
     pub(crate) agent_locks: KeyedLocks,
+    /// Serialize roster metadata and presence writes for each relay name.
+    pub(crate) roster_locks: KeyedLocks,
     /// Names being registered right now, so two sessions cannot claim one.
     pub(crate) claiming: Mutex<std::collections::HashSet<String>>,
     /// Setup routes and the delivery supervisor can both request a pass;
@@ -214,6 +219,7 @@ pub struct Core {
     pub(crate) retiring: Mutex<BTreeMap<String, (Registration, Secret)>>,
     pub(crate) delivery: Mutex<DeliveryState>,
     pub(crate) claude_delivery: ClaudeDeliveryPolicy,
+    pub(crate) mobile_claude_plugins: crate::relay::claude_mobile_plugin::Installations,
     /// Workspace-wide pacing shared by queue reads, heartbeats, lifecycle
     /// calls and direct-node token refreshes.
     pub(crate) relaycast_backoff: Arc<RelaycastBackoff>,
@@ -301,8 +307,10 @@ impl Core {
             plugins,
             project_names,
             session_snapshot: Mutex::new((0, Vec::new())),
+            roster_revision: std::sync::atomic::AtomicU64::new(0),
             target_locks: KeyedLocks::default(),
             agent_locks: KeyedLocks::default(),
+            roster_locks: KeyedLocks::default(),
             claiming: Mutex::default(),
             auto_activation: tokio::sync::Mutex::new(None),
             presence_announced: std::sync::atomic::AtomicBool::new(false),
@@ -311,6 +319,7 @@ impl Core {
             retiring: Mutex::default(),
             delivery: Mutex::default(),
             claude_delivery,
+            mobile_claude_plugins: Default::default(),
             relaycast_backoff,
             connect: Mutex::new(connect),
             connect_lifetime: Default::default(),
@@ -320,14 +329,6 @@ impl Core {
             contractors: std::sync::OnceLock::new(),
             spawn_node: tokio::sync::Mutex::new(None),
             me: me.clone(),
-        });
-        core.hub
-            .update(|status| status.agents.store_error = core.store.error());
-        let watcher = Arc::downgrade(&core);
-        core.store.watch_errors(move |error| {
-            if let Some(core) = watcher.upgrade() {
-                core.hub.update(|status| status.agents.store_error = error);
-            }
         });
         crate::relay::settings_watch::attach_plugins(&core);
         (core, signal_rx)
@@ -393,64 +394,6 @@ impl Core {
 
     pub(crate) fn relaycast_write_allowed(&self, workspace: &WorkspaceScope) -> bool {
         self.relaycast_backoff.allowed_write(workspace)
-    }
-
-    pub(crate) fn observe_relaycast_write_result<T>(
-        &self,
-        workspace: &WorkspaceScope,
-        result: &relaycast::Result<T>,
-    ) {
-        match result {
-            Ok(_) => self.relaycast_backoff.record_write_success(workspace),
-            Err(error) => {
-                if let Some(notice) = self.relaycast_backoff.record_write_error(workspace, error) {
-                    self.report_relaycast_backoff(workspace, &notice);
-                }
-            }
-        }
-    }
-
-    /// Settlement retries keep their durable outcome and stay queued at
-    /// Relaycast until writes are admitted again. Serialize this lane so
-    /// multiple agent queues observe a denial before starting siblings.
-    pub(crate) async fn relaycast_ack(
-        &self,
-        workspace: &WorkspaceScope,
-        base: &str,
-        token: &Secret,
-        id: &str,
-    ) -> bool {
-        let lock = self
-            .agent_locks
-            .get(&format!("settlements:{}", workspace.key()));
-        let _settling = lock.lock().await;
-        if !self.relaycast_write_allowed(workspace) {
-            return false;
-        }
-        let result = client::ack(base, token, id).await;
-        self.observe_relaycast_write_result(workspace, &result);
-        result.is_ok()
-    }
-
-    pub(crate) async fn relaycast_fail(
-        &self,
-        workspace: &WorkspaceScope,
-        base: &str,
-        token: &Secret,
-        id: &str,
-        reason: &str,
-        retryable: bool,
-    ) -> bool {
-        let lock = self
-            .agent_locks
-            .get(&format!("settlements:{}", workspace.key()));
-        let _settling = lock.lock().await;
-        if !self.relaycast_write_allowed(workspace) {
-            return false;
-        }
-        let result = client::fail(base, token, id, reason, retryable).await;
-        self.observe_relaycast_write_result(workspace, &result);
-        result.is_ok()
     }
 
     pub(crate) fn observe_relaycast_result<T>(
@@ -870,9 +813,7 @@ async fn run_with(
     let relay_send = serve_relay_send(&core);
     let watcher = tokio::spawn(crate::relay::local_methods::watch(core.clone()));
     let upload_watcher = tokio::spawn(crate::relay::local_methods::watch_uploads(core.clone()));
-    let upload_status_watcher = tokio::spawn(crate::relay::local_methods::watch_upload_status(
-        core.clone(),
-    ));
+
     let _ = stopping.wait_for(|stop| *stop).await;
 
     if let Some(relay_send) = relay_send {
@@ -880,7 +821,6 @@ async fn run_with(
     }
     watcher.abort();
     upload_watcher.abort();
-    upload_status_watcher.abort();
     if let Some(account) = account {
         account.abort();
     }

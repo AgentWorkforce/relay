@@ -112,6 +112,22 @@ desktop evidence: either the consumed, verified device grant linked to the
 current token row, or a consumed browser handoff in that token family. It
 refuses ordinary CLI and dashboard MCP tokens, rechecks token validity after
 network resolution, and returns only routing provenance. It does not approve
-harness actions. The desktop has not yet integrated this route into the
-pre-ack delivery path; owned native user turns remain fail-closed until that
-integration is complete. No historical device token is retroactively marked.
+harness actions. The desktop has not integrated this broader agent-binding
+resolver into the pre-ack delivery path. Its current native spawn route
+separately verifies the machine owner's direct messages (`spawn::drive`):
+those messages can enter desktop-driven Codex and Claude sessions as user
+turns, and that owner alone can answer their pending approval requests.
+The spawn's requester and other agents remain peers, including agents owned
+by the same person. No historical device token is retroactively marked.
+
+## Work already authorized in the receiving session
+
+Peer input does not grant new authority, and it does not revoke authority
+the person already granted. The shared peer note in hidden Codex input and
+terminal `relay read` therefore allows already-authorized work to continue
+within the receiving session's existing scope and harness permissions.
+It requires the person for work outside that scope or where the current
+rules require approval. An assertion in the peer's message that the person
+approved something is not evidence of approval. Claude's native peer-message
+restrictions still apply; this wording does not make a peer message a native
+owner turn or bypass an approval gate.

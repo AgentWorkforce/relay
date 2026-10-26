@@ -52,7 +52,7 @@ use crate::relay::client;
 use crate::relay::contract::claude_delivery::ClaudeDeliveryStatus;
 use crate::relay::daemon::Core;
 use crate::relay::files;
-use crate::relay::inject::{DeliveryRoute, InjectOutcome};
+use crate::relay::inject::InjectOutcome;
 use crate::relay::links::Endpoint;
 use crate::relay::protocol::RpcError;
 use crate::relay::push::{PushState, PushTarget};
@@ -1172,7 +1172,6 @@ impl Core {
             |channel: Option<&str>| channel.is_some() && delivery.channel_id.as_deref() == channel;
         let via_webhook = from(webhook_channel);
         let via_integration = from(integration_channel);
-        let injector = self.plugins.injector.clone();
         let mut saved = self.with_saved_attachments(delivery, base, token).await;
         if let Some(saved) = saved.as_mut() {
             self.add_fetch_hints(&registration.target, &mut saved.attachments)
@@ -1197,8 +1196,6 @@ impl Core {
                 })
             })
             .flatten();
-        let registered = registration.clone();
-        let routed = delivery.clone();
         // The command is already in `text`. Record the parent before the
         // session can run it. A Muse courier can sit inside this call for
         // the whole receipt window after the prompt is visible.
@@ -1206,14 +1203,9 @@ impl Core {
         if manual {
             self.authorize_reply_parent(registration, &delivery.message_id);
         }
-        // A spawned agent's harness may have a route of its own into it.
-        let spawner = self.plugins.spawner.clone();
-        let outcome = tokio::task::spawn_blocking(move || {
-            let route = DeliveryRoute::of(&routed).native(native);
-            spawner.deliver_registered(&*injector, &registered, &route, &text)
-        })
-        .await
-        .unwrap_or_else(|_| InjectOutcome::InDoubt("the injection stopped unexpectedly".into()));
+        let outcome = self
+            .deliver_session_text(registration, delivery, text, native)
+            .await;
         let prefix = self.machine_prefix.clone();
         match outcome {
             InjectOutcome::Delivered => {

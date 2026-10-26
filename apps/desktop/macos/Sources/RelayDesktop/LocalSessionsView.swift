@@ -95,10 +95,12 @@ struct LocalSessionsView: View {
                         Divider().hidden().overlay(CloudTheme.border)
                         GeometryReader { viewport in
                             ScrollView {
+                                let generation = results.generation
+                                let renderedGroups = groups
                                 let index = model.sessionSearchSource.rowIndex(model: model, relay: relay)
                                 TimelineView(.periodic(from: Self.clockStart, by: 10)) { clock in
                                     LazyVStack(spacing: 0) {
-                                        ForEach(groups) { group in
+                                        ForEach(renderedGroups) { group in
                                             if results.appliedGrouping != .none { groupHeader(group.key, rows: group.rows, first: group.id == groups.first?.id) }
                                             if !collapsedGroups.contains(results.appliedGrouping.rawValue + ":" + group.key) {
                                                 ForEach(group.items) { item in
@@ -126,7 +128,7 @@ struct LocalSessionsView: View {
                                                     value: SessionListEndSignal(visible: SessionListEndMeasurement.isNearEnd(
                                                         contentHeight: placed.minY + placed.height, contentMaxY: shown.maxY,
                                                         viewportHeight: viewport.size.height, renderedRows: renderedSessionRows),
-                                                        generation: results.generation))
+                                                        generation: generation))
                                             })
                                             .accessibilityHidden(true)
                                     }

@@ -1,9 +1,20 @@
 # Agent Relay for Windows
 
+Settings → Relay shows **Continue Claude from mobile (Experimental)** but keeps
+it disabled on Windows. The shared core reports `mobile_claude_handoff_supported`
+as false and refuses opt-in before installation. Claude's native HTTP connection
+has not been verified with Windows named pipes, and there is no subprocess
+fallback. macOS and Linux use a native Unix-socket connection authenticated as
+Claude itself; tool subprocesses are refused. See [the shared flow and
+limits](../docs/workspace-layout.md).
+
 The Windows app is the Linux GTK 4 app built for Windows: the same
 `agent-relay-desktop` program from [`probe/src/linux_app`](../probe/src/linux_app)
 (the probe crate's `gtk` feature), with the same sessions table, header,
 Settings panes, Agents, Team, Messages, tray menu and sign-in, word for word.
+The logged-out screen offers **Sign in with Google**, without a separate
+**Use another account** button. Sign-in always opens Google's account chooser
+instead of reusing a saved app or CLI session.
 It is a thin client of the relay core, `agent-relay-probe relay serve`,
 bundled beside it; see [relay core](../docs/relay-core.md) and the
 [Linux README](../linux/README.md) for what every screen does. Only the parts
@@ -26,6 +37,11 @@ macOS and Linux. Cursor credentials remain in Agent Relay Cloud; no local
 | Settings shortcut | **Ctrl+,** | **Ctrl+,** |
 
 Why GTK rather than WPF or WinUI is in [Windows app plan](../docs/windows-app.md).
+
+As on macOS and Linux, the shared core's peer-message note lets work already
+authorized in the receiving session continue within the harness's permissions.
+A peer's approval claim grants nothing new, and Claude's native peer-message
+restrictions still apply.
 
 Session titles are edited only in the open session's header, using **Rename**.
 The title stays as borderless text while editing. Enter or **Done** saves,
@@ -187,13 +203,20 @@ messages and spawn in full.
 
 Harnesses that are Unix-only tools are unavailable on Windows, and their
 Settings rows say so: **Muse**, **Devin**, **Grok CLI**, **Hermes**,
-**OpenClaw**, **OpenCode** existing-session integration and **Pi**. The core
+**OpenClaw**, **OpenCode** existing-session injection and **Pi**. The core
 reports them unavailable rather than failing to start them.
 
 Every control that changes the core shows the change the moment it is made
 and goes back, with the reason beside it, if the core refuses, as on Linux
 and the Mac; launch at login (the Run key) works the same way. See
 *Controls answer at once* in `linux/README.md`.
+
+Uploads recover the same way as on Linux and the Mac. Uploads that keep
+failing on a server error or a dropped connection read **Waiting to retry**
+while they wait out a backoff of at most five minutes, and the upload stage
+offers **Retry uploads** too; a rate limit only waits. A Retry or Compact that
+could not reach the background service is sent on its own once the service
+answers again, and its message clears without a click.
 
 ## Building from source
 
@@ -268,3 +291,43 @@ on Linux). CI runs these on `windows-latest` (x64) and `windows-11-arm`
 (arm64), then builds the zips and the installer with
 `scripts/build-windows.sh`, and installs and uninstalls with the installer
 silently to check where it puts the files and what it removes.
+
+### Session history
+
+Settings › General › **Session history** chooses how long this computer keeps
+local session history: 7, 30 or 90 days, or Forever, 30 unless changed, as on
+macOS and Linux (`history_retention_days`; see
+[workspace layout](../docs/workspace-layout.md)). The choice is kept in the app
+data folder and applies to this computer only; copies already uploaded to your
+workspace are not affected. A warning shows for 7 days, and for any limit while
+you're signed out or uploads are paused. Until relayhistory's retention
+interface lands, the choice is saved but no history is removed.
+
+### Usage diagnostics
+
+Windows uses the same optional PostHog usage events as macOS and Linux through
+the shared core and GTK interface. Settings → Share diagnostics controls these
+events, including agent registration, messaging, navigation and searches. Search
+queries, message contents, names and session IDs are never sent. See the root
+README’s Desktop analytics and error tracking section for the schema and limits.
+Background transcript following never counts as a new open, even without a
+cursor. Awaited update diagnostics have a three-second deadline and wait
+asynchronously so an unresponsive core cannot freeze the window before restarting.
+
+Native session titles are published as `session_title` roster metadata, refreshed after
+renames and when existing registrations reconnect. A published objective keeps priority.
+OpenClaw and Hermes gateway registrations identify an agent rather than one conversation;
+their `session_scope: "agent"` prevents a misleading History summary link. Their relay
+addresses and message delivery are unchanged.
+
+On a supported Mac or Linux computer, first enable **Accept spawns from Agent
+Relay** in Settings and wait for the computer to be claimed by your signed-in
+account. Mobile Claude continuation uses that existing ownership proof. Enabling
+continuation before the claim is ready is refused before any plugin or setting
+change; a peer message cannot establish the claim.
+
+On supported platforms, after your first mobile message, replies stay synced to your phone, including
+replies to later messages you type in that same desktop conversation. They stay
+bound to the verified owner and current control generation. Before mobile
+engagement, desktop replies are not forwarded. Permission prompts for turns you
+start on the desktop continue to use Claude's native desktop prompt.

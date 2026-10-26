@@ -31,7 +31,7 @@ use crate::relay::contract::{method, Method, NoParams};
 use crate::relay::links::DeepLink;
 use crate::relay::state::{AccountAction, SignInState, Status};
 use crate::relay::telemetry::{
-    TelemetryEvent, TelemetryFailure, TelemetryOperation, TelemetryOutcome,
+    TelemetryFailure, TelemetryOperation, TelemetryOutcome, TelemetrySurface,
 };
 use crate::relay::uploader::SharingMode;
 use gtk::{gio, glib, prelude::*};
@@ -95,6 +95,7 @@ pub(super) struct Inner {
     /// Settings are being drawn: switches set while drawing change nothing.
     pub(super) updating: Cell<bool>,
     timers_started: Cell<bool>,
+    pub(super) search_telemetry: RefCell<HashMap<TelemetrySurface, glib::SourceId>>,
 }
 
 /// The app. Cheap to clone; every clone is the same app. Lives on the GTK
@@ -140,6 +141,7 @@ impl App {
                 claude_delivery_changes: Cell::new(0),
                 updating: Cell::new(false),
                 timers_started: Cell::new(false),
+                search_telemetry: RefCell::default(),
             }),
         };
         let weak = app.downgrade();
@@ -189,11 +191,6 @@ impl App {
     /// Reads the window's state.
     pub fn with_state<T>(&self, read: impl FnOnce(&State) -> T) -> T {
         read(&self.inner.state.borrow())
-    }
-
-    /// Changes the window's state without redrawing.
-    pub fn update_state<T>(&self, change: impl FnOnce(&mut State) -> T) -> T {
-        change(&mut self.inner.state.borrow_mut())
     }
 
     pub fn view(&self) -> Option<View> {
@@ -448,23 +445,6 @@ impl App {
                 done(&app, value);
             }
         });
-    }
-
-    /// `telemetry.record` for what only the UI sees.
-    pub(super) fn record(
-        &self,
-        operation: TelemetryOperation,
-        outcome: TelemetryOutcome,
-        failure: Option<TelemetryFailure>,
-    ) {
-        if !self.inner.bridge.offers(method::TelemetryRecord::NAME) {
-            return;
-        }
-        let mut event = TelemetryEvent::new(operation, outcome);
-        if let Some(failure) = failure {
-            event = event.failure(failure);
-        }
-        self.call::<method::TelemetryRecord>(event, |_, _| {});
     }
 
     pub(super) fn confirm(&self, confirmation: Confirmation) -> Answer {
@@ -902,16 +882,6 @@ impl App {
         let sign_in = self.on(|app| app.sign_in(false, None));
         google.connect_clicked(move |_| sign_in());
         panel.append(&google);
-        // A text link, as on the Mac.
-        let another = widgets::button(
-            "Use another account",
-            &["link"],
-            self.on(|app| {
-                app.start_sign_in(false, None, true);
-            }),
-        );
-        another.set_sensitive(self.inner.bridge.offers(method::AccountSignIn::NAME) && !starting);
-        panel.append(&another);
         if account.action == Some(AccountAction::AcknowledgeUninspectedSchedules) {
             let anyway = widgets::button(
                 "Continue anyway",
@@ -930,18 +900,9 @@ impl App {
         self.replace(&self.welcome(&panel));
     }
 
-    /// Starts a sign-in in the browser, sharing only the sessions chosen in
+    /// Opens the browser account chooser, sharing only the sessions chosen in
     /// My sessions, as the Mac does.
     pub fn sign_in(&self, acknowledge_uninspected_schedules: bool, workspace: Option<String>) {
-        self.start_sign_in(acknowledge_uninspected_schedules, workspace, false);
-    }
-
-    fn start_sign_in(
-        &self,
-        acknowledge_uninspected_schedules: bool,
-        workspace: Option<String>,
-        use_another_account: bool,
-    ) {
         let account_state = self.with_state(|state| state.account_state());
         if self.with_state(|state| state.starting_sign_in)
             || State::signing_in(account_state)
@@ -958,7 +919,7 @@ impl App {
                 .or(workspace),
             sharing: SharingMode::Selected,
             acknowledge_uninspected_schedules,
-            flow: use_another_account.then_some(Flow::Browser),
+            flow: Some(Flow::Browser),
         };
         self.apply_inbound_default();
         let request = self.update_state(|state| {
@@ -1119,7 +1080,7 @@ impl App {
             url.filter(|url| state.opened_links.insert(url.clone()))
         });
         if let Some(url) = open {
-            self.inner.desktop.open_uri(&url);
+            self.open_approval_url(&url);
         }
         self.update_signing_in();
     }
@@ -1133,7 +1094,7 @@ impl App {
             })
         });
         if let Some(url) = url.filter(|url| web_link(url)) {
-            self.inner.desktop.open_uri(&url);
+            self.open_approval_url(&url);
         }
     }
 
@@ -1230,11 +1191,6 @@ impl App {
     }
 
     pub fn cancel_sign_in(&self) {
-        self.record(
-            TelemetryOperation::SignIn,
-            TelemetryOutcome::Cancelled,
-            None,
-        );
         self.update_state(|state| {
             // An `account.sign_in` answer still on its way belongs to the
             // cancelled attempt.
@@ -1462,6 +1418,12 @@ impl App {
                 // follows it.
                 self.go(Page::Settings(Pane::Account));
                 self.show_error("This app is connected to another account or workspace. Log out in Account before connecting a different workspace.");
+            } else {
+                self.record(
+                    TelemetryOperation::ConnectionLink,
+                    TelemetryOutcome::Succeeded,
+                    None,
+                );
             }
             return;
         }

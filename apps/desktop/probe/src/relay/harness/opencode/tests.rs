@@ -60,7 +60,9 @@ impl OpenCodeServer for FakeServer {
         self.outcome.clone()
     }
 
-    fn startup(&self, _binding: &Binding) -> Result<bool, String> { self.startup.clone() }
+    fn startup(&self, _binding: &Binding) -> Result<bool, String> {
+        self.startup.clone()
+    }
 
     fn status(&self, binding: &Binding) -> Option<String> {
         assert_eq!(binding, &self.binding);
@@ -967,12 +969,27 @@ fn a_spawned_server_loads_agent_relays_plugin_beside_the_persons_configuration()
 fn first_model_failure_is_not_successful_startup() {
     let f = fixture(|_| {});
     assert_eq!(startup::read(&f.adapter.opencode, SESSION), Ok(false));
-    write_messages(&f, &[(SESSION, r#"{"role":"assistant","time":{"completed":3},"error":{"name":"APIError","data":{"message":"This API key has expired. Bearer hidden-credential"}}}"#)]);
+    write_messages(
+        &f,
+        &[(
+            SESSION,
+            r#"{"role":"assistant","time":{"completed":3},"error":{"name":"APIError","data":{"message":"This API key has expired. Bearer hidden-credential"}}}"#,
+        )],
+    );
     let error = startup::read(&f.adapter.opencode, SESSION).unwrap_err();
     assert!(error.starts_with("This API key has expired."));
     assert!(!error.contains("hidden-credential"));
-    assert_eq!(startup::read(&f.adapter.opencode, "another-session"), Ok(false));
-    write_messages(&f, &[(SESSION, r#"{"role":"assistant","time":{"completed":3},"finish":"stop"}"#)]);
+    assert_eq!(
+        startup::read(&f.adapter.opencode, "another-session"),
+        Ok(false)
+    );
+    write_messages(
+        &f,
+        &[(
+            SESSION,
+            r#"{"role":"assistant","time":{"completed":3},"finish":"stop"}"#,
+        )],
+    );
     assert_eq!(startup::read(&f.adapter.opencode, SESSION), Ok(true));
 }
 
@@ -989,8 +1006,16 @@ fn a_queued_prompt_with_a_model_error_fails_the_launch_with_its_reason() {
 
 #[test]
 fn an_unverified_model_start_is_reported_without_resending_the_prompt() {
-    let f = fixture(|server| { server.startup = Ok(false); });
-    let launched = f.adapter.launch(&launch(f.home.path(), true), &|_, _| {}).unwrap();
-    assert_eq!(launched.task, TaskHandoff::Unconfirmed("model_start_unconfirmed"));
+    let f = fixture(|server| {
+        server.startup = Ok(false);
+    });
+    let launched = f
+        .adapter
+        .launch(&launch(f.home.path(), true), &|_, _| {})
+        .unwrap();
+    assert_eq!(
+        launched.task,
+        TaskHandoff::Unconfirmed("model_start_unconfirmed")
+    );
     assert_eq!(f.server.prompts.lock().unwrap().len(), 1);
 }

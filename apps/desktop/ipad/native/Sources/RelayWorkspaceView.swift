@@ -91,7 +91,7 @@ struct RelayWorkspaceView: View {
     @StateObject private var client = RelayClient()
     @State private var page: WorkspacePage = .agents
     @State private var selected: RelayAgent?
-    @State private var phonePath: [RelayAgent] = []
+    @State private var phonePath: [MobileConversationRoute] = []
     @State private var search = ""
     @State private var machineFilter = ""
     @State private var showAll = false
@@ -323,7 +323,7 @@ struct RelayWorkspaceView: View {
         discardStagedAttachments()
         messageFocused = false
         client.selectConversation(agent)
-        phonePath = [agent]
+        phonePath = [MobileConversationRoute(agent: agent)]
         Task { await client.loadHistory(for: agent) }
     }
 
@@ -344,7 +344,7 @@ struct RelayWorkspaceView: View {
         discardStagedAttachments()
         messageFocused = false
         client.selectConversation(channel)
-        phonePath = [channel]
+        phonePath = [MobileConversationRoute(agent: channel)]
         Task { await client.loadHistory(for: channel) }
     }
 
@@ -557,12 +557,12 @@ struct RelayWorkspaceView: View {
         }
         let matching = agents.filter { agent in
             (agent.source == .channel || MobileMachineFilter.matches(agent.machine, selected: machineFilter)) &&
-            (search.isEmpty || "\(agent.name) \(client.displayName(for: agent)) \(agent.subtitle) \(agent.objective) \(agent.address) \(agent.machine) \(client.summaries[agent.sessionID]?.title ?? "") \(client.goals[agent.sessionID] ?? "")".localizedCaseInsensitiveContains(search))
+            (search.isEmpty || "\(agent.name) \(client.displayName(for: agent)) \(agent.subtitle) \(agent.objective) \(agent.sessionTitle) \(agent.address) \(agent.machine) \(client.summaries[agent.sessionID]?.title ?? "") \(client.goals[agent.sessionID] ?? "")".localizedCaseInsensitiveContains(search))
         }
         return matching.filter { pinnedAgentIDs.contains($0.id) } + matching.filter { !pinnedAgentIDs.contains($0.id) }
     }
     private func rowSubtitle(_ agent: RelayAgent) -> String {
-        for candidate in [client.summaries[agent.sessionID]?.title ?? "", agent.objective,
+        for candidate in [client.summaries[agent.sessionID]?.title ?? "", agent.objective, agent.sessionTitle,
                           client.goals[agent.sessionID] ?? "", agent.subtitle, agent.address] where !candidate.isEmpty {
             return candidate
         }
@@ -660,7 +660,7 @@ struct RelayWorkspaceView: View {
                 List {
                         ForEach(filtered) { agent in
                             HStack(spacing: 2) {
-                                Button { phonePath.append(agent) } label: {
+                                Button { phonePath.append(MobileConversationRoute(agent: agent)) } label: {
                                     HStack(spacing: 11) {
                                         avatar(agent, size: 38)
                                         VStack(alignment: .leading, spacing: 3) {
@@ -722,13 +722,16 @@ struct RelayWorkspaceView: View {
                     }
                 }
             }
-            .navigationDestination(for: RelayAgent.self) { destination in
-                let agent = selected?.id == destination.id ? selected ?? destination : destination
+            .navigationDestination(for: MobileConversationRoute.self) { route in
+                let destination = route.agent
+                let agent = selected?.id == route.id ? selected ?? destination : destination
                 agentDetail(agent)
                     .navigationTitle(client.displayName(for: agent))
                     .navigationBarTitleDisplayMode(.inline)
                     .onAppear {
-                        selectAgent(agent)
+                        // Metadata changes may re-evaluate the destination;
+                        // only entering a different chat resets focus/history.
+                        if selected?.id != agent.id { selectAgent(agent) }
                     }
                     .onDisappear {
                         // Popping back to the list is handled by the phonePath
@@ -899,6 +902,17 @@ struct RelayWorkspaceView: View {
                     .disabled(releasingAgent)
                 }
             }.padding(.horizontal, 16).frame(height: 70)
+            if let notice = client.handoffNotice(for: agent) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label(notice.title, systemImage: notice.state == .failed ? "exclamationmark.circle" : "arrow.triangle.2.circlepath")
+                        .font(.caption.weight(.medium))
+                        .accessibilityIdentifier("Mobile handoff status")
+                    if !notice.detail.isEmpty { Text(notice.detail).font(.caption) }
+                }
+                .foregroundStyle(notice.state == .failed ? Color.orange : Color.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16).padding(.vertical, 8)
+            }
             Divider()
             if client.attachedID != nil {
                 summaryCard(for: agent)
@@ -956,12 +970,17 @@ struct RelayWorkspaceView: View {
                     Text(overview.title).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                 } else if !agent.objective.isEmpty {
                     Text(agent.objective).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                } else if !agent.sessionTitle.isEmpty {
+                    Text(agent.sessionTitle).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                 }
             } else if let overview, overview.hasBrief {
                 Text(overview.title).font(.system(size: 13, weight: .medium))
                 Text(overview.description).font(.system(size: 12)).foregroundStyle(.secondary)
                     .lineLimit(3)
             } else {
+                if !agent.sessionTitle.isEmpty {
+                    Text(agent.sessionTitle).font(.system(size: 13, weight: .medium))
+                }
                 if !agent.objective.isEmpty {
                     Text("Published objective").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Text(agent.objective).font(.system(size: 12)).foregroundStyle(.secondary)
@@ -1029,7 +1048,10 @@ struct RelayWorkspaceView: View {
         }
     }
     private func conversation(for agent: RelayAgent) -> some View {
-        VStack(spacing: 0) {
+        let scrollRequest = MobileChatScrollRequest(
+            pending: pendingMessages.filter { $0.agentID == agent.id }.map(\.id),
+            messages: client.messages.map(\.id))
+        return VStack(spacing: 0) {
             if agent.source == .drive {
                 HStack(spacing: 10) {
                     Button { Task { await client.attach(agent, mode: "drive") } } label: {
@@ -1090,12 +1112,12 @@ struct RelayWorkspaceView: View {
                                 // Part of the row so it scrolls into view and
                                 // slides with the bubble when times are revealed.
                                 if message.mine && message.id == client.messages.last(where: \.mine)?.id {
-                                    Text(client.deliveredMessageIDs.contains(message.id) ? "Delivered" : "Sent")
+                                    Text(client.deliveryLabel(for: message, to: agent))
                                         .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
                                         .accessibilityIdentifier("Delivery status")
                                 }
                                 }
-                            }.id(message.id)
+                            }.id(MobileChatScrollTarget.message(message.id))
                         }
                         ForEach(pendingMessages.filter { $0.agentID == agent.id }) { pending in
                             messageTimeRow(at: pending.createdAt) {
@@ -1123,7 +1145,7 @@ struct RelayWorkspaceView: View {
                                         .padding(12).background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
                                     }.buttonStyle(.plain)
                                 }
-                            }.id(pending.id)
+                            }.id(MobileChatScrollTarget.pending(pending.id))
                         }
                     }.padding(20)
                 }
@@ -1136,13 +1158,13 @@ struct RelayWorkspaceView: View {
                         }
                     }
                 )
-                .onChange(of: client.messages.count) { _, _ in
-                    if let last = client.messages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
-                }
-                .onChange(of: pendingMessages.count) { _, _ in
-                    if let last = pendingMessages.last(where: { $0.agentID == agent.id }) {
-                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
-                    }
+                .task(id: scrollRequest) {
+                    // A send can insert history and remove its pending row in
+                    // one update. Reconcile once, then scroll to the surviving
+                    // row; a superseded task must never target a removed row.
+                    await Task.yield()
+                    guard !Task.isCancelled, let scrollTarget = scrollRequest.target else { return }
+                    withAnimation { proxy.scrollTo(scrollTarget, anchor: .bottom) }
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -1223,6 +1245,7 @@ struct RelayWorkspaceView: View {
                     Image(systemName: "arrow.up").font(.system(size: 15, weight: .bold)).frame(width: 26, height: 26)
                 }
                 .buttonStyle(.borderedProminent)
+                .accessibilityLabel("Send message")
                 .disabled(uploadingAttachments || (messageDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && uploadedAttachments.isEmpty))
             }.padding(14)
         }
@@ -1321,6 +1344,9 @@ struct RelayWorkspaceView: View {
         pendingMessages.append(pending)
         Task {
             let sent = await client.send(text, attachments: attachments, to: agent)
+            #if DEBUG
+            MobileHandoffFixture.trace("composer received send result: \(sent)")
+            #endif
             if sent { pendingMessages.removeAll { $0.id == pending.id } }
             else if let index = pendingMessages.firstIndex(where: { $0.id == pending.id }) {
                 pendingMessages[index].failed = true
@@ -1707,7 +1733,7 @@ struct RelayWorkspaceView: View {
                     let agent = RelayAgent.recipient(endpoint, in: client.relayAgents + client.conversations)
                     page = .messages; showCompose = false; newRecipient = ""
                     selectAgent(agent)
-                    phonePath = [agent]
+                    phonePath = [MobileConversationRoute(agent: agent)]
                 }.disabled(newRecipient.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .navigationTitle("New message")

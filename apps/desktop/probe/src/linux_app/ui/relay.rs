@@ -118,10 +118,7 @@ impl App {
                 return;
             }
             match result {
-                Ok(status) => {
-                    app.update_state(|state| state.status = Some(StatusView::new(&status)));
-                    app.update_uploader_views();
-                }
+                Ok(status) => app.upload_status_answered(StatusView::new(&status)),
                 Err(error) => app.refresh_failed(&error),
             }
             app.refresh_if_stale();
@@ -226,7 +223,7 @@ impl App {
         }
     }
 
-    fn update_uploader_views(&self) {
+    pub(super) fn update_uploader_views(&self) {
         if !self.with_state(|state| state.connected()) {
             return;
         }
@@ -238,7 +235,7 @@ impl App {
         });
         match self.page() {
             Page::Sessions => self.render_page(),
-            Page::Settings(Pane::Sharing) if !busy => self.render_settings(),
+            Page::Settings(pane) if !busy => self.render_uploader_settings(pane),
             _ => {}
         }
         self.render_status_bar();

@@ -326,6 +326,32 @@ fn a_transcript_line_is_acknowledged_within_seconds() {
     // The first sweep and the first drain deliver what was already there.
     wait_for(received, "marker-start", Duration::from_secs(30), &diagnose);
 
+    // Delivery can acknowledge the startup sweep before the watcher has
+    // attached and its catch-up sweep finishes. An append during catch-up is
+    // validly captured there, but cannot prove the event-driven tick below.
+    // Wait for that distinct precondition instead of inferring it from a
+    // receiver acknowledgement or an arbitrary sleep.
+    let starting = Instant::now();
+    loop {
+        let report: Value = fs::read(directory.join("cycle.json"))
+            .ok()
+            .and_then(|data| serde_json::from_slice(&data).ok())
+            .unwrap_or_default();
+        let capture = &report["capture_metrics"];
+        if capture["sweeps"].as_u64().unwrap_or(0) >= 2
+            && capture["driver"] == "fs-events"
+            && capture["watching_since_ms"].is_u64()
+        {
+            break;
+        }
+        assert!(
+            starting.elapsed() < Duration::from_secs(30),
+            "capture watcher did not finish startup: {}",
+            diagnose()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
     let pid = collector.0.id();
     let cpu_start = measuring.then(|| cpu_seconds(pid));
     let mut latencies = Vec::new();

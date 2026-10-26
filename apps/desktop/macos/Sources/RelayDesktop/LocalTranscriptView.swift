@@ -28,12 +28,12 @@ final class LocalTranscriptModel: ObservableObject {
 
     /// One page: a spawned agent's own output while Agent Relay runs it
     /// headless, else the session's transcript.
-    private func page(_ cursor: LocalTranscriptCursor?, sessionID: String, agent: String?) async throws -> LocalTranscriptPage {
+    private func page(_ cursor: LocalTranscriptCursor?, sessionID: String, agent: String?, following: Bool = false) async throws -> LocalTranscriptPage {
         if let agent { return try await client.agentsTranscript(AgentTranscriptParams(cursor: cursor, name: agent)) }
-        return try await client.sessionsTranscript(LocalTranscriptParams(cursor: cursor, sessionId: sessionID, source: row.source))
+        return try await client.sessionsTranscript(LocalTranscriptParams(cursor: cursor, following: following, sessionId: sessionID, source: row.source))
     }
 
-    func load(more: Bool = false) async {
+    func load(more: Bool = false, following: Bool = false) async {
         guard !loading else { return }
         guard let sessionID = row.upload?.sessionId ?? row.relay?.target.id else { return }
         loading = true
@@ -51,7 +51,7 @@ final class LocalTranscriptModel: ObservableObject {
             repeat {
                 try Task.checkCancellation()
                 let requested = next
-                let page = try await page(next, sessionID: sessionID, agent: agent)
+                let page = try await page(next, sessionID: sessionID, agent: agent, following: following)
                 try Task.checkCancellation()
                 if replace {
                     entries = page.entries
@@ -85,10 +85,10 @@ final class LocalTranscriptModel: ObservableObject {
         guard !loading, error == nil, followReady,
               let sessionID = row.upload?.sessionId ?? row.relay?.target.id else { return }
         let agent = SpawnHandover.transcriptAgent(self.session)
-        if agent != readAgent { return await load() }
+        if agent != readAgent { return await load(following: true) }
         let read = reads
         var next = followFrom
-        while let page = try? await page(next, sessionID: sessionID, agent: agent) {
+        while let page = try? await page(next, sessionID: sessionID, agent: agent, following: true) {
             // A refresh or take-over read replaced the transcript meanwhile.
             guard read == reads, !loading else { return }
             let existing = Set(entries.map(\.id))

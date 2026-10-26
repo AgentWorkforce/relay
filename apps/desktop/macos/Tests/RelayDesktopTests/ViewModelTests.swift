@@ -155,6 +155,24 @@ final class ViewModelTests: XCTestCase {
         XCTAssertNil(signInStages[2].action)
         // A retrying failure is still waiting to retry.
         XCTAssertEqual(SessionUploadState(session: row, status: status(.needsAttention, message: "Stalled.")), .blocked)
+        XCTAssertFalse(StatusViewModel(status: status(.needsAttention, message: "Stalled.")).canRetryUploads)
+    }
+
+    /// A transient failure that has lasted waits out its backoff on its own,
+    /// and Retry tries again at once; a rate limit only waits.
+    func testALastingTransientFailureOffersARetryAndARateLimitDoesNot() {
+        let row = Fixture.uploadSession(sessionId: "a", included: true, status: .queued)
+        let transient = status(.needsAttention, message: "The upload service is temporarily unavailable.",
+                               failureCode: .transient)
+        XCTAssertEqual(SessionUploadState(session: row, status: transient), .blocked)
+        let model = StatusViewModel(status: transient)
+        XCTAssertTrue(model.canRetryUploads)
+        let stages = UploadStages.make(catalogReady: true, loadedSessions: 3, preparingHistory: false, capture: nil,
+                                       status: model, summary: SessionUploadSummary(status: model, sessions: [], requesting: []))
+        XCTAssertEqual(stages[2].action, .retry)
+        let limited = status(.needsAttention, message: "The upload service asked to slow down.", failureCode: .rateLimited)
+        XCTAssertFalse(StatusViewModel(status: limited).canRetryUploads)
+        XCTAssertFalse(StatusViewModel(status: status(.uploading, message: nil, failureCode: .transient)).canRetryUploads)
     }
 
     func testMessageAvailabilityOnlyGoesOnlineAfterPushIsLive() {

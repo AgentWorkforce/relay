@@ -323,7 +323,7 @@ impl App {
             return;
         };
         if read != agent {
-            self.load_transcript(false);
+            self.load_transcript(false, true);
             return;
         }
         if page.join.following.replace(true) {
@@ -335,6 +335,7 @@ impl App {
             source: row.source().into(),
             session_id: row.session_id(),
             cursor: from.clone(),
+            following: true,
         };
         self.transcript_page(agent.clone(), params, move |app, result| {
             let Some(shell) = app.shell() else {

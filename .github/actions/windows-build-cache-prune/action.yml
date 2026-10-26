@@ -1,0 +1,9 @@
+name: Prune Windows Cargo workspace products
+description: Keep reusable dependencies while removing probe binaries and tests before the build cache is saved.
+inputs:
+  profile:
+    description: Cargo build profile directory (debug or release)
+    required: true
+runs:
+  using: node20
+  main: main.cjs

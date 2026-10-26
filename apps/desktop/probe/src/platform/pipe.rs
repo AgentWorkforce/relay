@@ -126,11 +126,20 @@ impl DeadlineWriter {
         if self.pending {
             self.wait(start).map_err(unsent)?;
         }
+        self.begin(bytes).map_err(unsent)?;
+        self.finish_counted(start, finish)
+    }
+
+    fn begin(&mut self, bytes: &[u8]) -> io::Result<()> {
         self.written.store(0, Ordering::SeqCst);
         self.requests
             .send(bytes.to_vec())
-            .map_err(|_| unsent(io::Error::new(ErrorKind::BrokenPipe, "input closed")))?;
+            .map_err(|_| io::Error::new(ErrorKind::BrokenPipe, "input closed"))?;
         self.pending = true;
+        Ok(())
+    }
+
+    fn finish_counted(&mut self, start: Instant, finish: Instant) -> Result<(), Shortfall> {
         let result = match self.wait(start) {
             Err(error) if error.kind() == ErrorKind::TimedOut && self.progress() > 0 => {
                 self.wait(finish.max(start))
@@ -161,11 +170,15 @@ mod tests {
         take: usize,
         gate: Arc<(Mutex<bool>, Condvar)>,
         got: Arc<Mutex<Vec<u8>>>,
+        blocked: Option<mpsc::Sender<()>>,
     }
 
     impl Write for Stuck {
         fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
             if self.take == 0 {
+                if let Some(blocked) = self.blocked.take() {
+                    let _ = blocked.send(());
+                }
                 let (released, changed) = &*self.gate;
                 let mut released = released.lock().unwrap();
                 while !*released {
@@ -192,15 +205,18 @@ mod tests {
         DeadlineWriter,
         Arc<(Mutex<bool>, Condvar)>,
         Arc<Mutex<Vec<u8>>>,
+        Receiver<()>,
     ) {
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
         let got = Arc::new(Mutex::new(Vec::new()));
+        let (blocked, waiting) = mpsc::channel();
         let writer = DeadlineWriter::new(Stuck {
             take,
             gate: gate.clone(),
             got: got.clone(),
+            blocked: Some(blocked),
         });
-        (writer, gate, got)
+        (writer, gate, got, waiting)
     }
 
     fn release(gate: &Arc<(Mutex<bool>, Condvar)>) {
@@ -208,11 +224,20 @@ mod tests {
         gate.1.notify_all();
     }
 
+    struct ReleaseOnDrop(Arc<(Mutex<bool>, Condvar)>);
+
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            release(&self.0);
+        }
+    }
+
     /// Review: a timed-out write may still arrive whole, so it is never
     /// reported as unwritten, which a caller would write again.
     #[test]
     fn a_write_nobody_takes_by_its_deadline_is_in_doubt_and_may_still_arrive() {
-        let (mut writer, gate, got) = stuck(0);
+        let (mut writer, gate, got, _) = stuck(0);
+        let _release = ReleaseOnDrop(gate.clone());
         let started = Instant::now();
         let deadline = started + Duration::from_millis(100);
         let shortfall = writer
@@ -237,11 +262,15 @@ mod tests {
 
     #[test]
     fn a_write_cut_short_is_waited_for_until_it_must_finish_and_says_so() {
-        let (mut writer, gate, _) = stuck(5);
+        let (mut writer, gate, _, blocked) = stuck(5);
+        let _release = ReleaseOnDrop(gate);
+        writer.begin(&[0u8; 16]).unwrap();
+        // Entering the second write means the worker already published its
+        // first five bytes. Worker scheduling is outside the deadline under test.
+        blocked.recv_timeout(Duration::from_secs(10)).unwrap();
         let started = Instant::now();
         let shortfall = writer
-            .write_counted(
-                &[0u8; 16],
+            .finish_counted(
                 started + Duration::from_millis(50),
                 started + Duration::from_millis(300),
             )
@@ -249,6 +278,5 @@ mod tests {
         assert_eq!(shortfall.error.kind(), ErrorKind::TimedOut);
         assert_eq!((shortfall.written, shortfall.in_doubt), (5, true));
         assert!(started.elapsed() >= Duration::from_millis(300));
-        release(&gate);
     }
 }

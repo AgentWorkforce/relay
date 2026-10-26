@@ -50,6 +50,8 @@ pub type SettingsChanged = Arc<dyn Fn() + Send + Sync>;
 /// Attaches the plugins that report back to `core`: the account, and every
 /// settings extension, given its [`SettingsChanged`].
 pub(crate) fn attach_plugins(core: &Arc<Core>) {
+    watch_store_errors(core);
+    core.refresh_mobile_claude_plugin();
     if let Some(account) = &core.plugins.account {
         account.attach(core);
     }
@@ -76,4 +78,16 @@ pub(crate) fn attach_plugins(core: &Arc<Core>) {
     for extension in &core.plugins.settings {
         extension.attach(changed.clone());
     }
+}
+
+/// Keep persistent store errors visible before any settings plugin starts.
+fn watch_store_errors(core: &Arc<Core>) {
+    core.hub
+        .update(|status| status.agents.store_error = core.store.error());
+    let watcher = Arc::downgrade(core);
+    core.store.watch_errors(move |error| {
+        if let Some(core) = watcher.upgrade() {
+            core.hub.update(|status| status.agents.store_error = error);
+        }
+    });
 }

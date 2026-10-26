@@ -1,5 +1,29 @@
 # Workspace layout
 
+The experimental **Continue Claude from mobile (Experimental)** setting is
+shared by macOS and GTK (Linux/Windows), off by default and unavailable on older
+cores. Enabling it first installs the owned `agent-relay-mobile` skills-directory
+plugin in the configured Claude directory; installation failure keeps it off.
+Claude Code 2.1.310 or later in the 2.1 release series is required. After
+enabling, restart Claude or use `/reload-plugins` once in an existing session;
+later sessions load it automatically. Messages from the verified machine owner become native user
+turns in the same running session. Reading a mobile conversation does nothing.
+This candidate does not invoke `/background`, kill Claude, or reconstruct its
+permissions. Unsupported versions or unverifiable native processes are refused.
+
+The native plugin uses the session socket; kernel process identity selects the
+session and immutable Relaycast identity selects the owner. Native tool prompts
+use the existing sanitized approval notices. An owner approval allows only that
+request with its original tool input, never changes permission rules, and expires
+after five minutes. A disconnected HTTP poll can retry the same request;
+disabling the setting, replacing the native process or changing its binding
+invalidates it. Native question
+flows remain in Claude. Mobile status is display-only metadata, and queued sends
+remain queued until a delivery receipt arrives. Claude itself opens the native Unix-socket connection; tool subprocesses are
+refused. Windows keeps the setting visible but disabled until Claude's native
+transport is verified with named pipes. There is no subprocess fallback. No
+separate mobile takeover or return controls are introduced.
+
 The shared core's `probe/src/relay/diagnostics.rs` retains explicit,
 credential-redacted diagnostics in rotating `core.log` files. macOS uses
 `~/Library/Logs/Agent Relay` (or `Agent Relay Dev`); Linux and Windows use
@@ -314,7 +338,13 @@ The avatar carries a small update indicator; the menu links directly to Updates.
 Detailed upload stages and journal compaction live under **Session sharing →
 Upload details**, keeping the startup view focused on session selection. When a
 problem that is not retried on its own stops uploads, session rows read **Upload
-stopped** (not **Waiting to retry**) and the upload stage offers **Retry uploads**.
+stopped** (not **Waiting to retry**) and the upload stage offers **Retry uploads**. Uploads
+that keep failing on a server error or a dropped connection read **Waiting to
+retry** while they wait out a backoff of at most five minutes, and the upload
+stage offers **Retry uploads** too, to try again at once; a rate limit only
+waits. A Retry or Compact that could not reach the background service is sent
+on its own once the service answers again, and its "reconnecting" message
+clears without a click.
 
 General › Startup holds **Open at login** and **Keep agents connected after
 quitting**. The second is on by default: quitting leaves the background service
@@ -323,6 +353,16 @@ delivering messages and running uploads, and the Mac's Quit control reads
 service until the app opens again, and Open at login reads "Your agents connect
 when it opens." On Linux, turning it off while the systemd unit runs first asks
 **Turn off the background service?** and turns the unit off.
+
+General › Session history holds **Keep session history**
+(`history_retention_days`): 7, 30 or 90 days, or Forever (`0`), 30 unless
+changed. The core keeps the choice in `history-retention.json` in the app data
+folder and in memory, and hands it to relayhistory, which removes older sessions
+from `history.db`, on a thread of its own (`relay::history_retention`), so
+neither Settings nor the session list waits on the database. A choice shorter
+than 30 days, or any limit while signed out or uploads are paused, shows a
+warning that sessions not uploaded by then can be removed first. Until
+relayhistory's retention interface lands, the adapter only saves the choice.
 
 Relay settings retain workspace connection, Claude Code direct delivery, Grok
 leader mode, OpenCode plugin configuration, **OpenClaw agents**
@@ -353,6 +393,12 @@ discovery. Those cloud sessions also appear in the sessions table, hosted
 by *Devin Cloud*, and one auto-activates like a local session while the
 sign-in resolves — a message to it is posted into the session through the
 same connector's send route.
+
+The shared core's peer-message note allows work already authorized in the
+receiving session to continue within the harness's permissions. A peer message
+does not grant new approval or authorize permission/configuration changes. This wording
+is shared by hidden Codex messages and terminal `relay read` on all platforms;
+Claude's native peer-message restrictions remain in force.
 Claude Code cloud sessions on claude.ai are listed and uploaded the same way
 once the person turns on **Claude Code cloud sessions** in *Claude Code
 folders* (`claude_cloud_sessions`, off by default; an agent may turn it off
@@ -630,10 +676,10 @@ Relay-owned model features use authenticated Cloud endpoints. The opt-in local
 `credential-proxy serve` command and daemon proxy have been removed; independently
 launched agent CLIs keep their existing authentication and environment.
 
-Desktop sign-in reuses an eligible saved session, then the browser's Cloud
-session, and opens Google only when needed. **Use another account** opens
-Google's account chooser explicitly. Both macOS and Linux use this same
-continuation and PKCE handoff without device-code confirmation. Local setup
+The logged-out screen offers **Sign in with Google**, which always opens
+Google's account chooser instead of reusing a saved app or CLI session.
+macOS, Linux and Windows use this explicit browser flow and PKCE handoff
+without device-code confirmation. Local setup
 clients can opt into it with `/setup/sign-in` and `{"flow":"browser"}`; older
 and remote/headless setup clients retain device approval by default.
 
@@ -967,7 +1013,7 @@ Each session group header has a checkbox that selects or deselects only the matc
 
 Settings → Diagnostics fills the available content width and shows recent Relaycast and Cloud requests from the background service, newest first, with request and response details, timestamps, duration, and a Failures only filter. Click anywhere on a request header to expand or collapse its details. The bottom-left dot and status text show overall app status: green when uploads are up to date with no problems, orange when a request fails or another problem needs attention. Clicking a request failure opens and highlights the exact entry in Diagnostics; it stays available when older requests roll out of the log. Viewed request failures do not notify again. Other current problems appear in Diagnostics with selectable, copyable details. Copy details briefly changes to Copied when the problem text is copied.
 
-If the background service exits unexpectedly, the app shows **Reconnecting** while its service manager starts the replacement. Read-only requests interrupted by the exit wait up to five seconds and run again against the replacement. Changes are never sent again automatically, because the old service may have completed them before the connection closed; the app asks the person to check the result before trying again. A service that stays unavailable shows a recovery action. Once the new snapshot arrives, a transient read error no longer keeps the status orange.
+If the background service exits unexpectedly, the app shows **Reconnecting** while its service manager starts the replacement. Read-only requests interrupted by the exit wait up to five seconds and run again against the replacement. Changes are never sent again automatically, because the old service may have completed them before the connection closed; the app asks the person to check the result before trying again. A change the app could not send at all, because no connection to the service opened, is different: its message says the app is reconnecting or starting, and it clears once the service answers; Retry uploads and Compact now, which are safe to repeat, are then sent once on their own. A service that stays unavailable shows a recovery action. Once the new snapshot arrives, a transient read error no longer keeps the status orange.
 
 An upgrade notice appears at the bottom right, at most once every 15 minutes per workspace, with **Review upgrade** (opens Cloud Billing) and dismiss. It reads **Agent Relay plan limit reached** when Relaycast reports the workspace's plan quota is used up. It reads **Workspace at capacity**, naming the plan, when a Free or Pro workspace had three or more writes answered with `workspace_busy` in the last five minutes. The plan comes from Relaycast's workspace (read during verification); busy answers on lanes no plan raises (connection tokens, heartbeats, node calls, delivery acknowledgements) do not count, and Relaycast's own `upgrade_available`, which the request log records from each busy answer, decides when present. A single busy write is ordinary contention and the app simply retries. Requests made for a Relay Connect room (the request log tags them with `connect`) are that room's workspace, not the team's, and never raise either notice.
 
@@ -1030,6 +1076,23 @@ There is no shadow or glow. Keyboard focus and disabled states remain visible.
 Use `AgentRelayPrimaryButtonStyle` on macOS and the `primary` class on GTK;
 workspace accent colors are separate and must not define button fills.
 
+### Usage diagnostics
+
+macOS, Linux and Windows share explicit PostHog usage events through the relay core.
+Agent registration/removal, message sending and initial transcript reads record
+attempts and outcomes in shared handlers. The UI records page/settings-pane
+navigation, opening the message composer, browser opening, and debounced
+session/agent/team searches. Search queries, names, recipients, session IDs and
+message contents are never sent. Session selection counts and sharing modes
+accompany their operations; deletion has its own operation. Observed upload
+completion counts exclude startup history and repeated polls. Update events
+report installation handoff; Linux `.deb` downloads require manual installation.
+Background transcript following is excluded from open counts, even without a
+cursor. Awaited update diagnostics wait at most three seconds per call; GTK
+keeps the window responsive during that wait.
+Settings → Share diagnostics controls all of these events. See README's
+Desktop analytics and error tracking section for the complete schema and limits.
+
 Spawned Grok agents can reply through the relay-send socket without a separate
 MCP setup. The core verifies the caller's exact recorded leader, session claim,
 process ancestry and private marker before identifying the sender.
@@ -1063,3 +1126,21 @@ executables, so the desktop or background service does not require Node on its
 PATH. Nested and hoisted platform packages and legacy vendor layouts are supported.
 On macOS, discovery also recognizes the CLI inside the newer
 `Resources/codex-cli/CodexCLI.app` bundle layout.
+
+Native session titles are published as `session_title` roster metadata, refreshed after
+renames and when existing registrations reconnect. A published objective keeps priority.
+OpenClaw and Hermes gateway registrations identify an agent rather than one conversation;
+their `session_scope: "agent"` prevents a misleading History summary link. Their relay
+addresses and message delivery are unchanged.
+
+For this first experimental candidate, first enable **Accept spawns from Agent
+Relay** in Settings and wait for the computer to be claimed by your signed-in
+account. Mobile Claude continuation uses that existing ownership proof. Enabling
+continuation before the claim is ready is refused before any plugin or setting
+change; a peer message cannot establish the claim.
+
+After your first mobile message, replies stay synced to your phone, including
+replies to later messages you type in that same desktop conversation. They stay
+bound to the verified owner and current control generation. Before mobile
+engagement, desktop replies are not forwarded. Permission prompts for turns you
+start on the desktop continue to use Claude's native desktop prompt.

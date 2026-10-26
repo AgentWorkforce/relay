@@ -67,12 +67,40 @@ pub enum CallerMiss {
 }
 
 pub trait SessionDirectory: Send + Sync + 'static {
+    /// Unique live Claude session config roots, refreshed during discovery.
+    /// Ambiguous IDs must be absent. Capability checks use the core's cache.
+    fn mobile_claude_config_roots(&self) -> std::collections::BTreeMap<Target, std::path::PathBuf> {
+        Default::default()
+    }
+
+    /// Provider registry plus kernel identity; never supplied by an incoming message.
+    fn mobile_claude_runtime(
+        &self,
+        _target: &Target,
+        _caller_pid: i32,
+    ) -> Option<crate::relay::mobile_handoff::Runtime> {
+        None
+    }
+
+    /// Kernel evidence independent of a provider's registry rewrite.
+    /// `None` is unknown and must not revoke a durable native generation.
+    fn mobile_claude_incarnation(
+        &self,
+        _expected: &crate::relay::mobile_handoff::Runtime,
+    ) -> Option<bool> {
+        None
+    }
+
     /// The sessions on this computer now, without those a fleet worker
     /// already owns. May block; called on a blocking thread.
     fn sessions(&self) -> Vec<DiscoveredSession>;
 
     /// Native title support for this exact session. May block on a provider.
-    fn title_capability(&self, _source: &str, _session_id: &str) -> crate::relay::contract::agents::SessionTitleCapability {
+    fn title_capability(
+        &self,
+        _source: &str,
+        _session_id: &str,
+    ) -> crate::relay::contract::agents::SessionTitleCapability {
         crate::relay::session_titles::unsupported("Session title editing is unavailable.")
     }
 

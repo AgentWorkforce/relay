@@ -68,10 +68,7 @@ mod tests {
     // test_machine_name_is_normalized_stable_and_unique_per_direct_node (Linux).
     #[test]
     fn prefixes_are_normalized_and_stable() {
-        assert_eq!(
-            machine_prefix("Ada’s Laptop.local"),
-            "ada-s-laptop"
-        );
+        assert_eq!(machine_prefix("Ada’s Laptop.local"), "ada-s-laptop");
         assert_eq!(machine_prefix("Desk.LOCAL."), "desk");
         assert_eq!(machine_prefix("desk-local"), "desk-local");
         assert_eq!(machine_prefix("desk.local.example"), "desk-local-example");
@@ -88,10 +85,7 @@ mod tests {
     #[test]
     fn machine_names_are_unique_per_direct_node() {
         let prefix = machine_prefix("Ada’s Laptop.local");
-        assert_eq!(
-            machine_name(&prefix, "agent-1"),
-            "ada-s-laptop-agent-1"
-        );
+        assert_eq!(machine_name(&prefix, "agent-1"), "ada-s-laptop-agent-1");
         assert_ne!(
             machine_name(&prefix, "agent-1"),
             machine_name(&prefix, "agent-2")

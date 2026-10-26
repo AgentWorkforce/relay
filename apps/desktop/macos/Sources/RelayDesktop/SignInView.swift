@@ -128,9 +128,6 @@ struct SignInView: View {
             model.signIn()
         }
         .disabled(model.core == nil || model.startingSignIn)
-        Button("Use another account") { model.signIn(useAnotherAccount: true) }
-            .buttonStyle(.link)
-            .disabled(model.core == nil || model.startingSignIn)
         if model.account.action == .acknowledgeUninspectedSchedules {
             Button("Continue anyway") { model.signIn(acknowledgeUninspectedSchedules: true) }
                 .buttonStyle(MenuPanelButtonStyle(kind: .secondary, controlHeight: 38))

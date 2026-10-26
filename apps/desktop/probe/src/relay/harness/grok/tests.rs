@@ -645,8 +645,18 @@ fn it_is_observed_from_its_leader_and_the_sessions_turn_events() {
         (ProcessLiveness::Running, WorkState::Working, true)
     );
     // A missing lookup is inconclusive, so it cannot reclaim the slot.
-    assert_eq!(seen(false), (ProcessLiveness::Unknown, WorkState::Unknown, false));
-    world.table.insert(LEADER, FakeProcess { start: LEADER_START, zombie: true, ..FakeProcess::default() });
+    assert_eq!(
+        seen(false),
+        (ProcessLiveness::Unknown, WorkState::Unknown, false)
+    );
+    world.table.insert(
+        LEADER,
+        FakeProcess {
+            start: LEADER_START,
+            zombie: true,
+            ..FakeProcess::default()
+        },
+    );
     // A confirmed zombie ended with a turn running: what it left is unknown.
     assert_eq!(
         seen(false),
@@ -673,8 +683,17 @@ fn it_is_observed_from_its_leader_and_the_sessions_turn_events() {
         (ProcessLiveness::Exited, WorkState::Completed, false)
     );
     // Reuse of the PID also proves that the recorded leader ended.
-    world.table.insert(LEADER, FakeProcess { start: LEADER_START + 1, ..FakeProcess::default() });
-    assert_eq!(seen(false), (ProcessLiveness::Exited, WorkState::Completed, false));
+    world.table.insert(
+        LEADER,
+        FakeProcess {
+            start: LEADER_START + 1,
+            ..FakeProcess::default()
+        },
+    );
+    assert_eq!(
+        seen(false),
+        (ProcessLiveness::Exited, WorkState::Completed, false)
+    );
 }
 
 #[test]
@@ -854,7 +873,16 @@ fn only_a_spawned_grok_takes_messages_through_its_leader() {
     let target = Target::new(SessionKind::Grok, SESSION);
     let spawned = intent.registration("agent-1", target.clone(), None, ("node-1", "mac-desktop"));
     assert_eq!(
-        spawner.deliver_registered(&injector, &spawned, &crate::relay::inject::DeliveryRoute { delivery_id: "d-1", message_id: "m-1", ..Default::default() }, "hi"),
+        spawner.deliver_registered(
+            &injector,
+            &spawned,
+            &crate::relay::inject::DeliveryRoute {
+                delivery_id: "d-1",
+                message_id: "m-1",
+                ..Default::default()
+            },
+            "hi"
+        ),
         InjectOutcome::Delivered
     );
     assert!(injector.0.lock().unwrap().is_empty());
@@ -864,7 +892,16 @@ fn only_a_spawned_grok_takes_messages_through_its_leader() {
         ..spawned
     };
     assert_eq!(
-        spawner.deliver_registered(&injector, &registered, &crate::relay::inject::DeliveryRoute { delivery_id: "d-2", message_id: "m-2", ..Default::default() }, "hi"),
+        spawner.deliver_registered(
+            &injector,
+            &registered,
+            &crate::relay::inject::DeliveryRoute {
+                delivery_id: "d-2",
+                message_id: "m-2",
+                ..Default::default()
+            },
+            "hi"
+        ),
         InjectOutcome::Waiting("not this route".into())
     );
     assert_eq!(*injector.0.lock().unwrap(), [target]);
@@ -1100,21 +1137,40 @@ fn recording_the_session_does_not_use_the_first_prompt_budget() {
 fn a_failed_leader_leaves_its_real_exit_status_and_stderr() {
     let world = World::new();
     let executable = world.path().join("fake-grok");
-    std::fs::write(&executable, "#!/bin/sh\necho credentials-rejected >&2\nexit 42\n").unwrap();
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\necho credentials-rejected >&2\nexit 42\n",
+    )
+    .unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
     let project = world.project();
     let socket = world.path().join("unused.sock");
     let log = world.path().join("failed.log");
     let environment = BTreeMap::new();
-    SystemLeaders.start(&LeaderStart {
-        executable: &executable, socket: &socket, directory: &project,
-        environment: &environment, log: &log,
-    }, None).unwrap();
+    SystemLeaders
+        .start(
+            &LeaderStart {
+                executable: &executable,
+                socket: &socket,
+                directory: &project,
+                environment: &environment,
+                log: &log,
+            },
+            None,
+        )
+        .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !log.with_extension("exit").exists() {
         assert!(Instant::now() < deadline, "leader exit evidence was lost");
         std::thread::sleep(Duration::from_millis(20));
     }
-    assert_eq!(std::fs::read_to_string(log.with_extension("exit")).unwrap().trim(), "42");
-    assert!(std::fs::read_to_string(log).unwrap().contains("credentials-rejected"));
+    assert_eq!(
+        std::fs::read_to_string(log.with_extension("exit"))
+            .unwrap()
+            .trim(),
+        "42"
+    );
+    assert!(std::fs::read_to_string(log)
+        .unwrap()
+        .contains("credentials-rejected"));
 }

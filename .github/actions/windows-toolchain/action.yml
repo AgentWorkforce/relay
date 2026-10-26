@@ -1,0 +1,44 @@
+name: Windows Rust and GTK toolchain
+description: Install MSYS2 and cache downloaded Cargo sources independently of build profiles.
+inputs:
+  msystem:
+    description: MSYS2 environment matching the runner architecture
+    required: true
+outputs:
+  identity:
+    description: Fingerprint of the installed compiler and native dependencies
+    value: ${{ steps.identity.outputs.value }}
+runs:
+  using: composite
+  steps:
+    - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+      with:
+        msystem: ${{ inputs.msystem }}
+        update: true
+        install: zip unzip git
+        pacboy: >-
+          toolchain:p
+          rust:p
+          gtk4:p
+          pkgconf:p
+          librsvg:p
+          ntldd:p
+    - name: Fingerprint the toolchain and allow long paths
+      id: identity
+      shell: msys2 {0}
+      run: |
+        git config --global core.longpaths true
+        rustc -vV
+        cargo -V
+        pkgconf --modversion gtk4
+        identity=$( { rustc -vV; clang --version; pacman -Q; } | sha256sum | cut -d ' ' -f 1)
+        echo "value=$identity" >> "$(cygpath -u "$GITHUB_OUTPUT")"
+    - name: Cache downloaded Cargo sources
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          C:\ch\registry\index
+          C:\ch\registry\cache
+          C:\ch\git\db
+        key: windows-cargo-sources-v2-${{ hashFiles('apps/desktop/probe/Cargo.lock') }}
+        restore-keys: windows-cargo-sources-v2-

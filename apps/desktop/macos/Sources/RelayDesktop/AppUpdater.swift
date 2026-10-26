@@ -17,6 +17,8 @@ enum AppUpdateState: Equatable {
 @MainActor
 final class AppUpdater: ObservableObject {
     static let shared = AppUpdater()
+    var telemetryTimeoutNanoseconds: UInt64 = 3_000_000_000
+    var recordTelemetry: (TelemetryEvent) async -> Void = { _ in }
 
     @Published private(set) var state: AppUpdateState = .idle
     @Published var automaticallyChecksForUpdates: Bool {
@@ -120,6 +122,7 @@ final class AppUpdater: ObservableObject {
     func downloadAndInstall(_ release: AppRelease) async {
         guard !isBusy else { return }
         state = .downloading(release)
+        await recordUpdateTelemetry(TelemetryEvent(operation: .updateInstall, outcome: .started))
         var temporaryURL: URL?
         do {
             async let checksumRequest = session.data(from: release.checksumURL)
@@ -147,10 +150,32 @@ final class AppUpdater: ObservableObject {
                 throw error
             }
             temporaryURL = nil
+            await recordUpdateTelemetry(TelemetryEvent(operation: .updateInstall, outcome: .succeeded))
             terminate()
         } catch {
             if let temporaryURL { try? FileManager.default.removeItem(at: temporaryURL) }
             state = .failed(Self.downloadMessage(for: error))
+            await recordUpdateTelemetry(TelemetryEvent(failure: .updateFailed, operation: .updateInstall, outcome: .failed))
+        }
+    }
+
+    /// Bound the entire telemetry RPC, including connection and retries. A task
+    /// group would still wait for an uncooperative RPC after cancelling it.
+    /// Keep the success await before termination so the core can flush first.
+    func recordUpdateTelemetry(_ event: TelemetryEvent) async {
+        let record = recordTelemetry
+        let timeout = telemetryTimeoutNanoseconds
+        await withCheckedContinuation { continuation in
+            let completion = UpdateTelemetryCompletion(continuation)
+            let recording = Task {
+                await record(event)
+                completion.finish()
+            }
+            let deadline = Task {
+                try? await Task.sleep(nanoseconds: timeout)
+                completion.finish()
+            }
+            completion.tasks = [recording, deadline]
         }
     }
 
@@ -202,4 +227,23 @@ private enum UpdateError: Error {
     case downloadFailed
     case invalidChecksum
     case checksumMismatch
+}
+
+/// Main-actor isolation serializes the deadline and reply, including late replies.
+@MainActor
+private final class UpdateTelemetryCompletion {
+    private var continuation: CheckedContinuation<Void, Never>?
+    var tasks: [Task<Void, Never>] = []
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func finish() {
+        guard let continuation else { return }
+        self.continuation = nil
+        tasks.forEach { $0.cancel() }
+        tasks = []
+        continuation.resume()
+    }
 }

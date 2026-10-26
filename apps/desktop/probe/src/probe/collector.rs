@@ -18,10 +18,14 @@ use std::{
 };
 
 mod claims;
+mod passes;
 pub(super) use claims::{
     collector_version, ensure_no_live_newer_claim, newer_build, newer_build_live, outdated,
     running, UPDATE_REQUIRED,
 };
+use passes::deliver;
+#[cfg(test)]
+use passes::deliver_with_receiver;
 
 /// The destination and generation this probe delivers as. Both are part of the
 /// saved job configuration, so they cannot change for an existing install.
@@ -152,89 +156,6 @@ pub fn record_baseline(conn: &Connection, include_existing: bool) -> Result<usiz
         identities.len()
     })
 }
-/// One bounded delivery pass through the shared core delivery worker — the
-/// same loop the SDK drains with — carrying the RelayHistory receiver. The
-/// worker owns leases and their keepalive, prepared-payload persistence, the
-/// eligibility recheck before dispatch, retry classification and receipt
-/// compaction;
-/// the receiver owns only the legacy-scheduler/account/instance guards and the
-/// transport. Returns the job status the drain left behind.
-fn deliver(
-    db_path: &Path,
-    config: &Config,
-    cancelled: &AtomicBool,
-) -> Result<delivery::DeliveryStatus> {
-    let receiver = destination::RelayHistoryReceiver {
-        base_url: Some(config.history_url.clone()),
-        expected_account: Some(config.delivery_account.clone()),
-        instance_id: Some(INSTANCE.into()),
-        acknowledge_uninspected_schedules: config.acknowledge_uninspected_schedules,
-        state: receiver_state().clone(),
-    };
-    deliver_with_receiver(db_path, config, &receiver, &|| stopping(cancelled))
-}
-fn deliver_with_receiver(
-    db_path: &Path,
-    config: &Config,
-    receiver: &dyn worker::Receiver,
-    cancelled: &(dyn Fn() -> bool + Sync),
-) -> Result<delivery::DeliveryStatus> {
-    let options = delivery_options(
-        config.job_id.clone(),
-        format!("probe-{}", std::process::id()),
-    );
-    let result = worker::drain(
-        db_path,
-        &worker::SingleReceiver::new(DESTINATION, INSTANCE, receiver),
-        &options,
-        &worker::system_clock,
-        cancelled,
-    )?;
-    let status = result
-        .statuses
-        .into_iter()
-        .find(|job| job.job_id == config.job_id)
-        .context("delivery job missing")?;
-    PassMetrics::record(&result.metrics, &status);
-    // Pause can arrive while a batch is in flight. It is a successful user
-    // control action, even if it invalidated that batch's lease.
-    if status.state == "paused" {
-        return Ok(status);
-    }
-    if status.state != "active" {
-        if status.failure.as_deref() == Some("delivery_conflict") {
-            return Err(
-                destination::TransportFailure(delivery::DeliveryFailure::DeliveryConflict).into(),
-            );
-        }
-        return Err(user_error(
-            "Delivery needs attention. Reconnect with --force-login if credentials have expired.",
-        ));
-    }
-    // A recorded transport failure is not an issue: the job stays active and
-    // the worker owns its backoff. Only an unusable local state is reported,
-    // and waiting for a retry deadline is normal operation, not a fault.
-    // The drain's own error keeps its cause: a locked, full or damaged store
-    // is reported as such, and a batch that could not be prepared as that.
-    if let Some(failure) = result.failure {
-        return Err(failure.into_error());
-    }
-    if result
-        .issues
-        .iter()
-        .any(|issue| issue.code == worker::DrainIssueCode::PreparationFailed)
-    {
-        return Err(anyhow::anyhow!("an upload batch could not be prepared")
-            .context(delivery::PreparationFailed));
-    }
-    if !result.issues.is_empty() {
-        return Err(user_error(
-            "Session delivery is queued or needs attention. No unacknowledged data was discarded.",
-        ));
-    }
-    Ok(status)
-}
-
 /// [`delivery_options`] for one pass of a drain that must end by a deadline
 /// (`history flush`): the pass budget, and every request, within what is left.
 pub(super) fn deadline_options(
@@ -968,15 +889,36 @@ fn deliver_captured_with_stop(
     if stopping(cancelled) {
         return Ok(());
     }
+    deliver_captured_on(
+        directory,
+        config,
+        before_exit,
+        cancelled,
+        &mut worker::DrainSession::open(&directory.join("history.db"))?,
+    )
+}
+fn deliver_captured_on(
+    directory: &Path,
+    config: &Config,
+    before_exit: bool,
+    cancelled: &AtomicBool,
+    session: &mut worker::DrainSession,
+) -> Result<()> {
+    if stopping(cancelled) {
+        return Ok(());
+    }
     // Every drain must apply selected-mode exclusions, including retries after
     // a failed capture. Never reach the delivery worker with an unvetted row.
-    super::bridge::openclaw_upgrade::enforce_selection(directory, config)?;
-    let db_path = directory.join("history.db");
+    super::bridge::openclaw_upgrade::enforce_selection_from(
+        session.connection()?,
+        directory,
+        config,
+    )?;
     // One read of the job serves the whole pass's checks: a pause, the
     // destination and the saved configuration.
     {
-        let conn = agent_relay_probe::delivery::open_db(&db_path)?;
-        let job = delivery::job_check(&conn, &config.job_id)?;
+        let conn = session.connection()?;
+        let job = delivery::job_check(conn, &config.job_id)?;
         if job.state == "paused" {
             return Ok(());
         }
@@ -1011,7 +953,7 @@ fn deliver_captured_with_stop(
         Some(&config.job_id),
         before_exit,
     );
-    let result = deliver(&db_path, config, cancelled);
+    let result = deliver(session, config, cancelled);
     if before_exit {
         let connected =
             progress.finish_before_exit(result.is_ok(), super::progress::COMPLETION_TIMEOUT);
@@ -1460,10 +1402,22 @@ fn deliver_until_stopped(
     cancelled: &Arc<AtomicBool>,
     live: &super::live::Shared,
 ) {
+    let mut session: Option<worker::DrainSession> = None;
     while !stopping(cancelled) {
         // Whatever the capture thread wrote before this pass, the pass reads.
         live.clear();
-        let delivery = deliver_captured_with_stop(directory, config, false, cancelled);
+        let delivery = (|| {
+            if session.is_none() {
+                session = Some(worker::DrainSession::open(&directory.join("history.db"))?);
+            }
+            deliver_captured_on(
+                directory,
+                config,
+                false,
+                cancelled,
+                session.as_mut().context("delivery session unavailable")?,
+            )
+        })();
         // A user stop is not a failed/offline cycle and must not start delivery.
         if stopping(cancelled) {
             break;

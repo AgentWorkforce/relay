@@ -280,17 +280,33 @@ impl Core {
         let spawn = Change::read(changes).map_err(RpcError::invalid_params)?;
         let change = |key: &str| changes.get(key).and_then(Value::as_bool);
         let flags = crate::relay::store_settings::STORE_SETTINGS.map(change);
-        let [allow, auto, show, general] = flags;
+        let [allow, auto, show, general, mobile_handoff] = flags;
+        if mobile_handoff == Some(true) {
+            self.require_mobile_claude_owner_claim()
+                .map_err(|message| {
+                    RpcError::new(crate::relay::protocol::ErrorKind::Refused, message)
+                })?;
+            self.install_mobile_claude_plugin().map_err(|message| {
+                RpcError::new(crate::relay::protocol::ErrorKind::Refused, message)
+            })?;
+        }
         if flags.iter().any(Option::is_some) || !spawn.is_empty() {
             self.store
                 .update(|store| {
                     store.allow_self_registration = allow.or(store.allow_self_registration);
                     store.auto_activate = auto.or(store.auto_activate);
+                    store.mobile_claude_handoff = mobile_handoff.or(store.mobile_claude_handoff);
                     store.show_relay_messages = show.or(store.show_relay_messages);
                     store.extras.auto_join_general = general.or(store.extras.auto_join_general);
                     spawn.apply(store);
                 })
                 .map_err(|e| RpcError::store(&e))?;
+        }
+        if let Some(enabled) = mobile_handoff {
+            self.mobile_claude_setting_changed(enabled)
+                .map_err(|message| {
+                    RpcError::new(crate::relay::protocol::ErrorKind::Refused, message)
+                })?;
         }
         if spawn.moves_node() {
             if let Some(core) = self.arc() {

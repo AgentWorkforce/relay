@@ -25,6 +25,15 @@ public struct CoreError: Error, LocalizedError, Equatable, Sendable {
     public static let starting = CoreError(kind: "core_unreachable", message: "Agent Relay is starting. Try again in a moment.", retryable: true)
     public static let reconnecting = CoreError(kind: "core_unreachable", message: "Agent Relay is reconnecting to its background service. Try again in a moment.", retryable: true)
     public static let interrupted = CoreError(kind: "core_unreachable", message: "Connection to Agent Relay was interrupted. Check whether the action completed before trying again.")
+
+    /// Whether `message` is a failure to reach the core at all. A command
+    /// fails this way only when no connection to the core could be opened or
+    /// greeted, so it was never sent (`CoreClient.call`); once the core
+    /// answers again, the sentence is no longer true. `interrupted` and
+    /// `closed` are not included: those commands may have run.
+    public static func neverSent(_ message: String) -> Bool {
+        message == starting.message || message == reconnecting.message
+    }
 }
 
 /// One NDJSON JSON-RPC 2.0 connection to the core's Unix socket.
@@ -69,8 +78,6 @@ final class CoreConnection: @unchecked Sendable {
             buffer.copyBytes(from: bytes)
             buffer[bytes.count] = 0
         }
-        var noSigPipe: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
         // A full Unix-socket backlog must not block the main actor. A
         // connection not ready immediately is retried by the connect loop.
         let flags = fcntl(fd, F_GETFL)
@@ -114,11 +121,11 @@ final class CoreConnection: @unchecked Sendable {
         let ended = closeHandler
         closeHandler = nil
         eventHandler = nil
-        lock.unlock()
-        // Wake I/O now; the reader owns the final close. Closing the descriptor
-        // here could let an in-flight writer use a reused descriptor after a
-        // timeout. The reader waits for that writer before releasing it.
+        // Keep the state lock through shutdown: the reader can observe EOF
+        // concurrently, but must finish close() before releasing the descriptor.
+        // Unlocking first would let shutdown target a reused descriptor.
         shutdown(fd, SHUT_RDWR)
+        lock.unlock()
         for continuation in waiting.values { continuation.resume(throwing: error) }
         ended?()
     }
@@ -182,7 +189,8 @@ final class CoreConnection: @unchecked Sendable {
             guard var pointer = raw.baseAddress else { return true }
             var remaining = raw.count
             while remaining > 0 {
-                let written = Darwin.write(fd, pointer, remaining)
+                // A shutdown racing this send is an I/O error, never SIGPIPE.
+                let written = Darwin.send(fd, pointer, remaining, MSG_NOSIGNAL)
                 if written < 0 {
                     if errno == EINTR { continue }
                     return false

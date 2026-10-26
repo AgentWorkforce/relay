@@ -7,6 +7,9 @@ pub struct LocalTranscriptParams {
     pub source: String,
     pub session_id: String,
     pub cursor: Option<LocalTranscriptCursor>,
+    /// Background follow read, even when there is no cursor yet.
+    #[serde(default)]
+    pub following: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

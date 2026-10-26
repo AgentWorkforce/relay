@@ -10,6 +10,7 @@ pub const HISTORY_VERSION: &str = env!("RELAY_HISTORY_VERSION");
 pub mod cloud;
 pub mod delivery;
 pub mod destination;
+pub mod history_access;
 pub mod linux_app;
 pub mod migration;
 pub mod platform;

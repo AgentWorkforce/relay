@@ -3,6 +3,7 @@
 //! replacing a delivery generation. An interrupted change fences startup until
 //! recovery completes, so it cannot accidentally broaden sharing.
 pub(super) mod openclaw_upgrade;
+mod session_rows;
 use super::session_metadata::SessionMetadata;
 use super::{collector, lock, read_config, save_json, user_error, Config, Target};
 use agent_relay_probe::delivery::{self, DeliveryJobConfig, SessionIdentity};
@@ -13,6 +14,10 @@ use fs2::FileExt;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+#[cfg(test)]
+use session_rows::{pending_batches, session_rows_selected_within};
+#[cfg(test)]
+use session_rows::{session_rows, session_rows_within};
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -76,6 +81,9 @@ pub struct SessionList {
     /// Read the persisted catalog without filesystem discovery or delivery scans.
     #[arg(long)]
     catalog_only: bool,
+    /// Enrich only these catalog identities (at most 200); no prefix scan.
+    #[arg(long = "key")]
+    keys: Vec<String>,
     #[command(flatten)]
     target: Target,
     #[arg(long, default_value_t = 500)]
@@ -240,7 +248,17 @@ pub fn enforce_selection(directory: &Path, config: &Config) -> Result<()> {
     if mode(config) != SharingMode::Selected {
         return Ok(());
     }
-    let conn = db(directory)?;
+    enforce_selection_from(&db(directory)?, directory, config)
+}
+
+pub(crate) fn enforce_selection_from(
+    conn: &Connection,
+    directory: &Path,
+    config: &Config,
+) -> Result<()> {
+    if mode(config) != SharingMode::Selected {
+        return Ok(());
+    }
     let selected = selected(directory)?;
     let session_job = delivery::is_session_job(&conn, &config.job_id)?;
     let explicit = if session_job {
@@ -257,7 +275,7 @@ pub fn enforce_selection(directory: &Path, config: &Config) -> Result<()> {
     if !grok_ids.is_empty() {
         let discovered = GROK_SELECTION_DISCOVERED.get_or_init(|| Mutex::new(HashMap::new()));
         let needs_refresh = {
-            let entries = discovered.lock().unwrap();
+            let entries = discovered.lock().unwrap_or_else(|e| e.into_inner());
             !entries
                 .get(directory)
                 .is_some_and(|seen| grok_ids.is_subset(seen))
@@ -272,7 +290,7 @@ pub fn enforce_selection(directory: &Path, config: &Config) -> Result<()> {
             )?;
             discovered
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .entry(directory.to_path_buf())
                 .or_default()
                 .extend(grok_ids);
@@ -632,23 +650,7 @@ pub fn sessions(command: SessionCommand) -> Result<()> {
             super::save_json(&directory.join("sessions.json"), &response)?;
             emit(response);
         }
-        SessionCommand::List(options) => {
-            let directory = options.target.directory()?;
-            let config = read_config(&directory)?;
-            let rows = (if options.catalog_only {
-                catalog_session_rows(&directory, &config, options.limit)
-            } else {
-                session_rows(&directory, &config, options.limit)
-            })
-            .map_err(|error| {
-                if delivery::is_upgrade_pending(&error) {
-                    user_error(UPGRADING)
-                } else {
-                    error
-                }
-            })?;
-            emit(json!({"sharing_mode":mode(&config), "sessions":rows}));
-        }
+        SessionCommand::List(options) => session_rows::list(options)?,
         SessionCommand::Include(options) => {
             change(&options.target.directory()?, None, &options.keys, true)?
         }
@@ -946,161 +948,6 @@ fn catalog_session_rows(directory: &Path, config: &Config, limit: usize) -> Resu
     }).collect()
 }
 
-fn session_rows(directory: &Path, config: &Config, limit: usize) -> Result<Vec<Value>> {
-    session_rows_within(directory, config, limit, delivery::SESSION_STATUS_BUDGET)
-}
-fn session_rows_within(
-    directory: &Path,
-    config: &Config,
-    limit: usize,
-    budget: Duration,
-) -> Result<Vec<Value>> {
-    // A store the upgrade has not reached cannot say what was uploaded.
-    delivery::ensure_current(&directory.join("history.db"))?;
-    let conn = read_db(directory)?;
-    // Positions first: a batch prepared after this is among the pending
-    // batches read next, or its changes are still ahead of these positions.
-    let positions = delivery::upload_positions(&conn, &config.job_id)?;
-    // Pending batch identity is real per-session progress. Do not pretend that
-    // a global record count proves an individual session was acknowledged.
-    let mut pending = HashMap::new();
-    let mut batches = conn.prepare("SELECT payload,state FROM delivery_batches WHERE job_id=? AND state IN ('pending','leased','retry_wait','blocked') AND payload IS NOT NULL")?;
-    for row in batches.query_map([&config.job_id], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })? {
-        let (payload, state) = row?;
-        let batch: delivery::HistoryExportBatch = serde_json::from_str(&payload)?;
-        for record in batch.records {
-            // A relationship is stored under its parent but discloses its
-            // child too, and a child's backfill may be what sends it: the
-            // child is not uploaded until that edge is acknowledged.
-            let child = (record.kind == "relationship")
-                .then(|| {
-                    record
-                        .payload
-                        .get("child_session_id")?
-                        .as_str()
-                        .map(str::to_owned)
-                })
-                .flatten();
-            for id in record.session_id.into_iter().chain(child) {
-                mark_pending(
-                    &mut pending,
-                    SessionIdentity {
-                        source: record.source.clone(),
-                        session_id: id,
-                    },
-                    state == "leased",
-                );
-            }
-        }
-    }
-    let store = super::history::open_read(&directory.join("history.db"))?;
-    let sessions = super::history::catalog(
-        &store,
-        ai_hist::SessionScope::All,
-        recency_candidate_limit(limit),
-    )?;
-    let mut listed = Vec::new();
-    for ranked in rank_sessions(sessions, limit) {
-        let session = ranked.session;
-        let identity = SessionIdentity {
-            source: session.source.as_str().into(),
-            session_id: session.session_id.clone(),
-        };
-        // Membership comes from the same snapshot as the positions, so a
-        // member added during the listing is not yet listed as shared.
-        let included = delivery::is_shareable(&conn, &identity)?
-            && (!positions.scoped() || positions.member(&identity));
-        listed.push((
-            session,
-            identity,
-            included,
-            ranked.last_activity_ms,
-            ranked.is_agent,
-            ranked.metadata,
-        ));
-    }
-    // A shared session's subagents are uploaded with it, so its state is its
-    // whole family's: the session and the delegated members that came in
-    // with it.
-    let delegated = if positions.scoped() {
-        delivery::job_delegated_sessions(&conn, &config.job_id)?
-    } else {
-        HashSet::new()
-    };
-    let mut families: HashMap<SessionIdentity, Vec<SessionIdentity>> = HashMap::new();
-    for (_, identity, included, _, _, _) in &listed {
-        let mut family = vec![identity.clone()];
-        if *included && !delegated.is_empty() {
-            family.extend(
-                store
-                    .delegated_descendants(&[ai_hist::SessionIdentity::new(
-                        identity.source.as_str(),
-                        identity.session_id.as_str(),
-                    )])?
-                    .into_iter()
-                    .map(|child| SessionIdentity {
-                        source: child.source_name,
-                        session_id: child.session_id,
-                    })
-                    .filter(|child| delegated.contains(child)),
-            );
-        }
-        families.insert(identity.clone(), family);
-    }
-    // A session is uploaded once the job has examined all of its changes and
-    // none sits in an unacknowledged batch, whatever the rest of the backlog.
-    let settled: Vec<_> = listed
-        .iter()
-        .filter(|(_, _, included, _, _, _)| *included)
-        .flat_map(|(_, identity, _, _, _, _)| families[identity].iter())
-        .filter(|identity| !pending.contains_key(*identity))
-        .cloned()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-    // Proofs from earlier listings spare re-reading sessions that have not
-    // changed since. A cache that cannot be read or kept is only slower.
-    let cache_path = directory.join(STATUS_CACHE);
-    let cache = fs::read(&cache_path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default();
-    let states = delivery::session_states_within(&conn, &positions, &settled, cache, budget)?;
-    let _ = super::save_json(&cache_path, &states.cache);
-    let mut rows = Vec::new();
-    for (session, identity, included, last_activity_ms, is_agent, metadata) in listed {
-        let family = &families[&identity];
-        let any = |test: &dyn Fn(&SessionIdentity) -> bool| family.iter().any(test);
-        let state = if !included {
-            "not_shared"
-        } else if any(&|member| pending.get(member) == Some(&true)) {
-            "uploading"
-        } else if any(&|member| pending.contains_key(member)) {
-            "queued"
-        } else if any(&|member| states.unknown.contains(member)) {
-            // Not reached before the listing's budget ran out: neither proven
-            // uploaded nor known to be waiting.
-            "checking"
-        } else if !any(&|member| states.waiting.contains(member)) {
-            "uploaded"
-        } else {
-            "shared"
-        };
-        let models = metadata
-            .model
-            .map(|model| vec![model])
-            .unwrap_or_else(|| session.models.clone());
-        rows.push(
-            json!({"models": models, "reasoning_effort": metadata.reasoning_effort, "source":identity.source,"session_id":identity.session_id,
-            "cwd":session.cwd,"git_branch":session.git_branch,
-            "first_activity_ms":session.first_activity_ms,"last_activity_ms":last_activity_ms,
-            "is_agent":is_agent,"host":conductor::host(session.cwd.as_deref()),"title":title(&session),"included":included,"status":state}),
-        );
-    }
-    Ok(rows)
-}
 /// The harness's title from RelayHistory, when present and non-blank.
 fn catalog_title(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|title| !title.is_empty())
@@ -1827,7 +1674,6 @@ mod tests {
             .contains("refused to renew"));
     }
 
-    /// Retry restarts only a stopped job; a paused one stays paused.
     /// Like pause, retry waits for an interrupted sharing update to recover.
     #[test]
     fn retry_refuses_while_a_sharing_update_is_incomplete() {
@@ -1847,6 +1693,7 @@ mod tests {
         );
     }
 
+    /// Retry restarts a stopped job; a paused one stays paused.
     #[test]
     fn retry_restarts_a_stopped_job_and_leaves_a_paused_one() {
         let (dir, config) = fixture(SharingMode::All);
@@ -1868,6 +1715,40 @@ mod tests {
             delivery::status(&conn, &config.job_id).unwrap().state,
             "paused"
         );
+    }
+
+    /// Retry also wakes an active job waiting out a transient failure's
+    /// backoff, so a receiver that recovered is tried at once; a
+    /// rate-limited wait stands.
+    #[test]
+    fn retry_wakes_a_transient_backoff_and_leaves_a_rate_limit() {
+        let (dir, config) = fixture(SharingMode::All);
+        let conn = db(dir.path()).unwrap();
+        let later = chrono::Utc::now().timestamp_millis() + 20 * 60 * 1_000;
+        conn.execute(
+            "UPDATE delivery_jobs SET state='active',failure='rate_limited',attempts=15,next_attempt_ms=? WHERE id=?",
+            rusqlite::params![later, &config.job_id],
+        )
+        .unwrap();
+        assert_eq!(retry_value(dir.path()).unwrap()["retried"], false);
+        assert_eq!(
+            delivery::status(&conn, &config.job_id)
+                .unwrap()
+                .next_attempt_ms,
+            later
+        );
+
+        conn.execute(
+            "UPDATE delivery_jobs SET failure='transient' WHERE id=?",
+            [&config.job_id],
+        )
+        .unwrap();
+        assert_eq!(retry_value(dir.path()).unwrap()["retried"], true);
+        let job = delivery::status(&conn, &config.job_id).unwrap();
+        assert_eq!(job.state, "active");
+        assert_eq!(job.failure, None);
+        assert_eq!(job.next_attempt_ms, 0);
+        assert_eq!(job.attempts, 15);
     }
 
     #[test]
@@ -3373,7 +3254,7 @@ mod tests {
     #[test]
     fn queued_status_identifies_actual_pending_batch_sessions() {
         let (dir, config) = fixture(SharingMode::All);
-        let conn = db(dir.path()).unwrap();
+        let conn = delivery::open_db(&dir.path().join("history.db")).unwrap();
         for _ in 0..50 {
             if delivery::prepare_batch(&conn, &config.job_id, collector::now())
                 .unwrap()
@@ -3398,10 +3279,112 @@ mod tests {
             .unwrap()
             .iter()
             .any(|r| r["status"] == "uploading"));
+        let keys = [
+            parse_key("claude:old").unwrap(),
+            parse_key("codex:recent").unwrap(),
+        ];
+        let keyed = session_rows_selected_within(
+            dir.path(),
+            &config,
+            200,
+            delivery::SESSION_STATUS_BUDGET,
+            Some(&keys),
+        )
+        .unwrap();
+        assert_eq!(
+            keyed,
+            session_rows(dir.path(), &config, 500).unwrap(),
+            "candidate enrichment preserves leased-batch semantics"
+        );
         assert_eq!(
             session_rows(dir.path(), &config, 1).unwrap()[0]["session_id"],
             "recent"
         );
+    }
+
+    #[test]
+    fn keyed_enrichment_reads_only_candidates_and_never_deserializes_pending_payloads() {
+        let (dir, config) = fixture(SharingMode::All);
+        let conn = delivery::open_db(&dir.path().join("history.db")).unwrap();
+        conn.execute_batch("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<10000)
+            INSERT INTO sessions(source,session_id,first_prompt,last_activity_ms) SELECT 'codex','archive-'||x,'Unrelated historical metadata',100+x FROM n;").unwrap();
+        for _ in 0..50 {
+            if delivery::prepare_batch(&conn, &config.job_id, collector::now())
+                .unwrap()
+                .batch_id
+                .is_some()
+            {
+                break;
+            }
+        }
+        let keys = [parse_key("claude:old").unwrap()];
+        let rows = session_rows_selected_within(
+            dir.path(),
+            &config,
+            1,
+            delivery::SESSION_STATUS_BUDGET,
+            Some(&keys),
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0]["session_id"], "old",
+            "candidate predates ten thousand unrelated rows"
+        );
+        assert_eq!(rows[0]["status"], "queued");
+        conn.execute_batch(
+            "DROP TRIGGER delivery_pending_sessions_update;
+            UPDATE delivery_batches SET payload='malformed retained payload';",
+        )
+        .unwrap();
+        assert!(
+            pending_batches(&conn, &config.job_id).is_err(),
+            "old all-batch deserialization cannot answer this fixture"
+        );
+        for _ in 0..3 {
+            let rows = session_rows_selected_within(
+                dir.path(),
+                &config,
+                1,
+                delivery::SESSION_STATUS_BUDGET,
+                Some(&keys),
+            )
+            .unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0]["session_id"], "old");
+            assert_eq!(rows[0]["status"], "queued");
+        }
+        conn.execute("UPDATE sessions SET title='Candidate changed' WHERE source='claude' AND session_id='old'", []).unwrap();
+        let rows = session_rows_selected_within(
+            dir.path(),
+            &config,
+            1,
+            delivery::SESSION_STATUS_BUDGET,
+            Some(&keys),
+        )
+        .unwrap();
+        assert_eq!(rows[0]["title"], "Candidate changed");
+    }
+
+    #[test]
+    fn keyed_enrichment_preserves_all_new_and_selected_policy() {
+        let keys = [
+            parse_key("claude:old").unwrap(),
+            parse_key("codex:recent").unwrap(),
+        ];
+        for sharing in [SharingMode::All, SharingMode::New, SharingMode::Selected] {
+            let (directory, config) = fixture(sharing);
+            delivery::open_db(&directory.path().join("history.db")).unwrap();
+            let keyed = session_rows_selected_within(
+                directory.path(),
+                &config,
+                200,
+                delivery::SESSION_STATUS_BUDGET,
+                Some(&keys),
+            )
+            .unwrap();
+            assert_eq!(keyed, session_rows(directory.path(), &config, 500).unwrap());
+        }
     }
     #[test]
     fn catalog_first_paint_does_not_read_transcripts() {

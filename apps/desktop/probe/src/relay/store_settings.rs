@@ -18,11 +18,12 @@ pub const AUTO_JOIN_GENERAL: &str = "auto_join_general";
 
 /// The store's settings, in `store_settings` order; `spawn::settings` saves
 /// them with spawning's in one write (`Core::set_store_settings`).
-pub(crate) const STORE_SETTINGS: [&str; 4] = [
+pub(crate) const STORE_SETTINGS: [&str; 5] = [
     "allow_self_registration",
     "auto_activate",
     SHOW_RELAY_MESSAGES,
     AUTO_JOIN_GENERAL,
+    "mobile_claude_handoff",
 ];
 
 impl Store {
@@ -68,6 +69,8 @@ impl Core {
                 s.auto_activates(),
                 show,
                 s.auto_joins_general(),
+                crate::relay::claude_mobile_plugin::supported()
+                    && s.mobile_claude_handoff == Some(true),
             ];
             (values, s.extras.agent_changes.clone())
         });
@@ -76,6 +79,10 @@ impl Core {
             .zip(values)
             .map(|(key, value)| (key.to_string(), json!(value)))
             .collect();
+        settings.insert(
+            "mobile_claude_handoff_supported".into(),
+            json!(crate::relay::claude_mobile_plugin::supported()),
+        );
         settings.insert("agent_changes".into(), json!(changes));
         settings
     }

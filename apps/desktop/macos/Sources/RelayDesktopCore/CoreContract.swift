@@ -4316,17 +4316,21 @@ public struct LocalTranscriptPage: Codable, Equatable, Hashable, Sendable {
 
 public struct LocalTranscriptParams: Codable, Equatable, Hashable, Sendable {
     public let cursor: LocalTranscriptCursor?
+    /// Background follow read, even when there is no cursor yet.
+    public let following: Bool
     public let sessionId: String
     public let source: String
 
-    public init(cursor: LocalTranscriptCursor? = nil, sessionId: String, source: String) {
+    public init(cursor: LocalTranscriptCursor? = nil, following: Bool = false, sessionId: String, source: String) {
         self.cursor = cursor
+        self.following = following
         self.sessionId = sessionId
         self.source = source
     }
 
     enum CodingKeys: String, CodingKey {
         case cursor
+        case following
         case sessionId = "session_id"
         case source
     }
@@ -4334,6 +4338,7 @@ public struct LocalTranscriptParams: Codable, Equatable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.cursor = try c.decodeIfPresent(LocalTranscriptCursor.self, forKey: .cursor)
+        self.following = try c.decodeIfPresent(Bool.self, forKey: .following) ?? false
         self.sessionId = try c.decode(String.self, forKey: .sessionId)
         self.source = try c.decode(String.self, forKey: .source)
     }
@@ -4341,6 +4346,7 @@ public struct LocalTranscriptParams: Codable, Equatable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeIfPresent(self.cursor, forKey: .cursor)
+        try c.encode(self.following, forKey: .following)
         try c.encode(self.sessionId, forKey: .sessionId)
         try c.encode(self.source, forKey: .source)
     }
@@ -6116,7 +6122,7 @@ public struct Roster: Codable, Equatable, Hashable, Sendable {
 /// One roster entry, reduced to what the UI and sessions may see.
 public struct RosterAgent: Codable, Equatable, Hashable, Sendable {
     public let address: String?
-    /// What it is for: its objective, else role and project, else persona.
+    /// Its objective, else native title, role and project, or persona.
     public let description: String
     /// The desktop it runs on, as that desktop named itself.
     public let host: String?
@@ -7068,6 +7074,10 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     public let grokLeader: Bool?
     /// Turns the Hermes route on or off.
     public let hermesAgent: Bool?
+    /// How long this computer keeps local session history: 7, 30 or 90
+    /// days, or 0 to keep it forever.
+    public let historyRetentionDays: Int?
+    public let mobileClaudeHandoff: Bool?
     /// Turns the OpenClaw Gateway route on or off.
     public let openclawGateway: Bool?
     public let opencodePlugin: Bool?
@@ -7087,7 +7097,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     /// Replaces the relay senders trusted like the person.
     public let trustedRelaySenders: [String]?
 
-    public init(acceptSpawns: Bool? = nil, allowSelfRegistration: Bool? = nil, analyticsEnabled: Bool? = nil, autoActivate: Bool? = nil, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDir: ClaudeConfigDirChange? = nil, claudeConfigDirs: [String]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, contractorAccess: Bool? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryDefault: Bool? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, openclawGateway: Bool? = nil, opencodePlugin: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnRepositories: [String]? = nil, trustedRelaySenders: [String]? = nil) {
+    public init(acceptSpawns: Bool? = nil, allowSelfRegistration: Bool? = nil, analyticsEnabled: Bool? = nil, autoActivate: Bool? = nil, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDir: ClaudeConfigDirChange? = nil, claudeConfigDirs: [String]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, contractorAccess: Bool? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryDefault: Bool? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, openclawGateway: Bool? = nil, opencodePlugin: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnRepositories: [String]? = nil, trustedRelaySenders: [String]? = nil) {
         self.acceptSpawns = acceptSpawns
         self.allowSelfRegistration = allowSelfRegistration
         self.analyticsEnabled = analyticsEnabled
@@ -7104,6 +7114,8 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         self.directDeliveryDefault = directDeliveryDefault
         self.grokLeader = grokLeader
         self.hermesAgent = hermesAgent
+        self.historyRetentionDays = historyRetentionDays
+        self.mobileClaudeHandoff = mobileClaudeHandoff
         self.openclawGateway = openclawGateway
         self.opencodePlugin = opencodePlugin
         self.showRelayMessages = showRelayMessages
@@ -7135,6 +7147,8 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         case directDeliveryDefault = "direct_delivery_default"
         case grokLeader = "grok_leader"
         case hermesAgent = "hermes_agent"
+        case historyRetentionDays = "history_retention_days"
+        case mobileClaudeHandoff = "mobile_claude_handoff"
         case openclawGateway = "openclaw_gateway"
         case opencodePlugin = "opencode_plugin"
         case showRelayMessages = "show_relay_messages"
@@ -7167,6 +7181,8 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         self.directDeliveryDefault = try c.decodeIfPresent(Bool.self, forKey: .directDeliveryDefault)
         self.grokLeader = try c.decodeIfPresent(Bool.self, forKey: .grokLeader)
         self.hermesAgent = try c.decodeIfPresent(Bool.self, forKey: .hermesAgent)
+        self.historyRetentionDays = try c.decodeIfPresent(Int.self, forKey: .historyRetentionDays)
+        self.mobileClaudeHandoff = try c.decodeIfPresent(Bool.self, forKey: .mobileClaudeHandoff)
         self.openclawGateway = try c.decodeIfPresent(Bool.self, forKey: .openclawGateway)
         self.opencodePlugin = try c.decodeIfPresent(Bool.self, forKey: .opencodePlugin)
         self.showRelayMessages = try c.decodeIfPresent(Bool.self, forKey: .showRelayMessages)
@@ -7199,6 +7215,8 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.directDeliveryDefault, forKey: .directDeliveryDefault)
         try c.encodeIfPresent(self.grokLeader, forKey: .grokLeader)
         try c.encodeIfPresent(self.hermesAgent, forKey: .hermesAgent)
+        try c.encodeIfPresent(self.historyRetentionDays, forKey: .historyRetentionDays)
+        try c.encodeIfPresent(self.mobileClaudeHandoff, forKey: .mobileClaudeHandoff)
         try c.encodeIfPresent(self.openclawGateway, forKey: .openclawGateway)
         try c.encodeIfPresent(self.opencodePlugin, forKey: .opencodePlugin)
         try c.encodeIfPresent(self.showRelayMessages, forKey: .showRelayMessages)
@@ -7272,6 +7290,16 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// through its loopback API, each relay sender in a session of its own.
     /// Absent where Hermes has never run.
     public let hermesAgent: Bool?
+    /// Days this computer keeps local session history: 7, 30 or 90, or 0
+    /// to keep it forever. 30 unless changed. relayhistory removes older
+    /// sessions from this computer; uploaded copies are not affected.
+    /// Absent in older cores.
+    public let historyRetentionDays: Int?
+    /// Experimental owner-initiated mobile Claude handoff. Off by default;
+    /// absent on cores that do not support the experiment.
+    public let mobileClaudeHandoff: Bool?
+    /// Whether the native Claude bridge is verified on this platform. Read only.
+    public let mobileClaudeHandoffSupported: Bool?
     /// Whether Agent Relay lists the agents of the local OpenClaw Gateway
     /// and delivers to them, each relay sender in a session of its own.
     /// Absent where OpenClaw is not set up.
@@ -7320,7 +7348,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// an answer-only session. Absent where neither is set up.
     public let trustedRelaySenders: [String]?
 
-    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, contractorAccess: Bool? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodePlugin: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnRepositories: [String]? = nil, trustedRelaySenders: [String]? = nil) {
+    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, contractorAccess: Bool? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileClaudeHandoffSupported: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodePlugin: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnRepositories: [String]? = nil, trustedRelaySenders: [String]? = nil) {
         self.acceptSpawns = acceptSpawns
         self.agentChanges = agentChanges
         self.allowSelfRegistration = allowSelfRegistration
@@ -7337,6 +7365,9 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.directDeliveryManaged = directDeliveryManaged
         self.grokLeader = grokLeader
         self.hermesAgent = hermesAgent
+        self.historyRetentionDays = historyRetentionDays
+        self.mobileClaudeHandoff = mobileClaudeHandoff
+        self.mobileClaudeHandoffSupported = mobileClaudeHandoffSupported
         self.openclawGateway = openclawGateway
         self.openclawUnlimitedVersion = openclawUnlimitedVersion
         self.opencodePlugin = opencodePlugin
@@ -7369,6 +7400,9 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         case directDeliveryManaged = "direct_delivery_managed"
         case grokLeader = "grok_leader"
         case hermesAgent = "hermes_agent"
+        case historyRetentionDays = "history_retention_days"
+        case mobileClaudeHandoff = "mobile_claude_handoff"
+        case mobileClaudeHandoffSupported = "mobile_claude_handoff_supported"
         case openclawGateway = "openclaw_gateway"
         case openclawUnlimitedVersion = "openclaw_unlimited_version"
         case opencodePlugin = "opencode_plugin"
@@ -7402,6 +7436,9 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.directDeliveryManaged = try c.decodeIfPresent(String.self, forKey: .directDeliveryManaged)
         self.grokLeader = try c.decodeIfPresent(Bool.self, forKey: .grokLeader)
         self.hermesAgent = try c.decodeIfPresent(Bool.self, forKey: .hermesAgent)
+        self.historyRetentionDays = try c.decodeIfPresent(Int.self, forKey: .historyRetentionDays)
+        self.mobileClaudeHandoff = try c.decodeIfPresent(Bool.self, forKey: .mobileClaudeHandoff)
+        self.mobileClaudeHandoffSupported = try c.decodeIfPresent(Bool.self, forKey: .mobileClaudeHandoffSupported)
         self.openclawGateway = try c.decodeIfPresent(Bool.self, forKey: .openclawGateway)
         self.openclawUnlimitedVersion = try c.decodeIfPresent(String.self, forKey: .openclawUnlimitedVersion)
         self.opencodePlugin = try c.decodeIfPresent(Bool.self, forKey: .opencodePlugin)
@@ -7435,6 +7472,9 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.directDeliveryManaged, forKey: .directDeliveryManaged)
         try c.encodeIfPresent(self.grokLeader, forKey: .grokLeader)
         try c.encodeIfPresent(self.hermesAgent, forKey: .hermesAgent)
+        try c.encodeIfPresent(self.historyRetentionDays, forKey: .historyRetentionDays)
+        try c.encodeIfPresent(self.mobileClaudeHandoff, forKey: .mobileClaudeHandoff)
+        try c.encodeIfPresent(self.mobileClaudeHandoffSupported, forKey: .mobileClaudeHandoffSupported)
         try c.encodeIfPresent(self.openclawGateway, forKey: .openclawGateway)
         try c.encodeIfPresent(self.openclawUnlimitedVersion, forKey: .openclawUnlimitedVersion)
         try c.encodeIfPresent(self.opencodePlugin, forKey: .opencodePlugin)
@@ -8564,44 +8604,64 @@ public struct Target: Codable, Equatable, Hashable, Sendable {
 /// One operation to record: `telemetry.record`'s parameters. Only these
 /// codes and numbers are ever sent.
 public struct TelemetryEvent: Codable, Equatable, Hashable, Sendable {
+    public let agentKind: SessionKind?
+    public let alreadyRegistered: Bool?
     public let count: Int64?
     public let failure: TelemetryFailure?
+    public let isReply: Bool?
     public let mode: SharingMode?
     public let operation: TelemetryOperation
     public let outcome: TelemetryOutcome
+    public let surface: TelemetrySurface?
 
-    public init(count: Int64? = nil, failure: TelemetryFailure? = nil, mode: SharingMode? = nil, operation: TelemetryOperation, outcome: TelemetryOutcome) {
+    public init(agentKind: SessionKind? = nil, alreadyRegistered: Bool? = nil, count: Int64? = nil, failure: TelemetryFailure? = nil, isReply: Bool? = nil, mode: SharingMode? = nil, operation: TelemetryOperation, outcome: TelemetryOutcome, surface: TelemetrySurface? = nil) {
+        self.agentKind = agentKind
+        self.alreadyRegistered = alreadyRegistered
         self.count = count
         self.failure = failure
+        self.isReply = isReply
         self.mode = mode
         self.operation = operation
         self.outcome = outcome
+        self.surface = surface
     }
 
     enum CodingKeys: String, CodingKey {
+        case agentKind = "agent_kind"
+        case alreadyRegistered = "already_registered"
         case count
         case failure
+        case isReply = "is_reply"
         case mode
         case operation
         case outcome
+        case surface
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.agentKind = try c.decodeIfPresent(SessionKind.self, forKey: .agentKind)
+        self.alreadyRegistered = try c.decodeIfPresent(Bool.self, forKey: .alreadyRegistered)
         self.count = try c.decodeIfPresent(Int64.self, forKey: .count)
         self.failure = try c.decodeIfPresent(TelemetryFailure.self, forKey: .failure)
+        self.isReply = try c.decodeIfPresent(Bool.self, forKey: .isReply)
         self.mode = try c.decodeIfPresent(SharingMode.self, forKey: .mode)
         self.operation = try c.decode(TelemetryOperation.self, forKey: .operation)
         self.outcome = try c.decode(TelemetryOutcome.self, forKey: .outcome)
+        self.surface = try c.decodeIfPresent(TelemetrySurface.self, forKey: .surface)
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(self.agentKind, forKey: .agentKind)
+        try c.encodeIfPresent(self.alreadyRegistered, forKey: .alreadyRegistered)
         try c.encodeIfPresent(self.count, forKey: .count)
         try c.encodeIfPresent(self.failure, forKey: .failure)
+        try c.encodeIfPresent(self.isReply, forKey: .isReply)
         try c.encodeIfPresent(self.mode, forKey: .mode)
         try c.encode(self.operation, forKey: .operation)
         try c.encode(self.outcome, forKey: .outcome)
+        try c.encodeIfPresent(self.surface, forKey: .surface)
     }
 }
 
@@ -8631,6 +8691,8 @@ public enum TelemetryFailure: String, Codable, CaseIterable, Hashable, Sendable 
     case systemSetting = "system_setting"
     case browserOpen = "browser_open"
     case scheduleInspection = "schedule_inspection"
+    case requestFailed = "request_failed"
+    case updateFailed = "update_failed"
 }
 
 /// What the person (or the app on their behalf) did.
@@ -8656,6 +8718,17 @@ public enum TelemetryOperation: String, Codable, CaseIterable, Hashable, Sendabl
     case disconnect
     case settings
     case openLogs = "open_logs"
+    case agentRegister = "agent_register"
+    case agentUnregister = "agent_unregister"
+    case messageSend = "message_send"
+    case messageTest = "message_test"
+    case messageComposer = "message_composer"
+    case pageView = "page_view"
+    case search
+    case transcriptOpen = "transcript_open"
+    case deleteSessions = "delete_sessions"
+    case uploadCompleted = "upload_completed"
+    case updateInstall = "update_install"
 }
 
 public enum TelemetryOutcome: String, Codable, CaseIterable, Hashable, Sendable {
@@ -8664,6 +8737,22 @@ public enum TelemetryOutcome: String, Codable, CaseIterable, Hashable, Sendable 
     case failed
     case cancelled
     case requiresAction = "requires_action"
+}
+
+/// A fixed UI destination. Never a title, search query, endpoint or path.
+public enum TelemetrySurface: String, Codable, CaseIterable, Hashable, Sendable {
+    case sessions
+    case agents
+    case team
+    case messages
+    case projects
+    case settingsGeneral = "settings_general"
+    case settingsOpening = "settings_opening"
+    case settingsRelay = "settings_relay"
+    case settingsSharing = "settings_sharing"
+    case settingsAccount = "settings_account"
+    case settingsAbout = "settings_about"
+    case settingsDiagnostics = "settings_diagnostics"
 }
 
 public struct TestMessageParams: Codable, Equatable, Hashable, Sendable {

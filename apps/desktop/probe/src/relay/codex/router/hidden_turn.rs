@@ -9,7 +9,12 @@ use crate::relay::inject::InjectOutcome;
 
 impl CodexRouter {
     /// Once history accepted a channel batch, keep its identity on retry.
-    pub(super) fn refused_turn(&self, thread: &str, message_id: &str, reason: String) -> InjectOutcome {
+    pub(super) fn refused_turn(
+        &self,
+        thread: &str,
+        message_id: &str,
+        reason: String,
+    ) -> InjectOutcome {
         if super::super::compact::held(thread, message_id) == Some(Held::Injected) {
             self.hidden.hold(thread, message_id, (self.now)());
             InjectOutcome::Waiting(HIDDEN_TURN_PENDING.into())

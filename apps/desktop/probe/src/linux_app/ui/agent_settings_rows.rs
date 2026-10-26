@@ -22,6 +22,7 @@ impl App {
     /// reports its setting: relay messages in chats, joining #general, and
     /// the settings agents changed.
     pub(super) fn append_agent_relay_rows(&self, group: &gtk::Box) {
+        self.append_mobile_claude_handoff_row(group);
         self.append_show_relay_messages_row(group);
         self.append_auto_join_general_row(group);
         self.append_agent_changes_row(group);

@@ -953,7 +953,9 @@ mod tests {
     #[test]
     fn agent_mentions_deduplicate_references() {
         assert_eq!(
-            agent_mentions("Review cloud#4136 and https://github.com/acme/cloud/pull/4136. Then cloud#4136"),
+            agent_mentions(
+                "Review cloud#4136 and https://github.com/acme/cloud/pull/4136. Then cloud#4136"
+            ),
             ["cloud#4136", "https://github.com/acme/cloud/pull/4136"]
         );
         assert_eq!(

@@ -1,0 +1,25 @@
+name: Swift package cache
+description: Reuse SwiftPM builds within one architecture, lane and installed SDK/toolchain.
+inputs:
+  arch:
+    description: Runner architecture
+    required: true
+  lane:
+    description: Isolated package or tests build lane
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Fingerprint Swift and the SDK
+      id: toolchain
+      shell: bash
+      run: |
+        identity=$( { swift --version; xcodebuild -version; xcrun --show-sdk-version; } | shasum -a 256 | cut -d ' ' -f 1)
+        echo "identity=$identity" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: apps/desktop/macos/.build
+        key: swift-v1-${{ inputs.arch }}-${{ inputs.lane }}-${{ steps.toolchain.outputs.identity }}-${{ hashFiles('apps/desktop/macos/Package.swift', 'apps/desktop/macos/Package.resolved') }}-${{ github.sha }}
+        restore-keys: |
+          swift-v1-${{ inputs.arch }}-${{ inputs.lane }}-${{ steps.toolchain.outputs.identity }}-${{ hashFiles('apps/desktop/macos/Package.swift', 'apps/desktop/macos/Package.resolved') }}-
+          swift-v1-${{ inputs.arch }}-${{ inputs.lane }}-${{ steps.toolchain.outputs.identity }}-

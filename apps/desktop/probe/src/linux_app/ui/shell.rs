@@ -12,7 +12,7 @@ use super::widgets::{
 use crate::linux_app::models::{LocalSessionQuery, SessionFilter};
 use gtk::prelude::*;
 use gtk4 as gtk;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 mod menus;
@@ -34,6 +34,7 @@ pub struct Shell {
     pub topbar_separator: gtk::Separator,
     /// The top bar's search field and the page it searches.
     pub topbar_search: RefCell<Option<(gtk::SearchEntry, Page)>>,
+    pub(super) syncing_agent_search: Cell<bool>,
     pub page_error: gtk::Label,
     pub page_stack: gtk::Stack,
     pub status_dot: Dot,
@@ -169,6 +170,7 @@ impl Shell {
             topbar,
             topbar_separator,
             topbar_search: RefCell::new(None),
+            syncing_agent_search: Cell::new(false),
             page_error,
             page_stack,
             status_dot,
@@ -446,6 +448,9 @@ impl App {
             .as_ref()
             .filter(|(entry, searched)| *searched == page && focused_within(entry))
             .map(|(entry, _)| (entry.text().to_string(), entry.position()));
+        // Retired entries can still deliver a debounced search-changed signal.
+        // Invalidate their identity before removing them from the widget tree.
+        shell.topbar_search.borrow_mut().take();
         clear(&shell.topbar);
         let (title, scope, subtitle) = self.page_title();
         let words = vbox(2, &[]);
@@ -481,7 +486,7 @@ impl App {
                 let weak = self.downgrade();
                 search.connect_search_changed(move |entry| {
                     if let Some(app) = weak.upgrade() {
-                        app.set_agent_search(&entry.text());
+                        app.agent_search_changed(entry);
                     }
                 });
                 actions.append(&search);
@@ -540,26 +545,6 @@ impl App {
             search.set_position(caret);
         }
         *shell.topbar_search.borrow_mut() = search.map(|search| (search, page));
-    }
-
-    pub fn set_agent_search(&self, value: &str) {
-        let changed = self.update_state(|state| {
-            let changed = state.agent_search != value;
-            state.agent_search = value.to_string();
-            changed
-        });
-        if changed {
-            if let Some(shell) = self.shell() {
-                if let Some((search, Page::Agents | Page::Team)) =
-                    shell.topbar_search.borrow().as_ref()
-                {
-                    if search.text().as_str() != value {
-                        search.set_text(value);
-                    }
-                }
-            }
-            self.render_page();
-        }
     }
 
     pub fn set_session_search(&self, value: &str) {

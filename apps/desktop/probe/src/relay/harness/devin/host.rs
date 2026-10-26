@@ -25,7 +25,13 @@ impl Drop for Provider {
     fn drop(&mut self) {
         let _ = self.0.kill();
         if let Ok(status) = self.0.wait() {
-            let _ = crate::relay::detach::record_exit(&self.1, &status.code().map(|code| code.to_string()).unwrap_or_else(|| "signal".into()));
+            let _ = crate::relay::detach::record_exit(
+                &self.1,
+                &status
+                    .code()
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "signal".into()),
+            );
         }
     }
 }
@@ -54,7 +60,13 @@ pub fn run(
     let listener = UnixListener::bind(&socket)?;
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
-    let (mut provider, mut input, rx) = provider(executable, directory, launch_id, full_access, &runtime.join(format!("{launch_id}.devin.log")))?;
+    let (mut provider, mut input, rx) = provider(
+        executable,
+        directory,
+        launch_id,
+        full_access,
+        &runtime.join(format!("{launch_id}.devin.log")),
+    )?;
     send(
         &mut input,
         json!({"jsonrpc":"2.0","id":"initialize","method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"agent-relay","version":"1"}}}),
@@ -115,7 +127,11 @@ fn provider(
     log: &Path,
 ) -> Result<(Provider, std::process::ChildStdin, Receiver<Value>)> {
     use std::os::unix::fs::OpenOptionsExt;
-    let stderr = std::fs::OpenOptions::new().create_new(true).write(true).mode(0o600).open(log)?;
+    let stderr = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(log)?;
     let child = Command::new(executable)
         .args([
             "--permission-mode",

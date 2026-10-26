@@ -1132,8 +1132,8 @@ mod tests {
     use super::*;
     use crate::relay::process::{FakeProcess, FakeProcesses, SystemProcesses};
     use std::collections::VecDeque;
-    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::Mutex;
 
     struct NeverAnsweringInspector {

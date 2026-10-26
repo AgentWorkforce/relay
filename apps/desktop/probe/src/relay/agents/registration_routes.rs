@@ -28,7 +28,9 @@ impl Core {
         } else if target.kind == SessionKind::MuseOpen {
             // Only Relay-owned Muse spawns reach this branch. Delivery also
             // rechecks the saved spawn process before using the courier.
-            Some(crate::relay::harness::muse::courier::courier_reference(&target.id))
+            Some(crate::relay::harness::muse::courier::courier_reference(
+                &target.id,
+            ))
         } else if target.kind == SessionKind::OpenCodeOpen {
             // Like a Muse session, an open OpenCode session needs no stored
             // binding: delivery finds the one live process holding it and

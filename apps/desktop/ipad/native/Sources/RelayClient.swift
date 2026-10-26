@@ -64,6 +64,10 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
     let machine: String
     let sessionID: String
     let objective: String
+    /// The provider's title, independent from a user-authored objective.
+    var sessionTitle = ""
+    var mobileHandoff: MobileHandoffNotice?
+    var mobileHandoffEnabled = false
     let cli: String
     let subtitle: String
     let status: String
@@ -115,6 +119,8 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
         source = .relay
         node = ""
         let metadata = object(data["metadata"])
+        mobileHandoff = MobileHandoffNotice(metadata: metadata)
+        mobileHandoffEnabled = metadata["mobile_handoff_enabled"] as? Bool ?? false
         isDesktopRegistration = string(metadata["source"]) == "relay-desktop"
         isListed = string(metadata["renamed_to"]).isEmpty
         let seen = string(data["last_seen"])
@@ -124,7 +130,12 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
                                     string(metadata["tool"]), string(metadata["harness"]),
                                     string(metadata["provider"])],
                        name: name, persona: string(data["persona"]))
-        sessionID = string(metadata["session_id"])
+        // Gateway registrations name an agent (for example OpenClaw's `main`),
+        // not any one of its conversations. Never request a brief for that ID.
+        let gateway = string(metadata["session_scope"]) == "agent" ||
+            (isDesktopRegistration && ["openclaw", "hermes"].contains(string(metadata["session_kind"])))
+        sessionID = gateway ? "" : string(metadata["session_id"])
+        sessionTitle = string(metadata["session_title"]).trimmingCharacters(in: .whitespacesAndNewlines)
         let publishedObjective = string(metadata["objective"])
         objective = (publishedObjective.isEmpty ? string(data["description"]) : publishedObjective)
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -168,6 +179,10 @@ struct RelayAgent: Identifiable, Hashable, Sendable {
         machine = isHuman ? "" : (string(data["machine"]).isEmpty ? machineIn(address) : string(data["machine"]))
         sessionID = string(data["session_id"])
         objective = string(data["objective"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        sessionTitle = string(data["session_title"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        mobileHandoff = MobileHandoffNotice(metadata: object(data["handoff_metadata"]))
+        mobileHandoffEnabled = data["mobile_handoff_enabled"] as? Bool ?? false
+        isDesktopRegistration = data["desktop_registration"] as? Bool ?? false
         cli = isHuman ? "" : agentCLI(structured: [string(peer?["cli"]), string(data["cli"])], name: name)
         subtitle = string(object(data["last_message"])["text"])
         status = string(data["status"])
@@ -449,7 +464,7 @@ private enum SecureStore {
     }
     private func api(_ path: String, agent: Bool = false, method: String = "GET", body: JSONObject? = nil) async throws -> Any {
         #if DEBUG
-        if let fixture = RelayUITestFixture.response(path) { return fixture }
+        if let fixture = RelayUITestFixture.response(path, method: method, body: body) { return fixture }
         #endif
         guard let token = agent ? agentToken : workspaceKey else {
             throw RelayAPIError(message: "Sign in to Agent Relay")
@@ -1245,6 +1260,14 @@ private enum SecureStore {
             enriched["machine"] = metadata[name]?.machine ?? ""
             enriched["session_id"] = metadata[name]?.sessionID ?? ""
             enriched["objective"] = metadata[name]?.objective ?? ""
+            enriched["session_title"] = metadata[name]?.sessionTitle ?? ""
+            enriched["mobile_handoff_enabled"] = metadata[name]?.mobileHandoffEnabled ?? false
+            enriched["cli"] = metadata[name]?.cli ?? ""
+            enriched["desktop_registration"] = metadata[name]?.isDesktopRegistration ?? false
+            if let handoff = metadata[name]?.mobileHandoff {
+                enriched["handoff_metadata"] = ["mobile_handoff_state": handoff.state.rawValue,
+                                                "mobile_handoff_error": handoff.detail]
+            }
             enriched["is_human"] = metadata[name]?.isHuman ?? false
             enriched["display_name"] = metadata[name]?.displayName ?? ""
             if isCurrentPeer { updated.append(RelayAgent(conversation: enriched)) }
@@ -1405,6 +1428,14 @@ private enum SecureStore {
         deliveredMessageIDs.insert(message.id)
         return true
     }
+    /// Only server metadata can describe a handoff; viewing has no side effect.
+    func handoffNotice(for agent: RelayAgent) -> MobileHandoffNotice? {
+        (conversationAgentMetadata[agent.name] ?? agent).mobileHandoff
+    }
+    func deliveryLabel(for message: RelayMessage, to agent: RelayAgent) -> String {
+        let current = conversationAgentMetadata[agent.name] ?? agent
+        return current.deliveryLabel(delivered: deliveredMessageIDs.contains(message.id))
+    }
     func send(_ text: String, to agent: RelayAgent) async -> Bool {
         await send(text, attachments: [], to: agent)
     }
@@ -1425,8 +1456,17 @@ private enum SecureStore {
                 if !attachments.isEmpty { body["attachments"] = attachments.map(\.id) }
                 _ = try await api("/dm", agent: true, method: "POST", body: body)
             }
+            #if DEBUG
+            MobileHandoffFixture.trace("post accepted; refreshing")
+            #endif
             await refresh()
+            #if DEBUG
+            MobileHandoffFixture.trace("refresh finished; loading history")
+            #endif
             if selectedConversation == agent.id { await loadHistory(for: agent) }
+            #if DEBUG
+            MobileHandoffFixture.trace("history finished; send completed")
+            #endif
             // Delivery usually follows within seconds; check briefly, then
             // leave it to the regular history refresh.
             Task {

@@ -148,6 +148,17 @@ fn publish_title(core: &Core, source: &str, id: &str, title: &str) {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     patch_snapshot(&mut snapshot, source, id, title);
     drop(snapshot);
+    let changed = core
+        .store
+        .update(|store| {
+            core.roster_revision
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            crate::relay::agents::update_registered_title(store, source, id, title)
+        })
+        .unwrap_or(false);
+    if changed {
+        core.hub.invalidated(Listing::Agents);
+    }
     core.hub.invalidated(Listing::Sessions);
     core.hub.invalidated(Listing::Uploader);
 }

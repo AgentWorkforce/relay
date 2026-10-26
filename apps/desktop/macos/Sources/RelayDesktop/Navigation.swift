@@ -40,6 +40,25 @@ enum DesktopSection: String, CaseIterable, Identifiable {
 }
 
 enum DesktopPage: Hashable {
+    var telemetrySurface: TelemetrySurface {
+        switch self {
+        case .agents: return .agents
+        case .sessions: return .sessions
+        case .team: return .team
+        case .projects: return .projects
+        case .settings(let pane):
+            switch pane {
+            case .general: return .settingsGeneral
+            case .opening: return .settingsOpening
+            case .relay: return .settingsRelay
+            case .sharing: return .settingsSharing
+            case .account: return .settingsAccount
+            case .about: return .settingsAbout
+            case .diagnostics: return .settingsDiagnostics
+            }
+        }
+    }
+
     case agents
     case sessions
     case team
@@ -95,7 +114,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 
     var subtitle: String {
         switch self {
-        case .general: return "Appearance, startup and privacy."
+        case .general: return "Appearance, startup, privacy and session history."
         case .opening: return "Choose where local sessions open."
         case .relay: return "The workspace your agents join and how messages reach them."
         case .sharing: return "Which coding sessions Agent Relay shares with your workspace."

@@ -183,8 +183,12 @@ fn store_key(key: &str) -> bool {
 
 /// Settings only the person turns on, in Settings: turning one on asks them
 /// for something. Claude Code cloud sessions raise macOS's prompt to read
-/// Claude Code's Keychain login. An agent may still turn them off.
-const PERSON_TURNS_ON: [&str; 1] = [crate::relay::claude_dirs::CLOUD_SETTING];
+/// Claude Code's Keychain login; mobile handoff changes where sessions run.
+/// An agent may still turn them off.
+const PERSON_TURNS_ON: [&str; 2] = [
+    crate::relay::claude_dirs::CLOUD_SETTING,
+    "mobile_claude_handoff",
+];
 
 /// The change as `settings.set` takes it: known settings only, at least one.
 fn checked(fields: Map<String, Value>) -> Result<Map<String, Value>, OutboundError> {
@@ -373,6 +377,14 @@ mod tests {
             Value::Object(ok),
             json!({"auto_join_general": true, "spawn_max_agents": 4})
         );
+    }
+
+    #[test]
+    fn mobile_handoff_opt_in_requires_the_person_not_a_session_message() {
+        let on = checked(map(json!({"mobile_claude_handoff": true}))).unwrap_err();
+        assert_eq!((on.status, on.code.as_str()), (403, "person_only_setting"));
+        let off = checked(map(json!({"mobile_claude_handoff": false}))).unwrap();
+        assert_eq!(Value::Object(off), json!({"mobile_claude_handoff": false}));
     }
 
     #[test]

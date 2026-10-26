@@ -48,6 +48,11 @@ impl Store {
                 &ours.auto_activate,
                 &theirs.auto_activate,
             ),
+            mobile_claude_handoff: pick(
+                &base.mobile_claude_handoff,
+                &ours.mobile_claude_handoff,
+                &theirs.mobile_claude_handoff,
+            ),
             show_relay_messages: pick(
                 &base.show_relay_messages,
                 &ours.show_relay_messages,
@@ -480,10 +485,18 @@ fn merge_agents(
 /// cannot be cleared on the same registration: removal deletes the row,
 /// and taking over updates the origin. Never transfer it to a replacement.
 fn preserve_spawn_origins(result: &mut Store, sources: &[&Store]) {
-    for row in result.registrations.iter_mut().filter(|r| r.spawn.is_none()) {
+    for row in result
+        .registrations
+        .iter_mut()
+        .filter(|r| r.spawn.is_none())
+    {
         if let Some(old) = sources.iter().flat_map(|s| &s.registrations).find(|old| {
-            old.spawn.is_some() && old.name == row.name && old.agent_id == row.agent_id && old.target == row.target
-                && old.base_url == row.base_url && old.workspace_key == row.workspace_key
+            old.spawn.is_some()
+                && old.name == row.name
+                && old.agent_id == row.agent_id
+                && old.target == row.target
+                && old.base_url == row.base_url
+                && old.workspace_key == row.workspace_key
         }) {
             row.spawn = old.spawn.clone();
             // A writer that cannot recognize a spawn cannot determine its

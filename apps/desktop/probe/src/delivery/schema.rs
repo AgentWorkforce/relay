@@ -142,7 +142,7 @@ pub(super) fn column_exists(conn: &Connection, table: &str, column: &str) -> Res
         |r| r.get(0),
     )?)
 }
-fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
+pub(super) fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
         [table],
@@ -190,7 +190,7 @@ const JOURNAL_INDEXES: &[&str] = &["delivery_member_ready", "delivery_member_cur
 
 /// Whether the install still carries the export journal: its table, or a
 /// trigger that writes into it.
-fn has_journal(conn: &Connection) -> Result<bool> {
+pub(super) fn has_journal(conn: &Connection) -> Result<bool> {
     Ok(table_exists(conn, "delivery_journal")? || !journal_triggers(conn)?.is_empty())
 }
 

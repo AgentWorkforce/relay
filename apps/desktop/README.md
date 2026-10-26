@@ -459,6 +459,41 @@ global limit of 100 operations per minute on a monotonic clock. One request is
 in flight at a time; requests are best effort with finite timeouts, without disk
 persistence, and never delay sign-in or upload actions.
 
+Desktop usage stays in `desktop_operation`, with these additional `operation`
+values shared by macOS, Linux and Windows:
+
+| Operation | Trigger and interpretation |
+|---|---|
+| `agent_register` | Explicit `agents.register` request starts and succeeds/fails; `agent_kind` is the fixed provider enum and `already_registered` distinguishes an existing registration from a new one. Automatic discovery/registration is not a UI creation attempt. |
+| `agent_unregister` | Explicit removal starts and succeeds/fails. |
+| `message_send` | Person-to-agent send starts and succeeds/fails; `is_reply` records whether a reply parent was supplied. Success means the send API accepted it, not that the agent read it. |
+| `message_test` | Explicit test-message command starts and succeeds/fails. |
+| `message_composer` | Opening the message composer (`started`), without its recipient. |
+| `page_view` | Entering a page or settings pane (`succeeded`), including the initial connected page; unchanged snapshots do not repeat it. |
+| `search` | A nonempty session/agent/team query or filter settles for 500 ms (`succeeded`); clearing cancels a pending event. No query, query length, result text or recipient is sent. |
+| `transcript_open` | Initial transcript read or explicit refresh starts and succeeds/fails; pagination and background following are excluded, including polls without a cursor. |
+| `delete_sessions` | Explicit deletion succeeds/fails, separate from `exclude_sessions`. |
+| `upload_completed` | A previously observed queued/uploading session becomes `uploaded`; `session_count` aggregates transitions in that listing. Historical uploads, new pagination baselines and repeated polls do not count. This is observed progress, not a complete Cloud delivery ledger: transitions between reads or while the app is closed may be missed. |
+| `update_install` | An update starts and succeeds/fails. Success means replacement was installed or handed to the native replacement helper, not a confirmed relaunch. A downloaded Linux `.deb` emits `requires_action` because installation is manual. |
+
+The optional `surface` is a closed vocabulary: `sessions`, `agents`, `team`,
+`messages`, `projects`, and `settings_general`, `settings_opening`,
+`settings_relay`, `settings_sharing`, `settings_account`, `settings_about`,
+`settings_diagnostics`. Projects is reserved for the macOS-only hidden page.
+The settings event now follows actual settings-pane navigation on both platforms.
+Browser opening emits `browser_approval` started and succeeded/failed on each desktop.
+Success means the native opener accepted the handoff (on Windows, the validated
+URI was queued to the shell worker), not that browser approval finished.
+Sign-in cancellation is emitted once in the core, not again by either UI.
+Include/exclude/delete report the number of requested session keys as
+`session_count`; sharing-mode changes report `sharing_mode`.
+Agent/message/transcript command failures use `request_failed`, never error text;
+update failures use `update_failed`. All new events use the existing opt-out,
+identity, rate limits, exception deduplication and best-effort queue.
+Awaited update telemetry calls have a three-second client deadline, including connection
+and response time. GTK waits asynchronously so the window stays responsive; an
+unresponsive diagnostics call cannot indefinitely delay downloading or restarting.
+
 The request format follows PostHog's [capture API](https://posthog.com/docs/api/capture)
 and [exception schema](https://github.com/PostHog/posthog-js/blob/main/packages/core/src/error-tracking/types.ts).
 The core's telemetry and account tests inspect requests with a recording

@@ -289,7 +289,18 @@ impl ClaudeDirs {
             )
         };
         let _lock = FileLock::exclusive(&lock_path(file)).map_err(failed)?;
-        let mut recorded = self.recorded();
+        // Discovery must not overwrite unreadable consent choices with the
+        // permissive read-only fallback while recording a newly seen login.
+        let mut recorded = match std::fs::read(file) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
+                format!(
+                    "Could not decode Claude folder choices at {}: {error}",
+                    file.display()
+                )
+            })?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Recorded::default(),
+            Err(error) => return Err(failed(error)),
+        };
         if !change(&mut recorded) {
             return Ok(());
         }
@@ -299,7 +310,11 @@ impl ClaudeDirs {
     /// Every watched folder, the default first, each once by real path.
     /// Only folders that exist are listed, except the default.
     pub fn watched(&self, default: &Path) -> Vec<WatchedDir> {
-        let recorded = self.recorded();
+        self.watched_recorded(default, &self.recorded())
+    }
+
+    /// Uses a caller-validated consent snapshot for mutation-sensitive work.
+    pub(crate) fn watched_recorded(&self, default: &Path, recorded: &Recorded) -> Vec<WatchedDir> {
         let dir = |path: PathBuf, origin| WatchedDir {
             shared: recorded.choice(&path).shared,
             path,

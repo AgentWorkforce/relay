@@ -123,6 +123,17 @@ struct SettingsPaneView: View {
                     )
                 )
         }
+        if let days = model.settings?.historyRetentionDays {
+            SettingsSection(title: HistoryRetentionCopy.section) {
+                HistoryRetentionRow(
+                    days: days,
+                    uploadsHeld: !isConnected || model.isPaused,
+                    notice: model.settingErrors["history_retention_days"],
+                    isPending: model.isSettingPending("history_retention_days"),
+                    set: { value in Task { await model.setSetting(SettingsChange(historyRetentionDays: value)) } }
+                )
+            }
+        }
     }
 
     @ViewBuilder private var relay: some View {
@@ -352,6 +363,67 @@ private struct SpawnMaxAgentsRow: View {
                 .buttonStyle(AgentRelayPrimaryButtonStyle())
                 .controlSize(.small)
                 .disabled(editor.saving)
+        }
+        .padding(16)
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// How long this computer keeps local session history, with the warning a
+/// choice shorter than the default gets (Linux's `history_retention_row`).
+struct HistoryRetentionRow: View {
+    let days: Int
+    /// Signed out or uploads paused: any limit can remove what has not uploaded.
+    var uploadsHeld = false
+    var notice: String? = nil
+    var isPending = false
+    let set: (Int) -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            SettingsIcon(systemImage: "clock.arrow.circlepath")
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(HistoryRetentionCopy.title)
+                    .font(.body.weight(.medium))
+                Text(HistoryRetentionCopy.detail)
+                    .font(.footnote)
+                    .foregroundStyle(CloudTheme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let warning = HistoryRetentionCopy.warning(days, uploadsHeld: uploadsHeld) {
+                    Label(warning, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(CloudTheme.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
+                if let notice {
+                    Label(notice, systemImage: "exclamationmark.circle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(CloudTheme.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
+            }
+
+            Spacer(minLength: 20)
+
+            if isPending {
+                ProgressView().controlSize(.small)
+                    .accessibilityLabel("Saving")
+            }
+            Picker(HistoryRetentionCopy.title, selection: Binding(
+                get: { days },
+                set: { next in if next != days { set(next) } }
+            )) {
+                ForEach(HistoryRetentionCopy.choices, id: \.self) { choice in
+                    Text(HistoryRetentionCopy.label(choice)).tag(choice)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .frame(width: 170)
+            .accessibilityLabel(HistoryRetentionCopy.title)
         }
         .padding(16)
         .accessibilityElement(children: .contain)
@@ -956,6 +1028,20 @@ private struct RelaySettingsSection: View {
                 if model.settings?.codexStopHook != nil {
                     SettingsDivider()
                     codexStopHookRow
+                }
+                if model.settings?.mobileClaudeHandoff != nil {
+                    SettingsDivider()
+                    SettingsToggleRow(
+                        title: MobileClaudeHandoffCopy.title,
+                        detail: model.settings?.mobileClaudeHandoffSupported == true ? MobileClaudeHandoffCopy.detail : MobileClaudeHandoffCopy.unavailable,
+                        systemImage: "iphone",
+                        notice: model.settingErrors["mobile_claude_handoff"],
+                        isPending: model.isSettingPending("mobile_claude_handoff"),
+                        isOn: Binding(
+                            get: { model.settings?.mobileClaudeHandoff == true },
+                            set: { value in Task { await model.setSetting(SettingsChange(mobileClaudeHandoff: value)) } }
+                        )
+                    ).disabled(model.settings?.mobileClaudeHandoffSupported != true)
                 }
                 if model.settings?.showRelayMessages != nil {
                     SettingsDivider()

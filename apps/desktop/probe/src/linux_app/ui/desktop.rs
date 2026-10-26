@@ -42,8 +42,8 @@ pub type Answer = Pin<Box<dyn Future<Output = bool>>>;
 
 pub trait Desktop {
     /// Opens an `https`, `http` or `file` URI in the person's browser or
-    /// file manager.
-    fn open_uri(&self, uri: &str);
+    /// file manager. Returns whether the native opening handoff was started.
+    fn open_uri(&self, uri: &str) -> bool;
     fn has_uri_handler(&self, scheme: &str) -> bool;
     /// Starts an interactive CLI resume command in a terminal.
     fn open_terminal(&self, command: &str) -> Result<(), String>;
@@ -89,7 +89,7 @@ impl Desktop for System {
         self.platform_open_terminal(command)
     }
 
-    fn open_uri(&self, uri: &str) {
+    fn open_uri(&self, uri: &str) -> bool {
         self.platform_open_uri(uri)
     }
 
@@ -183,7 +183,7 @@ impl System {
         )
     }
 
-    fn platform_open_uri(&self, uri: &str) {
+    fn platform_open_uri(&self, uri: &str) -> bool {
         let opener = if cfg!(target_os = "linux") {
             "xdg-open"
         } else {
@@ -196,6 +196,9 @@ impl System {
             .spawn()
         {
             std::thread::spawn(move || child.wait());
+            true
+        } else {
+            false
         }
     }
 
@@ -229,7 +232,7 @@ impl System {
         windows::open_terminal(command)
     }
 
-    fn platform_open_uri(&self, uri: &str) {
+    fn platform_open_uri(&self, uri: &str) -> bool {
         windows::open_uri(uri)
     }
 

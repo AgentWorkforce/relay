@@ -45,6 +45,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+mod directory_trait;
 mod registered;
 mod session_directory;
 use session_directory::fleet_key;
@@ -200,7 +201,7 @@ pub struct LocalSessions {
     /// a broker cannot be read.
     fleet_owned: std::sync::Mutex<HashSet<Target>>,
     /// Codex's threads as last read, kept while Codex holds its database.
-    codex_threads: std::sync::Mutex<Vec<DiscoveredSession>>,
+    codex_threads: std::sync::Mutex<session_directory::CodexDiscoveryCache>,
     managed: Option<Arc<ManagedSessions>>,
     /// The Gateway's agents as last listed.
     openclaw: crate::relay::openclaw::Listing,
@@ -267,14 +268,7 @@ impl LocalSessions {
     }
 
     fn all(&self) -> Vec<DiscoveredSession> {
-        let mut found = match codex::try_discover(&self.config.codex, &*self.table, self.config.uid)
-        {
-            Some(threads) => {
-                *self.codex_threads.lock().unwrap() = threads.clone();
-                threads
-            }
-            None => self.codex_threads.lock().unwrap().clone(),
-        };
+        let mut found = self.discover_codex_threads();
         found.extend(claude::discover(&self.config.claude, &*self.table));
         // Each Grok row is offered exactly when delivery would use it: a
         // managed row is judged by the same per-session claim `grok_route`
@@ -582,272 +576,6 @@ impl LocalSessions {
             current = process.parent;
         }
         Err(CallerMiss::NotASession)
-    }
-}
-
-impl SessionDirectory for LocalSessions {
-    fn title_capability(&self, source: &str, session_id: &str) -> crate::relay::contract::agents::SessionTitleCapability {
-        self.native_title_capability(source, session_id)
-    }
-
-    fn set_title(&self, source: &str, session_id: &str, title: &str) -> Result<String, String> {
-        self.set_native_title(source, session_id, title)
-    }
-
-    fn sessions(&self) -> Vec<DiscoveredSession> {
-        self.discovered_sessions()
-    }
-
-    fn auto_activation_sessions(&self) -> Vec<DiscoveredSession> {
-        let claude_sessions = claude::registry(&self.config.claude, &*self.table).sessions;
-        let grok_reachable = |session_id: &str| self.grok_open_reachable(session_id);
-        self.sessions()
-            .into_iter()
-            .filter(|session| {
-                if !session.live {
-                    return false;
-                }
-                // A Devin Cloud row's `live` already proved this machine's
-                // sign-in can reach it — the caller proof a local lock
-                // proves for a local row — so it activates the same way,
-                // and a remote directory has nothing local to exclude.
-                if session.target.kind == SessionKind::Devin
-                    && session.host.as_deref() == Some(crate::relay::devin_cloud::CLOUD_HOST)
-                {
-                    return true;
-                }
-                if let Some(admitted) = self.gateway_admits(session.target.kind) {
-                    return admitted;
-                }
-                let Some(directory) = session.directory.as_deref().map(Path::new) else {
-                    return false;
-                };
-                if is_under(directory, &self.config.auto_activate_excluded_dirs) {
-                    return false;
-                }
-                match session.target.kind {
-                    SessionKind::ClaudeTerminal => claude::terminal_session(
-                        &self.config.claude,
-                        &*self.table,
-                        &session.target.id,
-                    )
-                    .is_some_and(|terminal| {
-                        claude::is_interactive_terminal(&*self.table, &terminal)
-                            || claude::is_conductor_chat(
-                                &*self.table,
-                                self.config.uid,
-                                &terminal,
-                                &claude_sessions,
-                            )
-                            || claude::is_app_hosted_chat(&*self.table, &terminal, &claude_sessions)
-                    }),
-                    SessionKind::Codex => true,
-                    SessionKind::ClaudeCloud => false,
-                    // A Grok TUI session is live only while a leader of this
-                    // user is running, the one route into it; registering it
-                    // binds and proves that leader first, and a binding that
-                    // does not prove is refused, so nothing is sent.
-                    SessionKind::GrokOpen => grok_reachable(&session.target.id),
-                    // Launched by the probe, which registers it itself.
-                    SessionKind::Grok | SessionKind::OpenCode => false,
-                    // Relay's spawner registers Muse itself; discovery never
-                    // turns a Muse registry record into a new agent.
-                    SessionKind::MuseOpen => false,
-                    // Opt-in, like every provider route the plugin opens.
-                    SessionKind::OpenCodeOpen | SessionKind::Pi => false,
-                    // A Devin row exists only while a `devin` process holds
-                    // the session's lock open, which is also its caller
-                    // proof. Devin Cloud rows return early above; any other
-                    // hosted row is never activated.
-                    SessionKind::Devin => session.host.is_none(),
-                    SessionKind::OpenClaw | SessionKind::Hermes => false,
-                }
-            })
-            .collect()
-    }
-
-    fn archived(&self, targets: &[Target]) -> HashSet<Target> {
-        let of_kind = |kinds: &[SessionKind]| {
-            targets
-                .iter()
-                .filter(|target| kinds.contains(&target.kind))
-                .map(|target| target.id.as_str())
-                .collect::<Vec<_>>()
-        };
-        let codex = of_kind(&[SessionKind::Codex]);
-        let codex = codex::threads::archived_ids(&self.config.codex, codex);
-        let opencode = of_kind(&[SessionKind::OpenCode, SessionKind::OpenCodeOpen]);
-        let opencode = crate::relay::opencode::archived_ids(&self.config.opencode, opencode);
-        // A Claude app session's archive is learned from the send it
-        // refuses; the other kinds have no archive.
-        targets
-            .iter()
-            .filter(|target| match target.kind {
-                SessionKind::Codex => codex.contains(&target.id),
-                SessionKind::OpenCode | SessionKind::OpenCodeOpen => opencode.contains(&target.id),
-                _ => false,
-            })
-            .cloned()
-            .collect()
-    }
-
-    fn caller(&self, pid: i32) -> Result<DiscoveredSession, CallerMiss> {
-        // Everything under this user's OpenClaw Gateway (its Codex runtime
-        // and the shells that runs, included) is the Gateway's agent, so
-        // an inherited Codex thread tag never names the caller.
-        let target = match self.openclaw_caller(pid) {
-            Some(caller) => caller?,
-            None => self.caller_target(pid)?,
-        };
-        // Named from the session's own state, never by scanning every
-        // process: identifying a caller reads only its ancestry.
-        let found = match target.kind {
-            SessionKind::Codex => codex::thread(&self.config.codex, &target.id),
-            SessionKind::ClaudeTerminal => {
-                claude::terminal_session(&self.config.claude, &*self.table, &target.id).map(
-                    |session| DiscoveredSession {
-                        target: target.clone(),
-                        title: session.display_name(),
-                        directory: session.cwd.clone(),
-                        updated_at_ms: session.updated_at_ms,
-                        host: if claude::is_paseo_chat(
-                            &*self.table,
-                            &session,
-                            &claude::registry(&self.config.claude, &*self.table).sessions,
-                        ) {
-                            Some(crate::relay::paseo::HOST.to_string())
-                        } else {
-                            crate::relay::conductor::host(session.cwd.as_deref())
-                        },
-                        live: true,
-                        holder: Some(claude::holder(&session)),
-                    },
-                )
-            }
-            SessionKind::Grok => grok_caller::session(&self.config, &self.table, &target),
-            SessionKind::GrokOpen => crate::relay::grok::discover(
-                &self.config.grok,
-                &*self.table,
-                self.config.uid,
-                true,
-                &|_| false,
-            )
-            .into_iter()
-            .find(|row| row.target == target),
-            SessionKind::MuseOpen => crate::relay::muse::discover(
-                &self.config.muse,
-                &*self.table,
-                self.config.uid,
-                true,
-                &|_| false,
-            )
-            .into_iter()
-            .find(|row| row.target == target),
-            SessionKind::OpenCodeOpen => crate::relay::opencode::discover(
-                &self.config.opencode,
-                &*self.table,
-                self.config.uid,
-            )
-            .into_iter()
-            .find(|row| row.target == target),
-            SessionKind::Devin => crate::relay::devin::session(
-                &self.config.devin,
-                &*self.table,
-                self.config.uid,
-                &target.id,
-            ),
-            SessionKind::ClaudeCloud
-            | SessionKind::OpenCode
-            | SessionKind::OpenClaw
-            | SessionKind::Hermes
-            | SessionKind::Pi => None,
-        };
-        Ok(found
-            .map(|s| DiscoveredSession { live: true, ..s })
-            .unwrap_or_else(|| DiscoveredSession {
-                title: match target.kind {
-                    SessionKind::Codex => "Codex session".into(),
-                    SessionKind::ClaudeTerminal | SessionKind::ClaudeCloud => {
-                        "Claude Code session".into()
-                    }
-                    SessionKind::Grok | SessionKind::GrokOpen => "Grok session".into(),
-                    SessionKind::OpenCode | SessionKind::OpenCodeOpen => "OpenCode session".into(),
-                    SessionKind::MuseOpen => "Muse session".into(),
-                    SessionKind::Devin => "Devin session".into(),
-                    SessionKind::OpenClaw => "OpenClaw agent".into(),
-                    SessionKind::Hermes => "Hermes".into(),
-                    SessionKind::Pi => "Pi session".into(),
-                },
-                target,
-                directory: None,
-                updated_at_ms: None,
-                holder: None,
-                host: None,
-                live: true,
-            }))
-    }
-
-    fn holds_codex_thread(&self, pid: i32, thread: &str) -> bool {
-        crate::relay::process::has_codex_writer_for_caller(
-            &*self.table,
-            pid,
-            self.config.uid,
-            thread,
-        )
-    }
-
-    fn unreadable_session_files(&self) -> Vec<UnreadableSessionFile> {
-        claude::registry(&self.config.claude, &*self.table).unreadable
-    }
-
-    fn fleet_owned(&self, target: &Target) -> Result<bool, String> {
-        self.config
-            .fleet
-            .managed_targets_blocking()
-            .map(|owned: HashSet<Target>| owned.contains(&fleet_key(target)))
-            .map_err(|error| error.message)
-    }
-
-    fn launch_managed(&self, launch: ManagedLaunch) -> Result<DiscoveredSession, String> {
-        self.managed
-            .as_ref()
-            .ok_or_else(|| "Managed provider launch is unavailable.".to_string())?
-            .launch(launch)
-    }
-
-    fn route_binding(&self, target: &Target) -> Option<String> {
-        self.live_route_binding(target)
-    }
-
-    fn register_existing(
-        &self,
-        request: enablement::OpenLeaderRequest,
-    ) -> Result<DiscoveredSession, String> {
-        self.register_existing_with(request, &|binding, authority| {
-            crate::relay::existing_session::grok::inspect_session(
-                binding,
-                authority,
-                EXISTING_GROK_INSPECT_TIMEOUT,
-            )
-        })
-    }
-
-    fn managed_authority(
-        &self,
-        target: &Target,
-    ) -> Option<crate::relay::managed_sessions::ManagedAuthority> {
-        if !matches!(target.kind, SessionKind::Grok | SessionKind::GrokOpen) {
-            return self.managed.as_ref()?.authority(target);
-        }
-        match grok_route(&self.config, &self.table, self.managed.as_deref(), target) {
-            GrokRoute::Managed(binding) => Some(binding.authority()),
-            GrokRoute::Existing(binding) => Some(ManagedAuthority {
-                workspace_id: binding.workspace_id,
-                owner_id: binding.owner_id,
-                owner_uid: binding.owner_uid,
-            }),
-            GrokRoute::Ambiguous | GrokRoute::Unavailable | GrokRoute::None => None,
-        }
     }
 }
 
@@ -2088,8 +1816,7 @@ impl LocalInjector {
             .and_then(|spawn| spawn.process)
         else {
             return InjectOutcome::Refused(
-                "Only a Muse session started and owned by Agent Relay can receive messages."
-                    .into(),
+                "Only a Muse session started and owned by Agent Relay can receive messages.".into(),
             );
         };
         let Some(open) = crate::relay::muse::open_session(
@@ -2102,9 +1829,7 @@ impl LocalInjector {
                 "This Relay-owned Muse session is not running right now.".into(),
             );
         };
-        if open.session.pid != expected.pid
-            || !expected.is(self.table.process(expected.pid))
-        {
+        if open.session.pid != expected.pid || !expected.is(self.table.process(expected.pid)) {
             return InjectOutcome::Refused(
                 "The Relay-owned Muse process no longer matches this agent.".into(),
             );
@@ -2381,9 +2106,7 @@ impl Injector for LocalInjector {
         }
         if registration.target.kind == SessionKind::MuseOpen {
             let owned = registration.spawn.as_ref().is_some_and(|spawn| {
-                spawn.harness == "muse"
-                    && spawn.taken_over_at.is_none()
-                    && spawn.process.is_some()
+                spawn.harness == "muse" && spawn.taken_over_at.is_none() && spawn.process.is_some()
             });
             return owned.then(|| {
                 crate::relay::muse::final_answer(
@@ -3934,7 +3657,6 @@ mod tests {
         assert!(world.sessions.auto_activation_sessions().is_empty());
     }
 
-
     // A Conductor chat is a stream-json Agent SDK run with no terminal, like
     // automation, but a person types in it: it is auto-activated when it is
     // in a Conductor workspace and Conductor's sidecar started it.
@@ -4228,6 +3950,55 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn a_confirmed_codex_rename_survives_discovery_database_failure() {
+        let world = world();
+        let home = &world.sessions.config.codex.home;
+        std::fs::create_dir_all(home).unwrap();
+        let path = home.join("state_5.sqlite");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(&format!(
+            "create table threads (id text, title text, cwd text, archived integer, source text, updated_at integer);
+             insert into threads values ('{THREAD}', 'Old title', '/p', 0, 'cli', 1790000000);"
+        )).unwrap();
+        drop(db);
+        let title = || {
+            world
+                .sessions
+                .sessions()
+                .into_iter()
+                .find(|session| session.target == Target::new(SessionKind::Codex, THREAD))
+                .unwrap()
+                .title
+        };
+        assert_eq!(title(), "Old title");
+        assert!(world
+            .sessions
+            .set_codex_title(THREAD, || Err("Provider refused".into()))
+            .is_err());
+        assert_eq!(
+            title(),
+            "Old title",
+            "a refused native write changes no cache"
+        );
+        world
+            .sessions
+            .set_codex_title(THREAD, || {
+                let db = rusqlite::Connection::open(&path).unwrap();
+                db.execute(
+                    "update threads set title = 'Confirmed title' where id = ?1",
+                    [THREAD],
+                )
+                .unwrap();
+                Ok("Confirmed title".into())
+            })
+            .unwrap();
+        // No discovery pass refreshed the cache between acknowledgement and
+        // the database becoming unreadable; fallback must retain the rename.
+        std::fs::write(&path, b"not a database").unwrap();
+        assert_eq!(title(), "Confirmed title");
+    }
+
     // Review: while Codex holds its database, its threads stay listed.
     #[test]
     fn codex_threads_survive_an_unreadable_database() {
@@ -4455,27 +4226,70 @@ mod tests {
         let native = crate::relay::grok::GrokConfig {
             home: world._temp.path().join("custom-grok-home"),
         };
-        world.table.processes.lock().unwrap().get_mut(&binding.leader_pid).unwrap()
-            .environment.insert("GROK_HOME".into(), native.home.display().to_string());
+        world
+            .table
+            .processes
+            .lock()
+            .unwrap()
+            .get_mut(&binding.leader_pid)
+            .unwrap()
+            .environment
+            .insert("GROK_HOME".into(), native.home.display().to_string());
         let registry = enablement::Registry::open(&existing_grok_paths(&world).bindings).unwrap();
-        registry.register(&binding, &ExistingLeaderAuthority::new(world.table.clone())).unwrap();
+        registry
+            .register(&binding, &ExistingLeaderAuthority::new(world.table.clone()))
+            .unwrap();
         let dir = native.session_dir(binding.cwd.to_str().unwrap(), id);
         std::fs::create_dir_all(&dir).unwrap();
         // Relay's default store must not supply a different session's title.
-        let wrong = world.sessions.config.grok.session_dir(binding.cwd.to_str().unwrap(), id);
+        let wrong = world
+            .sessions
+            .config
+            .grok
+            .session_dir(binding.cwd.to_str().unwrap(), id);
         std::fs::create_dir_all(&wrong).unwrap();
-        std::fs::write(wrong.join("summary.json"), r#"{"generated_title":"Wrong home"}"#).unwrap();
-        for title in ["Renamed in Relay".to_string(), "x".repeat(200), "Changed in Grok".into()] {
-            std::fs::write(dir.join("summary.json"), serde_json::json!({
-                "info":{"id":id,"cwd":binding.cwd}, "generated_title":title,
-            }).to_string()).unwrap();
-            let found = world.sessions.sessions().into_iter().find(|row| row.target.id == id).unwrap();
+        std::fs::write(
+            wrong.join("summary.json"),
+            r#"{"generated_title":"Wrong home"}"#,
+        )
+        .unwrap();
+        for title in [
+            "Renamed in Relay".to_string(),
+            "x".repeat(200),
+            "Changed in Grok".into(),
+        ] {
+            std::fs::write(
+                dir.join("summary.json"),
+                serde_json::json!({
+                    "info":{"id":id,"cwd":binding.cwd}, "generated_title":title,
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let found = world
+                .sessions
+                .sessions()
+                .into_iter()
+                .find(|row| row.target.id == id)
+                .unwrap();
             assert_eq!(found.title, title);
         }
         std::fs::remove_file(dir.join("summary.json")).unwrap();
-        let found = world.sessions.sessions().into_iter().find(|row| row.target.id == id).unwrap();
+        let found = world
+            .sessions
+            .sessions()
+            .into_iter()
+            .find(|row| row.target.id == id)
+            .unwrap();
         assert_eq!(found.title, format!("Grok {}", binding.model_id));
-        world.table.processes.lock().unwrap().get_mut(&binding.leader_pid).unwrap().start += 1;
+        world
+            .table
+            .processes
+            .lock()
+            .unwrap()
+            .get_mut(&binding.leader_pid)
+            .unwrap()
+            .start += 1;
         assert!(crate::relay::grok::binding_title(&binding, &*world.table).is_none());
     }
 
@@ -5837,8 +5651,7 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
         assert_eq!(
             injector.inject_registered(&registration, "delivery", "message", "hello"),
             InjectOutcome::Refused(
-                "Only a Muse session started and owned by Agent Relay can receive messages."
-                    .into()
+                "Only a Muse session started and owned by Agent Relay can receive messages.".into()
             )
         );
     }
@@ -6155,13 +5968,20 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
         world.table.insert(tool, child.clone());
         let target = Target::new(SessionKind::Grok, id);
         assert_eq!(world.sessions.caller(tool).unwrap().target, target);
-        let native = crate::relay::grok::GrokConfig { home: record.grok_home.clone() };
+        let native = crate::relay::grok::GrokConfig {
+            home: record.grok_home.clone(),
+        };
         let dir = native.session_dir(record.binding.cwd.to_str().unwrap(), id);
         std::fs::create_dir_all(&dir).unwrap();
         for title in ["Renamed spawned Grok", "Changed externally"] {
-            std::fs::write(dir.join("summary.json"), serde_json::json!({
-                "info":{"id":id,"cwd":record.binding.cwd}, "generated_title":title,
-            }).to_string()).unwrap();
+            std::fs::write(
+                dir.join("summary.json"),
+                serde_json::json!({
+                    "info":{"id":id,"cwd":record.binding.cwd}, "generated_title":title,
+                })
+                .to_string(),
+            )
+            .unwrap();
             assert_eq!(world.sessions.caller(tool).unwrap().title, title);
         }
         let injector = LocalInjector::new(
@@ -6310,5 +6130,88 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
         std::fs::remove_file(attestation).unwrap();
         assert!(!injector.can_reply(&target));
         assert!(sessions.caller_target(610).is_err());
+    }
+    #[test]
+    fn mobile_native_runtime_requires_exact_native_process_and_rejects_tool_descendants() {
+        let world = world();
+        let path = world.sessions.config.claude.registry().join("300.json");
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        record["kind"] = serde_json::json!("interactive");
+        record["status"] = serde_json::json!("idle");
+        std::fs::write(&path, record.to_string()).unwrap();
+        let target = Target::new(SessionKind::ClaudeTerminal, CLAUDE);
+        let runtime = world.sessions.mobile_claude_runtime(&target, 300).unwrap();
+        assert!(
+            world.sessions.mobile_claude_runtime(&target, 320).is_none(),
+            "tool children cannot invoke the private native bridge"
+        );
+        assert!(
+            world.sessions.caller(320).is_ok(),
+            "ordinary Relay descendant identification stays available"
+        );
+        assert_eq!((runtime.pid, runtime.start, runtime.idle), (300, 100, true));
+        assert_eq!(
+            world.sessions.mobile_claude_runtime(&target, 300),
+            Some(runtime.clone())
+        );
+        let recorded_start = record["procStart"].clone();
+        record.as_object_mut().unwrap().remove("procStart");
+        std::fs::write(&path, record.to_string()).unwrap();
+        assert!(
+            world.sessions.mobile_claude_runtime(&target, 300).is_none(),
+            "native PID alone cannot prove a session without a start time"
+        );
+        record["procStart"] = recorded_start;
+        std::fs::write(&path, record.to_string()).unwrap();
+        world
+            .table
+            .processes
+            .lock()
+            .unwrap()
+            .get_mut(&300)
+            .unwrap()
+            .uid = world.sessions.config.uid + 1;
+        assert!(
+            world.sessions.mobile_claude_runtime(&target, 300).is_none(),
+            "another user cannot own this native bridge"
+        );
+        world
+            .table
+            .processes
+            .lock()
+            .unwrap()
+            .get_mut(&300)
+            .unwrap()
+            .uid = world.sessions.config.uid;
+        std::fs::write(&path, "{partially-written").unwrap();
+        assert!(world.sessions.mobile_claude_runtime(&target, 300).is_none());
+        assert_eq!(
+            world.sessions.mobile_claude_incarnation(&runtime),
+            Some(true),
+            "an unreadable registry does not prove that the native process ended"
+        );
+        std::fs::write(&path, record.to_string()).unwrap();
+        world.table.insert(700, process(1, 10));
+        assert!(world.sessions.mobile_claude_runtime(&target, 700).is_none());
+        record["status"] = serde_json::json!("busy");
+        std::fs::write(&path, record.to_string()).unwrap();
+        assert!(
+            !world
+                .sessions
+                .mobile_claude_runtime(&target, 300)
+                .unwrap()
+                .idle
+        );
+        record["kind"] = serde_json::json!("unknown");
+        std::fs::write(&path, record.to_string()).unwrap();
+        assert!(world.sessions.mobile_claude_runtime(&target, 300).is_none());
+        record["kind"] = serde_json::json!("interactive");
+        std::fs::write(&path, record.to_string()).unwrap();
+        world.table.insert(300, process(1, 101));
+        assert!(
+            world.sessions.mobile_claude_runtime(&target, 300).is_none(),
+            "recycled PID never inherits the old session"
+        );
     }
 }

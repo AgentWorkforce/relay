@@ -8,7 +8,9 @@
 //! | `state` | What the window shows, as data: the screen, navigation, the core's answers |
 //! | `shell` | The rail, sidebar, top bar and status bar |
 //! | `relay` | The listings every surface shares, and switching sessions on the relay |
-//! | `settings_page` | Every Settings pane, the background service and software updates |
+//! | `settings_page` | Every Settings pane and the background service |
+//! | `usage` | Desktop usage events and search debouncing |
+//! | `update_actions` | Checking, downloading, installing, and reporting software updates |
 //! | `pages` | The four pages' roots in the page stack, and what they keep across redraws |
 //! | `agents_page` | My agents: sessions and their relay switch, details and tools, fleet workers, agents on other machines; the roster rows, overview card and banners Team reuses |
 //! | `capy_spawn` | Cloud-backed Capy thread creation and first-turn binding status |
@@ -47,6 +49,7 @@ mod core_settings;
 pub mod desktop;
 mod launch;
 pub mod messages;
+mod mobile_claude_handoff;
 pub mod pages;
 mod relay;
 mod relay_rows;
@@ -70,7 +73,9 @@ pub mod team_page;
 pub mod theme;
 pub mod transcript;
 pub mod tray;
+mod update_actions;
 mod upload_actions;
+mod usage;
 pub mod widgets;
 
 pub use app::{App, Options, APP_ID};

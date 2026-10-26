@@ -47,26 +47,29 @@ fn wide(text: &str) -> Vec<u16> {
 
 /// `ShellExecuteW(open)` on its own thread: the shell may take a while, and
 /// the browser outlives the call.
-fn shell_open(file: String, parameters: Option<String>) {
-    std::thread::spawn(move || {
-        use windows_sys::Win32::UI::Shell::ShellExecuteW;
-        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-        let (verb, file) = (wide("open"), wide(&file));
-        let parameters = parameters.as_deref().map(wide);
-        // SAFETY: NUL-terminated UTF-16 strings that outlive the call.
-        unsafe {
-            ShellExecuteW(
-                std::ptr::null_mut(),
-                verb.as_ptr(),
-                file.as_ptr(),
-                parameters
-                    .as_ref()
-                    .map_or(std::ptr::null(), |parameters| parameters.as_ptr()),
-                std::ptr::null(),
-                SW_SHOWNORMAL,
-            );
-        }
-    });
+fn shell_open(file: String, parameters: Option<String>) -> bool {
+    // Report whether the asynchronous shell handoff could be started.
+    std::thread::Builder::new()
+        .spawn(move || {
+            use windows_sys::Win32::UI::Shell::ShellExecuteW;
+            use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+            let (verb, file) = (wide("open"), wide(&file));
+            let parameters = parameters.as_deref().map(wide);
+            // SAFETY: NUL-terminated UTF-16 strings that outlive the call.
+            unsafe {
+                ShellExecuteW(
+                    std::ptr::null_mut(),
+                    verb.as_ptr(),
+                    file.as_ptr(),
+                    parameters
+                        .as_ref()
+                        .map_or(std::ptr::null(), |parameters| parameters.as_ptr()),
+                    std::ptr::null(),
+                    SW_SHOWNORMAL,
+                );
+            }
+        })
+        .is_ok()
 }
 
 /// What opening `uri` does: a link for its handler, a document for its
@@ -105,7 +108,7 @@ pub fn opening(uri: &str) -> Opening {
     }
 }
 
-pub fn open_uri(uri: &str) {
+pub fn open_uri(uri: &str) -> bool {
     match opening(uri) {
         Opening::Link(link) => shell_open(link, None),
         Opening::Path(path) => shell_open(path.display().to_string(), None),
@@ -116,7 +119,7 @@ pub fn open_uri(uri: &str) {
                 tree::quote_argument(&path.display().to_string())
             )),
         ),
-        Opening::Refused => {}
+        Opening::Refused => false,
     }
 }
 

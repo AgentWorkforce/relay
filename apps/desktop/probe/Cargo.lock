@@ -37,6 +37,7 @@ dependencies = [
  "ring",
  "rusqlite",
  "ryu-js",
+ "same-file",
  "schemars",
  "security-framework",
  "security-framework-sys",

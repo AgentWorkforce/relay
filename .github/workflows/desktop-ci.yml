@@ -1,7 +1,7 @@
 name: Desktop CI
 
-# Builds "Agent Relay.app" for both macOS architectures the way desktop-release.yml
-# does, minus signing, so a pull request fails here rather than at tag time.
+# Ordinary changes use representative native architectures. Release calls
+# this workflow for the full test matrix before building signed packages.
 
 on:
   pull_request:
@@ -12,33 +12,103 @@ on:
       - main
     paths:
       - 'apps/desktop/**'
+      - '.github/actions/**'
       - '.github/workflows/desktop-ci.yml'
       - '.github/workflows/desktop-release.yml'
       - '.github/workflows/ios-testflight.yml'
+      - '.github/workflows/mobile-ci.yml'
   push:
     branches:
       - main
     paths:
       - 'apps/desktop/**'
+      - '.github/actions/**'
       - '.github/workflows/desktop-ci.yml'
       - '.github/workflows/desktop-release.yml'
       - '.github/workflows/ios-testflight.yml'
+      - '.github/workflows/mobile-ci.yml'
+
+  workflow_call:
+    inputs:
+      full-matrix:
+        description: Validate both supported architectures on every platform
+        type: boolean
+        default: false
+      force-all:
+        description: Run every component regardless of changed paths
+        type: boolean
+        default: false
+      skip-packages:
+        description: Run tests only; the Release caller builds the real packages afterwards
+        type: boolean
+        default: false
+      probe-version:
+        description: Version embedded in the Linux core shared with package and test jobs
+        type: string
+        default: '0.0.0'
+    secrets:
+      POSTHOG_API_KEY:
+        description: Analytics ingestion key embedded only in release cores
+        required: false
+      POSTHOG_HOST:
+        description: Analytics ingestion host embedded only in release cores
+        required: false
+  workflow_dispatch:
+    inputs:
+      full-matrix:
+        description: Validate both supported architectures on every platform
+        type: boolean
+        default: false
+      force-all:
+        description: Run every component regardless of changed paths
+        type: boolean
+        default: false
+      skip-packages:
+        description: Run tests only; the Release caller builds the real packages afterwards
+        type: boolean
+        default: false
+      probe-version:
+        description: Version embedded in the Linux core shared with package and test jobs
+        type: string
+        default: '0.0.0'
 
 concurrency:
   # PR runs collapse per pull request; push runs key off the commit sha so two
   # merges landing together cannot cancel each other.
-  group: desktop-ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('push-{0}', github.sha) }}
+  # github.workflow is the caller name for reusable runs: keep this group
+  # distinct from the caller's release lock and from ordinary CI.
+  group: ci-checks-${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.sha) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Nothing in CI writes to the repository.
 permissions:
   contents: read
 
+env:
+  CI_PROBE_VERSION: ${{ inputs.probe-version || '0.0.0' }}
+
 defaults:
   run:
     working-directory: apps/desktop
 
 jobs:
+  # Runs for every pull request, including forks: GitHub-hosted, read-only
+  # and without secrets.
+  open-source:
+    name: Public source check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check nothing internal is in the public source
+        run: bash scripts/check-open-source.sh
+
   # Never run untrusted fork code on repository-configured runners. This small
   # GitHub-hosted lane still gives outside contributors useful checks.
   fork-checks:
@@ -65,11 +135,93 @@ jobs:
       - name: Test the release notes tooling
         run: python3 scripts/test_release_notes.py
 
-      - name: Check nothing internal is in the public source
-        run: bash scripts/check-open-source.sh
+  changes:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    name: Changed components
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    outputs:
+      shell: ${{ steps.changes.outputs.shell }}
+      probe: ${{ steps.changes.outputs.probe }}
+      macos: ${{ steps.changes.outputs.macos }}
+      macos_core: ${{ steps.changes.outputs.macos_core }}
+      macos_package: ${{ steps.changes.outputs.macos_package }}
+      macos-matrix: ${{ steps.matrices.outputs.macos }}
+      linux-matrix: ${{ steps.matrices.outputs.linux }}
+      linux-probe-matrix: ${{ steps.matrices.outputs.linux_probe }}
+      windows-matrix: ${{ steps.matrices.outputs.windows }}
+      linux: ${{ steps.changes.outputs.linux }}
+      linux_core: ${{ steps.changes.outputs.linux_core }}
+      linux_integration: ${{ steps.changes.outputs.linux_integration }}
+      linux_package: ${{ steps.changes.outputs.linux_package }}
+      windows: ${{ steps.changes.outputs.windows }}
+      windows_package: ${{ steps.changes.outputs.windows_package }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          # Fetch authenticated history during checkout, before credentials are removed.
+          fetch-depth: 0
+
+      - name: Select native architectures
+        id: matrices
+        env:
+          FULL_MATRIX: ${{ inputs.full-matrix }}
+          LINUX_RUNNER: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+          LINUX_ARM64_RUNNER: ${{ vars.CI_LINUX_ARM64_RUNNER || 'ubuntu-24.04-arm' }}
+          LINUX_2204_RUNNER: ${{ vars.CI_LINUX_2204_RUNNER || 'ubuntu-22.04' }}
+          LINUX_2204_ARM64_RUNNER: ${{ vars.CI_LINUX_2204_ARM64_RUNNER || 'ubuntu-22.04-arm' }}
+        run: |
+          python3 - <<'PY_MATRIX'
+          import json
+          import os
+
+          full = os.environ["FULL_MATRIX"] == "true"
+          matrices = {
+              "macos": [
+                  {"runner": "macos-15", "arch": "arm64", "rust_target": "aarch64-apple-darwin"},
+                  {"runner": "macos-15-intel", "arch": "x64", "rust_target": "x86_64-apple-darwin"},
+              ],
+              "linux": [
+                  {"runner": os.environ["LINUX_2204_RUNNER"], "arch": "x64", "rust_target": "x86_64-unknown-linux-gnu"},
+                  {"runner": os.environ["LINUX_2204_ARM64_RUNNER"], "arch": "arm64", "rust_target": "aarch64-unknown-linux-gnu"},
+              ],
+              "linux_probe": [
+                  {"runner": os.environ["LINUX_RUNNER"], "arch": "x64", "rust_target": "x86_64-unknown-linux-gnu", "zig_host": "x86_64-linux", "zig_sha256": "d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea"},
+                  {"runner": os.environ["LINUX_ARM64_RUNNER"], "arch": "arm64", "rust_target": "aarch64-unknown-linux-gnu", "zig_host": "aarch64-linux", "zig_sha256": "041ac42323837eb5624068acd8b00cd5777dac4cf91179e8dad7a7e90dd0c556"},
+              ],
+              "windows": [
+                  {"runner": "windows-latest", "arch": "x64", "msystem": "CLANG64"},
+                  {"runner": "windows-11-arm", "arch": "arm64", "msystem": "CLANGARM64"},
+              ],
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              for name, rows in matrices.items():
+                  selected = rows if full else rows[:1]
+                  print(f"{name}={json.dumps(selected, separators=(',', ':'))}", file=output)
+          PY_MATRIX
+
+      - name: Detect changed components
+        id: changes
+        working-directory: ${{ github.workspace }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          FORCE_ALL: ${{ inputs.force-all }}
+        run: |
+          # Compare the event base with the tested commit (the merge commit on
+          # PRs). Missing or unavailable history conservatively runs all jobs.
+          if [ "$FORCE_ALL" = true ]; then
+            python3 apps/desktop/scripts/ci-changes.py --all >> "$GITHUB_OUTPUT"
+          elif [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ && "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            python3 apps/desktop/scripts/ci-changes.py --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          else
+            python3 apps/desktop/scripts/ci-changes.py --base unavailable --head unavailable >> "$GITHUB_OUTPUT"
+          fi
 
   shellcheck:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: changes
+    if: needs.changes.outputs.shell == 'true'
     name: Shell scripts
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
@@ -88,11 +240,11 @@ jobs:
       - name: Lint the packaging scripts
         run: shellcheck scripts/*.sh linux/agent-relay.postinst
 
-      - name: Check nothing internal is in the public source
-        run: bash scripts/check-open-source.sh
-
       - name: Test probe bridge validation
         run: bash scripts/test-probe-bridge.sh
+
+      - name: Test CI change detection
+        run: python3 scripts/test_ci_changes.py
 
       - name: Test the release notes tooling
         run: python3 scripts/test_release_notes.py
@@ -104,7 +256,8 @@ jobs:
         run: bash scripts/test-linux-install.sh
 
   probe:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    needs: changes
+    if: needs.changes.outputs.probe == 'true'
     name: Probe
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     permissions:
@@ -120,6 +273,9 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Test Cargo binary target selection
+        run: python3 scripts/test_cargo_target_selection.py
+
       - name: Cache the probe build
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
@@ -130,8 +286,14 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Test dependency cache pruning
+        run: node --test "$GITHUB_WORKSPACE/.github/actions/windows-build-cache-prune/main.test.cjs"
+
       - name: Test live Pi sessions (legacy and current packages)
         run: bash scripts/test-pi-live.sh
+
+      - name: Test the native Claude mobile bridge
+        run: node --test scripts/test-claude-mobile-plugin.mjs scripts/mobile-build-inventory.test.mjs
 
       - name: Test the probe
         run: cargo test --manifest-path probe/Cargo.toml --locked
@@ -152,26 +314,17 @@ jobs:
           scripts/generate-contract.sh
           git diff --exit-code
 
-  linux-probe-glibc:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    name: Linux probe glibc 2.34 (${{ matrix.arch }})
+  linux-core:
+    needs: changes
+    if: needs.changes.outputs.linux_core == 'true'
+    name: Linux core (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
-            arch: x64
-            rust_target: x86_64-unknown-linux-gnu
-            zig_host: x86_64-linux
-            zig_sha256: d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea
-          - runner: ${{ vars.CI_LINUX_ARM64_RUNNER || 'ubuntu-24.04-arm' }}
-            arch: arm64
-            rust_target: aarch64-unknown-linux-gnu
-            zig_host: aarch64-linux
-            zig_sha256: 041ac42323837eb5624068acd8b00cd5777dac4cf91179e8dad7a7e90dd0c556
+        include: ${{ fromJSON(needs.changes.outputs.linux-probe-matrix) }}
     env:
       GLIBC_FLOOR: '2.34'
       ZIG_VERSION: '0.13.0'
@@ -191,7 +344,8 @@ jobs:
       - name: Cache the Zig-built probe
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          key: ci-linux-probe-zig-v1-${{ matrix.arch }}
+          # Retain the old key+job namespace after renaming the producer.
+          shared-key: ci-linux-probe-zig-v1-${{ matrix.arch }}-linux-probe-glibc
           workspaces: apps/desktop/probe
 
       - name: Install zig and cargo-zigbuild
@@ -208,57 +362,60 @@ jobs:
           cargo install --locked cargo-zigbuild --version "$CARGO_ZIGBUILD_VERSION"
 
       - name: Build the probe against glibc 2.34
+        env:
+          # Set only when Desktop Release calls this workflow; PR and fork
+          # builds embed no analytics configuration.
+          AGENT_RELAY_POSTHOG_API_KEY: ${{ secrets.POSTHOG_API_KEY }}
+          AGENT_RELAY_POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
         run: |
           scripts/build-probe.sh \
             --target '${{ matrix.rust_target }}' \
-            --version 0.0.0 \
+            --version "$CI_PROBE_VERSION" \
             --glibc "$GLIBC_FLOOR" \
             --out probe-build
 
       - name: Check the probe's glibc floor
         run: scripts/check-glibc-floor.sh probe-build/agent-relay-probe --max "$GLIBC_FLOOR"
 
-  macos:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    name: macOS ${{ matrix.arch }}
+      - name: Record the checked core identity
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+        run: |
+          printf '%s\n' "$GITHUB_SHA" > probe-build/source-revision.txt
+          printf '%s\n' "$RUST_TARGET" > probe-build/rust-target.txt
+
+      - name: Upload the checked Linux core
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          # Prefix avoids the release publisher's linux-* package pattern.
+          name: ci-linux-core-${{ matrix.arch }}-${{ github.sha }}
+          path: apps/desktop/probe-build/
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  macos-package:
+    needs: changes
+    if: needs.changes.outputs.macos_package == 'true' && !inputs.skip-packages
+    name: macOS package (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: macos-15
-            arch: arm64
-            rust_target: aarch64-apple-darwin
-          - runner: macos-15-intel
-            arch: x64
-            rust_target: x86_64-apple-darwin
+        include: ${{ fromJSON(needs.changes.outputs.macos-matrix) }}
     steps:
       - name: Check out
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
-      - name: Build the Swift package
-        run: swift build -c release --package-path macos
-
-      - name: Test the Swift package
-        env:
-          REQUEST_RENDER_DIR: ${{ runner.temp }}/desktop-ui-fixtures
-          SESSION_COLUMNS_PREVIEW: ${{ runner.temp }}/desktop-ui-fixtures
-        run: |
-          mkdir -p "$SESSION_COLUMNS_PREVIEW"
-          swift test --package-path macos
-
-      - name: Upload Swift rendering fixtures
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - name: Cache the Swift release build
+        uses: ./.github/actions/swift-cache
         with:
-          name: Swift-rendering-${{ matrix.arch }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/desktop-ui-fixtures
-          if-no-files-found: ignore
-          retention-days: 1
+          arch: ${{ matrix.arch }}
+          lane: package
 
       - name: Install the Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -267,24 +424,11 @@ jobs:
           targets: ${{ matrix.rust_target }}
 
       - name: Cache the probe build
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        uses: ./.github/actions/rust-lane-cache
         with:
-          key: probe-${{ matrix.arch }}
-          workspaces: apps/desktop/probe
-
-      - name: Test managed Muse MSP delivery
-        run: cargo test --manifest-path probe/Cargo.toml --locked --test muse_msp
-
-      - name: Test core diagnostic logs
-        run: cargo test --manifest-path probe/Cargo.toml --locked --lib relay::diagnostics
-
-      - name: Set up Node for Pi compatibility tests
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22'
-
-      - name: Test live Pi sessions (legacy and current packages)
-        run: bash scripts/test-pi-live.sh
+          legacy-key: probe-${{ matrix.arch }}-macos
+          lane: package
+          discard-profile: debug
 
       - name: Build the probe
         run: scripts/build-probe.sh --target '${{ matrix.rust_target }}' --version 0.0.0 --out probe-build
@@ -328,9 +472,99 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  windows:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    name: Windows ${{ matrix.arch }}
+  macos-swift-tests:
+    needs: changes
+    if: needs.changes.outputs.macos == 'true'
+    name: macOS Swift tests (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.macos-matrix) }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Cache the Swift test build
+        uses: ./.github/actions/swift-cache
+        with:
+          arch: ${{ matrix.arch }}
+          lane: tests
+
+      # RelayDesktopTests depends on the executable target, so this also
+      # compiles the app entrypoint when unsigned packaging is not selected.
+      - name: Test the Swift package
+        env:
+          REQUEST_RENDER_DIR: ${{ runner.temp }}/desktop-ui-fixtures
+          SESSION_COLUMNS_PREVIEW: ${{ runner.temp }}/desktop-ui-fixtures
+        run: |
+          mkdir -p "$SESSION_COLUMNS_PREVIEW"
+          swift test --package-path macos
+
+      - name: Test the shared session overview package
+        run: swift test --package-path shared/RelaySessionOverview
+
+      - name: Upload Swift rendering fixtures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Swift-rendering-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/desktop-ui-fixtures
+          if-no-files-found: ignore
+          retention-days: 1
+
+  macos-core-tests:
+    needs: changes
+    if: needs.changes.outputs.macos_core == 'true'
+    name: macOS core tests (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.macos-matrix) }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache the probe build
+        uses: ./.github/actions/rust-lane-cache
+        with:
+          legacy-key: probe-${{ matrix.arch }}-macos
+          lane: tests
+          discard-profile: release
+
+      - name: Test managed Muse MSP delivery
+        run: cargo test --manifest-path probe/Cargo.toml --locked --test muse_msp
+
+      - name: Test core diagnostic logs
+        run: cargo test --manifest-path probe/Cargo.toml --locked --lib relay::diagnostics
+
+      - name: Set up Node for Pi compatibility tests
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+
+      - name: Test live Pi sessions (legacy and current packages)
+        run: bash scripts/test-pi-live.sh
+
+  windows-package:
+    needs: changes
+    if: needs.changes.outputs.windows_package == 'true' && !inputs.skip-packages
+    name: Windows package (${{ matrix.arch }})
     # The Linux GTK app, built natively with MSYS2's clang toolchain and GTK 4
     # for each architecture. Windows runners have a desktop session, so the
     # GTK harness runs without a virtual display.
@@ -340,13 +574,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: windows-latest
-            arch: x64
-            msystem: CLANG64
-          - runner: windows-11-arm
-            arch: arm64
-            msystem: CLANGARM64
+        include: ${{ fromJSON(needs.changes.outputs.windows-matrix) }}
     defaults:
       run:
         shell: msys2 {0}
@@ -359,6 +587,8 @@ jobs:
       # Git itself fetches the git dependencies, honouring core.longpaths.
       CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
       CARGO_TERM_COLOR: always
+      # These caches omit incremental state; do not spend time producing it.
+      CARGO_INCREMENTAL: '0'
       RUST_BACKTRACE: '1'
     steps:
       # Scripts and fixtures keep their LF line endings, and long paths
@@ -375,41 +605,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install MSYS2, Rust and GTK 4
-        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+      - name: Install the Windows toolchain
+        id: toolchain
+        uses: ./.github/actions/windows-toolchain
         with:
           msystem: ${{ matrix.msystem }}
-          update: true
-          # git: cargo fetches its git dependencies through it (see
-          # CARGO_NET_GIT_FETCH_WITH_CLI above), inside this shell.
-          install: zip unzip git
-          pacboy: >-
-            toolchain:p
-            rust:p
-            gtk4:p
-            pkgconf:p
-            librsvg:p
-            ntldd:p
 
-      # MSYS2's git has a home and config of its own: long paths again.
-      - name: Show the toolchain and allow long paths
-        run: |
-          git config --global core.longpaths true
-          git --version
-          rustc -vV
-          cargo -V
-          pkgconf --modversion gtk4
-
-      - name: Cache cargo and the probe build
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Cache the Cargo release dependencies
+        id: build-cache
+        uses: ./.github/actions/windows-build-cache
         with:
-          path: |
-            C:\ch\registry\index
-            C:\ch\registry\cache
-            C:\ch\git\db
-            apps/desktop/probe/target
-          key: windows-${{ matrix.arch }}-${{ hashFiles('apps/desktop/probe/Cargo.lock') }}
-          restore-keys: windows-${{ matrix.arch }}-
+          arch: ${{ matrix.arch }}
+          profile: release
+          toolchain: ${{ steps.toolchain.outputs.identity }}
 
       # The Setup .exe is compiled with Inno Setup 6. windows-latest carries
       # it; windows-11-arm may not, so it is installed there.
@@ -478,24 +686,107 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Build the app and the fake core
-        run: cargo build --manifest-path probe/Cargo.toml --locked --features gtk --bin agent-relay-desktop --bin agent-relay-fake-core
+      - name: Keep only reusable release dependencies in the cache
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/windows-build-cache-prune
+        with:
+          profile: release
+
+  windows-tests:
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
+    name: Windows tests (${{ matrix.arch }})
+    # The Linux GTK app, built natively with MSYS2's clang toolchain and GTK 4
+    # for each architecture. Windows runners have a desktop session, so the
+    # GTK harness runs without a virtual display.
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.windows-matrix) }}
+    defaults:
+      run:
+        shell: msys2 {0}
+        working-directory: apps/desktop
+    env:
+      # A short cargo home: RelayHistory's fixtures hold paths close to
+      # Windows' 260-character limit, which a cargo home inside the
+      # workspace pushed over it when cargo checked the dependency out.
+      CARGO_HOME: C:\ch
+      # Git itself fetches the git dependencies, honouring core.longpaths.
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_TERM_COLOR: always
+      # These caches omit incremental state; do not spend time producing it.
+      CARGO_INCREMENTAL: '0'
+      RUST_BACKTRACE: '1'
+      # Keep runtime checks while avoiding debug-symbol generation/linking and
+      # large symbol archives in CI. Local developer profiles are unchanged.
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_PROFILE_DEV_DEBUG_ASSERTIONS: 'true'
+      CARGO_PROFILE_TEST_DEBUG_ASSERTIONS: 'true'
+      CARGO_PROFILE_DEV_OVERFLOW_CHECKS: 'true'
+      CARGO_PROFILE_TEST_OVERFLOW_CHECKS: 'true'
+    steps:
+      # Scripts and fixtures keep their LF line endings, and long paths
+      # check out.
+      - name: Keep line endings and allow long paths
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install the Windows toolchain
+        id: toolchain
+        uses: ./.github/actions/windows-toolchain
+        with:
+          msystem: ${{ matrix.msystem }}
+
+      - name: Cache the Cargo test dependencies
+        id: build-cache
+        uses: ./.github/actions/windows-build-cache
+        with:
+          arch: ${{ matrix.arch }}
+          profile: debug
+          toolchain: ${{ steps.toolchain.outputs.identity }}
 
       - name: Test the platform file helpers
-        run: 'cargo test --manifest-path probe/Cargo.toml --locked --lib platform::'
+        run: 'cargo test --manifest-path probe/Cargo.toml --locked --no-default-features --features gtk --lib platform::'
 
       - name: Test the app's wording and state
-        run: cargo test --manifest-path probe/Cargo.toml --locked --features gtk --lib linux_app
+        run: cargo test --manifest-path probe/Cargo.toml --locked --no-default-features --features gtk --lib linux_app
 
       - name: Test the app's window
-        run: cargo test --manifest-path probe/Cargo.toml --locked --features gtk --test linux_app_gtk
+        run: cargo test --manifest-path probe/Cargo.toml --locked --no-default-features --features gtk --test linux_app_gtk
 
       - name: Test the app's hosting of the core
-        run: cargo test --manifest-path probe/Cargo.toml --locked --features gtk --test linux_app_hosting
+        run: cargo test --manifest-path probe/Cargo.toml --locked --no-default-features --features gtk --test linux_app_hosting
 
-  linux:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    name: Linux ${{ matrix.arch }}
+      # Packaging already compiles and links the entrypoint when selected.
+      # Otherwise keep all Windows entrypoints checked, without
+      # making integration tests link production binaries they never execute.
+      - name: Check the Windows entrypoints
+        if: needs.changes.outputs.windows_package != 'true' || inputs.skip-packages
+        run: cargo check --manifest-path probe/Cargo.toml --locked --features gtk --bins
+
+      - name: Keep only reusable test dependencies in the cache
+        if: steps.build-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/windows-build-cache-prune
+        with:
+          profile: debug
+
+  linux-package:
+    needs: [changes, linux-core]
+    if: needs.changes.outputs.linux_package == 'true' && !inputs.skip-packages
+    name: Linux package (${{ matrix.arch }})
     # Ubuntu 22.04 ships GTK 4.6, the oldest the app runs on: the app is
     # built and tested against it, natively for each architecture.
     runs-on: ${{ matrix.runner }}
@@ -504,13 +795,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: ${{ vars.CI_LINUX_2204_RUNNER || 'ubuntu-22.04' }}
-            arch: x64
-            rust_target: x86_64-unknown-linux-gnu
-          - runner: ${{ vars.CI_LINUX_2204_ARM64_RUNNER || 'ubuntu-22.04-arm' }}
-            arch: arm64
-            rust_target: aarch64-unknown-linux-gnu
+        include: ${{ fromJSON(needs.changes.outputs.linux-matrix) }}
     env:
       GLIBC_FLOOR: '2.34'
     steps:
@@ -531,31 +816,112 @@ jobs:
           targets: ${{ matrix.rust_target }}
 
       - name: Cache the probe build
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        uses: ./.github/actions/rust-lane-cache
         with:
-          key: linux-gtk4-${{ matrix.arch }}
-          workspaces: apps/desktop/probe
+          legacy-key: linux-gtk4-${{ matrix.arch }}-linux
+          lane: package
+          discard-profile: debug
 
-      - name: Build the probe
-        run: scripts/build-probe.sh --target '${{ matrix.rust_target }}' --version 0.0.0 --out probe-build
+      - name: Download the checked Linux core
+        uses: ./.github/actions/linux-core-artifact
+        with:
+          arch: ${{ matrix.arch }}
+          rust-target: ${{ matrix.rust_target }}
+          probe-version: ${{ env.CI_PROBE_VERSION }}
 
       - name: Build the app
         env:
-          AGENT_RELAY_PROBE_VERSION: 0.0.0
+          AGENT_RELAY_PROBE_VERSION: ${{ env.CI_PROBE_VERSION }}
         run: cargo build --manifest-path probe/Cargo.toml --locked --release --features gtk --bin agent-relay-desktop
 
       - name: Check the app's glibc floor
         run: scripts/check-glibc-floor.sh probe/target/release/agent-relay-desktop --max "$GLIBC_FLOOR"
 
-      - name: Test the app
+      - name: Build Linux packages
         run: |
-          cargo build --manifest-path probe/Cargo.toml --locked --features gtk --bin agent-relay-desktop --bin agent-relay-fake-core
-          cargo test --manifest-path probe/Cargo.toml --locked --features gtk --lib linux_app
-          xvfb-run -a cargo test --manifest-path probe/Cargo.toml --locked --features gtk --test linux_app_gtk
+          scripts/build-linux.sh --version "$CI_PROBE_VERSION" --arch '${{ matrix.arch }}' \
+            --app probe/target/release/agent-relay-desktop --probe probe-build/agent-relay-probe --out out
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: AgentRelay-Linux-${{ matrix.arch }}
+          path: |
+            apps/desktop/out/*.tar.gz
+            apps/desktop/out/*.tar.gz.sha256
+            apps/desktop/out/*.deb
+            apps/desktop/out/*.deb.sha256
+          if-no-files-found: error
+          retention-days: 7
+  linux-tests:
+    needs: [changes, linux-core]
+    # Unlike the default needs-success rule, allow a deliberately skipped core
+    # for harness-only changes. Never run after a failed selector/core build.
+    if: >-
+      always() && !cancelled() && needs.changes.result == 'success' &&
+      (needs.changes.outputs.linux == 'true' || needs.changes.outputs.linux_integration == 'true') &&
+      (
+        (needs.changes.outputs.linux_core == 'true' && needs.linux-core.result == 'success') ||
+        (needs.changes.outputs.linux_core == 'false' && needs.linux-core.result == 'skipped' && needs.changes.outputs.linux_integration == 'false')
+      )
+    name: Linux tests (${{ matrix.arch }})
+    # Ubuntu 22.04 ships GTK 4.6, the oldest the app runs on: the app is
+    # tested against it. Selected GTK and integration checks share one build.
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.changes.outputs.linux-matrix) }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install GTK 4 and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libgtk-4-dev librsvg2-common pkg-config xvfb
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache the probe build
+        uses: ./.github/actions/rust-lane-cache
+        with:
+          legacy-key: linux-gtk4-${{ matrix.arch }}-linux
+          lane: tests
+          discard-profile: release
+
+      - name: Download the checked Linux core
+        if: needs.changes.outputs.linux_integration == 'true'
+        uses: ./.github/actions/linux-core-artifact
+        with:
+          arch: ${{ matrix.arch }}
+          rust-target: ${{ matrix.rust_target }}
+          probe-version: ${{ env.CI_PROBE_VERSION }}
+
+      # Integration-selected runs use the same default-feature GTK graph for
+      # all test targets. Harness-only runs opt out of unused production bins.
+      - name: Test the app's wording and state
+        if: needs.changes.outputs.linux == 'true'
+        run: cargo test --manifest-path probe/Cargo.toml --locked ${{ needs.changes.outputs.linux_integration != 'true' && '--no-default-features' || '' }} --features gtk --lib linux_app
+
+      - name: Test the app's window
+        if: needs.changes.outputs.linux == 'true'
+        run: xvfb-run -a cargo test --manifest-path probe/Cargo.toml --locked ${{ needs.changes.outputs.linux_integration != 'true' && '--no-default-features' || '' }} --features gtk --test linux_app_gtk
 
       # The real core binary, driven by the app's bridge client against fake
       # Relaycast and Cloud in an empty home.
+      # Cargo builds enabled binaries for this integration target, including
+      # the app and fake core that the following startup smoke check executes.
       - name: Test the app against the real core
+        if: needs.changes.outputs.linux_integration == 'true'
         env:
           RELAY_E2E_PROBE: ${{ github.workspace }}/apps/desktop/probe-build/agent-relay-probe
         run: cargo test --manifest-path probe/Cargo.toml --locked --features gtk --test linux_app_core_e2e -- --nocapture
@@ -563,6 +929,7 @@ jobs:
       # The app starts with no display server of its own, hosts the fake
       # core, and subscribes to it.
       - name: Smoke test the app's startup
+        if: needs.changes.outputs.linux_integration == 'true'
         env:
           RELAY_DESKTOP_PROBE: ${{ github.workspace }}/apps/desktop/probe/target/debug/agent-relay-fake-core
           AGENT_RELAY_CORE_SOCKET: ${{ runner.temp }}/gtk-core/core.sock
@@ -596,19 +963,194 @@ jobs:
           done
           ! pgrep -f 'probe/target/debug/agent-relay-desktop'
 
-      - name: Build Linux packages
+  macos:
+    # Legacy architecture labels are compatibility completion gates over the
+    # SELECTED matrix; the summary states actual and deferred native coverage.
+    name: macOS ${{ matrix.arch }}
+    needs: [changes, macos-package, macos-swift-tests, macos-core-tests]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - name: Check all selected macOS lanes
+        working-directory: ${{ github.workspace }}
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CHANGED: ${{ needs.changes.outputs.macos }}
+          CORE_CHANGED: ${{ needs.changes.outputs.macos_core }}
+          PACKAGE_CHANGED: ${{ needs.changes.outputs.macos_package }}
+          SKIP_PACKAGES: ${{ inputs.skip-packages && 'true' || 'false' }}
+          SELECTED_ARCHITECTURES: ${{ inputs.full-matrix && 'arm64, x64' || 'arm64' }}
+          DEFERRED_ARCHITECTURES: ${{ inputs.full-matrix && 'none' || 'x64 (pre-release)' }}
+          MACOS_PACKAGE_RESULT: ${{ needs.macos-package.result }}
+          MACOS_SWIFT_TESTS_RESULT: ${{ needs.macos-swift-tests.result }}
+          MACOS_CORE_TESTS_RESULT: ${{ needs.macos-core-tests.result }}
         run: |
-          scripts/build-linux.sh --version 0.0.0 --arch '${{ matrix.arch }}' \
-            --app probe/target/release/agent-relay-desktop --probe probe-build/agent-relay-probe --out out
+          {
+            echo 'This legacy architecture label is a compatibility completion gate over the selected matrix.'
+            echo "Native architectures tested when this component is selected: $SELECTED_ARCHITECTURES"
+            echo "Architectures deferred: $DEFERRED_ARCHITECTURES"
+            echo "Swift tests selected: $CHANGED; core tests selected: $CORE_CHANGED; packaging selected: $PACKAGE_CHANGED; unsigned package checks skipped: $SKIP_PACKAGES"
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$CHANGES_RESULT" = success
+          case "$CHANGED" in true|false) ;; *) exit 1 ;; esac
+          case "$SKIP_PACKAGES" in true|false) ;; *) exit 1 ;; esac
+          case "$PACKAGE_CHANGED" in true|false) ;; *) exit 1 ;; esac
+          if [ "$PACKAGE_CHANGED" = true ]; then test "$CHANGED" = true; fi
+          if [ "$CHANGED" = true ]; then
+            test "$MACOS_SWIFT_TESTS_RESULT" = success
+          else
+            test "$MACOS_SWIFT_TESTS_RESULT" = skipped
+          fi
+          if [ "$PACKAGE_CHANGED" = true ] && [ "$SKIP_PACKAGES" = false ]; then
+            test "$MACOS_PACKAGE_RESULT" = success
+          else
+            test "$MACOS_PACKAGE_RESULT" = skipped
+          fi
+          case "$CORE_CHANGED" in true|false) ;; *) exit 1 ;; esac
+          if [ "$CORE_CHANGED" = true ]; then
+            test "$MACOS_CORE_TESTS_RESULT" = success
+          else
+            test "$MACOS_CORE_TESTS_RESULT" = skipped
+          fi
 
-      - name: Upload Linux packages
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: AgentRelay-Linux-${{ matrix.arch }}
-          path: |
-            apps/desktop/out/*.tar.gz
-            apps/desktop/out/*.tar.gz.sha256
-            apps/desktop/out/*.deb
-            apps/desktop/out/*.deb.sha256
-          if-no-files-found: error
-          retention-days: 7
+  windows:
+    # Legacy architecture labels are compatibility completion gates over the
+    # SELECTED matrix; the summary states actual and deferred native coverage.
+    name: Windows ${{ matrix.arch }}
+    needs: [changes, windows-package, windows-tests]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - name: Check all selected Windows lanes
+        working-directory: ${{ github.workspace }}
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CHANGED: ${{ needs.changes.outputs.windows }}
+          PACKAGE_CHANGED: ${{ needs.changes.outputs.windows_package }}
+          SKIP_PACKAGES: ${{ inputs.skip-packages && 'true' || 'false' }}
+          SELECTED_ARCHITECTURES: ${{ inputs.full-matrix && 'arm64, x64' || 'x64' }}
+          DEFERRED_ARCHITECTURES: ${{ inputs.full-matrix && 'none' || 'arm64 (pre-release)' }}
+          WINDOWS_PACKAGE_RESULT: ${{ needs.windows-package.result }}
+          WINDOWS_TESTS_RESULT: ${{ needs.windows-tests.result }}
+        run: |
+          {
+            echo 'This legacy architecture label is a compatibility completion gate over the selected matrix.'
+            echo "Native architectures tested when this component is selected: $SELECTED_ARCHITECTURES"
+            echo "Architectures deferred: $DEFERRED_ARCHITECTURES"
+            echo "Tests selected: $CHANGED; packaging selected: $PACKAGE_CHANGED; unsigned package checks skipped: $SKIP_PACKAGES"
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$CHANGES_RESULT" = success
+          case "$CHANGED" in true|false) ;; *) exit 1 ;; esac
+          case "$SKIP_PACKAGES" in true|false) ;; *) exit 1 ;; esac
+          case "$PACKAGE_CHANGED" in true|false) ;; *) exit 1 ;; esac
+          if [ "$PACKAGE_CHANGED" = true ]; then test "$CHANGED" = true; fi
+          if [ "$CHANGED" = true ]; then
+            test "$WINDOWS_TESTS_RESULT" = success
+          else
+            test "$WINDOWS_TESTS_RESULT" = skipped
+          fi
+          if [ "$PACKAGE_CHANGED" = true ] && [ "$SKIP_PACKAGES" = false ]; then
+            test "$WINDOWS_PACKAGE_RESULT" = success
+          else
+            test "$WINDOWS_PACKAGE_RESULT" = skipped
+          fi
+
+  linux:
+    # Legacy architecture labels are compatibility completion gates over the
+    # SELECTED matrix; the summary states actual and deferred native coverage.
+    name: Linux ${{ matrix.arch }}
+    needs: [changes, linux-core, linux-package, linux-tests]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - name: Check all selected Linux lanes
+        working-directory: ${{ github.workspace }}
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CHANGED: ${{ needs.changes.outputs.linux }}
+          CORE_CHANGED: ${{ needs.changes.outputs.linux_core }}
+          INTEGRATION_CHANGED: ${{ needs.changes.outputs.linux_integration }}
+          PACKAGE_CHANGED: ${{ needs.changes.outputs.linux_package }}
+          SKIP_PACKAGES: ${{ inputs.skip-packages && 'true' || 'false' }}
+          SELECTED_ARCHITECTURES: ${{ inputs.full-matrix && 'arm64, x64' || 'x64' }}
+          DEFERRED_ARCHITECTURES: ${{ inputs.full-matrix && 'none' || 'arm64 (pre-release)' }}
+          LINUX_CORE_RESULT: ${{ needs.linux-core.result }}
+          LINUX_PACKAGE_RESULT: ${{ needs.linux-package.result }}
+          LINUX_TESTS_RESULT: ${{ needs.linux-tests.result }}
+        run: |
+          {
+            echo 'This legacy architecture label is a compatibility completion gate over the selected matrix.'
+            echo "Native architectures tested when this component is selected: $SELECTED_ARCHITECTURES"
+            echo "Architectures deferred: $DEFERRED_ARCHITECTURES"
+            echo "GTK tests selected: $CHANGED; core build selected: $CORE_CHANGED; integration selected: $INTEGRATION_CHANGED; packaging selected: $PACKAGE_CHANGED; unsigned package checks skipped: $SKIP_PACKAGES"
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$CHANGES_RESULT" = success
+          case "$CHANGED" in true|false) ;; *) exit 1 ;; esac
+          case "$CORE_CHANGED" in true|false) ;; *) exit 1 ;; esac
+          case "$INTEGRATION_CHANGED" in true|false) ;; *) exit 1 ;; esac
+          case "$PACKAGE_CHANGED" in true|false) ;; *) exit 1 ;; esac
+          case "$SKIP_PACKAGES" in true|false) ;; *) exit 1 ;; esac
+          if [ "$INTEGRATION_CHANGED" = true ] || [ "$PACKAGE_CHANGED" = true ]; then
+            test "$CORE_CHANGED" = true
+          fi
+          if [ "$CHANGED" = true ] || [ "$INTEGRATION_CHANGED" = true ]; then
+            test "$LINUX_TESTS_RESULT" = success
+          else
+            test "$LINUX_TESTS_RESULT" = skipped
+          fi
+          if [ "$CORE_CHANGED" = true ]; then
+            test "$LINUX_CORE_RESULT" = success
+          else
+            test "$LINUX_CORE_RESULT" = skipped
+          fi
+          if [ "$PACKAGE_CHANGED" = true ] && [ "$SKIP_PACKAGES" = false ]; then
+            test "$LINUX_PACKAGE_RESULT" = success
+          else
+            test "$LINUX_PACKAGE_RESULT" = skipped
+          fi
+
+  linux-probe-glibc:
+    # Preserve both former required-check names over the selected native matrix.
+    name: Linux probe glibc 2.34 (${{ matrix.arch }})
+    needs: [changes, linux-core]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    steps:
+      - name: Check the selected Linux core builds
+        working-directory: ${{ github.workspace }}
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CHANGED: ${{ needs.changes.outputs.linux_core }}
+          CORE_RESULT: ${{ needs.linux-core.result }}
+          SELECTED_ARCHITECTURES: ${{ inputs.full-matrix && 'arm64, x64' || 'x64' }}
+          DEFERRED_ARCHITECTURES: ${{ inputs.full-matrix && 'none' || 'arm64 (pre-release)' }}
+        run: |
+          {
+            echo 'This legacy architecture label is a compatibility completion gate over the selected matrix.'
+            echo "Linux cores checked against glibc 2.34 when selected: $SELECTED_ARCHITECTURES"
+            echo "Architectures deferred: $DEFERRED_ARCHITECTURES"
+            echo "Component selected: $CHANGED"
+          } >> "$GITHUB_STEP_SUMMARY"
+          test "$CHANGES_RESULT" = success
+          case "$CHANGED" in true|false) ;; *) exit 1 ;; esac
+          if [ "$CHANGED" = true ]; then
+            test "$CORE_RESULT" = success
+          else
+            test "$CORE_RESULT" = skipped
+          fi

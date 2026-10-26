@@ -77,7 +77,7 @@ impl Pane {
 
     pub fn subtitle(self) -> &'static str {
         match self {
-            Pane::General => "Appearance, startup and privacy.",
+            Pane::General => "Appearance, startup, privacy and session history.",
             Pane::Opening => "Choose where local sessions open.",
             Pane::About => "Keep Agent Relay up to date.",
             Pane::Diagnostics => "Troubleshoot connections and collect a diagnostic report.",
@@ -348,10 +348,10 @@ pub struct State {
     /// answers; the last click wins.
     pub sharing_mode_wanted: PendingValue<SharingMode>,
     pub paused_wanted: PendingValue<bool>,
-    /// A retry or compact asked for and not yet answered: its stage shows
-    /// under way.
-    pub retrying_uploads: bool,
-    pub compacting_journal: bool,
+    /// A retry or compact asked for and not yet answered (its stage shows
+    /// under way), and one the core never received, with whether to resend.
+    pub pending_upload_action: Option<crate::linux_app::models::StageAction>,
+    pub unsent_upload_action: Option<(crate::linux_app::models::StageAction, bool)>,
     pub upload_details_open: bool,
     pub settings_details_open: HashSet<String>,
     pub diagnostics_copied_at: Option<std::time::Instant>,

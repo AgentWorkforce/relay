@@ -44,6 +44,18 @@ final class SessionSearchProjectionTests: XCTestCase {
             SessionSearchSnapshot.Entry(row: $0, uploadState: nil, status: nil, onRelay: false, uploadEnabled: nil)
         }, query: query, sort: LocalSessionSort())
     }
+    func testViewportPreferenceKeepsVisibilityWithItsResultGeneration() {
+        let oldEmptyViewport = SessionListEndSignal(visible: true, generation: 0)
+        let populatedViewport = SessionListEndSignal(visible: false, generation: 1)
+        var signal = oldEmptyViewport
+        SessionListEndPreference.reduce(value: &signal) { populatedViewport }
+        XCTAssertEqual(signal, populatedViewport)
+        SessionListEndPreference.reduce(value: &signal) { oldEmptyViewport }
+        XCTAssertEqual(signal, populatedViewport)
+        SessionListEndPreference.reduce(value: &signal) { SessionListEndSignal(visible: true, generation: 1) }
+        XCTAssertTrue(signal.visible, "Scrolling within the current generation still loads older rows")
+    }
+
     func testHiddenSessionsAreExcludedBeforeSearchAndGroupingUnlessShown() {
         var input = snapshot("")
         input.hiddenSessionIDs = ["codex:one"]

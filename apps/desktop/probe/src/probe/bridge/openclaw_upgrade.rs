@@ -50,6 +50,16 @@ pub(crate) fn enforce_selection(directory: &Path, config: &Config) -> Result<()>
     super::enforce_selection(directory, config)
 }
 
+/// Delivery-thread variant reusing its validated connection.
+pub(crate) fn enforce_selection_from(
+    conn: &Connection,
+    directory: &Path,
+    config: &Config,
+) -> Result<()> {
+    migrate(directory, mode(config) == SharingMode::Selected)?;
+    super::enforce_selection_from(conn, directory, config)
+}
+
 /// `members` without the old OpenClaw window IDs a conversation replaced:
 /// they stay members only so their deletions are sent, and hydrating one
 /// fails.

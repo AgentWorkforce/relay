@@ -50,6 +50,7 @@ impl Uploader {
     async fn attempt_start(&self, install: &Install) {
         if let Ok(_one) = self.starting.try_lock() {
             let _changing = self.changing();
+            let _readers = self.suspend_background_readers().await;
             let _ = self
                 .runner
                 .run(

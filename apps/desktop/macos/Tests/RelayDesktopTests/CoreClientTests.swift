@@ -101,6 +101,35 @@ final class CoreClientTests: XCTestCase {
         await request.value
     }
 
+    func testRepeatedCancellationDuringReplyKeepsReplacementConnectionsUsable() async throws {
+        core.on("status.get") { _ in FakeCore.snapshot(revision: 1, account: ["state": "signed_out"]) }
+        let client = CoreClient(socketPath: core.path)
+        defer { client.reset() }
+        for _ in 0..<20 {
+            let entered = expectation(description: "old request received")
+            let release = DispatchSemaphore(value: 0)
+            defer { release.signal() }
+            core.on("sessions.list") { _ in
+                entered.fulfill()
+                release.wait()
+                return ["sessions": []]
+            }
+            let request = Task {
+                do { _ = try await client.sessionsList(); XCTFail("expected cancellation") }
+                catch is CancellationError { }
+                catch { XCTFail("unexpected \(error)") }
+            }
+            await fulfillment(of: [entered], timeout: 2)
+            // The old reader, late server reply, and new connection may overlap.
+            request.cancel()
+            client.reset()
+            release.signal()
+            await request.value
+            let status = try await client.statusGet()
+            XCTAssertEqual(status.daemon.pid, 4242)
+        }
+    }
+
     func testSilentHandshakeAndSubscriptionAreBounded() async {
         for method in ["hello", "subscribe"] {
             let held = DispatchSemaphore(value: 0)

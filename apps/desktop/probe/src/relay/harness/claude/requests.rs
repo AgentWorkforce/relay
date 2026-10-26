@@ -249,6 +249,11 @@ pub fn waiting(session: &str) -> bool {
         .any(|entry| entry.notice.session == session)
 }
 
+/// Whether this namespace owns a live, unanswered reference.
+pub fn has_pending(session: &str, reference: &str) -> bool {
+    live(&mut pending(), session, reference).is_some()
+}
+
 /// Notices not yet relayed. Each is marked only once Relaycast took it.
 pub fn unforwarded(session: &str) -> Vec<Notice> {
     let now = Instant::now();

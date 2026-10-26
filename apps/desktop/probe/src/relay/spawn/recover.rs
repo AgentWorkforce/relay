@@ -88,8 +88,14 @@ pub(super) fn adopt_receipted_intent(
     workspace: &Workspace,
 ) -> Option<Intent> {
     let adopted = of_workspace(intent.clone(), workspace)?;
-    if super::completions::Scope::workspace(workspace).adopt(app_data, &intent).is_err() {
-        crate::relay::diagnostics::write(format_args!("Agent Relay could not adopt spawn receipt {}; retaining its intent", intent.invocation_id));
+    if super::completions::Scope::workspace(workspace)
+        .adopt(app_data, &intent)
+        .is_err()
+    {
+        crate::relay::diagnostics::write(format_args!(
+            "Agent Relay could not adopt spawn receipt {}; retaining its intent",
+            intent.invocation_id
+        ));
         return None;
     }
     Some(adopted)
@@ -318,8 +324,7 @@ impl Core {
                 .load(&self.config.app_data_dir, &intent.invocation_id)
             {
                 Ok(completion) => {
-                    intent.launch_failed
-                        || completion.is_some_and(|completion| completion.failed())
+                    intent.launch_failed || completion.is_some_and(|completion| completion.failed())
                 }
                 Err(_) => return Settled::Retry,
             };

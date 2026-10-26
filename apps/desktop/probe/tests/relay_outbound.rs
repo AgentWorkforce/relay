@@ -2274,7 +2274,15 @@ async fn connect_messages_during_a_long_turn_wait_for_it_visibly_then_settle_vis
         .map(|item| item.message_id)
         .collect();
     assert_eq!(calls.len(), 6, "one handoff and one observation each");
-    assert_eq!(calls[3..], messages[..], "observed in order");
+    // Accepted messages already sit in the provider's FIFO queue. Their
+    // read-only observations have independent backoff deadlines, so a poll
+    // may observe a later accepted message before an earlier one's deadline.
+    // Arrival order was asserted above at the actual handoff boundary.
+    let mut observed = calls[3..].to_vec();
+    let mut expected = messages.clone();
+    observed.sort();
+    expected.sort();
+    assert_eq!(observed, expected, "each accepted message observed once");
     let status = h
         .call(IN_CODEX, "GET", "/connect/status", Value::Null)
         .await

@@ -33,38 +33,17 @@ pub struct Progress {
     pub backlog_complete: bool,
 }
 
-/// How long a count of captured sessions is reused. Counting walks the whole
-/// catalog, and the count changes only while a capture runs, so a report
-/// every few seconds reuses it, and the end of a capture pass counts afresh.
-const CAPTURED_SESSIONS_REFRESH: Duration = Duration::from_secs(30);
-
-/// The last count of captured sessions in each store, shared by every
-/// monitor in the process: each delivery pass starts its own.
-fn captured_sessions(db: &Path, fresh: bool) -> i64 {
-    static COUNTS: OnceLock<Mutex<HashMap<PathBuf, (Instant, i64)>>> = OnceLock::new();
-    let counts = COUNTS.get_or_init(Default::default);
-    if !fresh {
-        let counts = counts.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((at, count)) = counts.get(db) {
-            if at.elapsed() < CAPTURED_SESSIONS_REFRESH {
-                return *count;
-            }
-        }
-    }
-    let Ok(count) = super::history::captured_sessions(db) else {
-        return 0;
-    };
-    counts
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(db.to_owned(), (Instant::now(), count));
-    count
-}
+mod counts;
+use counts::captured_sessions;
 
 impl Progress {
     /// Read the counts a report shows. `fresh` counts captured sessions again
     /// rather than reusing a recent count.
     fn read_counts(&mut self, db: &Path, job: Option<&str>, fresh: bool) {
+        self.backlog_complete = false;
+        if self.phase == "watching" {
+            self.phase = "delivery".into();
+        }
         let Ok(conn) = delivery::open_db_readonly(db) else {
             return;
         };
@@ -591,6 +570,20 @@ fn heartbeat(url: &str, progress: &Progress) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unreadable_delivery_does_not_keep_an_up_to_date_progress_report() {
+        let root = tempfile::tempdir().unwrap();
+        let mut progress = Progress {
+            phase: "watching".into(),
+            backlog_complete: true,
+            ..Default::default()
+        };
+        progress.read_counts(&root.path().join("absent.db"), Some("job"), false);
+        assert!(!progress.backlog_complete);
+        assert_ne!(progress.phase, "watching");
+        assert!(!progress.line().contains("Up to date"));
+    }
 
     fn delivery_status(
         failure: Option<&str>,

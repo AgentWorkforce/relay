@@ -97,6 +97,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var pausedWanted = PendingValue<Bool>()
     /// The stage action asked for (retry or compact) until its answer.
     @Published private(set) var pendingUploadAction: UploadStage.Action?
+    /// A stage action the core never received because it could not be
+    /// reached, and whether it is still to be sent again on its own once
+    /// the core answers (only the person's own click is).
+    private var unsentUploadAction: (action: UploadStage.Action, replay: Bool)?
     private var drivingSharingMode = false
     private var drivingPause = false
     @Published private(set) var requestingUploads: Set<String> = [] {
@@ -112,7 +116,9 @@ final class AppModel: ObservableObject {
     @Published var selectedLocalSession: LocalSessionRow? {
         didSet { if selectedLocalSession != nil { showsSessionSearch = false } }
     }
-    @Published var sessionSearch = ""
+    @Published var sessionSearch = "" {
+        didSet { if oldValue != sessionSearch { scheduleSearchTelemetry(sessionSearch, surface: .sessions) } }
+    }
     @Published var showsSessionSearch = false
     @Published var sessionSort = LocalSessionSort()
     @Published var savedSessionViews = SavedSessionViews() {
@@ -164,16 +170,33 @@ final class AppModel: ObservableObject {
     }
 
     @Published var page: DesktopPage = .sessions {
-        didSet { if page != .sessions { showsSessionSearch = false } }
+        didSet {
+            if page != .sessions { showsSessionSearch = false }
+            if oldValue != page { recordPageView() }
+        }
     }
+    private var lastTelemetrySurface: TelemetrySurface?
+    private var pendingMessageComposerOpens = 0
+    private var searchTelemetryTasks: [TelemetrySurface: Task<Void, Never>] = [:]
     /// My agents' sidebar scope.
     @Published var agentScope: MyAgentScope = .all
     /// The teammate the Team page is narrowed to, by identity hash; nil shows everyone.
     @Published var teamPerson: String?
     /// The agent search shared by My agents and Team.
-    @Published var agentSearch = ""
+    @Published var agentSearch = "" {
+        didSet { if oldValue != agentSearch { scheduleSearchTelemetry(agentSearch, surface: page == .team ? .team : .agents) } }
+    }
     /// The open relay sheet, set from any page, the menu bar and links.
-    @Published var agentsSheet: AgentsSheet?
+    @Published var agentsSheet: AgentsSheet? {
+        didSet {
+            guard oldValue != agentsSheet else { return }
+            if agentsSheet == .message {
+                if hasRecordedLaunch { record(.messageComposer, .started, surface: .messages) }
+                else { pendingMessageComposerOpens += 1 }
+            }
+            recordPageView()
+        }
+    }
     /// The message composer's target; not secret.
     @Published var messageEndpoint = ""
 
@@ -374,6 +397,12 @@ final class AppModel: ObservableObject {
         contractors = ContractorsModel(client: client)
         incoming = IncomingModel(client: client)
         claudeDelivery = ClaudeDeliveryModel(client: client)
+        if manageSystemServices {
+            AppUpdater.shared.recordTelemetry = { [weak self] event in
+                guard let self else { return }
+                _ = try? await self.client.telemetryRecord(event)
+            }
+        }
         relay.model = self
         chat.model = self
         savedSessionViews = SavedSessionViews(data: defaults.data(forKey: SavedSessionViews.preferenceKey))
@@ -463,9 +492,9 @@ final class AppModel: ObservableObject {
     }
 
     func showSettingsWindow(_ pane: SettingsPane = .general) {
-        record(.settings, .started)
-        agentsSheet = nil
+        // Change the covered page first so dismissing the sheet records only Settings.
         page = .settings(pane)
+        agentsSheet = nil
         showMainWindow()
     }
 
@@ -556,6 +585,8 @@ final class AppModel: ObservableObject {
             stopBackgroundService()
         }
         isCoreConnected = false
+        searchTelemetryTasks.values.forEach { $0.cancel() }
+        searchTelemetryTasks.removeAll()
         connectTask?.cancel()
         initialRefreshTask?.cancel()
         startupWatchdog?.cancel()
@@ -746,6 +777,7 @@ final class AppModel: ObservableObject {
                 if previewError == CoreError.reconnecting.message || previewError == CoreError.closed.message {
                     previewError = nil
                 }
+                coreAnswered()
                 startupWatchdog?.cancel()
                 // subscribe queues the initial snapshot before returning.
                 // Apply it before any settings or session discovery work.
@@ -825,6 +857,11 @@ final class AppModel: ObservableObject {
         if !hasRecordedLaunch {
             hasRecordedLaunch = true
             record(.appLaunch, .started)
+            for _ in 0..<pendingMessageComposerOpens {
+                record(.messageComposer, .started, surface: .messages)
+            }
+            pendingMessageComposerOpens = 0
+            recordPageView()
         }
         guard !Task.isCancelled else { return }
         await refreshAll(includeAccount: refreshAccount)
@@ -891,6 +928,7 @@ final class AppModel: ObservableObject {
         let beforeAccount = core?.account
         core = snapshot
         let after = phase
+        recordPageView()
         if beforeAccount?.workspaceId != snapshot.account.workspaceId || beforeAccount?.person?.id != snapshot.account.person?.id || (snapshot.account.state == .signedOut && beforeAccount?.state != .signedOut) {
             relaycastUpgrade = nil
             lastRelaycastUpgradeAt = nil
@@ -980,9 +1018,9 @@ final class AppModel: ObservableObject {
         guard let link, link != openedLink, let url = URL(string: link) else { return }
         openedLink = link
         guard manageSystemServices else { return }
-        if !NSWorkspace.shared.open(url) {
-            record(.browserApproval, .failed, failure: .browserOpen)
-        }
+        record(.browserApproval, .started)
+        let opened = NSWorkspace.shared.open(url)
+        record(.browserApproval, opened ? .succeeded : .failed, failure: opened ? nil : .browserOpen)
     }
 
     // MARK: Notifications
@@ -1046,6 +1084,7 @@ final class AppModel: ObservableObject {
         sessionsError = nil
         sessionActionError = nil
         uploadActionError = nil
+        unsentUploadAction = nil
         requestingUploads = []
         stoppingUploads = []
         sharingModeWanted.clear()
@@ -1081,6 +1120,7 @@ final class AppModel: ObservableObject {
             guard revision == connectionRevision else { return }
             if status != response { status = response }
             if lastError != nil { lastError = nil }
+            coreAnswered()
         } catch let error as CoreError where error.kind == ErrorKind.notSignedIn.rawValue {
             guard revision == connectionRevision else { return }
             if status != nil { status = nil }
@@ -1226,12 +1266,14 @@ final class AppModel: ObservableObject {
     /// Retries uploads a problem stopped; queued records are kept. The stage
     /// shows the retry under way until the uploader's status says more.
     func retryUploads() async {
-        await runUploadAction(.retry, "Retrying uploads…") { try await client.uploaderRetry() }
+        await sendUploadAction(.retry, automatic: false)
     }
 
-    private func runUploadAction(_ action: UploadStage.Action, _ description: String, _ work: () async throws -> Void) async {
+    private func runUploadAction(_ action: UploadStage.Action, _ description: String, automatic: Bool = false,
+                                 _ work: () async throws -> Void) async {
         guard pendingUploadAction == nil else { return }
         uploadActionError = nil
+        unsentUploadAction = nil
         pendingUploadAction = action
         let revision = connectionRevision
         let failure = await perform(description) {
@@ -1240,7 +1282,40 @@ final class AppModel: ObservableObject {
         }
         guard revision == connectionRevision else { return }
         pendingUploadAction = nil
-        if let failure { uploadActionError = failure.localizedDescription }
+        if let failure {
+            uploadActionError = failure.localizedDescription
+            // Never sent: sent again once the core answers, at most once
+            // per click. Both actions are idempotent.
+            if let core = failure as? CoreError, CoreError.neverSent(core.message) {
+                unsentUploadAction = (action, !automatic)
+            }
+        }
+    }
+
+    /// The core answered a call. A failure that only said it could not be
+    /// reached is no longer true, so it clears without anyone dismissing it,
+    /// and a retry or compact that was never sent is sent now. Failures from
+    /// calls that reached the core keep their message until the next action.
+    private func coreAnswered() {
+        if let error = uploadActionError, CoreError.neverSent(error) { uploadActionError = nil }
+        if let error = sessionActionError, CoreError.neverSent(error) { sessionActionError = nil }
+        if uploadErrors.values.contains(where: CoreError.neverSent) {
+            uploadErrors = uploadErrors.filter { !CoreError.neverSent($0.value) }
+        }
+        // Another change is under way: the next answer sends it instead.
+        guard let unsent = unsentUploadAction, !isWorking, pendingUploadAction == nil else { return }
+        unsentUploadAction = nil
+        guard unsent.replay else { return }
+        Task { await sendUploadAction(unsent.action, automatic: true) }
+    }
+
+    private func sendUploadAction(_ action: UploadStage.Action, automatic: Bool) async {
+        switch action {
+        case .retry:
+            await runUploadAction(.retry, "Retrying uploads…", automatic: automatic) { try await client.uploaderRetry() }
+        case .compact:
+            await runUploadAction(.compact, "Compacting the upload journal…", automatic: automatic) { try await client.uploaderCompact() }
+        }
     }
 
     /// Asks Agent Relay Cloud again to record this computer's spawn node as
@@ -1255,7 +1330,7 @@ final class AppModel: ObservableObject {
 
     /// Removes consumed records from a full upload journal.
     func compactJournal() async {
-        await runUploadAction(.compact, "Compacting the upload journal…") { try await client.uploaderCompact() }
+        await sendUploadAction(.compact, automatic: false)
     }
 
     @discardableResult
@@ -1418,8 +1493,8 @@ final class AppModel: ObservableObject {
     }
 
     func openLogFile() {
-        record(.openLogs, .started)
         guard let directory = installDirectory else { return }
+        record(.openLogs, .started)
         let log = URL(fileURLWithPath: directory).appendingPathComponent("collector.log")
         if FileManager.default.fileExists(atPath: log.path) {
             NSWorkspace.shared.open(log)
@@ -1458,9 +1533,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Starts a sign-in in the browser, sharing only the sessions chosen in
+    /// Opens the browser account chooser, sharing only the sessions chosen in
     /// My sessions; Settings › Session sharing offers automatic uploads.
-    func signIn(acknowledgeUninspectedSchedules: Bool = false, workspace: String? = nil, useAnotherAccount: Bool = false) {
+    func signIn(acknowledgeUninspectedSchedules: Bool = false, workspace: String? = nil) {
         guard !startingSignIn, phase == .signedOut else { return }
         signInError = nil
         lastError = nil
@@ -1468,7 +1543,7 @@ final class AppModel: ObservableObject {
         let inboundChange = takeInboundDefault()
         Task {
             if let inboundChange { await applyInboundDefault(inboundChange) }
-            let params = SignInRequest(acknowledgeUninspectedSchedules: acknowledgeUninspectedSchedules, flow: useAnotherAccount ? .browser : nil,
+            let params = SignInRequest(acknowledgeUninspectedSchedules: acknowledgeUninspectedSchedules, flow: .browser,
                                        sharing: .selected, siteUrl: configuredSite, workspace: workspace)
             do {
                 let state = try await client.accountSignIn(params)
@@ -1563,10 +1638,15 @@ final class AppModel: ObservableObject {
                 switch link {
                 case .message(_, let endpoint):
                     messageEndpoint = endpoint
-                    page = .sessions
+                    // Present the sheet before changing its covered page.
                     agentsSheet = .message
+                    page = .sessions
                     lastError = nil
                 case .connect(_, _, let workspace):
+                    if phase == .signingIn || phase == .waitingForBrowser || phase == .preparingSessions {
+                        lastError = "Finish or cancel the current operation before opening another connection link."
+                        break
+                    }
                     if let current = workspaceID, canLogOut, current.lowercased() != workspace.lowercased() {
                         record(.connectionLink, .failed, failure: .workspaceConflict)
                         lastError = "This app is connected to another account or workspace. Log out in Account before connecting a different workspace."
@@ -1683,9 +1763,47 @@ final class AppModel: ObservableObject {
         if !changed { lastError = "Agent Relay could not change the login setting." }
     }
 
+    /// Search/filter usage after 500 ms of inactivity; no query text leaves the UI.
+    private func scheduleSearchTelemetry(_ query: String, surface: TelemetrySurface) {
+        let related: [TelemetrySurface] = surface == .sessions ? [.sessions] : [.agents, .team]
+        for key in related { searchTelemetryTasks.removeValue(forKey: key)?.cancel() }
+        guard hasRecordedLaunch, isCoreConnected, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        searchTelemetryTasks[surface] = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 500_000_000) } catch { return }
+            guard !Task.isCancelled, let self else { return }
+            self.searchTelemetryTasks.removeValue(forKey: surface)
+            guard self.isCoreConnected, self.agentsSheet != .message,
+                  self.page.telemetrySurface == surface else { return }
+            self.record(.search, .succeeded, surface: surface)
+        }
+    }
+
+    private func recordPageView() {
+        // Legacy diagnostics opt-out must migrate before the first usage event.
+        guard hasRecordedLaunch else { return }
+        guard phase == .attached || phase == .preparingSessions else {
+            lastTelemetrySurface = nil
+            searchTelemetryTasks.values.forEach { $0.cancel() }
+            searchTelemetryTasks.removeAll()
+            return
+        }
+        let surface: TelemetrySurface = agentsSheet == .message ? .messages : page.telemetrySurface
+        guard surface != lastTelemetrySurface else { return }
+        // A destination query may be applied immediately before navigation.
+        for (pendingSurface, task) in searchTelemetryTasks where pendingSurface != surface {
+            task.cancel()
+        }
+        searchTelemetryTasks = searchTelemetryTasks.filter { $0.key == surface }
+        lastTelemetrySurface = surface
+        record(.pageView, .succeeded, surface: surface)
+        if case .settings = page, agentsSheet != .message {
+            record(.settings, .started, surface: surface)
+        }
+    }
+
     /// Records an operation only the UI performs; the core records its own.
-    func record(_ operation: TelemetryOperation, _ outcome: TelemetryOutcome, failure: TelemetryFailure? = nil) {
-        let event = TelemetryEvent(failure: failure, operation: operation, outcome: outcome)
+    func record(_ operation: TelemetryOperation, _ outcome: TelemetryOutcome, failure: TelemetryFailure? = nil, surface: TelemetrySurface? = nil) {
+        let event = TelemetryEvent(failure: failure, operation: operation, outcome: outcome, surface: surface)
         Task { try? await client.telemetryRecord(event) }
     }
 }
