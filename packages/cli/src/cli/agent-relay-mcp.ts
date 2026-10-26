@@ -34,6 +34,7 @@ import {
 import { z } from 'zod';
 import { declaredWorkforceMetadata } from './lib/registration-metadata.js';
 import { isBundledBunEntrypointPath } from './lib/agent-relay-mcp-command.js';
+import { guardCredentialOrigin } from './lib/relaycast-origin-binding.js';
 import {
   DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS,
   withAgentRegistrationDeadline,
@@ -2009,14 +2010,22 @@ export function optionsFromEnv(): AgentRelayMcpServerOptions {
     resolveEnv('RELAY_AGENT_NAME') ??
     resolveEnv('RELAY_CLAW_NAME') ??
     (workspaceKey ? 'orchestrator' : undefined);
+  // An agent token has no workspace identity encoded locally. Only reuse it
+  // when the workspace was selected alongside it through the environment;
+  // a persisted project/store fallback must register into that workspace
+  // instead of silently pairing it with a possibly stale ambient token.
+  const agentToken = resumedPersistedWorkspace ? undefined : resolveEnv('RELAY_AGENT_TOKEN');
+  // The same rule as the CLI: a credential bound to a self-hosted or local
+  // server (by `relay init`, `workspace join`, …) only ever goes back to it,
+  // so the MCP server never sends it to the hosted default.
+  const credential = workspaceKey ?? agentToken;
+  const baseUrl = credential
+    ? guardCredentialOrigin(credential, resolveEnv('RELAY_BASE_URL'))
+    : resolveEnv('RELAY_BASE_URL');
   return {
     workspaceKey,
-    baseUrl: resolveEnv('RELAY_BASE_URL'),
-    // An agent token has no workspace identity encoded locally. Only reuse it
-    // when the workspace was selected alongside it through the environment;
-    // a persisted project/store fallback must register into that workspace
-    // instead of silently pairing it with a possibly stale ambient token.
-    agentToken: resumedPersistedWorkspace ? undefined : resolveEnv('RELAY_AGENT_TOKEN'),
+    baseUrl,
+    agentToken,
     agentName,
     agentType: normalizeAgentType(resolveEnv('RELAY_AGENT_TYPE')),
     strictAgentName: envFlagEnabled(resolveEnv('RELAY_STRICT_AGENT_NAME')),
