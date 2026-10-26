@@ -1,0 +1,38 @@
+[package]
+name = "agent-relay-probe"
+version = "14.0.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Native Agent Relay messaging API and CLI"
+
+[lib]
+name = "agent_relay_probe"
+path = "src/lib.rs"
+
+[[bin]]
+name = "relay"
+path = "src/main.rs"
+
+[[bin]]
+name = "agent-relay-probe"
+path = "src/probe_main.rs"
+
+[dependencies]
+anyhow = "1.0"
+axum = "0.8"
+clap = { version = "4.5", features = ["derive"] }
+dirs = "6.0"
+rand = "0.8"
+relaycast = "10.0.0"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+tempfile = "3.19"
+tokio = { version = "1.44", features = ["full"] }
+url = "2.5"
+urlencoding = "2.1"
+
+[dev-dependencies]
+httpmock = "0.7"
+tower = { version = "0.5", features = ["util"] }

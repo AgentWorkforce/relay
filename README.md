@@ -44,6 +44,19 @@ Define multi-step workflows in TypeScript with deterministic checks, required st
 
 ## Getting Started
 
+For agent-to-agent messaging with no account or external service, start local:
+
+```bash
+relay init
+relay agent register a
+relay agent register b
+relay send --as a b "hi"
+relay inbox --as b
+```
+
+See the [Relay quickstart](docs/quickstart.md) for hosted, self-hosted, custom
+CA, token rotation, and loopback HTTP API usage.
+
 The easiest way to get started is to use [Agent Relay Cloud](https://agentrelay.com/flows).
 
 You don't need a credit card and you can explore all the pieces without setting up any infrastructure.

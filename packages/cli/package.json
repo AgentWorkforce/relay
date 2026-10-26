@@ -26,7 +26,7 @@
   },
   "bin": {
     "agent-relay": "dist/cli/index.js",
-    "relay": "dist/cli/index.js"
+    "relay": "dist/cli/probe-entry.js"
   },
   "bundledDependencies": [],
   "publishConfig": {
@@ -34,7 +34,7 @@
   },
   "scripts": {
     "build": "tsc && npm run postbuild",
-    "postbuild": "chmod +x dist/cli/bootstrap.js dist/cli/index.js && npm run build:cjs",
+    "postbuild": "chmod +x dist/cli/bootstrap.js dist/cli/index.js dist/cli/probe-entry.js && npm run build:cjs",
     "build:cjs": "node ./scripts/build-cjs.mjs",
     "prepack": "if [ -d ../../node_modules ]; then npm --prefix ../.. run build:cli; else echo 'node_modules not found, skipping prepack build'; fi",
     "start": "node dist/cli/index.js",

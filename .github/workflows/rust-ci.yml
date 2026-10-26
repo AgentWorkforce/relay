@@ -63,6 +63,8 @@ jobs:
       - name: Live ConPTY boundary regression
         run: cargo test -p relay-pty --lib pty::tests::verified_write_boundary_includes_output_still_queued_for_consumer -- --exact --nocapture
         timeout-minutes: 2
+      - name: Check native messaging probe
+        run: cargo check --bin agent-relay-probe
 
   rust-cross-compile:
     name: Cross-compile check (${{ matrix.target }})
@@ -95,8 +97,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.packages }}
-      - name: Cross-compile agent-relay-broker
-        run: cargo check --target ${{ matrix.target }} --bin agent-relay-broker
+      - name: Cross-compile native binaries
+        run: cargo check --target ${{ matrix.target }} --bin agent-relay-broker --bin agent-relay-probe
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.linker }}
 

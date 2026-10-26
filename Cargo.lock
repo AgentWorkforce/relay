@@ -23,7 +23,7 @@ dependencies = [
  "rand 0.8.5",
  "regex",
  "relay-pty",
- "relaycast",
+ "relaycast 9.0.0",
  "reqwest",
  "serde",
  "serde_json",
@@ -39,6 +39,28 @@ dependencies = [
  "tracing-subscriber",
  "urlencoding",
  "uuid",
+]
+
+[[package]]
+name = "agent-relay-probe"
+version = "14.0.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "dirs",
+ "httpmock",
+ "rand 0.8.5",
+ "relaycast 10.0.0",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tower",
+ "url",
+ "urlencoding",
 ]
 
 [[package]]
@@ -1183,6 +1205,7 @@ dependencies = [
  "hyper 1.8.1",
  "hyper-util",
  "rustls",
+ "rustls-native-certs",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
@@ -2091,6 +2114,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "relaycast"
+version = "10.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44f855556ba9e0bac1312333f867c0929fe7fe5004469f1be057b625fff7b23a"
+dependencies = [
+ "futures-util",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+ "tracing",
+ "url",
+ "urlencoding",
+]
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2113,6 +2155,7 @@ dependencies = [
  "pin-project-lite",
  "quinn",
  "rustls",
+ "rustls-native-certs",
  "rustls-pki-types",
  "serde",
  "serde_json",

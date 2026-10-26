@@ -239,6 +239,10 @@ BROKER_D1=""
 BROKER_D2=""
 BROKER_PRE1=0
 BROKER_PRE2=0
+PROBE_D1=""
+PROBE_D2=""
+PROBE_PRE1=0
+PROBE_PRE2=0
 CLI_PRE=0
 LAUNCHER_PRE=0
 LAUNCHER_BACKUP=""
@@ -627,6 +631,10 @@ check_broker_binary() {
     smoke_test_broker "$1"
 }
 
+check_probe_binary() {
+    "$1" --version >/dev/null 2>&1 || { warn "probe binary failed --version"; return 1; }
+}
+
 check_cli_binary() {
     local log
     log=$(mktemp "${TMPDIR:-/tmp}/agent-relay-verify.XXXXXX") || return 1
@@ -756,10 +764,13 @@ copy_binary_atomic() {
 # when a binary was downloaded but REJECTED (integrity or smoke test failure);
 # the existing broker is left untouched in both failure cases.
 download_broker_binary() {
-    step "Downloading broker binary..."
+    step "Downloading native Relay components..."
 
     local binary_name="agent-relay-broker-${PLATFORM}"
     local target_path="$INSTALL_DIR/bin/agent-relay-broker"
+    local probe_name="agent-relay-probe-${PLATFORM}"
+    local probe_target="$INSTALL_DIR/bin/agent-relay-probe"
+    local broker_tmp="" probe_tmp=""
     local rc=0
 
     mkdir -p "$INSTALL_DIR/bin"
@@ -773,6 +784,26 @@ download_broker_binary() {
         warn "broker binary failed integrity verification"
         return 2
     fi
+    broker_tmp="$FETCHED_TMP"
+
+    rc=0
+    fetch_release_asset "$probe_name" "$INSTALL_DIR/bin" raw || rc=$?
+    if [ "$rc" -eq 1 ]; then
+        case "$VERSION" in
+            1[4-9].*|[2-9][0-9].*)
+                warn "No native messaging probe for $PLATFORM in v${VERSION}"
+                return 2
+                ;;
+            *)
+                warn "No native messaging probe for this older Relay release; continuing with its broker"
+                ;;
+        esac
+    elif [ "$rc" -ne 0 ]; then
+        warn "probe binary failed integrity verification"
+        return 2
+    else
+        probe_tmp="$FETCHED_TMP"
+    fi
 
     # Two destinations (INSTALL_DIR and BIN_DIR) commit together as part of the
     # install transaction: both keep a run-unique backup until the whole install
@@ -780,23 +811,31 @@ download_broker_binary() {
     # interrupt. The transaction is armed before any destination is touched.
     local d1="$target_path"
     local d2="$BIN_DIR/agent-relay-broker"
+    local p1="$probe_target"
+    local p2="$BIN_DIR/relay"
     BROKER_D1="$d1"; BROKER_D2="$d2"
+    PROBE_D1="$p1"; PROBE_D2="$p2"
     BROKER_PRE1=0; BROKER_PRE2=0
+    PROBE_PRE1=0; PROBE_PRE2=0
     if [ -e "$d1" ] || [ -L "$d1" ]; then BROKER_PRE1=1; fi
     if [ -e "$d2" ] || [ -L "$d2" ]; then BROKER_PRE2=1; fi
+    if [ -e "$p1" ] || [ -L "$p1" ]; then PROBE_PRE1=1; fi
+    if [ -e "$p2" ] || [ -L "$p2" ]; then PROBE_PRE2=1; fi
     local saved_keep="$KEEP_PREV" saved_suffix="$BACKUP_SUFFIX"
     TXN_STATE="${TXN_STATE:+$TXN_STATE }broker"
     KEEP_PREV=1
     BACKUP_SUFFIX="$TXN_SUFFIX"
-    if install_binary_atomic "$FETCHED_TMP" "$d1" check_broker_binary \
-        && copy_binary_atomic "$d1" "$d2"; then
+    if install_binary_atomic "$broker_tmp" "$d1" check_broker_binary \
+        && copy_binary_atomic "$d1" "$d2" \
+        && { [ -z "$probe_tmp" ] || install_binary_atomic "$probe_tmp" "$p1" check_probe_binary; } \
+        && { [ -z "$probe_tmp" ] || copy_binary_atomic "$p1" "$p2"; }; then
         KEEP_PREV="$saved_keep"; BACKUP_SUFFIX="$saved_suffix"
         if [ "$TXN_STATE" = "broker" ]; then
             # standalone-less (npm) install: this is the whole transaction
             TXN_STATE=""
             cleanup_broker_backups
         fi
-        success "Downloaded broker binary (workflow agent spawning)"
+        success "Downloaded native Relay components"
         return 0
     fi
     KEEP_PREV="$saved_keep"; BACKUP_SUFFIX="$saved_suffix"
@@ -839,11 +878,15 @@ undo_brokers() {
     [ -n "$BROKER_D1" ] || return 0
     undo_destination "$BROKER_D1" "$BROKER_PRE1"
     undo_destination "$BROKER_D2" "$BROKER_PRE2"
+    [ -n "$PROBE_D1" ] && undo_destination "$PROBE_D1" "$PROBE_PRE1"
+    [ -n "$PROBE_D2" ] && undo_destination "$PROBE_D2" "$PROBE_PRE2"
 }
 
 cleanup_broker_backups() {
     [ -n "$BROKER_D1" ] || return 0
     rm -f "${BROKER_D1}${TXN_SUFFIX}" "${BROKER_D2}${TXN_SUFFIX}"
+    [ -n "$PROBE_D1" ] && rm -f "${PROBE_D1}${TXN_SUFFIX}"
+    [ -n "$PROBE_D2" ] && rm -f "${PROBE_D2}${TXN_SUFFIX}"
 }
 
 # Undo the standalone CLI install: restore (or remove) the CLI binary and the

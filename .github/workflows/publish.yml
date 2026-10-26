@@ -91,26 +91,36 @@ jobs:
             broker_pkg: broker-darwin-arm64
             binary_name: agent-relay-broker-darwin-arm64
             binary_file: agent-relay-broker
+            probe_name: agent-relay-probe-darwin-arm64
+            probe_file: agent-relay-probe
           - os: macos-latest
             target: x86_64-apple-darwin
             broker_pkg: broker-darwin-x64
             binary_name: agent-relay-broker-darwin-x64
             binary_file: agent-relay-broker
+            probe_name: agent-relay-probe-darwin-x64
+            probe_file: agent-relay-probe
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             broker_pkg: broker-linux-x64
             binary_name: agent-relay-broker-linux-x64
             binary_file: agent-relay-broker
+            probe_name: agent-relay-probe-linux-x64
+            probe_file: agent-relay-probe
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
             broker_pkg: broker-linux-arm64
             binary_name: agent-relay-broker-linux-arm64
             binary_file: agent-relay-broker
+            probe_name: agent-relay-probe-linux-arm64
+            probe_file: agent-relay-probe
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             broker_pkg: broker-win32-x64
             binary_name: agent-relay-broker-win32-x64.exe
             binary_file: agent-relay-broker.exe
+            probe_name: agent-relay-probe-win32-x64.exe
+            probe_file: agent-relay-probe.exe
 
     steps:
       - name: Checkout code
@@ -157,11 +167,12 @@ jobs:
           AGENT_RELAY_VERSION: ${{ needs.build.outputs.new_version }}
         run: |
           if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-musl" ]]; then
-            RUSTFLAGS="-C target-feature=+crt-static" cross build --release --bin agent-relay-broker --target ${{ matrix.target }}
+            RUSTFLAGS="-C target-feature=+crt-static" cross build --release --bin agent-relay-broker --bin agent-relay-probe --target ${{ matrix.target }}
           else
-            RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --bin agent-relay-broker --target ${{ matrix.target }}
+            RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --bin agent-relay-broker --bin agent-relay-probe --target ${{ matrix.target }}
           fi
           strip target/${{ matrix.target }}/release/${{ matrix.binary_file }} 2>/dev/null || true
+          strip target/${{ matrix.target }}/release/${{ matrix.probe_file }} 2>/dev/null || true
 
       - name: Build broker binary (windows)
         if: runner.os == 'Windows'
@@ -171,13 +182,14 @@ jobs:
           AGENT_RELAY_VERSION: ${{ needs.build.outputs.new_version }}
         run: |
           $env:RUSTFLAGS = "-C target-feature=+crt-static"
-          cargo build --release --bin agent-relay-broker --target ${{ matrix.target }}
+          cargo build --release --bin agent-relay-broker --bin agent-relay-probe --target ${{ matrix.target }}
 
       - name: Copy binary with platform name (unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p release-binaries
           cp target/${{ matrix.target }}/release/${{ matrix.binary_file }} release-binaries/${{ matrix.binary_name }}
+          cp target/${{ matrix.target }}/release/${{ matrix.probe_file }} release-binaries/${{ matrix.probe_name }}
 
       - name: Copy binary with platform name (windows)
         if: runner.os == 'Windows'
@@ -185,17 +197,20 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path release-binaries | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.binary_file }}" "release-binaries/${{ matrix.binary_name }}"
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.probe_file }}" "release-binaries/${{ matrix.probe_name }}"
 
       # Ad-hoc sign macOS binaries at build time.
       - name: Ad-hoc sign macOS broker
         if: runner.os == 'macOS'
-        run: codesign --force --sign - release-binaries/${{ matrix.binary_name }}
+        run: |
+          codesign --force --sign - release-binaries/${{ matrix.binary_name }}
+          codesign --force --sign - release-binaries/${{ matrix.probe_name }}
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.binary_name }}
-          path: release-binaries/${{ matrix.binary_name }}
+          path: release-binaries/
           retention-days: 1
 
   # Build standalone binaries using bun compile (cross-platform, no Node.js required)
@@ -543,6 +558,8 @@ jobs:
             broker_pkg: broker-darwin-arm64
             binary_name: agent-relay-broker-darwin-arm64
             binary_file: agent-relay-broker
+            probe_name: agent-relay-probe-darwin-arm64
+            probe_file: agent-relay-probe
             pkg_os: darwin
             pkg_cpu: arm64
           # darwin-x64 smoke is intentionally omitted: GitHub's macos-13
@@ -554,6 +571,8 @@ jobs:
             broker_pkg: broker-linux-x64
             binary_name: agent-relay-broker-linux-x64
             binary_file: agent-relay-broker
+            probe_name: agent-relay-probe-linux-x64
+            probe_file: agent-relay-probe
             pkg_os: linux
             pkg_cpu: x64
           - platform: linux-arm64
@@ -561,6 +580,8 @@ jobs:
             broker_pkg: broker-linux-arm64
             binary_name: agent-relay-broker-linux-arm64
             binary_file: agent-relay-broker
+            probe_name: agent-relay-probe-linux-arm64
+            probe_file: agent-relay-probe
             pkg_os: linux
             pkg_cpu: arm64
           - platform: win32-x64
@@ -568,6 +589,8 @@ jobs:
             broker_pkg: broker-win32-x64
             binary_name: agent-relay-broker-win32-x64.exe
             binary_file: agent-relay-broker.exe
+            probe_name: agent-relay-probe-win32-x64.exe
+            probe_file: agent-relay-probe.exe
             pkg_os: win32
             pkg_cpu: x64
 
@@ -599,7 +622,9 @@ jobs:
           set -euo pipefail
           mkdir -p "packages/${{ matrix.broker_pkg }}/bin"
           cp "/tmp/broker/${{ matrix.binary_name }}" "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+          cp "/tmp/broker/${{ matrix.probe_name }}" "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.probe_file }}"
           chmod +x "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+          chmod +x "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.probe_file }}"
 
       - name: Stage broker binary (windows)
         if: runner.os == 'Windows'
@@ -607,6 +632,7 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path "packages/${{ matrix.broker_pkg }}/bin" | Out-Null
           Copy-Item "/tmp/broker/${{ matrix.binary_name }}" "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+          Copy-Item "/tmp/broker/${{ matrix.probe_name }}" "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.probe_file }}"
 
       - name: Inject os/cpu for ${{ matrix.pkg_os }}-${{ matrix.pkg_cpu }}
         shell: bash
@@ -673,6 +699,13 @@ jobs:
             accessSync(p, constants.X_OK);
             console.log('OK: resolver returned executable binary from optional-dep package');
           "
+
+      - name: Native relay launcher smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$SCRATCH"
+          node "$GITHUB_WORKSPACE/packages/cli/dist/cli/probe-entry.js" --version
 
       - name: Spawn smoke — HarnessDriverClient.spawn()
         shell: bash
@@ -848,7 +881,13 @@ jobs:
           set -euo pipefail
           mkdir -p packages/${{ matrix.broker_pkg }}/bin
           cp "/tmp/broker/${{ matrix.binary_name }}" "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+          PROBE_NAME="${{ matrix.binary_name }}"
+          PROBE_NAME="${PROBE_NAME/agent-relay-broker/agent-relay-probe}"
+          PROBE_FILE="${{ matrix.binary_file }}"
+          PROBE_FILE="${PROBE_FILE/agent-relay-broker/agent-relay-probe}"
+          cp "/tmp/broker/$PROBE_NAME" "packages/${{ matrix.broker_pkg }}/bin/$PROBE_FILE"
           chmod +x "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+          chmod +x "packages/${{ matrix.broker_pkg }}/bin/$PROBE_FILE"
           ls -lh packages/${{ matrix.broker_pkg }}/bin/
 
       # os/cpu constraints are injected at publish time. Keeping them out of
@@ -1708,6 +1747,17 @@ jobs:
             fi
           done
 
+          # The broker artifacts also carry the native messaging probe used by
+          # the public `relay` launcher and install.sh.
+          for BINARY in agent-relay-probe-darwin-arm64 agent-relay-probe-darwin-x64 agent-relay-probe-linux-x64 agent-relay-probe-linux-arm64 agent-relay-probe-win32-x64.exe; do
+            if [ -f "release-binaries/$BINARY" ]; then
+              echo "✓ $BINARY"
+            else
+              echo "✗ MISSING: $BINARY"
+              MISSING=1
+            fi
+          done
+
           if [ $MISSING -eq 1 ]; then
             echo ""
             echo "ERROR: Some required binaries are missing!"
@@ -2035,6 +2085,11 @@ jobs:
             - `agent-relay-broker-darwin-arm64` - macOS Apple Silicon
             - `agent-relay-broker-win32-x64.exe` - Windows x86_64
 
+            ### relay messaging binaries
+            Native local-first messaging API used by the `relay` command:
+            - `agent-relay-probe-{linux,darwin}-{x64,arm64}`
+            - `agent-relay-probe-win32-x64.exe`
+
           files: |
             release-binaries/*
           generate_release_notes: true
@@ -2076,6 +2131,10 @@ jobs:
 
             ### agent-relay-broker binaries
             - `agent-relay-broker-{linux,darwin}-{x64,arm64}`
+
+            ### relay messaging binaries
+            - `agent-relay-probe-{linux,darwin}-{x64,arm64}`
+            - `agent-relay-probe-win32-x64.exe`
 
             ### Next Steps
             1. Deploy to staging: Run **Deploy Staging** workflow in relay-cloud with `relay_version=${{ needs.build.outputs.new_version }}`

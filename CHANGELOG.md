@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Major]
+
+### Added
+
+- **`relay` now provides native, local-first agent messaging.** `relay init` starts an embedded loopback API and message engine with no signup or external runtime; agents can register, rotate credentials, send with confirmed delivery, and read durable inboxes. Hosted and self-hosted Relaycast remain explicit options, with origin-bound credentials and private-CA support.
 
 ### Removed
 
