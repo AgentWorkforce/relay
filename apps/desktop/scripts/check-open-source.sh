@@ -25,7 +25,9 @@ hits() { # MESSAGE PATTERN [PATHSPEC...]
   fi
 }
 
-[ -f LICENSE ] && grep -q "Apache License" LICENSE || fail "LICENSE must hold the Apache License 2.0."
+if ! grep -qs "Apache License" LICENSE; then
+  fail "LICENSE must hold the Apache License 2.0."
+fi
 grep -q 'license = "Apache-2.0"' probe/Cargo.toml || fail "probe/Cargo.toml must declare license = \"Apache-2.0\"."
 if grep -q "All rights reserved" macos/Info.plist.template; then
   fail "macos/Info.plist.template must not claim all rights reserved."
