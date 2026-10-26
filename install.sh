@@ -6,15 +6,32 @@ set -e
 #
 # Options (set as environment variables):
 #   AGENT_RELAY_VERSION              - Specific version to install (default: latest)
-#   AGENT_RELAY_INSTALL_DIR          - Installation directory (default: ~/.agentworkforce/relay)
-#   AGENT_RELAY_BIN_DIR              - Binary directory (default: ~/.local/bin)
+#   AGENT_RELAY_INSTALL_DIR          - Installation directory (default: $AGENT_RELAY_HOME, else ~/.agentworkforce/relay)
+#   AGENT_RELAY_BIN_DIR              - Launcher directory on PATH (default: ~/.local/bin)
+#   AGENT_RELAY_SKIP_RELAYCAST_ENGINE - Set to 1 to skip the local Relaycast server download
 #   AGENT_RELAY_TELEMETRY_DISABLED   - Disable anonymous install telemetry (default: false)
+#
+# Where everything lives: every Agent Relay binary is installed into ONE
+# directory, $INSTALL_DIR/bin (default ~/.agentworkforce/relay/bin):
+#   agent-relay          standalone CLI
+#   agent-relay-broker   broker
+#   relaycast-engine     local Relaycast server (when published for the platform)
+# The CLI, its broker and the desktop app all resolve binaries from there; npm
+# installs copy their broker there on first run. $BIN_DIR only holds launchers
+# (and a PATH copy of the broker).
 
 REPO_RELAY="AgentWorkforce/relay"
 VERSION="${AGENT_RELAY_VERSION:-latest}"
-INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-$HOME/.agentworkforce/relay}"
+DEFAULT_INSTALL_DIR="$HOME/.agentworkforce/relay"
+INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-${AGENT_RELAY_HOME:-$DEFAULT_INSTALL_DIR}}"
 BIN_DIR="${AGENT_RELAY_BIN_DIR:-$HOME/.local/bin}"
 ORIGINAL_PATH="${PATH:-}"
+
+# Local Relaycast server. The version is pinned here and only here; it is
+# downloaded from the relaycast GitHub release as
+# relaycast-engine-<version>-<os>-<arch> plus a .sha256 sidecar.
+REPO_RELAYCAST="AgentWorkforce/relaycast"
+RELAYCAST_ENGINE_VERSION="11.0.0"
 STANDALONE_FAILURE_REASON=""
 
 # Colors
@@ -116,11 +133,21 @@ write_executable_file() {
     mv -f "$temp" "$target"
 }
 
+# A relocated install root must also be visible at runtime, or the CLI would
+# look for its binaries under the default root. Prints nothing by default.
+launcher_env_lines() {
+    if [ "$INSTALL_DIR" != "$DEFAULT_INSTALL_DIR" ]; then
+        # shellcheck disable=SC2016  # the ${...} default is expanded by the launcher, not here
+        printf 'export AGENT_RELAY_INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-%s}"\n' "$INSTALL_DIR"
+    fi
+}
+
 install_binary_launcher() {
     local target_binary="$1"
 
     write_executable_file "$BIN_DIR/agent-relay" << WRAPPER
 #!/usr/bin/env bash
+$(launcher_env_lines)
 exec "$target_binary" "\$@"
 WRAPPER
 }
@@ -993,6 +1020,95 @@ install_acp_bridge() {
     return 1
 }
 
+# 0 when version $1 is strictly greater than $2 (major.minor.patch, numeric;
+# prerelease suffixes are ignored).
+version_gt() {
+    local IFS=.
+    # shellcheck disable=SC2206  # intentional field splitting on dots
+    local a=(${1%%-*}) b=(${2%%-*})
+    local i
+    for i in 0 1 2; do
+        if [ "${a[i]:-0}" -gt "${b[i]:-0}" ] 2>/dev/null; then return 0; fi
+        if [ "${a[i]:-0}" -lt "${b[i]:-0}" ] 2>/dev/null; then return 1; fi
+    done
+    return 1
+}
+
+# Version a binary reports for --version, or nothing.
+binary_version() {
+    { "$1" --version 2>/dev/null || true; } | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?' | head -n 1
+}
+
+# Install the local Relaycast server into $INSTALL_DIR/bin/relaycast-engine.
+# Optional and best effort: it always returns 0. An unpublished asset is
+# skipped with a message; a missing or mismatched .sha256 rejects the download;
+# an existing binary is only replaced by a verified one, never by an older one.
+install_relaycast_engine() {
+    if [ "${AGENT_RELAY_SKIP_RELAYCAST_ENGINE:-}" = "1" ]; then
+        info "Skipping the local Relaycast server (AGENT_RELAY_SKIP_RELAYCAST_ENGINE=1)"
+        return 0
+    fi
+    step "Installing local Relaycast server (relaycast-engine v${RELAYCAST_ENGINE_VERSION})..."
+
+    local asset="relaycast-engine-${RELAYCAST_ENGINE_VERSION}-${OS}-${ARCH}"
+    local base="https://github.com/$REPO_RELAYCAST/releases/download/v${RELAYCAST_ENGINE_VERSION}"
+    local target="$INSTALL_DIR/bin/relaycast-engine"
+    local installed="" dl sums expected actual
+
+    if [ -x "$target" ]; then
+        installed=$(binary_version "$target")
+        if [ "$installed" = "$RELAYCAST_ENGINE_VERSION" ]; then
+            success "relaycast-engine v$installed already installed"
+            return 0
+        fi
+        if [ -n "$installed" ] && version_gt "$installed" "$RELAYCAST_ENGINE_VERSION"; then
+            info "Keeping newer relaycast-engine v$installed (this installer pins v$RELAYCAST_ENGINE_VERSION)"
+            return 0
+        fi
+    fi
+
+    mkdir -p "$INSTALL_DIR/bin"
+    make_temp_file "$INSTALL_DIR/bin" "relaycast-engine" || return 0
+    dl="$MADE_TEMP"
+    if ! curl -fsSL "$base/$asset" -o "$dl" 2>/dev/null; then
+        rm -f "$dl"
+        info "relaycast-engine v${RELAYCAST_ENGINE_VERSION} is not published for $PLATFORM yet (no release asset $asset); skipping. The local Relaycast server is optional."
+        return 0
+    fi
+    make_temp_file "$INSTALL_DIR/bin" "relaycast-engine-sha256" || { rm -f "$dl"; return 0; }
+    sums="$MADE_TEMP"
+    if ! curl -fsSL "$base/$asset.sha256" -o "$sums" 2>/dev/null; then
+        rm -f "$dl" "$sums"
+        warn "relaycast-engine v${RELAYCAST_ENGINE_VERSION} publishes no $asset.sha256; not installing an unverified binary."
+        return 0
+    fi
+    expected=$(awk 'NR == 1 { print tolower($1) }' "$sums")
+    rm -f "$sums"
+    if ! printf '%s' "$expected" | grep -Eq '^[0-9a-f]{64}$'; then
+        rm -f "$dl"
+        warn "$asset.sha256 is not a SHA-256 digest; not installing relaycast-engine."
+        return 0
+    fi
+    if ! actual=$(sha256_of "$dl"); then
+        rm -f "$dl"
+        warn "No SHA-256 tool found (shasum, sha256sum or openssl); not installing an unverified relaycast-engine."
+        return 0
+    fi
+    if [ "$actual" != "$expected" ]; then
+        rm -f "$dl"
+        warn "SHA-256 mismatch for $asset: expected $expected, got $actual. Not installing it."
+        return 0
+    fi
+    info "Verified SHA-256 of $asset ($expected)"
+    DIGEST_VERIFIED=1
+    if install_binary_atomic "$dl" "$target"; then
+        success "Installed relaycast-engine v${RELAYCAST_ENGINE_VERSION} to $target"
+    else
+        warn "Could not install relaycast-engine; the local Relaycast server is optional, continuing."
+    fi
+    return 0
+}
+
 # Download with progress indicator
 download_with_progress() {
     local url="$1"
@@ -1172,6 +1288,8 @@ Or use nvm: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/instal
         error "The v${VERSION} broker was rejected (integrity or smoke test failed) after the CLI was installed via npm; the existing broker was left untouched, so CLI and broker versions now differ. Re-run the installer, or install a known-good version with AGENT_RELAY_VERSION."
     fi
 
+    install_relaycast_engine
+
     success "Installed via npm"
 }
 
@@ -1301,6 +1419,8 @@ print_usage() {
     echo "  # Stop the broker"
     echo "  agent-relay ${node_group}down"
     echo ""
+    echo -e "${BOLD}Binaries:${NC} $INSTALL_DIR/bin (launcher: $BIN_DIR/agent-relay)"
+    echo ""
     echo -e "${BOLD}Documentation:${NC} https://github.com/AgentWorkforce/relay"
     echo ""
 }
@@ -1382,6 +1502,7 @@ main() {
         LAUNCHER_BACKUP=""
         # Install ACP bridge for Zed editor (requires Node.js)
         install_acp_bridge || true
+        install_relaycast_engine
         verify_installation && print_usage && track_event "install_completed" && exit 0
     fi
 
@@ -1471,8 +1592,9 @@ case "${1:-}" in
         echo ""
         echo "Environment variables:"
         echo "  AGENT_RELAY_VERSION              Specific version to install (default: latest)"
-        echo "  AGENT_RELAY_INSTALL_DIR          Installation directory (default: ~/.agentworkforce/relay)"
-        echo "  AGENT_RELAY_BIN_DIR              Binary directory (default: ~/.local/bin)"
+        echo "  AGENT_RELAY_INSTALL_DIR          Installation directory; binaries go in its bin/ (default: \$AGENT_RELAY_HOME, else ~/.agentworkforce/relay)"
+        echo "  AGENT_RELAY_BIN_DIR              Launcher directory on PATH (default: ~/.local/bin)"
+        echo "  AGENT_RELAY_SKIP_RELAYCAST_ENGINE Set to 1 to skip the local Relaycast server (relaycast-engine)"
         echo "  AGENT_RELAY_TELEMETRY_DISABLED   Disable anonymous install telemetry (default: false)"
         echo ""
         echo "Telemetry: This installer collects anonymous usage data to improve the product."

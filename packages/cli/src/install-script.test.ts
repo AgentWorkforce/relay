@@ -160,4 +160,33 @@ describe('install.sh', () => {
       );
     });
   });
+
+  describe('single install location', () => {
+    it('installs under AGENT_RELAY_INSTALL_DIR, else AGENT_RELAY_HOME, else ~/.agentworkforce/relay', () => {
+      expect(installScript).toMatch(
+        /^INSTALL_DIR="\$\{AGENT_RELAY_INSTALL_DIR:-\$\{AGENT_RELAY_HOME:-\$DEFAULT_INSTALL_DIR\}\}"$/m
+      );
+      expect(installScript).toMatch(/^DEFAULT_INSTALL_DIR="\$HOME\/\.agentworkforce\/relay"$/m);
+    });
+
+    it('pins relaycast-engine in exactly one place', () => {
+      expect(installScript.match(/^RELAYCAST_ENGINE_VERSION=/gm)).toHaveLength(1);
+      expect(installScript).toMatch(/^RELAYCAST_ENGINE_VERSION="\d+\.\d+\.\d+"$/m);
+    });
+
+    it('downloads relaycast-engine into the canonical bin dir through the atomic path', () => {
+      const body = fnBody('install_relaycast_engine');
+      expect(body).toMatch(/relaycast-engine-\$\{RELAYCAST_ENGINE_VERSION\}-\$\{OS\}-\$\{ARCH\}/);
+      expect(body).toMatch(/local target="\$INSTALL_DIR\/bin\/relaycast-engine"/);
+      expect(body).toMatch(/\.sha256/);
+      expect(body).toMatch(/install_binary_atomic "\$dl" "\$target"/);
+      // Never fatal: every path returns 0.
+      expect(body).not.toMatch(/\berror\b|return 1/);
+    });
+
+    it('installs relaycast-engine on both the standalone and npm paths', () => {
+      expect(fnBody('main')).toMatch(/install_relaycast_engine/);
+      expect(fnBody('install_via_npm')).toMatch(/install_relaycast_engine/);
+    });
+  });
 });

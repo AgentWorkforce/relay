@@ -193,14 +193,19 @@ jobs:
           npm install --no-audit --no-fund "${{ steps.pkg.outputs.spec }}"
           node --input-type=module -e "
             import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
+            import os from 'node:os';
+            import path from 'node:path';
             import { accessSync, constants } from 'node:fs';
             const expected = getOptionalDepPackageName();
             const p = getBrokerBinaryPath();
             console.log('expected package:', expected);
             console.log('resolved:', p);
             if (!p) { console.error('FAIL: resolver returned null'); process.exit(1); }
-            if (!p.replace(/\\\\/g, '/').includes(expected)) {
-              console.error('FAIL: resolution did not go through the optional-dep package; got', p);
+            // npm installs resolve through the optional-dep package until the
+            // CLI's first run copies the broker into ~/.agentworkforce/relay/bin.
+            const canonical = path.join(os.homedir(), '.agentworkforce', 'relay', 'bin', path.basename(p));
+            if (!p.replace(/\\\\/g, '/').includes(expected) && p !== canonical) {
+              console.error('FAIL: resolution went through neither the optional-dep package nor the canonical bin dir; got', p);
               process.exit(1);
             }
             accessSync(p, constants.X_OK);
@@ -248,6 +253,8 @@ jobs:
           cd /tmp/test-project
           node --input-type=module -e "
             import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
+            import os from 'node:os';
+            import path from 'node:path';
             import { accessSync, constants } from 'node:fs';
             import { execFileSync } from 'node:child_process';
             const expected = getOptionalDepPackageName();
@@ -255,8 +262,11 @@ jobs:
             console.log('expected package:', expected);
             console.log('resolved:', p);
             if (!p) { console.error('FAIL: resolver returned null'); process.exit(1); }
-            if (!p.replace(/\\\\/g, '/').includes(expected)) {
-              console.error('FAIL: resolution did not go through the optional-dep package; got', p);
+            // npm installs resolve through the optional-dep package until the
+            // CLI's first run copies the broker into ~/.agentworkforce/relay/bin.
+            const canonical = path.join(os.homedir(), '.agentworkforce', 'relay', 'bin', path.basename(p));
+            if (!p.replace(/\\\\/g, '/').includes(expected) && p !== canonical) {
+              console.error('FAIL: resolution went through neither the optional-dep package nor the canonical bin dir; got', p);
               process.exit(1);
             }
             accessSync(p, constants.X_OK);
@@ -352,6 +362,8 @@ jobs:
           cd /tmp/test-project
           node --input-type=module -e "
             import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
+            import os from 'node:os';
+            import path from 'node:path';
             import { accessSync, constants } from 'node:fs';
             import { execFileSync } from 'node:child_process';
             const expected = getOptionalDepPackageName();
@@ -363,8 +375,9 @@ jobs:
               console.error('FAIL: expected darwin-arm64 optional-dep, got', expected);
               process.exit(1);
             }
-            if (!p.includes(expected)) {
-              console.error('FAIL: resolution did not go through the optional-dep package; got', p);
+            const canonical = path.join(os.homedir(), '.agentworkforce', 'relay', 'bin', path.basename(p));
+            if (!p.includes(expected) && p !== canonical) {
+              console.error('FAIL: resolution went through neither the optional-dep package nor the canonical bin dir; got', p);
               process.exit(1);
             }
             accessSync(p, constants.X_OK);

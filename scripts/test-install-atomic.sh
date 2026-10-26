@@ -721,6 +721,96 @@ DIGEST_VERIFIED=0
 eval "$orig_has_command"
 OS="$SAVED_OS"
 
+echo "== install root: AGENT_RELAY_INSTALL_DIR > AGENT_RELAY_HOME > ~/.agentworkforce/relay =="
+# shellcheck disable=SC2016  # single-quoted scripts are expanded by the child bash
+root_of() { # root_of <INSTALL_DIR-or-empty> <HOME-or-empty>
+    env -u AGENT_RELAY_INSTALL_DIR -u AGENT_RELAY_HOME ${1:+AGENT_RELAY_INSTALL_DIR="$1"} ${2:+AGENT_RELAY_HOME="$2"} \
+        HOME="$HOME" AGENT_RELAY_INSTALL_SOURCE_ONLY=1 bash -c '. "$1/install.sh"; printf "%s" "$INSTALL_DIR"' _ "$ROOT"
+}
+check "default install root" test "$(root_of "" "")" = "$HOME/.agentworkforce/relay"
+check "AGENT_RELAY_HOME relocates the install root" test "$(root_of "" /srv/relay-home)" = "/srv/relay-home"
+check "AGENT_RELAY_INSTALL_DIR wins over AGENT_RELAY_HOME" test "$(root_of /opt/relay /srv/relay-home)" = "/opt/relay"
+# shellcheck disable=SC2016
+launcher_of() { # launcher_of <INSTALL_DIR>
+    env -u AGENT_RELAY_INSTALL_DIR -u AGENT_RELAY_HOME AGENT_RELAY_INSTALL_DIR="$1" HOME="$HOME" AGENT_RELAY_INSTALL_SOURCE_ONLY=1 \
+        bash -c '. "$1/install.sh"; BIN_DIR="$2"; install_binary_launcher /x/agent-relay; cat "$2/agent-relay"' _ "$ROOT" "$(newdir)"
+}
+check "default launcher sets no install root" test -z "$(launcher_of "$HOME/.agentworkforce/relay" | grep AGENT_RELAY_INSTALL_DIR)"
+# shellcheck disable=SC2016
+check "relocated launcher exports its install root" contains "$(launcher_of /opt/relay)" 'export AGENT_RELAY_INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-/opt/relay}"'
+
+echo "== relaycast-engine: optional, checksum-verified, never downgraded =="
+SAVED_OS="$OS"
+OS="linux"
+# shellcheck disable=SC2034  # read by the sourced installer functions
+ARCH="x64"
+PLATFORM="linux-x64"
+# shellcheck disable=SC2034
+RELAYCAST_ENGINE_VERSION="11.0.0"
+RC_ASSET="relaycast-engine-11.0.0-linux-x64"
+make_fake_engine() { # make_fake_engine <path> <version>
+    # shellcheck disable=SC2016
+    printf '#!/bin/bash\n[ "$1" = --version ] && echo "relaycast-engine %s"\nexit 0\n' "$2" > "$1"; chmod +x "$1"
+}
+rc_reset() {
+    INSTALL_DIR="$(newdir)"; : > "$LOG"
+    rm -f "$FIX/asset/$RC_ASSET" "$FIX/asset/$RC_ASSET.sha256"
+}
+rc_publish() { # rc_publish <version> [bad-sum]
+    make_fake_engine "$FIX/asset/$RC_ASSET" "$1"
+    if [ "${2:-}" = bad-sum ]; then
+        printf '%s  %s\n' "$(printf 'x' | sha256_of)" "$RC_ASSET" > "$FIX/asset/$RC_ASSET.sha256"
+    else
+        printf '%s  %s\n' "$(sha256_of "$FIX/asset/$RC_ASSET")" "$RC_ASSET" > "$FIX/asset/$RC_ASSET.sha256"
+    fi
+}
+rc_no_temps() { test -z "$(find "$INSTALL_DIR" -name '.*' -type f | head -1)"; }
+
+rc_reset
+install_relaycast_engine; rc=$?
+check "unpublished asset: returns 0" test "$rc" -eq 0
+check "unpublished asset: nothing installed" test ! -e "$INSTALL_DIR/bin/relaycast-engine"
+check "unpublished asset: clear message" contains "$(cat "$LOG")" "is not published for linux-x64 yet"
+check "unpublished asset: no temp files" rc_no_temps
+
+rc_reset; rc_publish 11.0.0
+install_relaycast_engine; rc=$?
+check "published asset: installed into INSTALL_DIR/bin" test "$rc" -eq 0 -a -x "$INSTALL_DIR/bin/relaycast-engine"
+check "published asset: bytes match the release" cmp -s "$INSTALL_DIR/bin/relaycast-engine" "$FIX/asset/$RC_ASSET"
+check "published asset: no temp or .prev files" rc_no_temps
+
+rc_reset; rc_publish 11.0.0 bad-sum
+install_relaycast_engine; rc=$?
+check "checksum mismatch: returns 0 but installs nothing" test "$rc" -eq 0 -a ! -e "$INSTALL_DIR/bin/relaycast-engine"
+check "checksum mismatch: reported" contains "$(cat "$LOG")" "SHA-256 mismatch for $RC_ASSET"
+
+rc_reset; make_fake_engine "$FIX/asset/$RC_ASSET" 11.0.0
+install_relaycast_engine
+check "missing .sha256: unverified binary refused" test ! -e "$INSTALL_DIR/bin/relaycast-engine"
+check "missing .sha256: reported" contains "$(cat "$LOG")" "publishes no $RC_ASSET.sha256"
+check "missing .sha256: no temp files" rc_no_temps
+
+rc_reset; rc_publish 11.0.0
+mkdir -p "$INSTALL_DIR/bin"; make_fake_engine "$INSTALL_DIR/bin/relaycast-engine" 12.1.0
+cp -p "$INSTALL_DIR/bin/relaycast-engine" "$WORK/engine.newer"
+install_relaycast_engine
+check "newer installed engine is never downgraded" cmp -s "$INSTALL_DIR/bin/relaycast-engine" "$WORK/engine.newer"
+check "newer installed engine: reported" contains "$(cat "$LOG")" "Keeping newer relaycast-engine v12.1.0"
+
+rc_reset; rc_publish 11.0.0
+mkdir -p "$INSTALL_DIR/bin"; make_fake_engine "$INSTALL_DIR/bin/relaycast-engine" 10.6.5
+install_relaycast_engine
+check "older installed engine is upgraded" test "$("$INSTALL_DIR/bin/relaycast-engine" --version)" = "relaycast-engine 11.0.0"
+
+rc_reset; rc_publish 11.0.0
+AGENT_RELAY_SKIP_RELAYCAST_ENGINE=1 install_relaycast_engine
+check "AGENT_RELAY_SKIP_RELAYCAST_ENGINE=1 skips the download" test ! -e "$INSTALL_DIR/bin/relaycast-engine"
+
+check "version_gt orders numerically" version_gt 11.10.0 11.9.9
+check "version_gt is strict" eval '! version_gt 11.0.0 11.0.0'
+rm -f "$FIX/asset/$RC_ASSET" "$FIX/asset/$RC_ASSET.sha256"
+OS="$SAVED_OS"; PLATFORM="test-test"
+
 echo "== AGENT_RELAY_SMOKE_SECONDS is validated =="
 for v in 0 abc -1 "" 1.5 99999; do
     got="$(AGENT_RELAY_SMOKE_SECONDS="$v" resolve_smoke_seconds 2>/dev/null)"

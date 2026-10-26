@@ -849,6 +849,9 @@ jobs:
           mkdir -p packages/${{ matrix.broker_pkg }}/bin
           cp "/tmp/broker/${{ matrix.binary_name }}" "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
           chmod +x "packages/${{ matrix.broker_pkg }}/bin/${{ matrix.binary_file }}"
+          # SHA-256 sidecar: the CLI verifies it before copying this broker
+          # into ~/.agentworkforce/relay/bin on first run.
+          (cd "packages/${{ matrix.broker_pkg }}/bin" && sha256sum "${{ matrix.binary_file }}" > "${{ matrix.binary_file }}.sha256")
           ls -lh packages/${{ matrix.broker_pkg }}/bin/
 
       # os/cpu constraints are injected at publish time. Keeping them out of

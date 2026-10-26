@@ -5,7 +5,17 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Major]
+
+### Added
+
+- Every Agent Relay binary now lives in `~/.agentworkforce/relay/bin` (or `$AGENT_RELAY_INSTALL_DIR/bin`, else `$AGENT_RELAY_HOME/bin`), however the CLI is installed. An npm-installed CLI copies its broker there on first run. The copy is atomic and checksum-verified, and it never replaces a newer broker from `install.sh` or the desktop app. Set `AGENT_RELAY_SKIP_BROKER_INSTALL=1` to opt out.
+- `install.sh` installs the local Relaycast server (`relaycast-engine`) into the same directory when the pinned release publishes it for your platform. If it is not published, the step is skipped. Set `AGENT_RELAY_SKIP_RELAYCAST_ENGINE=1` to skip it.
+
+### Changed
+
+- The CLI and `@agent-relay/harness-driver` now resolve the broker in this order: `BROKER_BINARY_PATH` / `AGENT_RELAY_BIN`, then `~/.agentworkforce/relay/bin`, then the npm platform package, then `PATH`. A broker in the install directory now wins over one found on `PATH`.
+- `install.sh` honours `AGENT_RELAY_HOME` as the install root when `AGENT_RELAY_INSTALL_DIR` is not set. A relocated install exports its root from the `agent-relay` launcher.
 
 ### Removed
 

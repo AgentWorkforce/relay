@@ -34,6 +34,16 @@
       "import": "./dist/broker-path.js",
       "default": "./dist/broker-path.js"
     },
+    "./install-paths": {
+      "types": "./dist/install-paths.d.ts",
+      "import": "./dist/install-paths.js",
+      "default": "./dist/install-paths.js"
+    },
+    "./broker-install": {
+      "types": "./dist/broker-install.d.ts",
+      "import": "./dist/broker-install.js",
+      "default": "./dist/broker-install.js"
+    },
     "./harnesses": {
       "types": "./dist/harnesses.d.ts",
       "import": "./dist/harnesses.js",
