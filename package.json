@@ -36,7 +36,7 @@
     "dev:local": "npm run build && (cd packages/cli && npm link) && echo '✓ agent-relay linked globally'",
     "dev:unlink": "(cd packages/cli && npm unlink -g agent-relay) && echo '✓ agent-relay unlinked'",
     "dev:rebuild": "npm run build && echo '✓ Rebuilt (linked version updated)'",
-    "build:rust": "if command -v ~/.cargo/bin/cargo >/dev/null 2>&1; then ~/.cargo/bin/cargo build --release --bin agent-relay-broker --bin agent-relay-probe && echo '✓ native binaries built at target/release'; else echo '⚠ Rust not installed, skipping local native builds; installs use platform optional dependencies'; fi",
+    "build:rust": "if command -v cargo >/dev/null 2>&1; then cargo build --release --bin agent-relay-broker --bin agent-relay-probe && echo '✓ native binaries built at target/release'; else echo '⚠ Rust not installed, skipping local native builds; installs use platform optional dependencies'; fi",
     "start": "node packages/cli/dist/cli/index.js",
     "pretest": "npm run build",
     "test": "vitest run",
