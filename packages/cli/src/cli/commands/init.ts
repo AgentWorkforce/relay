@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -17,7 +17,8 @@ import { persistWorkspaceSession } from '../lib/workspace-session.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
 
 /** The Relaycast server `relay init` runs locally. Pinned so every machine runs the same server. */
-export const LOCAL_ENGINE_PACKAGE = '@relaycast/engine@11.0.0';
+export const LOCAL_ENGINE_VERSION = '11.0.0';
+export const LOCAL_ENGINE_PACKAGE = `@relaycast/engine@${LOCAL_ENGINE_VERSION}`;
 const DEFAULT_LOCAL_PORT = 8787;
 const HOSTED_ORIGIN = 'https://cast.agentrelay.com';
 const START_TIMEOUT_MS = 120_000;
@@ -70,17 +71,79 @@ function readState(): LocalServerState | undefined {
   return state as LocalServerState;
 }
 
+/** Where Agent Relay's binaries live: the same directory install.sh uses. */
+function binDir(): string {
+  return path.join(process.env.AGENT_RELAY_INSTALL_DIR ?? relayHome(), 'bin');
+}
+
+/** The standalone server binary install.sh places, when there is one. */
+function standaloneEngine(): string | undefined {
+  const binary = path.join(
+    binDir(),
+    process.platform === 'win32' ? 'relaycast-engine.exe' : 'relaycast-engine'
+  );
+  return fs.existsSync(binary) ? binary : undefined;
+}
+
+/** Whether a server is already installed, so starting it needs no download. */
+function engineInstalled(): boolean {
+  return (
+    standaloneEngine() !== undefined ||
+    fs.existsSync(
+      path.join(
+        relayHome(),
+        'engine',
+        LOCAL_ENGINE_VERSION,
+        'node_modules',
+        '@relaycast',
+        'engine',
+        'dist',
+        'bin',
+        'serve.js'
+      )
+    )
+  );
+}
+
+/**
+ * Install the pinned server package once, under the relay home rather than
+ * npm's npx cache, so it always lives in one known place. Returns its entry.
+ */
+function packagedEngine(log: number): string {
+  const prefix = path.join(relayHome(), 'engine', LOCAL_ENGINE_VERSION);
+  const entry = path.join(prefix, 'node_modules', '@relaycast', 'engine', 'dist', 'bin', 'serve.js');
+  if (!fs.existsSync(entry)) {
+    fs.mkdirSync(prefix, { recursive: true, mode: 0o700 });
+    execFileSync(
+      process.platform === 'win32' ? 'npm.cmd' : 'npm',
+      ['install', '--prefix', prefix, '--no-audit', '--no-fund', '--omit=dev', LOCAL_ENGINE_PACKAGE],
+      { stdio: ['ignore', log, log], env: process.env }
+    );
+  }
+  if (!fs.existsSync(entry)) throw new Error(`Installing ${LOCAL_ENGINE_PACKAGE} did not produce ${entry}.`);
+  return entry;
+}
+
 function defaultStartEngine({ dataDir, port, logFile }: { dataDir: string; port: number; logFile: string }) {
   const log = fs.openSync(logFile, 'a', 0o600);
-  const child = spawn(
-    process.platform === 'win32' ? 'npx.cmd' : 'npx',
-    ['--yes', LOCAL_ENGINE_PACKAGE, '--db', path.join(dataDir, 'relaycast.db'), '--port', String(port)],
-    { detached: true, stdio: ['ignore', log, log], env: process.env }
-  );
-  child.unref();
-  fs.closeSync(log);
-  if (child.pid === undefined) throw new Error('Could not start the local Relaycast server.');
-  return child.pid;
+  const args = ['--db', path.join(dataDir, 'relaycast.db'), '--port', String(port)];
+  try {
+    const binary = standaloneEngine();
+    const [command, commandArgs] = binary
+      ? [binary, args]
+      : // The packaged server needs Node. A Bun-compiled CLI's own executable is not Node.
+        [process.versions.bun ? 'node' : process.execPath, [packagedEngine(log), ...args]];
+    const child = spawn(command, commandArgs, {
+      detached: true,
+      stdio: ['ignore', log, log],
+      env: process.env,
+    });
+    child.unref();
+    if (child.pid === undefined) throw new Error('Could not start the local Relaycast server.');
+    return child.pid;
+  } finally {
+    fs.closeSync(log);
+  }
 }
 
 function defaultIsAlive(pid: number): boolean {
@@ -149,7 +212,9 @@ async function ensureLocalServer(deps: InitCommandDependencies, port: number): P
   }
   fs.mkdirSync(localDir(), { recursive: true, mode: 0o700 });
   const logFile = path.join(localDir(), 'server.log');
-  deps.log(`Starting a local Relaycast server on ${origin} (the very first start downloads it)…`);
+  deps.log(
+    `Starting a local Relaycast server on ${origin}${engineInstalled() ? '' : ' (downloading it the first time)'}…`
+  );
   const pid = deps.startEngine({ dataDir: localDir(), port, logFile });
   const deadline = Date.now() + START_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -164,7 +229,9 @@ async function ensureLocalServer(deps: InitCommandDependencies, port: number): P
   deps.stop(pid);
   const tail = logTail(logFile);
   throw new Error(
-    `The local Relaycast server did not start. It needs Node.js 22 or 24 with npm install scripts enabled.` +
+    `The local Relaycast server did not start. Install the standalone server with the install script ` +
+      `(curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash), ` +
+      `or use Node.js 22 or 24 with npm install scripts enabled.` +
       (tail ? `\nLast lines of ${logFile}:\n${tail}` : '')
   );
 }

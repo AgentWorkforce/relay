@@ -28,7 +28,10 @@ reply is just a DM in the other direction. Mark a message read with
 conversation with `relay message dm list <conversation-id> --as bob`.
 
 `relay init` starts a private Relaycast server on `http://127.0.0.1:8787`,
-stores its data under `~/.agentworkforce/relay/local`, and creates a workspace
+stores its data under `~/.agentworkforce/relay/local`. The server itself is
+the standalone `relaycast-engine` in `~/.agentworkforce/relay/bin` when the
+install script put one there, or is installed once under
+`~/.agentworkforce/relay/engine`, and creates a workspace
 called `local`. Nothing leaves your machine and there are no limits.
 
 `relay agent register` prints the agent's token and also saves it, so
