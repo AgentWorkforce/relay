@@ -96,6 +96,16 @@ describe('version helpers', () => {
     expect(compareVersions('14.1.0-beta.10', '14.1.0-beta.2')).toBe(1);
     expect(compareVersions('garbage', '1.0.0')).toBeNull();
   });
+
+  it('scans long digit runs in linear time and never starts mid-number', () => {
+    const digits = '0'.repeat(200_000);
+    const started = performance.now();
+    expect(parseVersion(digits)).toBeNull();
+    expect(compareVersions(digits, `${digits}.1`)).toBeNull();
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(parseVersion(`${digits}1.2.3`)).toBeNull();
+    expect(parseVersion(`${digits} 1.2.3`)).toBe('1.2.3');
+  });
 });
 
 sh('ensureCanonicalBroker', () => {

@@ -97,7 +97,9 @@ export interface EnsureCanonicalBrokerOptions {
   lockStaleMs?: number;
 }
 
-const SEMVER_RE = /(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/u;
+// Bounded components and the no-digit lookbehind keep the unanchored scan
+// linear: an unbounded `\d+` re-backtracks every suffix of a long digit run.
+const SEMVER_RE = /(?<!\d)(\d{1,10})\.(\d{1,10})\.(\d{1,10})(?:-([0-9A-Za-z.-]{1,128}))?/u;
 
 /**
  * Extract the first semantic version from text such as
