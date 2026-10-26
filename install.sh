@@ -771,6 +771,7 @@ download_broker_binary() {
     local probe_name="agent-relay-probe-${PLATFORM}"
     local probe_target="$INSTALL_DIR/bin/agent-relay-probe"
     local broker_tmp="" probe_tmp=""
+    local broker_digest_verified=0 probe_digest_verified=0
     local rc=0
 
     mkdir -p "$INSTALL_DIR/bin"
@@ -785,6 +786,7 @@ download_broker_binary() {
         return 2
     fi
     broker_tmp="$FETCHED_TMP"
+    broker_digest_verified="$DIGEST_VERIFIED"
 
     rc=0
     fetch_release_asset "$probe_name" "$INSTALL_DIR/bin" raw || rc=$?
@@ -798,6 +800,7 @@ download_broker_binary() {
         return 2
     else
         probe_tmp="$FETCHED_TMP"
+        probe_digest_verified="$DIGEST_VERIFIED"
     fi
 
     # Two destinations (INSTALL_DIR and BIN_DIR) commit together as part of the
@@ -820,10 +823,30 @@ download_broker_binary() {
     TXN_STATE="${TXN_STATE:+$TXN_STATE }broker"
     KEEP_PREV=1
     BACKUP_SUFFIX="$TXN_SUFFIX"
-    if install_binary_atomic "$broker_tmp" "$d1" check_broker_binary \
-        && copy_binary_atomic "$d1" "$d2" \
-        && { [ -z "$probe_tmp" ] || install_binary_atomic "$probe_tmp" "$p1" check_probe_binary; } \
-        && { [ -z "$probe_tmp" ] || copy_binary_atomic "$p1" "$p2"; }; then
+    local install_ok=1
+    DIGEST_VERIFIED="$broker_digest_verified"
+    install_binary_atomic "$broker_tmp" "$d1" check_broker_binary || install_ok=0
+    if [ "$install_ok" -eq 1 ]; then
+        copy_binary_atomic "$d1" "$d2" || install_ok=0
+    fi
+    if [ "$install_ok" -eq 1 ] && [ -n "$probe_tmp" ]; then
+        DIGEST_VERIFIED="$probe_digest_verified"
+        install_binary_atomic "$probe_tmp" "$p1" check_probe_binary || install_ok=0
+        if [ "$install_ok" -eq 1 ]; then
+            copy_binary_atomic "$p1" "$p2" || install_ok=0
+        fi
+    elif [ "$install_ok" -eq 1 ]; then
+        # A downgrade to a pre-probe release must not leave a newer relay
+        # executable behind. Move both destinations into this transaction's
+        # run-unique backups so rollback can restore them on any later failure.
+        if [ -e "$p1" ] || [ -L "$p1" ]; then
+            mv -f "$p1" "${p1}${TXN_SUFFIX}" || install_ok=0
+        fi
+        if [ "$install_ok" -eq 1 ] && { [ -e "$p2" ] || [ -L "$p2" ]; }; then
+            mv -f "$p2" "${p2}${TXN_SUFFIX}" || install_ok=0
+        fi
+    fi
+    if [ "$install_ok" -eq 1 ]; then
         KEEP_PREV="$saved_keep"; BACKUP_SUFFIX="$saved_suffix"
         if [ "$TXN_STATE" = "broker" ]; then
             # standalone-less (npm) install: this is the whole transaction

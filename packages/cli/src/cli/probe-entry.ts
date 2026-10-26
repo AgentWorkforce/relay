@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
-import { constants, accessSync, realpathSync } from 'node:fs';
+import { constants, accessSync, existsSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,14 +23,6 @@ function resolveProbe(): string | null {
   if (override) return executableFile(resolve(override));
 
   const moduleDirectory = dirname(fileURLToPath(import.meta.url));
-  const roots = [process.cwd(), resolve(moduleDirectory, '..', '..', '..', '..')];
-  for (const root of roots) {
-    for (const profile of ['release', 'debug']) {
-      const found = executableFile(join(root, 'target', profile, executable));
-      if (found) return found;
-    }
-  }
-
   const packageName = `@agent-relay/broker-${process.platform}-${process.arch}`;
   const references = [import.meta.url, process.argv[1], join(process.cwd(), 'package.json')].filter(
     (value): value is string => Boolean(value)
@@ -44,9 +37,20 @@ function resolveProbe(): string | null {
     }
   }
 
+  const sourceRoot = resolve(moduleDirectory, '..', '..', '..', '..');
+  if (
+    existsSync(join(sourceRoot, 'Cargo.toml')) &&
+    existsSync(join(sourceRoot, 'crates', 'probe', 'Cargo.toml'))
+  ) {
+    for (const profile of ['release', 'debug']) {
+      const found = executableFile(join(sourceRoot, 'target', profile, executable));
+      if (found) return found;
+    }
+  }
+
   for (const sibling of [
     join(dirname(process.argv[1] ?? ''), executable),
-    join(process.env.HOME ?? '', '.agentworkforce', 'relay', 'bin', executable),
+    join(homedir(), '.agentworkforce', 'relay', 'bin', executable),
   ]) {
     const found = executableFile(sibling);
     if (found) return found;
