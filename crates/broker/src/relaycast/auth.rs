@@ -66,7 +66,7 @@ struct WorkspaceSource {
 }
 
 struct EnvWorkspaceKey {
-    source: &'static str,
+    source: String,
     key: String,
     explicit_join: bool,
 }
@@ -1106,7 +1106,7 @@ fn env_workspace_key() -> Result<Option<EnvWorkspaceKey>> {
             let key = normalize_workspace_key(trimmed)
                 .with_context(|| format!("{name} is not a valid workspace key"))?;
             return Ok(Some(EnvWorkspaceKey {
-                source: name,
+                source: workspace_key_source_label(name),
                 key,
                 explicit_join: true,
             }));
@@ -1117,10 +1117,36 @@ fn env_workspace_key() -> Result<Option<EnvWorkspaceKey>> {
         .ok()
         .and_then(|value| normalize_workspace_key(&value))
         .map(|key| EnvWorkspaceKey {
-            source: "RELAY_API_KEY",
+            source: workspace_key_source_label("RELAY_API_KEY"),
             key,
             explicit_join: false,
         }))
+}
+
+/// Recover the source chosen by the TypeScript CLI before it normalized the
+/// key into environment variables for the broker child. This keeps a rejected
+/// repository pin from being misreported as `AGENT_RELAY_WORKSPACE_KEY` merely
+/// because that is the first compatibility alias the broker reads.
+fn workspace_key_source_label(fallback_env: &str) -> String {
+    match std::env::var("AGENT_RELAY_WORKSPACE_SOURCE")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+    {
+        Some("flag") => "command-line flag (--workspace-key / --wk)".to_string(),
+        Some("project") => std::env::current_dir()
+            .map(|cwd| cwd.join(".agentworkforce/relay/workspace-key.json"))
+            .map(|path| format!("repository pin ({})", path.display()))
+            .unwrap_or_else(|_| {
+                "repository pin (.agentworkforce/relay/workspace-key.json)".to_string()
+            }),
+        Some("store") => dirs::home_dir()
+            .map(|home| home.join(".agentworkforce/relay/workspaces.json"))
+            .map(|path| format!("machine-global active workspace ({})", path.display()))
+            .unwrap_or_else(|| "machine-global active workspace".to_string()),
+        Some("multi-workspace") => "multi-workspace session (RELAY_WORKSPACES_JSON)".to_string(),
+        _ => fallback_env.to_string(),
+    }
 }
 
 fn is_auth_rejection(err: &anyhow::Error) -> bool {
@@ -2314,8 +2340,21 @@ mod tests {
             std::env::remove_var("RELAY_DEFAULT_WORKSPACE");
             std::env::remove_var("RELAY_AGENT_IDENTITY_KEY");
             std::env::remove_var("RELAY_NODE_ID");
+            std::env::remove_var("AGENT_RELAY_WORKSPACE_SOURCE");
         }
         guard
+    }
+
+    #[test]
+    fn workspace_key_error_source_names_the_repository_pin() {
+        let _env_guard = clear_relay_env();
+        // SAFETY: test-only and serialized by RELAY_ENV_MUTEX.
+        unsafe {
+            std::env::set_var("AGENT_RELAY_WORKSPACE_SOURCE", "project");
+        }
+        let source = super::workspace_key_source_label("AGENT_RELAY_WORKSPACE_KEY");
+        assert!(source.starts_with("repository pin ("));
+        assert!(source.ends_with("/.agentworkforce/relay/workspace-key.json)"));
     }
 
     #[tokio::test]
@@ -4133,6 +4172,7 @@ mod tests {
         let server = MockServer::start();
         unsafe {
             std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", "rk_live_rejected");
+            std::env::set_var("AGENT_RELAY_WORKSPACE_SOURCE", "project");
         }
         let rejected_register = server.mock(|when, then| {
             when.method(POST)
@@ -4151,17 +4191,21 @@ mod tests {
 
         let client = AuthClient::new(Some(server.base_url()));
         let error = client.startup_session(Some("lead")).await.unwrap_err();
+        let message = error.to_string();
         assert!(
-            error
-                .to_string()
-                .contains("explicit workspace key from AGENT_RELAY_WORKSPACE_KEY was rejected"),
-            "unexpected error: {error:#}"
+            message.contains("explicit workspace key from repository pin ("),
+            "{message}"
+        );
+        assert!(
+            message.contains("/.agentworkforce/relay/workspace-key.json) was rejected"),
+            "{message}"
         );
         rejected_register.assert_hits(1);
         workspace.assert_hits(0);
 
         unsafe {
             std::env::remove_var("AGENT_RELAY_WORKSPACE_KEY");
+            std::env::remove_var("AGENT_RELAY_WORKSPACE_SOURCE");
         }
     }
 

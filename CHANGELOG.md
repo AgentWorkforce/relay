@@ -15,10 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `relay agent rotate <name>`, and `agent register` for a name that already exists, now issue a new token through the audited owner takeover instead of failing with "already exists", so a lost token can always be replaced.
+- `relay node up` now reports the actual workspace-key source when startup fails, including the repository's `.agentworkforce/relay/workspace-key.json` pin instead of mislabeling every key as `AGENT_RELAY_WORKSPACE_KEY`.
 
 ### Security
 
 - `agent-relay` no longer sends a self-hosted workspace key or agent token to the hosted service when `RELAY_BASE_URL` is unset in a later shell. A credential used with a self-hosted server is remembered (as a one-way fingerprint in `~/.agentworkforce/relay/relaycast-origins.json`, path prefix included) and sent back only to that server, and a persisted project route can no longer redirect it; `workspace create` now honours `RELAY_BASE_URL`; and a malformed `RELAY_BASE_URL` or `--base-url` is an error instead of a silent fallback to `https://cast.agentrelay.com`.
+- The Rust broker now enforces the same saved self-hosted credential route before making authenticated HTTPS or WebSocket connections, passes that resolved route to spawned agents, and trusts operating-system roots plus `SSL_CERT_FILE` for private certificate authorities.
 
 ### Removed
 
