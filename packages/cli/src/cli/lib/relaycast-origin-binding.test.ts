@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -9,7 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Command } from 'commander';
 
 import { registerWorkspaceCommands } from '../commands/workspace.js';
-import { originBindingsPath } from './relaycast-origin-binding.js';
+import { writeProjectWorkspaceKey } from './project-workspace-key.js';
+import { bindOrigin, boundOrigin, originBindingsPath, unbindOrigin } from './relaycast-origin-binding.js';
 import { createAgentRelay, resolveBaseUrl, resolveWorkspaceTransport } from './sdk-client.js';
 
 const SELF_HOSTED_KEY = 'rk_live_selfhosted_origin_binding';
@@ -29,6 +31,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   fs.rmSync(home, { recursive: true, force: true });
   fs.rmSync(project, { recursive: true, force: true });
 });
@@ -136,6 +139,110 @@ describe('Relaycast credential origin binding', () => {
     }
   });
 
+  it('keeps a path prefix (a server behind a proxy) across shells', () => {
+    resolveWorkspaceTransport({
+      workspaceKey: SELF_HOSTED_KEY,
+      env: envWith({ RELAY_BASE_URL: 'https://proxy.corp.test/relaycast/' }),
+    });
+    expect(resolveWorkspaceTransport({ workspaceKey: SELF_HOSTED_KEY, env: envWith() }).baseUrl).toBe(
+      'https://proxy.corp.test/relaycast'
+    );
+  });
+
+  it('rejects a RELAY_BASE_URL with a query or fragment', () => {
+    for (const value of ['https://relay.corp.test/?x=1', 'https://relay.corp.test/#frag']) {
+      expect(() =>
+        resolveWorkspaceTransport({ workspaceKey: SELF_HOSTED_KEY, env: envWith({ RELAY_BASE_URL: value }) })
+      ).toThrow(/query or fragment/);
+    }
+  });
+
+  it('never lets a persisted hosted route take a key bound to a self-hosted server', () => {
+    bindOrigin(SELF_HOSTED_KEY, 'https://relay.corp.test', envWith());
+    writeProjectWorkspaceKey(path.join(project, '.agentworkforce/relay'), SELF_HOSTED_KEY, {
+      workspaceId: 'rw_route',
+      relaycastRoute: 'canonical',
+      relaycastBaseUrl: 'https://cast.agentrelay.com',
+    });
+    expect(() => resolveWorkspaceTransport({ env: envWith() })).toThrow(
+      /belongs to https:\/\/relay\.corp\.test/
+    );
+    expect(() => resolveBaseUrl({ env: envWith() })).toThrow(/belongs to/);
+    // RELAY_BASE_URL does not override a persisted route, so it must not unbind either.
+    expect(() =>
+      resolveWorkspaceTransport({ env: envWith({ RELAY_BASE_URL: 'https://relay.corp.test' }) })
+    ).toThrow(/belongs to/);
+    expect(boundOrigin(SELF_HOSTED_KEY, envWith())).toBe('https://relay.corp.test');
+    // An explicit --base-url is a deliberate choice and moves the key.
+    expect(
+      resolveWorkspaceTransport({ baseUrl: 'https://cast.agentrelay.com', env: envWith() }).baseUrl
+    ).toBe('https://cast.agentrelay.com');
+    expect(boundOrigin(SELF_HOSTED_KEY, envWith())).toBeUndefined();
+  });
+
+  it.each([
+    ['an array of origins', { version: 1, origins: ['https://relay.corp.test'] }],
+    ['a null server', { version: 1, origins: { ['a'.repeat(32)]: null } }],
+    ['an empty server', { version: 1, origins: { ['a'.repeat(32)]: '' } }],
+    ['a non-http server', { version: 1, origins: { ['a'.repeat(32)]: 'file:///etc/passwd' } }],
+    ['a credential-bearing server', { version: 1, origins: { ['a'.repeat(32)]: 'https://u:p@evil.test' } }],
+    ['a hosted server', { version: 1, origins: { ['a'.repeat(32)]: 'https://cast.agentrelay.com' } }],
+    ['a malformed fingerprint', { version: 1, origins: { 'not-a-fingerprint': 'https://relay.corp.test' } }],
+    ['an array root', [{ version: 1, origins: {} }]],
+    ['an unknown version', { version: 2, origins: {} }],
+  ])('fails closed on a binding file with %s', (_label, contents) => {
+    fs.mkdirSync(path.dirname(originBindingsPath(envWith())), { recursive: true });
+    fs.writeFileSync(originBindingsPath(envWith()), JSON.stringify(contents));
+    expect(() => resolveWorkspaceTransport({ workspaceKey: SELF_HOSTED_KEY, env: envWith() })).toThrow(
+      /not a valid Relaycast origin file/
+    );
+  });
+
+  it("does not lose another process's binding written while this one waits for the lock", async () => {
+    const file = originBindingsPath(envWith());
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const otherFingerprint = 'b'.repeat(32);
+    // Another CLI process takes the lock, then writes its own binding.
+    const other = spawn(
+      process.execPath,
+      [
+        '-e',
+        `const fs = require('node:fs');
+         const path = require('node:path');
+         const [file, fingerprint] = process.argv.slice(1);
+         fs.mkdirSync(file + '.lock');
+         fs.writeFileSync(path.join(file + '.lock', 'owner'), String(process.pid));
+         console.log('locked');
+         setTimeout(() => {
+           fs.writeFileSync(file, JSON.stringify({ version: 1, origins: { [fingerprint]: 'https://other.corp.test' } }));
+           fs.rmSync(file + '.lock', { recursive: true, force: true });
+         }, 300);`,
+        file,
+        otherFingerprint,
+      ],
+      { stdio: ['ignore', 'pipe', 'inherit'] }
+    );
+    await new Promise<void>((resolve) => other.stdout.once('data', () => resolve()));
+    bindOrigin(SELF_HOSTED_KEY, 'https://relay.corp.test', envWith());
+    await new Promise((resolve) => other.once('exit', resolve));
+
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8')) as { origins: Record<string, string> };
+    expect(saved.origins[otherFingerprint]).toBe('https://other.corp.test');
+    expect(boundOrigin(SELF_HOSTED_KEY, envWith())).toBe('https://relay.corp.test');
+    expect(fs.existsSync(`${file}.lock`)).toBe(false);
+  });
+
+  it('recovers a lock left by a process that exited', () => {
+    const file = originBindingsPath(envWith());
+    fs.mkdirSync(`${file}.lock`, { recursive: true });
+    // Far above any real pid limit, so it is never alive.
+    fs.writeFileSync(path.join(`${file}.lock`, 'owner'), '2147483646');
+    bindOrigin(SELF_HOSTED_KEY, 'https://relay.corp.test', envWith());
+    expect(boundOrigin(SELF_HOSTED_KEY, envWith())).toBe('https://relay.corp.test');
+    expect(unbindOrigin(SELF_HOSTED_KEY, envWith())).toBe(true);
+    expect(boundOrigin(SELF_HOSTED_KEY, envWith())).toBeUndefined();
+  });
+
   it('fails closed on a corrupt binding file rather than forgetting every binding', () => {
     fs.mkdirSync(path.dirname(originBindingsPath(envWith())), { recursive: true });
     fs.writeFileSync(originBindingsPath(envWith()), '{not json');
@@ -158,9 +265,36 @@ describe('workspace commands bind keys to the configured server', () => {
     expect(resolveWorkspaceTransport({ workspaceKey: SELF_HOSTED_KEY, env: envWith() }).baseUrl).toBe(
       'https://relay.corp.test:8443'
     );
-    vi.unstubAllEnvs();
+  });
+
+  it('checks the binding file before workspace create mints a key', async () => {
+    vi.stubEnv('AGENT_RELAY_HOME', home);
+    vi.stubEnv('AGENT_RELAY_PROJECT', project);
+    vi.stubEnv('RELAY_BASE_URL', 'https://relay.corp.test');
+    fs.writeFileSync(originBindingsPath(envWith()), '{not json');
+    const createWorkspace = vi.fn(async () => ({ workspaceKey: 'rk_live_minted' }));
+    const errors: string[] = [];
+    const program = new Command().exitOverride();
+    registerWorkspaceCommands(program, {
+      log: () => undefined,
+      error: (...args: unknown[]) => errors.push(args.join(' ')),
+      exit: ((code: number) => {
+        throw new Error(`exit:${code}`);
+      }) as never,
+      createWorkspace: createWorkspace as never,
+    });
+    await expect(program.parseAsync(['workspace', 'create', 'corp'], { from: 'user' })).rejects.toThrow(
+      'exit:1'
+    );
+    expect(createWorkspace).not.toHaveBeenCalled();
+    expect(errors.join('\n')).toContain('not a valid Relaycast origin file');
   });
 });
+
+function isAgentRelayHost(url: string): boolean {
+  const { hostname } = new URL(url);
+  return hostname === 'agentrelay.com' || hostname.endsWith('.agentrelay.com');
+}
 
 describe('network: a self-hosted credential never reaches the hosted gateway', () => {
   let server: http.Server;
@@ -180,7 +314,7 @@ describe('network: a self-hosted credential never reaches the hosted gateway', (
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
       const url = input instanceof Request ? input.url : String(input);
       requests.push(url);
-      if (new URL(url).hostname.endsWith('agentrelay.com')) {
+      if (isAgentRelayHost(url)) {
         throw new Error(`credential sent to the hosted gateway: ${url}`);
       }
       return realFetch(input, init);
@@ -192,7 +326,7 @@ describe('network: a self-hosted credential never reaches the hosted gateway', (
   });
 
   function hostedRequests(): string[] {
-    return requests.filter((url) => new URL(url).hostname.endsWith('agentrelay.com'));
+    return requests.filter(isAgentRelayHost);
   }
 
   it('sends a bound key to its own server when RELAY_BASE_URL is missing or blank', async () => {

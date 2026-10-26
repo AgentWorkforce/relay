@@ -5,7 +5,11 @@ import { resolveActiveWorkspace } from '@agent-relay/cloud';
 import { maskSecret } from '../lib/redact.js';
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import { readWorkspaceStore, setWorkspaceKey } from '../lib/workspace-store.js';
-import { configuredOrigin, guardCredentialOrigin } from '../lib/relaycast-origin-binding.js';
+import {
+  assertOriginBindingsWritable,
+  configuredBaseUrl,
+  guardCredentialOrigin,
+} from '../lib/relaycast-origin-binding.js';
 import {
   describeClearedEnrollment,
   persistWorkspaceSession,
@@ -115,14 +119,17 @@ export function registerWorkspaceCommands(
       await runSdk(deps, async () => {
         const workspaceName = validateWorkspaceSessionName(name);
         const requestedBaseUrl = (o.baseUrl as string | undefined) ?? process.env.RELAY_BASE_URL;
-        const origin = configuredOrigin(
+        const baseUrl = configuredBaseUrl(
           requestedBaseUrl,
           'The Relaycast base URL (--base-url or RELAY_BASE_URL)'
         );
+        // Check the binding file before the server mints a key: a key that
+        // cannot be bound afterwards would be lost or fall back to hosted.
+        if (baseUrl) assertOriginBindingsWritable(baseUrl);
         const relay = await deps.createWorkspace(workspaceName, requestedBaseUrl?.trim());
-        if (relay.workspaceKey && origin) {
+        if (relay.workspaceKey && baseUrl) {
           // The self-hosted server that minted this key is the only one it may be sent to.
-          guardCredentialOrigin(relay.workspaceKey, origin);
+          guardCredentialOrigin(relay.workspaceKey, baseUrl);
         }
         const previousActive = readWorkspaceStore().active;
         const persisted = relay.workspaceKey

@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `relay init` gets two agents talking with no account: it starts a private Relaycast server on this machine and creates a workspace. `relay init --hosted` creates a hosted workspace and prints the one command other machines run to join, and `relay init --url <url> --key <key>` connects to your own server on any HTTPS port. See `docs/quickstart.md`.
+- `relay init` lets two agents communicate without an account: it starts a private Relaycast server on this machine and creates a workspace. `relay init --hosted` creates a hosted workspace and prints the one command other machines run to join, and `relay init --url <url> --key <key>` connects to your own server on any HTTPS port. See `docs/quickstart.md`.
 - `relay agent register` saves each agent's token, and `--as <name>` uses it on any messaging command, so agents no longer need `RELAY_AGENT_TOKEN` exported in every shell.
 
 ### Fixed
@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- `agent-relay` no longer sends a self-hosted workspace key or agent token to the hosted service when `RELAY_BASE_URL` is unset in a later shell. A credential used with a self-hosted server is remembered (as a one-way fingerprint in `~/.agentworkforce/relay/relaycast-origins.json`) and sent back only to that server; `workspace create` now honours `RELAY_BASE_URL`; and a malformed `RELAY_BASE_URL` or `--base-url` is an error instead of a silent fallback to `https://cast.agentrelay.com`.
+- `agent-relay` no longer sends a self-hosted workspace key or agent token to the hosted service when `RELAY_BASE_URL` is unset in a later shell. A credential used with a self-hosted server is remembered (as a one-way fingerprint in `~/.agentworkforce/relay/relaycast-origins.json`, path prefix included) and sent back only to that server, and a persisted project route can no longer redirect it; `workspace create` now honours `RELAY_BASE_URL`; and a malformed `RELAY_BASE_URL` or `--base-url` is an error instead of a silent fallback to `https://cast.agentrelay.com`.
 
 ### Removed
 
