@@ -14,6 +14,8 @@ import {
   type WorkspaceKeySource,
 } from '@agent-relay/cloud/workspace-key';
 
+import { configuredOrigin, guardCredentialOrigin } from './relaycast-origin-binding.js';
+
 /** Options shared by the SDK-backed (Relaycast) CLI command groups. */
 export interface SdkClientOptions {
   workspaceKey?: string;
@@ -79,7 +81,37 @@ export function resolveWorkspaceKey(options: SdkClientOptions = {}): string {
 
 export function resolveBaseUrl(options: SdkClientOptions = {}): string | undefined {
   const selection = selectionForTransport(options);
-  return resolveBaseUrlForSelection(selection, options);
+  const resolved = resolveBaseUrlForSelection(selection, options);
+  return guardedBaseUrl(selection ? selectionCredential(selection) : undefined, resolved, options);
+}
+
+/** The URL the caller asked for, untrimmed, so a set-but-empty value is visible. */
+function requestedBaseUrl(options: SdkClientOptions): string | undefined {
+  if (options.baseUrl !== undefined) return options.baseUrl;
+  return trimOrUndefined(options.fallbackBaseUrl) ?? env(options).RELAY_BASE_URL;
+}
+
+function selectionCredential(selection: WorkspaceSelection): string {
+  return trimOrUndefined(selection.relaycastApiKey) ?? selection.key;
+}
+
+/**
+ * Never let a credential silently fall through to the hosted default: an empty
+ * or malformed base URL is an error, and a credential bound to one server is
+ * only ever sent back to that server.
+ */
+function guardedBaseUrl(
+  credential: string | undefined,
+  resolved: string | undefined,
+  options: SdkClientOptions
+): string | undefined {
+  const requested = resolved ?? requestedBaseUrl(options);
+  const label = 'The Relaycast base URL (--base-url or RELAY_BASE_URL)';
+  if (!credential) {
+    configuredOrigin(requested, label);
+    return resolved;
+  }
+  return guardCredentialOrigin(credential, requested, env(options));
 }
 
 function selectionForTransport(options: SdkClientOptions): WorkspaceSelection | undefined {
@@ -143,7 +175,11 @@ export function resolveWorkspaceTransport(options: SdkClientOptions = {}): Works
       'No workspace key found. Pass --workspace-key, set RELAY_WORKSPACE_KEY, or run `relay workspace set_key <name> <key>`.'
     );
   }
-  const baseUrl = resolveBaseUrlForSelection(selection, options);
+  const baseUrl = guardedBaseUrl(
+    selectionCredential(selection),
+    resolveBaseUrlForSelection(selection, options),
+    options
+  );
   // Project-session loading already validates the reference against the
   // project/workspace/route/base tuple. Never re-read a ref here: doing so
   // would let a tampered ref bypass that binding and pair an unrelated key
@@ -269,10 +305,14 @@ export function createAgentRelay(options: SdkClientOptions = {}): AgentRelayAgen
       // flag or RELAY_AGENT_TOKEN. Do not let a persisted project route
       // silently select a different gateway; only an explicit/ambient base URL
       // may choose the token's origin.
-      baseUrl: resolveBaseUrl({
-        ...options,
-        ignorePersistedRelaycastTarget: true,
-      }),
+      baseUrl: guardedBaseUrl(
+        token,
+        resolveBaseUrlForSelection(
+          selectionForTransport({ ...options, ignorePersistedRelaycastTarget: true }),
+          options
+        ),
+        options
+      ),
     });
   }
   const { workspaceKey, baseUrl } = resolveWorkspaceTransport(options);
