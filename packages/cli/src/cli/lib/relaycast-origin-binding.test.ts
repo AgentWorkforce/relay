@@ -20,6 +20,12 @@ const SELF_HOSTED_TOKEN = 'at_live_selfhosted_origin_binding';
 let home: string;
 let project: string;
 
+class ExitSignal extends Error {
+  constructor(public readonly code: number) {
+    super(`exit:${code}`);
+  }
+}
+
 function envWith(extra: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
   return { AGENT_RELAY_HOME: home, AGENT_RELAY_PROJECT: project, ...extra };
 }
@@ -278,13 +284,13 @@ describe('workspace commands bind keys to the configured server', () => {
     registerWorkspaceCommands(program, {
       log: () => undefined,
       error: (...args: unknown[]) => errors.push(args.join(' ')),
-      exit: ((code: number) => {
-        throw new Error(`exit:${code}`);
+      exit: vi.fn((code: number) => {
+        throw new ExitSignal(code);
       }) as never,
       createWorkspace: createWorkspace as never,
     });
-    await expect(program.parseAsync(['workspace', 'create', 'corp'], { from: 'user' })).rejects.toThrow(
-      'exit:1'
+    await expect(program.parseAsync(['workspace', 'create', 'corp'], { from: 'user' })).rejects.toEqual(
+      new ExitSignal(1)
     );
     expect(createWorkspace).not.toHaveBeenCalled();
     expect(errors.join('\n')).toContain('not a valid Relaycast origin file');
