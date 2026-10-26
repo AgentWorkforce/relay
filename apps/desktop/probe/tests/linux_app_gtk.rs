@@ -1622,8 +1622,7 @@ fn general_settings_come_from_the_core(runtime: &tokio::runtime::Runtime) {
     assert!(!case.service.calls.lock().unwrap().contains(&"stop"));
 }
 
-fn session_history_retention_is_chosen_and_warns(runtime: &tokio::runtime::Runtime) {
-    use agent_relay_probe::linux_app::models::history_retention_warning;
+fn session_history_retention_is_previewed_but_disabled(runtime: &tokio::runtime::Runtime) {
     let case = Case::new(runtime);
     let mut kept = settings();
     kept["history_retention_days"] = json!(30);
@@ -1651,86 +1650,19 @@ fn session_history_retention_is_chosen_and_warns(runtime: &tokio::runtime::Runti
         found
     };
     case.pump(|_| choice().is_some());
-    assert_eq!(choice().unwrap().selected(), 1, "30 days unless changed");
-    let warning = history_retention_warning(7, false).unwrap();
-    let held = history_retention_warning(30, true).unwrap();
+    let choice = choice().unwrap();
+    assert_eq!(choice.selected(), 1, "30 days unless changed");
+    assert!(!choice.is_sensitive(), "retention is not enforced yet");
     let labels = case.settings_labels();
     assert!(
         labels.contains(&"Session history".to_string()),
         "{labels:?}"
     );
-    assert!(labels.contains(&"Keep session history".to_string()));
-    assert!(!labels.contains(&warning));
-    assert!(
-        !labels.contains(&held),
-        "uploads run: 30 days does not warn"
-    );
+    assert!(labels.contains(&"Keep session history (coming soon)".to_string()));
+    assert!(labels.contains(
+        &"Automatic history removal is not available yet. Agent Relay keeps local session history until you remove it yourself.".to_string()
+    ));
     render_session_history(&case, "session-history-gtk-30-days-default");
-
-    // Pausing from the status bar while General shows warns at the default
-    // too, and resuming clears it, without leaving the pane.
-    let uploads = |paused: bool| {
-        let mut status = uploader();
-        status["paused"] = json!(paused);
-        check::<method::UploaderStatus>(status)
-    };
-    case.pump(|case| !case.app.with_state(|state| state.busy));
-    let pause = case.app.shell().unwrap().pause_button.clone();
-    case.answer("uploader.status", uploads(true));
-    pause.emit_clicked();
-    case.pump(|case| !case.called("uploader.pause").is_empty());
-    case.pump(|case| {
-        !case.app.with_state(|state| state.busy) && case.settings_labels().contains(&held)
-    });
-    case.settle();
-    assert!(
-        case.settings_labels().contains(&held),
-        "still paused once confirmed"
-    );
-    render_session_history(&case, "session-history-gtk-30-days-uploads-paused");
-    case.answer("uploader.status", uploads(false));
-    pause.emit_clicked();
-    case.pump(|case| !case.called("uploader.resume").is_empty());
-    case.pump(|case| !case.settings_labels().contains(&held));
-
-    choice().unwrap().set_selected(0);
-    case.pump(|case| {
-        case.called("settings.set")
-            .iter()
-            .any(|v| *v == json!({"history_retention_days": 7}))
-    });
-    case.pump(|case| {
-        case.app.with_state(|state| {
-            state
-                .settings
-                .as_ref()
-                .and_then(|s| s.history_retention_days)
-                == Some(7)
-                && !state.setting_pending("history_retention_days")
-        })
-    });
-    case.settle();
-    assert_eq!(choice().unwrap().selected(), 0);
-    assert!(case.settings_labels().contains(&warning));
-    render_session_history(&case, "session-history-gtk-7-days-warning");
-
-    choice().unwrap().set_selected(3);
-    case.pump(|case| {
-        case.called("settings.set")
-            .iter()
-            .any(|v| *v == json!({"history_retention_days": 0}))
-    });
-    case.pump(|case| {
-        case.app.with_state(|state| {
-            state
-                .settings
-                .as_ref()
-                .and_then(|s| s.history_retention_days)
-                == Some(0)
-        })
-    });
-    case.settle();
-    assert!(!case.settings_labels().contains(&warning));
 }
 
 /// With `SETTINGS_RENDER_DIR` set, saves the General pane scrolled to
@@ -1769,7 +1701,7 @@ fn session_history_retention_is_absent_in_older_cores(runtime: &tokio::runtime::
     case.pump(|case| case.app.with_state(|state| state.settings.is_some()));
     case.settle();
     let labels = case.settings_labels();
-    assert!(!labels.contains(&"Keep session history".to_string()));
+    assert!(!labels.contains(&"Keep session history (coming soon)".to_string()));
 }
 
 fn appearance_is_remembered(runtime: &tokio::runtime::Runtime) {
@@ -3773,8 +3705,8 @@ const TESTS: &[(&str, Test)] = &[
         spawned_agents_have_an_optional_cap,
     ),
     (
-        "session_history_retention_is_chosen_and_warns",
-        session_history_retention_is_chosen_and_warns,
+        "session_history_retention_is_previewed_but_disabled",
+        session_history_retention_is_previewed_but_disabled,
     ),
     (
         "session_history_retention_is_absent_in_older_cores",

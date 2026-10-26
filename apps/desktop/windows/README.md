@@ -294,14 +294,11 @@ silently to check where it puts the files and what it removes.
 
 ### Session history
 
-Settings › General › **Session history** chooses how long this computer keeps
-local session history: 7, 30 or 90 days, or Forever, 30 unless changed, as on
-macOS and Linux (`history_retention_days`; see
-[workspace layout](../docs/workspace-layout.md)). The choice is kept in the app
-data folder and applies to this computer only; copies already uploaded to your
-workspace are not affected. A warning shows for 7 days, and for any limit while
-you're signed out or uploads are paused. Until relayhistory's retention
-interface lands, the choice is saved but no history is removed.
+Settings › General › **Session history** shows the planned 7, 30 or 90 day and
+Forever choices, as on macOS and Linux (`history_retention_days`; see
+[workspace layout](../docs/workspace-layout.md)). The control stays disabled
+until relayhistory exposes its retention interface. Agent Relay does not remove
+older sessions automatically yet.
 
 ### Usage diagnostics
 

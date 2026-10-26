@@ -550,8 +550,8 @@ jobs:
           lane: tests
           discard-profile: release
 
-      - name: Test managed Muse MSP delivery
-        run: cargo test --manifest-path probe/Cargo.toml --locked --test muse_msp
+      - name: Test managed Muse delivery
+        run: cargo test --manifest-path probe/Cargo.toml --locked --lib relay::harness::muse
 
       - name: Test core diagnostic logs
         run: cargo test --manifest-path probe/Cargo.toml --locked --lib relay::diagnostics

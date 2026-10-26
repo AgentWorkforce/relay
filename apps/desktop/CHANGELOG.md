@@ -8,7 +8,7 @@ publishing; land that artifact through a normal pull request. A release whose
 
 ## Unreleased
 
-- **Choose how long this computer keeps session history.** Settings › General › **Session history** lets you choose 7, 30 or 90 days, or forever, for the local session history on this computer; it is 30 days unless you change it. Older sessions are removed from this computer only; copies already uploaded to your workspace stay. A warning shows for 7 days, and for any limit while you're signed out or uploads are paused, since sessions that haven't uploaded by then could be removed first. Agents can read and change it as `history_retention_days` (`0` keeps history forever). Same on macOS, Linux and Windows.
+- **Preview session-history retention controls.** Settings › General › **Session history** shows the planned 7, 30 or 90 day and forever choices, but keeps the control disabled until relayhistory can enforce deletion. Agent Relay does not remove older sessions automatically yet. Same on macOS, Linux and Windows.
 
 - **A simpler sign-in screen.** The logged-out screen on macOS, Linux and Windows now offers **Sign in with Google** without the redundant **Use another account** button. Signing in always opens Google's account chooser instead of silently reusing a saved app or CLI session.
 

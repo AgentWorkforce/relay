@@ -424,6 +424,7 @@ struct HistoryRetentionRow: View {
             .pickerStyle(.menu)
             .frame(width: 170)
             .accessibilityLabel(HistoryRetentionCopy.title)
+            .disabled(true)
         }
         .padding(16)
         .accessibilityElement(children: .contain)

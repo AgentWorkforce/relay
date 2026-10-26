@@ -11,8 +11,8 @@ final class HistoryRetentionRowRenderTests: XCTestCase {
     func testRendersEachState() throws {
         let states: [(name: String, days: Int, held: Bool)] = [
             ("session-history-mac-30-days-default", 30, false),
-            ("session-history-mac-7-days-warning", 7, false),
-            ("session-history-mac-30-days-uploads-paused", 30, true),
+            ("session-history-mac-7-days-preview", 7, false),
+            ("session-history-mac-30-days-uploads-paused-preview", 30, true),
         ]
         for scheme in [NSAppearance.Name.aqua, .darkAqua] {
             for state in states {

@@ -92,6 +92,30 @@ const LIVE_NODE_A = {
 };
 
 describe('RelaycastMessagingClient placement', () => {
+  it.each([
+    ['spawn:gemini', "provider 'gemini' has been removed"],
+    ['spawn:cursor', "use 'cursor-cloud'"],
+    ['spawn:cursor-agent', "use 'cursor-cloud'"],
+    ['spawn:aider', "provider 'aider' has been removed"],
+    ['spawn:goose', "provider 'goose' has been removed"],
+    ['spawn:droid', "provider 'droid' has been removed"],
+  ])('rejects removed capability %s before placement or dispatch', async (capability, guidance) => {
+    const listNodes = vi.fn(async () => []);
+    const { client, invoke } = createClient([], { listNodes });
+
+    const error = await client.placement
+      .spawn({ capability, failFast: false, ttlMs: 60_000, input: { name: 'removed' } })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(RelayPlacementError);
+    expect((error as RelayPlacementError).code).toBe('provider_removed');
+    expect((error as RelayPlacementError).attempts).toBe(0);
+    expect((error as RelayPlacementError).dispatchState).toBe('not_dispatched');
+    expect((error as Error).message).toContain(guidance);
+    expect(listNodes).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it('places a targeted spawn on the named live eligible node', async () => {
     const { client, invoke } = createClient([
       {

@@ -63,11 +63,17 @@ export function resolveNodeCapacityHarnesses(
 ): string {
   const trimmed = preset?.trim();
   if (trimmed) {
-    return trimmed
+    const supported = trimmed
       .split(',')
       .map((harness) => harness.trim())
       .filter((harness) => harness && !removedProvider(harness))
       .join(',');
+    if (!supported) {
+      throw new Error(
+        'AGENT_RELAY_NODE_HARNESSES does not contain a supported provider; use claude, codex, opencode, muse, devin, or a configured custom native harness.'
+      );
+    }
+    return supported;
   }
   return nodeCapacityHarnesses(teamsConfig, definition).join(',');
 }

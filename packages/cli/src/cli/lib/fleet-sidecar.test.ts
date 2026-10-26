@@ -92,6 +92,12 @@ describe('resolveNodeCapacityHarnesses', () => {
     expect(resolveNodeCapacityHarnesses('claude,gemini,cursor-agent', null)).toBe('claude');
   });
 
+  it('rejects a preset containing only removed providers instead of advertising defaults', () => {
+    expect(() => resolveNodeCapacityHarnesses('gemini,cursor-agent,aider,goose,droid', null)).toThrow(
+      /does not contain a supported provider/
+    );
+  });
+
   it('computes defaults ∪ config when no value is pre-set', () => {
     const definition = defineNode({
       name: 'p',

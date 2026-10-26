@@ -123,6 +123,7 @@ impl App {
             choice.set_selected(index as u32);
         }
         choice.set_valign(gtk::Align::Start);
+        choice.set_sensitive(false);
         widgets::name(&choice, HISTORY_RETENTION_TITLE);
         if held {
             choice.add_css_class(HELD_CLASS);

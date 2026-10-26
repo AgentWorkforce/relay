@@ -10,6 +10,7 @@ import {
   nonEmptyPlacement,
   placementActionInput,
   placementActionName,
+  removedSpawnProviderMessage,
   RelayPlacementError,
   resolveDispatchState,
   type PlacementSelection,
@@ -756,6 +757,15 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
   readonly placement = {
     spawn: async (input: RelaySpawnPlacementInput): Promise<RelaySpawnPlacementAck> => {
       const capability = nonEmptyPlacement(input.capability, 'placement capability');
+      const providerRemoved = removedSpawnProviderMessage(capability);
+      if (providerRemoved) {
+        throw new RelayPlacementError('provider_removed', providerRemoved, {
+          capability,
+          attempts: 0,
+          state: 'failed',
+          dispatchState: 'not_dispatched',
+        });
+      }
       const repo = input.repo?.trim() || undefined;
       const targetNode = this.resolvePlacementNode(input.node, input.selfNodeName);
       const sandboxOnly = input.sandboxOnly ?? this.placementSandboxOnly;

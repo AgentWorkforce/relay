@@ -158,6 +158,27 @@ export function placementActionName(capability: string): string {
   return capability.startsWith('spawn:') ? 'spawn' : capability;
 }
 
+const REMOVED_SPAWN_PROVIDERS = new Map<string, string>([
+  ['gemini', 'gemini'],
+  ['cursor', 'cursor'],
+  ['cursor-agent', 'cursor'],
+  ['aider', 'aider'],
+  ['goose', 'goose'],
+  ['droid', 'droid'],
+]);
+
+/** A stable migration error for spawn capabilities retired from native nodes. */
+export function removedSpawnProviderMessage(capability: string): string | undefined {
+  if (!capability.startsWith('spawn:')) return undefined;
+  const harness = capability.slice('spawn:'.length).trim().toLowerCase();
+  const provider = REMOVED_SPAWN_PROVIDERS.get(harness);
+  if (!provider) return undefined;
+  if (provider === 'cursor') {
+    return "provider_removed: local Cursor CLI spawning has been removed; use 'cursor-cloud' for Cursor Cloud agents.";
+  }
+  return `provider_removed: provider '${provider}' has been removed; switch to a supported native provider (claude, codex, or opencode).`;
+}
+
 export function placementActionInput(
   input: Record<string, unknown> | undefined,
   placement: { capability: string; node?: string; repo?: string; ttlMs: number; verifyReady?: boolean }

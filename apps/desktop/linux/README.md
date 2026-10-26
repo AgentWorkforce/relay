@@ -180,7 +180,7 @@ includes both message states again. Sessions stay current automatically.
   its own once the service answers again, and its message clears.
   **Live Agents on Relay: N** opens Sessions with `is:active is:on-relay`, replacing
   previous search filters and returning from any open transcript.
-- **Settings:** General (appearance, open at login, keep agents connected after quitting, privacy, how long session history is kept, and service recovery when needed), Updates (software updates),
+- **Settings:** General (appearance, open at login, keep agents connected after quitting, privacy, a disabled preview of session-history retention until relayhistory can enforce it, and service recovery when needed), Updates (software updates),
   Diagnostics (log files and expandable, copyable diagnostic reports), Messages (connect the account workspace or
   paste a key, Claude Code direct delivery, Grok leader mode, the OpenCode plugin, OpenClaw agents (any OpenClaw from 2026.3.13; one older
   than 2026.8.1 cannot limit relay sessions, which the row says; with **Agent Relay tools** under it while it is on:

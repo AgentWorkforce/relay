@@ -7,16 +7,13 @@ final class HistoryRetentionCopyTests: XCTestCase {
                        ["7 days", "30 days (default)", "90 days", "Forever"])
     }
 
-    func testAShortChoiceWarnsAndAnyLimitWarnsWhileUploadsAreHeld() {
-        XCTAssertEqual(HistoryRetentionCopy.warning(7, uploadsHeld: false),
-                       "Sessions that haven’t uploaded within 7 days can be removed from this computer before they upload, for example while you’re signed out or uploads are paused.")
+    func testNoChoicePromisesDeletionBeforeRelayhistoryEnforcesIt() {
         for days in [30, 90, 0] {
             XCTAssertNil(HistoryRetentionCopy.warning(days, uploadsHeld: false), "\(days)")
+            XCTAssertNil(HistoryRetentionCopy.warning(days, uploadsHeld: true), "\(days)")
         }
-        XCTAssertEqual(HistoryRetentionCopy.warning(30, uploadsHeld: true),
-                       "While you’re signed out or uploads are paused, sessions that haven’t uploaded within 30 days can be removed from this computer before they upload.")
-        XCTAssertNotNil(HistoryRetentionCopy.warning(90, uploadsHeld: true))
-        XCTAssertNil(HistoryRetentionCopy.warning(0, uploadsHeld: true))
+        XCTAssertNil(HistoryRetentionCopy.warning(7, uploadsHeld: false))
+        XCTAssertNil(HistoryRetentionCopy.warning(7, uploadsHeld: true))
     }
 
     func testAChoiceShowsAtOnceWhileItSaves() {

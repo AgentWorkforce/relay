@@ -354,15 +354,12 @@ service until the app opens again, and Open at login reads "Your agents connect
 when it opens." On Linux, turning it off while the systemd unit runs first asks
 **Turn off the background service?** and turns the unit off.
 
-General › Session history holds **Keep session history**
-(`history_retention_days`): 7, 30 or 90 days, or Forever (`0`), 30 unless
-changed. The core keeps the choice in `history-retention.json` in the app data
-folder and in memory, and hands it to relayhistory, which removes older sessions
-from `history.db`, on a thread of its own (`relay::history_retention`), so
-neither Settings nor the session list waits on the database. A choice shorter
-than 30 days, or any limit while signed out or uploads are paused, shows a
-warning that sessions not uploaded by then can be removed first. Until
-relayhistory's retention interface lands, the adapter only saves the choice.
+General › Session history shows **Keep session history (coming soon)** and the
+planned 7, 30 or 90 day and Forever (`0`) choices. The control stays disabled:
+relayhistory does not expose its retention interface yet, so Agent Relay does
+not remove older sessions automatically. The core's provisional
+`history_retention_days` adapter can persist a value for development, but the
+desktop apps do not present it as an active deletion guarantee.
 
 Relay settings retain workspace connection, Claude Code direct delivery, Grok
 leader mode, OpenCode plugin configuration, **OpenClaw agents**
