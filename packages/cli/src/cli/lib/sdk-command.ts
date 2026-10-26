@@ -47,6 +47,7 @@ export function addSdkOptions(command: Command): Command {
       )
       .option('--wk <key>', 'Alias for --workspace-key')
       .option('--token <token>', 'Agent token (defaults to RELAY_AGENT_TOKEN)')
+      .option('--as <name>', 'Act as an agent whose token `agent register` saved')
       .option('--base-url <url>', 'Override the API base URL (defaults to RELAY_BASE_URL)')
       // Fold the `--wk` alias into `workspaceKey` before the action runs, so every
       // downstream reader (`sdkOptionsFromOpts`, integration's `explicitWorkspaceKey`,
@@ -65,6 +66,7 @@ export function sdkOptionsFromOpts(opts: Record<string, unknown>): SdkClientOpti
   return {
     workspaceKey: opts.workspaceKey as string | undefined,
     token: opts.token as string | undefined,
+    asAgent: opts.as as string | undefined,
     baseUrl: opts.baseUrl as string | undefined,
   };
 }

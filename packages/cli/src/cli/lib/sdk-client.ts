@@ -14,12 +14,15 @@ import {
   type WorkspaceKeySource,
 } from '@agent-relay/cloud/workspace-key';
 
+import { savedAgentToken } from './agent-token-store.js';
 import { configuredOrigin, guardCredentialOrigin } from './relaycast-origin-binding.js';
 
 /** Options shared by the SDK-backed (Relaycast) CLI command groups. */
 export interface SdkClientOptions {
   workspaceKey?: string;
   token?: string;
+  /** Act as this agent, using the token `agent register` saved for it. */
+  asAgent?: string;
   /** Non-authoritative session URL used only when no persisted route or explicit URL exists. */
   fallbackBaseUrl?: string;
   baseUrl?: string;
@@ -270,7 +273,21 @@ export function persistWorkspaceRelaycastTarget(
 }
 
 export function resolveAgentToken(options: SdkClientOptions = {}): string | undefined {
-  return trimOrUndefined(options.token) ?? trimOrUndefined(env(options).RELAY_AGENT_TOKEN);
+  const explicit = trimOrUndefined(options.token);
+  const asAgent = trimOrUndefined(options.asAgent);
+  if (explicit && asAgent) throw new Error('Pass either --token or --as, not both.');
+  if (explicit) return explicit;
+  if (asAgent) {
+    const { workspaceKey, baseUrl } = resolveWorkspaceTransport({ ...options, asAgent: undefined });
+    const saved = savedAgentToken(workspaceKey, baseUrl, asAgent, env(options));
+    if (!saved) {
+      throw new Error(
+        `No saved token for "${asAgent}" in this workspace. Run \`agent-relay agent register ${asAgent}\` first.`
+      );
+    }
+    return saved;
+  }
+  return trimOrUndefined(env(options).RELAY_AGENT_TOKEN);
 }
 
 /** Workspace-scoped client (no agent token). */
@@ -285,7 +302,7 @@ export function createWorkspaceRelay(options: SdkClientOptions = {}): AgentRelay
  * workspace-scoped client is returned.
  */
 export function createAgentRelay(options: SdkClientOptions = {}): AgentRelayAgent {
-  if (trimOrUndefined(options.workspaceKey)) {
+  if (trimOrUndefined(options.workspaceKey) && !trimOrUndefined(options.asAgent)) {
     if (trimOrUndefined(options.token)) {
       throw new Error('Pass either --workspace-key or --token, not both.');
     }
@@ -294,6 +311,11 @@ export function createAgentRelay(options: SdkClientOptions = {}): AgentRelayAgen
     return createWorkspaceRelay(options);
   }
   const token = resolveAgentToken(options);
+  if (token && trimOrUndefined(options.asAgent)) {
+    // A saved token goes to the server of the workspace it was saved under.
+    const { baseUrl } = resolveWorkspaceTransport({ ...options, asAgent: undefined });
+    return new AgentRelay({ agentToken: token, baseUrl: guardedBaseUrl(token, baseUrl, options) });
+  }
   // Agent tokens are valid Relaycast transport credentials and already bind
   // the caller to exactly one workspace. Prefer the scoped token itself over
   // every ambient workspace-key source so invited humans cannot accidentally
