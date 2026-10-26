@@ -259,7 +259,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.probe == 'true'
     name: Probe
-    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    # The native identity and filesystem-permission tests intentionally reject
+    # root-owned sessions. Keep this suite on GitHub's non-root hosted runner;
+    # repository-configured build runners may execute their jobs as uid 0.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
