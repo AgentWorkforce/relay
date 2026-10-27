@@ -281,11 +281,22 @@ async function installStandaloneEngine(deps: InitCommandDependencies): Promise<v
   }
 }
 
-async function ensureLocalServer(deps: InitCommandDependencies, port: number): Promise<string> {
+/** The origin of the local server `relay init` started earlier, if it is still up. */
+async function runningLocalServer(deps: InitCommandDependencies): Promise<string | undefined> {
   const existing = readState();
   if (existing && deps.isAlive(existing.pid) && (await healthy(deps, existing.origin))) {
     return existing.origin;
   }
+  return undefined;
+}
+
+async function ensureLocalServer(deps: InitCommandDependencies, port: number): Promise<string> {
+  const running = await runningLocalServer(deps);
+  if (running) return running;
+  await installStandaloneEngine(deps);
+  // The download can take a while; another `relay init` may have started the server meanwhile.
+  const startedMeanwhile = await runningLocalServer(deps);
+  if (startedMeanwhile) return startedMeanwhile;
   const origin = `http://127.0.0.1:${port}`;
   if (await healthy(deps, origin)) {
     throw new Error(
@@ -294,7 +305,6 @@ async function ensureLocalServer(deps: InitCommandDependencies, port: number): P
   }
   fs.mkdirSync(localDir(), { recursive: true, mode: 0o700 });
   const logFile = path.join(localDir(), 'server.log');
-  await installStandaloneEngine(deps);
   deps.log(
     `Starting a local Relaycast server on ${origin}${engineInstalled() ? '' : ' (downloading it the first time)'}…`
   );

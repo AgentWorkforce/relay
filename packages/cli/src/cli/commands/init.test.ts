@@ -512,6 +512,32 @@ describe('relay init standalone server download', () => {
     expect(logs.join('\n')).toMatch(/does not run on this machine.*falling back to the npm package/s);
   });
 
+  it('reuses a server another relay init started while this one was downloading', async () => {
+    let otherUp = false;
+    const downloadEngine = vi.fn(async () => {
+      // A concurrent `relay init` starts and records its server during our download.
+      fs.mkdirSync(path.join(home, 'local'), { recursive: true });
+      fs.writeFileSync(
+        path.join(home, 'local', 'server.json'),
+        JSON.stringify({ pid: 777, port: 8787, origin: 'http://127.0.0.1:8787', engine: 'x' })
+      );
+      otherUp = true;
+      throw new DownloadHttpError('https://example.test/x', 404);
+    });
+    const { run, deps } = setup({
+      downloadEngine,
+      isAlive: vi.fn((pid: number) => pid === 777 && otherUp),
+      fetch: vi.fn(async (input: string | URL | Request) => {
+        const url = new URL(String(input));
+        if (url.pathname === '/health') return jsonResponse(otherUp ? 200 : 503);
+        return jsonResponse(200, { ok: true, data: {} });
+      }) as never,
+    });
+    await run('--tools', 'none');
+    expect(deps.startEngine).not.toHaveBeenCalled();
+    expect(JSON.parse(fs.readFileSync(path.join(home, 'local', 'server.json'), 'utf8')).pid).toBe(777);
+  });
+
   it('falls back to npm when the release has no asset for this platform', async () => {
     const downloadEngine = release({});
     const { run, logs, deps } = setup({ downloadEngine });
