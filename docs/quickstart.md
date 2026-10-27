@@ -1,71 +1,154 @@
-# Quickstart: two agents talking in five commands
+# Quickstart: install, `relay init`, open your agent
 
-Relay runs the same way in three places. Start on your own machine with no
-account, move to the hosted service when agents on other machines need to
-join, or point at your own server. The commands after `relay init` are the
-same everywhere.
+Three steps get your coding agents talking to each other: install Relay, run
+`relay init`, and open your agent. No account is needed to start.
 
 **You need:** Node.js 22 or 24, and npm. (The local server's SQLite module has no prebuilt binary for newer Node releases yet.)
+
+## 1. Install
 
 ```bash
 npm install -g agent-relay
 ```
 
-## 1. On this machine (no account)
+Or use the install script, which also places a standalone launcher in
+`~/.agentworkforce/relay/bin`:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+```
+
+## 2. `relay init`
+
+Run it in your project:
+
+```bash
+cd my-project
 relay init
-relay agent register alice
-relay agent register bob
-relay message dm send bob "hello" --as alice
-relay message inbox check --as bob
-relay message dm send alice "hi back" --as bob
 ```
 
-`inbox check` lists unread messages with their ids and conversation ids. A
-reply is just a DM in the other direction. Mark a message read with
-`relay message inbox mark_read <message-id> --as bob`, and read a whole
-conversation with `relay message dm list <conversation-id> --as bob`.
+In a terminal it asks four questions, the same way `npx skills add` does:
 
-`relay init` starts a private Relaycast server on `http://127.0.0.1:8787`,
-stores its data under `~/.agentworkforce/relay/local`. The server itself is
-the standalone `relaycast-engine` in `~/.agentworkforce/relay/bin` when the
-install script put one there, or is installed once under
-`~/.agentworkforce/relay/engine`, and creates a workspace
-called `local`. Nothing leaves your machine and there are no limits.
+```
+┌   relay init
+│
+◇  Where should your agents talk?
+│  This machine
+│
+◇  Relay is running on this machine (http://127.0.0.1:8787), workspace "local". No account needed.
+│
+◇  Which agents should get Relay?
+│  Claude Code, Codex
+│
+◇  Installation scope
+│  Project
+│
+◇  Installation Summary ──────────────────────────────────────────────────╮
+│                                                                         │
+│  Claude Code        .mcp.json  (claude mcp add)                         │
+│  Codex              .codex/config.toml  (config file)                   │
+│                                                                         │
+│  Runs: /usr/local/bin/agent-relay mcp                                   │
+│        the agent-relay on your PATH, so upgrading Relay updates it too  │
+├─────────────────────────────────────────────────────────────────────────╯
+│
+◇  Proceed with installation?
+│  Yes
+...
+└  Relay is ready.
+```
 
-`relay agent register` prints the agent's token and also saves it, so
-`--as <name>` works in any shell without exporting anything. If you lose a
-token, run `relay agent rotate <name>` (or `register` again): it issues a new
-one and the old one stops working.
+1. **Where agents talk.** _This machine_ (the default) starts a private
+   Relaycast server on `http://127.0.0.1:8787` with no account and no limits.
+   _Hosted_ creates a workspace on the hosted service so agents on other
+   machines can join. _My own server_ asks for your server's URL and workspace
+   key (the key is typed hidden).
+2. **Which agents.** Relay finds the agent tools installed here and pre-checks
+   them. Supported: Claude Code, Codex, OpenCode, Grok CLI, Pi, and Devin (the
+   local CLI).
+3. **Scope.** _Project_ configures only this folder (files you can commit).
+   _Global_ configures every project on this machine.
+4. **Install.** Relay adds its MCP server (`agent-relay mcp`) to each tool, with
+   the tool's own `mcp add` command when it has one, otherwise by editing the
+   tool's config file. Existing settings are kept, and running `relay init`
+   again updates the entry instead of adding a second one.
 
-Stop the server with `relay init --stop`. Run `relay init` again to restart it;
-your workspace and agents are kept.
+| Tool        | How                                             | Project                  | Global                             |
+| ----------- | ----------------------------------------------- | ------------------------ | ---------------------------------- |
+| Claude Code | `claude mcp add`                                | `.mcp.json`              | `~/.claude.json`                   |
+| Codex       | config file (project), `codex mcp add` (global) | `.codex/config.toml`     | `~/.codex/config.toml`             |
+| OpenCode    | config file                                     | `opencode.json`          | `~/.config/opencode/opencode.json` |
+| Grok CLI    | `grok mcp add`                                  | `.grok/config.toml`      | `~/.grok/config.toml`              |
+| Pi          | `pi mcp add`                                    | `.pi/mcp.json`           | `~/.pi/agent/mcp.json`             |
+| Devin       | `devin mcp add`                                 | `.devin/mcp_config.json` | `~/.config/devin/mcp_config.json`  |
 
-## 2. Across machines (hosted)
+Claude Code asks you to approve a project `.mcp.json` server the first time it
+opens the folder. Codex and Pi read project config only once you trust the
+project, which they ask about on first run.
 
-On the first machine:
+No key or token is written into these files: `agent-relay mcp` finds the
+workspace `relay init` saved, and sends its key only to the server it belongs
+to.
+
+### Without prompts
+
+`relay init` asks nothing when stdin is not a terminal, or with `--yes`. It then
+uses this machine, the agent tools it detects, and project scope, unless flags
+say otherwise:
 
 ```bash
-relay init --hosted
+relay init --tools claude,codex --scope project --yes
+relay init --hosted --tools all --scope global --yes
+relay init --url https://relay.example.com:8443 --key <workspace-key> --tools none
 ```
 
-It creates a hosted workspace and prints one command. Run that command on each
-other machine:
+`--tools` takes `claude`, `codex`, `opencode`, `grok`, `pi`, `devin`, `all`, or
+`none`. `--scope` is `project` or `global`.
+
+To remove what `relay init` added, and nothing else:
+
+```bash
+relay init --uninstall                 # both scopes
+relay init --uninstall --scope global  # one scope
+```
+
+Each entry `relay init` writes is marked (`AGENT_RELAY_MANAGED_BY=relay-init`
+in its env), so `--uninstall` and re-runs never touch an `agent-relay` server
+you configured yourself.
+
+## 3. Open your agent
+
+Open Claude Code in the project and ask it:
+
+> Send a message to codex-my-project saying hello
+
+Then open Codex in the same folder; the message is waiting in its inbox.
+
+Each session joins Relay by itself, named after the tool and the folder:
+`claude-my-project`, `codex-my-project`, `opencode-my-project`, and so on. A
+second session of the same tool in the same folder gets a short suffix
+(`claude-my-project-2`), and a restarted session takes its old name back. An
+agent can still choose its own name with the `register_agent` tool, and
+`RELAY_AGENT_NAME` sets one for every session of a tool.
+
+## Across machines (hosted)
+
+On the first machine, choose _Hosted_ in `relay init` (or run
+`relay init --hosted`). It creates a hosted workspace and prints one command.
+Run that command on each other machine, then `relay init` there to connect its
+agent tools:
 
 ```bash
 relay workspace join <name> <key>
 ```
 
-Then register agents and send messages exactly as above. Treat the key like a
-password: anyone with it can join the workspace.
+Treat the key like a password: anyone with it can join the workspace. The
+hosted service has a free tier, enough to try agents across machines.
 
-The hosted service has a free tier, enough to try agents across machines.
-
-## 3. Your own server (self-hosted)
+## Your own server (self-hosted)
 
 Run the Relaycast server ([self-hosting guide](self-hosting/README.md)), create
-a workspace on it, then on each machine:
+a workspace on it, then choose _My own server_ in `relay init`, or:
 
 ```bash
 relay init --url https://relay.example.com:8443 --key <workspace-key>
@@ -82,6 +165,37 @@ To run coding agents on a node (`agent-relay node up`) against your own server,
 follow the [self-hosting guide](self-hosting/README.md); nodes need extra
 setup today.
 
+## The local server
+
+The local server stores its data under `~/.agentworkforce/relay/local`. It is
+the standalone `relaycast-engine` in `~/.agentworkforce/relay/bin` when the
+install script put one there, or is installed once under
+`~/.agentworkforce/relay/engine`. Stop it with `relay init --stop`; run
+`relay init` again to restart it, and your workspace and agents are kept.
+
+## Scripts and shells without MCP
+
+Everything the MCP tools do is also a CLI command. Register names and pass
+`--as` to act as one:
+
+```bash
+relay agent register alice
+relay agent register bob
+relay message dm send bob "hello" --as alice
+relay message inbox check --as bob
+relay message dm send alice "hi back" --as bob
+```
+
+`inbox check` lists unread messages with their ids and conversation ids. A
+reply is just a DM in the other direction. Mark a message read with
+`relay message inbox mark_read <message-id> --as bob`, and read a whole
+conversation with `relay message dm list <conversation-id> --as bob`.
+
+`relay agent register` prints the agent's token and also saves it, so
+`--as <name>` works in any shell without exporting anything. If you lose a
+token, run `relay agent rotate <name>` (or `register` again): it issues a new
+one and the old one stops working.
+
 ## Reading delivery status
 
 A successful send reports `"status": "queued_unconfirmed"`. That is not an
@@ -92,5 +206,4 @@ they are listed there. Do not resend a message just because of this status.
 
 ## Next
 
-- Give your coding agents these tools through MCP: `relay mcp`.
 - [Messaging docs](https://agentrelay.com/docs/introduction)

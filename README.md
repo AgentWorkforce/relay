@@ -60,15 +60,22 @@ Or install with npm:
 npm install -g agent-relay
 ```
 
-Then get two agents talking on your machine, with no account:
+Then, in your project, run:
 
 ```bash
 relay init
+```
+
+It starts a private server on this machine (no account needed), finds the coding agents you have installed (Claude Code, Codex, OpenCode, Grok CLI, Pi, Devin), and adds Relay to them for this project or every project. Open Claude Code and ask it to message `codex-<your-folder>`; each session joins Relay as `<tool>-<folder>` by itself.
+
+Scripts and shells without MCP use the CLI directly:
+
+```bash
 relay agent register alice && relay agent register bob
 relay message dm send bob "hello" --as alice
 ```
 
-The [quickstart](docs/quickstart.md) covers this, moving to the hosted service when agents on other machines need to join, and running your own server.
+The [quickstart](docs/quickstart.md) covers the guided setup, its flags (`--tools`, `--scope`, `--yes`, `--uninstall`), moving to the hosted service when agents on other machines need to join, and running your own server.
 
 ### Self Hosting
 

@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `relay init` lets two agents communicate without an account: it starts a private Relaycast server on this machine and creates a workspace. `relay init --hosted` creates a hosted workspace and prints the one command other machines run to join, and `relay init --url <url> --key <key>` connects to your own server on any HTTPS port. See `docs/quickstart.md`.
 - `relay agent register` saves each agent's token, and `--as <name>` uses it on any messaging command, so agents no longer need `RELAY_AGENT_TOKEN` exported in every shell.
+- `relay init` is now a guided setup in a terminal: it asks where agents talk (this machine, hosted, or your own server), which agent tools to connect (Claude Code, Codex, OpenCode, Grok CLI, Pi and Devin, with the installed ones pre-checked), and whether to configure this project or every project, then adds the Relay MCP server to each tool through its own `mcp add` command or config file. `--tools`, `--scope` and `--yes` run it without prompts (the default when stdin is not a terminal), and `relay init --uninstall` removes only the entries it added.
+
+### Changed
+
+- `relay mcp` without `RELAY_AGENT_NAME` now registers each session as `<tool>-<project folder>` (for example `claude-myproject`, from the MCP client's name), adding a short suffix when another live session holds that name and taking the name back after a restart, instead of registering every session as `orchestrator`.
 
 ### Fixed
 
@@ -21,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay` no longer sends a self-hosted workspace key or agent token to the hosted service when `RELAY_BASE_URL` is unset in a later shell. A credential used with a self-hosted server is remembered (as a one-way fingerprint in `~/.agentworkforce/relay/relaycast-origins.json`, path prefix included) and sent back only to that server, and a persisted project route can no longer redirect it; `workspace create` now honours `RELAY_BASE_URL`; and a malformed `RELAY_BASE_URL` or `--base-url` is an error instead of a silent fallback to `https://cast.agentrelay.com`.
 - The Rust broker now enforces the same saved self-hosted credential route before making authenticated HTTPS or WebSocket connections, passes that resolved route to spawned agents, and trusts operating-system roots plus `SSL_CERT_FILE` for private certificate authorities.
+- Spawned Cursor, OpenCode, Gemini, and Grok agents no longer get the workspace key, agent token, or `RELAY_WORKSPACES_JSON` written into their config files (`.cursor/mcp.json`, `opencode.json`, `.gemini/settings.json`, `~/.grok/config.toml`). The files name each credential by environment variable, and the broker sets the values on the agent process. A later commit of the project can no longer publish live Relay credentials. The broker refuses to write a credential-shaped value into a project file, and it adds each project file it writes to `.git/info/exclude`. Rotate any key or token that an earlier version may have written into a repository.
+- Muse workers' Relay MCP settings move from `<project>/.agent-relay/` to `~/.agentworkforce/relay/sessions/` (or `$AGENT_RELAY_HOME/sessions/`), and the broker removes them when the worker is released. A Muse worker that uses `RELAY_MUSE_ISOLATED_AUTH` has to log in again once.
+- `agent-relay-broker mcp-args` output adds `requiredEnv`, which lists the credential variables (names only) that the caller must set on the agent process.
 
 ### Removed
 

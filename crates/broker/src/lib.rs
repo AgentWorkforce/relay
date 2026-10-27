@@ -65,6 +65,7 @@ pub(crate) mod types;
 pub(crate) mod util;
 pub(crate) mod worker;
 pub(crate) mod worker_request;
+pub mod worktree_guard;
 pub(crate) mod wrap;
 
 // The PTY layer — session management, terminal grid snapshots, and CLI
