@@ -303,6 +303,38 @@ describe('relay init and the machine-wide active workspace', () => {
     expect(logs.join('\n')).toContain('relay workspace switch corp');
   });
 
+  it('quotes a workspace name the shell would split in the switch command', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run, logs } = setup();
+    await run('--hosted', '--name', "my team's", '--tools', 'none');
+    expect(readWorkspaceStore().workspaces["my team's"]?.key).toBeDefined();
+    expect(logs.join('\n')).toContain(`run: relay workspace switch 'my team'\\''s'`);
+  });
+
+  it('says which workspace globally set up agent tools use outside this project', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run, logs } = setup();
+    await run('--tools', 'claude', '--scope', 'global');
+    expect(logs.join('\n')).toContain(
+      'Outside this project, the globally set up agent tools use the active workspace "ghsub-live". ' +
+        'To use "local" there too, run: relay workspace switch local'
+    );
+  });
+
+  it('adds no global-scope note at project scope or when the new workspace is active', async () => {
+    const fresh = setup();
+    await fresh.run('--tools', 'claude', '--scope', 'global');
+    expect(fresh.logs.join('\n')).not.toContain('Outside this project');
+
+    writeWorkspaceStore({
+      ...HOSTED,
+      workspaces: { ...HOSTED.workspaces, ...readWorkspaceStore().workspaces },
+    });
+    const project = setup();
+    await project.run('--tools', 'claude', '--scope', 'project');
+    expect(project.logs.join('\n')).not.toContain('Outside this project');
+  });
+
   it('keeps it in the guided flow', async () => {
     writeWorkspaceStore(HOSTED);
     const script = scriptedPrompter(['local', []]);
