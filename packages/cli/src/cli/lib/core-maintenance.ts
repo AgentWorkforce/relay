@@ -300,6 +300,17 @@ async function installVersion(
   });
 }
 
+/** Marker line install.sh writes into every launcher it creates (see install.sh LAUNCHER_MARKER). */
+export const INSTALLER_LAUNCHER_MARKER = '# agent-relay launcher (written by the Agent Relay installer)';
+
+function isInstallerLauncher(filePath: string, fs: CoreFileSystem): boolean {
+  try {
+    return fs.existsSync(filePath) && fs.readFileSync(filePath, 'utf-8').includes(INSTALLER_LAUNCHER_MARKER);
+  } catch {
+    return false;
+  }
+}
+
 export async function runUninstallCommand(
   options: {
     keepData?: boolean;
@@ -375,9 +386,13 @@ export async function runUninstallCommand(
   const standaloneBinDir = path.join(homeDir, '.local', 'bin');
   const installBinDirs = INSTALL_DIR_NAMES.map((installDir) => path.join(homeDir, installDir, 'bin'));
 
-  // Remove standalone binaries from ~/.local/bin
-  for (const binaryName of ['agent-relay', 'relay-acp']) {
+  // Remove standalone binaries from ~/.local/bin. The short `relay` launcher is
+  // removed only when install.sh wrote it: another tool may own that name.
+  for (const binaryName of ['agent-relay', 'relay', 'relay-acp']) {
     const binPath = path.join(standaloneBinDir, binaryName);
+    if (binaryName === 'relay' && !isInstallerLauncher(binPath, deps.fs)) {
+      continue;
+    }
     if (deps.fs.existsSync(binPath)) {
       if (isDryRun) {
         deps.log(`[dry-run] Would remove binary: ${binPath}`);

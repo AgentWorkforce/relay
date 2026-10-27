@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
+import { INSTALLER_LAUNCHER_MARKER } from './cli/lib/core-maintenance.js';
+
 const installScriptPath = fileURLToPath(new URL('../../../install.sh', import.meta.url));
 const installScript = fs.readFileSync(installScriptPath, 'utf-8');
 
@@ -176,6 +178,17 @@ describe('install.sh', () => {
     it('exports a relocated install root from both the binary and the source launcher', () => {
       expect(fnBody('install_binary_launcher')).toMatch(/\$\(launcher_env_lines\)/);
       expect(fnBody('install_node_launcher')).toMatch(/\$\(launcher_env_lines\)/);
+    });
+
+    it('marks both launchers and writes the short relay launcher with the same body', () => {
+      expect(fnBody('install_binary_launcher')).toMatch(/^\$LAUNCHER_MARKER$/m);
+      expect(fnBody('install_node_launcher')).toMatch(/^\$LAUNCHER_MARKER$/m);
+      expect(fnBody('write_launchers')).toMatch(/write_executable_file "\$BIN_DIR\/agent-relay"/);
+      expect(fnBody('write_launchers')).toMatch(/write_executable_file "\$BIN_DIR\/relay"/);
+    });
+
+    it('uses the launcher marker that `agent-relay uninstall` looks for', () => {
+      expect(installScript).toContain(`LAUNCHER_MARKER="${INSTALLER_LAUNCHER_MARKER}"`);
     });
 
     it('never deletes the install root when replacing a source checkout', () => {
