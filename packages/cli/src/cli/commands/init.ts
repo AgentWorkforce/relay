@@ -43,6 +43,7 @@ import {
   type DownloadFile,
   type EnginePlatform,
 } from '../lib/relaycast-engine-install.js';
+import { shellQuote } from '../lib/agent-registration.js';
 import { persistWorkspaceSession } from '../lib/workspace-session.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
 import { getProjectPaths } from '@agent-relay/config';
@@ -401,7 +402,7 @@ interface ServerSetup {
 
 /** A word as the shell reads it: quoted unless it is plainly safe to paste. */
 function shellWord(value: string): string {
-  return /^[A-Za-z0-9._@%+=:,/-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+  return /^[A-Za-z0-9._@%+=:,/-]+$/.test(value) ? value : shellQuote(value);
 }
 
 /** The command that makes `name` the machine-wide active workspace. */
@@ -436,14 +437,15 @@ function saveWorkspace(
 
 /**
  * Agent tools set up globally run in every project, and a project without its
- * own workspace uses the machine-wide active one. Say so when that is not the
+ * own workspace (and no flag or environment selection) uses the machine-wide
+ * active one. Say so when that is not the
  * workspace just set up.
  */
 function globalScopeNote(setup: ServerSetup, scope: InstallScope, installed: ToolId[]): string | undefined {
   if (scope !== 'global' || installed.length === 0 || !setup.keptActive) return undefined;
   return (
-    `Outside this project, the globally set up agent tools use the active workspace "${setup.keptActive}". ` +
-    `To use "${setup.workspace}" there too, run: ${switchCommand(setup.workspace)}`
+    `In projects without their own workspace, globally set up agent tools use the active workspace "${setup.keptActive}". ` +
+    `To make "${setup.workspace}" the machine-wide fallback, run: ${switchCommand(setup.workspace)}`
   );
 }
 
