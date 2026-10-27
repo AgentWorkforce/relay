@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +9,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CANCELLED, type InitPrompter } from '../lib/init-prompts.js';
 import { boundOrigin } from '../lib/relaycast-origin-binding.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
-import { registerInitCommand, type InitCommandDependencies } from './init.js';
+import { DownloadHttpError, engineAssetName } from '../lib/relaycast-engine-install.js';
+import { LOCAL_ENGINE_VERSION, registerInitCommand, type InitCommandDependencies } from './init.js';
 
 let home: string;
 let project: string;
@@ -25,6 +27,8 @@ beforeEach(() => {
   project = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-init-project-'));
   toolHome = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-init-toolhome-'));
   vi.stubEnv('AGENT_RELAY_HOME', home);
+  vi.stubEnv('AGENT_RELAY_INSTALL_DIR', '');
+  vi.stubEnv('RELAYCAST_ENGINE_PATH', '');
   vi.stubEnv('AGENT_RELAY_PROJECT', project);
   vi.stubEnv('RELAY_BASE_URL', '');
   vi.stubEnv('RELAY_WORKSPACE_KEY', '');
@@ -79,6 +83,12 @@ function setup(overrides: Partial<InitCommandDependencies> = {}) {
       args: ['mcp'],
       reason: 'the test launcher',
     }),
+    // Offline by default: no test reaches GitHub, and the npm path is the fallback.
+    downloadEngine: vi.fn(async () => {
+      throw new Error('offline');
+    }),
+    engineVersion: vi.fn(() => undefined),
+    enginePlatform: () => ({ platform: 'linux', arch: 'x64', musl: false }),
     ...overrides,
   };
   const program = new Command().exitOverride();
@@ -429,5 +439,168 @@ describe('relay init guided flow', () => {
     await run();
     expect(script.shown.join('\n')).toContain('relay agent register alice');
     expect(script.asked).not.toContain('Installation scope');
+  });
+});
+
+describe('relay init standalone server download', () => {
+  const asset = `relaycast-engine-${LOCAL_ENGINE_VERSION}-linux-x64`;
+  const base = `https://github.com/AgentWorkforce/relaycast/releases/download/v${LOCAL_ENGINE_VERSION}/${asset}`;
+  const body = new TextEncoder().encode('#!/bin/sh\necho relaycast-engine\n');
+  const digest = createHash('sha256').update(body).digest('hex');
+  const target = () => path.join(home, 'bin', 'relaycast-engine');
+
+  function release(files: Record<string, Uint8Array | number>) {
+    return vi.fn(async (url: string) => {
+      const file = files[url];
+      if (file === undefined || typeof file === 'number') throw new DownloadHttpError(url, file ?? 404);
+      return file;
+    });
+  }
+
+  it('downloads, verifies and installs the pinned binary before starting the server', async () => {
+    const downloadEngine = release({
+      [base]: body,
+      [`${base}.sha256`]: new TextEncoder().encode(`${digest}  ${asset}\n`),
+    });
+    let installedWhenStarted = false;
+    // Only the freshly downloaded temp file runs; nothing is installed yet.
+    const engineVersion = vi.fn((binary: string) =>
+      binary.endsWith('.tmp') ? LOCAL_ENGINE_VERSION : undefined
+    );
+    const { run, logs, deps } = setup({ downloadEngine, engineVersion });
+    const start = deps.startEngine as ReturnType<typeof vi.fn>;
+    const original = start.getMockImplementation() as InitCommandDependencies['startEngine'];
+    start.mockImplementation((input) => {
+      installedWhenStarted = fs.existsSync(target());
+      return original(input);
+    });
+    await run('--tools', 'none');
+    expect(downloadEngine).toHaveBeenCalledWith(
+      base,
+      expect.objectContaining({ timeoutMs: expect.any(Number) })
+    );
+    expect(fs.readFileSync(target())).toEqual(Buffer.from(body));
+    expect(fs.statSync(target()).mode & 0o777).toBe(0o755);
+    expect(installedWhenStarted).toBe(true);
+    expect(fs.readdirSync(path.join(home, 'bin'))).toEqual(['relaycast-engine']);
+    expect(logs.filter((line) => line.startsWith('Downloading the local Relaycast server'))).toHaveLength(1);
+    expect(logs.join('\n')).not.toContain('falling back');
+  });
+
+  it('never installs a binary whose checksum does not match, and falls back to npm', async () => {
+    const downloadEngine = release({
+      [base]: body,
+      [`${base}.sha256`]: new TextEncoder().encode(`${'0'.repeat(64)}  ${asset}\n`),
+    });
+    const { run, logs, deps } = setup({ downloadEngine });
+    await run('--tools', 'none');
+    expect(fs.existsSync(target())).toBe(false);
+    expect(fs.existsSync(path.join(home, 'bin')) ? fs.readdirSync(path.join(home, 'bin')) : []).toEqual([]);
+    expect(logs.join('\n')).toMatch(/SHA-256 mismatch.*falling back to the npm package @relaycast\/engine@/s);
+    expect(deps.startEngine).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not install a verified download that will not run here', async () => {
+    const downloadEngine = release({
+      [base]: body,
+      [`${base}.sha256`]: new TextEncoder().encode(`${digest}  ${asset}\n`),
+    });
+    const { run, logs } = setup({ downloadEngine, engineVersion: vi.fn(() => undefined) });
+    await run('--tools', 'none');
+    expect(fs.existsSync(target())).toBe(false);
+    expect(fs.readdirSync(path.join(home, 'bin'))).toEqual([]);
+    expect(logs.join('\n')).toMatch(/does not run on this machine.*falling back to the npm package/s);
+  });
+
+  it('reuses a server another relay init started while this one was downloading', async () => {
+    let otherUp = false;
+    const downloadEngine = vi.fn(async () => {
+      // A concurrent `relay init` starts and records its server during our download.
+      fs.mkdirSync(path.join(home, 'local'), { recursive: true });
+      fs.writeFileSync(
+        path.join(home, 'local', 'server.json'),
+        JSON.stringify({ pid: 777, port: 8787, origin: 'http://127.0.0.1:8787', engine: 'x' })
+      );
+      otherUp = true;
+      throw new DownloadHttpError('https://example.test/x', 404);
+    });
+    const { run, deps } = setup({
+      downloadEngine,
+      isAlive: vi.fn((pid: number) => pid === 777 && otherUp),
+      fetch: vi.fn(async (input: string | URL | Request) => {
+        const url = new URL(String(input));
+        if (url.pathname === '/health') return jsonResponse(otherUp ? 200 : 503);
+        return jsonResponse(200, { ok: true, data: {} });
+      }) as never,
+    });
+    await run('--tools', 'none');
+    expect(deps.startEngine).not.toHaveBeenCalled();
+    expect(JSON.parse(fs.readFileSync(path.join(home, 'local', 'server.json'), 'utf8')).pid).toBe(777);
+  });
+
+  it('refuses an occupied port before downloading anything', async () => {
+    const downloadEngine = vi.fn(async () => new Uint8Array());
+    const { run, errors } = setup({
+      downloadEngine,
+      fetch: vi.fn(async () => jsonResponse(200, { ok: true })) as never,
+    });
+    await expect(run('--tools', 'none')).rejects.toEqual(new ExitSignal(1));
+    expect(errors.join('\n')).toContain('Something else is already serving on port 8787');
+    expect(downloadEngine).not.toHaveBeenCalled();
+  });
+
+  it('falls back to npm when the release has no asset for this platform', async () => {
+    const downloadEngine = release({});
+    const { run, logs, deps } = setup({ downloadEngine });
+    await run('--tools', 'none');
+    expect(downloadEngine).toHaveBeenCalledTimes(1);
+    expect(fs.existsSync(target())).toBe(false);
+    expect(logs.join('\n')).toContain(`no release asset ${asset}.sha256`);
+    expect(logs.join('\n')).toContain('falling back to the npm package');
+    expect(deps.startEngine).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not download when the installed binary reports the pinned version', async () => {
+    fs.mkdirSync(path.join(home, 'bin'), { recursive: true });
+    fs.writeFileSync(target(), 'existing', { mode: 0o755 });
+    const downloadEngine = release({});
+    const engineVersion = vi.fn(() => LOCAL_ENGINE_VERSION);
+    const { run, logs } = setup({ downloadEngine, engineVersion });
+    await run('--tools', 'none');
+    expect(engineVersion).toHaveBeenCalledWith(target());
+    expect(downloadEngine).not.toHaveBeenCalled();
+    expect(fs.readFileSync(target(), 'utf8')).toBe('existing');
+    expect(logs.join('\n')).not.toContain('Downloading');
+  });
+
+  it('replaces an older installed binary, keeping it if the download fails', async () => {
+    fs.mkdirSync(path.join(home, 'bin'), { recursive: true });
+    fs.writeFileSync(target(), 'old', { mode: 0o755 });
+    const { run, logs } = setup({ engineVersion: vi.fn(() => '11.0.0') });
+    await run('--tools', 'none');
+    expect(fs.readFileSync(target(), 'utf8')).toBe('old');
+    expect(logs.join('\n')).toContain(`using the one already at ${target()}`);
+  });
+});
+
+describe('engineAssetName', () => {
+  it.each([
+    [{ platform: 'darwin', arch: 'arm64', musl: false }, 'darwin-arm64'],
+    [{ platform: 'darwin', arch: 'x64', musl: false }, 'darwin-x64'],
+    [{ platform: 'linux', arch: 'x64', musl: false }, 'linux-x64'],
+    [{ platform: 'linux', arch: 'arm64', musl: false }, 'linux-arm64'],
+    [{ platform: 'linux', arch: 'x64', musl: true }, 'linux-musl-x64'],
+    [{ platform: 'linux', arch: 'arm64', musl: true }, 'linux-musl-arm64'],
+    [{ platform: 'win32', arch: 'x64', musl: false }, 'windows-x64.exe'],
+  ] as const)('maps %o to %s', (target, suffix) => {
+    expect(engineAssetName('11.1.0', target)).toBe(`relaycast-engine-11.1.0-${suffix}`);
+  });
+
+  it.each([
+    { platform: 'win32', arch: 'arm64', musl: false },
+    { platform: 'linux', arch: 'ia32', musl: false },
+    { platform: 'freebsd', arch: 'x64', musl: false },
+  ] as const)('publishes nothing for %o', (target) => {
+    expect(engineAssetName('11.1.0', target)).toBeUndefined();
   });
 });

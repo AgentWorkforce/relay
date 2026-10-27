@@ -35,9 +35,18 @@ import {
 import { CANCELLED, clackPrompter, type InitPrompter } from '../lib/init-prompts.js';
 import { sessionBaseName } from '../lib/mcp-session-name.js';
 import { runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
+import {
+  currentEnginePlatform,
+  ensureStandaloneEngine,
+  fetchDownload,
+  readEngineVersion,
+  type DownloadFile,
+  type EnginePlatform,
+} from '../lib/relaycast-engine-install.js';
 import { persistWorkspaceSession } from '../lib/workspace-session.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
 import { getProjectPaths } from '@agent-relay/config';
+import { getCanonicalRelaycastEnginePath } from '@agent-relay/harness-driver/install-paths';
 
 /** The Relaycast server `relay init` runs locally. Pinned so every machine runs the same server. */
 export const LOCAL_ENGINE_VERSION = '11.1.0';
@@ -63,6 +72,12 @@ export interface InitCommandDependencies extends SdkCommandDeps {
   runTool: RunTool;
   /** The command agent tools run for `relay mcp`. */
   resolveLaunch: (ctx: ToolContext) => McpLaunch;
+  /** Downloads one file of the standalone server release (binary or `.sha256`). */
+  downloadEngine: DownloadFile;
+  /** The version an installed `relaycast-engine` reports for `--version`. */
+  engineVersion: (binary: string) => string | undefined;
+  /** Platform, architecture and libc that pick the standalone server asset. */
+  enginePlatform: () => EnginePlatform;
 }
 
 interface LocalServerState {
@@ -111,17 +126,9 @@ function readState(): LocalServerState | undefined {
   return state as LocalServerState;
 }
 
-/** Where Agent Relay's binaries live: the same directory install.sh uses. */
-function binDir(): string {
-  return path.join(process.env.AGENT_RELAY_INSTALL_DIR ?? relayHome(), 'bin');
-}
-
-/** The standalone server binary install.sh places, when there is one. */
+/** The standalone server binary in the canonical bin slot install.sh and the broker use, when there is one. */
 function standaloneEngine(): string | undefined {
-  const binary = path.join(
-    binDir(),
-    process.platform === 'win32' ? 'relaycast-engine.exe' : 'relaycast-engine'
-  );
+  const binary = getCanonicalRelaycastEnginePath();
   return fs.existsSync(binary) ? binary : undefined;
 }
 
@@ -223,6 +230,9 @@ export function withInitDefaults(overrides: Partial<InitCommandDependencies> = {
     toolContext: () => defaultToolContext(projectRoot()),
     runTool: defaultRunTool,
     resolveLaunch: (ctx) => resolveMcpLaunch({ ctx }),
+    downloadEngine: fetchDownload,
+    engineVersion: readEngineVersion,
+    enginePlatform: currentEnginePlatform,
     ...overrides,
   };
 }
@@ -244,17 +254,60 @@ function logTail(file: string): string {
   }
 }
 
-async function ensureLocalServer(deps: InitCommandDependencies, port: number): Promise<string> {
+/**
+ * Put the pinned standalone server in the bin slot when it is missing or
+ * older. It runs on any Node version and needs no npm install scripts; when it
+ * cannot be had, the npm package is the fallback.
+ */
+async function installStandaloneEngine(deps: InitCommandDependencies): Promise<void> {
+  const target = getCanonicalRelaycastEnginePath();
+  const result = await ensureStandaloneEngine({
+    version: LOCAL_ENGINE_VERSION,
+    target,
+    platform: deps.enginePlatform(),
+    download: deps.downloadEngine,
+    readVersion: deps.engineVersion,
+    progress: (line) => deps.log(line),
+  });
+  if (result.status === 'installed') {
+    deps.log(`Installed relaycast-engine v${LOCAL_ENGINE_VERSION} to ${target}.`);
+  } else if (result.status === 'failed') {
+    deps.log(
+      `Could not install the standalone Relaycast server (${result.reason}); ` +
+        (fs.existsSync(target)
+          ? `using the one already at ${target}.`
+          : `falling back to the npm package ${LOCAL_ENGINE_PACKAGE}.`)
+    );
+  }
+}
+
+/** The origin of the local server `relay init` started earlier, if it is still up. */
+async function runningLocalServer(deps: InitCommandDependencies): Promise<string | undefined> {
   const existing = readState();
   if (existing && deps.isAlive(existing.pid) && (await healthy(deps, existing.origin))) {
     return existing.origin;
   }
+  return undefined;
+}
+
+async function ensureLocalServer(deps: InitCommandDependencies, port: number): Promise<string> {
+  const running = await runningLocalServer(deps);
+  if (running) return running;
   const origin = `http://127.0.0.1:${port}`;
-  if (await healthy(deps, origin)) {
-    throw new Error(
-      `Something else is already serving on port ${port}. Stop it, or choose another port with --port.`
-    );
-  }
+  const refuseOccupiedPort = async () => {
+    if (await healthy(deps, origin)) {
+      throw new Error(
+        `Something else is already serving on port ${port}. Stop it, or choose another port with --port.`
+      );
+    }
+  };
+  // Before the download too, so a taken port fails fast.
+  await refuseOccupiedPort();
+  await installStandaloneEngine(deps);
+  // The download can take a while; another `relay init` may have started the server meanwhile.
+  const startedMeanwhile = await runningLocalServer(deps);
+  if (startedMeanwhile) return startedMeanwhile;
+  await refuseOccupiedPort();
   fs.mkdirSync(localDir(), { recursive: true, mode: 0o700 });
   const logFile = path.join(localDir(), 'server.log');
   deps.log(

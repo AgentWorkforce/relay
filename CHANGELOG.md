@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Broker: `spawn:<harness>` capabilities now declare `metadata.configured.node_kind: "broker"`, so Cloud keeps placing spawns on unclaimed CLI brokers instead of refusing them until `agent-relay node claim`. An already-declared kind (e.g. `desktop`) is preserved.
+- `relay init` downloads the standalone Relaycast server (`relaycast-engine`) for your platform into the install directory's `bin` when it is missing, verifying its SHA-256, so the local server now starts from an npm install on any Node.js version and with npm install scripts disabled. It falls back to the `@relaycast/engine` npm package only if the download fails.
 - Codex 0.16x workers no longer dead-letter their initial task with `initial_injection_incomplete` when the composer scrolls long input. The broker now checks that the end of each typed chunk is visible and ignores Codex's `↑`/`↓` scroll markers.
 - `relay agent rotate <name>`, and `agent register` for a name that already exists, now issue a new token through the audited owner takeover instead of failing with "already exists", so a lost token can always be replaced.
 - `@agent-relay/sdk` docs for `workspace.register()` now say registration is create-only: an existing name fails with `name_conflict` (with or without `{ strict: true }`) and keeps its token. Resume an agent with `workspace.reconnect({ apiToken })`, and get a new token with `relay agent rotate <name>`.

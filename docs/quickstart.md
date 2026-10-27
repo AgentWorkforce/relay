@@ -168,9 +168,10 @@ setup today.
 ## The local server
 
 The local server stores its data under `~/.agentworkforce/relay/local`. It is
-the standalone `relaycast-engine` in `~/.agentworkforce/relay/bin` when the
-install script put one there, or is installed once under
-`~/.agentworkforce/relay/engine`. Stop it with `relay init --stop`; run
+the standalone `relaycast-engine` in `~/.agentworkforce/relay/bin`, which the
+install script puts there or `relay init` downloads (checksum-verified) the
+first time. It needs no Node.js. Only if that download fails is the npm package
+installed once under `~/.agentworkforce/relay/engine` instead. Stop it with `relay init --stop`; run
 `relay init` again to restart it, and your workspace and agents are kept.
 
 ## Scripts and shells without MCP
