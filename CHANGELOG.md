@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `install.sh` and `relay init` use Relaycast engine 11.1.0, which ships as a standalone binary: `install.sh` now installs `relaycast-engine` into `~/.agentworkforce/relay/bin`, so the local server no longer needs Node.js or a native addon.
 - The CLI and `@agent-relay/harness-driver` now resolve the broker in this order: `BROKER_BINARY_PATH` / `AGENT_RELAY_BIN`, then `~/.agentworkforce/relay/bin`, then the npm platform package, then `PATH`. A broker in the install directory now wins over one found on `PATH`.
 - `install.sh` honours `AGENT_RELAY_HOME` as the install root when `AGENT_RELAY_INSTALL_DIR` is not set. A relocated install exports its root from the `agent-relay` launcher.
 - `relay mcp` without `RELAY_AGENT_NAME` now registers each session as `<tool>-<project folder>` (for example `claude-myproject`, from the MCP client's name), adding a short suffix when another live session holds that name and taking the name back after a restart, instead of registering every session as `orchestrator`.

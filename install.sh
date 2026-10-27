@@ -54,7 +54,7 @@ ORIGINAL_PATH="${PATH:-}"
 # downloaded from the relaycast GitHub release as
 # relaycast-engine-<version>-<os>-<arch> plus a .sha256 sidecar.
 REPO_RELAYCAST="AgentWorkforce/relaycast"
-RELAYCAST_ENGINE_VERSION="11.0.0"
+RELAYCAST_ENGINE_VERSION="11.1.0"
 STANDALONE_FAILURE_REASON=""
 
 # Colors

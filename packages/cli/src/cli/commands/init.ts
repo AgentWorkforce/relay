@@ -40,7 +40,7 @@ import { readWorkspaceStore } from '../lib/workspace-store.js';
 import { getProjectPaths } from '@agent-relay/config';
 
 /** The Relaycast server `relay init` runs locally. Pinned so every machine runs the same server. */
-export const LOCAL_ENGINE_VERSION = '11.0.0';
+export const LOCAL_ENGINE_VERSION = '11.1.0';
 export const LOCAL_ENGINE_PACKAGE = `@relaycast/engine@${LOCAL_ENGINE_VERSION}`;
 const DEFAULT_LOCAL_PORT = 8787;
 const HOSTED_ORIGIN = 'https://cast.agentrelay.com';
