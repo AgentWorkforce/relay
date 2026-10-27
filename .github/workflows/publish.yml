@@ -381,8 +381,9 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "New version: $NEW_VERSION"
 
-          # Detect if this is a prerelease version (contains hyphen, e.g. 2.2.0-beta.1)
-          if [[ "$NEW_VERSION" == *"-"* ]]; then
+          # Detect if this is a prerelease version (hyphen before any `+build`
+          # metadata, e.g. 2.2.0-beta.1; 2.2.0+build-1 is stable)
+          if [[ "${NEW_VERSION%%+*}" == *"-"* ]]; then
             echo "is_prerelease=true" >> $GITHUB_OUTPUT
             echo "This is a PRERELEASE version"
           else
@@ -454,6 +455,24 @@ jobs:
               }
             }
           "
+
+      # Every publish job needs `build`, so failing here blocks all npm
+      # publishes. A prerelease (prepatch/preminor/premajor/prerelease, or a
+      # custom_version containing '-') published under the default `latest`
+      # dist-tag would become what every plain `npm install` resolves.
+      - name: Guard npm dist-tag against prerelease versions
+        env:
+          NEW_VERSION: ${{ steps.bump.outputs.new_version }}
+          IS_PRERELEASE: ${{ steps.bump.outputs.is_prerelease }}
+        run: |
+          if [ "$IS_PRERELEASE" = "true" ] && [ "$NPM_TAG" = "latest" ]; then
+            echo "::error::Refusing to publish prerelease $NEW_VERSION under the 'latest' dist-tag. Re-run with tag set to next, beta, or alpha."
+            exit 1
+          fi
+          if [ "$IS_PRERELEASE" != "true" ] && [ "$NPM_TAG" != "latest" ]; then
+            echo "::warning::Publishing stable $NEW_VERSION under the '$NPM_TAG' dist-tag; 'latest' will not move."
+          fi
+          echo "Publishing $NEW_VERSION under dist-tag '$NPM_TAG'"
 
       - name: Upgrade npm before fresh resolution
         # npm <=10.9.x's arborist crashes ("Cannot read properties of null
