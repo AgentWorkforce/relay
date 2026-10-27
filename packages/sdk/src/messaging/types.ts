@@ -972,9 +972,10 @@ export interface RelayMessagingClient {
     get(name: string): Promise<RelayAgent>;
     register(input: RelayRegisterAgentInput): Promise<RelayAgentRegistration>;
     /**
-     * Register an agent, adopting the existing identity (with a rotated
-     * token) when the name is already taken. Optional: backends without
-     * rotation support fall back to plain `register`.
+     * Compatibility alias for `register`. Current Relaycast SDKs implement it
+     * as create-only registration: an existing name is rejected with
+     * `name_conflict` and its token is not rotated. Optional: when absent,
+     * callers fall back to plain `register`.
      */
     registerOrRotate?(input: RelayRegisterAgentInput): Promise<RelayAgentRegistration>;
     /** Resolve the identity of the agent the client is authenticated as. */

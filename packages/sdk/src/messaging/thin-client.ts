@@ -40,7 +40,7 @@ export const RELAYCAST_SDK_VERSION: string = SDK_VERSION;
 
 /** Raw registration payload returned by `agents.registerOrRotate`. */
 export interface RelayRawAgentRegistration {
-  /** Agent token (`at_live_...`) minted or rotated for this identity. */
+  /** Agent token (`at_live_...`) minted for this identity. */
   token: string;
   /** Canonical agent name the workspace bound the registration to. */
   name?: string;
@@ -86,7 +86,7 @@ export interface RelayRawGroupConversation {
 export interface RelayWorkspaceThinClient {
   readonly agents: {
     list(options?: RelayListAgentsOptions): Promise<unknown[]>;
-    /** Register an agent, rotating its token when the name already exists. */
+    /** Create-only registration alias; an existing name is rejected with `name_conflict`. */
     registerOrRotate(input: RelayRegisterAgentInput): Promise<RelayRawAgentRegistration>;
     /** Ask the relay to spawn a provider-backed worker. */
     spawn(input: RelaySpawnAgentInput): Promise<Record<string, unknown>>;

@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Codex 0.16x workers no longer dead-letter their initial task with `initial_injection_incomplete` when the composer scrolls long input. The broker now checks that the end of each typed chunk is visible and ignores Codex's `↑`/`↓` scroll markers.
 - `relay agent rotate <name>`, and `agent register` for a name that already exists, now issue a new token through the audited owner takeover instead of failing with "already exists", so a lost token can always be replaced.
+- `@agent-relay/sdk` docs for `workspace.register()` now say registration is create-only: an existing name fails with `name_conflict` (with or without `{ strict: true }`) and keeps its token. Resume an agent with `workspace.reconnect({ apiToken })`, and get a new token with `relay agent rotate <name>`.
 - `install.sh`'s source-build fallback no longer deletes the install root (and with it saved workspaces and Relaycast credentials); the checkout now lives in its `source/` subdirectory.
 - `relay node up` now reports the actual workspace-key source when startup fails, including the repository's `.agentworkforce/relay/workspace-key.json` pin instead of mislabeling every key as `AGENT_RELAY_WORKSPACE_KEY`.
 
