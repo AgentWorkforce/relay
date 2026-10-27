@@ -5,12 +5,13 @@
 // interactive harness and records an observable effect when a nonce-bearing
 // brief reaches it. Before that boundary it deliberately discards input, which
 // models a TUI consuming startup keystrokes before its prompt is ready.
-const { mkdirSync, writeFileSync } = require('node:fs');
+const { mkdirSync, writeFileSync, readdirSync, readFileSync } = require('node:fs');
 const path = require('node:path');
 
 const readyDelayMs = Number.parseInt(process.env.RELAY_E2E_STUB_READY_DELAY_MS ?? '0', 10) || 0;
 let ready = false;
 let input = '';
+let deliveryInput = '';
 const recordedNonces = new Set();
 const nonceMarker = 'RELAY_E2E_BRIEF_NONCE=';
 const maxNonceLength = 256;
@@ -38,11 +39,10 @@ function recordBriefNonce(nonce) {
 // Invoked as `codex`, model Codex's composer closely enough for the broker's
 // chunked initial-task path: raw input (no kernel echo, so discarded
 // pre-ready keystrokes never appear), typed text rendered after the `›`
-// prompt, and Enter submitting the turn and redrawing an empty composer. A
-// composer that keeps the submitted text visible looks like a parked task, so
-// the broker would retry the submit and report the delivery incomplete.
+// prompt, and Enter submitting the turn and redrawing an empty composer.
+// These screen changes guide chunking only; the native receipt confirms delivery.
 const codexComposer = path.basename(process.argv[1]) === 'codex';
-if (codexComposer && process.stdin.isTTY) process.stdin.setRawMode(true);
+if (process.stdin.isTTY) process.stdin.setRawMode(true);
 
 function renderCodexComposer(text) {
   for (const ch of text) {
@@ -59,9 +59,18 @@ try {
   process.stdin.on('data', (chunk) => {
     if (!ready) return;
     if (codexComposer) renderCodexComposer(chunk.toString());
-    // Like a real harness, Enter submits the turn and repaints the prompt, so
-    // the broker can see the composer clear and confirm acceptance.
-    else if (/[\r\n]/.test(chunk.toString())) process.stdout.write('\r\n❯ ');
+    // Acknowledge a submitted delivery from the recipient, independent of the screen.
+    deliveryInput = (deliveryInput + chunk.toString()).slice(-65536);
+    const ackDir = process.env.RELAY_PTY_ACK_DIR;
+    if (ackDir && chunk.toString().includes('\r')) {
+      for (const name of readdirSync(ackDir).filter((name) => name.endsWith('.pending'))) {
+        const receipt = JSON.parse(readFileSync(path.join(ackDir, name), 'utf8'));
+        if (deliveryInput.includes(receipt.messageId)) {
+          writeFileSync(path.join(ackDir, `${name.slice(0, -8)}.${receipt.nonce}.read`), receipt.nonce);
+        }
+      }
+      deliveryInput = '';
+    }
     input += chunk.toString();
     // Require a delimiter after the nonce. PTY chunks can split anywhere, so
     // treating the current buffer end as a complete token could record a
@@ -97,6 +106,8 @@ setTimeout(() => {
   // MCP boot label. This native stub starts no MCP/AI service.
   if (path.basename(process.argv[1]) === 'codex') {
     process.stdout.write('› ');
+  } else {
+    process.stdout.write('❯ ');
   }
 }, readyDelayMs);
 

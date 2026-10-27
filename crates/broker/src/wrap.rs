@@ -27,9 +27,9 @@ use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::broker::{
     delivery_verification::{
-        assess_harness_acceptance, draft_visible_at_cursor, failed_draft_released, DeliveryOutcome,
-        HarnessAcceptance, PendingActivity, PendingVerification, ThrottleState, VerificationOutput,
-        ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
+        assess_delivery_acceptance, draft_visible_at_cursor, failed_draft_released,
+        DeliveryOutcome, HarnessAcceptance, PendingActivity, PendingVerification, ThrottleState,
+        VerificationOutput, ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
         MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
     },
     injection_format::{format_injection_for_worker_with_workspace, McpReminderThrottle},
@@ -272,6 +272,7 @@ pub(crate) struct PendingWrapInjection {
 /// and its harness-specific submit sequence were written and flushed.
 enum PendingWrapWrite {
     Initial {
+        native_ack: Option<crate::pty_delivery_ack::NativeAck>,
         pending: PendingWrapInjection,
         injection: String,
         output_boundary: u64,
@@ -425,7 +426,7 @@ fn queue_or_confirm_wrap_verification(
     verification.observe_raw_process_receipt(output, resolved_cli);
     verification.observe_visible_composer(&Snapshot::capture(pty), resolved_cli);
     if let HarnessAcceptance::Accepted(evidence) =
-        assess_harness_acceptance(resolved_cli, &verification, &Snapshot::capture(pty))
+        assess_delivery_acceptance(resolved_cli, &verification, &Snapshot::capture(pty))
     {
         tracing::info!(
             target = "agent_relay::worker::wrap",
@@ -1415,6 +1416,36 @@ async fn register_broker_actions(workspace: &RelayWorkspace) {
     }
 }
 
+/// Add native MCP configuration while preserving every user-supplied launch argument.
+async fn configure_wrap_mcp_args(
+    cli: &str,
+    args: &mut Vec<String>,
+    workspace: &RelayWorkspace,
+    base_url: Option<&str>,
+    workspaces_json: &str,
+    cwd: &std::path::Path,
+) -> Result<()> {
+    if let Some(harness) = crate::pty_delivery_ack::native_harness_name(cli) {
+        let mcp_args = crate::snippets::configure_agent_relay_mcp_with_token(
+            harness,
+            &workspace.self_name,
+            Some(&workspace.relay_workspace_key),
+            base_url,
+            args,
+            cwd,
+            workspace
+                .http_client
+                .cached_agent_token(&workspace.self_name)
+                .as_deref(),
+            Some(workspaces_json),
+            Some(&workspace.workspace_id),
+        )
+        .await?;
+        args.extend(mcp_args);
+    }
+    Ok(())
+}
+
 /// Interactive wrap mode: wraps a CLI in a PTY with terminal passthrough
 /// while connecting to Relaycast for relay message injection.
 /// Usage: `agent-relay codex --full-auto`
@@ -1534,6 +1565,18 @@ pub(crate) async fn run_wrap(
             std::env::set_var("RELAY_BASE_URL", base);
         }
     }
+    let native_acks = crate::pty_delivery_ack::NativeAckInbox::new()?;
+    native_acks.expose_to_child();
+    configure_wrap_mcp_args(
+        &resolved_cli,
+        &mut effective_cli_args,
+        &default_workspace,
+        child_base_url.as_deref(),
+        &child_workspaces_json,
+        &runtime_cwd,
+    )
+    .await?;
+    native_acks.configure_harness(&resolved_cli, &mut effective_cli_args)?;
     let _devin_state = crate::devin::prepare_worker_config(&resolved_cli).await?;
 
     // --- Spawn CLI in PTY ---
@@ -1838,7 +1881,7 @@ pub(crate) async fn run_wrap(
                                 pv.observe_raw_process_receipt(&echo_buffer, &resolved_cli);
                                 pv.observe_visible_composer(&snapshot, &resolved_cli);
                                 if let HarnessAcceptance::Accepted(evidence) =
-                                    assess_harness_acceptance(&resolved_cli, pv, &snapshot)
+                                    assess_delivery_acceptance(&resolved_cli, pv, &snapshot)
                                 {
                                     verified_indices.push((i, evidence));
                                 }
@@ -2321,10 +2364,15 @@ pub(crate) async fn run_wrap(
                         pending.workspace_alias.as_deref(),
                     );
                     let bytes = crate::injection_wire::injection_bytes(crate::injection_wire::injection_wire(&resolved_cli, &pty), &injection);
+                    let native_ack = native_acks.register(&pending.event_id, &default_workspace.self_name)
+                        .inspect_err(|error| tracing::warn!(%error,
+                            "wrap: native receipt registration failed; continuing without a receipt"))
+                        .ok();
                     let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
                     match write {
                         Ok((ack_rx, output_boundary)) => {
                             let pending_write = PendingWrapWrite::Initial {
+                                native_ack,
                                 pending,
                                 injection,
                                 output_boundary,
@@ -2370,6 +2418,7 @@ pub(crate) async fn run_wrap(
 
                 match pending_write {
                     PendingWrapWrite::Initial {
+                        native_ack,
                         pending,
                         injection,
                         output_boundary,
@@ -2411,6 +2460,7 @@ pub(crate) async fn run_wrap(
                         );
                         pty_auto.note_completed_injection(&resolved_cli);
                         let verification = PendingVerification {
+                            native_ack,
                             delivery_id: DeliveryId::new(format!("wrap_{}", pending.event_id)),
                             event_id: pending.event_id,
                             expected_echo: injection,
@@ -2494,12 +2544,12 @@ pub(crate) async fn run_wrap(
             _ = verification_tick.tick() => {
                 let mut i = 0;
                 while i < pending_verifications.len() {
-                    if pending_verifications[i].injected_at.elapsed() >= VERIFICATION_WINDOW {
+                    if pending_verifications[i].ready_to_assess(VERIFICATION_WINDOW) {
                         let mut pv = pending_verifications.remove(i).unwrap();
                         pv.observe_raw_process_receipt(&echo_buffer, &resolved_cli);
                         let snapshot = Snapshot::capture(&pty);
                         pv.observe_visible_composer(&snapshot, &resolved_cli);
-                        match assess_harness_acceptance(
+                        match assess_delivery_acceptance(
                             &resolved_cli,
                             &pv,
                             &snapshot,
@@ -2589,6 +2639,10 @@ pub(crate) async fn run_wrap(
                                 throttle.record(DeliveryOutcome::Failed);
                                 // Parked is the positive evidence.
                                 wrap_failed_draft = Some(pv.expected_echo.clone());
+                            }
+                            HarnessAcceptance::Inconclusive if pv.waiting_for_native_ack(&resolved_cli) => {
+                                pv.injected_at = Instant::now();
+                                pending_verifications.push_back(pv);
                             }
                             HarnessAcceptance::Inconclusive => {
                                 tracing::info!(
@@ -2713,6 +2767,86 @@ mod tests {
     use std::collections::VecDeque;
     use std::io;
     use std::time::{Duration, Instant};
+
+    #[tokio::test]
+    async fn wrap_native_mcp_setup_preserves_launch_options_and_custom_servers() {
+        let (ws_control_tx, _rx) = tokio::sync::mpsc::channel(1);
+        let workspace = super::RelayWorkspace {
+            workspace_id: "test-workspace".into(),
+            workspace_alias: None,
+            relay_workspace_key: "test-key".into(),
+            self_name: "worker".into(),
+            self_agent_id: "test-agent".into(),
+            self_names: Default::default(),
+            self_agent_ids: Default::default(),
+            http_client: crate::relaycast::RelaycastHttpClient::local_only("worker"),
+            ws_control_tx,
+        };
+        for cli in ["claude", "/opt/Claude.EXE", "codex", "/opt/Codex.exe"] {
+            let claude = crate::pty_delivery_ack::native_harness_name(cli) == Some("claude");
+            for custom in [false, true] {
+                let inbox = crate::pty_delivery_ack::NativeAckInbox::new().unwrap();
+                let cwd = tempfile::tempdir().unwrap();
+                let mut args: Vec<String> = if claude {
+                    [
+                        "--model",
+                        "sonnet",
+                        "--resume",
+                        "session-id",
+                        "--dangerously-skip-permissions",
+                    ]
+                    .into_iter()
+                    .map(String::from)
+                    .collect()
+                } else {
+                    ["--model", "test-model", "--profile", "work", "--full-auto"]
+                        .into_iter()
+                        .map(String::from)
+                        .collect()
+                };
+                if custom {
+                    if claude {
+                        args.extend(["--mcp-config".into(), serde_json::json!({"mcpServers": {
+                            "relaycast": {"command": "custom-relay", "env": {"RELAY_AGENT_NAME": "worker"}},
+                            "other": {"command": "other-server"}
+                        }}).to_string()]);
+                    } else {
+                        args.extend([
+                            "--config".into(),
+                            "mcp_servers.relaycast.command=\"custom-relay\"".into(),
+                        ]);
+                    }
+                }
+                let original = args.clone();
+                super::configure_wrap_mcp_args(cli, &mut args, &workspace, None, "[]", cwd.path())
+                    .await
+                    .unwrap();
+                assert_eq!(&args[..original.len()], &original, "{cli}, custom={custom}");
+                inbox.configure_harness(cli, &mut args).unwrap();
+                assert_eq!(&args[..5], &original[..5]);
+                if claude {
+                    let index = args.iter().position(|arg| arg == "--mcp-config").unwrap() + 1;
+                    let config: serde_json::Value =
+                        serde_json::from_str(&std::fs::read_to_string(&args[index]).unwrap())
+                            .unwrap();
+                    let server = if custom { "relaycast" } else { "agent-relay" };
+                    assert!(config["mcpServers"][server]["env"]["RELAY_PTY_ACK_DIR"].is_string());
+                    assert_eq!(
+                        config["mcpServers"][server]["env"]["RELAY_AGENT_NAME"],
+                        "worker"
+                    );
+                    if custom {
+                        assert_eq!(config["mcpServers"]["other"]["command"], "other-server");
+                        assert_eq!(config["mcpServers"]["relaycast"]["command"], "custom-relay");
+                    }
+                } else {
+                    let server = if custom { "relaycast" } else { "agent-relay" };
+                    assert!(args.iter().any(|arg| arg
+                        .starts_with(&format!("mcp_servers.{server}.env.RELAY_PTY_ACK_DIR="))));
+                }
+            }
+        }
+    }
 
     #[cfg(unix)]
     #[tokio::test]
@@ -2973,6 +3107,7 @@ sys.stdout.flush()"#;
     #[test]
     fn busy_devin_deferrals_preserve_retry_budget_and_reset_deadline() {
         let mut verification = PendingVerification {
+            native_ack: None,
             delivery_id: DeliveryId::new("delivery"),
             event_id: EventId::new("event"),
             expected_echo: String::new(),
