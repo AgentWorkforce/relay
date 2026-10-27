@@ -1013,18 +1013,23 @@ pub(crate) async fn retry_pending_delivery(
         return Ok(DeliveryAttemptOutcome::Noop);
     }
 
-    if let Err(error) = crate::worker::validate_delivery_size(
-        workers
-            .workers
-            .get(&pending.worker_name)
-            .map(|handle| &handle.spec),
-        &pending.worker_name,
-        &pending.delivery,
-    ) {
-        return Ok(DeliveryAttemptOutcome::Failed {
-            pending: Box::new(pending_deliveries.remove(delivery_id).unwrap_or(pending)),
-            last_error: error.to_string(),
-        });
+    // A restored, never-handed-off delivery still needs admission validation.
+    // Once handed off, preserve retry/dedup and ACK handling: the worker may
+    // already have accepted it using a paste-capable wire.
+    if pending.attempts == 0 {
+        if let Err(error) = crate::worker::validate_delivery_size(
+            workers
+                .workers
+                .get(&pending.worker_name)
+                .map(|handle| &handle.spec),
+            &pending.worker_name,
+            &pending.delivery,
+        ) {
+            return Ok(DeliveryAttemptOutcome::Failed {
+                pending: Box::new(pending_deliveries.remove(delivery_id).unwrap_or(pending)),
+                last_error: error.to_string(),
+            });
+        }
     }
     match workers
         .deliver(&pending.worker_name, pending.delivery.clone())

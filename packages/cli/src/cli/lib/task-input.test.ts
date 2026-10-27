@@ -16,7 +16,14 @@ describe('task input', () => {
     for (const cli of ['claude', 'gemini', '/opt/custom-tui']) {
       await expect(readTaskInput(body, undefined, false, { cli })).rejects.toThrow('1536 UTF-8 bytes');
     }
-    for (const cli of ['codex', 'CODEX.exe', 'devin', 'muse']) {
+    for (const cli of [
+      'codex',
+      'CODEX.exe',
+      'codex --yolo',
+      '"/opt/Tool Bin/codex" --yolo',
+      'devin',
+      'muse',
+    ]) {
       expect(await readTaskInput(body, undefined, false, { cli })).toBe(body);
     }
     const dir = await mkdtemp(join(tmpdir(), 'relay-typed-task-'));

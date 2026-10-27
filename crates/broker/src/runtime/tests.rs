@@ -4857,6 +4857,7 @@ async fn worker_missing_oversize_replay_retains_relaycast_ownership_and_sequence
     }
     // An already-owned predecessor's acknowledgement remains withheld as well.
     let mut owned = make_pending_delivery("owned", "worker-a");
+    owned.attempts = 0;
     owned.withheld_fleet_ack = Some(deliver.clone());
     owned.delivery.body = "x".repeat(2000);
     let mut workers = make_worker_registry_with_worker("worker-a").await;
@@ -4876,6 +4877,32 @@ async fn worker_missing_oversize_replay_retains_relaycast_ownership_and_sequence
         failed.withheld_fleet_ack.unwrap().delivery_id,
         deliver.delivery_id
     );
+    cleanup_worker_registry(workers).await;
+}
+
+#[tokio::test]
+async fn recipient_wire_guard_preserves_already_handed_off_retry_and_ack() {
+    let mut workers = make_worker_registry_with_worker("Worker").await;
+    let mut owned = make_pending_delivery("already-handed-off", "Worker");
+    owned.delivery.body = "x".repeat(2000);
+    let ack = fleet_deliver(1);
+    owned.withheld_fleet_ack = Some(ack.clone());
+    owned.withheld_fleet_ack_floor = Some(ack.seq);
+    let id = owned.delivery.delivery_id.clone();
+    let mut pending = HashMap::from([(id.clone(), owned)]);
+    let outcome = retry_pending_delivery(&id, &mut workers, &mut pending, Duration::from_secs(1))
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        DeliveryAttemptOutcome::Attempted { attempts: 2, .. }
+    ));
+    let retained = &pending[&id];
+    assert_eq!(
+        retained.withheld_fleet_ack.as_ref().unwrap().delivery_id,
+        ack.delivery_id
+    );
+    assert_eq!(retained.withheld_fleet_ack_floor, Some(ack.seq));
     cleanup_worker_registry(workers).await;
 }
 

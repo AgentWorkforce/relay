@@ -27,10 +27,16 @@ export interface TaskTarget {
   runtime?: 'native' | 'pty';
 }
 
-/** Mirrors the broker's `is_muse_executable`: the basename, case-insensitive, minus a Windows launcher suffix. */
+/** Classify the executable, preserving quoted paths and ignoring inline launch flags. */
+function executableName(cli: string): string {
+  const token = cli.trim().match(/^(?:"([^"]+)"|'([^']+)'|(\S+))/);
+  const command = token?.[1] ?? token?.[2] ?? token?.[3] ?? cli;
+  return (command.split(/[\\/]/).pop() || command).toLowerCase();
+}
+
+/** Mirrors the broker's Muse basename and Windows launcher suffix handling. */
 function isMuseExecutable(cli: string): boolean {
-  const basename = cli.split(/[\\/]/).pop() || cli;
-  return basename.toLowerCase().replace(/\.(exe|cmd|bat)$/, '') === 'muse';
+  return executableName(cli).replace(/\.(exe|cmd|bat)$/, '') === 'muse';
 }
 
 type TaskLimit = 'pty' | 'argv' | 'native';
@@ -65,11 +71,7 @@ function taskByteLimit(target: TaskTarget | undefined): number {
   const kind = taskLimitKind(target);
   if (kind !== 'pty') return kind === 'argv' ? MAX_ARGV_TASK_BYTES : MAX_NATIVE_TASK_BYTES;
   // No recipient information means only the transport-independent ceiling is known.
-  const cli = target?.cli
-    .split(/[\\/]/)
-    .pop()
-    ?.toLowerCase()
-    .replace(/\.exe$/, '');
+  const cli = target && executableName(target.cli).replace(/\.exe$/, '');
   return !cli || cli === 'codex' || cli === 'devin' ? MAX_TASK_BODY_BYTES : MAX_TYPED_TASK_BYTES;
 }
 
