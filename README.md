@@ -48,17 +48,29 @@ The easiest way to get started is to use [Agent Relay Cloud](https://agentrelay.
 
 You don't need a credit card and you can explore all the pieces without setting up any infrastructure.
 
-Kick the tires yourself by installing the CLI:
+Kick the tires yourself by installing the CLI. The install script is the recommended way:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
 ```
 
-Or install with npm:
+The install script puts every Agent Relay binary in one place, `~/.agentworkforce/relay/bin`:
+
+| Binary               | What it is                                                   |
+| -------------------- | ------------------------------------------------------------ |
+| `agent-relay`        | the CLI (a launcher for it is put in `~/.local/bin`)         |
+| `agent-relay-broker` | the local broker the CLI starts                              |
+| `relaycast-engine`   | the local Relaycast server, when published for your platform |
+
+The CLI, its broker and the desktop app all use the binaries in that directory. Set `AGENT_RELAY_INSTALL_DIR` (or `AGENT_RELAY_HOME`) to move it; binaries then live in its `bin/`.
+
+npm also works:
 
 ```bash
 npm install -g agent-relay
 ```
+
+npm links the `agent-relay` CLI into its own global bin directory (`$(npm prefix -g)/bin`), not into `~/.agentworkforce/relay/bin`. On its first run, the npm-installed CLI copies only its broker (`agent-relay-broker`) into `~/.agentworkforce/relay/bin`, so the CLI, the desktop app and SDK callers share one broker. It never replaces a newer broker that is already there.
 
 Then, in your project, run:
 
