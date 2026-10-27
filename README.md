@@ -56,11 +56,11 @@ curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.s
 
 The install script puts every Agent Relay binary in one place, `~/.agentworkforce/relay/bin`:
 
-| Binary               | What it is                                                   |
-| -------------------- | ------------------------------------------------------------ |
-| `agent-relay`        | the CLI (a launcher for it is put in `~/.local/bin`)         |
-| `agent-relay-broker` | the local broker the CLI starts                              |
-| `relaycast-engine`   | the local Relaycast server, when published for your platform |
+| Binary               | What it is                                           |
+| -------------------- | ---------------------------------------------------- |
+| `agent-relay`        | the CLI (a launcher for it is put in `~/.local/bin`) |
+| `agent-relay-broker` | the local broker the CLI starts                      |
+| `relaycast-engine`   | the local Relaycast server                           |
 
 The CLI, its broker and the desktop app all use the binaries in that directory. Set `AGENT_RELAY_INSTALL_DIR` (or `AGENT_RELAY_HOME`) to move it; binaries then live in its `bin/`.
 
@@ -70,7 +70,7 @@ npm also works:
 npm install -g agent-relay
 ```
 
-npm links the `agent-relay` CLI into its own global bin directory (`$(npm prefix -g)/bin`), not into `~/.agentworkforce/relay/bin`. On its first run, the npm-installed CLI copies only its broker (`agent-relay-broker`) into `~/.agentworkforce/relay/bin`, so the CLI, the desktop app and SDK callers share one broker. It never replaces a newer broker that is already there.
+npm links the `agent-relay` and `relay` commands into its own global bin directory (`$(npm prefix -g)/bin`), not into `~/.agentworkforce/relay/bin`. The npm-installed CLI still keeps its broker and the local Relaycast server in `~/.agentworkforce/relay/bin`: it copies its broker there on first run, and `relay init` downloads `relaycast-engine` there, so the CLI, the desktop app and SDK callers share them. It never replaces a newer broker that is already there.
 
 Then, in your project, run:
 
