@@ -164,7 +164,10 @@ describe('AgentRelay facade (Phase A)', () => {
   });
 });
 
-describe('workspace.register idempotency', () => {
+describe('workspace.register backend routing', () => {
+  // This mock's registerOrRotate succeeds for a repeated name; it only checks
+  // which backend method the facade calls. Real Relaycast registration is
+  // create-only and rejects an existing name with name_conflict.
   function createRotatingMessagingMock() {
     const base = createMessagingMock();
     const registerOrRotate = vi.fn(async (input: { name: string }) => ({
@@ -178,7 +181,7 @@ describe('workspace.register idempotency', () => {
     return { ...base, registerOrRotate };
   }
 
-  it('uses registerOrRotate by default so re-registering a name succeeds', async () => {
+  it('routes default registration through registerOrRotate when the backend provides it', async () => {
     const { messaging, agents, registerOrRotate } = createRotatingMessagingMock();
     const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
 
@@ -192,7 +195,7 @@ describe('workspace.register idempotency', () => {
     expect(second.token).toBe('rotated-triager');
   });
 
-  it('register({ strict: true }) bypasses rotation and uses plain register', async () => {
+  it('register({ strict: true }) uses plain register instead of registerOrRotate', async () => {
     const { messaging, agents, registerOrRotate } = createRotatingMessagingMock();
     const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
 
