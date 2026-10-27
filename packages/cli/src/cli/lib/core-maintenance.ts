@@ -223,17 +223,21 @@ export async function runUninstallCommand(
   const paths = deps.getProjectPaths();
   const connectionPath = path.join(paths.dataDir, 'connection.json');
 
-  // Kill the broker if running
+  const isDryRun = options.dryRun === true;
+
+  // Preview broker shutdown without signalling a running process.
   const conn = readBrokerConnection(paths.dataDir);
   if (conn && conn.pid > 0) {
-    try {
-      deps.killProcess(conn.pid, 'SIGTERM');
-    } catch {
-      // Ignore dead processes.
+    if (isDryRun) {
+      deps.log(`[dry-run] Would send SIGTERM to broker (pid: ${conn.pid})`);
+    } else {
+      try {
+        deps.killProcess(conn.pid, 'SIGTERM');
+      } catch {
+        // Ignore dead processes.
+      }
     }
   }
-
-  const isDryRun = options.dryRun === true;
 
   // --- Data directory cleanup ---
   if (isDryRun) {
