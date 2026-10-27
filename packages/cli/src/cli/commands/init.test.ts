@@ -5,12 +5,14 @@ import path from 'node:path';
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { CANCELLED, type InitPrompter } from '../lib/init-prompts.js';
 import { boundOrigin } from '../lib/relaycast-origin-binding.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
 import { registerInitCommand, type InitCommandDependencies } from './init.js';
 
 let home: string;
 let project: string;
+let toolHome: string;
 
 class ExitSignal extends Error {
   constructor(public readonly code: number) {
@@ -21,6 +23,7 @@ class ExitSignal extends Error {
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-init-home-'));
   project = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-init-project-'));
+  toolHome = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-init-toolhome-'));
   vi.stubEnv('AGENT_RELAY_HOME', home);
   vi.stubEnv('AGENT_RELAY_PROJECT', project);
   vi.stubEnv('RELAY_BASE_URL', '');
@@ -31,6 +34,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   fs.rmSync(home, { recursive: true, force: true });
   fs.rmSync(project, { recursive: true, force: true });
+  fs.rmSync(toolHome, { recursive: true, force: true });
 });
 
 function jsonResponse(status: number, body: unknown = {}): Response {
@@ -66,6 +70,15 @@ function setup(overrides: Partial<InitCommandDependencies> = {}) {
       if (url.pathname === '/v1/workspace') return jsonResponse(200, { ok: true, data: {} });
       return jsonResponse(404);
     }) as never,
+    isInteractive: () => false,
+    // No tool CLI on PATH and a private home: configs are written as files, here.
+    toolContext: () => ({ projectRoot: project, home: toolHome, env: { PATH: '' } }),
+    runTool: vi.fn(() => ({ status: 1, output: 'not used' })),
+    resolveLaunch: () => ({
+      command: '/opt/relay/bin/agent-relay',
+      args: ['mcp'],
+      reason: 'the test launcher',
+    }),
     ...overrides,
   };
   const program = new Command().exitOverride();
@@ -196,5 +209,225 @@ describe('relay init', () => {
     await run('--stop');
     expect(deps.stop).toHaveBeenCalledWith(4242);
     expect(logs.join('\n')).toContain('Stopped the local Relay server');
+  });
+});
+
+/** A prompter that answers from a script and records what was shown. */
+function scriptedPrompter(answers: unknown[]) {
+  const shown: string[] = [];
+  const asked: string[] = [];
+  const next = async (message: string) => {
+    asked.push(message);
+    if (answers.length === 0) throw new Error(`Unexpected prompt: ${message}`);
+    return answers.shift() as never;
+  };
+  const prompter: InitPrompter = {
+    intro: (title) => shown.push(`intro ${title}`),
+    outro: (message) => shown.push(`outro ${message}`),
+    cancel: (message) => shown.push(`cancel ${message}`),
+    note: (message, title) => shown.push(`note ${title ?? ''}\n${message}`),
+    info: (message) => shown.push(`info ${message}`),
+    warn: (message) => shown.push(`warn ${message}`),
+    success: (message) => shown.push(`success ${message}`),
+    select: (input) => next(input.message),
+    multiselect: (input) => {
+      shown.push(
+        `options ${input.options.map((o) => `${o.label}${input.initialValues?.includes(o.value) ? '*' : ''}`).join(',')}`
+      );
+      return next(input.message);
+    },
+    text: (input) => next(input.message),
+    password: (input) => next(input.message),
+    confirm: (input) => next(input.message),
+    spinner: () => ({
+      start: (m) => shown.push(`spin ${m}`),
+      message: () => undefined,
+      stop: (m) => shown.push(`done ${m}`),
+      error: (m) => shown.push(`error ${m}`),
+    }),
+  };
+  return { prompter, shown, asked };
+}
+
+const mcpJson = () => JSON.parse(fs.readFileSync(path.join(project, '.mcp.json'), 'utf8'));
+
+describe('relay init agent tools (non-interactive)', () => {
+  it('connects the detected tools at project scope by default', async () => {
+    fs.mkdirSync(path.join(toolHome, '.claude'));
+    fs.mkdirSync(path.join(toolHome, '.codex'));
+    const { run, logs } = setup();
+    await run();
+    expect(mcpJson().mcpServers['agent-relay']).toMatchObject({
+      command: '/opt/relay/bin/agent-relay',
+      args: ['mcp'],
+      env: { AGENT_RELAY_MANAGED_BY: 'relay-init', AGENT_RELAY_CLIENT: 'claude' },
+    });
+    expect(fs.readFileSync(path.join(project, '.codex', 'config.toml'), 'utf8')).toContain(
+      '[mcp_servers.agent-relay]'
+    );
+    const output = logs.join('\n');
+    const folder = path.basename(project).toLowerCase();
+    expect(output).toContain(`"Send a message to codex-${folder} saying hello"`);
+    expect(output).toContain('relay message dm send bob "hello" --as alice');
+    expect(output).toContain('trust this project');
+  });
+
+  it('says so when no tool is installed, and still prints the CLI fallback', async () => {
+    const { run, logs } = setup();
+    await run();
+    expect(logs.join('\n')).toContain('No agent tools found');
+    expect(logs.join('\n')).toContain('relay agent register alice');
+    expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
+  });
+
+  it('installs the tools named by --tools at --scope global', async () => {
+    const { run } = setup();
+    await run('--tools', 'claude,pi,devin', '--scope', 'global', '--yes');
+    expect(
+      JSON.parse(fs.readFileSync(path.join(toolHome, '.claude.json'), 'utf8')).mcpServers
+    ).toHaveProperty('agent-relay');
+    expect(fs.existsSync(path.join(toolHome, '.pi', 'agent', 'mcp.json'))).toBe(true);
+    expect(fs.existsSync(path.join(toolHome, '.config', 'devin', 'mcp_config.json'))).toBe(true);
+    expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
+  });
+
+  it('--tools none sets up the server only', async () => {
+    fs.mkdirSync(path.join(toolHome, '.claude'));
+    const { run } = setup();
+    await run('--tools', 'none');
+    expect(readWorkspaceStore().workspaces.local?.key).toBeDefined();
+    expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
+  });
+
+  it('re-running updates its entry instead of duplicating it', async () => {
+    const first = setup();
+    await first.run('--tools', 'claude');
+    const before = fs.readFileSync(path.join(project, '.mcp.json'), 'utf8');
+    const { run, logs } = setup();
+    await run('--tools', 'claude');
+    expect(fs.readFileSync(path.join(project, '.mcp.json'), 'utf8')).toBe(before);
+    expect(logs.join('\n')).toContain('already set up');
+  });
+
+  it.each([
+    [['--tools', 'cursor'], /Unknown tool for --tools: cursor/],
+    [['--tools', 'gemini,vscode,windsurf'], /Unknown tools/],
+    [['--scope', 'everywhere'], /Expected project or global/],
+  ])('rejects %j before changing anything', async (args, message) => {
+    const { run, deps } = setup();
+    await expect(run(...args)).rejects.toThrow(message);
+    expect(deps.startEngine).not.toHaveBeenCalled();
+  });
+
+  it('never prompts with --yes, even in a terminal', async () => {
+    const prompter = vi.fn();
+    const { run } = setup({ isInteractive: () => true, prompter: prompter as never });
+    await run('--yes', '--tools', 'claude');
+    expect(prompter).not.toHaveBeenCalled();
+    expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
+  });
+});
+
+describe('relay init --uninstall', () => {
+  it('removes exactly the entries relay init added, in both scopes by default', async () => {
+    fs.writeFileSync(
+      path.join(project, '.mcp.json'),
+      JSON.stringify({ mcpServers: { github: { command: 'gh-mcp' } } }, null, 2)
+    );
+    const devinUser = path.join(toolHome, '.config', 'devin', 'mcp_config.json');
+    fs.mkdirSync(path.dirname(devinUser), { recursive: true });
+    const ownDevin = JSON.stringify({ mcpServers: { 'agent-relay': { command: 'my-own' } } });
+    fs.writeFileSync(devinUser, ownDevin);
+    const install = setup();
+    await install.run('--tools', 'claude,codex', '--scope', 'project');
+    await install.run('--tools', 'opencode', '--scope', 'global');
+
+    const { run, logs } = setup();
+    await run('--uninstall');
+    expect(mcpJson()).toEqual({ mcpServers: { github: { command: 'gh-mcp' } } });
+    expect(fs.existsSync(path.join(project, '.codex', 'config.toml'))).toBe(false);
+    expect(fs.existsSync(path.join(toolHome, '.config', 'opencode', 'opencode.json'))).toBe(false);
+    expect(fs.readFileSync(devinUser, 'utf8')).toBe(ownDevin);
+    const output = logs.join('\n');
+    expect(output).toMatch(/Claude Code\s+removed/);
+    expect(output).toMatch(/Devin \(local CLI\)\s+left as is/);
+    // The server and workspace are untouched.
+    expect(readWorkspaceStore().workspaces.local?.key).toBeDefined();
+  });
+
+  it('limits removal to --scope', async () => {
+    const install = setup();
+    await install.run('--tools', 'claude', '--scope', 'project');
+    await install.run('--tools', 'claude', '--scope', 'global');
+    const { run } = setup();
+    await run('--uninstall', '--scope', 'global');
+    expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
+    expect(fs.existsSync(path.join(toolHome, '.claude.json'))).toBe(false);
+  });
+
+  it('says when there is nothing to remove', async () => {
+    const { run, logs } = setup();
+    await run('--uninstall');
+    expect(logs.join('\n')).toContain('nothing to remove');
+  });
+});
+
+describe('relay init guided flow', () => {
+  it('asks where agents talk, which tools, and the scope, then installs and names the next step', async () => {
+    fs.mkdirSync(path.join(toolHome, '.claude'));
+    fs.mkdirSync(path.join(toolHome, '.pi', 'agent'), { recursive: true });
+    const script = scriptedPrompter([
+      'own',
+      'https://relay.corp.test',
+      'rk_live_corp',
+      ['claude', 'codex'],
+      'project',
+      true,
+    ]);
+    const { run, createWorkspace } = setup({ isInteractive: () => true, prompter: () => script.prompter });
+    await run();
+
+    expect(script.asked).toEqual([
+      'Where should your agents talk?',
+      'Server URL',
+      'Workspace key',
+      'Which agents should get Relay?',
+      'Installation scope',
+      'Proceed with installation?',
+    ]);
+    // Detected tools are pre-checked; every supported tool is offered.
+    expect(script.shown).toContain('options Claude Code*,Codex,OpenCode,Grok CLI,Pi*,Devin (local CLI)');
+    expect(createWorkspace).not.toHaveBeenCalled();
+    expect(boundOrigin('rk_live_corp')).toBe('https://relay.corp.test');
+    expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
+    const shown = script.shown.join('\n');
+    expect(shown).toContain('Installation Summary');
+    expect(shown).toContain('Runs: /opt/relay/bin/agent-relay mcp');
+    expect(shown).toContain(`Send a message to codex-${path.basename(project).toLowerCase()} saying hello`);
+    expect(shown).toContain('outro Relay is ready.');
+  });
+
+  it('only asks what the flags did not answer', async () => {
+    const script = scriptedPrompter([true]);
+    const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
+    await run('--hosted', '--tools', 'grok', '--scope', 'global');
+    expect(script.asked).toEqual(['Proceed with installation?']);
+    expect(fs.readFileSync(path.join(toolHome, '.grok', 'config.toml'), 'utf8')).toContain('enabled = true');
+  });
+
+  it('stops without installing when the person cancels', async () => {
+    const script = scriptedPrompter(['local', ['claude'], 'project', CANCELLED]);
+    const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
+    await run();
+    expect(script.shown.join('\n')).toContain('cancel Setup cancelled');
+    expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
+  });
+
+  it('shows the CLI fallback when no agent is chosen', async () => {
+    const script = scriptedPrompter(['local', []]);
+    const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
+    await run();
+    expect(script.shown.join('\n')).toContain('relay agent register alice');
+    expect(script.asked).not.toContain('Installation scope');
   });
 });

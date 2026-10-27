@@ -641,7 +641,8 @@ describe('agent-relay-mcp startup helpers', () => {
 
     expect(mod.optionsFromEnv()).toMatchObject({
       workspaceKey: 'rk_live_persisted',
-      agentName: 'orchestrator',
+      agentName: undefined,
+      autoRegister: { cwd: process.cwd() },
     });
     expect(mocks.resolveWorkspaceSessionKey).toHaveBeenCalledTimes(1);
   });
@@ -660,7 +661,8 @@ describe('agent-relay-mcp startup helpers', () => {
     expect(mod.optionsFromEnv()).toMatchObject({
       workspaceKey: 'rk_live_persisted',
       agentToken: undefined,
-      agentName: 'orchestrator',
+      agentName: undefined,
+      autoRegister: { cwd: process.cwd() },
     });
   });
 
