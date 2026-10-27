@@ -2812,6 +2812,129 @@ describe('registerCoreCommands', () => {
     });
   });
 
+  it('updates a standalone binary with the verified installer and pinned version', async () => {
+    const home = os.homedir();
+    const execCommand = vi.fn(async () => ({ stdout: 'updated\n', stderr: '' }));
+    const { deps } = createHarness({
+      execPath: nodePath.join(home, '.agentworkforce', 'relay', 'bin', 'agent-relay'),
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      execCommand,
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    expect(await runCommand(program, ['update'])).toBeUndefined();
+    expect(execCommand).toHaveBeenCalledWith(
+      `AGENT_RELAY_INSTALL_STANDALONE_ONLY=1 AGENT_RELAY_INSTALL_DIR='${nodePath.join(home, '.agentworkforce', 'relay')}' AGENT_RELAY_VERSION='2.0.0' bash -c 'installer=$(curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh) && bash -c "$installer"'`
+    );
+    expect(deps.log).toHaveBeenCalledWith('Successfully updated to 2.0.0');
+  });
+
+  it.each([{}, { AGENT_RELAY_INSTALL_DIR: '/another-install' }])(
+    'updates a standalone binary in its actual custom directory with env %j',
+    async (env) => {
+      const installDir = nodePath.resolve("/custom directory/relay's install");
+      const { deps } = createHarness({
+        execPath: nodePath.join(installDir, 'bin', 'agent-relay'),
+        env,
+        checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      });
+      const program = new Command();
+      registerCoreMaintenance(program, deps);
+
+      expect(await runCommand(program, ['update'])).toBeUndefined();
+      expect(deps.execCommand).toHaveBeenCalledWith(
+        expect.stringContaining(`AGENT_RELAY_INSTALL_DIR='${installDir.replace(/'/g, `'"'"'`)}'`)
+      );
+    }
+  );
+
+  it('updates a standalone binary in the legacy install directory', async () => {
+    const installDir = nodePath.join(os.homedir(), '.agent-relay');
+    const { deps } = createHarness({
+      execPath: nodePath.join(installDir, 'bin', 'agent-relay'),
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+    expect(await runCommand(program, ['update'])).toBeUndefined();
+    expect(deps.execCommand).toHaveBeenCalledWith(
+      expect.stringContaining(`AGENT_RELAY_INSTALL_DIR='${installDir}'`)
+    );
+  });
+
+  it('recognizes a symlink to a standalone binary', async () => {
+    const installedBinary = nodePath.join(os.homedir(), '.agentworkforce', 'relay', 'bin', 'agent-relay');
+    const { deps } = createHarness({
+      execPath: nodePath.resolve('/linked/agent-relay'),
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      configureDependencies: (deps) => {
+        deps.fs.realpathSync = () => installedBinary;
+      },
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    expect(await runCommand(program, ['update'])).toBeUndefined();
+    expect(deps.execCommand).toHaveBeenCalledWith(
+      expect.stringContaining('AGENT_RELAY_INSTALL_STANDALONE_ONLY=1')
+    );
+  });
+
+  it.each(['matching', 'symlink-target', 'other-install', 'not-a-launcher', 'not-executable'])(
+    'preserves a custom launcher directory only for this installation (%s)',
+    async (mode) => {
+      const installDir = nodePath.resolve('/opt/custom-relay');
+      const binary = nodePath.join(installDir, 'bin', 'agent-relay');
+      const launcherDir = nodePath.resolve('/opt/custom-launchers');
+      const launcher = nodePath.join(launcherDir, 'agent-relay');
+      const laterDir = nodePath.resolve('/opt/later-launchers');
+      const fs = createFsMock({
+        [launcher]:
+          mode === 'not-a-launcher'
+            ? '#!/bin/sh\nexit 0\n'
+            : `#!/usr/bin/env bash\nexec "${mode === 'other-install' ? nodePath.resolve('/other/bin/agent-relay') : mode === 'symlink-target' ? nodePath.resolve('/linked/agent-relay') : binary}" "$@"\n`,
+        [nodePath.join(laterDir, 'agent-relay')]: `#!/usr/bin/env bash\nexec "${binary}" "$@"\n`,
+      });
+      fs.accessSync = vi.fn((candidate) => {
+        if (!fs.existsSync(candidate) || mode === 'not-executable') throw new Error('not executable');
+      });
+      fs.realpathSync = (candidate) =>
+        candidate === nodePath.resolve('/linked/agent-relay') ? binary : candidate;
+      const { deps } = createHarness({
+        fs,
+        env: { PATH: [launcherDir, laterDir].join(nodePath.delimiter) },
+        execPath: binary,
+        checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      });
+      const program = new Command();
+      registerCoreMaintenance(program, deps);
+      expect(await runCommand(program, ['update'])).toBeUndefined();
+      const command = vi.mocked(deps.execCommand).mock.calls[0][0];
+      if (mode === 'matching' || mode === 'symlink-target') {
+        expect(command).toContain(`AGENT_RELAY_BIN_DIR='${launcherDir}'`);
+      } else {
+        expect(command).not.toContain('AGENT_RELAY_BIN_DIR=');
+      }
+    }
+  );
+
+  it('returns a failure when a standalone update fails', async () => {
+    const home = os.homedir();
+    const { deps } = createHarness({
+      execPath: nodePath.join(home, '.agentworkforce', 'relay', 'bin', 'agent-relay'),
+      checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
+      execCommand: vi.fn(async () => {
+        throw new Error('installer failed');
+      }),
+    });
+    const program = new Command();
+    registerCoreMaintenance(program, deps);
+
+    expect(await runCommand(program, ['update'])).toBe(1);
+    expect(deps.error).toHaveBeenCalledWith('Failed to install update: installer failed');
+  });
+
   it('update tracks failed install attempts without leaking messages', async () => {
     const { deps } = createHarness({
       checkForUpdatesResult: { updateAvailable: true, latestVersion: '2.0.0' },
