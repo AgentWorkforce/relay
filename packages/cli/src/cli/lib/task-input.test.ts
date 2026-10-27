@@ -8,8 +8,28 @@ import {
   MAX_TASK_BODY_BYTES,
   MAX_ARGV_TASK_BYTES,
   MAX_NATIVE_TASK_BYTES,
+  MAX_TYPED_TASK_BYTES,
 } from './task-input.js';
 describe('task input', () => {
+  it('rejects paced recipient tasks before launch while preserving bulk and argv limits', async () => {
+    const body = 'é'.repeat(MAX_TYPED_TASK_BYTES / 2 + 1);
+    for (const cli of ['claude', 'gemini', '/opt/custom-tui']) {
+      await expect(readTaskInput(body, undefined, false, { cli })).rejects.toThrow('1536 UTF-8 bytes');
+    }
+    for (const cli of ['codex', 'CODEX.exe', 'devin', 'muse']) {
+      expect(await readTaskInput(body, undefined, false, { cli })).toBe(body);
+    }
+    const dir = await mkdtemp(join(tmpdir(), 'relay-typed-task-'));
+    try {
+      const file = join(dir, 'task.txt');
+      await writeFile(file, body);
+      await expect(readTaskInput(undefined, file, true, { cli: 'claude' })).rejects.toThrow(
+        '1536 UTF-8 bytes'
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
   it('requires exactly one source for fleet, allows neither locally', async () => {
     await expect(readTaskInput(undefined, undefined, true)).rejects.toThrow('exactly one');
     await expect(readTaskInput('hi', 'brief.md')).rejects.toThrow('exactly one');

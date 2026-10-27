@@ -6,6 +6,8 @@ export const MAX_INJECTION_BODY_BYTES = 16 * 1024;
 export const ENVELOPE_RESERVE_BYTES = 2 * 1024;
 /** Largest body that still fits {@link MAX_INJECTION_BODY_BYTES} once formatted. */
 export const MAX_TASK_BODY_BYTES = MAX_INJECTION_BODY_BYTES - ENVELOPE_RESERVE_BYTES;
+/** Conservative paced wire ceiling before a remote recipient advertises paste support. */
+export const MAX_TYPED_TASK_BYTES = 1536;
 /**
  * The broker's portable ceiling for a prompt passed as one process argument
  * (Muse's startup task, a headless provider's message).
@@ -61,7 +63,14 @@ export async function readTaskInput(
 
 function taskByteLimit(target: TaskTarget | undefined): number {
   const kind = taskLimitKind(target);
-  return kind === 'pty' ? MAX_TASK_BODY_BYTES : kind === 'argv' ? MAX_ARGV_TASK_BYTES : MAX_NATIVE_TASK_BYTES;
+  if (kind !== 'pty') return kind === 'argv' ? MAX_ARGV_TASK_BYTES : MAX_NATIVE_TASK_BYTES;
+  // No recipient information means only the transport-independent ceiling is known.
+  const cli = target?.cli
+    .split(/[\\/]/)
+    .pop()
+    ?.toLowerCase()
+    .replace(/\.exe$/, '');
+  return !cli || cli === 'codex' || cli === 'devin' ? MAX_TASK_BODY_BYTES : MAX_TYPED_TASK_BYTES;
 }
 
 /** Validate a task as its target receives it; recheck after anything is appended to it. */
@@ -71,7 +80,7 @@ export function validateTaskSize(text: string, target?: TaskTarget): void {
 
 function validateTaskBytes(bytes: number, target: TaskTarget | undefined): void {
   const kind = taskLimitKind(target);
-  if (kind === 'pty' && bytes > MAX_TASK_BODY_BYTES) throwInjectionTooLarge();
+  if (kind === 'pty' && bytes > taskByteLimit(target)) throwInjectionTooLarge(taskByteLimit(target));
   if (kind === 'argv') validateArgvTaskSize(bytes);
   if (kind === 'native' && bytes > MAX_NATIVE_TASK_BYTES) {
     throw new Error(
@@ -116,8 +125,8 @@ function validateArgvTaskSize(bytes: number): void {
   }
 }
 
-function throwInjectionTooLarge(): never {
+function throwInjectionTooLarge(limit: number): never {
   throw new Error(
-    `Task exceeds ${MAX_TASK_BODY_BYTES} UTF-8 bytes (the ${MAX_INJECTION_BODY_BYTES}-byte PTY limit less room for the message envelope); use a brief file on the node and send a short pointer`
+    `Task exceeds ${limit} UTF-8 bytes for this conservative PTY wire limit; the broker also checks its formatted envelope. Use a brief file on the node and send a short pointer`
   );
 }

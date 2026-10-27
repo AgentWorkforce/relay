@@ -4782,6 +4782,104 @@ async fn pty_body_cap_applies_only_to_pty_recipients() {
 }
 
 #[tokio::test]
+async fn recipient_wire_guard_checks_shared_insertion_before_taking_custody() {
+    let mut workers = make_worker_registry_with_worker("Worker").await;
+    let mut pending = HashMap::new();
+    let mut delivery = make_pending_delivery("wire-size", "Worker").delivery;
+    delivery.body = "x".repeat(1400); // Fits the typed body limit, but not its envelope.
+    let ack = fleet_deliver(1);
+    for runtime in [AgentRuntime::Pty, AgentRuntime::Headless] {
+        workers.workers.get_mut("Worker").unwrap().spec.runtime = runtime.clone();
+        if runtime == AgentRuntime::Headless {
+            delivery.body = "x".repeat(crate::worker::MUSE_STARTUP_PROMPT_MAX_BYTES + 1);
+        }
+        let error = super::insert_and_attempt_delivery(
+            &mut workers,
+            &mut pending,
+            "Worker",
+            delivery.clone(),
+            Duration::from_secs(1),
+            Some(ack.clone()),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("injection_too_large"));
+        assert!(
+            pending.is_empty(),
+            "rejecting a prebuilt fleet delivery must not acquire its ack"
+        );
+    }
+    cleanup_worker_registry(workers).await;
+}
+
+#[tokio::test]
+async fn worker_missing_oversize_replay_retains_relaycast_ownership_and_sequence() {
+    let (tx, _rx) = mpsc::channel(16);
+    let workers = WorkerRegistry::new(tx, vec![], PathBuf::from("/tmp/size-guard"), Instant::now());
+    let mut fixture = worker_event_runtime_fixture(workers, HashMap::new());
+    let mut deliver = fleet_deliver(1);
+    deliver.payload = json!({"type":"message.created", "text":"x".repeat(2000)});
+    fixture
+        .runtime
+        .fleet_delivery_book
+        .bind_authoritative_identity(&deliver.agent, &deliver.agent_id);
+    for _ in 0..2 {
+        fixture
+            .runtime
+            .handle_fleet_deliver(deliver.clone(), None)
+            .await;
+        assert!(fixture.runtime.pending_deliveries.is_empty());
+        assert_eq!(
+            fixture
+                .runtime
+                .fleet_delivery_book
+                .acked_up_to_seq(&deliver.agent_id),
+            0
+        );
+        assert!(
+            matches!(
+                fixture.runtime.fleet_delivery_book.observe(&deliver),
+                crate::node_control::DeliveryDecision::Deliver { .. }
+            ),
+            "rejection must not commit receipt or make exact redelivery a duplicate"
+        );
+        assert!(!fixture
+            .runtime
+            .terminal_failed_deliveries
+            .contains(deliver.delivery_id.as_str()));
+        while let Ok(command) = fixture.fleet_control_rx.try_recv() {
+            assert!(!matches!(
+                command,
+                FleetControlCommand::Send(BrokerToRelaycast::DeliveryAck(_))
+            ));
+        }
+    }
+    // An already-owned predecessor's acknowledgement remains withheld as well.
+    let mut owned = make_pending_delivery("owned", "worker-a");
+    owned.withheld_fleet_ack = Some(deliver.clone());
+    owned.delivery.body = "x".repeat(2000);
+    let mut workers = make_worker_registry_with_worker("worker-a").await;
+    let id = owned.delivery.delivery_id.clone();
+    let mut pending = HashMap::from([(id.clone(), owned)]);
+    let outcome =
+        super::retry_pending_delivery(&id, &mut workers, &mut pending, Duration::from_secs(1))
+            .await
+            .unwrap();
+    let super::DeliveryAttemptOutcome::Failed {
+        pending: failed, ..
+    } = outcome
+    else {
+        panic!("oversize replay must fail before handoff")
+    };
+    assert_eq!(
+        failed.withheld_fleet_ack.unwrap().delivery_id,
+        deliver.delivery_id
+    );
+    cleanup_worker_registry(workers).await;
+}
+
+#[tokio::test]
 async fn delivery_retry_transient_blip_emits_failed_event_for_present_worker() {
     let worker_name = "worker-blip";
     let mut workers = make_worker_registry_with_worker(worker_name).await;

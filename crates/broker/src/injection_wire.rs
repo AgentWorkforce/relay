@@ -9,6 +9,32 @@ pub(crate) const MAX_INJECTION_BODY_BYTES: usize = 16 * 1024;
 pub(crate) const ENVELOPE_RESERVE_BYTES: usize = 2 * 1024;
 pub(crate) const MAX_BODY_BYTES: usize = MAX_INJECTION_BODY_BYTES - ENVELOPE_RESERVE_BYTES;
 
+/// Use the worker's pacing defaults before a terminal can advertise paste support.
+pub(crate) fn resolve_inject_rate(cli: &str, override_value: Option<&str>) -> Duration {
+    let name = cli.rsplit(['/', '\\']).next().unwrap_or(cli);
+    let default = if name.eq_ignore_ascii_case("codex")
+        || name.eq_ignore_ascii_case("codex.exe")
+        || crate::readiness::is_devin_cli(cli)
+    {
+        0
+    } else {
+        5
+    };
+    Duration::from_millis(
+        override_value
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or(default),
+    )
+}
+
+/// Conservative wire ceiling when no live terminal capability is available.
+pub(crate) fn preflight_limit(cli: &str, rate: Option<&str>, paste_disabled: bool) -> usize {
+    effective_limit(
+        select_wire(cli, false, paste_disabled),
+        resolve_inject_rate(cli, rate),
+    )
+}
+
 /// The spawn error for an initial PTY task that cannot fit its envelope.
 pub(crate) fn task_too_large_error(task: &str) -> Option<String> {
     (task.len() > MAX_BODY_BYTES).then(|| {

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- PTY tasks and deliveries are checked against conservative recipient wire limits, including their message envelopes, before launch or queue handoff. Fleet deliveries rejected before custody remain available for redelivery.
+
 ### Removed
 
 - Python workflows, the `agent-relay.py` node provider, and the `agent-relay-sdk` package. Local workflows are YAML, TypeScript, JavaScript, or shell. Cloud and worker workflows are YAML or TypeScript. Node definitions are TypeScript or JavaScript. SDKs are TypeScript and Swift.

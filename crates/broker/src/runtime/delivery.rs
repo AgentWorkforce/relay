@@ -861,27 +861,6 @@ pub(crate) async fn queue_and_try_delivery_raw(
     withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
     withheld_fleet_ack_floor: Option<u64>,
 ) -> Result<DeliveryId> {
-    // The envelope-sized cap exists because PTY delivery types the message into
-    // a terminal, so it applies to PTY and unknown recipients. The headless CLI
-    // runner (no harness config) hands the body to its provider as one argv
-    // entry, so it is bounded by the portable single-argument ceiling instead.
-    // App-server and native harness workers receive deliveries as frames and
-    // need neither bound.
-    let recipient = workers.workers.get(worker_name).map(|handle| &handle.spec);
-    if recipient.is_none_or(|spec| spec.runtime == AgentRuntime::Pty) {
-        anyhow::ensure!(
-            body.len() <= crate::injection_wire::MAX_BODY_BYTES,
-            "injection_too_large: body limit is {} bytes so the formatted envelope fits the {}-byte PTY limit; use a brief file pointer",
-            crate::injection_wire::MAX_BODY_BYTES,
-            crate::injection_wire::MAX_INJECTION_BODY_BYTES
-        );
-    } else if recipient.is_some_and(|spec| spec.harness_config.is_none()) {
-        anyhow::ensure!(
-            body.len() <= crate::worker::MUSE_STARTUP_PROMPT_MAX_BYTES,
-            "injection_too_large: a headless agent receives the body as one process argument, limited to {} bytes; use a brief file pointer",
-            crate::worker::MUSE_STARTUP_PROMPT_MAX_BYTES
-        );
-    }
     // Fleet delivery IDs are stable across Relaycast retries. Preserve that
     // identity all the way into the worker so its completed-delivery cache can
     // re-ACK a replay without pasting the instruction a second time. Local
@@ -932,6 +911,13 @@ pub(crate) async fn insert_and_attempt_delivery(
     withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
     explicit_withheld_fleet_ack_floor: Option<u64>,
 ) -> Result<DeliveryId> {
+    // Reject before local custody or any handoff. The fleet caller retains
+    // Relaycast ownership on Err and does not commit receipt of the rejected frame.
+    crate::worker::validate_delivery_size(
+        workers.workers.get(worker_name).map(|handle| &handle.spec),
+        worker_name,
+        &delivery,
+    )?;
     let delivery_id = delivery.delivery_id.clone();
     let withheld_fleet_ack_floor = withheld_fleet_ack
         .as_ref()
@@ -1027,6 +1013,19 @@ pub(crate) async fn retry_pending_delivery(
         return Ok(DeliveryAttemptOutcome::Noop);
     }
 
+    if let Err(error) = crate::worker::validate_delivery_size(
+        workers
+            .workers
+            .get(&pending.worker_name)
+            .map(|handle| &handle.spec),
+        &pending.worker_name,
+        &pending.delivery,
+    ) {
+        return Ok(DeliveryAttemptOutcome::Failed {
+            pending: Box::new(pending_deliveries.remove(delivery_id).unwrap_or(pending)),
+            last_error: error.to_string(),
+        });
+    }
     match workers
         .deliver(&pending.worker_name, pending.delivery.clone())
         .await

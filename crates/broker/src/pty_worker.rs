@@ -38,6 +38,7 @@ use crate::broker::{
 };
 use crate::cli::command_parse::parse_cli_command;
 use crate::cli::PtyCommand;
+use crate::injection_wire::resolve_inject_rate;
 use crate::readiness::{
     detect_cli_ready, devin_trust_prompt_active, is_devin_cli, is_muse_cli, GridReadinessSnapshot,
 };
@@ -196,37 +197,6 @@ fn failed_draft_latch_is_sole_blocker(
 /// composer, so only that write takes ownership away from relay deliveries.
 fn human_write_takes_ownership(byte_len: usize, admitted: bool) -> bool {
     byte_len > 0 && admitted
-}
-
-/// Default per-atom gap for escape-aware paced injection, in milliseconds.
-/// Overridable at runtime via `RELAY_INJECT_RATE_MS`; `0` disables pacing and
-/// restores the single bulk write. Kept small because a full injection
-/// (envelope plus an optional MCP reminder) can span a few hundred atoms and
-/// the gap multiplies across every one.
-const DEFAULT_INJECT_RATE_MS: u64 = 5;
-
-/// Codex redraws its full-screen input UI for each received character. Paced
-/// writes therefore amplify into minutes-long initial task delivery, while its
-/// bulk-input path accepts the same reminder and task immediately.
-fn default_inject_rate_ms(cli: &str) -> u64 {
-    let cli = cli_basename(cli);
-    if cli.eq_ignore_ascii_case("codex")
-        || cli.eq_ignore_ascii_case("codex.exe")
-        || crate::readiness::is_devin_cli(cli)
-    {
-        0
-    } else {
-        DEFAULT_INJECT_RATE_MS
-    }
-}
-
-/// Resolve the injection pacing gap from an optional override. Keeping this
-/// pure avoids process-environment races in tests.
-fn resolve_inject_rate(cli: &str, override_value: Option<&str>) -> Duration {
-    let ms = override_value
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or_else(|| default_inject_rate_ms(cli));
-    Duration::from_millis(ms)
 }
 
 /// Resolve the injection pacing gap from `RELAY_INJECT_RATE_MS`, falling back
@@ -4114,15 +4084,15 @@ mod tests {
     fn non_codex_clis_keep_paced_injection_default() {
         assert_eq!(
             resolve_inject_rate("claude", None),
-            Duration::from_millis(DEFAULT_INJECT_RATE_MS)
+            Duration::from_millis(5)
         );
         assert_eq!(
             resolve_inject_rate("gemini", Some("invalid")),
-            Duration::from_millis(DEFAULT_INJECT_RATE_MS)
+            Duration::from_millis(5)
         );
         assert_eq!(
             resolve_inject_rate("opencode", Some("  ")),
-            Duration::from_millis(DEFAULT_INJECT_RATE_MS)
+            Duration::from_millis(5)
         );
     }
 
