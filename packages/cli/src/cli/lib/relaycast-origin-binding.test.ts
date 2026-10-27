@@ -16,6 +16,18 @@ import { createAgentRelay, resolveBaseUrl, resolveWorkspaceTransport } from './s
 
 const SELF_HOSTED_KEY = 'rk_live_selfhosted_origin_binding';
 const SELF_HOSTED_TOKEN = 'at_live_selfhosted_origin_binding';
+const SHARED_VECTOR = JSON.parse(
+  fs.readFileSync(
+    new URL('../../../../contracts/fixtures/relaycast-origin-binding.json', import.meta.url),
+    'utf8'
+  )
+) as {
+  credential: string;
+  fingerprint: string;
+  base_url_input: string;
+  normalized_base_url: string;
+  binding_file: { version: 1; origins: Record<string, string> };
+};
 
 let home: string;
 let project: string;
@@ -43,6 +55,19 @@ afterEach(() => {
 });
 
 describe('Relaycast credential origin binding', () => {
+  it('matches the shared Rust credential fingerprint and binding-file vector', () => {
+    resolveWorkspaceTransport({
+      workspaceKey: SHARED_VECTOR.credential,
+      env: envWith({ RELAY_BASE_URL: SHARED_VECTOR.base_url_input }),
+    });
+    const saved = JSON.parse(fs.readFileSync(originBindingsPath(envWith()), 'utf8')) as unknown;
+    expect(saved).toEqual(SHARED_VECTOR.binding_file);
+    expect(Object.keys(SHARED_VECTOR.binding_file.origins)).toEqual([SHARED_VECTOR.fingerprint]);
+
+    fs.writeFileSync(originBindingsPath(envWith()), JSON.stringify(SHARED_VECTOR.binding_file));
+    expect(boundOrigin(SHARED_VECTOR.credential, envWith())).toBe(SHARED_VECTOR.normalized_base_url);
+  });
+
   it('keeps sending a self-hosted key to its server after RELAY_BASE_URL is unset', () => {
     const first = resolveWorkspaceTransport({
       workspaceKey: SELF_HOSTED_KEY,
