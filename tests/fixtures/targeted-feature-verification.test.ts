@@ -508,6 +508,19 @@ describe('targeted Flows v2 PR verification', () => {
     expect(workflow).toContain('matrix: ${{ fromJSON(needs.select.outputs.matrix) }}');
   });
 
+  it('keys the shard selection artifact by run so "Re-run failed jobs" can download it', async () => {
+    const workflow = await readFile('.github/workflows/targeted-feature-verification.yml', 'utf8');
+    const selectionNames = workflow.match(/name: targeted-feature-selection-.*$/gm) ?? [];
+    // One upload (select job) and one download (each shard).
+    expect(selectionNames).toEqual([
+      'name: targeted-feature-selection-${{ github.run_id }}',
+      'name: targeted-feature-selection-${{ github.run_id }}',
+    ]);
+    expect(workflow).toMatch(
+      /name: targeted-feature-selection-\$\{\{ github\.run_id \}\}\n(?:\s+.+\n)*?\s+overwrite: true/
+    );
+  });
+
   it('expands the broker binary template in a full-smoke spec', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'relay-targeted-pr-broker-'));
     temporaryDirectories.push(directory);
