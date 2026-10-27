@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { exec, spawn as spawnProcess } from 'node:child_process';
+import { exec, execFile, spawn as spawnProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Command, InvalidArgumentError, Option } from 'commander';
 
@@ -16,6 +16,7 @@ import { createRuntimeClient, spawnAgentWithClient } from '../lib/client-factory
 import { defaultExit, runSignalHandler } from '../lib/exit.js';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 type ExitFn = (code: number) => never;
 
@@ -117,6 +118,20 @@ export interface CoreDependencies {
   ) => CoreRelay | Promise<CoreRelay>;
   spawnProcess: (command: string, args: string[], options?: Record<string, unknown>) => SpawnedProcess;
   execCommand: (command: string) => Promise<{ stdout: string; stderr: string }>;
+  /** Run a program without a shell and capture its output (rejects on a non-zero exit). */
+  execFileCommand: (
+    file: string,
+    args: string[],
+    options?: { env?: NodeJS.ProcessEnv; timeoutMs?: number }
+  ) => Promise<{ stdout: string; stderr: string }>;
+  /** Run a program with inherited stdio; resolves with its exit status. */
+  runInheritedCommand: (
+    file: string,
+    args: string[],
+    options?: { env?: NodeJS.ProcessEnv }
+  ) => Promise<number>;
+  /** GET a URL and return the body as text (rejects on a non-2xx status). */
+  fetchText: (url: string) => Promise<string>;
   killProcess: (pid: number, signal?: NodeJS.Signals | number) => void;
   fs: CoreFileSystem;
   generateAgentName: () => string;
@@ -260,6 +275,27 @@ export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDep
         stdout: result.stdout ?? '',
         stderr: result.stderr ?? '',
       };
+    },
+    execFileCommand: async (file, args, options) => {
+      const result = await execFileAsync(file, args, {
+        env: options?.env,
+        timeout: options?.timeoutMs,
+        encoding: 'utf-8',
+      });
+      return { stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+    },
+    runInheritedCommand: (file, args, options) =>
+      new Promise<number>((resolve, reject) => {
+        const child = spawnProcess(file, args, { stdio: 'inherit', env: options?.env });
+        child.once('error', reject);
+        child.once('exit', (code, signal) => resolve(code ?? (signal ? 128 : 1)));
+      }),
+    fetchText: async (url: string) => {
+      const response = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response.text();
     },
     killProcess: process.kill,
     fs: fileSystem,
