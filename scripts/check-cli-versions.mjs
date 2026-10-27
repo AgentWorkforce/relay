@@ -207,7 +207,7 @@ async function main() {
     if (shouldUpdate && hasChanges) {
       writeFileSync(registryPath, stringify(registry));
       console.log('\nUpdated cli-registry.yaml');
-      console.log('Run `npm run codegen:models` to regenerate TypeScript/Python models.');
+      console.log('Run `npm run codegen:models` to regenerate TypeScript models.');
     } else if (!shouldUpdate) {
       console.log('\nRun with --update to apply changes.');
     }

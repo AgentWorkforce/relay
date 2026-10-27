@@ -7107,7 +7107,9 @@ async fn slow_delivery_read_ack_does_not_block_confirmation_path() {
             .path("/v1/messages/msg_slow/read")
             .header("authorization", "Bearer at_live_slow_recipient");
         then.status(200)
-            .delay(Duration::from_millis(200))
+            // Keep the response beyond the operation bound while allowing a
+            // cold native-root load to finish and put the request on the wire.
+            .delay(Duration::from_secs(2))
             .json_body(json!({
                 "ok": true,
                 "data": {
@@ -7157,7 +7159,7 @@ async fn slow_delivery_read_ack_does_not_block_confirmation_path() {
         Some("codex"),
         &confirmed.delivery.delivery_id,
         &confirmed.delivery.event_id,
-        Duration::from_millis(20),
+        Duration::from_millis(500),
     );
     assert!(
         start.elapsed() < Duration::from_millis(50),
@@ -9188,6 +9190,10 @@ async fn shutdown_does_not_block_on_a_full_fleet_queue() {
         "queue pressure must not discard the retained Fleet completion",
     );
     fixture.runtime.workers.release("unrelated").await.unwrap();
+    // The fixture client has no base URL, so presence updates go to the public
+    // Relaycast endpoint and may use the whole 2.5s shutdown budget. This
+    // assertion is about the full Fleet queue, so presence stays local.
+    fixture.runtime.relaycast_http = RelaycastHttpClient::local_only("broker");
     tokio::time::timeout(Duration::from_secs(2), fixture.runtime.shutdown_runtime())
         .await
         .expect("a full Fleet queue must not block the complete broker shutdown path")

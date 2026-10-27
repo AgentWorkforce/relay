@@ -17,6 +17,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
+  CallToolRequestSchema,
+  InitializeRequestSchema,
   ListToolsRequestSchema,
   SubscribeRequestSchema,
   UnsubscribeRequestSchema,
@@ -34,6 +36,9 @@ import {
 import { z } from 'zod';
 import { declaredWorkforceMetadata } from './lib/registration-metadata.js';
 import { isBundledBunEntrypointPath } from './lib/agent-relay-mcp-command.js';
+import { guardCredentialOrigin } from './lib/relaycast-origin-binding.js';
+import { isAgentAlreadyExists, takeOverAgent } from './lib/agent-takeover.js';
+import { pickAvailableName, sessionBaseName } from './lib/mcp-session-name.js';
 import {
   DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS,
   withAgentRegistrationDeadline,
@@ -76,6 +81,7 @@ import type {
   AgentClientLike,
   AgentRelayMcpServerOptions,
   AgentType,
+  AutoRegisterOptions,
   RegisteredAgent,
   RegistrationSession,
   RelayCastLike,
@@ -420,7 +426,7 @@ export const AGENT_RELAY_MCP_INSTRUCTIONS = `You are an AI agent in a collaborat
 1. The current project workspace is resumed automatically when one was selected before
 2. Call "create_workspace" only when you explicitly want to start a new workspace session
 3. If someone shared an existing workspace key with you, call "set_workspace_key"
-4. When a workspace key is available at startup, this MCP server auto-registers the session as RELAY_AGENT_NAME (or "orchestrator" by default). Otherwise call "register_agent" with your agent name to join the workspace
+4. When a workspace key is available at startup, this MCP server registers the session automatically: as RELAY_AGENT_NAME when it is set, otherwise as your tool plus the project folder (for example "claude-myproject", with a short suffix when another live session holds that name). Call "register_agent" to choose a different name, or to join when no workspace key was available
 5. Use "list_channels" to see available channels
 6. Use "join_channel" to join channels of interest
 7. Use "check_inbox" to see unread messages and mentions
@@ -1902,7 +1908,205 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
     });
   }
 
+  if (options.autoRegister) {
+    installSessionAutoRegistration(mcpServer, handlers, options.autoRegister, {
+      getSession,
+      setSession,
+      getRelay,
+      agentType: options.agentType,
+      baseUrl: options.baseUrl,
+    });
+  }
+
   return mcpServer;
+}
+
+const RELAYCAST_HOSTED_ORIGIN = 'https://cast.agentrelay.com';
+/** Under Relaycast's 60s presence TTL, with room for one missed beat. */
+const SESSION_HEARTBEAT_MS = 25_000;
+
+/** How an auto-registered session marks itself offline when it ends. */
+const sessionDisconnectors = new WeakMap<McpServer, () => Promise<void>>();
+
+/**
+ * Names of the sessions connected right now. The presence endpoint tracks
+ * live connections (a session that exits drops out within its heartbeat TTL,
+ * at once when it disconnects cleanly), where the roster's `online` filter
+ * keeps a registration for minutes after its process is gone.
+ */
+async function liveAgentNames(
+  relay: RelayCastLike,
+  workspaceKey: string,
+  baseUrl: string | undefined,
+  fetchImpl: typeof fetch
+): Promise<Set<string>> {
+  const live = new Set<string>();
+  try {
+    const response = await fetchImpl(new URL('/v1/agents/presence', baseUrl ?? RELAYCAST_HOSTED_ORIGIN), {
+      headers: { authorization: `Bearer ${workspaceKey}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (response.ok) {
+      const body = (await response.json()) as { data?: unknown };
+      if (Array.isArray(body.data)) {
+        for (const entry of body.data as Array<{ agent_name?: unknown; status?: unknown }>) {
+          if (entry?.status === 'online' && typeof entry.agent_name === 'string') live.add(entry.agent_name);
+        }
+        return live;
+      }
+    }
+  } catch {
+    // Fall back to the roster below.
+  }
+  try {
+    for (const agent of await relay.agents.list({ status: 'online' })) {
+      const name = (agent as { name?: unknown } | null)?.name;
+      if (typeof name === 'string') live.add(name);
+    }
+  } catch {
+    // Without either, the base name is still the best guess.
+  }
+  return live;
+}
+
+/**
+ * Register a session that has no configured name as soon as the MCP client
+ * says who it is. The name comes from `clientInfo.name` and the folder the
+ * tool started in (`claude-myproject`); a live session already holding it
+ * pushes this one to `claude-myproject-2`. Tool calls wait for the
+ * registration, so the first call never races it.
+ */
+function installSessionAutoRegistration(
+  mcpServer: McpServer,
+  handlers: Map<string, (req: unknown, extra: unknown) => Promise<unknown>>,
+  autoRegister: AutoRegisterOptions,
+  ctx: {
+    getSession: () => SessionState;
+    setSession: SessionSetter;
+    getRelay: () => RelayCastLike;
+    agentType?: AgentType;
+    baseUrl?: string;
+  }
+): void {
+  const fetchImpl = autoRegister.fetch ?? globalThis.fetch;
+  let pending: Promise<void> | null = null;
+
+  const register = async (clientName: string | undefined): Promise<void> => {
+    const base = sessionBaseName({ clientName, hint: autoRegister.clientHint, cwd: autoRegister.cwd });
+    const workspaceKey = ctx.getSession().workspaceKey!;
+    const live = await liveAgentNames(ctx.getRelay(), workspaceKey, ctx.baseUrl, fetchImpl);
+    const name = pickAvailableName(base, live);
+    let token: string | null;
+    let registeredName: string | null;
+    try {
+      const payload = await registerAgentWithRebind({
+        session: ctx.getSession(),
+        setSession: ctx.setSession,
+        getRelay: ctx.getRelay,
+        name,
+        type: ctx.agentType ?? 'agent',
+      });
+      token = typeof payload.token === 'string' ? payload.token : null;
+      registeredName = typeof payload.registered_name === 'string' ? payload.registered_name : null;
+    } catch (error) {
+      // The name belongs to an earlier session of this tool in this folder
+      // that is no longer connected (a restart): resume that identity.
+      if (!isAgentAlreadyExists(error)) throw error;
+      const grant = await takeOverAgent(
+        { workspaceKey, baseUrl: ctx.baseUrl, fetch: fetchImpl },
+        name,
+        'agent-relay mcp: resume the identity of an earlier session of this tool in this folder'
+      );
+      token = grant.token;
+      registeredName = grant.name;
+    }
+    if (token && registeredName) {
+      const agents = new Map(ctx.getSession().agents);
+      agents.set(registeredName, createRegisteredAgent(registeredName, token));
+      ctx.setSession({ agentToken: token, agentName: registeredName, agents });
+      startHeartbeat();
+    }
+  };
+
+  // Keep this session present while it runs, so the next session in the same
+  // folder sees the name is taken. Presence lapses about a minute after the
+  // last beat, which is how a crashed session frees its name.
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const beat = (): void => {
+    const token = ctx.getSession().agentToken;
+    if (!token) return;
+    void fetchImpl(new URL('/v1/agents/heartbeat', ctx.baseUrl ?? RELAYCAST_HOSTED_ORIGIN), {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5_000),
+    }).catch(() => undefined);
+  };
+  const startHeartbeat = (): void => {
+    if (heartbeat) return;
+    beat();
+    heartbeat = setInterval(beat, SESSION_HEARTBEAT_MS);
+    heartbeat.unref?.();
+  };
+
+  // Read clientInfo from the initialize request itself, and start right after
+  // answering it, so nothing depends on the order a client's messages land in.
+  const initialize = handlers.get('initialize');
+  if (initialize) {
+    mcpServer.server.setRequestHandler(InitializeRequestSchema, async (req, extra) => {
+      const result = await initialize(req, extra);
+      const session = ctx.getSession();
+      if (!pending && session.workspaceKey && !session.agentToken) {
+        pending = register(req.params.clientInfo?.name).catch((error: unknown) => {
+          process.stderr.write(
+            `[agent-relay] Could not register this session automatically (${safeRelayErrorMessage(error)}). ` +
+              'Call "register_agent" to join the workspace.\n'
+          );
+        });
+      }
+      return result as never;
+    });
+  }
+
+  const callTool = handlers.get('tools/call');
+  if (callTool) {
+    mcpServer.server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
+      if (pending) await pending;
+      return (await callTool(req, extra)) as never;
+    });
+  }
+
+  // Leave cleanly so the next session in this folder can take the name at once.
+  sessionDisconnectors.set(mcpServer, async () => {
+    if (heartbeat) clearInterval(heartbeat);
+    const token = ctx.getSession().agentToken;
+    if (!token) return;
+    ctx.getSession().wsBridge?.stop();
+    await fetchImpl(new URL('/v1/agents/disconnect', ctx.baseUrl ?? RELAYCAST_HOSTED_ORIGIN), {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(2_000),
+    }).catch(() => undefined);
+  });
+}
+
+/**
+ * Mark an auto-registered session offline when its tool stops it: stdin
+ * closes (the MCP stdio shutdown) or the process is signalled.
+ */
+function disconnectSessionOnExit(mcpServer: McpServer): void {
+  const disconnect = sessionDisconnectors.get(mcpServer);
+  if (!disconnect) return;
+  let closing = false;
+  const shutdown = (): void => {
+    if (closing) return;
+    closing = true;
+    void Promise.race([disconnect(), new Promise((resolve) => setTimeout(resolve, 2_500))]).finally(() =>
+      process.exit(0)
+    );
+  };
+  process.stdin.once('end', shutdown);
+  for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.once(signal, shutdown);
 }
 
 /** Relaycast agent tokens are opaque `at_live_<hex>` literals. Anything else
@@ -1982,6 +2186,7 @@ export async function startAgentRelayMcpStdio(options: AgentRelayMcpServerOption
   });
   const transport = new StdioServerTransport();
   await mcpServer.connect(transport);
+  disconnectSessionOnExit(mcpServer);
 }
 
 export function optionsFromEnv(): AgentRelayMcpServerOptions {
@@ -2005,22 +2210,34 @@ export function optionsFromEnv(): AgentRelayMcpServerOptions {
       // session can still be selected explicitly with set_workspace_key.
     }
   }
-  const agentName =
-    resolveEnv('RELAY_AGENT_NAME') ??
-    resolveEnv('RELAY_CLAW_NAME') ??
-    (workspaceKey ? 'orchestrator' : undefined);
+  // With no configured name the session is named after the MCP client and the
+  // project folder once the client connects (see installSessionAutoRegistration),
+  // so two sessions never share one identity.
+  const agentName = resolveEnv('RELAY_AGENT_NAME') ?? resolveEnv('RELAY_CLAW_NAME');
+  // An agent token has no workspace identity encoded locally. Only reuse it
+  // when the workspace was selected alongside it through the environment;
+  // a persisted project/store fallback must register into that workspace
+  // instead of silently pairing it with a possibly stale ambient token.
+  const agentToken = resumedPersistedWorkspace ? undefined : resolveEnv('RELAY_AGENT_TOKEN');
+  // The same rule as the CLI: a credential bound to a self-hosted or local
+  // server (by `relay init`, `workspace join`, …) only ever goes back to it,
+  // so the MCP server never sends it to the hosted default.
+  const credential = workspaceKey ?? agentToken;
+  const baseUrl = credential
+    ? guardCredentialOrigin(credential, resolveEnv('RELAY_BASE_URL'))
+    : resolveEnv('RELAY_BASE_URL');
   return {
     workspaceKey,
-    baseUrl: resolveEnv('RELAY_BASE_URL'),
-    // An agent token has no workspace identity encoded locally. Only reuse it
-    // when the workspace was selected alongside it through the environment;
-    // a persisted project/store fallback must register into that workspace
-    // instead of silently pairing it with a possibly stale ambient token.
-    agentToken: resumedPersistedWorkspace ? undefined : resolveEnv('RELAY_AGENT_TOKEN'),
+    baseUrl,
+    agentToken,
     agentName,
     agentType: normalizeAgentType(resolveEnv('RELAY_AGENT_TYPE')),
     strictAgentName: envFlagEnabled(resolveEnv('RELAY_STRICT_AGENT_NAME')),
     skipBootstrap: envFlagEnabled(resolveEnv('RELAY_SKIP_BOOTSTRAP')),
+    autoRegister:
+      workspaceKey && !agentName && !agentToken
+        ? { cwd: process.cwd(), clientHint: resolveEnv('AGENT_RELAY_CLIENT') }
+        : undefined,
   };
 }
 

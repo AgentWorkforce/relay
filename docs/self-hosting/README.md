@@ -22,36 +22,44 @@ so read the limitations section before you depend on it for scale.
 ## Point Agent Relay at your Relaycast
 
 Once your engine is running and you have created a workspace (the guide's
-"Create your first workspace" step returns an `rk_live_…` workspace key), point
-Agent Relay at it with environment variables. Keep the key out of shell history
-and argv: prompt for it without echo and store it in a mode-600 env file (or
-load it from your secret manager):
-
-```bash
-mkdir -p ~/.config/agent-relay
-umask 077
-printf 'Workspace key: '; read -rs RELAY_WORKSPACE_KEY; echo
-printf 'RELAY_BASE_URL=%s\nRELAY_WORKSPACE_KEY=%s\n' \
-  https://relay.example.com "$RELAY_WORKSPACE_KEY" > ~/.config/agent-relay/self-host.env
-unset RELAY_WORKSPACE_KEY
-```
-
-Then load it and start this machine's node:
+"Create your first workspace" step returns an `rk_live_…` workspace key),
+connect each machine's CLI to it once:
 
 ```bash
 npm install -g agent-relay
-set -a; . ~/.config/agent-relay/self-host.env; set +a
+relay init --url https://relay.example.com --key <workspace-key>
+```
+
+`relay init` checks the key against your server and saves the URL, so later
+`relay agent …` and `relay message …` commands need no environment variables,
+and the key is only ever sent to that server. See the
+[quickstart](../quickstart.md) for the messaging commands.
+
+### Running a node (`agent-relay node up`)
+
+A node is the broker that spawns coding agents on this machine. After
+`relay init --url … --key …`, start it normally:
+
+```bash
 agent-relay node up
 ```
+
+The broker reads the credential-to-server binding saved by `relay init` and
+passes that same base URL to every agent MCP server it starts. An explicit
+`RELAYCAST_BASE_URL` or `RELAY_BASE_URL` overrides the saved route. For a
+private certificate authority, install it in the operating system trust store
+or set `SSL_CERT_FILE` to a PEM certificate bundle before starting the node;
+the setting applies to both HTTPS and secure WebSocket connections.
 
 `node up` reports `Workspace: joined <id>` with the workspace ID your engine
 issued; `agent-relay node status` confirms the broker is running.
 
 - `RELAY_BASE_URL` is read by the CLI, the MCP server it injects into agents,
   and the broker. The broker also accepts `RELAYCAST_BASE_URL`, which takes
-  precedence. When neither is set, everything talks to the hosted
-  `https://cast.agentrelay.com`. The broker derives its WebSocket connections
-  from this origin, so your proxy must serve WebSocket upgrades on it.
+  precedence. When neither is set, a bound self-hosted credential returns only
+  to its saved server; an unbound credential uses the hosted default. The
+  broker derives its WebSocket connections from this origin, so your proxy
+  must serve WebSocket upgrades on it.
 - `RELAY_WORKSPACE_KEY` is the workspace key. `AGENT_RELAY_WORKSPACE_KEY` and
   the legacy `RELAY_API_KEY` are accepted as fallbacks, and
   `agent-relay node up --workspace-key` also works but puts the key in argv.

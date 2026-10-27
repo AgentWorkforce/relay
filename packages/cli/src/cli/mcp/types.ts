@@ -28,6 +28,21 @@ export interface AgentRelayMcpServerOptions {
   sharedSessionTools?: Tool[];
   actions?: AgentRelayActions;
   onActionAuditEvent?: (event: ActionAuditEvent) => Promise<void> | void;
+  /**
+   * Name and register this session once the MCP client says who it is, when
+   * no agent name was configured: `<tool>-<project folder>` from the client's
+   * `clientInfo.name`, with a short suffix when a live session holds it.
+   */
+  autoRegister?: AutoRegisterOptions;
+}
+
+export interface AutoRegisterOptions {
+  /** The directory the agent tool started the server in. */
+  cwd: string;
+  /** AGENT_RELAY_CLIENT, used when the client name is generic. */
+  clientHint?: string;
+  /** Test seam for the presence and disconnect requests. */
+  fetch?: typeof fetch;
 }
 
 export interface RegisteredAgent {

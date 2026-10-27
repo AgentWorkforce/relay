@@ -16,13 +16,48 @@ import {
 } from '../lib/agent-removal.js';
 
 import { withAgentRegistrationDeadline, withDeadline } from '../lib/agent-registration.js';
+import { isAgentAlreadyExists, takeOverAgent, type AgentTokenGrant } from '../lib/agent-takeover.js';
+import { saveAgentToken } from '../lib/agent-token-store.js';
+import { guardCredentialOrigin } from '../lib/relaycast-origin-binding.js';
+import { resolveWorkspaceTransport } from '../lib/sdk-client.js';
 import { attributableReleaseReason } from '../lib/release-reason.js';
 
-export type AgentCommandDependencies = SdkCommandDeps;
+export interface AgentCommandDependencies extends SdkCommandDeps {
+  /** Issue a fresh token for an existing agent with the workspace key. */
+  takeOverAgent: typeof takeOverAgent;
+}
+
+/** Save a freshly issued token by name so `--as <name>` works in any shell. */
+function rememberToken(
+  deps: AgentCommandDependencies,
+  opts: Record<string, unknown>,
+  name: string,
+  token: string | undefined,
+  registration?: unknown
+): void {
+  if (!token) return;
+  if ((registration as Partial<AgentTokenGrant> | undefined)?.oldTokenGraceRemains) {
+    deps.error(
+      `Issued a new token for "${name}", but could not retire the old one at once; it stops working within a minute.`
+    );
+  }
+  try {
+    const { workspaceKey, baseUrl } = resolveWorkspaceTransport(sdkOptionsFromOpts(opts));
+    saveAgentToken(workspaceKey, baseUrl, name, token);
+    // The token belongs to the same server as the key that minted it.
+    if (baseUrl) guardCredentialOrigin(token, baseUrl);
+    deps.error(`Saved the token for "${name}". Act as this agent with --as ${name}.`);
+  } catch (error) {
+    // The token is still printed; only the convenience of --as is lost.
+    const reason = error instanceof Error ? error.message : String(error);
+    deps.error(`Could not save the token for "${name}" (${reason}). Use the printed token instead.`);
+  }
+}
 
 function withAgentDefaults(overrides: Partial<AgentCommandDependencies> = {}): AgentCommandDependencies {
   return {
     ...withSdkDefaults(overrides),
+    takeOverAgent,
     ...overrides,
   };
 }
@@ -45,18 +80,31 @@ export function registerAgentCommands(
   ).action(async (name: string, opts: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       const relay = deps.createWorkspaceRelay(sdkOptionsFromOpts(opts));
-      const registration = await withAgentRegistrationDeadline(
-        () =>
-          relay.workspace.register(
-            {
-              name,
-              type: opts.type as 'agent' | 'human' | 'system' | undefined,
-              persona: opts.persona as string | undefined,
-            },
-            { strict: opts.strict === true }
-          ),
-        name
-      );
+      let registration: { id: string; name: string; token?: string };
+      try {
+        registration = await withAgentRegistrationDeadline(
+          () =>
+            relay.workspace.register(
+              {
+                name,
+                type: opts.type as 'agent' | 'human' | 'system' | undefined,
+                persona: opts.persona as string | undefined,
+              },
+              { strict: opts.strict === true }
+            ),
+          name
+        );
+      } catch (error) {
+        // Relaycast refuses to re-register a taken name. Without --strict,
+        // re-registering means "give me a working token for this agent".
+        if (opts.strict === true || !isAgentAlreadyExists(error)) throw error;
+        registration = await deps.takeOverAgent(
+          resolveWorkspaceTransport(sdkOptionsFromOpts(opts)),
+          name,
+          'agent-relay agent register: issue a new token for an existing agent'
+        );
+      }
+      rememberToken(deps, opts, registration.name, registration.token, registration);
       printJson(deps, { id: registration.id, name: registration.name, token: registration.token });
     });
   });
@@ -69,18 +117,10 @@ export function registerAgentCommands(
   ).action(async (name: string, opts: Record<string, unknown>) => {
     await runSdk(deps, async () => {
       const relay = deps.createWorkspaceRelay(sdkOptionsFromOpts(opts));
-      // `register()` is create-or-rotate by default, so without this existence
-      // check a typo'd/never-registered name would silently mint a brand-new
-      // identity instead of failing — surprising for a command documented as
-      // rotating an *existing* one. Bounded like the registration call below,
-      // so a hung upstream `agents.get` can't reintroduce the hang class this
-      // PR's deadline wrapper exists to prevent. Only a confirmed "not found"
-      // is translated to the existence-check error — a network/auth/5xx
-      // failure is rethrown as-is, since treating those as "does not exist"
-      // and pointing at `agent register` (create-or-rotate) would rotate and
-      // disconnect a still-valid token for an identity that does exist but
-      // was merely unreachable.
-      await withDeadline(
+      // Only rotate an agent that exists: a typo must not mint a new identity.
+      // A confirmed "not found" becomes that message; any other failure is
+      // rethrown unchanged rather than claiming the agent is missing.
+      const existing = await withDeadline(
         () => relay.agents.get(name),
         (effectiveTimeoutMs) =>
           new Error(
@@ -91,10 +131,19 @@ export function registerAgentCommands(
         const detail = error instanceof Error ? error.message : String(error);
         throw new Error(`Agent "${name}" does not exist; use "agent register" to create it. (${detail})`);
       });
+      // An owner rotation needs only the workspace key, so a lost token can
+      // always be replaced. It retires the agent's previous token.
       const registration = await withAgentRegistrationDeadline(
-        () => relay.workspace.register({ name }),
+        () =>
+          deps.takeOverAgent(
+            resolveWorkspaceTransport(sdkOptionsFromOpts(opts)),
+            name,
+            'agent-relay agent rotate',
+            (existing as { id?: string } | undefined)?.id
+          ),
         name
       );
+      rememberToken(deps, opts, registration.name, registration.token, registration);
       printJson(deps, { id: registration.id, name: registration.name, token: registration.token });
     });
   });
