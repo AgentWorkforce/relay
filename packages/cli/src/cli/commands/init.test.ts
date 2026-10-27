@@ -538,6 +538,17 @@ describe('relay init standalone server download', () => {
     expect(JSON.parse(fs.readFileSync(path.join(home, 'local', 'server.json'), 'utf8')).pid).toBe(777);
   });
 
+  it('refuses an occupied port before downloading anything', async () => {
+    const downloadEngine = vi.fn(async () => new Uint8Array());
+    const { run, errors } = setup({
+      downloadEngine,
+      fetch: vi.fn(async () => jsonResponse(200, { ok: true })) as never,
+    });
+    await expect(run('--tools', 'none')).rejects.toEqual(new ExitSignal(1));
+    expect(errors.join('\n')).toContain('Something else is already serving on port 8787');
+    expect(downloadEngine).not.toHaveBeenCalled();
+  });
+
   it('falls back to npm when the release has no asset for this platform', async () => {
     const downloadEngine = release({});
     const { run, logs, deps } = setup({ downloadEngine });

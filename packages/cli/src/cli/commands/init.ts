@@ -293,16 +293,21 @@ async function runningLocalServer(deps: InitCommandDependencies): Promise<string
 async function ensureLocalServer(deps: InitCommandDependencies, port: number): Promise<string> {
   const running = await runningLocalServer(deps);
   if (running) return running;
+  const origin = `http://127.0.0.1:${port}`;
+  const refuseOccupiedPort = async () => {
+    if (await healthy(deps, origin)) {
+      throw new Error(
+        `Something else is already serving on port ${port}. Stop it, or choose another port with --port.`
+      );
+    }
+  };
+  // Before the download too, so a taken port fails fast.
+  await refuseOccupiedPort();
   await installStandaloneEngine(deps);
   // The download can take a while; another `relay init` may have started the server meanwhile.
   const startedMeanwhile = await runningLocalServer(deps);
   if (startedMeanwhile) return startedMeanwhile;
-  const origin = `http://127.0.0.1:${port}`;
-  if (await healthy(deps, origin)) {
-    throw new Error(
-      `Something else is already serving on port ${port}. Stop it, or choose another port with --port.`
-    );
-  }
+  await refuseOccupiedPort();
   fs.mkdirSync(localDir(), { recursive: true, mode: 0o700 });
   const logFile = path.join(localDir(), 'server.log');
   deps.log(
