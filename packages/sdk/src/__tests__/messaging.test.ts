@@ -529,6 +529,55 @@ describe('RelaycastMessagingClient', () => {
     expect(offlineNode.activeAgents).toBeUndefined();
   });
 
+  it('keeps DM classification on generic recipient readback from a backing channel', async () => {
+    const workspace = createWorkspace();
+    const client = new RelaycastMessagingClient({ relaycast: workspace });
+
+    const dm = {
+      id: 'dm-sent-1',
+      agent_id: 'agent-1',
+      agent_name: 'WorkerA',
+      text: 'private follow-up',
+      channel_id: 'dmch_private_123',
+      attachments: [],
+    };
+    vi.mocked(workspace.messages.get).mockResolvedValueOnce(dm);
+    const readback = await client.messages.get(dm.id);
+
+    expect(workspace.messages.get).toHaveBeenCalledWith(dm.id);
+    expect(readback).toMatchObject({
+      id: dm.id,
+      kind: 'dm',
+      text: dm.text,
+      from: { id: dm.agent_id, name: dm.agent_name },
+      channel: { id: dm.channel_id },
+    });
+    expect(readback.conversationId).toBeUndefined();
+
+    // A real channel ID must never be inferred to be a DM.
+    vi.mocked(workspace.messages.get).mockResolvedValueOnce({
+      ...dm,
+      id: 'message-channel-1',
+      channel_id: 'ch_general_123',
+    });
+    const channel = await client.messages.get('message-channel-1');
+    expect(channel).toMatchObject({
+      id: 'message-channel-1',
+      kind: 'channel',
+      channel: { id: 'ch_general_123' },
+    });
+  });
+
+  it('keeps explicit channel context and thread-reply precedence for DM backing IDs', async () => {
+    const { normalizeMessage } = await import('../messaging/index.js');
+    const wire = { id: 'm-2', channel_id: 'dmch_private_123', text: 'response' };
+
+    expect(normalizeMessage(wire, { kind: 'channel' }).kind).toBe('channel');
+    expect(normalizeMessage({ ...wire, parent_id: 'm-1' }).kind).toBe('thread_reply');
+    expect(normalizeMessage({ ...wire, conversation_id: 'dm-1' }).kind).toBe('dm');
+    expect(normalizeMessage({ id: 'no-context', text: 'unknown' }).kind).toBe('unknown');
+  });
+
   it('delegates write operations through an agent client and normalizes responses', async () => {
     const workspace = createWorkspace();
     const { client: agentClient } = createAgentClient();
