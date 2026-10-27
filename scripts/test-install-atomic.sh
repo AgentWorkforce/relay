@@ -869,6 +869,36 @@ warn() { echo "[warn] $1" >> "$LOG"; }
 check "invalid AGENT_RELAY_SMOKE_SECONDS warning is visible through smoke_test_broker" contains "$out" "Ignoring invalid AGENT_RELAY_SMOKE_SECONDS"
 
 # ---------------------------------------------------------------------------
+echo "== unwritable TMPDIR / temp-file failures are not verification failures (#1963) =="
+
+NOTMP="$WORK/no-such-dir/tmp"   # mktemp cannot create files here
+make_fake_cli "$WORK/cli-ok" "9.9.9"
+CLI_CHECK_OUTPUT=""
+TMPDIR="$NOTMP" check_cli_binary "$WORK/cli-ok"; rc=$?
+check "check_cli_binary passes a working CLI with an unwritable TMPDIR" test "$rc" -eq 0
+printf '#!/bin/bash\necho "boom: broken build"; exit 1\n' > "$WORK/cli-bad"; chmod +x "$WORK/cli-bad"
+TMPDIR="$NOTMP" check_cli_binary "$WORK/cli-bad"; rc=$?
+check "check_cli_binary still rejects a failing CLI" test "$rc" -ne 0
+check "and reports its first output line" test "$CLI_CHECK_OUTPUT" = "boom: broken build"
+
+reset_release
+make_fake_broker "$FIX/asset/agent-relay-broker-test-test" ok new
+fetch_release_asset agent-relay-broker-test-test "$WORK/no-such-dir/bin" raw; rc=$?
+check "fetch_release_asset returns 3 (not 1 = unavailable) when no temp file can be created" test "$rc" -eq 3
+
+out="$( (INSTALL_DIR="$WORK/no-such-dir"; INSTALL_ID=""; temp_file_failure "$INSTALL_DIR/bin") 2>&1)"; rc=$?
+check "temp_file_failure exits non-zero" test "$rc" -ne 0
+check "temp_file_failure names the directory, not a verification failure" contains "$out" "Cannot create a temporary file in $WORK/no-such-dir/bin"
+
+echo "== AGENT_RELAY_INSTALL_METHOD=standalone never falls back to npm =="
+(AGENT_RELAY_INSTALL_METHOD="" refuse_fallback_if_standalone_only); rc=$?
+check "fallback allowed by default" test "$rc" -eq 0
+out="$( (INSTALL_ID=""; STANDALONE_FAILURE_REASON="sha mismatch"; AGENT_RELAY_INSTALL_METHOD=standalone refuse_fallback_if_standalone_only; echo REACHED) 2>&1)"; rc=$?
+check "standalone-only mode exits non-zero" test "$rc" -ne 0
+check "standalone-only mode stops before the fallback" eval '! contains "$out" REACHED'
+check "standalone-only mode reports the reason" contains "$out" "sha mismatch"
+
+# ---------------------------------------------------------------------------
 if [ -n "${AGENT_RELAY_TEST_BROKER:-}" ]; then
     echo "== real broker binary (pristine published build) =="
     D="$(newdir)"

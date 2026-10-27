@@ -30,6 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `relay agent rotate <name>`, and `agent register` for a name that already exists, now issue a new token through the audited owner takeover instead of failing with "already exists", so a lost token can always be replaced.
 - `install.sh`'s source-build fallback no longer deletes the install root (and with it saved workspaces and Relaycast credentials); the checkout now lives in its `source/` subdirectory.
+- `agent-relay update` now updates the install that ran it. A standalone install in `~/.agentworkforce/relay/bin` (or `$AGENT_RELAY_INSTALL_DIR/bin` / `$AGENT_RELAY_HOME/bin`) is updated with the release's own checksum-verified `install.sh`, which replaces the CLI and broker together, and no longer needs npm. An npm install still uses `npm install -g agent-relay@<version>`. `update` checks that the binary that ran reports the new version, and exits non-zero on any failure instead of printing "Successfully updated". It tracks the `latest` release; prereleases are not moved along their channel.
+- `install.sh` no longer reports an unwritable `TMPDIR` as a failed binary verification, and a temp file it cannot create no longer triggers the npm fallback. `AGENT_RELAY_INSTALL_METHOD=standalone` makes a failed standalone install exit non-zero instead of falling back to npm.
 - `relay node up` now reports the actual workspace-key source when startup fails, including the repository's `.agentworkforce/relay/workspace-key.json` pin instead of mislabeling every key as `AGENT_RELAY_WORKSPACE_KEY`.
 
 ### Security

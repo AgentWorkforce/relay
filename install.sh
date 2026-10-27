@@ -9,6 +9,8 @@ set -e
 #   AGENT_RELAY_INSTALL_DIR          - Installation directory (default: $AGENT_RELAY_HOME, else ~/.agentworkforce/relay)
 #   AGENT_RELAY_BIN_DIR              - Launcher directory on PATH (default: ~/.local/bin)
 #   AGENT_RELAY_SKIP_RELAYCAST_ENGINE - Set to 1 to skip the local Relaycast server download
+#   AGENT_RELAY_INSTALL_METHOD       - Set to "standalone" to fail instead of falling back to npm/source
+#                                      (used by `agent-relay update` on standalone installs)
 #   AGENT_RELAY_TELEMETRY_DISABLED   - Disable anonymous install telemetry (default: false)
 #
 # Where everything lives: every Agent Relay binary is installed into ONE
@@ -484,7 +486,8 @@ verify_asset_digest() {
 # Download release asset $1 into a fresh temp file in directory $2. $3 is "raw"
 # or "gz" (gunzip into a second temp file). On success FETCHED_TMP holds a
 # digest-verified, not yet signed file. Returns 0 on success, 1 when the asset
-# is unavailable or undecodable, 2 on an integrity failure.
+# is unavailable or undecodable, 2 on an integrity failure, 3 when no temp file
+# could be created in $2 (a local problem, not a property of the release).
 fetch_release_asset() {
     local asset="$1"
     local dir="$2"
@@ -494,7 +497,7 @@ fetch_release_asset() {
 
     FETCHED_TMP=""
     DIGEST_VERIFIED=0
-    make_temp_file "$dir" "download" || return 1
+    make_temp_file "$dir" "download" || return 3
     dl="$MADE_TEMP"
     if ! curl -fsSL "$url" -o "$dl" 2>/dev/null; then
         rm -f "$dl"
@@ -518,7 +521,7 @@ fetch_release_asset() {
 
     if [ "$mode" = "gz" ]; then
         local h_file h_stream
-        make_temp_file "$dir" "decoded" || { rm -f "$dl"; return 1; }
+        make_temp_file "$dir" "decoded" || { rm -f "$dl"; return 3; }
         out="$MADE_TEMP"
         if ! gunzip -c "$dl" > "$out" 2>/dev/null; then
             rm -f "$dl" "$out"
@@ -584,8 +587,12 @@ smoke_test_broker_run() {
     local seconds="$2"
     local tmp pid rc=0 i=0 alive=1
 
-    tmp=$(mktemp -d "${TMPDIR:-/tmp}/agent-relay-smoke.XXXXXX") || {
-        warn "smoke test: could not create a temp dir"
+    # TMPDIR may point somewhere mktemp is not permitted to write (#1963); fall
+    # back to /tmp and then the install root, which must be writable anyway.
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/agent-relay-smoke.XXXXXX" 2>/dev/null) \
+        || tmp=$(mktemp -d "/tmp/agent-relay-smoke.XXXXXX" 2>/dev/null) \
+        || tmp=$(mktemp -d "$INSTALL_DIR/.agent-relay-smoke.XXXXXX" 2>/dev/null) || {
+        warn "smoke test: could not create a temp dir in ${TMPDIR:-/tmp}, /tmp or $INSTALL_DIR (not writable?)"
         return 1
     }
     SMOKE_DIR="$tmp"
@@ -679,14 +686,13 @@ check_broker_binary() {
 }
 
 check_cli_binary() {
-    local log
-    log=$(mktemp "${TMPDIR:-/tmp}/agent-relay-verify.XXXXXX") || return 1
-    if "$1" --version >"$log" 2>&1; then
-        rm -f "$log"
+    # Captured in memory, not in a temp file: an unwritable TMPDIR must not be
+    # reported as a failed verification of the binary (#1963).
+    local out
+    if out=$("$1" --version 2>&1); then
         return 0
     fi
-    CLI_CHECK_OUTPUT=$(head -n 1 "$log" 2>/dev/null || true)
-    rm -f "$log"
+    CLI_CHECK_OUTPUT=$(printf '%s\n' "$out" | head -n 1)
     return 1
 }
 
@@ -820,6 +826,9 @@ download_broker_binary() {
     if [ "$rc" -eq 1 ]; then
         warn "No prebuilt broker binary for $PLATFORM"
         return 1
+    elif [ "$rc" -eq 3 ]; then
+        warn "Could not create a temporary file in $INSTALL_DIR/bin (not writable, or disk full); the broker was not updated"
+        return 2
     elif [ "$rc" -ne 0 ]; then
         warn "broker binary failed integrity verification"
         return 2
@@ -1148,13 +1157,29 @@ download_with_progress() {
     fi
 }
 
+# A temp file could not be created next to the destination. That is a local
+# problem (permissions, disk full), not a bad release, so it is reported as such
+# and never falls back to npm: the npm path writes to the same directory.
+temp_file_failure() {
+    STANDALONE_FAILURE_REASON="Cannot create a temporary file in $1 (not writable, or disk full)"
+    error "$STANDALONE_FAILURE_REASON; nothing was changed. Fix the directory's permissions or free some space, then re-run the installer."
+}
+
+# AGENT_RELAY_INSTALL_METHOD=standalone (set by `agent-relay update` on a
+# standalone install): a failed standalone install is a failure, never a cue to
+# install a second, npm-managed copy that the standalone launcher would not run.
+refuse_fallback_if_standalone_only() {
+    [ "${AGENT_RELAY_INSTALL_METHOD:-}" = "standalone" ] || return 0
+    error "Standalone install of v${VERSION} failed${STANDALONE_FAILURE_REASON:+: $STANDALONE_FAILURE_REASON}. The existing install in $INSTALL_DIR/bin was left untouched (not falling back to npm because AGENT_RELAY_INSTALL_METHOD=standalone)."
+}
+
 # Download standalone agent-relay binary (no Node.js required)
 download_standalone_binary() {
     step "Checking for standalone binary..."
 
     local binary_name="agent-relay-${PLATFORM}"
     local target_path="$INSTALL_DIR/bin/agent-relay"
-    local file_size verify_output
+    local file_size verify_output rc
 
     mkdir -p "$INSTALL_DIR/bin"
     mkdir -p "$BIN_DIR"
@@ -1162,7 +1187,10 @@ download_standalone_binary() {
     # Try compressed binary first (faster download, ~60-70% smaller)
     # Only if gunzip is available
     if has_command gunzip; then
-        if fetch_release_asset "${binary_name}.gz" "$INSTALL_DIR/bin" gz; then
+        rc=0
+        fetch_release_asset "${binary_name}.gz" "$INSTALL_DIR/bin" gz || rc=$?
+        [ "$rc" -eq 3 ] && temp_file_failure "$INSTALL_DIR/bin"
+        if [ "$rc" -eq 0 ]; then
             CLI_CHECK_OUTPUT=""
             if install_binary_atomic "$FETCHED_TMP" "$target_path" check_cli_binary; then
                 install_binary_launcher "$target_path"
@@ -1182,7 +1210,10 @@ download_standalone_binary() {
     # Fall back to uncompressed binary
     info "Downloading standalone binary..."
 
-    if fetch_release_asset "$binary_name" "$INSTALL_DIR/bin" raw; then
+    rc=0
+    fetch_release_asset "$binary_name" "$INSTALL_DIR/bin" raw || rc=$?
+    [ "$rc" -eq 3 ] && temp_file_failure "$INSTALL_DIR/bin"
+    if [ "$rc" -eq 0 ]; then
         # Check file size - error pages are typically small (<1MB)
         file_size=$(stat -f%z "$FETCHED_TMP" 2>/dev/null || stat -c%s "$FETCHED_TMP" 2>/dev/null || echo "0")
 
@@ -1202,7 +1233,11 @@ download_standalone_binary() {
         fi
     fi
 
-    info "No standalone binary available for $PLATFORM, falling back to npm"
+    if [ "${AGENT_RELAY_INSTALL_METHOD:-}" = "standalone" ]; then
+        STANDALONE_FAILURE_REASON="${STANDALONE_FAILURE_REASON:-no standalone binary could be downloaded for $PLATFORM}"
+    else
+        info "No standalone binary available for $PLATFORM, falling back to npm"
+    fi
     return 1
 }
 
@@ -1504,6 +1539,7 @@ main() {
             # Without a backup a rollback could not restore the existing launcher,
             # so do not replace it: skip the standalone install.
             skip_standalone=1
+            STANDALONE_FAILURE_REASON="could not back up the existing $BIN_DIR/agent-relay launcher"
             warn "Could not back up the existing $BIN_DIR/agent-relay launcher (disk full or permissions?); not replacing it, skipping the standalone install."
         fi
     fi
@@ -1544,6 +1580,8 @@ main() {
     TXN_STATE=""
     [ -n "$LAUNCHER_BACKUP" ] && rm -f "$LAUNCHER_BACKUP"
     LAUNCHER_BACKUP=""
+
+    refuse_fallback_if_standalone_only
 
     # Fall back to npm if Node.js is available
     if [ -n "$STANDALONE_FAILURE_REASON" ]; then
@@ -1629,6 +1667,7 @@ case "${1:-}" in
         echo "  AGENT_RELAY_INSTALL_DIR          Installation directory; binaries go in its bin/ (default: \$AGENT_RELAY_HOME, else ~/.agentworkforce/relay)"
         echo "  AGENT_RELAY_BIN_DIR              Launcher directory on PATH (default: ~/.local/bin)"
         echo "  AGENT_RELAY_SKIP_RELAYCAST_ENGINE Set to 1 to skip the local Relaycast server (relaycast-engine)"
+        echo "  AGENT_RELAY_INSTALL_METHOD       Set to \"standalone\" to fail instead of falling back to npm/source"
         echo "  AGENT_RELAY_TELEMETRY_DISABLED   Disable anonymous install telemetry (default: false)"
         echo ""
         echo "Telemetry: This installer collects anonymous usage data to improve the product."
