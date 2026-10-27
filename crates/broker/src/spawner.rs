@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs, path::Path, process::Stdio, time::Duration};
 
-use crate::relaycast::configure_agent_relay_mcp_with_token;
+use crate::relaycast::configure_agent_relay_mcp_launch;
 use anyhow::{Context, Result};
 use tokio::{
     process::{Child, Command},
@@ -360,7 +360,7 @@ impl Spawner {
             .find(|(k, _)| k == "RELAY_DEFAULT_WORKSPACE")
             .map(|(_, v)| v.as_str());
         let cwd = std::env::current_dir().unwrap_or_default();
-        let mcp_args = configure_agent_relay_mcp_with_token(
+        let mcp_launch = configure_agent_relay_mcp_launch(
             cli,
             child_name,
             api_key,
@@ -370,9 +370,10 @@ impl Spawner {
             agent_token,
             workspaces_json,
             default_workspace,
+            None,
         )
         .await?;
-        for arg in &mcp_args {
+        for arg in &mcp_launch.args {
             cmd.arg(arg);
         }
 
@@ -400,6 +401,10 @@ impl Spawner {
             }
         }
         for (key, value) in &child_env {
+            cmd.env(key, value);
+        }
+        // Credentials the harness's MCP config names by reference.
+        for (key, value) in &mcp_launch.env {
             cmd.env(key, value);
         }
         // Inject pre-registered agent token when available so the MCP server

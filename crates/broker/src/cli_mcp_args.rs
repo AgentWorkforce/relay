@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::relaycast::{
-    configure_agent_relay_mcp_with_token, retry_agent_registration_create_only, RegRetryOutcome,
+    configure_agent_relay_mcp_launch, retry_agent_registration_create_only, RegRetryOutcome,
     RelaycastHttpClient, RelaycastRegistrationError, MAX_AGENT_REGISTRATION_ELAPSED,
     MAX_AGENT_REGISTRATION_OUTER_TIMEOUT,
 };
@@ -32,6 +32,13 @@ struct McpArgsOutput {
     args: Vec<String>,
     side_effect_files: Vec<PathBuf>,
     agent_token: Option<String>,
+    /// Names (never values) of the credential variables the harness config
+    /// references. File-based harnesses (Cursor, OpenCode, Gemini, Grok) keep
+    /// credentials out of project files, so the caller must set each of these
+    /// on the agent process environment (`RELAY_AGENT_TOKEN` is `agentToken`
+    /// when `--register` minted it).
+    #[serde(default)]
+    required_env: Vec<String>,
 }
 
 struct RegisteredMcpArgsToken {
@@ -117,7 +124,7 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         .default_workspace
         .or_else(|| std::env::var("RELAY_DEFAULT_WORKSPACE").ok());
 
-    let args = configure_agent_relay_mcp_with_token(
+    let launch = configure_agent_relay_mcp_launch(
         &cli,
         &agent_name,
         api_key.as_deref(),
@@ -127,8 +134,11 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         agent_token.as_deref(),
         workspaces_json.as_deref(),
         default_workspace.as_deref(),
+        None,
     )
     .await?;
+    let args = launch.args;
+    let required_env = launch.env.into_iter().map(|(key, _)| key).collect();
 
     let side_effect_files = side_effect_files_for(&cli, &existing_args, &cwd)?;
 
@@ -136,6 +146,7 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         args,
         side_effect_files,
         agent_token: registered.map(|registered| registered.agent_token),
+        required_env,
     })
 }
 

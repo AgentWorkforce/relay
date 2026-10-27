@@ -5,7 +5,13 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Major]
+
+### Security
+
+- Spawned Cursor, OpenCode, Gemini, and Grok agents no longer get the workspace key, agent token, or `RELAY_WORKSPACES_JSON` written into their config files (`.cursor/mcp.json`, `opencode.json`, `.gemini/settings.json`, `~/.grok/config.toml`). The files name each credential by environment variable, and the broker sets the values on the agent process. A later commit of the project can no longer publish live Relay credentials. The broker refuses to write a credential-shaped value into a project file, and it adds each project file it writes to `.git/info/exclude`. Rotate any key or token that an earlier version may have written into a repository.
+- Muse workers' Relay MCP settings move from `<project>/.agent-relay/` to `~/.agentworkforce/relay/sessions/` (or `$AGENT_RELAY_HOME/sessions/`), and the broker removes them when the worker is released. A Muse worker that uses `RELAY_MUSE_ISOLATED_AUTH` has to log in again once.
+- `agent-relay-broker mcp-args` output adds `requiredEnv`, which lists the credential variables (names only) that the caller must set on the agent process.
 
 ### Removed
 
