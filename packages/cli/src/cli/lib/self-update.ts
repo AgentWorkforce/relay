@@ -28,7 +28,7 @@ const VERSION_CHECK_TIMEOUT_MS = 30_000;
 
 export type InstallMethod =
   | { kind: 'standalone'; binaryPath: string; installRoot: string }
-  | { kind: 'npm'; cliScript: string }
+  | { kind: 'npm'; cliScript: string; globalPrefix?: string }
   | { kind: 'unknown'; reason: string };
 
 type UpdateDeps = Pick<
@@ -54,7 +54,11 @@ export class UpdateError extends Error {
   }
 }
 
-/** True when `version` is a plain semver (safe to put in a URL or shell command). */
+/**
+ * Whether `version` is a plain semver, and so safe to put in a URL or command.
+ * @param version - Version string from the registry
+ * @returns true for `1.2.3` or `1.2.3-next.0`
+ */
 export function isInstallableVersion(version: string): boolean {
   return VERSION_PATTERN.test(version);
 }
@@ -109,8 +113,14 @@ export function detectInstallMethod(
   }
 
   const script = realpathOrResolve(deps, deps.cliScript);
-  if (script.replace(/\\/g, '/').includes('/node_modules/agent-relay/')) {
-    return { kind: 'npm', cliScript: script };
+  const marker = `${path.sep}node_modules${path.sep}agent-relay${path.sep}`;
+  const markerAt = script.indexOf(marker);
+  if (markerAt >= 0) {
+    // A global install on Unix lives in `<prefix>/lib/node_modules`; pin npm to
+    // that prefix so it updates this copy, not whichever prefix npm defaults to.
+    const libDir = script.slice(0, markerAt);
+    const globalPrefix = path.basename(libDir) === 'lib' ? path.dirname(libDir) : undefined;
+    return { kind: 'npm', cliScript: script, ...(globalPrefix ? { globalPrefix } : {}) };
   }
   return {
     kind: 'unknown',
@@ -118,12 +128,27 @@ export function detectInstallMethod(
   };
 }
 
-/** The command a user can run by hand to install `version` with `method`. */
+function shellQuote(value: string): string {
+  return /^[A-Za-z0-9_./:@=-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function npmInstallCommand(method: Extract<InstallMethod, { kind: 'npm' }>, version: string): string {
+  const prefix = method.globalPrefix ? ` --prefix ${shellQuote(method.globalPrefix)}` : '';
+  return `npm install -g${prefix} agent-relay@${version}`;
+}
+
+/**
+ * The command a user can run by hand to install `version` with `method`.
+ * @param method - Detected install method
+ * @param version - Version to install
+ * @returns A shell command line
+ */
 export function manualUpdateCommand(method: InstallMethod, version: string): string {
   if (method.kind === 'npm') {
-    return `npm install -g agent-relay@${version}`;
+    return npmInstallCommand(method, version);
   }
-  const dirPrefix = method.kind === 'standalone' ? `${RELAY_INSTALL_DIR_ENV}="${method.installRoot}" ` : '';
+  const dirPrefix =
+    method.kind === 'standalone' ? `${RELAY_INSTALL_DIR_ENV}=${shellQuote(method.installRoot)} ` : '';
   return `curl -fsSL https://raw.githubusercontent.com/${RELEASE_REPO}/v${version}/install.sh | ${dirPrefix}AGENT_RELAY_VERSION=${version} bash`;
 }
 
@@ -154,6 +179,10 @@ async function reportedVersion(deps: UpdateDeps, file: string, args: string[]): 
  * (rolled back together on failure); relaycast-engine is installed from its
  * pinned, `.sha256`-verified release the same way. Afterwards the binaries in
  * the install root must report `version`.
+ * @param deps - Update dependencies
+ * @param method - Detected standalone install
+ * @param version - Version to install
+ * @throws UpdateError when the installer fails or the binaries do not report `version`
  */
 export async function updateStandaloneInstall(
   deps: UpdateDeps,
@@ -202,7 +231,7 @@ export async function updateStandaloneInstall(
   }
   if (exitCode !== 0) {
     throw new UpdateError(
-      `the installer exited with status ${exitCode}; install.sh only replaces binaries after verifying them, so the existing install was kept`
+      `the installer exited with status ${exitCode} (see its output above); check \`agent-relay --version\` and \`agent-relay-broker --version\` before retrying`
     );
   }
 
@@ -212,27 +241,44 @@ export async function updateStandaloneInstall(
       `the installer finished, but ${method.binaryPath} reports ${cliVersion ?? 'no version'} instead of ${version}`
     );
   }
-  const brokerPath = path.join(method.installRoot, 'bin', 'agent-relay-broker');
-  if (deps.fs.existsSync(brokerPath)) {
-    const brokerVersion = await reportedVersion(deps, brokerPath, []);
-    if (brokerVersion !== version) {
-      throw new UpdateError(
-        `the CLI is now ${version}, but the broker at ${brokerPath} reports ${brokerVersion ?? 'no version'}; re-run \`agent-relay update\` or the installer`
-      );
-    }
+  const broker = await standaloneBrokerVersion(deps, method);
+  if (broker && broker.version !== version) {
+    throw new UpdateError(
+      `the CLI is now ${version}, but the broker at ${broker.path} reports ${broker.version ?? 'no version'}; re-run \`agent-relay update\` to repair it`
+    );
   }
 }
 
 /**
- * npm update: `npm install -g agent-relay@<version>`, then the CLI script that
- * is running must report `version` (npm may install into a different prefix).
+ * Version of the broker beside a standalone CLI.
+ * @param deps - Update dependencies
+ * @param method - Detected standalone install
+ * @returns The broker path and its reported version, or null when no broker is installed
+ */
+export async function standaloneBrokerVersion(
+  deps: UpdateDeps,
+  method: Extract<InstallMethod, { kind: 'standalone' }>
+): Promise<{ path: string; version: string | null } | null> {
+  const brokerPath = path.join(method.installRoot, 'bin', 'agent-relay-broker');
+  if (!deps.fs.existsSync(brokerPath)) return null;
+  return { path: brokerPath, version: await reportedVersion(deps, brokerPath, []) };
+}
+
+/**
+ * npm update: `npm install -g agent-relay@<version>` (pinned to the prefix the
+ * running CLI was installed into, when that is a global install), then the CLI
+ * script that is running must report `version`.
+ * @param deps - Update dependencies
+ * @param method - Detected npm install
+ * @param version - Version to install
+ * @throws UpdateError when npm fails or the running CLI does not report `version`
  */
 export async function updateNpmInstall(
   deps: UpdateDeps,
   method: Extract<InstallMethod, { kind: 'npm' }>,
   version: string
 ): Promise<void> {
-  const command = `npm install -g agent-relay@${version}`;
+  const command = npmInstallCommand(method, version);
   let output: { stdout: string; stderr: string };
   try {
     output = await deps.execCommand(command);

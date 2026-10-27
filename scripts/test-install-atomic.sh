@@ -466,6 +466,19 @@ run_main; rc=$?
 check "fresh install + rejected broker: exits non-zero" test "$rc" -ne 0
 check "fresh install + rejected broker: new CLI removed" test ! -e "$INSTALL_DIR/bin/agent-relay" -a ! -e "$BIN_DIR/agent-relay"
 
+echo "== standalone-only update: an unavailable broker rolls the CLI back (#1963) =="
+e2e_setup ok yes
+rm -f "$FIX/asset/agent-relay-broker-$REAL_PLATFORM"   # broker download fails (rc 1)
+( export AGENT_RELAY_INSTALL_METHOD=standalone; run_main ); rc=$?
+check "standalone-only + missing broker: exits non-zero" test "$rc" -ne 0
+check "standalone-only + missing broker: previous CLI restored (no skew)" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+check "standalone-only + missing broker: old broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+check "standalone-only + missing broker: says why" contains "$(cat "$WORK/main.out")" "could not be downloaded"
+e2e_setup ok yes
+rm -f "$FIX/asset/agent-relay-broker-$REAL_PLATFORM"
+run_main; rc=$?
+check "default mode + missing broker: still installs the CLI (unchanged behaviour)" test "$rc" -eq 0 -a "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
+
 echo "== an existing .prev survives until the new binary is verified =="
 reset_release
 D="$(newdir)"; DEST="$D/tool"

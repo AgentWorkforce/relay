@@ -2871,7 +2871,7 @@ describe('registerCoreCommands', () => {
       const exitCode = await runUpdate(deps);
 
       expect(exitCode).toBeUndefined();
-      expect(deps.execCommand).toHaveBeenCalledWith('npm install -g agent-relay@2.0.0');
+      expect(deps.execCommand).toHaveBeenCalledWith('npm install -g --prefix /usr agent-relay@2.0.0');
       expect(deps.execFileCommand).toHaveBeenCalledWith(
         '/usr/bin/node',
         [NPM_SCRIPT, '--version'],
@@ -2889,6 +2889,19 @@ describe('registerCoreCommands', () => {
       });
     });
 
+    it('npm: a non-global package (no <prefix>/lib layout) uses a plain global install', async () => {
+      const script = '/home/me/.npm/_npx/abc/node_modules/agent-relay/dist/cli/index.js';
+      const { deps } = npmHarness({
+        cliScript: script,
+        execFileCommand: versionReporter({ [script]: '2.0.0' }),
+      });
+
+      const exitCode = await runUpdate(deps);
+
+      expect(exitCode).toBeUndefined();
+      expect(deps.execCommand).toHaveBeenCalledWith('npm install -g agent-relay@2.0.0');
+    });
+
     it('npm: a failed install exits 1 and tracks the failure without leaking messages', async () => {
       const { deps } = npmHarness({
         execCommand: vi.fn(async () => {
@@ -2900,7 +2913,9 @@ describe('registerCoreCommands', () => {
 
       expect(exitCode).toBe(1);
       expect(logged(deps.log)).not.toContain('Successfully updated');
-      expect(logged(deps.log)).toContain('Try running manually: npm install -g agent-relay@2.0.0');
+      expect(logged(deps.log)).toContain(
+        'Try running manually: npm install -g --prefix /usr agent-relay@2.0.0'
+      );
       expect(telemetryMocks.track).toHaveBeenCalledWith('cli_update', {
         from_version: '1.2.3',
         to_version: '2.0.0',
@@ -3017,6 +3032,56 @@ describe('registerCoreCommands', () => {
       expect(exitCode).toBe(1);
       expect(logged(deps.error)).toContain(`broker at ${standaloneBroker} reports 1.2.3`);
       expect(logged(deps.log)).not.toContain('Successfully updated');
+    });
+
+    it('standalone: an already-current CLI with a stale broker reinstalls its own version', async () => {
+      const { deps } = standaloneHarness({
+        checkForUpdatesResult: { updateAvailable: false, latestVersion: '1.2.3' },
+        execFileCommand: versionReporter({ [standaloneBinary]: '1.2.3', [standaloneBroker]: '1.0.0' }),
+      });
+      vi.mocked(deps.runInheritedCommand).mockImplementation(async () => {
+        vi.mocked(deps.execFileCommand).mockImplementation(
+          versionReporter({ [standaloneBinary]: '1.2.3', [standaloneBroker]: '1.2.3' })
+        );
+        return 0;
+      });
+
+      const exitCode = await runUpdate(deps);
+
+      expect(exitCode).toBeUndefined();
+      expect(logged(deps.log)).toContain(
+        `The broker at ${standaloneBroker} reports 1.0.0, but the CLI is 1.2.3.`
+      );
+      expect(deps.runInheritedCommand).toHaveBeenCalledWith('bash', expect.any(Array), {
+        env: expect.objectContaining({ AGENT_RELAY_VERSION: '1.2.3' }),
+      });
+      expect(logged(deps.log)).toContain('Successfully updated to 1.2.3');
+    });
+
+    it('standalone: --check reports a stale broker without installing', async () => {
+      const { deps } = standaloneHarness({
+        checkForUpdatesResult: { updateAvailable: false, latestVersion: '1.2.3' },
+        execFileCommand: versionReporter({ [standaloneBinary]: '1.2.3', [standaloneBroker]: '1.0.0' }),
+      });
+
+      const exitCode = await runUpdate(deps, ['--check']);
+
+      expect(exitCode).toBeUndefined();
+      expect(logged(deps.log)).toContain('reports 1.0.0, but the CLI is 1.2.3');
+      expect(deps.runInheritedCommand).not.toHaveBeenCalled();
+    });
+
+    it('standalone: a current CLI with a matching broker does nothing', async () => {
+      const { deps } = standaloneHarness({
+        checkForUpdatesResult: { updateAvailable: false, latestVersion: '1.2.3' },
+        execFileCommand: versionReporter({ [standaloneBinary]: '1.2.3', [standaloneBroker]: '1.2.3' }),
+      });
+
+      const exitCode = await runUpdate(deps);
+
+      expect(exitCode).toBeUndefined();
+      expect(deps.runInheritedCommand).not.toHaveBeenCalled();
+      expect(deps.fetchText).not.toHaveBeenCalled();
     });
 
     it('standalone: exits 1 when the installer cannot be downloaded', async () => {

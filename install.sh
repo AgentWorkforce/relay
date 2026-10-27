@@ -871,6 +871,7 @@ download_broker_binary() {
 # rejected after the CLI was replaced, undo the CLI step (transactional
 # install) and fail loudly instead of leaving a CLI/broker version skew.
 abort_standalone_install() {
+    local why="${1:-was rejected (integrity or smoke test failed)}"
     local broker="$INSTALL_DIR/bin/agent-relay-broker"
     local old_broker="none installed"
 
@@ -881,7 +882,7 @@ abort_standalone_install() {
     undo_brokers
     undo_cli
     TXN_STATE=""
-    error "The v${VERSION} broker was rejected (integrity or smoke test failed), so the v${VERSION} CLI was NOT kept: ${ROLLBACK_OUTCOME}. The existing broker (${old_broker}) is untouched. Nothing was upgraded; re-run the installer, or set AGENT_RELAY_VERSION to a known-good version."
+    error "The v${VERSION} broker ${why}, so the v${VERSION} CLI was NOT kept: ${ROLLBACK_OUTCOME}. The existing broker (${old_broker}) is untouched. Nothing was upgraded; re-run the installer, or set AGENT_RELAY_VERSION to a known-good version."
 }
 
 # Idempotent undo of one destination: put this run's backup back; a destination
@@ -1558,11 +1559,17 @@ main() {
     if [ "$standalone_ok" -eq 1 ]; then
         INSTALL_METHOD="binary"
         # Download broker binary for workflow/SDK agent spawning. A rejected
-        # broker (rc 2) rolls the CLI back; an unavailable one (rc 1) is fine.
-        local broker_rc=0
+        # broker (rc 2) rolls the CLI back; an unavailable one (rc 1) is fine,
+        # except for a standalone-only update of an install that already has a
+        # broker: committing the CLI alone would leave a CLI/broker version skew.
+        local broker_rc=0 had_broker=0
+        if [ -e "$INSTALL_DIR/bin/agent-relay-broker" ]; then had_broker=1; fi
         download_broker_binary || broker_rc=$?
         if [ "$broker_rc" -eq 2 ]; then
             abort_standalone_install
+        fi
+        if [ "$broker_rc" -eq 1 ] && [ "$had_broker" -eq 1 ] && [ "${AGENT_RELAY_INSTALL_METHOD:-}" = "standalone" ]; then
+            abort_standalone_install "could not be downloaded for $PLATFORM"
         fi
         # COMMIT: one assignment; everything after this is cleanup of backups.
         TXN_STATE=""
