@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { getProjectPaths } from '@agent-relay/config';
 import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
-import { resolveBaseUrl, resolveWorkspaceKey, type SdkClientOptions } from '../lib/sdk-client.js';
+import { resolveWorkspaceKey, resolveWorkspaceTransport, type SdkClientOptions } from '../lib/sdk-client.js';
 
 export interface RecipientLaunch {
   rollback(): Promise<void>;
@@ -23,13 +23,15 @@ export interface RecipientLaunchInput {
 }
 
 async function verifyRecipientIsolation(input: RecipientLaunchInput): Promise<void> {
+  // One resolution, so the key sent is exactly the one whose server was checked.
+  const transport = resolveWorkspaceTransport(input.options);
   const membership = await fetch(
     new URL(
       `/v1/agents/${encodeURIComponent(input.name)}`,
-      resolveBaseUrl(input.options) ?? 'https://cast.agentrelay.com'
+      transport.baseUrl ?? 'https://cast.agentrelay.com'
     ),
     {
-      headers: { authorization: `Bearer ${resolveWorkspaceKey(input.options)}` },
+      headers: { authorization: `Bearer ${transport.workspaceKey}` },
       signal: AbortSignal.timeout(15_000),
     }
   );
@@ -142,15 +144,17 @@ export async function resolveSubscriptionAgentChannel(
   name: string,
   options: SdkClientOptions
 ): Promise<string> {
+  // One resolution, so the key sent is exactly the one whose server was checked.
+  const transport = resolveWorkspaceTransport(options);
   const response = await fetch(
     new URL(
       `/v1/agents/${encodeURIComponent(name)}/subscription-channel`,
-      resolveBaseUrl(options) ?? 'https://cast.agentrelay.com'
+      transport.baseUrl ?? 'https://cast.agentrelay.com'
     ),
     {
       method: 'POST',
       signal: AbortSignal.timeout(15_000),
-      headers: { authorization: `Bearer ${resolveWorkspaceKey(options)}` },
+      headers: { authorization: `Bearer ${transport.workspaceKey}` },
     }
   );
   if (!response.ok) {

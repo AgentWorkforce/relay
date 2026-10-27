@@ -445,8 +445,6 @@ The two baseline runs with no Daytona sandbox failed in stages 1-2 or their boun
   counts.
 - Two broad Vitest batches passed 930 tests total, with five provider-backed tests skipped for missing credentials.
 - The native broker integration run hung in `lockfile.test.js` and left at least ten persistent broker processes. `SIGTERM` did not stop them; cleanup required `SIGKILL`.
-- Python SDK: 287 passed, two skipped, four failed. Three failures invoke the removed top-level `agent-relay run`; one expects `sessionId` to be absent but receives `sessionId: None`.
-- The Python editable install fails unless a broker binary has first been staged at the package's expected path; the clean-room setup did not stage it.
 - OpenCode plugin setup attempted to install the nonexistent npm peer package `opencode@>=0.1.0` and failed with E404. Running the plugin tests from existing root dependencies passed 28 tests.
 - The Gemini extension checks passed. Swift could not run because the stock image has no Swift toolchain.
 - Two integration CLI assertions still expect removed top-level `swarm --dry-run` and `workflows list` commands.
@@ -577,7 +575,7 @@ Trace the fleet sandbox request through Cloud's ensure endpoint, Daytona create,
 7. **Quota behavior:** add a preflight or typed provider-capacity error with requested/current/limit values. A quota failure must create no database ghost, node, agent, or sandbox. Generic HTTP 500 is unacceptable.
 8. **Attach resilience:** retry bounded transient 429/503/database-overloaded terminal-session creation according to `Retry-After`, without duplicating a session.
 9. **Image contract:** make the shipped smoke entrypoint self-contained and verify `/opt/relay-smoke` exists in the built image. Either size the image/sandbox so documented clean installs and native tests work, or split build/test snapshots and declare their resource/toolchain requirements explicitly.
-10. **Test drift:** fix stale CLI expectations, Python packaging/CLI drift, `sessionId` parity, OpenCode peer installation, Swift provisioning, and broker integration cleanup. A timed-out test must terminate every descendant broker without requiring manual `SIGKILL`.
+10. **Test drift:** fix stale CLI expectations, `sessionId` parity, OpenCode peer installation, Swift provisioning, and broker integration cleanup. A timed-out test must terminate every descendant broker without requiring manual `SIGKILL`.
 11. **Observability:** all accepted operations must expose phase, correlation ID, timestamps, retry count, owned resource IDs, and final cleanup status. Add alerts for old pending runs, never-claimed jobs, zero-agent started fleet sandboxes, and cleanup retries exhausted.
 
 ## Deterministic tests to add

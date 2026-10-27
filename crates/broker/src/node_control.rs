@@ -386,6 +386,7 @@ pub(crate) fn create_node_request(
         max_agents: None,
         tags: None,
         version: Some(broker_version.to_string()),
+        machine_id: None,
     }
 }
 

@@ -9,3 +9,11 @@ export * from './transport.js';
 export * from './broker-path.js';
 export * from './harness.js';
 export * from './predictive-echo.js';
+export * from './install-paths.js';
+export {
+  ensureCanonicalBroker,
+  SKIP_BROKER_INSTALL_ENV,
+  type EnsureCanonicalBrokerOptions,
+  type EnsureCanonicalBrokerResult,
+  type EnsureCanonicalBrokerSkipReason,
+} from './broker-install.js';

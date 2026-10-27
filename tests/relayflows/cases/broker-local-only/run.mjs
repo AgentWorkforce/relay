@@ -228,7 +228,13 @@ try {
       channels: [],
     });
     assert(exiting.response.ok);
-    assert((await request('/api/input/local-exit-worker', { data: 'EXIT_LOCAL_WORKER\r' })).response.ok);
+    // This input makes the worker exit, which can win the race against the
+    // worker's input acknowledgement. The reap poll below proves the effect.
+    const exitInput = await request('/api/input/local-exit-worker', { data: 'EXIT_LOCAL_WORKER\r' });
+    assert(
+      exitInput.response.ok || /worker_disappeared/.test(exitInput.data?.message ?? ''),
+      `Exit input rejected: ${JSON.stringify(exitInput.data)}`
+    );
     await poll(async () => {
       const { data } = await request('/api/spawned');
       return !data.agents.some((agent) => agent.name === 'local-exit-worker');
@@ -296,6 +302,14 @@ try {
       const snapshot = await request('/api/spawned/local-worker/snapshot');
       return snapshot.response.ok && snapshot.data.screen?.includes('LOCAL_WORK_PROOF');
     }, 'local work rendered in attached PTY');
+    // The body is visible before the injection's Enter write is confirmed.
+    // Human PTY input in that window intentionally fails (and dead-letters)
+    // the delivery, so wait for the broker to settle it before typing.
+    await poll(async () => {
+      const status = (await request('/api/status')).data;
+      assert.equal(status.dead_letter_count, 0, 'Local work must be delivered, not dead-lettered');
+      return !status.pending_deliveries.some((delivery) => delivery.event_id === sent.data.event_id);
+    }, 'local work delivery settled before human input');
     const input = await request('/api/input/local-worker', { data: 'LOCAL_ATTACH_PROOF\r' });
     assert(input.response.ok, 'Local terminal input works during outage');
     await poll(

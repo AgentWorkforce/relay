@@ -2090,32 +2090,6 @@ impl BrokerRuntime {
 
         self.pty_observability.remove(&name);
 
-        let mut deregistration_failed = false;
-        if outcome == super::relaycast_events::ReleaseOutcome::Released {
-            match deregister_fleet_agent(&self.fleet_control_tx, &self.fleet_delivery_book, &name)
-                .await
-            {
-                Ok(_) => {
-                    prune_fleet_agent_state(
-                        &self.fleet_control_tx,
-                        &mut self.fleet_inventory,
-                        &mut self.fleet_delivery_book,
-                        &name,
-                    )
-                    .await;
-                }
-                Err(error) => {
-                    tracing::warn!(worker = %name, %error, "retaining fleet identity after release cleanup");
-                    deregistration_failed = true;
-                    prune_fleet_inventory_entry(
-                        &self.fleet_control_tx,
-                        &mut self.fleet_inventory,
-                        &name,
-                    )
-                    .await;
-                }
-            }
-        }
         if let Some(pending) = self.pending_verified_spawns.remove(&name) {
             self.send_fleet_action_result(verified_spawn_failed_result(
                 pending.invocation_id,
@@ -2123,16 +2097,23 @@ impl BrokerRuntime {
             ))
             .await;
         }
-        self.publish_fleet_load(true).await;
         match outcome {
-            super::relaycast_events::ReleaseOutcome::Released if deregistration_failed => {
-                self.reply_action_error(&invoke.invocation_id, "release_deregistration_failed")
-                    .await;
-            }
             super::relaycast_events::ReleaseOutcome::Released => {
+                // The built-in release action's result is the engine's atomic
+                // authorization point. Keep its binding active until this
+                // frame is first on the FIFO control channel; an earlier
+                // agent.deregister or inventory removal makes the completion
+                // fail closed with agent_release_generation_conflict.
                 self.reply_action_output(
                     &invoke.invocation_id,
                     json!({ "released": true, "name": name.as_str() }),
+                )
+                .await;
+                prune_fleet_agent_state(
+                    &self.fleet_control_tx,
+                    &mut self.fleet_inventory,
+                    &mut self.fleet_delivery_book,
+                    &name,
                 )
                 .await;
             }
@@ -2141,6 +2122,7 @@ impl BrokerRuntime {
                     .await;
             }
         }
+        self.publish_fleet_load(true).await;
     }
 
     async fn reply_action_output(&self, invocation_id: &str, output: Value) {

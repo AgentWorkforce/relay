@@ -495,16 +495,6 @@ node tests/integration/sdk/v8-api-smoke.mjs
 
 Assert bootstrap/reconnect, participants, channel/thread/reaction/DM/group-DM/listener/action/DeliveryRunner/webhook/node behavior. Release all identities and clean up remote workspace through its control plane; the smoke script does not delete it.
 
-## python-sdk
-
-**Features:** all `python-sdk-*` entries.
-
-```bash
-cd packages/sdk-py && python -m pytest
-```
-
-For true E2E, create a disposable Relay, send/receive unique message, then release agents and shut down. Adapter/workflow tests require their provider CLI and must clean up spawned work.
-
 ## swift-sdk
 
 **Features:** `swift-sdk-hosted`, `swift-sdk-broker`.

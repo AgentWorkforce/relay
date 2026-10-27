@@ -43,7 +43,6 @@ verification:
     mcp: mcp-stdio
     harnesses: harnesses
     sdk: typescript-sdk
-    python-sdk: python-sdk
     swift-sdk: swift-sdk
     opencode-plugin: opencode-plugin
     codex-relay-skill: codex-relay-skill
@@ -457,7 +456,7 @@ categories:
       - id: local-workflow-run
         name: Run Local Workflow
         cli: relay node workflow run <workflow> [--file-type <type>] [--json]
-        description: Run a local YAML, TypeScript, JavaScript, Python, or shell workflow and record its result locally
+        description: Run a local YAML, TypeScript, JavaScript, or shell workflow and record its result locally
         location: packages/cli/src/cli/commands/local-workflow.ts
         verify_tier: 1
 
@@ -1298,35 +1297,6 @@ categories:
         description: Define custom harnesses and session capabilities for Relay-connected agents
         location: packages/sdk/src/session/, packages/sdk/src/agent-relay.ts
         verify_tier: 3
-
-  python-sdk:
-    name: Python SDK
-    description: Python orchestration, Relay communication, adapters, and workflow building
-    criticality: hot
-    features:
-      - id: python-sdk-orchestration
-        name: Python AgentRelay Orchestration
-        description: Spawn, message, release, and wait for managed Python AgentRelay agents
-        location: packages/sdk-py/src/agent_relay/
-        verify_tier: 6
-
-      - id: python-sdk-communication
-        name: Python Relay Communication
-        description: Coordinate agents through the Relay communication interface
-        location: packages/sdk-py/src/agent_relay/
-        verify_tier: 3
-
-      - id: python-sdk-adapters
-        name: Python Relay Adapters
-        description: Attach Relay behavior to supported Python agent frameworks with on_relay adapters
-        location: packages/sdk-py/src/agent_relay/
-        verify_tier: 6
-
-      - id: python-sdk-workflows
-        name: Python Workflow Builder
-        description: Define Python workflow templates and multi-agent workflow steps
-        location: packages/sdk-py/src/agent_relay/
-        verify_tier: 6
 
   swift-sdk:
     name: Swift SDKs

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "workflow-node-file-surfaces",
+  "kind": "feature",
+  "title": "Workflow and node files are YAML, TypeScript, JavaScript, and shell",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/workflow-node-file-surfaces/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 1800,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "py_workflow_and_node_surface_present"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "yaml_ts_js_sh_workflow_surface"
+    }
+  }
+}

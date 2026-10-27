@@ -126,10 +126,10 @@ function parseNonNegativeInteger(value: string): number {
 }
 
 function parseWorkflowFileType(value: string): WorkflowFileType {
-  if (value === 'yaml' || value === 'ts' || value === 'py') {
+  if (value === 'yaml' || value === 'ts') {
     return value;
   }
-  throw new InvalidArgumentError('Expected workflow type to be one of: yaml, ts, py');
+  throw new InvalidArgumentError('Expected workflow type to be one of: yaml, ts');
 }
 
 function parseRelayflowVersion(value: string): RelayflowVersion {
@@ -1063,7 +1063,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .description('Submit a workflow run')
     .argument('<workflow>', 'Workflow file path or inline workflow content')
     .option('--api-url <url>', 'Cloud API base URL')
-    .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
+    .option('--file-type <type>', 'Workflow type: yaml or ts', parseWorkflowFileType)
     .option('--relayflow-version <version>', 'Relayflow engine generation: v1 or v2', parseRelayflowVersion)
     .option('--sync-code', 'Upload the current working directory before running')
     .option('--no-sync-code', 'Skip uploading the current working directory')
@@ -1129,7 +1129,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
     .description('Schedule a repeatable workflow run')
     .argument('<workflow>', 'Workflow file path or inline workflow content')
     .option('--api-url <url>', 'Cloud API base URL')
-    .option('--file-type <type>', 'Workflow type: yaml, ts, or py', parseWorkflowFileType)
+    .option('--file-type <type>', 'Workflow type: yaml or ts', parseWorkflowFileType)
     .option(
       '--relayflow-version <version>',
       'Relayflow engine generation for scheduled runs: v1 (v2 is not supported)',
