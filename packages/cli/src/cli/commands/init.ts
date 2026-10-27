@@ -396,6 +396,22 @@ interface ServerSetup {
 }
 
 /**
+ * Save the workspace and bind it to this project. It becomes the machine-wide
+ * active workspace only when no other one is: a machine already serving a
+ * workspace (a fleet node, other projects) must not be moved by setting up one
+ * project.
+ * @returns The line explaining a kept active workspace, if one was kept.
+ */
+function saveWorkspace(name: string, workspaceKey: string): string[] {
+  const { keptActiveWorkspace } = persistWorkspaceSession({ name, workspaceKey, activate: 'if-none' });
+  if (!keptActiveWorkspace) return [];
+  return [
+    `This project now uses workspace "${name}"; "${keptActiveWorkspace}" stays active machine-wide. ` +
+      `To make "${name}" the default everywhere, run: relay workspace switch ${name}`,
+  ];
+}
+
+/**
  * Connect to (or start) the server and save its workspace for this project.
  * This is the original `relay init`; the agent-tool setup comes after it.
  */
@@ -408,10 +424,10 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     await verifyWorkspace(deps, origin, key);
     guardCredentialOrigin(key, url);
     const name = choice.name ?? new URL(origin).hostname;
-    persistWorkspaceSession({ name, workspaceKey: key });
+    const saved = saveWorkspace(name, key);
     return {
       headline: `Connected to your server at ${origin} as workspace "${name}".`,
-      details: ['Your key is only ever sent to this server.'],
+      details: ['Your key is only ever sent to this server.', ...saved],
     };
   }
 
@@ -419,10 +435,11 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     const name = choice.name ?? `relay-${os.hostname().split('.')[0]}`;
     const relay = await deps.createWorkspace(name, HOSTED_ORIGIN);
     if (!relay.workspaceKey) throw new Error('The hosted service did not return a workspace key.');
-    persistWorkspaceSession({ name, workspaceKey: relay.workspaceKey });
+    const saved = saveWorkspace(name, relay.workspaceKey);
     return {
       headline: `Created hosted workspace "${name}".`,
       details: [
+        ...saved,
         'On another machine, join it with (treat this key like a password):',
         `  relay workspace join ${name} ${relay.workspaceKey}`,
       ],
@@ -450,10 +467,10 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     workspaceKey = relay.workspaceKey;
     guardCredentialOrigin(workspaceKey, origin);
   }
-  persistWorkspaceSession({ name, workspaceKey });
+  const saved = saveWorkspace(name, workspaceKey);
   return {
     headline: `Relay is running on this machine (${origin}), workspace "${name}". No account needed.`,
-    details: ['To work with agents on other machines later, run: relay init --hosted'],
+    details: [...saved, 'To work with agents on other machines later, run: relay init --hosted'],
   };
 }
 
