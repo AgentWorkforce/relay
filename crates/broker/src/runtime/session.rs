@@ -283,11 +283,10 @@ fn startup_has_preconfigured_workspace_key() -> bool {
 pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
     let startup_debug = startup_debug_enabled();
     let connect_started = Instant::now();
-    let configured_base: Option<String> = std::env::var("RELAYCAST_BASE_URL")
-        .ok()
-        .or_else(|| std::env::var("RELAY_BASE_URL").ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    // Resolve the destination before constructing any authenticated client.
+    // This reads the credential-to-origin binding written by `relay init`, so
+    // a self-hosted key cannot silently fall through to the hosted default.
+    let configured_base = crate::transport::resolve_relaycast_base_url()?;
     // WS override (rare); else the SDK derives wss from the base.
     let configured_ws: Option<String> = std::env::var("RELAYCAST_WS_URL")
         .ok()

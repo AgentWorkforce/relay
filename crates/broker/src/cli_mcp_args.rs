@@ -744,7 +744,10 @@ mod tests {
         let register_mock = server.mock(|when, then| {
             when.method(POST).path("/v1/agents");
             then.status(200)
-                .delay(Duration::from_millis(300))
+                // Native-root discovery can take tens of milliseconds on a
+                // cold machine. Leave enough room to prove the request was
+                // sent while keeping the server response beyond the bound.
+                .delay(Duration::from_secs(2))
                 .json_body(json!({
                     "ok": true,
                     "data": {
@@ -765,18 +768,18 @@ mod tests {
                 "test-agent",
                 Some("rk_live_test".to_string()),
                 Some(server.base_url()),
-                Duration::from_millis(30),
+                Duration::from_secs(1),
             ),
         )
         .await
-        .expect("the injected 30ms registration bound must finish within the outer guard");
+        .expect("the injected 1s registration bound must finish within the outer guard");
         let error = match outcome {
             Ok(_) => panic!("the delayed registration must time out"),
             Err(error) => error,
         };
 
         let message = error.to_string();
-        for marker in ["register transport error", "30ms"] {
+        for marker in ["register transport error", "1s"] {
             assert!(message.contains(marker), "missing {marker}: {message}");
         }
         register_mock.assert_hits(1);

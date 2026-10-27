@@ -19,10 +19,11 @@ chrono = { version = "0.4", features = ["serde", "clock"] }
 clap = { version = "4.5", features = ["derive"] }
 dirs = "6.0"
 hostname = "0.4"
+pbkdf2 = "0.12"
 rand = "0.8"
 relay-pty = { path = "../relay-pty" }
 regex = "1.11"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 json5 = "0.4"
@@ -39,6 +40,7 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 futures-lite = "2.6"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 uuid = { version = "1.15", features = ["v4", "serde"] }
+url = "2.5"
 urlencoding = "2.1"
 base64 = "0.22"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
@@ -49,7 +51,10 @@ libc = "0.2"
 
 [dev-dependencies]
 httpmock = "0.7"
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tempfile = "3.19"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tower = { version = "0.5", features = ["util"] }
 # Enables `#[tokio::test(start_paused = true)]` and `tokio::time::{pause,advance}`
 # for deterministic virtual-clock tests of budget/timeout retry logic.

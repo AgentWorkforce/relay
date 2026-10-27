@@ -34,10 +34,20 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         .filter(|name| !name.is_empty())
         .unwrap_or("project");
     let resolved_name = cmd.resolved_instance_name(Some(default_instance_name));
+    if cmd.workspace_key.is_some() && std::env::var_os("AGENT_RELAY_WORKSPACE_SOURCE").is_none() {
+        std::env::set_var("AGENT_RELAY_WORKSPACE_SOURCE", "flag");
+    }
     if let Some(workspace_key) = cmd.resolved_workspace_key() {
         std::env::set_var("AGENT_RELAY_WORKSPACE_KEY", &workspace_key);
         std::env::set_var("RELAY_WORKSPACE_KEY", &workspace_key);
         std::env::set_var("RELAY_API_KEY", &workspace_key);
+    }
+    // Resolve a saved self-hosted route before starting any background path.
+    // Besides the primary handshake, local-only reconciliation and spawned MCP
+    // servers read RELAY_BASE_URL directly; normalizing it here keeps every
+    // authenticated client on the same server.
+    if let Some(base_url) = crate::transport::resolve_relaycast_base_url()? {
+        std::env::set_var("RELAY_BASE_URL", base_url);
     }
     let custom_state_dir = cmd.state_dir.as_ref().map(PathBuf::from);
     log_startup_phase(
@@ -624,8 +634,9 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
             relay_workspaces_json.clone(),
         ),
     ];
-    // Pass RELAY_BASE_URL to workers only when an override is configured; when
-    // unset, workers inherit the SDK default.
+    // Pass the fully resolved route — explicit or credential-bound — to every
+    // worker. The injected MCP server reads RELAY_BASE_URL directly and must
+    // never rediscover the hosted default for a self-hosted credential.
     if let Some(base) = configured_base.as_deref() {
         worker_env.push(("RELAY_BASE_URL".to_string(), base.to_string()));
     }

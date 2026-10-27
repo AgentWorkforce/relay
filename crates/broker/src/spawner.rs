@@ -540,8 +540,8 @@ pub fn spawn_env_vars(
         ("RELAY_CHANNELS".to_string(), channels.to_string()),
         ("RELAY_STRICT_AGENT_NAME".to_string(), "1".to_string()),
     ];
-    // Pass RELAY_BASE_URL to the child only when an override is configured; when
-    // unset, the child inherits the SDK default.
+    // The caller passes the broker's resolved route (explicit or credential-
+    // bound). Only an unbound hosted-default session leaves it unset.
     if let Some(base_url) = base_url.map(str::trim).filter(|value| !value.is_empty()) {
         env.push(("RELAY_BASE_URL".to_string(), base_url.to_string()));
     }
@@ -737,6 +737,13 @@ mod tests {
             .find(|(k, _)| k == "AGENT_RELAY_ORIGIN_ACTOR")
             .map(|(_, v)| v.as_str());
         assert_eq!(origin_actor, Some("agent-relay-cli/agent/codex"));
+        assert_eq!(
+            env.iter()
+                .find(|(key, _)| key == "RELAY_BASE_URL")
+                .map(|(_, value)| value.as_str()),
+            Some("https://gw"),
+            "the resolved broker route must reach the spawned MCP process"
+        );
     }
 
     #[test]
