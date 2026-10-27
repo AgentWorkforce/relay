@@ -22,8 +22,30 @@ so read the limitations section before you depend on it for scale.
 ## Point Agent Relay at your Relaycast
 
 Once your engine is running and you have created a workspace (the guide's
-"Create your first workspace" step returns an `rk_live_…` workspace key), point
-Agent Relay at it with environment variables. Keep the key out of shell history
+"Create your first workspace" step returns an `rk_live_…` workspace key),
+connect each machine's CLI to it once:
+
+```bash
+npm install -g agent-relay
+relay init --url https://relay.example.com --key <workspace-key>
+```
+
+`relay init` checks the key against your server and saves the URL, so later
+`relay agent …` and `relay message …` commands need no environment variables,
+and the key is only ever sent to that server. See the
+[quickstart](../quickstart.md) for the messaging commands.
+
+### Running a node (`agent-relay node up`)
+
+A node is the broker that spawns coding agents on this machine. It does not yet
+read the URL `relay init` saves: it takes it from the environment, and **when
+`RELAY_BASE_URL` is not set it falls back to the hosted
+`https://cast.agentrelay.com` and sends your workspace key there.** Always start
+it with the environment file below loaded. The broker also does not yet trust a
+private certificate authority, so serve your engine with a certificate from a
+public CA if you run nodes against it.
+
+Point the node at your engine with environment variables. Keep the key out of shell history
 and argv: prompt for it without echo and store it in a mode-600 env file (or
 load it from your secret manager):
 

@@ -41,6 +41,7 @@ import { registerLocalAgentCommands } from './commands/local-agent.js';
 import { registerLocalWorkflowCommands } from './commands/local-workflow.js';
 import { registerCloudCommands } from './commands/cloud.js';
 import { registerWorkspaceCommands } from './commands/workspace.js';
+import { registerInitCommand } from './commands/init.js';
 import { registerObserverCommands } from './commands/observer.js';
 import { registerAgentCommands } from './commands/agent.js';
 import { registerChannelCommands } from './commands/channel.js';
@@ -418,6 +419,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerStatusCommand(program);
   registerSetupCommands(program);
   registerCloudCommands(program);
+  registerInitCommand(program);
   registerWorkspaceCommands(program);
   registerObserverCommands(program);
   registerAgentCommands(program);

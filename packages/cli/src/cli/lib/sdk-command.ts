@@ -47,6 +47,7 @@ export function addSdkOptions(command: Command): Command {
       )
       .option('--wk <key>', 'Alias for --workspace-key')
       .option('--token <token>', 'Agent token (defaults to RELAY_AGENT_TOKEN)')
+      .option('--as <name>', 'Act as an agent whose token `agent register` saved')
       .option('--base-url <url>', 'Override the API base URL (defaults to RELAY_BASE_URL)')
       // Fold the `--wk` alias into `workspaceKey` before the action runs, so every
       // downstream reader (`sdkOptionsFromOpts`, integration's `explicitWorkspaceKey`,
@@ -65,6 +66,7 @@ export function sdkOptionsFromOpts(opts: Record<string, unknown>): SdkClientOpti
   return {
     workspaceKey: opts.workspaceKey as string | undefined,
     token: opts.token as string | undefined,
+    asAgent: opts.as as string | undefined,
     baseUrl: opts.baseUrl as string | undefined,
   };
 }
@@ -78,7 +80,11 @@ export async function runSdk(deps: SdkCommandDeps, fn: () => Promise<void>): Pro
   try {
     await fn();
   } catch (err) {
-    const message = safeRelayErrorMessage(err);
+    const raw = safeRelayErrorMessage(err);
+    // A bare network failure most often means the server is not running.
+    const message = /fetch failed|ECONNREFUSED|Network request failed/i.test(raw)
+      ? `${raw}\nCould not reach the Relay server. For a server on this machine run \`relay init\`; otherwise check the URL and your network.`
+      : raw;
     if (err instanceof RelayPlacementError || err instanceof FleetSpawnError) {
       const structured = {
         error: {

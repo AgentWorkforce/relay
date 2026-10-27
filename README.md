@@ -72,6 +72,23 @@ npm install -g agent-relay
 
 npm links the `agent-relay` CLI into its own global bin directory (`$(npm prefix -g)/bin`), not into `~/.agentworkforce/relay/bin`. On its first run, the npm-installed CLI copies only its broker (`agent-relay-broker`) into `~/.agentworkforce/relay/bin`, so the CLI, the desktop app and SDK callers share one broker. It never replaces a newer broker that is already there.
 
+Then, in your project, run:
+
+```bash
+relay init
+```
+
+It starts a private server on this machine (no account needed), finds the coding agents you have installed (Claude Code, Codex, OpenCode, Grok CLI, Pi, Devin), and adds Relay to them for this project or every project. Open Claude Code and ask it to message `codex-<your-folder>`; each session joins Relay as `<tool>-<folder>` by itself.
+
+Scripts and shells without MCP use the CLI directly:
+
+```bash
+relay agent register alice && relay agent register bob
+relay message dm send bob "hello" --as alice
+```
+
+The [quickstart](docs/quickstart.md) covers the guided setup, its flags (`--tools`, `--scope`, `--yes`, `--uninstall`), moving to the hosted service when agents on other machines need to join, and running your own server.
+
 ### Self Hosting
 
 Agent Relay has self hosting options for each primitive; start with the [self-hosting guide](docs/self-hosting/README.md). We're happy to help you set up the whole system on your environment, just reach out to our team hi(at)agentrelay.com and we'll walk you through it.
