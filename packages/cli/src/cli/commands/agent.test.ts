@@ -26,6 +26,11 @@ function createHarness() {
   };
   const createAgentRelay = vi.fn(() => agentRelay);
   const createWorkspaceRelay = vi.fn(() => workspaceRelay);
+  const takeOverAgent = vi.fn(async (_transport: unknown, name: string) => ({
+    id: 'agent_rotated',
+    name,
+    token: 'at_live_rotated',
+  }));
   const log = vi.fn();
   const error = vi.fn();
   const program = new Command();
@@ -33,6 +38,7 @@ function createHarness() {
   registerAgentCommands(program, {
     createAgentRelay: createAgentRelay as never,
     createWorkspaceRelay: createWorkspaceRelay as never,
+    takeOverAgent: takeOverAgent as never,
     log,
     error,
     exit: ((code: number) => {
@@ -45,6 +51,7 @@ function createHarness() {
     workspaceRelay,
     createAgentRelay,
     createWorkspaceRelay,
+    takeOverAgent,
     log,
     error,
   };
@@ -153,7 +160,7 @@ describe('agent identity lifecycle commands', () => {
   });
 
   it('exposes an explicit token rotation command for an existing name', async () => {
-    const { program, workspaceRelay } = createHarness();
+    const { program, workspaceRelay, takeOverAgent } = createHarness();
 
     await program.parseAsync([
       'node',
@@ -166,7 +173,85 @@ describe('agent identity lifecycle commands', () => {
     ]);
 
     expect(workspaceRelay.agents.get).toHaveBeenCalledWith('chief');
-    expect(workspaceRelay.workspace.register).toHaveBeenCalledWith({ name: 'chief' });
+    // Relaycast refuses to re-register a taken name; rotation is the owner takeover.
+    expect(workspaceRelay.workspace.register).not.toHaveBeenCalled();
+    expect(takeOverAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceKey: 'rk_live_test' }),
+      'chief',
+      'agent-relay agent rotate',
+      'agent_existing'
+    );
+  });
+
+  it('says when the old token could not be retired at once', async () => {
+    const { program, takeOverAgent, error } = createHarness();
+    takeOverAgent.mockResolvedValueOnce({
+      id: 'agent_rotated',
+      name: 'chief',
+      token: 'at_live_rotated',
+      oldTokenGraceRemains: true,
+    } as never);
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'agent',
+      'rotate',
+      'chief',
+      '--workspace-key',
+      'rk_live_test',
+    ]);
+
+    expect(error.mock.calls.flat().join('\n')).toContain('stops working within a minute');
+  });
+
+  it('register recovers an existing name with a new token instead of failing', async () => {
+    const { program, workspaceRelay, takeOverAgent, log } = createHarness();
+    workspaceRelay.workspace.register.mockRejectedValueOnce(
+      Object.assign(new Error('Agent "chief" already exists in this workspace'), {
+        code: 'agent_already_exists',
+      })
+    );
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'agent',
+      'register',
+      'chief',
+      '--workspace-key',
+      'rk_live_test',
+    ]);
+
+    expect(takeOverAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceKey: 'rk_live_test' }),
+      'chief',
+      expect.stringContaining('agent register')
+    );
+    expect(log.mock.calls.flat().join('\n')).toContain('at_live_rotated');
+  });
+
+  it('register --strict still fails on an existing name', async () => {
+    const { program, workspaceRelay, takeOverAgent } = createHarness();
+    workspaceRelay.workspace.register.mockRejectedValueOnce(
+      Object.assign(new Error('Agent "chief" already exists in this workspace'), {
+        code: 'agent_already_exists',
+      })
+    );
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'agent',
+        'register',
+        'chief',
+        '--strict',
+        '--workspace-key',
+        'rk_live_test',
+      ])
+    ).rejects.toThrow('exit:1');
+    expect(takeOverAgent).not.toHaveBeenCalled();
   });
 
   it('rejects rotation of a name that does not already exist instead of minting a new identity', async () => {

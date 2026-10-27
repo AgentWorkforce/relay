@@ -499,6 +499,21 @@ describe('registerAgentWithRebind', () => {
 });
 
 describe('optionsFromEnv', () => {
+  it('sends a key bound by relay init to its own server, not the hosted default', () => {
+    vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_mcp_bound');
+    vi.stubEnv('RELAY_BASE_URL', 'http://127.0.0.1:8787');
+    try {
+      // The first resolution binds the key, as relay init or workspace join does.
+      expect(optionsFromEnv().baseUrl).toBe('http://127.0.0.1:8787');
+      vi.stubEnv('RELAY_BASE_URL', '');
+      expect(optionsFromEnv().baseUrl).toBe('http://127.0.0.1:8787');
+      vi.stubEnv('RELAY_BASE_URL', 'not a url');
+      expect(() => optionsFromEnv()).toThrow(/Relaycast base URL/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('auto-selects an orchestrator identity when a workspace key is configured', () => {
     const previous = {
       workspaceKey: process.env.RELAY_WORKSPACE_KEY,

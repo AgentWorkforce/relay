@@ -60,6 +60,16 @@ Or install with npm:
 npm install -g agent-relay
 ```
 
+Then get two agents talking on your machine, with no account:
+
+```bash
+relay init
+relay agent register alice && relay agent register bob
+relay message dm send bob "hello" --as alice
+```
+
+The [quickstart](docs/quickstart.md) covers this, moving to the hosted service when agents on other machines need to join, and running your own server.
+
 ### Self Hosting
 
 Agent Relay has self hosting options for each primitive; start with the [self-hosting guide](docs/self-hosting/README.md). We're happy to help you set up the whole system on your environment, just reach out to our team hi(at)agentrelay.com and we'll walk you through it.

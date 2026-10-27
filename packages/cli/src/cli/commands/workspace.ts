@@ -6,6 +6,11 @@ import { maskSecret } from '../lib/redact.js';
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import { readWorkspaceStore, setWorkspaceKey } from '../lib/workspace-store.js';
 import {
+  assertOriginBindingsWritable,
+  configuredBaseUrl,
+  guardCredentialOrigin,
+} from '../lib/relaycast-origin-binding.js';
+import {
   describeClearedEnrollment,
   persistWorkspaceSession,
   pinProjectWorkspaceSession,
@@ -26,6 +31,17 @@ function reportClearedEnrollment(
   const message = describeClearedEnrollment(result);
   if (message) {
     deps.log(message);
+  }
+}
+
+/**
+ * Bind a key someone hands us to the server named by RELAY_BASE_URL, so later
+ * shells without the variable keep sending it there. Without the variable we
+ * do not know where the key belongs and leave it unbound.
+ */
+function bindKeyToConfiguredServer(key: string): void {
+  if (process.env.RELAY_BASE_URL !== undefined) {
+    guardCredentialOrigin(key, process.env.RELAY_BASE_URL);
   }
 }
 
@@ -102,7 +118,19 @@ export function registerWorkspaceCommands(
     .action(async (name: string, o: Record<string, unknown>) => {
       await runSdk(deps, async () => {
         const workspaceName = validateWorkspaceSessionName(name);
-        const relay = await deps.createWorkspace(workspaceName, o.baseUrl as string | undefined);
+        const requestedBaseUrl = (o.baseUrl as string | undefined) ?? process.env.RELAY_BASE_URL;
+        const baseUrl = configuredBaseUrl(
+          requestedBaseUrl,
+          'The Relaycast base URL (--base-url or RELAY_BASE_URL)'
+        );
+        // Check the binding file before the server mints a key: a key that
+        // cannot be bound afterwards would be lost or fall back to hosted.
+        if (baseUrl) assertOriginBindingsWritable(baseUrl);
+        const relay = await deps.createWorkspace(workspaceName, requestedBaseUrl?.trim());
+        if (relay.workspaceKey && baseUrl) {
+          // The self-hosted server that minted this key is the only one it may be sent to.
+          guardCredentialOrigin(relay.workspaceKey, baseUrl);
+        }
         const previousActive = readWorkspaceStore().active;
         const persisted = relay.workspaceKey
           ? persistWorkspaceSession({ name: workspaceName, workspaceKey: relay.workspaceKey })
@@ -170,6 +198,7 @@ export function registerWorkspaceCommands(
     .argument('<key>', 'Workspace key')
     .action(async (name: string, key: string) => {
       await runSdk(deps, async () => {
+        bindKeyToConfiguredServer(key);
         setWorkspaceKey(name, key);
         deps.log(`Stored key for workspace "${name}".`);
       });
@@ -182,6 +211,7 @@ export function registerWorkspaceCommands(
     .argument('<key>', 'Workspace key')
     .action(async (name: string, key: string) => {
       await runSdk(deps, async () => {
+        bindKeyToConfiguredServer(key);
         const result = persistWorkspaceSession({ name, workspaceKey: key });
         deps.log(`Joined and switched to workspace "${name}".`);
         reportClearedEnrollment(result, deps);
