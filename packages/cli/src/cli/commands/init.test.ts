@@ -463,7 +463,11 @@ describe('relay init standalone server download', () => {
       [`${base}.sha256`]: new TextEncoder().encode(`${digest}  ${asset}\n`),
     });
     let installedWhenStarted = false;
-    const { run, logs, deps } = setup({ downloadEngine });
+    // Only the freshly downloaded temp file runs; nothing is installed yet.
+    const engineVersion = vi.fn((binary: string) =>
+      binary.endsWith('.tmp') ? LOCAL_ENGINE_VERSION : undefined
+    );
+    const { run, logs, deps } = setup({ downloadEngine, engineVersion });
     const start = deps.startEngine as ReturnType<typeof vi.fn>;
     const original = start.getMockImplementation() as InitCommandDependencies['startEngine'];
     start.mockImplementation((input) => {
@@ -494,6 +498,18 @@ describe('relay init standalone server download', () => {
     expect(fs.existsSync(path.join(home, 'bin')) ? fs.readdirSync(path.join(home, 'bin')) : []).toEqual([]);
     expect(logs.join('\n')).toMatch(/SHA-256 mismatch.*falling back to the npm package @relaycast\/engine@/s);
     expect(deps.startEngine).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not install a verified download that will not run here', async () => {
+    const downloadEngine = release({
+      [base]: body,
+      [`${base}.sha256`]: new TextEncoder().encode(`${digest}  ${asset}\n`),
+    });
+    const { run, logs } = setup({ downloadEngine, engineVersion: vi.fn(() => undefined) });
+    await run('--tools', 'none');
+    expect(fs.existsSync(target())).toBe(false);
+    expect(fs.readdirSync(path.join(home, 'bin'))).toEqual([]);
+    expect(logs.join('\n')).toMatch(/does not run on this machine.*falling back to the npm package/s);
   });
 
   it('falls back to npm when the release has no asset for this platform', async () => {

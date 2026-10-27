@@ -16,7 +16,8 @@ import path from 'node:path';
 const RELEASE_BASE = 'https://github.com/AgentWorkforce/relaycast/releases/download';
 /** The binary is tens of megabytes; bounded so a stalled download cannot hang `relay init`. */
 export const ENGINE_DOWNLOAD_TIMEOUT_MS = 300_000;
-export const ENGINE_CHECKSUM_TIMEOUT_MS = 60_000;
+/** Short: the checksum is tiny, and a stalled GitHub should not hold up every restart for long. */
+export const ENGINE_CHECKSUM_TIMEOUT_MS = 15_000;
 
 /** The platform facts that pick a release asset. */
 export interface EnginePlatform {
@@ -208,6 +209,12 @@ export async function ensureStandaloneEngine(input: EnsureEngineInput): Promise<
     temp = path.join(dir, `.${path.basename(target)}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`);
     fs.writeFileSync(temp, binary, { mode: 0o755, flag: 'wx' });
     fs.chmodSync(temp, 0o755);
+    // A verified file can still fail to run here (too old an OS, missing libraries);
+    // never let it replace a working binary or shadow the npm package.
+    const runs = input.readVersion(temp);
+    if (runs !== version) {
+      return { status: 'failed', reason: `the downloaded ${asset} does not run on this machine` };
+    }
     fs.renameSync(temp, target);
     temp = undefined;
     return { status: 'installed', asset };
