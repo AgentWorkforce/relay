@@ -381,8 +381,9 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "New version: $NEW_VERSION"
 
-          # Detect if this is a prerelease version (contains hyphen, e.g. 2.2.0-beta.1)
-          if [[ "$NEW_VERSION" == *"-"* ]]; then
+          # Detect if this is a prerelease version (hyphen before any `+build`
+          # metadata, e.g. 2.2.0-beta.1; 2.2.0+build-1 is stable)
+          if [[ "${NEW_VERSION%%+*}" == *"-"* ]]; then
             echo "is_prerelease=true" >> $GITHUB_OUTPUT
             echo "This is a PRERELEASE version"
           else
