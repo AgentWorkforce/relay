@@ -428,7 +428,21 @@ fn initial_codex_delivery(cli: &str, delivery: &RelayDelivery) -> bool {
 }
 
 fn compact_render(text: &str) -> String {
-    text.chars().filter(|c| !c.is_whitespace()).collect()
+    // Codex draws ↑/↓ at a scrolled composer's edge; they are chrome, not text.
+    text.chars()
+        .filter(|c| !c.is_whitespace() && !matches!(c, '↑' | '↓'))
+        .collect()
+}
+
+/// How much of a chunk's end must be visible before the next chunk or Enter.
+/// Codex limits the composer's height and scrolls longer input, so a whole
+/// 768-byte chunk is usually not on screen at once; its tail always is.
+const RENDER_TAIL_BYTES: usize = 128;
+
+/// Whether the pending composer shows the end of `chunk`.
+fn codex_chunk_rendered(composer: &str, chunk: &str) -> bool {
+    let tail_start = floor_char_boundary(chunk, chunk.len().saturating_sub(RENDER_TAIL_BYTES));
+    compact_render(composer).contains(&compact_render(&chunk[tail_start..]))
 }
 
 // Only the current composer, never transcript/history. A scrolling composer
@@ -514,7 +528,7 @@ async fn write_initial_codex(
         loop {
             ack.await.map_err(std::io::Error::other)??;
             let end = chunk_end(body, start);
-            let expected = compact_render(&body[start..end]);
+            let chunk = &body[start..end];
             let mut offset = before;
             let mut quiet_since = Instant::now();
             let gate_started = Instant::now();
@@ -531,7 +545,7 @@ async fn write_initial_codex(
                 if current > before
                     && quiet_since.elapsed() >= CODEX_STARTUP_SETTLE
                     && pending_codex_composer(&shot)
-                        .is_some_and(|text| compact_render(&text).contains(&expected))
+                        .is_some_and(|text| codex_chunk_rendered(&text, chunk))
                 {
                     break;
                 }
@@ -576,8 +590,7 @@ async fn write_initial_codex(
             let Some(composer) = pending_codex_composer(&shot) else {
                 return Ok(());
             };
-            let tail_start = floor_char_boundary(body, body.len().saturating_sub(128));
-            if !compact_render(&composer).contains(&compact_render(&body[tail_start..])) {
+            if !codex_chunk_rendered(&composer, body) {
                 return Ok(());
             }
             if last_submit.elapsed() >= INITIAL_SUBMIT_RETRY
@@ -3718,6 +3731,54 @@ mod tests {
             pending_codex_composer(&snapshot).is_some(),
             "wrapped composer text mentioning the phrase without a real busy indicator must still read as pending"
         );
+    }
+
+    // Codex 0.16x caps the composer's height: a long initial task scrolls, so
+    // only its last rows are visible, and a "↑" marker sits on the first
+    // visible row. The render gate used to require a whole 768-byte chunk on
+    // screen, never saw it, timed out, and never sent Enter, so every Codex
+    // spawn dead-lettered with initial_injection_incomplete.
+    #[test]
+    fn scrolled_composer_shows_the_chunk_tail_with_scroll_markers() {
+        let chunk = "Investigate the failing deploy. ".repeat(24);
+        let visible: String = chunk[chunk.len() - 200..].to_string();
+        let (first, rest) = visible.split_at(60);
+        let composer = format!("› {first}  ↑\n{rest}");
+        assert!(codex_chunk_rendered(&composer, &chunk));
+        assert!(!codex_chunk_rendered(
+            "› something else entirely  ↑",
+            &chunk
+        ));
+        // A short chunk still has to appear in full.
+        assert!(codex_chunk_rendered("› reply ok", "reply ok"));
+        assert!(!codex_chunk_rendered("› reply", "reply ok"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn initial_native_pty_reads_a_scrolled_composer_as_pending() {
+        let script = r#"
+            stty raw -echo
+            printf '\033[2J\033[H› Do not call register unless a send fails with  ↑\nNot registered. Use send_dm for broker replies and post_message for\nchannel replies. Check the inbox before starting and report when done.'
+            sleep 5
+        "#
+        .to_string();
+        let (pty, mut rx) = PtySession::spawn("/bin/sh", &["-c".into(), script], 24, 80).unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        for _ in 0..100 {
+            if pty.screen_text().contains("report when done") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let snapshot = Snapshot::capture(&pty);
+        pty.shutdown().unwrap();
+        drain.abort();
+        let composer = pending_codex_composer(&snapshot).expect("scrolled composer is pending");
+        assert!(codex_chunk_rendered(
+            &composer,
+            "Earlier task text that has scrolled away. Do not call register unless a send fails with Not registered. Use send_dm for broker replies and post_message for channel replies. Check the inbox before starting and report when done."
+        ));
     }
 
     #[test]
