@@ -245,6 +245,11 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     let self_names = default_workspace.self_names.clone();
     let ws_control_tx = default_workspace.ws_control_tx.clone();
     let relaycast_http = default_workspace.http_client.clone();
+    // Run-token mode (RELAY_RUN_TOKEN_FILE, no `rk_` key): the broker holds no
+    // workspace key. Node minting reads the run token per request and workers
+    // receive no workspace credential at all.
+    let run_token_source = relaycast_http.run_token_source().cloned();
+    let run_token_mode = run_token_source.is_some();
     let (hosted_agent_event_tx, hosted_agent_event_rx) = mpsc::channel::<HostedAgentEvent>(10_000);
     let hosted_event_client = relaycast_http.clone();
     let hosted_event_clients = workspaces
@@ -366,6 +371,7 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     // client is available (then a 401 surfaces a hard error rather than recovering).
     let token_minter = Some(crate::node_control::NodeTokenMinter {
         workspace_key: relay_workspace_key.clone(),
+        run_token: run_token_source.clone(),
         workspace_id: node_workspace_id.clone(),
         base_url: node_base_url.clone(),
         node_id: node_id.clone(),
@@ -501,7 +507,8 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         tx: api_tx.clone(),
         events_tx: events_tx.clone(),
         replay_buffer: replay_buffer.clone(),
-        workspace_key: (!local_only).then(|| relay_workspace_key.clone()),
+        workspace_key: (!local_only && !relay_workspace_key.is_empty())
+            .then(|| relay_workspace_key.clone()),
         relay_base_url: configured_base.clone(),
         memberships: if local_only {
             vec![]
@@ -605,25 +612,12 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
     }
 
     let callback_host = callback_host_for_url(&cmd.api_bind, local_addr);
-    let mut worker_env = vec![
-        (
-            "AGENT_RELAY_WORKSPACE_KEY".to_string(),
-            relay_workspace_key.clone(),
-        ),
-        (
-            "RELAY_WORKSPACE_KEY".to_string(),
-            relay_workspace_key.clone(),
-        ),
-        ("RELAY_API_KEY".to_string(), relay_workspace_key.clone()),
-        (
-            "AGENT_RELAY_RESULT_URL".to_string(),
-            format!("http://{}:{}/api/agent-result", callback_host, actual_port),
-        ),
-        (
-            "RELAY_WORKSPACES_JSON".to_string(),
-            relay_workspaces_json.clone(),
-        ),
-    ];
+    let mut worker_env = base_worker_relay_env(
+        &relay_workspace_key,
+        &relay_workspaces_json,
+        format!("http://{}:{}/api/agent-result", callback_host, actual_port),
+        run_token_mode,
+    );
     // Pass RELAY_BASE_URL to workers only when an override is configured; when
     // unset, workers inherit the SDK default.
     if let Some(base) = configured_base.as_deref() {
@@ -685,6 +679,17 @@ pub(crate) async fn run_init(cmd: InitCommand, telemetry: TelemetryClient) -> Re
         .state
         .parent()
         .map(|parent| parent.join("owned-cleanups.json"));
+    if run_token_mode {
+        // Broker-owned 0700 directory of per-worker agent token files; the
+        // broker rotates each worker's short-lived token into its file.
+        let dir = paths
+            .state
+            .parent()
+            .expect("state path should always have a parent")
+            .join("agent-tokens");
+        crate::relaycast::agent_token_rotation::ensure_agent_token_dir(&dir)?;
+        workers.agent_token_dir = Some(dir);
+    }
 
     // Load crash insights from previous session
     let crash_insights_path = paths.state.parent().unwrap().join("crash-insights.json");
@@ -1351,5 +1356,86 @@ mod tests {
             callback_host_for_url("127.0.0.1", SocketAddr::from((Ipv4Addr::LOCALHOST, 3889))),
             "127.0.0.1"
         );
+    }
+}
+
+/// The relay entries of every worker's environment. Legacy mode delegates the
+/// workspace key to workers (unchanged behavior). Run-token mode delegates no
+/// workspace credential and never the run token: each worker holds only its
+/// own `at_live_` agent token, injected per spawn as `RELAY_AGENT_TOKEN`.
+pub(crate) fn base_worker_relay_env(
+    relay_workspace_key: &str,
+    relay_workspaces_json: &str,
+    result_url: String,
+    run_token_mode: bool,
+) -> Vec<(String, String)> {
+    if run_token_mode {
+        return vec![("AGENT_RELAY_RESULT_URL".to_string(), result_url)];
+    }
+    vec![
+        (
+            "AGENT_RELAY_WORKSPACE_KEY".to_string(),
+            relay_workspace_key.to_string(),
+        ),
+        (
+            "RELAY_WORKSPACE_KEY".to_string(),
+            relay_workspace_key.to_string(),
+        ),
+        ("RELAY_API_KEY".to_string(), relay_workspace_key.to_string()),
+        ("AGENT_RELAY_RESULT_URL".to_string(), result_url),
+        (
+            "RELAY_WORKSPACES_JSON".to_string(),
+            relay_workspaces_json.to_string(),
+        ),
+    ]
+}
+
+#[cfg(test)]
+mod run_token_worker_env_tests {
+    use super::base_worker_relay_env;
+
+    const KEY_VARS: [&str; 5] = [
+        "AGENT_RELAY_WORKSPACE_KEY",
+        "RELAY_WORKSPACE_KEY",
+        "RELAY_API_KEY",
+        "RELAY_WORKSPACES_JSON",
+        "RELAY_RUN_TOKEN_FILE",
+    ];
+
+    #[test]
+    fn run_token_mode_worker_env_holds_no_workspace_credential() {
+        let env = base_worker_relay_env(
+            "",
+            r#"[{"workspace_id":"ws_run","api_key":""}]"#,
+            "http://127.0.0.1:1/api/agent-result".to_string(),
+            true,
+        );
+        for (key, value) in &env {
+            assert!(!KEY_VARS.contains(&key.as_str()), "{key} leaked to workers");
+            assert!(!value.contains("rk_") && !value.contains("rt_"), "{key}");
+        }
+        assert_eq!(
+            env,
+            vec![(
+                "AGENT_RELAY_RESULT_URL".to_string(),
+                "http://127.0.0.1:1/api/agent-result".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn legacy_worker_env_is_unchanged() {
+        let env = base_worker_relay_env("rk_live_legacy", "[]", "http://cb".to_string(), false);
+        let expected: Vec<(String, String)> = [
+            ("AGENT_RELAY_WORKSPACE_KEY", "rk_live_legacy"),
+            ("RELAY_WORKSPACE_KEY", "rk_live_legacy"),
+            ("RELAY_API_KEY", "rk_live_legacy"),
+            ("AGENT_RELAY_RESULT_URL", "http://cb"),
+            ("RELAY_WORKSPACES_JSON", "[]"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        assert_eq!(env, expected);
     }
 }

@@ -658,7 +658,9 @@ fn agent_relay_mcp_server_config(
         );
     }
     if let Some(token) = relay_agent_token.map(str::trim).filter(|s| !s.is_empty()) {
-        env.insert("RELAY_AGENT_TOKEN".into(), Value::String(token.to_string()));
+        let (token_key, token_value) =
+            crate::relaycast::agent_token_rotation::agent_token_env(token);
+        env.insert(token_key.into(), Value::String(token_value));
         // Skip bootstrap when the broker has already pre-registered the agent —
         // prevents blocking HTTP calls during MCP initialize handshake.
         env.insert(
@@ -838,7 +840,8 @@ pub fn ensure_opencode_config_with_result(
         );
     }
     if let Some(v) = relay_agent_token.map(str::trim).filter(|s| !s.is_empty()) {
-        env.insert("RELAY_AGENT_TOKEN".into(), Value::String(v.to_string()));
+        let (token_key, token_value) = crate::relaycast::agent_token_rotation::agent_token_env(v);
+        env.insert(token_key.into(), Value::String(token_value));
         // Skip bootstrap when the broker has already pre-registered the agent —
         // prevents blocking HTTP calls during MCP initialize handshake.
         env.insert(
@@ -1713,13 +1716,14 @@ pub async fn configure_agent_relay_mcp_with_result(
             "mcp_servers.agent-relay.env.RELAY_STRICT_AGENT_NAME=\"1\"".to_string(),
         ]);
         if let Some(token) = agent_token.map(str::trim).filter(|s| !s.is_empty()) {
-            args.extend([
-                "--config".to_string(),
+            args.extend(["--config".to_string(), {
+                let (token_key, token_value) =
+                    crate::relaycast::agent_token_rotation::agent_token_env(token);
                 format!(
-                    "mcp_servers.agent-relay.env.RELAY_AGENT_TOKEN=\"{}\"",
-                    escape_toml_basic_string(token)
-                ),
-            ]);
+                    "mcp_servers.agent-relay.env.{token_key}=\"{}\"",
+                    escape_toml_basic_string(&token_value)
+                )
+            }]);
             // Skip bootstrap when the broker has already pre-registered the agent.
             args.extend([
                 "--config".to_string(),
@@ -1970,7 +1974,9 @@ fn gemini_droid_mcp_add_args_with_result(
     }
     if let Some(token) = agent_token.map(str::trim).filter(|s| !s.is_empty()) {
         args.push(env_flag.to_string());
-        args.push(format!("RELAY_AGENT_TOKEN={token}"));
+        let (token_key, token_value) =
+            crate::relaycast::agent_token_rotation::agent_token_env(token);
+        args.push(format!("{token_key}={token_value}"));
         // Skip bootstrap when the broker has already pre-registered the agent.
         args.push(env_flag.to_string());
         args.push("RELAY_SKIP_BOOTSTRAP=1".to_string());
@@ -2030,7 +2036,9 @@ fn grok_mcp_add_args(
     }
     if let Some(token) = agent_token.map(str::trim).filter(|s| !s.is_empty()) {
         args.push("--env".to_string());
-        args.push(format!("RELAY_AGENT_TOKEN={token}"));
+        let (token_key, token_value) =
+            crate::relaycast::agent_token_rotation::agent_token_env(token);
+        args.push(format!("{token_key}={token_value}"));
         args.push("--env".to_string());
         args.push("RELAY_SKIP_BOOTSTRAP=1".to_string());
     }
@@ -3801,6 +3809,54 @@ exit 0
                 .any(|a| a == "mcp_servers.agent-relay.env.RELAY_API_KEY=\"rk_live_secret\""),
             "Codex must include RELAY_API_KEY in --config args"
         );
+    }
+
+    #[tokio::test]
+    async fn run_token_mode_mcp_configs_carry_the_token_file_not_a_token() {
+        let temp = tempdir().expect("tempdir");
+        let file_ref = crate::relaycast::agent_token_rotation::agent_token_file_ref(
+            std::path::Path::new("/run/agent-tokens/worker.json"),
+        );
+        let args = super::configure_agent_relay_mcp_with_token(
+            "claude",
+            "Worker",
+            None,
+            None,
+            &[],
+            temp.path(),
+            Some(&file_ref),
+            None,
+            None,
+        )
+        .await
+        .expect("configure claude mcp with token file");
+        let json: Value = serde_json::from_str(&args[1]).expect("parse mcp-config JSON");
+        let env = &json["mcpServers"]["agent-relay"]["env"];
+        assert_eq!(
+            env["RELAY_AGENT_TOKEN_FILE"].as_str(),
+            Some("/run/agent-tokens/worker.json")
+        );
+        assert!(env["RELAY_AGENT_TOKEN"].is_null());
+        assert!(env["RELAY_API_KEY"].is_null());
+
+        let codex = super::configure_agent_relay_mcp_with_token(
+            "codex",
+            "Agent",
+            None,
+            None,
+            &[],
+            temp.path(),
+            Some(&file_ref),
+            None,
+            None,
+        )
+        .await
+        .expect("configure codex mcp with token file");
+        assert!(codex.iter().any(|a| a
+            == "mcp_servers.agent-relay.env.RELAY_AGENT_TOKEN_FILE=\"/run/agent-tokens/worker.json\""));
+        assert!(!codex
+            .iter()
+            .any(|a| a.contains("RELAY_AGENT_TOKEN=") || a.contains("relay-agent-token-file:")));
     }
 
     #[tokio::test]

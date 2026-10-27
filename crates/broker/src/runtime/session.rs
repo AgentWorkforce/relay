@@ -267,6 +267,10 @@ where
 
 fn startup_has_preconfigured_workspace_key() -> bool {
     [
+        // Run-token mode joins the run's existing workspace; it must take the
+        // join path (which never mints a workspace), not the fresh-workspace
+        // path below.
+        crate::relaycast::run_token::RUN_TOKEN_FILE_ENV,
         "RELAY_WORKSPACES_JSON",
         "AGENT_RELAY_WORKSPACE_KEY",
         "RELAY_WORKSPACE_KEY",

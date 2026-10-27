@@ -678,6 +678,21 @@ impl BrokerRuntime {
                     }
                 }
 
+                if let (Some(_), Some(token_file)) = (
+                    worker_relay_key.as_deref(),
+                    workers.agent_token_file_for(&name),
+                ) {
+                    if let Err(error) =
+                        relaycast_http.ensure_agent_token_rotation(&name, Some(token_file))
+                    {
+                        tracing::error!(
+                            worker = %name,
+                            error = %error,
+                            "failed to prepare worker agent token file before restart"
+                        );
+                        continue;
+                    }
+                }
                 match workers
                     .spawn(
                         rst.payload.spec.clone(),

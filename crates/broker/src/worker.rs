@@ -272,6 +272,10 @@ pub(crate) struct WorkerRegistry {
     pub(crate) supervisor: Supervisor,
     pub(crate) metrics: MetricsCollector,
     native_delivery_custody: NativeDeliveryCustodyHub,
+    /// Run-token mode: broker-owned 0700 directory of per-worker agent token
+    /// files. Workers get `RELAY_AGENT_TOKEN_FILE` (rotated by the broker)
+    /// instead of a static `RELAY_AGENT_TOKEN`. `None` keeps legacy behavior.
+    pub(crate) agent_token_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -565,7 +569,16 @@ impl WorkerRegistry {
             supervisor: Supervisor::new(),
             metrics: MetricsCollector::new(broker_start),
             native_delivery_custody: NativeDeliveryCustodyHub::default(),
+            agent_token_dir: None,
         }
+    }
+
+    /// The agent token file a worker reads in run-token mode, or `None` in
+    /// legacy mode.
+    pub(crate) fn agent_token_file_for(&self, name: &str) -> Option<PathBuf> {
+        self.agent_token_dir
+            .as_deref()
+            .map(|dir| crate::relaycast::agent_token_rotation::worker_agent_token_file(dir, name))
     }
 
     fn commit_hooks_dir(&mut self) -> Result<&Path> {
@@ -903,6 +916,23 @@ impl WorkerRegistry {
         if self.identity_cleanups.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' has pending owned cleanup", spec.name);
         }
+        // Run-token mode: the worker's credential is a reference to its
+        // broker-rotated token file, never the static token. The broker's
+        // rotation task normally created the file already; write it here only
+        // if it is missing so a spawn can never point at a nonexistent file.
+        let worker_relay_api_key =
+            match (worker_relay_api_key, self.agent_token_file_for(&spec.name)) {
+                (Some(token), Some(path)) => {
+                    if !path.exists() {
+                        crate::relaycast::agent_token_rotation::write_agent_token_file(
+                            &path, &token, None,
+                        )
+                        .context("failed to write worker agent token file")?;
+                    }
+                    Some(crate::relaycast::agent_token_rotation::agent_token_file_ref(&path))
+                }
+                (credential, _) => credential,
+            };
         if self.workers.contains_key(&spec.name) {
             anyhow::bail!("agent '{}' already exists", spec.name);
         }
@@ -1630,7 +1660,11 @@ impl WorkerRegistry {
             skip_relay_prompt,
         ) {
             if let Some(relay_key) = worker_relay_api_key {
-                command.env("RELAY_AGENT_TOKEN", relay_key);
+                // `RELAY_AGENT_TOKEN_FILE` in run-token mode, otherwise the
+                // legacy static `RELAY_AGENT_TOKEN`.
+                let (key, value) =
+                    crate::relaycast::agent_token_rotation::agent_token_env(&relay_key);
+                command.env(key, value);
             }
             command.env("RELAY_AGENT_NAME", &spec.name);
             command.env("RELAY_AGENT_TYPE", "agent");
@@ -3499,6 +3533,100 @@ mod tests {
             .collect();
         observed.sort();
         assert_eq!(observed, vec!["RELAY_AGENT_TOKEN", "RELAY_API_KEY"]);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[tokio::test]
+    async fn run_token_mode_worker_holds_only_its_own_agent_token() {
+        let dir = tempfile::tempdir().expect("worker cwd");
+        // Record credential variable NAMES the worker sees, plus how many env
+        // values look like a workspace key or run token (never the values).
+        let keys = format!(
+            "{} RELAY_NODE_ID AGENT_RELAY_ENROLLED_NODE_ID",
+            crate::spawner::INHERITED_RELAY_CREDENTIAL_ENV_KEYS.join(" ")
+        );
+        let script = format!(
+            "for k in {keys}; do if printenv \"$k\" >/dev/null; then echo \"$k\"; fi; done > names.tmp; \
+             env | grep -cE '(rk|rt|at)_(live|test)_' > leaks.tmp; \
+             mv leaks.tmp leaks.txt; mv names.tmp names.txt; sleep 30"
+        );
+        let mut spec = sleeping_native_worker("run-token-worker", None);
+        spec.harness_config = Some(ResolvedHarnessConfig::Native(NativeHarnessConfig {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), script],
+            cwd: Some(dir.path().to_string_lossy().into_owned()),
+            env: None,
+            session_id: "session-run-token-worker".to_string(),
+            metadata: None,
+        }));
+        // Exactly what the broker hands workers in run-token mode.
+        let mut registry = make_registry(crate::runtime::init::base_worker_relay_env(
+            "",
+            r#"[{"workspace_id":"ws_run","api_key":""}]"#,
+            "http://127.0.0.1:1/api/agent-result".to_string(),
+            true,
+        ));
+        let token_root = tempfile::tempdir().expect("token dir");
+        registry.agent_token_dir = Some(token_root.path().join("agent-tokens"));
+        let token_file = registry
+            .agent_token_file_for("run-token-worker")
+            .expect("run-token mode token file");
+
+        registry
+            .spawn(
+                spec,
+                None,
+                None,
+                Some("at_live_worker_own".to_string()),
+                false,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("run-token worker should spawn");
+
+        let names_path = dir.path().join("names.txt");
+        let mut names = None;
+        for _ in 0..50 {
+            if let Ok(value) = std::fs::read_to_string(&names_path) {
+                names = Some(value);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let leaks = std::fs::read_to_string(dir.path().join("leaks.txt"));
+        registry
+            .release("run-token-worker")
+            .await
+            .expect("release run-token worker");
+
+        let mut observed: Vec<String> = names
+            .expect("worker recorded its credential names")
+            .lines()
+            .map(str::to_string)
+            .collect();
+        observed.sort();
+        // The worker gets a token FILE, never a static token, workspace key,
+        // or run token.
+        assert_eq!(observed, vec!["RELAY_AGENT_TOKEN_FILE"]);
+        assert_eq!(
+            leaks.expect("worker recorded its leak count").trim(),
+            "0",
+            "no rk_/rt_/at_ value may reach a run-token-mode worker's env"
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&token_file).unwrap()).unwrap();
+        assert_eq!(body["token"], "at_live_worker_own");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&token_file).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

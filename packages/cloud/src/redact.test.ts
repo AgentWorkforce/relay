@@ -27,6 +27,12 @@ describe('redactCredentialValues', () => {
     ).toBe('denied for at_live_…cdef with session cld_at_…cdef and join rjt_live_…cdef');
   });
 
+  it('masks a Relaycast run token', () => {
+    expect(redactCredentialValues('run token rt_live_0123456789abcdef rejected')).toBe(
+      'run token rt_live_…cdef rejected'
+    );
+  });
+
   it('masks a short-bodied credential entirely instead of leaking most of it', () => {
     expect(redactCredentialValues('bad key rk_live_abcd rejected')).toBe('bad key rk_live_… rejected');
     expect(redactCredentialValues('bad key rk_live_abcde rejected')).toBe('bad key rk_live_… rejected');

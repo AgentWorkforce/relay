@@ -147,6 +147,10 @@ pub(crate) struct FleetControlConfig {
 #[derive(Clone)]
 pub(crate) struct NodeTokenMinter {
     pub(crate) workspace_key: String,
+    /// Run-token mode: `workspace_key` is empty and `POST /v1/nodes` is
+    /// authenticated with the run token read from this file per mint (one
+    /// re-read and retry on 401).
+    pub(crate) run_token: Option<crate::relaycast::run_token::RunTokenSource>,
     pub(crate) workspace_id: String,
     pub(crate) base_url: Option<String>,
     pub(crate) node_id: String,
@@ -195,19 +199,54 @@ impl NodeTokenMinter {
         idempotency_key: Option<&str>,
     ) -> std::result::Result<String, CreateNodeMintError> {
         let request = create_node_request(&self.node_id, &self.node_name, &self.broker_version);
-        match mint_node_token(
-            &self.workspace_key,
-            self.base_url.as_deref(),
-            request,
-            current_node_token,
-            idempotency_key,
-            MintNodeTokenLogContext {
-                node_id: &self.node_id,
-                workspace_id: &self.workspace_id,
-            },
-        )
-        .await
-        {
+        let context = MintNodeTokenLogContext {
+            node_id: &self.node_id,
+            workspace_id: &self.workspace_id,
+        };
+        let minted = match self.run_token.as_ref() {
+            Some(source) => crate::relaycast::run_token::call_with_run_token(
+                source,
+                |error: &CreateNodeMintError| error.status() == Some(401),
+                |token| {
+                    let request = request.clone();
+                    async move {
+                        mint_node_token(
+                            &token,
+                            self.base_url.as_deref(),
+                            request,
+                            current_node_token,
+                            idempotency_key,
+                            context,
+                        )
+                        .await
+                    }
+                },
+            )
+            .await
+            .map_err(|error| match error {
+                crate::relaycast::run_token::RunTokenCallError::Call(error) => error,
+                crate::relaycast::run_token::RunTokenCallError::Read(error) => {
+                    CreateNodeMintError::Api {
+                        status: 401,
+                        code: "run_token_unavailable".to_string(),
+                        message: format!("run token unavailable: {error:#}"),
+                        body: String::new(),
+                    }
+                }
+            }),
+            None => {
+                mint_node_token(
+                    &self.workspace_key,
+                    self.base_url.as_deref(),
+                    request,
+                    current_node_token,
+                    idempotency_key,
+                    context,
+                )
+                .await
+            }
+        };
+        match minted {
             Ok(token) => {
                 tracing::info!(
                     target = "relay_broker::fleet",
@@ -436,6 +475,7 @@ fn is_node_token_proof_conflict(error: &CreateNodeMintError) -> bool {
     error.status() == Some(409) && error.code() == Some("node_token_proof_required")
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct MintNodeTokenLogContext<'a> {
     pub(crate) node_id: &'a str,
     pub(crate) workspace_id: &'a str,
@@ -647,7 +687,7 @@ fn redact_relaycast_secrets(input: &str) -> String {
 
     let mut redacted = input.to_string();
     let bearer_re = BEARER_SECRET_RE.get_or_init(|| {
-        regex::Regex::new(r#"(rk_live_|at_live_|nt_live_|br_|Bearer\s+)[A-Za-z0-9._-]+"#)
+        regex::Regex::new(r#"(rk_live_|rt_live_|at_live_|nt_live_|br_|Bearer\s+)[A-Za-z0-9._-]+"#)
             .expect("bearer secret redaction regex must compile")
     });
     redacted = bearer_re
@@ -8167,6 +8207,7 @@ mod tests {
                 broker_version: "broker/test".to_string(),
                 token_minter: Some(NodeTokenMinter {
                     workspace_key: "rk_live_test".to_string(),
+                    run_token: None,
                     workspace_id: "ws_test".to_string(),
                     base_url: Some(mint_server.base_url()),
                     node_id: "node-test".to_string(),
@@ -8251,6 +8292,7 @@ mod tests {
                 broker_version: "broker/test".to_string(),
                 token_minter: Some(NodeTokenMinter {
                     workspace_key: "rk_live_test".to_string(),
+                    run_token: None,
                     workspace_id: "ws_test".to_string(),
                     base_url: Some(mint_server.base_url()),
                     node_id: "node-test".to_string(),
@@ -8339,6 +8381,7 @@ mod tests {
                 broker_version: "broker/test".to_string(),
                 token_minter: Some(NodeTokenMinter {
                     workspace_key: "rk_live_test".to_string(),
+                    run_token: None,
                     workspace_id: "ws_test".to_string(),
                     base_url: Some(mint_server.base_url()),
                     node_id: "node-test".to_string(),
@@ -8450,6 +8493,7 @@ mod tests {
                 broker_version: "broker/test".to_string(),
                 token_minter: Some(NodeTokenMinter {
                     workspace_key: "rk_live_test".to_string(),
+                    run_token: None,
                     workspace_id: "ws_test".to_string(),
                     base_url: Some(mint_server.base_url()),
                     node_id: "node-test".to_string(),
@@ -8590,6 +8634,7 @@ mod tests {
                 broker_version: "broker/test".to_string(),
                 token_minter: Some(NodeTokenMinter {
                     workspace_key: "rk_live_test".to_string(),
+                    run_token: None,
                     workspace_id: "ws_test".to_string(),
                     base_url: Some(mint_base_url.clone()),
                     node_id: "node-test".to_string(),
@@ -8705,6 +8750,7 @@ mod tests {
         .unwrap();
         let minter = NodeTokenMinter {
             workspace_key: "rk_live_test".to_string(),
+            run_token: None,
             workspace_id: "ws_test".to_string(),
             base_url: Some(mint_base_url.clone()),
             node_id: "node-test".to_string(),
@@ -8773,6 +8819,7 @@ mod tests {
         .unwrap();
         let minter = NodeTokenMinter {
             workspace_key: "rk_live_test".to_string(),
+            run_token: None,
             workspace_id: "ws_test".to_string(),
             base_url: Some(mint_base_url.clone()),
             node_id: "node-test".to_string(),
@@ -8833,6 +8880,7 @@ mod tests {
         .unwrap();
         let minter = NodeTokenMinter {
             workspace_key: "rk_live_test".to_string(),
+            run_token: None,
             workspace_id: "ws_test".to_string(),
             base_url: Some(mint_base_url.clone()),
             node_id: "node-test".to_string(),
@@ -8889,6 +8937,7 @@ mod tests {
         .unwrap();
         let minter = NodeTokenMinter {
             workspace_key: "rk_live_test".to_string(),
+            run_token: None,
             workspace_id: "ws_test".to_string(),
             base_url: Some(mint_base_url.clone()),
             node_id: "node-test".to_string(),
@@ -10923,3 +10972,98 @@ mod tests {
 
 #[cfg(test)]
 mod registration_tests;
+
+#[cfg(test)]
+mod run_token_mint_tests {
+    use httpmock::{Method::POST, MockServer};
+    use serde_json::json;
+
+    use super::NodeTokenMinter;
+    use crate::relaycast::run_token::{
+        test_support::{future_expiry, write_run_token_file},
+        RunTokenSource,
+    };
+
+    fn node_created(token: &str) -> serde_json::Value {
+        json!({
+            "ok": true,
+            "data": {
+                "id": "node_run", "name": "run-node", "kind": "ws", "role": "broker",
+                "version": "relay-broker/test", "status": "offline", "live": false,
+                "handlers_live": false, "load": null, "active_agents": 0, "max_agents": 0,
+                "created_at": "2026-10-17T00:00:00Z", "token": token
+            }
+        })
+    }
+
+    fn run_token_minter(base_url: String, source: RunTokenSource) -> NodeTokenMinter {
+        NodeTokenMinter {
+            // Run-token mode: no workspace key at all.
+            workspace_key: String::new(),
+            run_token: Some(source),
+            workspace_id: "ws_run".to_string(),
+            base_url: Some(base_url),
+            node_id: "node_run".to_string(),
+            node_name: "run-node".to_string(),
+            broker_version: "relay-broker/test".to_string(),
+            token_path: None,
+            adopt_cached_token_after_conflict: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn node_is_minted_with_the_current_run_token() {
+        let server = MockServer::start();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relaycast-run.json");
+        write_run_token_file(&path, "rt_live_mint_one", &future_expiry());
+        let minter = run_token_minter(server.base_url(), RunTokenSource::new(&path));
+
+        let first = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/nodes")
+                .header("authorization", "Bearer rt_live_mint_one");
+            then.status(201).json_body(node_created("nt_live_first"));
+        });
+        assert_eq!(minter.mint(None).await.unwrap(), "nt_live_first");
+        first.assert_hits(1);
+
+        // A rotated file is picked up by the very next mint.
+        write_run_token_file(&path, "rt_live_mint_two", &future_expiry());
+        let second = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/nodes")
+                .header("authorization", "Bearer rt_live_mint_two");
+            then.status(201).json_body(node_created("nt_live_second"));
+        });
+        assert_eq!(minter.mint(None).await.unwrap(), "nt_live_second");
+        second.assert_hits(1);
+        first.assert_hits(1);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_run_token_is_retried_once_then_surfaces_401() {
+        let server = MockServer::start();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relaycast-run.json");
+        write_run_token_file(&path, "rt_live_revoked", &future_expiry());
+        let minter = run_token_minter(server.base_url(), RunTokenSource::new(&path));
+
+        let rejected = server.mock(|when, then| {
+            when.method(POST).path("/v1/nodes");
+            then.status(401).json_body(json!({"ok": false, "error": {
+                "code": "run_authority_revoked", "message": "revoked"}}));
+        });
+        let error = minter.mint(None).await.unwrap_err();
+        assert_eq!(error.status(), Some(401));
+        assert!(!error.to_string().contains("rt_live_revoked"));
+        rejected.assert_hits(2);
+    }
+
+    #[test]
+    fn mint_error_redaction_covers_run_tokens() {
+        let redacted = super::redact_relaycast_secrets("echo rt_live_abc.def and rk_live_x");
+        assert!(!redacted.contains("abc.def"), "{redacted}");
+        assert!(!redacted.contains("rk_live_x"), "{redacted}");
+    }
+}
