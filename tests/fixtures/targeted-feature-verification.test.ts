@@ -509,16 +509,17 @@ describe('targeted Flows v2 PR verification', () => {
   });
 
   it('keys the shard selection artifact by run so "Re-run failed jobs" can download it', async () => {
-    const workflow = await readFile('.github/workflows/targeted-feature-verification.yml', 'utf8');
-    const selectionNames = workflow.match(/name: targeted-feature-selection-.*$/gm) ?? [];
-    // One upload (select job) and one download (each shard).
-    expect(selectionNames).toEqual([
-      'name: targeted-feature-selection-${{ github.run_id }}',
-      'name: targeted-feature-selection-${{ github.run_id }}',
-    ]);
-    expect(workflow).toMatch(
-      /name: targeted-feature-selection-\$\{\{ github\.run_id \}\}\n(?:\s+.+\n)*?\s+overwrite: true/
-    );
+    const workflow = parse(await readFile('.github/workflows/targeted-feature-verification.yml', 'utf8'));
+    const step = (job: string, name: string) =>
+      workflow.jobs[job].steps.find((candidate: { name?: string }) => candidate.name === name);
+    const upload = step('select', 'Upload immutable selection');
+    const download = step('targeted', 'Download immutable selection');
+
+    // No run_attempt: the select job is not re-run by "Re-run failed jobs".
+    expect(upload.with.name).toBe('targeted-feature-selection-${{ github.run_id }}');
+    expect(download.with.name).toBe(upload.with.name);
+    // "Re-run all jobs" re-uploads the same name.
+    expect(upload.with.overwrite).toBe(true);
   });
 
   it('expands the broker binary template in a full-smoke spec', async () => {
