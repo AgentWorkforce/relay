@@ -16,6 +16,11 @@ on:
       - '.github/workflows/test-build.yml'
   workflow_dispatch:
 
+# A new push to a PR replaces its earlier runs; pushes to main always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   AGENT_RELAY_TELEMETRY_DISABLED: 1
 
