@@ -150,6 +150,12 @@ function gitExcludePath(dotGit: string): string | undefined {
     const match = /^gitdir:\s*(.+?)\s*$/m.exec(pointerFile);
     if (!match) return undefined;
     gitDir = path.resolve(path.dirname(dotGit), match[1]);
+    // A stale pointer (moved or pruned worktree) is not a repository to write into.
+    try {
+      if (!fs.statSync(gitDir).isDirectory()) return undefined;
+    } catch {
+      return undefined;
+    }
   }
   let commonDir = gitDir;
   try {

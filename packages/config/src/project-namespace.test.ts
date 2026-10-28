@@ -111,6 +111,13 @@ describe('ensureGitExclude', () => {
     expect(exclude(gitDir)).toBe('/.agentworkforce/relay/\n');
   });
 
+  it('writes nothing for a .git file whose gitdir no longer exists', () => {
+    const missing = path.join(root, 'gone', '.git', 'worktrees', 'feature');
+    fs.writeFileSync(path.join(root, '.git'), `gitdir: ${missing}\n`);
+    expect(ensureGitExclude(dataDir())).toEqual({ modified: false });
+    expect(fs.existsSync(path.join(root, 'gone'))).toBe(false);
+  });
+
   it('does nothing outside a git repository', () => {
     expect(ensureGitExclude(dataDir())).toEqual({ modified: false });
   });
