@@ -198,6 +198,55 @@ describe('AgentRelay workspace setup', () => {
     });
   });
 
+  it('suppresses inherited and explicit analytics hints when opted out', () => {
+    expect(
+      relaycastTelemetryOptions(
+        { agentRelayUserId: 'usr_explicit' },
+        {
+          AGENT_RELAY_USER_ID: 'usr_inherited',
+          DO_NOT_TRACK: '1',
+          AGENT_RELAY_TELEMETRY_DISABLED: '0',
+        }
+      )
+    ).toEqual({});
+  });
+
+  it('does not forward local A identity hints for delegated B credentials', () => {
+    expect(
+      relaycastTelemetryOptions(
+        { agentRelayUserId: 'usr_A' },
+        {
+          AGENT_RELAY_USER_ID: 'usr_A',
+          AGENT_RELAY_ORG_ID: 'org_A',
+          CLOUD_API_ACCESS_TOKEN: 'synthetic-B',
+        }
+      )
+    ).toEqual({});
+  });
+
+  it('keeps delegated actor and machine dimensions without stale local people', () => {
+    expect(
+      relaycastTelemetryOptions(
+        {
+          originActor: 'agent-relay-cli/agent/claude',
+          agentRelayMachineId: 'machine',
+          agentRelayUserId: 'usr_A',
+          agentRelayDistinctId: 'usr_A',
+          agentRelayOrgId: 'org_A',
+        },
+        {
+          CLOUD_API_ACCESS_TOKEN: 'synthetic-B',
+        }
+      )
+    ).toEqual({ originActor: 'agent-relay-cli/agent/claude', agentRelayMachineId: 'machine' });
+  });
+
+  it('does not turn a durable machine dimension into a person hint', () => {
+    expect(relaycastTelemetryOptions({}, { AGENT_RELAY_MACHINE_ID: 'machine' })).toEqual({
+      agentRelayMachineId: 'machine',
+    });
+  });
+
   it('does not require a Node process global for SDK client construction', () => {
     const originalProcess = globalThis.process;
     vi.stubGlobal('process', undefined);

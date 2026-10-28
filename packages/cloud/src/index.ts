@@ -4,6 +4,7 @@ export {
   clearStoredAuth,
   refreshStoredAuth,
   refreshStoredCloudIdentity,
+  recoverStoredCloudIdentity,
   hasCurrentStoredCloudIdentity,
   toCloudIdentity,
   ensureAuthenticated,

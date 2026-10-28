@@ -1,3 +1,8 @@
+import {
+  identityRevision,
+  isCloudAnalyticsEnabled,
+  shouldPersistResolvedCloudIdentity,
+} from '@agent-relay/cloud/identity';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -695,7 +700,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         errorClass = errorClassName(err);
         throw err;
       } finally {
-        track('cloud_auth', {
+        track('cli_cloud_auth_command', {
           action: 'login',
           ...(method ? { method } : {}),
           success,
@@ -743,7 +748,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         errorClass = errorClassName(err);
         throw err;
       } finally {
-        track('cloud_auth', {
+        track('cli_cloud_auth_command', {
           action: 'logout',
           success,
           duration_ms: Date.now() - started,
@@ -818,9 +823,16 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       let errorClass: string | undefined;
       try {
         const apiUrl = options.apiUrl || defaultApiUrl();
+        // Sample the revision before reading credentials. A later login or
+        // logout belongs to another process unless this command itself had no
+        // stored session and performed the interactive login.
+        const revisionBeforeAuth = identityRevision();
+        const storedBeforeAuth = await readStoredAuth();
         const auth = await ensureAuthenticated(apiUrl);
-        const { response } = await authorizedApiFetch(auth, '/api/v1/auth/whoami', {
+        const revisionAfterAuth = identityRevision();
+        const { response, auth: activeAuth } = await authorizedApiFetch(auth, '/api/v1/auth/whoami', {
           method: 'GET',
+          headers: isCloudAnalyticsEnabled() ? { 'X-Agent-Relay-Analytics': 'enabled' } : {},
         });
 
         const payload = (await response.json().catch(() => null)) as
@@ -831,7 +843,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           throw new Error(payload?.error || 'Failed to resolve auth status');
         }
 
-        deps.log(`API URL: ${auth.apiUrl}`);
+        deps.log(`API URL: ${activeAuth.apiUrl}`);
         deps.log(`Auth source: ${payload.source}`);
         deps.log(`Subject type: ${payload.subjectType ?? 'session'}`);
         deps.log(
@@ -847,9 +859,25 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
 
         // whoami is the canonical "who am I" call, so make it the refresh point
         // for the locally cached identity that tags telemetry.
-        const identity = toCloudIdentity(payload, auth.apiUrl);
-        if (identity) {
-          await writeStoredIdentity(identity);
+        const identity = toCloudIdentity(payload, activeAuth.apiUrl);
+        const storedAfterAuth = identity ? await readStoredAuth() : null;
+        if (
+          identity &&
+          shouldPersistResolvedCloudIdentity({
+            delegatedCredentials: Boolean(process.env.CLOUD_API_ACCESS_TOKEN?.trim()),
+            hadStoredAuth: Boolean(storedBeforeAuth),
+            revisionBeforeAuth,
+            revisionAfterAuth,
+            revisionNow: identityRevision(),
+            // Compare the token that produced this response. A 401 refresh
+            // replaces the access token without switching accounts.
+            resolvedAccessToken: activeAuth.accessToken,
+            resolvedApiUrl: activeAuth.apiUrl,
+            storedAccessToken: storedAfterAuth?.accessToken,
+            storedApiUrl: storedAfterAuth?.apiUrl,
+          })
+        ) {
+          await writeStoredIdentity(identity, process.env, revisionAfterAuth);
           deps.log(`Identity file: ${IDENTITY_FILE_PATH}`);
         }
         success = true;
@@ -857,7 +885,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         errorClass = errorClassName(err);
         throw err;
       } finally {
-        track('cloud_auth', {
+        track('cli_cloud_auth_command', {
           action: 'whoami',
           success,
           duration_ms: Date.now() - started,
@@ -901,7 +929,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         );
         deps.exit(1);
       } finally {
-        track('cloud_auth', {
+        track('cli_cloud_auth_command', {
           action: 'workspaces',
           success,
           duration_ms: Date.now() - started,
@@ -937,7 +965,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         errorClass = errorClassName(err);
         throw err;
       } finally {
-        track('cloud_auth', {
+        track('cli_cloud_auth_command', {
           action: 'connect',
           success,
           duration_ms: Date.now() - started,

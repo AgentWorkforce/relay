@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Major]
 
+### Fixed
+
+- CLI and broker analytics follow login, logout, and account changes without merging shared machines into people. Cloud repairs profile data; child processes no longer inherit email addresses.
+- The broker treats an unreadable or malformed `telemetry.json` as opted out, so a truncated opt-out no longer keeps sending identity-bearing events.
+- `cloud whoami` does not replace the local identity cache for a delegated `CLOUD_API_ACCESS_TOKEN`, or when another login changes while credentials are being read. A same-account token refresh still saves the snapshot.
+
 ### Changed
 
 - `fleet spawn --sandbox` inside a repository starts from an exact shallow Git checkout without waiting for Relayfile. `--checkout` also omits Relayfile unless context is explicitly requested.

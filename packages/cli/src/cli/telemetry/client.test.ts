@@ -10,6 +10,7 @@ const posthogMocks = vi.hoisted(() => ({
   alias: vi.fn(),
   groupIdentify: vi.fn(),
   shutdown: vi.fn(async () => undefined),
+  setPersistedProperty: vi.fn(),
 }));
 
 vi.mock('posthog-node', () => ({
@@ -20,12 +21,14 @@ vi.mock('posthog-node', () => ({
       alias: posthogMocks.alias,
       groupIdentify: posthogMocks.groupIdentify,
       shutdown: posthogMocks.shutdown,
+      setPersistedProperty: posthogMocks.setPersistedProperty,
     };
   }),
 }));
 
-import { writeStoredIdentity, type CloudIdentity } from '@agent-relay/cloud/identity';
-import { getDistinctId } from './config.js';
+import { writeStoredIdentity, clearStoredIdentity, type CloudIdentity } from '@agent-relay/cloud/identity';
+import { createDistinctId } from './machine-id.js';
+import { getDistinctId, disableTelemetry } from './config.js';
 import { initTelemetry, shutdown, track, getStatus } from './client.js';
 
 const IDENTITY: CloudIdentity = {
@@ -113,7 +116,7 @@ describe('telemetry client events', () => {
   });
 
   describe('anonymous (not logged in)', () => {
-    it('keys events by the machine hash and marks them unauthenticated', () => {
+    it('keys events by a random auth generation and marks them unauthenticated', () => {
       const machineDistinctId = getDistinctId();
       initTelemetry({ cliVersion: '1.2.3' });
       posthogMocks.capture.mockClear();
@@ -132,7 +135,7 @@ describe('telemetry client events', () => {
     });
 
     it('still reports the machine id', () => {
-      const machineDistinctId = getDistinctId();
+      const machineDistinctId = createDistinctId();
       initTelemetry({ cliVersion: '1.2.3' });
       posthogMocks.capture.mockClear();
 
@@ -140,7 +143,7 @@ describe('telemetry client events', () => {
 
       const [call] = posthogMocks.capture.mock.calls.at(-1)!;
       expect(call.properties.machine_id).toBe(machineDistinctId);
-      expect(call.distinctId).toBe(machineDistinctId);
+      expect(call.distinctId).not.toBe(machineDistinctId);
     });
 
     it('does not identify or create groups', () => {
@@ -162,7 +165,7 @@ describe('telemetry client events', () => {
       expect(posthogMocks.capture).toHaveBeenCalledWith(
         expect.objectContaining({
           distinctId: 'usr_abc123',
-          groups: { organization: 'org_xyz789' },
+          groups: { organization: 'org_xyz789', workspace: 'ws_123' },
           properties: expect.objectContaining({
             is_authenticated: true,
             user_id: 'usr_abc123',
@@ -182,65 +185,77 @@ describe('telemetry client events', () => {
 
       const [call] = posthogMocks.capture.mock.calls.at(-1)!;
       expect(JSON.stringify(call.properties)).not.toContain('will@agentrelay.com');
-      expect(posthogMocks.identify).toHaveBeenCalledWith(
-        expect.objectContaining({
-          distinctId: 'usr_abc123',
-          properties: expect.objectContaining({ email: 'will@agentrelay.com' }),
-        })
-      );
+      expect(posthogMocks.identify).not.toHaveBeenCalled();
     });
 
-    it('aliases the machine hash into the user so pre-login events are not stranded', async () => {
-      const machineDistinctId = getDistinctId();
-      await writeStoredIdentity(IDENTITY, process.env);
-
+    it('never aliases durable machine identity or writes cached PII, even after failure/restart', async () => {
+      await writeStoredIdentity(IDENTITY);
       initTelemetry({ cliVersion: '1.2.3' });
-
-      expect(posthogMocks.alias).toHaveBeenCalledWith({
-        distinctId: 'usr_abc123',
-        alias: machineDistinctId,
-      });
-      expect(posthogMocks.groupIdentify).toHaveBeenCalledWith(
-        expect.objectContaining({ groupType: 'organization', groupKey: 'org_xyz789' })
-      );
-    });
-
-    it('identifies once per identity, not on every run', async () => {
-      await writeStoredIdentity(IDENTITY, process.env);
-
-      initTelemetry({ cliVersion: '1.2.3' });
-      expect(posthogMocks.identify).toHaveBeenCalledTimes(1);
-
+      posthogMocks.shutdown.mockRejectedValueOnce(new Error('network unavailable'));
       await shutdown();
       initTelemetry({ cliVersion: '1.2.3' });
-      expect(posthogMocks.identify).toHaveBeenCalledTimes(1);
-    });
-
-    it('re-identifies after an org switch', async () => {
-      await writeStoredIdentity(IDENTITY, process.env);
-      initTelemetry({ cliVersion: '1.2.3' });
-      await shutdown();
-
-      await writeStoredIdentity({ ...IDENTITY, organizationId: 'org_other' }, process.env);
-      initTelemetry({ cliVersion: '1.2.3' });
-
-      expect(posthogMocks.identify).toHaveBeenCalledTimes(2);
-      expect(posthogMocks.groupIdentify).toHaveBeenLastCalledWith(
-        expect.objectContaining({ groupKey: 'org_other' })
+      track('cli_command_run', { command_name: 'status' });
+      expect(posthogMocks.alias).not.toHaveBeenCalled();
+      expect(posthogMocks.identify).not.toHaveBeenCalled();
+      expect(posthogMocks.capture).toHaveBeenLastCalledWith(
+        expect.objectContaining({ distinctId: IDENTITY.userId })
       );
     });
 
-    it('prefers an identity published on the env over the stored file', async () => {
-      await writeStoredIdentity(IDENTITY, process.env);
+    it('reconciles login, workspace switch, logout, and account switch without restart', async () => {
+      initTelemetry({ cliVersion: '1.2.3', showNotice: false });
+      track('cli_command_run', { command_name: 'login' });
+      const anonymousA = posthogMocks.capture.mock.calls.at(-1)![0].distinctId;
+      await writeStoredIdentity(IDENTITY);
+      track('cli_cloud_auth_command', { action: 'login', success: true, duration_ms: 1 });
+      expect(posthogMocks.capture.mock.calls.at(-1)![0].distinctId).toBe(IDENTITY.userId);
+      await writeStoredIdentity({ ...IDENTITY, organizationId: undefined, workspaceId: 'ws_other' });
+      track('cli_command_run', { command_name: 'status' });
+      const switched = posthogMocks.capture.mock.calls.at(-1)![0];
+      expect(switched.groups).toEqual({ workspace: 'ws_other' });
+      expect(switched.properties.organization_id).toBeUndefined();
+      expect(process.env.AGENT_RELAY_ORG_ID).toBeUndefined();
+      await clearStoredIdentity();
+      track('cli_command_run', { command_name: 'logout' });
+      const anonymousB = posthogMocks.capture.mock.calls.at(-1)![0].distinctId;
+      expect(anonymousB).not.toBe(anonymousA);
+      expect(process.env.AGENT_RELAY_USER_ID).toBeUndefined();
+      await writeStoredIdentity({ ...IDENTITY, userId: 'usr_B' });
+      track('cli_command_run', { command_name: 'status' });
+      expect(posthogMocks.capture.mock.calls.at(-1)![0].distinctId).toBe('usr_B');
+      expect(posthogMocks.alias).not.toHaveBeenCalled();
+    });
+
+    it('does not let inherited IDs override the current login', async () => {
+      await writeStoredIdentity(IDENTITY);
       vi.stubEnv('AGENT_RELAY_USER_ID', 'usr_from_env');
-
       initTelemetry({ cliVersion: '1.2.3' });
-      posthogMocks.capture.mockClear();
-      track('cli_command_run', { command_name: 'up', flags: [] });
+      track('cli_command_run', { command_name: 'up' });
+      expect(posthogMocks.capture.mock.calls.at(-1)![0].distinctId).toBe(IDENTITY.userId);
+    });
 
-      expect(posthogMocks.capture).toHaveBeenCalledWith(
-        expect.objectContaining({ distinctId: 'usr_from_env' })
-      );
+    it('discards queued events and child identity when disabled mid-process', async () => {
+      await writeStoredIdentity(IDENTITY);
+      initTelemetry({ showNotice: false });
+      track('cli_command_run', { command_name: 'up' });
+      const captures = posthogMocks.capture.mock.calls.length;
+      disableTelemetry();
+      track('cli_command_run', { command_name: 'status' });
+      expect(posthogMocks.capture).toHaveBeenCalledTimes(captures);
+      expect(posthogMocks.setPersistedProperty).toHaveBeenCalledWith('queue', []);
+      expect(process.env.AGENT_RELAY_USER_ID).toBeUndefined();
+      expect(process.env.AGENT_RELAY_USER_EMAIL).toBeUndefined();
+    });
+
+    it('does not credit the local account when env-backed credentials select another session', async () => {
+      await writeStoredIdentity(IDENTITY);
+      vi.stubEnv('CLOUD_API_ACCESS_TOKEN', 'synthetic-B');
+      initTelemetry({ showNotice: false });
+      track('cli_command_run', { command_name: 'status' });
+      const event = posthogMocks.capture.mock.calls.at(-1)![0];
+      expect(event.distinctId).not.toBe(IDENTITY.userId);
+      expect(event.properties.user_id).toBeUndefined();
+      expect(event.groups).toBeUndefined();
     });
 
     it('honors an explicit anonymous override', async () => {
@@ -255,7 +270,7 @@ describe('telemetry client events', () => {
     });
 
     it('keeps the machine id as its own property so machine cross-tabs survive', async () => {
-      const machineDistinctId = getDistinctId();
+      const machineDistinctId = createDistinctId();
       await writeStoredIdentity(IDENTITY, process.env);
       initTelemetry({ cliVersion: '1.2.3' });
       posthogMocks.capture.mockClear();

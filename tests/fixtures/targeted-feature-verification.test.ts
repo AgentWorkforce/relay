@@ -508,6 +508,67 @@ describe('targeted Flows v2 PR verification', () => {
     expect(workflow).toContain('matrix: ${{ fromJSON(needs.select.outputs.matrix) }}');
   });
 
+  it.each([1, 2])(
+    'uses the selection artifact from producer attempt %i when a shard reruns',
+    async (producerAttempt) => {
+      const parsed: unknown = parse(
+        await readFile('.github/workflows/targeted-feature-verification.yml', 'utf8')
+      );
+      const workflow = parsed as {
+        jobs?: Record<
+          string,
+          {
+            steps?: Array<{ id?: string; name?: string; run?: string; with?: Record<string, unknown> }>;
+            outputs?: Record<string, unknown>;
+          }
+        >;
+      };
+      const select = workflow.jobs?.select;
+      const targeted = workflow.jobs?.targeted;
+      expect(Array.isArray(select?.steps)).toBe(true);
+      expect(Array.isArray(targeted?.steps)).toBe(true);
+      const upload = select?.steps?.find((step) => step.name === 'Upload immutable selection');
+      const download = targeted?.steps?.find((step) => step.name === 'Download immutable selection');
+      expect(typeof upload?.with?.name).toBe('string');
+      expect(typeof download?.with?.name).toBe('string');
+      const resolve = (value: string, context: Record<string, unknown>) =>
+        value.replace(/\$\{\{\s*([\w.-]+)\s*\}\}/g, (_match, expression: string) => {
+          const resolved = expression.split('.').reduce<unknown>((current, key) => {
+            if (!current || typeof current !== 'object') return undefined;
+            return (current as Record<string, unknown>)[key];
+          }, context);
+          expect(resolved, `missing workflow value: ${expression}`).toBeDefined();
+          return String(resolved);
+        });
+      const producer = {
+        github: { run_id: 38771051325, run_attempt: producerAttempt },
+        steps: {
+          shards: {
+            outputs: { selection_artifact_name: `targeted-feature-selection-38771051325-${producerAttempt}` },
+          },
+        },
+      };
+      const publishedName = resolve(String(upload?.with?.name), producer);
+      const outputs = Object.fromEntries(
+        Object.entries(select?.outputs ?? {}).map(([key, value]) => [
+          key,
+          key === 'matrix' ? '{}' : resolve(String(value), producer),
+        ])
+      );
+      const requestedName = resolve(String(download?.with?.name), {
+        github: { run_id: 38771051325, run_attempt: 2 },
+        needs: { select: { outputs } },
+      });
+      expect(select?.steps?.find((step) => step.id === 'shards')?.run).toContain(
+        'selection_artifact_name=targeted-feature-selection-${{ github.run_id }}-${{ github.run_attempt }}'
+      );
+      expect(publishedName).toBe(`targeted-feature-selection-38771051325-${producerAttempt}`);
+      expect(requestedName).toBe(publishedName);
+      expect(download?.with).not.toHaveProperty('pattern');
+      expect(download?.with).not.toHaveProperty('run-id');
+    }
+  );
+
   it('expands the broker binary template in a full-smoke spec', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'relay-targeted-pr-broker-'));
     temporaryDirectories.push(directory);
