@@ -119,6 +119,25 @@ export async function ensureApiKey(): Promise<string> {
   return apiKey;
 }
 
+function annotateErrorMessage(cause: Error, message: string): void {
+  try {
+    cause.message = message;
+    if (cause.message === message) return;
+  } catch {
+    /* Message is a getter without a setter. */
+  }
+  try {
+    Object.defineProperty(cause, 'message', {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: message,
+    });
+  } catch {
+    /* A non-configurable message stays intact so the original error still surfaces. */
+  }
+}
+
 /** Test-only failure context; elapsed time covers the operation, not one HTTP request. */
 export async function diagnoseBrokerOperation<T>(
   operation: 'startup' | 'spawn',
@@ -142,8 +161,10 @@ export async function diagnoseBrokerOperation<T>(
     const detail = cause instanceof Error ? cause.message : String(cause);
     const message = `[broker_diag operation=${operation} origin=${origin} operation_elapsed_ms=${elapsed}] ${detail}`;
     // Preserve typed broker error codes and identity used by test assertions.
+    // Some driver errors expose message as a getter, and assignment then throws
+    // a TypeError that hides the failure the test needs to see.
     if (cause instanceof Error) {
-      cause.message = message;
+      annotateErrorMessage(cause, message);
       throw cause;
     }
     throw new Error(message, { cause });

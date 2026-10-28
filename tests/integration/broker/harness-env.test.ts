@@ -153,6 +153,31 @@ test('broker failure context preserves cause without replay and strips URL crede
   assert.equal(calls, 1);
 });
 
+test('broker failure context annotates a getter-only message without hiding the error', async () => {
+  const original = new Error('registration failed (500): internal_error');
+  Object.defineProperty(original, 'message', {
+    configurable: true,
+    get() {
+      return 'registration failed (500): internal_error';
+    },
+  });
+  const coded = original as Error & { code: string };
+  coded.code = 'internal_error';
+  await assert.rejects(
+    diagnoseBrokerOperation('spawn', {}, async () => {
+      throw original;
+    }),
+    (error: Error & { code?: string }) => {
+      assert.equal(error, original);
+      assert.equal(error.code, 'internal_error');
+      assert.match(error.message, /broker_diag operation=spawn origin=https:\/\/cast\.agentrelay\.com/);
+      assert.match(error.message, /internal_error/);
+      assert.equal(error.name, 'Error');
+      return true;
+    }
+  );
+});
+
 test('broker failure context reports hosted default and never prints malformed origin input', async () => {
   for (const [env, origin] of [
     [{}, 'https://cast.agentrelay.com'],
