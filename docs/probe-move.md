@@ -145,6 +145,7 @@ from two sources, read-only (the probe never writes the CLI's files):
    http(s) base URLs (ports and path prefixes included) are accepted as the
    CLI accepts them. A malformed bindings file, an unreadable `workspaces.json`
    or a malformed `RELAY_BASE_URL` fails closed.
+
 2. **The Cloud sign-in** (`cloud` in the agent store; `RELAYCAST_URL` still
    re-origins only this key), used only when the CLI names nothing.
 
@@ -167,7 +168,7 @@ files change.
 
 **One workspace per daemon.** The daemon holds a single
 `Mutex<Option<Workspace>>` that about 40 call sites (registrations, push,
-delivery, spawn, messaging, verification) read as *the* workspace, so this
+delivery, spawn, messaging, verification) read as _the_ workspace, so this
 phase supports one workspace per machine: the env key, the
 `AGENT_RELAY_PROJECT` pin, or the machine's active CLI workspace, else the
 Cloud sign-in. A project whose pin names a different workspace than the
