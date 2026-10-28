@@ -133,8 +133,15 @@ function findDotGit(dir: string): string | undefined {
  */
 function gitExcludePath(dotGit: string): string | undefined {
   let gitDir = dotGit;
-  if (fs.statSync(dotGit).isFile()) {
-    const match = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, 'utf-8'));
+  // Read rather than stat-then-read: a directory fails with EISDIR.
+  let pointerFile: string | undefined;
+  try {
+    pointerFile = fs.readFileSync(dotGit, 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EISDIR') return undefined;
+  }
+  if (pointerFile !== undefined) {
+    const match = /^gitdir:\s*(.+?)\s*$/m.exec(pointerFile);
     if (!match) return undefined;
     gitDir = path.resolve(path.dirname(dotGit), match[1]);
   }
