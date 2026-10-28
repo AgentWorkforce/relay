@@ -138,7 +138,11 @@ export function getDistinctId(): string {
   return loadPrefs().authGeneration!;
 }
 
-/** Rotate before assigning a generation to a different account, including logout. */
+/**
+ * Rotate the anonymous generation before assigning it to a different account, including logout.
+ * @param userId - Cloud user id for the selected local session, omitted on logout
+ * @returns The auth generation that keys anonymous events for this session
+ */
 export function syncAuthGeneration(userId?: string): string {
   const prefs = loadPrefs();
   if (prefs.authUserId !== userId) {

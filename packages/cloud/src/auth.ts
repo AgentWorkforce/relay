@@ -230,9 +230,13 @@ export async function refreshStoredCloudIdentity(
   }
 }
 
-/** At most one bounded repair per eligible CLI bootstrap. Successful identity
- * snapshots refresh daily; failures retry after five minutes. This never runs
- * for opted-out clients and never turns a token failure into interactive login. */
+/**
+ * Ask Cloud to repair the local analytics profile at most once per eligible CLI bootstrap.
+ * Successful snapshots refresh daily. Failures retry after five minutes. Opted-out clients
+ * and delegated credentials never call whoami, and a token failure never becomes interactive login.
+ * @param env - Process environment selecting consent, credentials, and the data directory
+ * @returns Resolves when the repair attempt has finished or been skipped
+ */
 export async function recoverStoredCloudIdentity(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   if (!isCloudAnalyticsEnabled(env) || env.CLOUD_API_ACCESS_TOKEN?.trim()) return;
   try {

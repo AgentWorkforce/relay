@@ -1,4 +1,8 @@
-import { identityRevision, isCloudAnalyticsEnabled } from '@agent-relay/cloud/identity';
+import {
+  identityRevision,
+  isCloudAnalyticsEnabled,
+  shouldPersistResolvedCloudIdentity,
+} from '@agent-relay/cloud/identity';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -819,8 +823,13 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
       let errorClass: string | undefined;
       try {
         const apiUrl = options.apiUrl || defaultApiUrl();
+        // Sample the revision before reading credentials. A later login or
+        // logout belongs to another process unless this command itself had no
+        // stored session and performed the interactive login.
+        const revisionBeforeAuth = identityRevision();
+        const storedBeforeAuth = await readStoredAuth();
         const auth = await ensureAuthenticated(apiUrl);
-        const revision = identityRevision();
+        const revisionAfterAuth = identityRevision();
         const { response } = await authorizedApiFetch(auth, '/api/v1/auth/whoami', {
           method: 'GET',
           headers: isCloudAnalyticsEnabled() ? { 'X-Agent-Relay-Analytics': 'enabled' } : {},
@@ -851,8 +860,22 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         // whoami is the canonical "who am I" call, so make it the refresh point
         // for the locally cached identity that tags telemetry.
         const identity = toCloudIdentity(payload, auth.apiUrl);
-        if (identity) {
-          await writeStoredIdentity(identity, process.env, revision);
+        const storedAfterAuth = identity ? await readStoredAuth() : null;
+        if (
+          identity &&
+          shouldPersistResolvedCloudIdentity({
+            delegatedCredentials: Boolean(process.env.CLOUD_API_ACCESS_TOKEN?.trim()),
+            hadStoredAuth: Boolean(storedBeforeAuth),
+            revisionBeforeAuth,
+            revisionAfterAuth,
+            revisionNow: identityRevision(),
+            resolvedAccessToken: auth.accessToken,
+            resolvedApiUrl: auth.apiUrl,
+            storedAccessToken: storedAfterAuth?.accessToken,
+            storedApiUrl: storedAfterAuth?.apiUrl,
+          })
+        ) {
+          await writeStoredIdentity(identity, process.env, revisionAfterAuth);
           deps.log(`Identity file: ${IDENTITY_FILE_PATH}`);
         }
         success = true;

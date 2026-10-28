@@ -7,8 +7,25 @@ import { writeStoredIdentity } from '@agent-relay/cloud/identity';
 import { initTelemetry, shutdown, track } from './client.js';
 import { disableTelemetry } from './config.js';
 
+interface CapturedTelemetryEvent {
+  distinct_id?: string;
+  event?: string;
+  properties?: Record<string, unknown>;
+}
+
+interface CapturedTelemetryBatch {
+  batch: CapturedTelemetryEvent[];
+}
+
+function capturedBatch(value: unknown): CapturedTelemetryBatch {
+  if (!value || typeof value !== 'object' || !Array.isArray((value as { batch?: unknown }).batch)) {
+    throw new Error('telemetry transport did not send a batch');
+  }
+  return value as CapturedTelemetryBatch;
+}
+
 let dataDir: string;
-let batches: any[];
+let batches: CapturedTelemetryBatch[];
 beforeEach(() => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-wire-'));
   batches = [];
@@ -25,7 +42,7 @@ beforeEach(() => {
           : gunzipSync(
               init.body instanceof Blob ? Buffer.from(await init.body.arrayBuffer()) : init.body
             ).toString();
-      batches.push(JSON.parse(raw));
+      batches.push(capturedBatch(JSON.parse(raw)));
       return new Response('{}', { status: 200 });
     })
   );

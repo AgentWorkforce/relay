@@ -54,7 +54,7 @@ vi.mock('@agent-relay/cloud', async (importOriginal) => ({
   syncWorkflowPatch: (...args: unknown[]) => cloudMocks.syncWorkflowPatch(...args),
   upsertCloudWorkerRecord: vi.fn(),
   IDENTITY_FILE_PATH: '/tmp/cloud-identity.json',
-  toCloudIdentity: () => null,
+  toCloudIdentity: vi.fn((): unknown => null),
   writeStoredIdentity: vi.fn(),
   cloudWorkerStateDir: (env?: NodeJS.ProcessEnv) =>
     env?.AGENT_RELAY_HOME ? path.join(env.AGENT_RELAY_HOME, 'cloud-workers') : '/tmp/cloud-workers',
@@ -69,6 +69,8 @@ import {
   ensureAuthenticated,
   ensureCloudSession,
   readStoredAuth,
+  toCloudIdentity,
+  writeStoredIdentity,
 } from '@agent-relay/cloud';
 import { track } from '../telemetry/index.js';
 
@@ -1600,6 +1602,118 @@ describe('registerCloudCommands', () => {
     const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
     expect(output).toContain('Organization: Acme (org-1)');
     expect(output).toContain('Workspace: Chief HQ (50587328-441d-4acb-b8f3-dbe1b3c5de99)');
+  });
+
+  it('cloud whoami does not restore an identity sampled before another login changes', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-whoami-revision-'));
+    vi.stubEnv('AGENT_RELAY_DATA_DIR', dataDir);
+    vi.stubEnv('CLOUD_API_ACCESS_TOKEN', '');
+    fs.writeFileSync(path.join(dataDir, 'cloud-identity.json.generation'), 'rev-A');
+    const auth = { apiUrl: 'https://cloud.test', accessToken: 'token-A' };
+    vi.mocked(readStoredAuth).mockResolvedValue(auth as never);
+    vi.mocked(ensureAuthenticated).mockImplementation(async () => {
+      fs.writeFileSync(path.join(dataDir, 'cloud-identity.json.generation'), 'rev-B');
+      return auth as never;
+    });
+    vi.mocked(toCloudIdentity).mockReturnValueOnce({
+      userId: 'usr_A',
+      apiUrl: auth.apiUrl,
+      updatedAt: '2026-10-28T00:00:00.000Z',
+    });
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+      response: jsonResponse({
+        authenticated: true,
+        source: 'session',
+        subjectType: 'user',
+        scopes: [],
+        user: { id: 'usr_A', email: null, name: 'A', avatarUrl: null },
+        currentOrganization: null,
+        currentWorkspace: null,
+      }),
+      auth,
+    } as never);
+    const { program } = createHarness();
+
+    try {
+      await program.parseAsync(['node', 'agent-relay', 'cloud', 'whoami']);
+      expect(writeStoredIdentity).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it('cloud whoami does not replace the local identity for a delegated credential', async () => {
+    vi.stubEnv('CLOUD_API_ACCESS_TOKEN', 'token-B');
+    const auth = { apiUrl: 'https://cloud.test', accessToken: 'token-B' };
+    vi.mocked(readStoredAuth).mockResolvedValue(auth as never);
+    vi.mocked(ensureAuthenticated).mockResolvedValueOnce(auth as never);
+    vi.mocked(toCloudIdentity).mockReturnValueOnce({
+      userId: 'usr_B',
+      apiUrl: auth.apiUrl,
+      updatedAt: '2026-10-28T00:00:00.000Z',
+    });
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+      response: jsonResponse({
+        authenticated: true,
+        source: 'env',
+        subjectType: 'user',
+        scopes: [],
+        user: { id: 'usr_B', email: null, name: 'B', avatarUrl: null },
+        currentOrganization: null,
+        currentWorkspace: null,
+      }),
+      auth,
+    } as never);
+    const { program } = createHarness();
+
+    try {
+      await program.parseAsync(['node', 'agent-relay', 'cloud', 'whoami']);
+      expect(writeStoredIdentity).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('cloud whoami persists identity for the login it just completed', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-whoami-login-'));
+    vi.stubEnv('AGENT_RELAY_DATA_DIR', dataDir);
+    vi.stubEnv('CLOUD_API_ACCESS_TOKEN', '');
+    const auth = { apiUrl: 'https://cloud.test', accessToken: 'token-B' };
+    const identity = {
+      userId: 'usr_B',
+      apiUrl: auth.apiUrl,
+      updatedAt: '2026-10-28T00:00:00.000Z',
+    };
+    vi.mocked(readStoredAuth)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(auth as never);
+    vi.mocked(ensureAuthenticated).mockImplementation(async () => {
+      fs.writeFileSync(path.join(dataDir, 'cloud-identity.json.generation'), 'rev-login');
+      return auth as never;
+    });
+    vi.mocked(toCloudIdentity).mockReturnValueOnce(identity);
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+      response: jsonResponse({
+        authenticated: true,
+        source: 'session',
+        subjectType: 'user',
+        scopes: [],
+        user: { id: 'usr_B', email: null, name: 'B', avatarUrl: null },
+        currentOrganization: null,
+        currentWorkspace: null,
+      }),
+      auth,
+    } as never);
+    const { program } = createHarness();
+
+    try {
+      await program.parseAsync(['node', 'agent-relay', 'cloud', 'whoami']);
+      expect(writeStoredIdentity).toHaveBeenCalledWith(identity, process.env, 'rev-login');
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 
   it('cloud whoami still reports a login with no workspace selected', async () => {

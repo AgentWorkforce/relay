@@ -14,6 +14,7 @@ import {
   readStoredIdentity,
   readStoredIdentitySync,
   resolveCloudIdentity,
+  shouldPersistResolvedCloudIdentity,
   writeStoredIdentity,
   type CloudIdentity,
 } from './identity.js';
@@ -85,6 +86,58 @@ describe('identityFilePath', () => {
     expect(identityFilePath({})).toBe(
       path.join(os.homedir(), '.agentworkforce/relay', 'cloud-identity.json')
     );
+  });
+});
+
+describe('shouldPersistResolvedCloudIdentity', () => {
+  const current = {
+    delegatedCredentials: false,
+    hadStoredAuth: true,
+    revisionBeforeAuth: 'rev-A',
+    revisionAfterAuth: 'rev-A',
+    revisionNow: 'rev-A',
+    resolvedAccessToken: 'token-A',
+    resolvedApiUrl: 'https://cloud.test',
+    storedAccessToken: 'token-A',
+    storedApiUrl: 'https://cloud.test',
+  };
+
+  it('keeps a stable local login', () => {
+    expect(shouldPersistResolvedCloudIdentity(current)).toBe(true);
+  });
+
+  it('accepts the revision rotated by this command when it had no stored login', () => {
+    expect(
+      shouldPersistResolvedCloudIdentity({
+        ...current,
+        hadStoredAuth: false,
+        revisionBeforeAuth: '',
+        revisionAfterAuth: 'rev-login',
+        revisionNow: 'rev-login',
+        resolvedAccessToken: 'token-B',
+        storedAccessToken: 'token-B',
+      })
+    ).toBe(true);
+  });
+
+  it('rejects an old token sampled before another process changes the revision', () => {
+    expect(
+      shouldPersistResolvedCloudIdentity({
+        ...current,
+        revisionAfterAuth: 'rev-B',
+        revisionNow: 'rev-B',
+      })
+    ).toBe(false);
+  });
+
+  it('rejects a delegated credential and a credential file that no longer matches', () => {
+    expect(shouldPersistResolvedCloudIdentity({ ...current, delegatedCredentials: true })).toBe(false);
+    expect(
+      shouldPersistResolvedCloudIdentity({
+        ...current,
+        storedAccessToken: 'token-B',
+      })
+    ).toBe(false);
   });
 });
 

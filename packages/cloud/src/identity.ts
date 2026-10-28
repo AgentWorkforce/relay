@@ -136,7 +136,11 @@ export function readStoredIdentitySync(env: NodeJS.ProcessEnv = process.env): Cl
   }
 }
 
-/** Logout/login invalidates in-flight whoami responses across processes. */
+/**
+ * Logout and login invalidate in-flight whoami responses across processes.
+ * @param env - Process environment that selects the identity data directory
+ * @returns The current identity revision, or an empty string when none is recorded
+ */
 export function identityRevision(env: NodeJS.ProcessEnv = process.env): string {
   try {
     return fs.readFileSync(`${identityFilePath(env)}.generation`, 'utf8');
@@ -193,6 +197,30 @@ export async function clearStoredIdentity(env: NodeJS.ProcessEnv = process.env):
   }
 }
 
+/**
+ * Decide whether a whoami result may replace the local operator identity cache.
+ * A delegated credential never writes that cache. A revision change is accepted
+ * only when this command had no stored login and therefore performed its own.
+ * @param input - Revisions and credential snapshots around the whoami request
+ * @returns True when the resolved credentials still match the on-disk login
+ */
+export function shouldPersistResolvedCloudIdentity(input: {
+  delegatedCredentials: boolean;
+  hadStoredAuth: boolean;
+  revisionBeforeAuth: string;
+  revisionAfterAuth: string;
+  revisionNow: string;
+  resolvedAccessToken: string;
+  resolvedApiUrl: string;
+  storedAccessToken?: string;
+  storedApiUrl?: string;
+}): boolean {
+  if (input.delegatedCredentials) return false;
+  if (input.revisionNow !== input.revisionAfterAuth) return false;
+  if (input.hadStoredAuth && input.revisionBeforeAuth !== input.revisionAfterAuth) return false;
+  return input.storedAccessToken === input.resolvedAccessToken && input.storedApiUrl === input.resolvedApiUrl;
+}
+
 /** Local login identity is authoritative. Inherited IDs are correlation hints,
  * never proof that this process is still logged in as the same account. */
 export function resolveCloudIdentity(env: NodeJS.ProcessEnv = process.env): CloudIdentity | null {
@@ -201,7 +229,11 @@ export function resolveCloudIdentity(env: NodeJS.ProcessEnv = process.env): Clou
   return readStoredIdentitySync(env);
 }
 
-/** Surface-local eligibility, shared with the CLI preference file. */
+/**
+ * Whether this process may send Cloud analytics, using the shared CLI preference file.
+ * @param env - Process environment, including opt-out variables and the data directory
+ * @returns False for an explicit opt-out or an unreadable preference file
+ */
 export function isCloudAnalyticsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const disabled = (value: string | undefined) => value === '1' || value?.toLowerCase() === 'true';
   if (disabled(env.AGENT_RELAY_TELEMETRY_DISABLED) || disabled(env.DO_NOT_TRACK)) return false;
@@ -217,8 +249,13 @@ export function isCloudAnalyticsEnabled(env: NodeJS.ProcessEnv = process.env): b
   }
 }
 
-/** Replace, rather than merge, child context so logout/workspace changes clear
- * stale values. These are hints at remote boundaries, not authorization. */
+/**
+ * Replace, rather than merge, child context so logout and workspace changes clear
+ * stale values. These are hints at remote boundaries, not authorization.
+ * @param identity - Local Cloud identity to publish, or null to clear it
+ * @param env - Process environment that receives the hint variables
+ * @returns Nothing. Opted-out processes are left without identity hints.
+ */
 export function publishCloudIdentity(
   identity: CloudIdentity | null,
   env: NodeJS.ProcessEnv = process.env
