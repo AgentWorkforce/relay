@@ -8,7 +8,8 @@
 //!   - Set `DO_NOT_TRACK=1` (cross-tool convention, https://consoledonottrack.com)
 //!   - Or write `{"enabled": false}` to `~/.agentworkforce/relay/telemetry.json`
 //!     (or `$AGENT_RELAY_DATA_DIR/telemetry.json` when that is set — the same
-//!     file `agent-relay telemetry disable` writes)
+//!     file `agent-relay telemetry disable` writes). A missing file stays
+//!     enabled. An existing file that cannot be read or parsed fails closed.
 
 use std::path::PathBuf;
 
@@ -244,10 +245,25 @@ fn load_prefs() -> TelemetryPrefs {
     let Some(path) = prefs_path() else {
         return TelemetryPrefs::default();
     };
-    std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    // Match the CLI: absence inherits the default, but a present file that
+    // cannot be read or parsed may be a truncated opt-out and must not be
+    // treated as consent.
+    prefs_from_read(std::fs::read_to_string(&path))
+}
+
+fn consent_denied() -> TelemetryPrefs {
+    TelemetryPrefs {
+        enabled: Some(false),
+        ..TelemetryPrefs::default()
+    }
+}
+
+fn prefs_from_read(read: std::io::Result<String>) -> TelemetryPrefs {
+    match read {
+        Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|_| consent_denied()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => TelemetryPrefs::default(),
+        Err(_) => consent_denied(),
+    }
 }
 
 fn save_prefs(prefs: &TelemetryPrefs) {
@@ -944,7 +960,8 @@ impl TelemetryClient {
                 }
             }
         }
-        // Prefs file opt-out.
+        // Prefs file opt-out. Malformed or unreadable consent is loaded as
+        // explicitly disabled; only a missing file keeps the default.
         let prefs = load_prefs();
         if prefs.enabled == Some(false) {
             return false;
@@ -1199,6 +1216,82 @@ mod tests {
         assert_eq!(b.org_id, None);
         std::fs::remove_file(&path).unwrap();
         assert!(read_identity_file(&path).is_none());
+    }
+
+    #[test]
+    fn preference_read_failures_fail_closed_without_disabling_a_missing_file() {
+        assert_ne!(
+            prefs_from_read(Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "missing"
+            )))
+            .enabled,
+            Some(false)
+        );
+        assert_ne!(
+            prefs_from_read(Ok(
+                r#"{"enabled":true,"authGeneration":"generation"}"#.to_string()
+            ))
+            .enabled,
+            Some(false)
+        );
+        assert_ne!(prefs_from_read(Ok("{}".to_string())).enabled, Some(false));
+        assert_eq!(
+            prefs_from_read(Ok(r#"{"enabled":false}"#.to_string())).enabled,
+            Some(false)
+        );
+        assert_eq!(
+            prefs_from_read(Ok(r#"{"enabled":false"#.to_string())).enabled,
+            Some(false)
+        );
+        assert_eq!(
+            prefs_from_read(Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "denied"
+            )))
+            .enabled,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn malformed_telemetry_preferences_disable_broker_identity() {
+        if std::env::var_os("RELAY_TEST_MALFORMED_PREFS_CHILD").is_none() {
+            let data = tempfile::tempdir().unwrap();
+            std::fs::write(data.path().join("telemetry.json"), r#"{"enabled":false"#).unwrap();
+            std::fs::write(
+                data.path().join("cloud-identity.json"),
+                r#"{"userId":"usr_A","organizationId":"org_A","_analyticsRevision":"revision-A"}"#,
+            )
+            .unwrap();
+            std::fs::write(
+                data.path().join("cloud-identity.json.generation"),
+                "revision-A",
+            )
+            .unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "telemetry::tests::malformed_telemetry_preferences_disable_broker_identity",
+                    "--exact",
+                    "--nocapture",
+                ])
+                .env("RELAY_TEST_MALFORMED_PREFS_CHILD", "1")
+                .env("AGENT_RELAY_DATA_DIR", data.path())
+                .env_remove("AGENT_RELAY_TELEMETRY_DISABLED")
+                .env_remove("DO_NOT_TRACK")
+                .env_remove("CLOUD_API_ACCESS_TOKEN")
+                .status()
+                .unwrap();
+            assert!(status.success(), "malformed preference child failed");
+            return;
+        }
+
+        assert!(!TelemetryClient::check_enabled());
+        let identity = cloud_identity();
+        assert!(identity.user_id.is_none());
+        assert!(identity.distinct_id.is_none());
+        assert!(identity.org_id.is_none());
+        assert!(agent_relay_distinct_id().is_none());
     }
 
     #[test]
