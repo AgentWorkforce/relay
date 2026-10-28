@@ -31,17 +31,17 @@ a member of the repository's root workspace (the broker): the two pin
 different `relaycast`, `nix` and `portable-pty` versions, which a later phase
 aligns.
 
-| Path | Owns |
-|---|---|
-| `src/probe/` | The `agent-relay-probe` binary: bridge commands, the collector's delivery loop, `live` capture, progress, and `history`, its one path into `SessionStore` |
-| `src/relay/` | The relay core daemon (`relay serve`): workspace and account, Relaycast, delivery and injection per harness, harness setup (hooks/plugins), spawning, the bridge and its contract (`relay::contract`) |
-| `src/cloud*`, `src/delivery*`, `src/destination*`, `src/retention*` | Cloud sign-in, the upload queue and its worker, the RelayHistory receiver, history retention |
-| `src/install*` | Where a packaged desktop install keeps its executables (`agent-relay`, `agent-relay-probe`); the core's launch-at-login entry uses it |
-| `src/session_model*` | The session catalog's view model (rows, the session search language, upload states) the core's catalog query filters by |
-| `src/bin/relay-contract-codegen.rs` | Generates the Swift bridge contract the apps consume |
-| `contract/CoreContract.swift` | The checked-in generated contract; CI fails on drift |
-| `scripts/` | `generate-contract.sh`, `check-open-source.sh` |
-| `tests/` | Integration tests, with in-process fakes of Cloud, Relaycast and RelayHistory (`tests/support`) |
+| Path                                                                | Owns                                                                                                                                                                                                  |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/probe/`                                                        | The `agent-relay-probe` binary: bridge commands, the collector's delivery loop, `live` capture, progress, and `history`, its one path into `SessionStore`                                             |
+| `src/relay/`                                                        | The relay core daemon (`relay serve`): workspace and account, Relaycast, delivery and injection per harness, harness setup (hooks/plugins), spawning, the bridge and its contract (`relay::contract`) |
+| `src/cloud*`, `src/delivery*`, `src/destination*`, `src/retention*` | Cloud sign-in, the upload queue and its worker, the RelayHistory receiver, history retention                                                                                                          |
+| `src/install*`                                                      | Where a packaged desktop install keeps its executables (`agent-relay`, `agent-relay-probe`); the core's launch-at-login entry uses it                                                                 |
+| `src/session_model*`                                                | The session catalog's view model (rows, the session search language, upload states) the core's catalog query filters by                                                                               |
+| `src/bin/relay-contract-codegen.rs`                                 | Generates the Swift bridge contract the apps consume                                                                                                                                                  |
+| `contract/CoreContract.swift`                                       | The checked-in generated contract; CI fails on drift                                                                                                                                                  |
+| `scripts/`                                                          | `generate-contract.sh`, `check-open-source.sh`                                                                                                                                                        |
+| `tests/`                                                            | Integration tests, with in-process fakes of Cloud, Relaycast and RelayHistory (`tests/support`)                                                                                                       |
 
 ## Build and test
 
@@ -64,11 +64,11 @@ arm64, builds on Windows x64, checks the generated contract for drift and runs
 `build.rs` stamps `agent_relay_probe::VERSION` (what the daemon reports in its
 bridge handshake, telemetry and Relaycast `origin_version`):
 
-| Build | `VERSION` |
-|---|---|
-| `AGENT_RELAY_PROBE_VERSION=X` set | `X` exactly: a relay release passes the relay version, relay-desktop passes its CalVer (`2026.10.58`) |
+| Build                                         | `VERSION`                                                                                                              |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `AGENT_RELAY_PROBE_VERSION=X` set             | `X` exactly: a relay release passes the relay version, relay-desktop passes its CalVer (`2026.10.58`)                  |
 | unset, `AGENT_RELAY_PROBE_BASE_VERSION=B` set | `B-dev+<git revision>`: relay-desktop passes its newest CalVer so development cores still order below the next release |
-| neither | `<crate version>-dev+<git revision>` |
+| neither                                       | `<crate version>-dev+<git revision>`                                                                                   |
 
 The internal Cargo package version is never reported as a release on its
 own. On Windows, `AGENT_RELAY_WINDOWS_ICON` additionally embeds an icon and
