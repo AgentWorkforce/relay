@@ -584,6 +584,22 @@ describe('Codex project trust', () => {
     expect(read(codexConfig())).toBe(text);
   });
 
+  it('finds an existing entry for a path with brackets instead of adding a duplicate table', () => {
+    const bracketed = path.join(root, 'client[old]');
+    fs.mkdirSync(bracketed);
+    const bctx = { ...ctx, projectRoot: bracketed };
+    const header = `[projects.${JSON.stringify(fs.realpathSync(bracketed))}]`;
+    writeCodexConfig(`${header}\ntrust_level = "trusted"\n\n[mcp_servers.x]\ncommand = "x"\n`);
+    expect(codexProjectTrust(bctx)).toBe('trusted');
+    trustCodexProject(bctx);
+    expect(read(codexConfig()).split(header)).toHaveLength(2);
+    writeCodexConfig(`${header}\nmodel = "o3"\n`);
+    expect(codexProjectTrust(bctx)).toBe('unset');
+    trustCodexProject(bctx);
+    expect(read(codexConfig())).toBe(`${header}\ntrust_level = "trusted"\nmodel = "o3"\n`);
+    expect(codexProjectTrust(bctx)).toBe('trusted');
+  });
+
   it('creates the Codex config when there is none', () => {
     trustCodexProject(ctx);
     expect(codexProjectTrust(ctx)).toBe('trusted');

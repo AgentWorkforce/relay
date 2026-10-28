@@ -761,7 +761,8 @@ function jsonIndent(text: string): string | number {
 // Only the `[mcp_servers.agent-relay]` table and its sub-tables are touched;
 // every other line, comment included, is kept byte for byte.
 
-const TOML_HEADER = /^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(?:#.*)?$/;
+// Quote-aware: a quoted key may contain `]`, as in [projects."/work/client[old]"].
+const TOML_HEADER = /^\s*\[\[?\s*((?:"(?:[^"\\]|\\.)*"|'[^']*'|[^\]"'])+?)\s*\]\]?\s*(?:#.*)?$/;
 const TOML_TABLE = `mcp_servers.${MCP_SERVER_NAME}`;
 
 function tomlKey(raw: string): string {
