@@ -14,3 +14,4 @@ tests/benchmarks/head-to-head.ts
 crates/probe/src
 crates/probe/resources
 crates/probe/tests/fixtures
+crates/probe/docs
