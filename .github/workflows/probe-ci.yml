@@ -70,7 +70,9 @@ jobs:
 
   linux:
     name: Linux x64 build + test
-    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    # GitHub-hosted: the suite spawns many processes and starved the smaller
+    # self-hosted runner until it dropped off.
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -91,7 +93,7 @@ jobs:
           export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
           export HOME="$RUNNER_TEMP/probe-home"
           mkdir -p "$HOME"
-          cargo test --locked
+          cargo test --locked -- --test-threads=4
 
   macos:
     name: macOS arm64 build + test
@@ -114,7 +116,7 @@ jobs:
           export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
           export HOME="$RUNNER_TEMP/probe-home"
           mkdir -p "$HOME"
-          cargo test --locked
+          cargo test --locked -- --test-threads=4
 
   windows:
     name: Windows x64 build
