@@ -5,11 +5,7 @@
     "usage": {
       "primary": { "usedPercent": 33, "windowMinutes": 43200, "resetsAt": "2026-11-01T00:00:00Z" },
       "updatedAt": "2026-10-14T02:00:00Z",
-      "identity": {
-        "providerID": "grok",
-        "accountEmail": "person@example.test",
-        "accountOrganization": "team-1"
-      }
+      "identity": { "providerID": "grok", "accountEmail": "person@example.test", "accountOrganization": "team-1" }
     }
   }
 ]

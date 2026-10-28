@@ -501,7 +501,7 @@ so nothing written after the collector started waits for the backstop.
   attach to yet), or `disabled` (`AGENT_RELAY_PROBE_FS_EVENTS=0` in the
   collector's environment). If the store cannot be opened for the watch, the
   thread runs the timer itself (`mode: timer`, `fallback_reason:
-watch_unavailable`). Each change of driver is logged as one content-free
+  watch_unavailable`). Each change of driver is logged as one content-free
   JSON line.
 
 The detached collector (`run`, the session collector the relay core and
