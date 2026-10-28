@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,14 +15,19 @@ import {
 import {
   TOOL_IDS,
   TOOL_TARGETS,
+  codexProjectRoot,
+  codexProjectTrust,
+  codexUserConfigPath,
   defaultRunTool,
   defaultToolContext,
   detectTools,
   findOnPath,
   findToolTarget,
   installTool,
+  npxPackageSpec,
   parseToolsFlag,
   resolveMcpLaunch,
+  trustCodexProject,
   uninstallTool,
   type InstallScope,
   type McpLaunch,
@@ -71,8 +76,15 @@ export interface InitCommandDependencies extends SdkCommandDeps {
   toolContext: () => ToolContext;
   /** Runs an agent tool's own `mcp add`. */
   runTool: RunTool;
-  /** The command agent tools run for `relay mcp`. */
-  resolveLaunch: (ctx: ToolContext) => McpLaunch;
+  /** This CLI's version, pinned when agent tools start Relay through npx. */
+  cliVersion?: string;
+  /** The command agent tools run for `relay mcp`, for an install scope. */
+  resolveLaunch: (ctx: ToolContext, scope: InstallScope) => McpLaunch;
+  /**
+   * Fetch an `npx` launch's package into npm's cache now, so an agent tool's
+   * first start of the server does not hit its MCP startup timeout.
+   */
+  warmLaunch: (launch: McpLaunch) => void;
   /** Downloads one file of the standalone server release (binary or `.sha256`). */
   downloadEngine: DownloadFile;
   /** The version an installed `relaycast-engine` reports for `--version`. */
@@ -194,6 +206,17 @@ function defaultStartEngine({ dataDir, port, logFile }: { dataDir: string; port:
   }
 }
 
+function defaultWarmLaunch(launch: McpLaunch): void {
+  const spec = npxPackageSpec(launch);
+  if (!spec) return;
+  // `--version` runs no Relay code beyond printing; failures are left for the
+  // agent tool to surface, since the entry itself is still right. Windows
+  // starts npx (a .cmd) only through a shell; the spec is a plain package name.
+  const options = { stdio: 'ignore' as const, timeout: 180_000, env: process.env };
+  if (process.platform === 'win32') spawnSync(`npx -y ${spec} --version`, { ...options, shell: true });
+  else spawnSync('npx', ['-y', spec, '--version'], options);
+}
+
 function defaultIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -230,7 +253,8 @@ export function withInitDefaults(overrides: Partial<InitCommandDependencies> = {
     prompter: clackPrompter,
     toolContext: () => defaultToolContext(projectRoot()),
     runTool: defaultRunTool,
-    resolveLaunch: (ctx) => resolveMcpLaunch({ ctx }),
+    resolveLaunch: (ctx, scope) => resolveMcpLaunch({ ctx, scope, version: overrides.cliVersion }),
+    warmLaunch: defaultWarmLaunch,
     downloadEngine: fetchDownload,
     engineVersion: readEngineVersion,
     enginePlatform: currentEnginePlatform,
@@ -605,9 +629,9 @@ function nextStep(installed: ToolId[], scope: InstallScope, ctx: ToolContext): s
   return ['No agent tool was set up. Run relay init again to choose some.'];
 }
 
-function notesFor(installed: ToolId[], scope: InstallScope): string[] {
+function notesFor(installed: ToolId[], scope: InstallScope, ctx: ToolContext): string[] {
   return installed
-    .map((id) => findToolTarget(id)!.note?.(scope))
+    .map((id) => findToolTarget(id)!.note?.(scope, ctx))
     .filter((note): note is string => Boolean(note));
 }
 
@@ -694,7 +718,8 @@ async function runPlain(deps: InitCommandDependencies, o: InitOptions): Promise<
   const scope = o.scope ?? 'project';
   const installed: ToolId[] = [];
   if (tools.length > 0) {
-    const launch = deps.resolveLaunch(ctx);
+    const launch = deps.resolveLaunch(ctx, scope);
+    deps.warmLaunch(launch);
     deps.log('');
     deps.log(
       `Adding the Relay MCP server (${[launch.command, ...launch.args].join(' ')}) to your agent tools:`
@@ -704,7 +729,7 @@ async function runPlain(deps: InitCommandDependencies, o: InitOptions): Promise<
       if (['installed', 'updated', 'unchanged'].includes(result.status)) installed.push(result.id);
     }
     if (launch.warning) deps.log(`  ! ${launch.warning}`);
-    for (const note of notesFor(installed, scope)) deps.log(`  ${note}`);
+    for (const note of notesFor(installed, scope, ctx)) deps.log(`  ${note}`);
     const scopeNote = globalScopeNote(setup, scope, installed);
     if (scopeNote) deps.log(`  ! ${scopeNote}`);
   } else if (o.tools === undefined) {
@@ -715,6 +740,30 @@ async function runPlain(deps: InitCommandDependencies, o: InitOptions): Promise<
   deps.log('Next:');
   for (const line of installed.length > 0 ? nextStep(installed, scope, ctx) : []) deps.log(`  ${line}`);
   for (const line of CLI_FALLBACK) deps.log(`  ${line}`);
+}
+
+/**
+ * Codex reads a project's .codex/config.toml only once that project is
+ * trusted, which `codex exec` never asks about. Offer to record the trust
+ * Codex's own first-run prompt would, since it also relaxes Codex's approval
+ * defaults in the project. `--yes` never trusts on the person's behalf.
+ */
+async function offerCodexTrust(p: InitPrompter, ctx: ToolContext): Promise<void> {
+  if (codexProjectTrust(ctx) !== 'unset') return;
+  const root = codexProjectRoot(ctx);
+  const trust = await p.confirm({
+    message:
+      `Codex reads .codex/config.toml only in projects it trusts. Trust ${root} in Codex now? ` +
+      '(Codex asks the same on its first run here; trusted projects get its trusted approval defaults.)',
+    initialValue: true,
+  });
+  if (trust !== true) return;
+  try {
+    trustCodexProject(ctx);
+    p.info(`Codex now trusts ${root} (${displayPath(codexUserConfigPath(ctx), ctx)}).`);
+  } catch (error) {
+    p.warn((error as Error).message);
+  }
 }
 
 /** `relay init` in a terminal: ask what flags did not say. */
@@ -811,7 +860,7 @@ async function runGuided(deps: InitCommandDependencies, o: InitOptions): Promise
   }
 
   // e. Install.
-  const launch = deps.resolveLaunch(ctx);
+  const launch = deps.resolveLaunch(ctx, scope);
   const summary = [
     ...tools.map((id) => {
       const target = findToolTarget(id)!;
@@ -831,12 +880,14 @@ async function runGuided(deps: InitCommandDependencies, o: InitOptions): Promise
     const proceed = await p.confirm({ message: 'Proceed with installation?', initialValue: true });
     if (proceed === CANCELLED || !proceed) return cancelled();
   }
+  deps.warmLaunch(launch);
   const results = installAll(deps, { tools, scope }, ctx, launch);
   const installed = results
     .filter((result) => ['installed', 'updated', 'unchanged'].includes(result.status))
     .map((result) => result.id);
   p.note(results.map((result) => describeResult(result, ctx)).join('\n'), 'Relay MCP server');
-  for (const note of notesFor(installed, scope)) p.info(note);
+  if (scope === 'project' && installed.includes('codex')) await offerCodexTrust(p, ctx);
+  for (const note of notesFor(installed, scope, ctx)) p.info(note);
   const scopeNote = globalScopeNote(setup, scope, installed);
   if (scopeNote) p.warn(scopeNote);
 

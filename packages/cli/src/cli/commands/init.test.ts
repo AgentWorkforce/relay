@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -87,6 +88,7 @@ function setup(overrides: Partial<InitCommandDependencies> = {}) {
       args: ['mcp'],
       reason: 'the test launcher',
     }),
+    warmLaunch: vi.fn(),
     // Offline by default: no test reaches GitHub, and the npm path is the fallback.
     downloadEngine: vi.fn(async () => {
       throw new Error('offline');
@@ -435,7 +437,81 @@ describe('relay init agent tools (non-interactive)', () => {
     const folder = path.basename(project).toLowerCase();
     expect(output).toContain(`"Send a message to codex-${folder} saying hello"`);
     expect(output).toContain('relay message dm send bob "hello" --as alice');
-    expect(output).toContain('trust this project');
+    // Codex reads the project file only once the project itself is trusted;
+    // --yes never trusts it on the person's behalf.
+    expect(output).toContain('Codex reads .codex/config.toml only in projects it trusts');
+    expect(output).toContain(
+      `[projects.${JSON.stringify(fs.realpathSync(project))}]\n    trust_level = "trusted"`
+    );
+    expect(fs.existsSync(path.join(toolHome, '.codex', 'config.toml'))).toBe(false);
+  });
+
+  it('says nothing about Codex trust when Codex already trusts the project', async () => {
+    fs.mkdirSync(path.join(toolHome, '.codex'));
+    fs.writeFileSync(
+      path.join(toolHome, '.codex', 'config.toml'),
+      `[projects.${JSON.stringify(fs.realpathSync(project))}]\ntrust_level = "trusted"\n`
+    );
+    const { run, logs } = setup();
+    await run('--tools', 'codex');
+    expect(logs.join('\n')).not.toContain('only in projects it trusts');
+  });
+
+  it('resolves the launch for the chosen scope and warms an npx launch before writing it', async () => {
+    const resolveLaunch = vi.fn((_ctx: unknown, scope: string) => ({
+      command: 'npx',
+      args: ['-y', `agent-relay@15.0.0`, 'mcp'],
+      reason: scope,
+    }));
+    const warmLaunch = vi.fn();
+    const { run } = setup({ resolveLaunch, warmLaunch });
+    await run('--tools', 'claude', '--scope', 'project');
+    expect(resolveLaunch).toHaveBeenCalledWith(expect.anything(), 'project');
+    expect(warmLaunch).toHaveBeenCalledWith(expect.objectContaining({ command: 'npx' }));
+    expect(mcpJson().mcpServers['agent-relay']).toMatchObject({
+      command: 'npx',
+      args: ['-y', 'agent-relay@15.0.0', 'mcp'],
+    });
+  });
+
+  it('replaces an entry it wrote with an npx cache path on re-run', async () => {
+    const npxCache = '/home/me/.npm/_npx/88f578dfe12e5edc/node_modules/.bin/agent-relay';
+    const first = setup({ resolveLaunch: () => ({ command: npxCache, args: ['mcp'], reason: 'old' }) });
+    await first.run('--tools', 'claude,codex');
+    const { run, logs } = setup({
+      resolveLaunch: () => ({ command: 'agent-relay', args: ['mcp'], reason: 'portable' }),
+    });
+    await run('--tools', 'claude,codex');
+    expect(logs.join('\n')).toMatch(/Claude Code\s+updated/);
+    expect(mcpJson().mcpServers['agent-relay'].command).toBe('agent-relay');
+    const codex = fs.readFileSync(path.join(project, '.codex', 'config.toml'), 'utf8');
+    expect(codex).toContain('command = "agent-relay"');
+    expect(codex).not.toContain('_npx');
+  });
+
+  it('keeps the workspace key out of git status in a git project', async () => {
+    // A git hook or shell may point git elsewhere; aim it at the test project only.
+    const gitEnv = { ...process.env };
+    for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete gitEnv[key];
+    try {
+      execFileSync('git', ['init', '-q', project], { env: gitEnv });
+    } catch {
+      return; // git is not installed here.
+    }
+    const { run } = setup();
+    await run('--tools', 'claude');
+    expect(fs.existsSync(path.join(project, '.agentworkforce', 'relay', 'workspace-key.json'))).toBe(true);
+    expect(fs.readFileSync(path.join(project, '.git', 'info', 'exclude'), 'utf8')).toContain(
+      '/.agentworkforce/relay/'
+    );
+    const status = execFileSync('git', ['-C', project, 'status', '--porcelain', '--untracked-files=all'], {
+      env: gitEnv,
+      encoding: 'utf8',
+    });
+    expect(status).not.toContain('.agentworkforce');
+    expect(status).toContain('.mcp.json');
+    // The project's own .gitignore is never touched.
+    expect(fs.existsSync(path.join(project, '.gitignore'))).toBe(false);
   });
 
   it('says so when no tool is installed, and still prints the CLI fallback', async () => {
@@ -549,6 +625,7 @@ describe('relay init guided flow', () => {
       ['claude', 'codex'],
       'project',
       true,
+      true,
     ]);
     const { run, createWorkspace } = setup({ isInteractive: () => true, prompter: () => script.prompter });
     await run();
@@ -560,7 +637,15 @@ describe('relay init guided flow', () => {
       'Which agents should get Relay?',
       'Installation scope',
       'Proceed with installation?',
+      expect.stringMatching(
+        /^Codex reads \.codex\/config\.toml only in projects it trusts\. Trust .* in Codex now\?/
+      ),
     ]);
+    // Codex now trusts exactly this project, so it loads .codex/config.toml.
+    expect(fs.readFileSync(path.join(toolHome, '.codex', 'config.toml'), 'utf8')).toBe(
+      `[projects.${JSON.stringify(fs.realpathSync(project))}]\ntrust_level = "trusted"\n`
+    );
+    expect(script.shown.join('\n')).not.toContain('not trusted yet');
     // Detected tools are pre-checked; every supported tool is offered.
     expect(script.shown).toContain('options Claude Code*,Codex,OpenCode,Grok CLI,Pi*,Devin (local CLI)');
     expect(createWorkspace).not.toHaveBeenCalled();
@@ -571,6 +656,22 @@ describe('relay init guided flow', () => {
     expect(shown).toContain('Runs: /opt/relay/bin/agent-relay mcp');
     expect(shown).toContain(`Send a message to codex-${path.basename(project).toLowerCase()} saying hello`);
     expect(shown).toContain('outro Relay is ready.');
+  });
+
+  it('leaves Codex trust alone when the person declines, and says what is left to do', async () => {
+    const script = scriptedPrompter([true, false]);
+    const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
+    await run('--hosted', '--tools', 'codex', '--scope', 'project');
+    expect(script.asked).toHaveLength(2);
+    expect(fs.existsSync(path.join(toolHome, '.codex', 'config.toml'))).toBe(false);
+    expect(script.shown.join('\n')).toContain('not trusted yet');
+  });
+
+  it('does not ask about Codex trust at global scope', async () => {
+    const script = scriptedPrompter([true]);
+    const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
+    await run('--hosted', '--tools', 'codex', '--scope', 'global');
+    expect(script.asked).toEqual(['Proceed with installation?']);
   });
 
   it('only asks what the flags did not answer', async () => {
