@@ -8,9 +8,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CANCELLED, type InitPrompter } from '../lib/init-prompts.js';
 import { boundOrigin } from '../lib/relaycast-origin-binding.js';
-import { readWorkspaceStore } from '../lib/workspace-store.js';
+import { resolveWorkspaceTransport, type SdkClientOptions } from '../lib/sdk-client.js';
+import { readWorkspaceStore, writeWorkspaceStore } from '../lib/workspace-store.js';
+import { readProjectWorkspaceKey } from '../lib/project-workspace-key.js';
+import { registerAgentCommands } from './agent.js';
 import { DownloadHttpError, engineAssetName } from '../lib/relaycast-engine-install.js';
 import { LOCAL_ENGINE_VERSION, registerInitCommand, type InitCommandDependencies } from './init.js';
+import { getProjectPaths } from '@agent-relay/config';
 
 let home: string;
 let project: string;
@@ -219,6 +223,158 @@ describe('relay init', () => {
     await run('--stop');
     expect(deps.stop).toHaveBeenCalledWith(4242);
     expect(logs.join('\n')).toContain('Stopped the local Relay server');
+  });
+});
+
+describe('relay init and the machine-wide active workspace', () => {
+  const HOSTED = { active: 'ghsub-live', workspaces: { 'ghsub-live': { key: 'rk_live_fleet' } } };
+  const projectKey = () => readProjectWorkspaceKey(getProjectPaths().dataDir);
+  const keptLine =
+    /This project now uses workspace "local"; "ghsub-live" stays active machine-wide\. To make "local" the default everywhere, run: relay workspace switch local/;
+
+  it('makes the new workspace active on a machine with none', async () => {
+    const { run, logs } = setup();
+    await run('--tools', 'none');
+    const store = readWorkspaceStore();
+    expect(store.active).toBe('local');
+    expect(projectKey()).toBe(store.workspaces.local?.key);
+    expect(logs.join('\n')).not.toContain('stays active');
+  });
+
+  it('keeps a different active workspace, binds this project to the new one, and says so', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run, logs } = setup();
+    await run('--tools', 'none');
+    const store = readWorkspaceStore();
+    expect(store.active).toBe('ghsub-live');
+    expect(store.workspaces['ghsub-live']?.key).toBe('rk_live_fleet');
+    expect(store.workspaces.local?.key).toBe('rk_live_local_local');
+    expect(projectKey()).toBe('rk_live_local_local');
+    expect(logs.join('\n')).toMatch(keptLine);
+  });
+
+  it('stays the same on re-run', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run, logs, createWorkspace } = setup();
+    await run('--tools', 'none');
+    const before = readWorkspaceStore();
+    logs.length = 0;
+    await run('--tools', 'none');
+    expect(createWorkspace).toHaveBeenCalledTimes(1);
+    expect(readWorkspaceStore()).toEqual(before);
+    expect(projectKey()).toBe('rk_live_local_local');
+    expect(logs.join('\n')).toMatch(keptLine);
+  });
+
+  it('re-selecting the active workspace keeps it active without a note', async () => {
+    const { run, logs } = setup();
+    await run('--tools', 'none');
+    await run('--tools', 'none');
+    expect(readWorkspaceStore().active).toBe('local');
+    expect(logs.join('\n')).not.toContain('stays active');
+  });
+
+  it('keeps it for --hosted', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run, logs } = setup();
+    await run('--hosted', '--name', 'team', '--tools', 'none');
+    expect(readWorkspaceStore().active).toBe('ghsub-live');
+    expect(readWorkspaceStore().workspaces.team?.key).toBe('rk_live_team_remote');
+    expect(projectKey()).toBe('rk_live_team_remote');
+    expect(logs.join('\n')).toContain('"ghsub-live" stays active machine-wide');
+    expect(logs.join('\n')).toContain('relay workspace switch team');
+  });
+
+  it('keeps it for --url/--key', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run, logs } = setup();
+    await run(
+      '--url',
+      'https://relay.corp.test',
+      '--key',
+      'rk_live_corp',
+      '--name',
+      'corp',
+      '--tools',
+      'none'
+    );
+    expect(readWorkspaceStore().active).toBe('ghsub-live');
+    expect(projectKey()).toBe('rk_live_corp');
+    expect(logs.join('\n')).toContain('relay workspace switch corp');
+  });
+
+  it('quotes a workspace name the shell would split in the switch command', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run, logs } = setup();
+    await run('--hosted', '--name', "my team's", '--tools', 'none');
+    expect(readWorkspaceStore().workspaces["my team's"]?.key).toBeDefined();
+    expect(logs.join('\n')).toContain(`run: relay workspace switch 'my team'\\''s'`);
+  });
+
+  it('says which workspace globally set up agent tools use outside this project', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run, logs } = setup();
+    await run('--tools', 'claude', '--scope', 'global');
+    expect(logs.join('\n')).toContain(
+      'In projects without their own workspace, globally set up agent tools use the active workspace "ghsub-live". ' +
+        'To make "local" the machine-wide fallback, run: relay workspace switch local'
+    );
+  });
+
+  it('adds no global-scope note at project scope or when the new workspace is active', async () => {
+    const fresh = setup();
+    await fresh.run('--tools', 'claude', '--scope', 'global');
+    expect(fresh.logs.join('\n')).not.toContain('globally set up agent tools');
+
+    writeWorkspaceStore({
+      ...HOSTED,
+      workspaces: { ...HOSTED.workspaces, ...readWorkspaceStore().workspaces },
+    });
+    const project = setup();
+    await project.run('--tools', 'claude', '--scope', 'project');
+    expect(project.logs.join('\n')).not.toContain('globally set up agent tools');
+  });
+
+  it('keeps it in the guided flow', async () => {
+    writeWorkspaceStore(HOSTED);
+    const script = scriptedPrompter(['local', []]);
+    const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
+    await run();
+    expect(readWorkspaceStore().active).toBe('ghsub-live');
+    expect(projectKey()).toBe('rk_live_local_local');
+    expect(script.shown.join('\n')).toMatch(keptLine);
+  });
+
+  it('then `relay agent register` in this project uses the new local workspace', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run } = setup();
+    await run('--tools', 'none');
+
+    const transports: ReturnType<typeof resolveWorkspaceTransport>[] = [];
+    const register = vi.fn(async ({ name }: { name: string }) => ({
+      id: 'a_1',
+      name,
+      token: 'at_live_alice',
+    }));
+    const program = new Command().exitOverride();
+    registerAgentCommands(program, {
+      createWorkspaceRelay: ((options: SdkClientOptions) => {
+        transports.push(resolveWorkspaceTransport(options));
+        return { workspace: { register } };
+      }) as never,
+      log: () => undefined,
+      error: () => undefined,
+      exit: ((code: number) => {
+        throw new ExitSignal(code);
+      }) as never,
+    });
+    await program.parseAsync(['agent', 'register', 'alice'], { from: 'user' });
+
+    expect(register).toHaveBeenCalledTimes(1);
+    expect(transports).toEqual([
+      { workspaceKey: 'rk_live_local_local', baseUrl: 'http://127.0.0.1:8787', source: 'project' },
+    ]);
+    expect(readWorkspaceStore().active).toBe('ghsub-live');
   });
 });
 
