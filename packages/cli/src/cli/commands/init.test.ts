@@ -490,8 +490,11 @@ describe('relay init agent tools (non-interactive)', () => {
   });
 
   it('keeps the workspace key out of git status in a git project', async () => {
+    // A git hook or shell may point git elsewhere; aim it at the test project only.
+    const gitEnv = { ...process.env };
+    for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete gitEnv[key];
     try {
-      execFileSync('git', ['init', '-q', project]);
+      execFileSync('git', ['init', '-q', project], { env: gitEnv });
     } catch {
       return; // git is not installed here.
     }
@@ -502,6 +505,7 @@ describe('relay init agent tools (non-interactive)', () => {
       '/.agentworkforce/relay/'
     );
     const status = execFileSync('git', ['-C', project, 'status', '--porcelain', '--untracked-files=all'], {
+      env: gitEnv,
       encoding: 'utf8',
     });
     expect(status).not.toContain('.agentworkforce');

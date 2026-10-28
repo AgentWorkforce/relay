@@ -15,6 +15,7 @@ import {
   codexTrustNote,
   detectTools,
   findToolTarget,
+  npxPackageSpec,
   installTool,
   parseToolsFlag,
   resolveMcpLaunch,
@@ -464,6 +465,16 @@ describe('resolveMcpLaunch', () => {
       command: 'npx',
       args: ['-y', 'agent-relay@15.0.0', 'mcp'],
     });
+  });
+
+  it('names the npx package spec to warm, and nothing for other launches', () => {
+    expect(npxPackageSpec({ command: 'npx', args: ['-y', 'agent-relay@15.0.0', 'mcp'], reason: '' })).toBe(
+      'agent-relay@15.0.0'
+    );
+    expect(
+      npxPackageSpec({ command: 'cmd', args: ['/c', 'npx', '-y', 'agent-relay@15.0.0', 'mcp'], reason: '' })
+    ).toBe('agent-relay@15.0.0');
+    expect(npxPackageSpec(launch)).toBeUndefined();
   });
 
   it('leaves the npx version unpinned when this build has no published version', () => {

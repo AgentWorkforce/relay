@@ -597,11 +597,28 @@ function publishedVersion(version: string | undefined): string | undefined {
 /** `npx -y agent-relay@<version> mcp`: works on any machine with Node, and never goes stale. */
 function npxLaunch(version: string | undefined, reason: string): McpLaunch {
   const pinned = publishedVersion(version);
-  return {
-    command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
-    args: ['-y', pinned ? `${NPM_PACKAGE}@${pinned}` : NPM_PACKAGE, 'mcp'],
-    reason,
-  };
+  const npxArgs = ['-y', pinned ? `${NPM_PACKAGE}@${pinned}` : NPM_PACKAGE, 'mcp'];
+  // Windows cannot start npx.cmd without a shell; MCP clients document `cmd /c npx`.
+  return process.platform === 'win32'
+    ? { command: 'cmd', args: ['/c', 'npx', ...npxArgs], reason }
+    : { command: 'npx', args: npxArgs, reason };
+}
+
+/**
+ * The package spec an `npx` launch from {@link resolveMcpLaunch} runs, so it
+ * can be fetched ahead of time.
+ *
+ * @param launch - A resolved launch.
+ * @returns `agent-relay@<version>` for an npx launch, else undefined.
+ */
+export function npxPackageSpec(launch: McpLaunch): string | undefined {
+  const args =
+    launch.command === 'npx'
+      ? launch.args
+      : launch.command === 'cmd' && launch.args[0] === '/c' && launch.args[1] === 'npx'
+        ? launch.args.slice(2)
+        : undefined;
+  return args?.[0] === '-y' && args[1]?.startsWith(NPM_PACKAGE) ? args[1] : undefined;
 }
 
 /**

@@ -24,6 +24,7 @@ import {
   findOnPath,
   findToolTarget,
   installTool,
+  npxPackageSpec,
   parseToolsFlag,
   resolveMcpLaunch,
   trustCodexProject,
@@ -206,14 +207,14 @@ function defaultStartEngine({ dataDir, port, logFile }: { dataDir: string; port:
 }
 
 function defaultWarmLaunch(launch: McpLaunch): void {
-  if (!/^npx(?:\.cmd)?$/.test(launch.command)) return;
+  const spec = npxPackageSpec(launch);
+  if (!spec) return;
   // `--version` runs no Relay code beyond printing; failures are left for the
-  // agent tool to surface, since the entry itself is still right.
-  spawnSync(launch.command, [...launch.args.slice(0, -1), '--version'], {
-    stdio: 'ignore',
-    timeout: 180_000,
-    env: process.env,
-  });
+  // agent tool to surface, since the entry itself is still right. Windows
+  // starts npx (a .cmd) only through a shell; the spec is a plain package name.
+  const options = { stdio: 'ignore' as const, timeout: 180_000, env: process.env };
+  if (process.platform === 'win32') spawnSync(`npx -y ${spec} --version`, { ...options, shell: true });
+  else spawnSync('npx', ['-y', spec, '--version'], options);
 }
 
 function defaultIsAlive(pid: number): boolean {

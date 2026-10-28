@@ -101,6 +101,16 @@ describe('ensureGitExclude', () => {
     expect(exclude(common)).toBe('/.agentworkforce/relay/\n');
   });
 
+  it('writes the exclude of a submodule whose .git file has a relative gitdir', () => {
+    const gitDir = path.join(root, 'super', '.git', 'modules', 'sub');
+    fs.mkdirSync(gitDir, { recursive: true });
+    const sub = path.join(root, 'super', 'sub');
+    fs.mkdirSync(sub, { recursive: true });
+    fs.writeFileSync(path.join(sub, '.git'), 'gitdir: ../.git/modules/sub\n');
+    expect(ensureGitExclude(path.join(sub, '.agentworkforce', 'relay'))).toEqual({ modified: true });
+    expect(exclude(gitDir)).toBe('/.agentworkforce/relay/\n');
+  });
+
   it('does nothing outside a git repository', () => {
     expect(ensureGitExclude(dataDir())).toEqual({ modified: false });
   });
