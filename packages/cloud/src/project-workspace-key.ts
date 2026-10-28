@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { getProjectPaths } from '@agent-relay/config';
+import { ensureGitExclude, getProjectPaths } from '@agent-relay/config';
 
 import {
   readRelaycastCredential,
@@ -177,6 +177,18 @@ export function writeProjectWorkspaceKey(
   withProjectWorkspaceKeyLock(dataDir, () => writeProjectWorkspaceKeyUnlocked(dataDir, key, metadata, env));
 }
 
+/**
+ * The workspace key is a credential: keep the project data directory that
+ * holds it out of `git status` (and so out of `git add -A`) through the
+ * repository's `info/exclude`. Only the standard `<project>/.agentworkforce/relay`
+ * directory is excluded; a caller-chosen data directory elsewhere is left to
+ * its owner.
+ */
+function excludeProjectDataDirFromGit(dataDir: string): void {
+  const parts = path.resolve(dataDir).split(path.sep);
+  if (parts.at(-1) === 'relay' && parts.at(-2) === '.agentworkforce') ensureGitExclude(dataDir);
+}
+
 function writeProjectWorkspaceKeyUnlocked(
   dataDir: string,
   workspaceKey: string,
@@ -206,6 +218,7 @@ function writeProjectWorkspaceKeyUnlocked(
     );
   }
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  excludeProjectDataDirFromGit(dataDir);
   const file = projectWorkspaceKeyPath(dataDir);
   // Worker threads share a PID, so include a per-write nonce as well as the PID.
   let tmp = `${file}.tmp.${process.pid}.${randomUUID()}`;

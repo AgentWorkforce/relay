@@ -86,7 +86,7 @@ export interface ToolTarget {
   /** Arguments for the tool's own `mcp add`, when it has one for this scope. */
   cliAdd?(scope: InstallScope, launch: McpLaunch, env: Record<string, string>): string[] | undefined;
   /** Something the person has to do before the tool loads the entry. */
-  note?(scope: InstallScope): string | undefined;
+  note?(scope: InstallScope, ctx: ToolContext): string | undefined;
 }
 
 function xdgConfigHome(ctx: ToolContext): string {
@@ -157,7 +157,8 @@ export const TOOL_TARGETS: readonly ToolTarget[] = [
     binary: 'codex',
     format: { kind: 'toml' },
     // `codex mcp add` always writes $CODEX_HOME/config.toml. Codex also reads
-    // .codex/config.toml in a project once that project is trusted.
+    // .codex/config.toml in a project, but only once that exact project is
+    // trusted in $CODEX_HOME/config.toml (see codexProjectTrust).
     configPath: (scope, ctx) =>
       scope === 'project'
         ? path.join(ctx.projectRoot, '.codex', 'config.toml')
@@ -168,10 +169,7 @@ export const TOOL_TARGETS: readonly ToolTarget[] = [
       scope === 'global'
         ? ['mcp', 'add', ...envFlags('--env', env), MCP_SERVER_NAME, '--', launch.command, ...launch.args]
         : undefined,
-    note: (scope) =>
-      scope === 'project'
-        ? 'Codex loads .codex/config.toml only after you trust this project (it asks on first run).'
-        : undefined,
+    note: (scope, ctx) => (scope === 'project' ? codexTrustNote(ctx) : undefined),
   },
   {
     id: 'opencode',
@@ -266,6 +264,121 @@ export const TOOL_TARGETS: readonly ToolTarget[] = [
   },
 ];
 
+// ---------------------------------------------------------------------------
+// Codex project trust
+//
+// Codex 0.154 reads <project>/.codex/config.toml (MCP servers included) only
+// when that project has its own `[projects."<root>"] trust_level = "trusted"`
+// table in $CODEX_HOME/config.toml. The root is the nearest directory with a
+// `.git` (Codex's default project_root_markers), else the working directory.
+// A trusted parent directory does not count, `-c projects...` overrides do not
+// count, and `codex exec` never asks: only an interactive `codex` offers to
+// trust the folder on first run.
+
+/** The directory Codex treats as this project's root, which is what it trusts. */
+export function codexProjectRoot(ctx: ToolContext): string {
+  const start = realpath(ctx.projectRoot) ?? path.resolve(ctx.projectRoot);
+  let current = start;
+  for (;;) {
+    if (fs.existsSync(path.join(current, '.git'))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return start;
+    current = parent;
+  }
+}
+
+/** Codex's user config, where project trust is recorded. */
+export function codexUserConfigPath(ctx: ToolContext): string {
+  return path.join(codexHome(ctx), 'config.toml');
+}
+
+const CODEX_PROJECT_HEADER = /^\s*\[\s*projects\s*\.\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*\]\s*(?:#.*)?$/;
+
+function tomlQuotedKey(raw: string): string | undefined {
+  if (raw.startsWith("'")) return raw.slice(1, -1);
+  try {
+    return JSON.parse(raw) as string;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Codex's recorded trust for this project. */
+export type CodexTrust = 'trusted' | 'untrusted' | 'unset';
+
+/** Whether Codex will read this project's .codex/config.toml. */
+export function codexProjectTrust(ctx: ToolContext): CodexTrust {
+  const root = codexProjectRoot(ctx);
+  const text = readText(codexUserConfigPath(ctx));
+  if (text === undefined) return 'unset';
+  const lines = text.split('\n');
+  let inRoot = false;
+  let trust: CodexTrust = 'unset';
+  for (const line of lines) {
+    if (TOML_HEADER.test(line)) {
+      const match = CODEX_PROJECT_HEADER.exec(line);
+      inRoot = Boolean(match && tomlQuotedKey(match[1]) === root);
+      continue;
+    }
+    if (!inRoot) continue;
+    const value = /^\s*trust_level\s*=\s*["']([^"']*)["']/.exec(line)?.[1];
+    if (value) trust = value === 'trusted' ? 'trusted' : 'untrusted';
+  }
+  return trust;
+}
+
+/**
+ * Record this project as trusted in Codex's user config, as Codex's own
+ * first-run prompt does. Trust also relaxes Codex's approval defaults in the
+ * project, so callers ask first. Refuses (throws) rather than risk a config
+ * Codex cannot parse.
+ */
+export function trustCodexProject(ctx: ToolContext): void {
+  const root = codexProjectRoot(ctx);
+  const file = codexUserConfigPath(ctx);
+  const text = readText(file) ?? '';
+  const lines = text.split('\n');
+  if (lines.some((line) => /^\s*projects\s*[.=]/.test(line) || /^\s*\[\s*projects\s*\]/.test(line))) {
+    throw new Error(
+      `${file} declares projects in a form relay init does not edit; trust ${root} in Codex instead.`
+    );
+  }
+  const header = `[projects.${JSON.stringify(root)}]`;
+  const index = lines.findIndex((line) => {
+    const match = CODEX_PROJECT_HEADER.exec(line);
+    return Boolean(match && tomlQuotedKey(match[1]) === root);
+  });
+  let next: string;
+  if (index === -1) {
+    const base = text.replace(/\n*$/, '');
+    next = `${base}${base ? '\n\n' : ''}${header}\ntrust_level = "trusted"\n`;
+  } else {
+    let end = index + 1;
+    while (end < lines.length && !TOML_HEADER.test(lines[end])) end += 1;
+    const body = lines.slice(index + 1, end).filter((line) => !/^\s*trust_level\s*=/.test(line));
+    next = [...lines.slice(0, index + 1), 'trust_level = "trusted"', ...body, ...lines.slice(end)].join('\n');
+  }
+  writeKeepingMode(file, next, 0o600);
+}
+
+/** The step left before Codex loads the project entry, if any. */
+export function codexTrustNote(ctx: ToolContext): string | undefined {
+  const trust = codexProjectTrust(ctx);
+  if (trust === 'trusted') return undefined;
+  const root = codexProjectRoot(ctx);
+  if (trust === 'untrusted') {
+    return (
+      `Codex ignores .codex/config.toml here: ${root} is marked untrusted in ${codexUserConfigPath(ctx)}. ` +
+      'Mark it trusted there, or run relay init --scope global for Codex.'
+    );
+  }
+  return (
+    `Codex reads .codex/config.toml only in projects it trusts, and ${root} is not trusted yet ` +
+    '(a trusted parent folder does not count, and codex exec never asks). Open codex here once and trust ' +
+    `the folder, or add [projects.${JSON.stringify(root)}] trust_level = "trusted" to ${codexUserConfigPath(ctx)}.`
+  );
+}
+
 /** Look up a supported tool. */
 export function findToolTarget(id: string): ToolTarget | undefined {
   return TOOL_TARGETS.find((target) => target.id === id);
@@ -359,11 +472,22 @@ export function detectTools(ctx: ToolContext): DetectedTool[] {
 /** Inputs to {@link resolveMcpLaunch}; `process` values by default. */
 export interface LaunchInputs {
   ctx: ToolContext;
+  /**
+   * Where the entry goes. Project files are shared with everyone who clones
+   * the project, so they get a command without machine-specific paths.
+   * Defaults to `global`.
+   */
+  scope?: InstallScope;
+  /** This CLI's version, pinned in an `npx` command. Defaults to AGENT_RELAY_CLI_VERSION. */
+  version?: string;
   execPath?: string;
   /** The running CLI script (process.argv[1]). */
   script?: string;
   isBun?: boolean;
 }
+
+/** The npm package that provides `agent-relay mcp`. */
+const NPM_PACKAGE = 'agent-relay';
 
 function realpath(file: string): string | undefined {
   try {
@@ -373,29 +497,70 @@ function realpath(file: string): string | undefined {
   }
 }
 
-function isEphemeralPath(file: string): boolean {
+/** A path npm or Bun may delete at any time: an npx/bunx cache copy. */
+export function isEphemeralPath(file: string): boolean {
   const normalized = file.replace(/\\/g, '/');
   return (
     normalized.includes('/_npx/') || normalized.includes('/.npm/_cacache/') || normalized.includes('/bunx-')
   );
 }
 
+/** `agent-relay` on PATH, skipping the temporary bin directory npx puts first on PATH. */
+function stableOnPath(env: NodeJS.ProcessEnv): string | undefined {
+  const dirs = (env.PATH ?? '').split(path.delimiter).filter((dir) => dir && !isEphemeralPath(`${dir}/`));
+  return findOnPath('agent-relay', { ...env, PATH: dirs.join(path.delimiter) });
+}
+
+/** A usable npm version string, or undefined for unknown/dev builds. */
+function publishedVersion(version: string | undefined): string | undefined {
+  const trimmed = version?.trim();
+  return trimmed && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(trimmed) && trimmed !== '0.0.0'
+    ? trimmed
+    : undefined;
+}
+
+/** `npx -y agent-relay@<version> mcp`: works on any machine with Node, and never goes stale. */
+function npxLaunch(version: string | undefined, reason: string): McpLaunch {
+  const pinned = publishedVersion(version);
+  return {
+    command: process.platform === 'win32' ? 'npx.cmd' : 'npx',
+    args: ['-y', pinned ? `${NPM_PACKAGE}@${pinned}` : NPM_PACKAGE, 'mcp'],
+    reason,
+  };
+}
+
 /**
- * Choose the command agent tools run for `relay mcp`, most durable first:
+ * Choose the command agent tools run for `relay mcp`.
  *
- * 1. `AGENT_RELAY_MCP_COMMAND`, the same override the broker honours.
- * 2. The running CLI, when it is the standalone launcher install.sh places in
- *    ~/.agentworkforce/relay/bin, or the `agent-relay` on PATH that leads to
- *    the running CLI (an npm global install). Either survives upgrades.
- * 3. The standalone launcher, then `agent-relay` on PATH, when the running
- *    CLI is a temporary copy (npx), which npm may delete at any time.
- * 4. The running CLI by absolute path (a checkout or an unusual install).
+ * `AGENT_RELAY_MCP_COMMAND`, the override the broker honours, always wins.
+ * Otherwise a copy of the CLI that npx unpacked into its cache is never
+ * written: npm deletes that cache at will, and its path is specific to this
+ * machine (npx also puts its cache `bin` first on PATH, so a PATH lookup alone
+ * would find it).
+ *
+ * Project scope writes files teammates share (.mcp.json and friends), so it
+ * gets a portable command with no home-directory path:
+ *
+ * 1. `agent-relay mcp` when a lasting `agent-relay` is on PATH and this run is
+ *    that install or a temporary npx copy.
+ * 2. `npx -y agent-relay@<this version> mcp` when Relay is not installed.
+ * 3. The running CLI by absolute path, for a source checkout.
+ *
+ * Global scope writes this machine's own config, so absolute paths are fine:
+ *
+ * 1. The running CLI's launcher (install.sh's bin directory) or the
+ *    `agent-relay` on PATH that leads to it. Both survive upgrades.
+ * 2. For a temporary npx copy: a lasting `agent-relay` on PATH, else
+ *    `npx -y agent-relay@<this version> mcp`.
+ * 3. The running CLI by absolute path.
  */
 export function resolveMcpLaunch(inputs: LaunchInputs): McpLaunch {
   const { ctx } = inputs;
+  const scope = inputs.scope ?? 'global';
   const execPath = inputs.execPath ?? process.execPath;
   const script = inputs.script ?? process.argv[1] ?? '';
   const isBun = inputs.isBun ?? Boolean(process.versions.bun);
+  const version = inputs.version ?? ctx.env.AGENT_RELAY_CLI_VERSION;
 
   const override = ctx.env.AGENT_RELAY_MCP_COMMAND?.trim();
   if (override) {
@@ -409,40 +574,52 @@ export function resolveMcpLaunch(inputs: LaunchInputs): McpLaunch {
     path.join(ctx.home, '.agentworkforce', 'relay', 'bin'),
   ];
   const launcher = launcherDirs.map((dir) => path.join(dir, binary)).find(isExecutable);
-  const onPath = findOnPath('agent-relay', ctx.env);
+  const onPath = stableOnPath(ctx.env);
 
   const standalone = isBun && isBundledBunEntrypointPath(script);
   const running = standalone ? execPath : script;
   const runningReal = running ? realpath(running) : undefined;
+  const ephemeral = Boolean(
+    running && (isEphemeralPath(running) || (runningReal && isEphemeralPath(runningReal)))
+  );
+  const isRunning = (file: string | undefined) =>
+    Boolean(file && runningReal && realpath(file) === runningReal);
 
-  if (launcher && runningReal && realpath(launcher) === runningReal) {
-    return {
-      command: launcher,
-      args: ['mcp'],
-      reason: 'the Relay launcher install.sh keeps up to date',
-    };
-  }
-  if (onPath && runningReal && realpath(onPath) === runningReal) {
-    return {
-      command: onPath,
-      args: ['mcp'],
-      reason: 'the agent-relay on your PATH, so upgrading Relay updates it too',
-    };
-  }
-  if (running && isEphemeralPath(running)) {
-    if (launcher) {
+  if (scope === 'project') {
+    if (onPath && (ephemeral || isRunning(onPath) || isRunning(launcher))) {
       return {
-        command: launcher,
+        command: 'agent-relay',
         args: ['mcp'],
-        reason: 'the installed Relay launcher (npx copies are temporary)',
+        reason:
+          'the agent-relay on PATH, by name, so the project file works on any machine with Relay installed',
       };
     }
-    if (onPath) {
+    if (ephemeral || isRunning(launcher)) {
+      return npxLaunch(
+        version,
+        'npx, because agent-relay is not on your PATH; the project file then works on any machine with Node.js'
+      );
+    }
+  } else {
+    if (launcher && isRunning(launcher)) {
+      return { command: launcher, args: ['mcp'], reason: 'the Relay launcher install.sh keeps up to date' };
+    }
+    if (onPath && isRunning(onPath)) {
       return {
         command: onPath,
         args: ['mcp'],
-        reason: 'the agent-relay on your PATH (npx copies are temporary)',
+        reason: 'the agent-relay on your PATH, so upgrading Relay updates it too',
       };
+    }
+    if (ephemeral) {
+      if (onPath) {
+        return {
+          command: onPath,
+          args: ['mcp'],
+          reason: 'the agent-relay on your PATH (npx copies are temporary)',
+        };
+      }
+      return npxLaunch(version, 'npx, because npx copies are temporary and agent-relay is not on your PATH');
     }
   }
   return {
@@ -450,9 +627,10 @@ export function resolveMcpLaunch(inputs: LaunchInputs): McpLaunch {
     args: standalone ? ['mcp'] : [script, 'mcp'],
     reason: 'this copy of the Relay CLI, by absolute path',
     warning:
-      running && isEphemeralPath(running)
-        ? 'This CLI runs from the npx cache, which npm can delete. Install Relay ' +
-          '(npm install -g agent-relay) and run relay init again so the agents keep working.'
+      scope === 'project'
+        ? "The project files name this machine's copy of the Relay CLI by absolute path. Set " +
+          'AGENT_RELAY_MCP_COMMAND, or install Relay so agent-relay is on your PATH, and run relay init again ' +
+          'before sharing them.'
         : undefined,
   };
 }

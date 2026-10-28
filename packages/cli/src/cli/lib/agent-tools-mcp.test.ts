@@ -10,11 +10,15 @@ import {
   MANAGED_ENV_VALUE,
   TOOL_IDS,
   TOOL_TARGETS,
+  codexProjectRoot,
+  codexProjectTrust,
+  codexTrustNote,
   detectTools,
   findToolTarget,
   installTool,
   parseToolsFlag,
   resolveMcpLaunch,
+  trustCodexProject,
   uninstallTool,
   type InstallScope,
   type McpLaunch,
@@ -413,24 +417,110 @@ describe('resolveMcpLaunch', () => {
     expect(result.warning).toBeUndefined();
   });
 
-  it('uses the installed launcher instead of a temporary npx copy', () => {
-    const launcher = executable(path.join(ctx.home, '.agentworkforce', 'relay', 'bin', 'agent-relay'));
-    const npx = executable(
-      path.join(ctx.home, '.npm', '_npx', 'abc', 'node_modules', 'agent-relay', 'index.js')
+  /** An npx run: the CLI unpacked in npm's cache, with that cache's bin first on PATH, as npx sets it up. */
+  function npxRun() {
+    const pkg = executable(
+      path.join(
+        ctx.home,
+        '.npm',
+        '_npx',
+        '88f578dfe12e5edc',
+        'node_modules',
+        'agent-relay',
+        'dist',
+        'index.js'
+      )
     );
-    expect(resolveMcpLaunch({ ctx, execPath: '/usr/bin/node', script: npx })).toMatchObject({
-      command: launcher,
+    const bin = path.join(ctx.home, '.npm', '_npx', '88f578dfe12e5edc', 'node_modules', '.bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.symlinkSync(pkg, path.join(bin, 'agent-relay'));
+    return { script: path.join(bin, 'agent-relay'), bin };
+  }
+
+  it.each(['project', 'global'] as const)(
+    'never writes the npx cache copy at %s scope, even though npx puts it first on PATH',
+    (scope) => {
+      const { script, bin } = npxRun();
+      ctx.env = { PATH: bin };
+      const result = resolveMcpLaunch({
+        ctx,
+        scope,
+        version: '15.0.0-next.2',
+        execPath: '/usr/bin/node',
+        script,
+      });
+      expect(result).toMatchObject({ command: 'npx', args: ['-y', 'agent-relay@15.0.0-next.2', 'mcp'] });
+      expect(JSON.stringify(result)).not.toContain('_npx');
+      expect(result.warning).toBeUndefined();
+    }
+  );
+
+  it('does not fall back to an installed launcher that is not on PATH from npx', () => {
+    // It may be an old, unrelated install; npx pins the version that ran init.
+    executable(path.join(ctx.home, '.agentworkforce', 'relay', 'bin', 'agent-relay'));
+    const { script, bin } = npxRun();
+    ctx.env = { PATH: bin };
+    expect(resolveMcpLaunch({ ctx, version: '15.0.0', execPath: '/usr/bin/node', script })).toMatchObject({
+      command: 'npx',
+      args: ['-y', 'agent-relay@15.0.0', 'mcp'],
+    });
+  });
+
+  it('leaves the npx version unpinned when this build has no published version', () => {
+    const { script } = npxRun();
+    expect(
+      resolveMcpLaunch({ ctx, scope: 'project', version: 'unknown', execPath: '/usr/bin/node', script })
+    ).toMatchObject({ command: 'npx', args: ['-y', 'agent-relay', 'mcp'] });
+  });
+
+  it('from npx, uses a lasting agent-relay on PATH: by name for a project, by path globally', () => {
+    const installed = executable(path.join(root, 'usr', 'bin', 'agent-relay'));
+    const { script, bin } = npxRun();
+    ctx.env = { PATH: [bin, path.dirname(installed)].join(path.delimiter) };
+    const inputs = { ctx, version: '15.0.0', execPath: '/usr/bin/node', script };
+    expect(resolveMcpLaunch({ ...inputs, scope: 'project' })).toMatchObject({
+      command: 'agent-relay',
+      args: ['mcp'],
+    });
+    expect(resolveMcpLaunch({ ...inputs, scope: 'global' })).toMatchObject({
+      command: installed,
       args: ['mcp'],
     });
   });
 
-  it('warns when only a temporary npx copy exists', () => {
-    const npx = executable(
-      path.join(ctx.home, '.npm', '_npx', 'abc', 'node_modules', 'agent-relay', 'index.js')
-    );
-    const result = resolveMcpLaunch({ ctx, execPath: '/usr/bin/node', script: npx });
-    expect(result).toMatchObject({ command: '/usr/bin/node', args: [npx, 'mcp'] });
-    expect(result.warning).toMatch(/npx cache/);
+  it('writes the install.sh launcher by name for a project and by path globally', () => {
+    const launcher = executable(path.join(ctx.home, '.agentworkforce', 'relay', 'bin', 'agent-relay'));
+    const onPath = path.join(ctx.home, '.local', 'bin');
+    fs.mkdirSync(onPath, { recursive: true });
+    fs.symlinkSync(launcher, path.join(onPath, 'agent-relay'));
+    ctx.env = { PATH: onPath };
+    const inputs = { ctx, execPath: '/usr/bin/node', script: path.join(onPath, 'agent-relay') };
+    expect(resolveMcpLaunch({ ...inputs, scope: 'project' })).toMatchObject({ command: 'agent-relay' });
+    expect(resolveMcpLaunch({ ...inputs, scope: 'global' })).toMatchObject({ command: launcher });
+  });
+
+  it('uses npx for a project when the running launcher is not on PATH', () => {
+    const launcher = executable(path.join(ctx.home, '.agentworkforce', 'relay', 'bin', 'agent-relay'));
+    expect(
+      resolveMcpLaunch({
+        ctx,
+        scope: 'project',
+        version: '15.0.0',
+        execPath: '/usr/bin/node',
+        script: launcher,
+      })
+    ).toMatchObject({ command: 'npx', args: ['-y', 'agent-relay@15.0.0', 'mcp'] });
+  });
+
+  it('warns before writing a checkout path into project files', () => {
+    const result = resolveMcpLaunch({
+      ctx,
+      scope: 'project',
+      execPath: '/usr/bin/node',
+      script: '/src/relay/dist/cli/index.js',
+    });
+    expect(result).toMatchObject({ command: '/usr/bin/node', args: ['/src/relay/dist/cli/index.js', 'mcp'] });
+    expect(result.warning).toMatch(/absolute path/);
   });
 
   it('re-enters a Bun standalone binary directly', () => {
@@ -443,6 +533,65 @@ describe('resolveMcpLaunch', () => {
     expect(
       resolveMcpLaunch({ ctx, execPath: '/usr/bin/node', script: '/src/relay/dist/cli/index.js' })
     ).toMatchObject({ command: '/usr/bin/node', args: ['/src/relay/dist/cli/index.js', 'mcp'] });
+  });
+});
+
+describe('Codex project trust', () => {
+  const codexConfig = () => path.join(ctx.home, '.codex', 'config.toml');
+  const writeCodexConfig = (text: string) => {
+    fs.mkdirSync(path.dirname(codexConfig()), { recursive: true });
+    fs.writeFileSync(codexConfig(), text);
+  };
+  const realProject = () => fs.realpathSync(ctx.projectRoot);
+
+  it('trusts the git root, which Codex keys trust by', () => {
+    fs.mkdirSync(path.join(ctx.projectRoot, '.git'));
+    const sub = path.join(ctx.projectRoot, 'packages', 'app');
+    fs.mkdirSync(sub, { recursive: true });
+    expect(codexProjectRoot({ ...ctx, projectRoot: sub })).toBe(realProject());
+  });
+
+  it('does not count a trusted parent folder, as Codex does not', () => {
+    writeCodexConfig(`[projects.${JSON.stringify(path.dirname(realProject()))}]\ntrust_level = "trusted"\n`);
+    expect(codexProjectTrust(ctx)).toBe('unset');
+    expect(codexTrustNote(ctx)).toMatch(
+      /not trusted yet.*trusted parent folder does not count.*codex exec never asks/s
+    );
+  });
+
+  it('reads trusted and untrusted entries for the project itself', () => {
+    writeCodexConfig(
+      `model = "o3"\n\n[projects.${JSON.stringify(realProject())}]\ntrust_level = "trusted"\n`
+    );
+    expect(codexProjectTrust(ctx)).toBe('trusted');
+    expect(codexTrustNote(ctx)).toBeUndefined();
+    writeCodexConfig(`[projects.'${realProject()}']\ntrust_level = "untrusted"\n`);
+    expect(codexProjectTrust(ctx)).toBe('untrusted');
+    expect(codexTrustNote(ctx)).toMatch(/marked untrusted/);
+  });
+
+  it('records trust the way Codex does, keeping the rest of the config', () => {
+    const existing = '# mine\nmodel = "o3"\n\n[mcp_servers.github]\ncommand = "gh-mcp"\n';
+    writeCodexConfig(existing);
+    fs.chmodSync(codexConfig(), 0o600);
+    trustCodexProject(ctx);
+    const text = read(codexConfig());
+    expect(text.startsWith(existing.trimEnd())).toBe(true);
+    expect(text).toContain(`[projects.${JSON.stringify(realProject())}]\ntrust_level = "trusted"\n`);
+    expect(fs.statSync(codexConfig()).mode & 0o777).toBe(0o600);
+    expect(codexProjectTrust(ctx)).toBe('trusted');
+    trustCodexProject(ctx);
+    expect(read(codexConfig())).toBe(text);
+  });
+
+  it('creates the Codex config when there is none', () => {
+    trustCodexProject(ctx);
+    expect(codexProjectTrust(ctx)).toBe('trusted');
+  });
+
+  it('refuses a projects table it would have to restructure', () => {
+    writeCodexConfig('[projects]\n"/somewhere" = { trust_level = "trusted" }\n');
+    expect(() => trustCodexProject(ctx)).toThrow(/does not edit/);
   });
 });
 

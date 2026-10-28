@@ -48,8 +48,9 @@ In a terminal it asks four questions, the same way `npx skills add` does:
 │  Claude Code        .mcp.json  (claude mcp add)                         │
 │  Codex              .codex/config.toml  (config file)                   │
 │                                                                         │
-│  Runs: /usr/local/bin/agent-relay mcp                                   │
-│        the agent-relay on your PATH, so upgrading Relay updates it too  │
+│  Runs: agent-relay mcp                                                  │
+│        the agent-relay on PATH, by name, so the project file works on   │
+│        any machine with Relay installed                                 │
 ├─────────────────────────────────────────────────────────────────────────╯
 │
 ◇  Proceed with installation?
@@ -82,9 +83,22 @@ In a terminal it asks four questions, the same way `npx skills add` does:
 | Pi          | `pi mcp add`                                    | `.pi/mcp.json`           | `~/.pi/agent/mcp.json`             |
 | Devin       | `devin mcp add`                                 | `.devin/mcp_config.json` | `~/.config/devin/mcp_config.json`  |
 
+Project files name the server portably, since teammates share them:
+`agent-relay mcp` when `agent-relay` is on your PATH, otherwise
+`npx -y agent-relay@<version> mcp`. Global configs use the installed launcher's
+path. A temporary `npx` copy of the CLI is never written.
+
 Claude Code asks you to approve a project `.mcp.json` server the first time it
-opens the folder. Codex and Pi read project config only once you trust the
-project, which they ask about on first run.
+opens the folder. Pi reads `.pi/mcp.json` only once you trust the project, which
+it asks about on first run. Codex reads `.codex/config.toml` only when that
+exact project (its git root) is trusted in `~/.codex/config.toml`; a trusted
+parent folder does not count, and `codex exec` never asks. In a terminal
+`relay init` offers to record that trust for you; with `--yes` it prints the
+line to add instead.
+
+In a git repository, `relay init` keeps `.agentworkforce/relay/` (which holds
+the project's workspace key) out of `git status` through `.git/info/exclude`;
+your `.gitignore` is not changed.
 
 No key or token is written into these files: `agent-relay mcp` finds the
 workspace `relay init` saved, and sends its key only to the server it belongs
