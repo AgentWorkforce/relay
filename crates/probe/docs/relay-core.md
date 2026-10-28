@@ -773,19 +773,44 @@ other failure stays generic.
 
 ## Workspace discovery
 
-The workspace is the signed-in account's (`cloud` in the agent store, at its
-own origin), written at sign-in together with the uploader's target, so uploads
-and messaging always use one workspace and one key (`relay::workspace`).
-Nothing else names a workspace key: the environment, the `agent-relay` CLI's
-files under `$AGENT_RELAY_HOME` and keys pasted into the app are not read.
-Signing in to another workspace replaces it.
+The daemon uses one Relaycast workspace at a time (`relay::workspace`), from
+the first of two sources that names one:
 
-Only `rk_…` keys of at least 12 characters without whitespace qualify.
-`RELAYCAST_URL` overrides the origin when it is a bare https origin (http and
-a port only for `localhost`/`127.0.0.1`; no user info, path, query or
-fragment); anything else leaves `https://cast.agentrelay.com`. The daemon
-rediscovers every 30 s and on `workspace.refresh`, and verifies a new key with
-`GET /v1/workspace`.
+1. **The `agent-relay` CLI** (`relay::workspace::cli`), read and never
+   written, by the CLI's own precedence: a workspace-key variable in the
+   daemon's environment (`RELAY_WORKSPACE_KEY` > `AGENT_RELAY_WORKSPACE_KEY` >
+   `RELAY_API_KEY`); then the project pin
+   `<project>/.agentworkforce/relay/workspace-key.json` when
+   `AGENT_RELAY_PROJECT` names the project (the daemon has no working
+   directory to search from); then the active entry of
+   `$AGENT_RELAY_HOME/workspaces.json` (default `~/.agentworkforce/relay`).
+   Its origin follows the CLI too: a project's persisted Relaycast route
+   (only Agent Relay's own gateways), else `RELAY_BASE_URL`, else the key's
+   self-hosted binding in `relaycast-origins.json`
+   (`relay::workspace::origin_binding`: the PBKDF2-SHA256 fingerprint shared
+   with the CLI and the broker), else `https://cast.agentrelay.com`. A bound
+   key goes only to its bound server, so `relay init`'s local server
+   (`http://127.0.0.1:8787`) and self-hosted servers (any http(s) base URL,
+   path prefix included) work with no sign-in. A malformed bindings file, an
+   unreadable `workspaces.json` or a malformed `RELAY_BASE_URL` fails closed:
+   the daemon has no workspace and says why in its activity, rather than
+   sending the key to the hosted default or falling back to the account's.
+2. **The Cloud sign-in** (`cloud` in the agent store, at its own origin),
+   written at sign-in together with the uploader's target, used only when the
+   CLI names nothing: a desktop user who never ran the CLI. `RELAYCAST_URL`
+   overrides its origin when it is a bare https origin (http and a port only
+   for `localhost`/`127.0.0.1`; no user info, path, query or fragment);
+   anything else leaves `https://cast.agentrelay.com`.
+
+Neither source's key is sent to the other's origin: `RELAYCAST_URL` applies
+only to the account's key, and CLI bindings only to the CLI's. Only
+`rk_…` keys of at least 12 characters without whitespace qualify. A refused
+key is recovered through Cloud (`account::workspace_recovery`) only when it
+came from the sign-in; a key the CLI named is the CLI's to rotate, and a
+rotated `workspaces.json` entry is picked up by the next rediscovery. When the
+CLI names a workspace, messaging uses it while uploads still go to the signed-in
+account's workspace. The daemon rediscovers every 30 s and on
+`workspace.refresh`, and verifies a new key with `GET /v1/workspace`.
 
 The machine prefix is the host name with `.local` dropped, diacritics folded,
 non-`[a-z0-9]` runs as one dash, at most 40 characters, else `computer`; each

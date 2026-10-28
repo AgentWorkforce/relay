@@ -744,6 +744,7 @@ mod tests {
             key: Secret::new("rk_team_workspace"),
             base_url: "https://relay.example".into(),
             workspace_id: Some("rw_team".into()),
+            source: Default::default(),
         };
         let person = PersonIdentity {
             name: "person".into(),

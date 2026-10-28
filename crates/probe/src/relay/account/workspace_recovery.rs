@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::relay::store::{CloudWorkspace, Store};
-use crate::relay::workspace::Workspace;
+use crate::relay::workspace::{Workspace, WorkspaceSource};
 
 impl Account {
     /// Refreshes this app's retained Cloud session and re-resolves only the
@@ -16,6 +16,12 @@ impl Account {
         crate::relay::workspace::Workspace,
         crate::relay::client::WorkspaceInfo,
     )> {
+        // Only the account's own key is recovered through the account: a
+        // key the CLI named is the CLI's to rotate, and is picked up from
+        // its files on the next refresh.
+        if !refused.source.is_cloud() {
+            return None;
+        }
         let core = self.core()?;
         if core.discover().as_ref() != Some(refused) {
             return None;
@@ -62,6 +68,7 @@ impl Account {
             key: resolved.key.clone(),
             base_url: resolved.base_url.clone(),
             workspace_id: resolved.workspace_id.clone(),
+            source: WorkspaceSource::Cloud,
         };
         // This is the sole safe retry; a mutation that triggered recovery is never replayed.
         let info = crate::relay::client::workspace_info(&replacement)

@@ -180,6 +180,9 @@ pub struct Core {
     pub(crate) config: Config,
     pub(crate) hub: Hub,
     workspace: Mutex<Option<Workspace>>,
+    /// Why the last discovery could not use the CLI's workspace, once
+    /// reported, so the same reason is not repeated every pass.
+    discovery_problem: Mutex<Option<String>>,
     push: tokio::sync::Mutex<PushManager>,
     shutdown: watch::Sender<bool>,
     pub(crate) machine_prefix: String,
@@ -302,6 +305,7 @@ impl Core {
             config,
             hub,
             workspace: Mutex::new(None),
+            discovery_problem: Mutex::new(None),
             push: tokio::sync::Mutex::new(push),
             shutdown,
             machine_prefix,
@@ -422,12 +426,21 @@ impl Core {
             .activity(Level::Warning, notice.message(workspace.label()));
     }
 
-    /// The signed-in account's workspace, as the agent store records it now.
+    /// The workspace this daemon uses now: the `agent-relay` CLI's when it
+    /// selects one, else the signed-in account's (`workspace::resolve`).
+    /// `None` when neither names one or the CLI's may not be used.
     pub fn discover(&self) -> Option<Workspace> {
+        self.discovery().ok().flatten()
+    }
+
+    /// Like [`Core::discover`], with the printable reason the CLI's
+    /// selection may not be used.
+    fn discovery(&self) -> Result<Option<Workspace>, String> {
         let env = |key: &str| self.config.env.get(key).cloned();
         workspace::resolve(
             app_store::load_cloud(&self.config.app_data_dir).as_ref(),
             &env,
+            &self.config.home,
         )
     }
 
@@ -435,7 +448,22 @@ impl Core {
     /// discovery finds now, and answers whether Relaycast is still to be
     /// asked about it. Nothing here waits on the network.
     pub fn rediscover_workspace(&self) -> bool {
-        let found = self.discover();
+        let (found, problem) = match self.discovery() {
+            Ok(found) => (found, None),
+            Err(problem) => (None, Some(problem)),
+        };
+        let new_problem = {
+            let mut reported = self.discovery_problem.lock().unwrap();
+            let new = problem.is_some() && *reported != problem;
+            *reported = problem.clone();
+            new
+        };
+        if let (true, Some(problem)) = (new_problem, &problem) {
+            self.hub.activity(
+                Level::Warning,
+                format!("Not using the agent-relay CLI's workspace: {problem}"),
+            );
+        }
         let changed = {
             let mut current = self.workspace.lock().unwrap();
             let changed = *current != found;
@@ -449,13 +477,17 @@ impl Core {
                 Some(workspace) => self.hub.activity(
                     Level::Info,
                     format!(
-                        "Using your account's Agent Relay workspace at {}.",
+                        "Using the Agent Relay workspace from {} at {}.",
+                        workspace.source.describe(),
                         workspace.base_url
                     ),
                 ),
-                None => self
-                    .hub
-                    .activity(Level::Warning, "Sign in to use an Agent Relay workspace."),
+                // A refused CLI selection was reported above.
+                None if problem.is_some() => {}
+                None => self.hub.activity(
+                    Level::Warning,
+                    "Run `relay init` or sign in to use an Agent Relay workspace.",
+                ),
             }
             // The spawn node follows the workspace. At start the first agent
             // sync can run before discovery, and nothing else would bring
@@ -1051,6 +1083,7 @@ mod key_migration_tests {
             key: Secret::new(key),
             base_url: "https://cast.test".into(),
             workspace_id: None,
+            source: Default::default(),
         }
     }
 

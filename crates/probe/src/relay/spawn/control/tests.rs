@@ -8,6 +8,7 @@ fn selected_workspace() -> Workspace {
         key: Secret::new("test-workspace-secret"),
         base_url: "https://cast.example".into(),
         workspace_id: None,
+        source: Default::default(),
     }
 }
 #[test]

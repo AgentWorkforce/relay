@@ -1193,6 +1193,7 @@ mod tests {
             key: Secret::new(LOCAL_KEY),
             base_url: CAST.into(),
             workspace_id: Some("rw_cast".into()),
+            source: Default::default(),
         };
         let mut status = WorkspaceStatus::discovered(Some(&active));
         let account_id = "rw_cast".to_string();
