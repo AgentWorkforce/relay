@@ -9,3 +9,8 @@ packages/config/src/cli-registry.generated.ts
 tests/benchmarks/head-to-head.ts
 .agentworkforce/trajectories/
 .trajectories/
+# The probe core embeds these byte-for-byte (include_str!) and its tests check
+# their exact text; formatting them breaks the build's contract.
+crates/probe/src/
+crates/probe/resources/
+crates/probe/tests/fixtures/
