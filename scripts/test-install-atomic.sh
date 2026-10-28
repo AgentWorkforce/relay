@@ -466,6 +466,19 @@ run_main; rc=$?
 check "fresh install + rejected broker: exits non-zero" test "$rc" -ne 0
 check "fresh install + rejected broker: new CLI removed" test ! -e "$INSTALL_DIR/bin/agent-relay" -a ! -e "$BIN_DIR/agent-relay"
 
+echo "== standalone-only update: an unavailable broker rolls the CLI back (#1963) =="
+e2e_setup ok yes
+rm -f "$FIX/asset/agent-relay-broker-$REAL_PLATFORM"   # broker download fails (rc 1)
+( export AGENT_RELAY_INSTALL_METHOD=standalone; run_main ); rc=$?
+check "standalone-only + missing broker: exits non-zero" test "$rc" -ne 0
+check "standalone-only + missing broker: previous CLI restored (no skew)" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
+check "standalone-only + missing broker: old broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
+check "standalone-only + missing broker: says why" contains "$(cat "$WORK/main.out")" "could not be downloaded"
+e2e_setup ok yes
+rm -f "$FIX/asset/agent-relay-broker-$REAL_PLATFORM"
+run_main; rc=$?
+check "default mode + missing broker: still installs the CLI (unchanged behaviour)" test "$rc" -eq 0 -a "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
+
 echo "== an existing .prev survives until the new binary is verified =="
 reset_release
 D="$(newdir)"; DEST="$D/tool"
@@ -526,6 +539,89 @@ cp -p "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
 run_main; rc=$?
 check "launcher + previous CLI: launcher byte-identical after rollback" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
 
+echo "== the short relay launcher is part of the same transaction =="
+# our_relay_launcher <path> <label>: a relay launcher written by an earlier install.sh run
+our_relay_launcher() {
+    printf '#!/usr/bin/env bash\n%s\n# %s\nexec "%s/bin/agent-relay" "$@"\n' "$LAUNCHER_MARKER" "$2" "$INSTALL_DIR" > "$1"; chmod +x "$1"
+}
+foreign_relay() { printf '#!/bin/sh\necho "some other relay tool"\n' > "$1"; chmod +x "$1"; }
+
+e2e_setup ok yes no
+run_main; rc=$?
+check "relay launcher: fresh install exits 0" test "$rc" -eq 0
+check "relay launcher: agent-relay launcher created" test -x "$BIN_DIR/agent-relay"
+check "relay launcher: relay launcher created" test -x "$BIN_DIR/relay"
+check "relay launcher: both launchers carry the marker" is_our_launcher "$BIN_DIR/relay"
+check "relay launcher: same body as agent-relay" cmp -s "$BIN_DIR/relay" "$BIN_DIR/agent-relay"
+check "relay launcher: relay runs the new CLI" test "$("$BIN_DIR/relay" --version)" = "9.9.9"
+check "relay launcher: agent-relay runs the new CLI" test "$("$BIN_DIR/agent-relay" --version)" = "9.9.9"
+check "relay launcher: usage lists both launchers" contains "$(cat "$WORK/main.out")" "$BIN_DIR/agent-relay, $BIN_DIR/relay"
+check "relay launcher: no backup/temp files left" test -z "$(find "$BIN_DIR" "$INSTALL_DIR" -name '.*.??????' -o -name '*.prev*' | head -1)"
+
+e2e_setup ok yes yes
+our_relay_launcher "$BIN_DIR/relay" "older install"
+run_main; rc=$?
+check "relay launcher: upgrade replaces our older relay launcher" test "$rc" -eq 0 -a -z "$(grep 'older install' "$BIN_DIR/relay")"
+check "relay launcher: upgraded relay is identical to agent-relay" cmp -s "$BIN_DIR/relay" "$BIN_DIR/agent-relay"
+
+e2e_setup crash no yes
+printf '#!/bin/bash\n# older launcher\nexec "%s/bin/agent-relay" "$@"\n' "$INSTALL_DIR" > "$BIN_DIR/agent-relay"; chmod +x "$BIN_DIR/agent-relay"
+cp -p "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+our_relay_launcher "$BIN_DIR/relay" "older install"
+cp -p "$BIN_DIR/relay" "$WORK/relay.orig"
+run_main; rc=$?
+check "relay rollback: exits non-zero" test "$rc" -ne 0
+check "relay rollback: agent-relay launcher byte-identical" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+check "relay rollback: relay launcher byte-identical" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
+check "relay rollback: no backup/temp files left" test -z "$(find "$BIN_DIR" "$INSTALL_DIR" -name '.*.??????' -o -name '*.prev*' | head -1)"
+
+e2e_setup crash no no
+run_main; rc=$?
+check "relay rollback, fresh install: both new launchers removed" test "$rc" -ne 0 -a ! -e "$BIN_DIR/agent-relay" -a ! -e "$BIN_DIR/relay"
+
+for outcome in ok crash; do
+    e2e_setup "$outcome" yes yes
+    foreign_relay "$BIN_DIR/relay"; cp -p "$BIN_DIR/relay" "$WORK/relay.orig"
+    run_main; rc=$?
+    check "foreign relay ($outcome broker): left byte-identical" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
+    check "foreign relay ($outcome broker): warned to use agent-relay" contains "$(cat "$LOG")" "was not installed by Agent Relay; leaving it alone. Use \`agent-relay\`"
+    check "foreign relay ($outcome broker): warned once" test "$(grep -c 'was not installed by Agent Relay' "$LOG")" = "1"
+done
+e2e_setup ok yes yes
+foreign_relay "$BIN_DIR/relay"
+run_main; rc=$?
+check "foreign relay: install exits 0 and agent-relay works" test "$rc" -eq 0 -a "$("$BIN_DIR/agent-relay" --version)" = "9.9.9"
+check "foreign relay: usage lists only agent-relay" contains "$(cat "$WORK/main.out")" "(launchers: $BIN_DIR/agent-relay)"
+
+e2e_setup ok yes yes
+mkdir -p "$WORK/npmprefix/lib/node_modules/agent-relay/dist/cli"
+ln -sf "$WORK/npmprefix/lib/node_modules/agent-relay/dist/cli/index.js" "$BIN_DIR/relay"
+run_main; rc=$?
+check "npm's own relay symlink: left alone" test "$rc" -eq 0 -a -L "$BIN_DIR/relay"
+check "npm's own relay symlink: no 'use agent-relay' warning" test -z "$(grep 'was not installed by Agent Relay' "$LOG")"
+
+e2e_setup ok yes yes
+our_relay_launcher "$BIN_DIR/relay" "older install"; cp -p "$BIN_DIR/relay" "$WORK/relay.orig"
+orig_mtf="$(declare -f make_temp_file)"
+eval "$(printf '%s\n' "$orig_mtf" | sed '1s/make_temp_file/real_make_temp_file/')"
+make_temp_file() { if [ "$2" = relay-launcher ]; then return 1; fi; real_make_temp_file "$@"; }
+run_main; rc=$?
+eval "$orig_mtf"
+check "relay backup failure: install still succeeds" test "$rc" -eq 0 -a "$("$BIN_DIR/agent-relay" --version)" = "9.9.9"
+check "relay backup failure: relay launcher left unchanged" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
+check "relay backup failure: reported" contains "$(cat "$LOG")" "Could not back up the existing $BIN_DIR/relay launcher"
+
+# a failed relay write (here: its temp path is a directory) never replaces the working launcher
+BIN_DIR="$(newdir)"
+our_relay_launcher "$BIN_DIR/relay" "working"; cp -p "$BIN_DIR/relay" "$WORK/relay.orig"
+mkdir "$BIN_DIR/relay.tmp.$$"
+: > "$LOG"
+( install_binary_launcher /x/agent-relay ) 2>/dev/null; rc=$?
+rmdir "$BIN_DIR/relay.tmp.$$"
+check "relay write failure: agent-relay launcher still written" test "$rc" -eq 0 -a -x "$BIN_DIR/agent-relay"
+check "relay write failure: existing relay launcher unchanged" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
+check "relay write failure: reported" contains "$(cat "$LOG")" "Could not write the $BIN_DIR/relay launcher"
+
 echo "== interrupted install cleans its temp files =="
 for sig in INT TERM; do
     reset_release
@@ -571,16 +667,18 @@ SHIMEOF
         AGENT_RELAY_VERSION=1.2.3 AGENT_RELAY_INSTALL_DIR="$INSTALL_DIR" AGENT_RELAY_BIN_DIR="$BIN_DIR" \
         AGENT_RELAY_TELEMETRY_DISABLED=1 AGENT_RELAY_SMOKE_SECONDS=2 bash install.sh ) > "$WORK/sig.out" 2>&1
 }
-sig_setup() { # previous CLI 1.0.0, old broker, an existing launcher
+sig_setup() { # previous CLI 1.0.0, old broker, existing agent-relay and relay launchers
     e2e_setup "${1:-ok}" no yes
     printf '#!/bin/bash\n# existing launcher\nexec "%s/bin/agent-relay" "$@"\n' "$INSTALL_DIR" > "$BIN_DIR/agent-relay"
     chmod +x "$BIN_DIR/agent-relay"; cp -p "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+    our_relay_launcher "$BIN_DIR/relay" "existing relay launcher"; cp -p "$BIN_DIR/relay" "$WORK/relay.orig"
 }
 sig_assert() { # sig_assert <label>
     check "$1: installer stopped" test "$rc" -ne 0
     check "$1: previous CLI restored" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
     check "$1: old broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
     check "$1: launcher byte-identical" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+    check "$1: relay launcher byte-identical" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
     check "$1: no .prev/temp files left" test -z "$(find "$INSTALL_DIR" "$BIN_DIR" -type f \( -name '.*.??????' -o -name '*.prev*' \) | head -1)"
 }
 for sig in TERM INT HUP; do
@@ -637,6 +735,7 @@ sig_main_pid; rc=$?
 eval "$orig_acp"
 NEW_B="$(sha256_of "$FIX/asset/agent-relay-broker-$REAL_PLATFORM")"
 check "TERM after commit: CLI is the new one (not rolled back)" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
+check "TERM after commit: relay launcher is the new one" cmp -s "$BIN_DIR/relay" "$BIN_DIR/agent-relay"
 check "TERM after commit: BOTH broker locations are the new broker" \
     test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$NEW_B" -a "$(sha256_of "$BIN_DIR/agent-relay-broker")" = "$NEW_B"
 
@@ -721,6 +820,139 @@ DIGEST_VERIFIED=0
 eval "$orig_has_command"
 OS="$SAVED_OS"
 
+echo "== install root: AGENT_RELAY_INSTALL_DIR > AGENT_RELAY_HOME > ~/.agentworkforce/relay =="
+# shellcheck disable=SC2016  # single-quoted scripts are expanded by the child bash
+root_of() { # root_of <INSTALL_DIR-or-empty> <HOME-or-empty>
+    env -u AGENT_RELAY_INSTALL_DIR -u AGENT_RELAY_HOME ${1:+AGENT_RELAY_INSTALL_DIR="$1"} ${2:+AGENT_RELAY_HOME="$2"} \
+        HOME="$HOME" AGENT_RELAY_INSTALL_SOURCE_ONLY=1 bash -c '. "$1/install.sh"; printf "%s" "$INSTALL_DIR"' _ "$ROOT"
+}
+check "default install root" test "$(root_of "" "")" = "$HOME/.agentworkforce/relay"
+check "AGENT_RELAY_HOME relocates the install root" test "$(root_of "" /srv/relay-home)" = "/srv/relay-home"
+check "AGENT_RELAY_INSTALL_DIR wins over AGENT_RELAY_HOME" test "$(root_of /opt/relay /srv/relay-home)" = "/opt/relay"
+check "whitespace-only AGENT_RELAY_INSTALL_DIR counts as unset" test "$(root_of "   " /srv/relay-home)" = "/srv/relay-home"
+check "whitespace-only roots fall back to the default" test "$(root_of "  " "  ")" = "$HOME/.agentworkforce/relay"
+check "surrounding whitespace and trailing slashes are trimmed" test "$(root_of " /opt/relay// " "")" = "/opt/relay"
+# shellcheck disable=SC2016
+rel_root="$(cd "$WORK" && env -u AGENT_RELAY_INSTALL_DIR -u AGENT_RELAY_HOME AGENT_RELAY_INSTALL_DIR=rel/relay HOME="$HOME" AGENT_RELAY_INSTALL_SOURCE_ONLY=1 \
+    bash -c '. "$1/install.sh"; printf "%s" "$INSTALL_DIR"' _ "$ROOT")"
+check "a relative install root is made absolute" test "$rel_root" = "$(cd "$WORK" && pwd)/rel/relay"
+# shellcheck disable=SC2016
+launcher_of() { # launcher_of <INSTALL_DIR>
+    env -u AGENT_RELAY_INSTALL_DIR -u AGENT_RELAY_HOME AGENT_RELAY_INSTALL_DIR="$1" HOME="$HOME" AGENT_RELAY_INSTALL_SOURCE_ONLY=1 \
+        bash -c '. "$1/install.sh"; BIN_DIR="$2"; install_binary_launcher /x/agent-relay; cat "$2/agent-relay"' _ "$ROOT" "$(newdir)"
+}
+check "default launcher sets no install root" test -z "$(launcher_of "$HOME/.agentworkforce/relay" | grep AGENT_RELAY_INSTALL_DIR)"
+# shellcheck disable=SC2016
+check "relocated launcher exports its install root" contains "$(launcher_of /opt/relay)" 'export AGENT_RELAY_INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-/opt/relay}"'
+# shellcheck disable=SC2016
+node_launcher_of() { # node_launcher_of <INSTALL_DIR>
+    env -u AGENT_RELAY_INSTALL_DIR -u AGENT_RELAY_HOME AGENT_RELAY_INSTALL_DIR="$1" HOME="$HOME" AGENT_RELAY_INSTALL_SOURCE_ONLY=1 \
+        bash -c '. "$1/install.sh"; BIN_DIR="$2"; install_node_launcher /x/source; cat "$2/agent-relay"' _ "$ROOT" "$(newdir)"
+}
+# shellcheck disable=SC2016
+node_relay_launcher() {
+    env -u AGENT_RELAY_INSTALL_DIR -u AGENT_RELAY_HOME HOME="$HOME" AGENT_RELAY_INSTALL_SOURCE_ONLY=1 \
+        bash -c '. "$1/install.sh"; BIN_DIR="$2"; install_node_launcher /x/source; cmp -s "$2/relay" "$2/agent-relay" && cat "$2/relay"' _ "$ROOT" "$(newdir)"
+}
+check "source launcher: relay launcher written with the same body" contains "$(node_relay_launcher)" 'cd "/x/source" && exec node dist/src/cli/index.js'
+check "default source launcher sets no install root" test -z "$(node_launcher_of "$HOME/.agentworkforce/relay" | grep AGENT_RELAY_INSTALL_DIR)"
+# shellcheck disable=SC2016
+check "relocated source launcher exports its install root" contains "$(node_launcher_of /opt/relay)" 'export AGENT_RELAY_INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-/opt/relay}"'
+
+echo "== source fallback keeps the install root's state =="
+SRC_ROOT="$(newdir)"
+mkdir -p "$SRC_ROOT/bin"
+echo '{"active":"w"}' > "$SRC_ROOT/workspaces.json"
+echo '{"k":"v"}' > "$SRC_ROOT/relaycast-credentials.json"
+: > "$SRC_ROOT/bin/agent-relay-broker"
+# shellcheck disable=SC2016
+src_out="$(env -u AGENT_RELAY_INSTALL_DIR AGENT_RELAY_HOME="$SRC_ROOT" HOME="$HOME" AGENT_RELAY_INSTALL_SOURCE_ONLY=1 PATH="$PATH" \
+    bash -c '. "$1/install.sh"; set +e
+        check_node() { return 0; }
+        step() { :; }; info() { :; }; success() { :; }
+        git() { if [ "$1" = clone ]; then for last; do :; done; mkdir -p "$last/.git"; fi; return 0; }
+        npm() { return 0; }; pnpm() { return 0; }
+        BIN_DIR="$2"
+        install_from_source >/dev/null 2>&1
+        printf "%s" "$(cat "$BIN_DIR/agent-relay")"' _ "$ROOT" "$(newdir)")"
+check "source fallback: workspaces.json survives" test -f "$SRC_ROOT/workspaces.json"
+check "source fallback: relaycast-credentials.json survives" test -f "$SRC_ROOT/relaycast-credentials.json"
+check "source fallback: bin/ survives" test -e "$SRC_ROOT/bin/agent-relay-broker"
+check "source fallback: checkout lives in <root>/source" test -d "$SRC_ROOT/source/.git"
+check "source fallback: launcher runs the checkout" contains "$src_out" "cd \"$SRC_ROOT/source\""
+
+echo "== relaycast-engine: optional, checksum-verified, never downgraded =="
+SAVED_OS="$OS"
+OS="linux"
+# shellcheck disable=SC2034  # read by the sourced installer functions
+ARCH="x64"
+PLATFORM="linux-x64"
+# shellcheck disable=SC2034
+RELAYCAST_ENGINE_VERSION="11.0.0"
+RC_ASSET="relaycast-engine-11.0.0-linux-x64"
+make_fake_engine() { # make_fake_engine <path> <version>
+    # shellcheck disable=SC2016
+    printf '#!/bin/bash\n[ "$1" = --version ] && echo "relaycast-engine %s"\nexit 0\n' "$2" > "$1"; chmod +x "$1"
+}
+rc_reset() {
+    INSTALL_DIR="$(newdir)"; : > "$LOG"
+    rm -f "$FIX/asset/$RC_ASSET" "$FIX/asset/$RC_ASSET.sha256"
+}
+rc_publish() { # rc_publish <version> [bad-sum]
+    make_fake_engine "$FIX/asset/$RC_ASSET" "$1"
+    if [ "${2:-}" = bad-sum ]; then
+        printf '%s  %s\n' "$(printf 'x' | sha256_of)" "$RC_ASSET" > "$FIX/asset/$RC_ASSET.sha256"
+    else
+        printf '%s  %s\n' "$(sha256_of "$FIX/asset/$RC_ASSET")" "$RC_ASSET" > "$FIX/asset/$RC_ASSET.sha256"
+    fi
+}
+rc_no_temps() { test -z "$(find "$INSTALL_DIR" -name '.*' -type f | head -1)"; }
+
+rc_reset
+install_relaycast_engine; rc=$?
+check "unpublished asset: returns 0" test "$rc" -eq 0
+check "unpublished asset: nothing installed" test ! -e "$INSTALL_DIR/bin/relaycast-engine"
+check "unpublished asset: clear message" contains "$(cat "$LOG")" "could not be downloaded for linux-x64"
+check "unpublished asset: no temp files" rc_no_temps
+
+rc_reset; rc_publish 11.0.0
+install_relaycast_engine; rc=$?
+check "published asset: installed into INSTALL_DIR/bin" test "$rc" -eq 0 -a -x "$INSTALL_DIR/bin/relaycast-engine"
+check "published asset: bytes match the release" cmp -s "$INSTALL_DIR/bin/relaycast-engine" "$FIX/asset/$RC_ASSET"
+check "published asset: no temp or .prev files" rc_no_temps
+
+rc_reset; rc_publish 11.0.0 bad-sum
+install_relaycast_engine; rc=$?
+check "checksum mismatch: returns 0 but installs nothing" test "$rc" -eq 0 -a ! -e "$INSTALL_DIR/bin/relaycast-engine"
+check "checksum mismatch: reported" contains "$(cat "$LOG")" "SHA-256 mismatch for $RC_ASSET"
+
+rc_reset; make_fake_engine "$FIX/asset/$RC_ASSET" 11.0.0
+install_relaycast_engine
+check "missing .sha256: unverified binary refused" test ! -e "$INSTALL_DIR/bin/relaycast-engine"
+check "missing .sha256: reported" contains "$(cat "$LOG")" "publishes no $RC_ASSET.sha256"
+check "missing .sha256: no temp files" rc_no_temps
+
+rc_reset; rc_publish 11.0.0
+mkdir -p "$INSTALL_DIR/bin"; make_fake_engine "$INSTALL_DIR/bin/relaycast-engine" 12.1.0
+cp -p "$INSTALL_DIR/bin/relaycast-engine" "$WORK/engine.newer"
+install_relaycast_engine
+check "newer installed engine is never downgraded" cmp -s "$INSTALL_DIR/bin/relaycast-engine" "$WORK/engine.newer"
+check "newer installed engine: reported" contains "$(cat "$LOG")" "Keeping newer relaycast-engine v12.1.0"
+
+rc_reset; rc_publish 11.0.0
+mkdir -p "$INSTALL_DIR/bin"; make_fake_engine "$INSTALL_DIR/bin/relaycast-engine" 10.6.5
+install_relaycast_engine
+check "older installed engine is upgraded" test "$("$INSTALL_DIR/bin/relaycast-engine" --version)" = "relaycast-engine 11.0.0"
+
+rc_reset; rc_publish 11.0.0
+AGENT_RELAY_SKIP_RELAYCAST_ENGINE=1 install_relaycast_engine
+check "AGENT_RELAY_SKIP_RELAYCAST_ENGINE=1 skips the download" test ! -e "$INSTALL_DIR/bin/relaycast-engine"
+
+check "version_gt orders numerically" version_gt 11.10.0 11.9.9
+check "version_gt is strict" eval '! version_gt 11.0.0 11.0.0'
+rm -f "$FIX/asset/$RC_ASSET" "$FIX/asset/$RC_ASSET.sha256"
+OS="$SAVED_OS"; PLATFORM="test-test"
+
 echo "== AGENT_RELAY_SMOKE_SECONDS is validated =="
 for v in 0 abc -1 "" 1.5 99999; do
     got="$(AGENT_RELAY_SMOKE_SECONDS="$v" resolve_smoke_seconds 2>/dev/null)"
@@ -740,6 +972,36 @@ warn() { echo "[warn] $1"; }
 out="$(AGENT_RELAY_SMOKE_SECONDS=abc smoke_test_broker "$WORK/fast-crash" 2>&1)"
 warn() { echo "[warn] $1" >> "$LOG"; }
 check "invalid AGENT_RELAY_SMOKE_SECONDS warning is visible through smoke_test_broker" contains "$out" "Ignoring invalid AGENT_RELAY_SMOKE_SECONDS"
+
+# ---------------------------------------------------------------------------
+echo "== unwritable TMPDIR / temp-file failures are not verification failures (#1963) =="
+
+NOTMP="$WORK/no-such-dir/tmp"   # mktemp cannot create files here
+make_fake_cli "$WORK/cli-ok" "9.9.9"
+CLI_CHECK_OUTPUT=""
+TMPDIR="$NOTMP" check_cli_binary "$WORK/cli-ok"; rc=$?
+check "check_cli_binary passes a working CLI with an unwritable TMPDIR" test "$rc" -eq 0
+printf '#!/bin/bash\necho "boom: broken build"; exit 1\n' > "$WORK/cli-bad"; chmod +x "$WORK/cli-bad"
+TMPDIR="$NOTMP" check_cli_binary "$WORK/cli-bad"; rc=$?
+check "check_cli_binary still rejects a failing CLI" test "$rc" -ne 0
+check "and reports its first output line" test "$CLI_CHECK_OUTPUT" = "boom: broken build"
+
+reset_release
+make_fake_broker "$FIX/asset/agent-relay-broker-test-test" ok new
+fetch_release_asset agent-relay-broker-test-test "$WORK/no-such-dir/bin" raw; rc=$?
+check "fetch_release_asset returns 3 (not 1 = unavailable) when no temp file can be created" test "$rc" -eq 3
+
+out="$( (INSTALL_DIR="$WORK/no-such-dir"; INSTALL_ID=""; temp_file_failure "$INSTALL_DIR/bin") 2>&1)"; rc=$?
+check "temp_file_failure exits non-zero" test "$rc" -ne 0
+check "temp_file_failure names the directory, not a verification failure" contains "$out" "Cannot create a temporary file in $WORK/no-such-dir/bin"
+
+echo "== AGENT_RELAY_INSTALL_METHOD=standalone never falls back to npm =="
+(AGENT_RELAY_INSTALL_METHOD="" refuse_fallback_if_standalone_only); rc=$?
+check "fallback allowed by default" test "$rc" -eq 0
+out="$( (INSTALL_ID=""; STANDALONE_FAILURE_REASON="sha mismatch"; AGENT_RELAY_INSTALL_METHOD=standalone refuse_fallback_if_standalone_only; echo REACHED) 2>&1)"; rc=$?
+check "standalone-only mode exits non-zero" test "$rc" -ne 0
+check "standalone-only mode stops before the fallback" eval '! contains "$out" REACHED'
+check "standalone-only mode reports the reason" contains "$out" "sha mismatch"
 
 # ---------------------------------------------------------------------------
 if [ -n "${AGENT_RELAY_TEST_BROKER:-}" ]; then

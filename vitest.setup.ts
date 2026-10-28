@@ -1,5 +1,14 @@
 // Add jest-dom matchers for React component testing
 import '@testing-library/jest-dom/vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+// Machine-wide Agent Relay state (workspace store, Relaycast origin
+// bindings) must never land in the real home directory during tests.
+if (!process.env.AGENT_RELAY_HOME) {
+  process.env.AGENT_RELAY_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-relay-test-home-'));
+}
 
 const setIfMissing = (key: string, value: string) => {
   if (!process.env[key]) {

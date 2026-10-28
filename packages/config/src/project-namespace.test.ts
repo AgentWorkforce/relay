@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { findProjectRoot } from './project-namespace.js';
+import { ensureGitExclude, findProjectRoot } from './project-namespace.js';
 
 let root: string;
 beforeEach(() => {
@@ -55,5 +55,70 @@ describe('shared repository workspace boundary', () => {
     fs.writeFileSync(path.join(nested, 'package.json'), '{}');
     fs.symlinkSync('/nonexistent/git', path.join(root, '.git'));
     expect(() => findProjectRoot(nested)).toThrow('Cannot resolve the repository workspace');
+  });
+});
+
+describe('ensureGitExclude', () => {
+  const dataDir = () => path.join(root, '.agentworkforce', 'relay');
+  const exclude = (gitDir = path.join(root, '.git')) =>
+    fs.readFileSync(path.join(gitDir, 'info', 'exclude'), 'utf8');
+
+  it('adds the data directory, anchored, to info/exclude once', () => {
+    fs.mkdirSync(path.join(root, '.git', 'info'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, '.git', 'info', 'exclude'),
+      '# git ls-files --others --exclude-from=.git/info/exclude'
+    );
+    expect(ensureGitExclude(dataDir())).toEqual({ modified: true });
+    expect(ensureGitExclude(dataDir())).toEqual({ modified: false });
+    expect(exclude()).toBe(
+      '# git ls-files --others --exclude-from=.git/info/exclude\n/.agentworkforce/relay/\n'
+    );
+  });
+
+  it('creates info/exclude and anchors a project below the repository root', () => {
+    fs.mkdirSync(path.join(root, '.git'));
+    const nested = path.join(root, 'apps', 'web', '.agentworkforce', 'relay');
+    expect(ensureGitExclude(nested)).toEqual({ modified: true });
+    expect(exclude()).toBe('/apps/web/.agentworkforce/relay/\n');
+  });
+
+  it('accepts the unanchored entry older versions wrote', () => {
+    fs.mkdirSync(path.join(root, '.git', 'info'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.git', 'info', 'exclude'), '.agentworkforce/relay/\n');
+    expect(ensureGitExclude(dataDir())).toEqual({ modified: false });
+  });
+
+  it('writes the shared exclude of a linked worktree', () => {
+    const common = path.join(root, 'main', '.git');
+    const worktreeGitDir = path.join(common, 'worktrees', 'feature');
+    fs.mkdirSync(worktreeGitDir, { recursive: true });
+    fs.writeFileSync(path.join(worktreeGitDir, 'commondir'), '../..\n');
+    const worktree = path.join(root, 'feature');
+    fs.mkdirSync(worktree);
+    fs.writeFileSync(path.join(worktree, '.git'), `gitdir: ${worktreeGitDir}\n`);
+    expect(ensureGitExclude(path.join(worktree, '.agentworkforce', 'relay'))).toEqual({ modified: true });
+    expect(exclude(common)).toBe('/.agentworkforce/relay/\n');
+  });
+
+  it('writes the exclude of a submodule whose .git file has a relative gitdir', () => {
+    const gitDir = path.join(root, 'super', '.git', 'modules', 'sub');
+    fs.mkdirSync(gitDir, { recursive: true });
+    const sub = path.join(root, 'super', 'sub');
+    fs.mkdirSync(sub, { recursive: true });
+    fs.writeFileSync(path.join(sub, '.git'), 'gitdir: ../.git/modules/sub\n');
+    expect(ensureGitExclude(path.join(sub, '.agentworkforce', 'relay'))).toEqual({ modified: true });
+    expect(exclude(gitDir)).toBe('/.agentworkforce/relay/\n');
+  });
+
+  it('writes nothing for a .git file whose gitdir no longer exists', () => {
+    const missing = path.join(root, 'gone', '.git', 'worktrees', 'feature');
+    fs.writeFileSync(path.join(root, '.git'), `gitdir: ${missing}\n`);
+    expect(ensureGitExclude(dataDir())).toEqual({ modified: false });
+    expect(fs.existsSync(path.join(root, 'gone'))).toBe(false);
+  });
+
+  it('does nothing outside a git repository', () => {
+    expect(ensureGitExclude(dataDir())).toEqual({ modified: false });
   });
 });

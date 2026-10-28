@@ -4510,7 +4510,9 @@ mod tests {
             when.method(POST).path("/v1/agents");
             then.status(429)
                 .delay(Duration::from_millis(120))
-                .header("Retry-After", "1")
+                // Keep the cooldown outside the overall budget while leaving
+                // enough time for a cold macOS Keychain root load.
+                .header("Retry-After", "10")
                 .json_body(json!({
                     "ok": false,
                     "error": { "code": "workspace_busy", "message": "busy" }
@@ -4524,17 +4526,17 @@ mod tests {
             &client,
             "worker-a",
             Some("codex"),
-            Duration::from_millis(200),
+            Duration::from_secs(2),
         )
         .await;
         let elapsed = started.elapsed();
 
         assert!(
             matches!(result, Err(RegRetryOutcome::RetryableExhausted(_))),
-            "expected the 1s cooldown to be rejected once it can't fit the 200ms budget, got {result:?}"
+            "expected the 10s cooldown to be rejected once it can't fit the 2s budget, got {result:?}"
         );
         assert!(
-            elapsed < Duration::from_millis(600),
+            elapsed < Duration::from_secs(4),
             "elapsed {elapsed:?} suggests the operation slept past its budget instead of \
              failing closed after the slow request consumed it"
         );
@@ -5706,14 +5708,14 @@ mod tests {
                 true,
                 Some(&expected_hash),
                 None,
-                &[5_000],
-                Duration::from_millis(50),
+                &[30_000],
+                Duration::from_secs(1),
             )
             .await
             .expect_err("the guarded release loop must honor one overall deadline");
 
         assert!(error.to_string().contains("total budget"), "{error:#}");
-        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(started.elapsed() < Duration::from_secs(3));
         cleanup.assert_hits(1);
     }
 

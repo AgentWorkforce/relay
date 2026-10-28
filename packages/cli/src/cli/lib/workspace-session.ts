@@ -6,7 +6,12 @@ import {
   writeProjectWorkspaceKey,
   writeProjectWorkspaceKeyPreservingSession,
 } from './project-workspace-key.js';
-import { setWorkspaceKey, switchWorkspace, validateWorkspaceName } from './workspace-store.js';
+import {
+  readWorkspaceStore,
+  setWorkspaceKey,
+  switchWorkspace,
+  validateWorkspaceName,
+} from './workspace-store.js';
 
 export interface WorkspaceSessionOptions {
   env?: NodeJS.ProcessEnv;
@@ -24,6 +29,14 @@ export interface PersistWorkspaceSessionOptions extends WorkspaceSessionOptions 
   relaycastApiKey?: string;
   /** Named sessions are also stored and selected in the machine-global workspace store. */
   name?: string;
+  /**
+   * When a named session becomes the machine-global active workspace.
+   * `always` (the default) selects it, as `relay workspace switch/join/create` do.
+   * `if-none` selects it only when no other saved workspace is active, so a
+   * project-scoped setup such as `relay init` never moves the whole machine off
+   * a workspace something else already relies on.
+   */
+  activate?: 'always' | 'if-none';
 }
 
 export interface PinProjectWorkspaceSessionOptions extends WorkspaceSessionOptions {
@@ -49,6 +62,11 @@ export interface PersistWorkspaceSessionResult {
    * workspace. Present only when there was one to drop.
    */
   clearedEnrolledNodeId?: string;
+  /**
+   * The machine-global active workspace left in place because `activate` was
+   * `if-none` and a different saved workspace was already active.
+   */
+  keptActiveWorkspace?: string;
 }
 
 /**
@@ -126,14 +144,33 @@ export function persistWorkspaceSession(
     });
   }
 
+  let keptActiveWorkspace: string | undefined;
   if (name) {
+    const otherActive = options.activate === 'if-none' ? otherActiveWorkspace(name, options.env) : undefined;
     setWorkspaceKey(name, workspaceKey, options.env);
-    switchWorkspace(name, options.env);
+    if (otherActive) {
+      keptActiveWorkspace = otherActive;
+    } else {
+      switchWorkspace(name, options.env);
+    }
   }
 
-  return existing?.enrolledNodeId && !enrolledNodeId
-    ? { clearedEnrolledNodeId: existing.enrolledNodeId }
-    : {};
+  return {
+    ...(existing?.enrolledNodeId && !enrolledNodeId
+      ? { clearedEnrolledNodeId: existing.enrolledNodeId }
+      : {}),
+    ...(keptActiveWorkspace ? { keptActiveWorkspace } : {}),
+  };
+}
+
+/**
+ * The saved workspace active machine-wide, when it is one other than `name`.
+ * An active name with no saved entry resolves to nothing, so it is not kept.
+ */
+function otherActiveWorkspace(name: string, env: NodeJS.ProcessEnv | undefined): string | undefined {
+  const store = readWorkspaceStore(env);
+  const active = store.active;
+  return active && active !== name && store.workspaces[active] ? active : undefined;
 }
 
 /**

@@ -480,3 +480,23 @@ describe('workspace precedence ladder diagnostics', () => {
     });
   });
 });
+
+describe('workspace key and git', () => {
+  it('keeps the project data directory holding the key out of git status', () => {
+    fs.mkdirSync(path.join(root, '.git'));
+    writeProjectWorkspaceKey(dataDir, 'rk_live_project');
+    expect(fs.readFileSync(path.join(root, '.git', 'info', 'exclude'), 'utf8')).toBe(
+      '/.agentworkforce/relay/\n'
+    );
+    writeProjectWorkspaceKeyPreservingSession(dataDir, 'rk_live_project');
+    expect(fs.readFileSync(path.join(root, '.git', 'info', 'exclude'), 'utf8')).toBe(
+      '/.agentworkforce/relay/\n'
+    );
+  });
+
+  it('leaves a caller-chosen data directory alone', () => {
+    fs.mkdirSync(path.join(root, '.git'));
+    writeProjectWorkspaceKey(path.join(root, 'state'), 'rk_live_project');
+    expect(fs.existsSync(path.join(root, '.git', 'info', 'exclude'))).toBe(false);
+  });
+});

@@ -83,6 +83,7 @@ const expectedLeafCommands = [
   'cloud integration disconnect',
   // workspace
   'workspace create',
+  'init',
   'workspace active',
   'workspace list',
   'workspace set_key',

@@ -5,7 +5,22 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Major]
+
+### Added
+
+- The broker now lives in `~/.agentworkforce/relay/bin` (or `$AGENT_RELAY_INSTALL_DIR/bin`, else `$AGENT_RELAY_HOME/bin`), however the CLI is installed; `install.sh` also puts the standalone CLI there. An npm-installed CLI stays in npm's global bin directory and copies only its broker there on first run. The copy is atomic and checksum-verified, and it never replaces a newer broker from `install.sh` or the desktop app. Set `AGENT_RELAY_SKIP_BROKER_INSTALL=1` to opt out.
+- `install.sh` installs the local Relaycast server (`relaycast-engine`) into the same directory when the pinned release publishes it for your platform. If it is not published, the step is skipped. Set `AGENT_RELAY_SKIP_RELAYCAST_ENGINE=1` to skip it.
+- `relay init` lets two agents communicate without an account: it starts a private Relaycast server on this machine and creates a workspace. `relay init --hosted` creates a hosted workspace and prints the one command other machines run to join, and `relay init --url <url> --key <key>` connects to your own server on any HTTPS port. See `docs/quickstart.md`.
+- `relay agent register` saves each agent's token, and `--as <name>` uses it on any messaging command, so agents no longer need `RELAY_AGENT_TOKEN` exported in every shell.
+- `relay init` is now a guided setup in a terminal: it asks where agents talk (this machine, hosted, or your own server), which agent tools to connect (Claude Code, Codex, OpenCode, Grok CLI, Pi and Devin, with the installed ones pre-checked), and whether to configure this project or every project, then adds the Relay MCP server to each tool through its own `mcp add` command or config file. `--tools`, `--scope` and `--yes` run it without prompts (the default when stdin is not a terminal), and `relay init --uninstall` removes only the entries it added.
+
+### Changed
+
+- `install.sh` and `relay init` use Relaycast engine 11.1.0, which ships as a standalone binary: `install.sh` now installs `relaycast-engine` into `~/.agentworkforce/relay/bin`, so the local server no longer needs Node.js or a native addon.
+- The CLI and `@agent-relay/harness-driver` now resolve the broker in this order: `BROKER_BINARY_PATH` / `AGENT_RELAY_BIN`, then `~/.agentworkforce/relay/bin`, then the npm platform package, then `PATH`. A broker in the install directory now wins over one found on `PATH`.
+- `install.sh` honours `AGENT_RELAY_HOME` as the install root when `AGENT_RELAY_INSTALL_DIR` is not set. A relocated install exports its root from the `agent-relay` launcher.
+- `relay mcp` without `RELAY_AGENT_NAME` now registers each session as `<tool>-<project folder>` (for example `claude-myproject`, from the MCP client's name), adding a short suffix when another live session holds that name and taking the name back after a restart, instead of registering every session as `orchestrator`.
 
 ### Fixed
 
@@ -15,6 +30,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - Python workflows, the `agent-relay.py` node provider, and the `agent-relay-sdk` package. Local workflows are YAML, TypeScript, JavaScript, or shell. Cloud and worker workflows are YAML or TypeScript. Node definitions are TypeScript or JavaScript. SDKs are TypeScript and Swift.
+
+### Fixed
+
+- Broker: `spawn:<harness>` capabilities now declare `metadata.configured.node_kind: "broker"`, so Cloud keeps placing spawns on unclaimed CLI brokers instead of refusing them until `agent-relay node claim`. An already-declared kind (e.g. `desktop`) is preserved.
+- `relay init` downloads the standalone Relaycast server (`relaycast-engine`) for your platform into the install directory's `bin` when it is missing, verifying its SHA-256, so the local server now starts from an npm install on any Node.js version and with npm install scripts disabled. It falls back to the `@relaycast/engine` npm package only if the download fails.
+- Codex 0.16x workers no longer dead-letter their initial task with `initial_injection_incomplete` when the composer scrolls long input. The broker now checks that the end of each typed chunk is visible and ignores Codex's `↑`/`↓` scroll markers.
+- `relay agent rotate <name>`, and `agent register` for a name that already exists, now issue a new token through the audited owner takeover instead of failing with "already exists", so a lost token can always be replaced.
+- `@agent-relay/sdk` docs for `workspace.register()` now say registration is create-only: an existing name fails with `name_conflict` (with or without `{ strict: true }`) and keeps its token. Resume an agent with `workspace.reconnect({ apiToken })`, and get a new token with `relay agent rotate <name>`.
+- `install.sh`'s source-build fallback no longer deletes the install root (and with it saved workspaces and Relaycast credentials); the checkout now lives in its `source/` subdirectory.
+- `agent-relay update` now updates the install that ran it: standalone installs through the release's verified `install.sh` (no npm needed, CLI and broker replaced together), npm installs with `npm install -g`. It verifies the new version and exits non-zero on failure instead of claiming success. It tracks the `latest` release.
+- `install.sh` no longer reports an unwritable `TMPDIR` as a failed verification or falls back to npm when it cannot create a temp file.
+- `install.sh` now also installs the short `relay` command next to `agent-relay` (same CLI), so `relay init` works right after a curl install. An existing `relay` from another tool is left alone with a warning, and `agent-relay uninstall` removes `relay` only when the installer wrote it.
+- `relay init` no longer switches the machine-wide active workspace away from one already in use: it saves the new workspace for the current project, keeps the existing active one, and prints `relay workspace switch <name>` to make it the default.
+- `relay init` no longer writes npx's temporary cache path into agent tool configs. Project configs (`.mcp.json` and the like) run `agent-relay mcp` by name, or `npx -y agent-relay@<version> mcp` when Relay is not installed, so they work on teammates' machines. Re-running `relay init` updates entries it wrote earlier.
+- `relay init --scope project` now tells the truth about Codex: Codex loads `.codex/config.toml` only when that exact project is trusted in `~/.codex/config.toml` (a trusted parent folder does not count, and `codex exec` never asks). In a terminal, `relay init` offers to record that trust; with `--yes` it prints the lines to add.
+- The project workspace key file (`.agentworkforce/relay/workspace-key.json`) is no longer picked up by `git add -A`: any command that saves it adds `.agentworkforce/relay/` to `.git/info/exclude` (worktrees included), never to `.gitignore`.
+- `relay node up` now reports the actual workspace-key source when startup fails, including the repository's `.agentworkforce/relay/workspace-key.json` pin instead of mislabeling every key as `AGENT_RELAY_WORKSPACE_KEY`.
+
+### Security
+
+- `agent-relay` no longer sends a self-hosted workspace key or agent token to the hosted service when `RELAY_BASE_URL` is unset in a later shell. A credential used with a self-hosted server is remembered (as a one-way fingerprint in `~/.agentworkforce/relay/relaycast-origins.json`, path prefix included) and sent back only to that server, and a persisted project route can no longer redirect it; `workspace create` now honours `RELAY_BASE_URL`; and a malformed `RELAY_BASE_URL` or `--base-url` is an error instead of a silent fallback to `https://cast.agentrelay.com`.
+- The Rust broker now enforces the same saved self-hosted credential route before making authenticated HTTPS or WebSocket connections, passes that resolved route to spawned agents, and trusts operating-system roots plus `SSL_CERT_FILE` for private certificate authorities.
+- Spawned Cursor, OpenCode, Gemini, and Grok agents no longer get the workspace key, agent token, or `RELAY_WORKSPACES_JSON` written into their config files (`.cursor/mcp.json`, `opencode.json`, `.gemini/settings.json`, `~/.grok/config.toml`). The files name each credential by environment variable, and the broker sets the values on the agent process. A later commit of the project can no longer publish live Relay credentials. The broker refuses to write a credential-shaped value into a project file, and it adds each project file it writes to `.git/info/exclude`. Rotate any key or token that an earlier version may have written into a repository.
+- Muse workers' Relay MCP settings move from `<project>/.agent-relay/` to `~/.agentworkforce/relay/sessions/` (or `$AGENT_RELAY_HOME/sessions/`), and the broker removes them when the worker is released. A Muse worker that uses `RELAY_MUSE_ISOLATED_AUTH` has to log in again once.
+- `agent-relay-broker mcp-args` output adds `requiredEnv`, which lists the credential variables (names only) that the caller must set on the agent process.
 
 ## [14.0.0] - 2026-10-13
 

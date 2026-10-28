@@ -273,6 +273,8 @@ export interface CliUpdateEvent {
   to_version: string;
   /** True when the update install command completed successfully. */
   success: boolean;
+  /** How the running CLI was installed ('standalone', 'npm' or 'unknown'). */
+  install_method?: 'standalone' | 'npm' | 'unknown';
   /** Error constructor/category when success=false. */
   error_class?: string;
 }

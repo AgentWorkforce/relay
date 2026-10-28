@@ -7107,7 +7107,9 @@ async fn slow_delivery_read_ack_does_not_block_confirmation_path() {
             .path("/v1/messages/msg_slow/read")
             .header("authorization", "Bearer at_live_slow_recipient");
         then.status(200)
-            .delay(Duration::from_millis(200))
+            // Keep the response beyond the operation bound while allowing a
+            // cold native-root load to finish and put the request on the wire.
+            .delay(Duration::from_secs(2))
             .json_body(json!({
                 "ok": true,
                 "data": {
@@ -7157,7 +7159,7 @@ async fn slow_delivery_read_ack_does_not_block_confirmation_path() {
         Some("codex"),
         &confirmed.delivery.delivery_id,
         &confirmed.delivery.event_id,
-        Duration::from_millis(20),
+        Duration::from_millis(500),
     );
     assert!(
         start.elapsed() < Duration::from_millis(50),

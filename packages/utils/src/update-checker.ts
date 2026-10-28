@@ -172,7 +172,7 @@ export function printUpdateNotification(info: UpdateInfo): void {
   if (!info.updateAvailable || !info.latestVersion) return;
 
   const line1 = `Update available: ${info.currentVersion} → ${info.latestVersion}`;
-  const line2 = 'Run: npm install -g agent-relay';
+  const line2 = 'Run: agent-relay update';
   const contentWidth = Math.max(line1.length, line2.length);
   const boxWidth = contentWidth + 4; // 2 chars padding each side
 
