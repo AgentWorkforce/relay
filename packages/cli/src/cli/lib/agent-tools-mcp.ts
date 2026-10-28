@@ -275,7 +275,12 @@ export const TOOL_TARGETS: readonly ToolTarget[] = [
 // count, and `codex exec` never asks: only an interactive `codex` offers to
 // trust the folder on first run.
 
-/** The directory Codex treats as this project's root, which is what it trusts. */
+/**
+ * The directory Codex treats as this project's root, which is what it trusts.
+ *
+ * @param ctx - Project root, home and environment to resolve against.
+ * @returns The real path of the nearest directory with a `.git`, else the project root.
+ */
 export function codexProjectRoot(ctx: ToolContext): string {
   const start = realpath(ctx.projectRoot) ?? path.resolve(ctx.projectRoot);
   let current = start;
@@ -287,37 +292,74 @@ export function codexProjectRoot(ctx: ToolContext): string {
   }
 }
 
-/** Codex's user config, where project trust is recorded. */
+/**
+ * Codex's user config, where project trust is recorded.
+ *
+ * @param ctx - Home and environment (`CODEX_HOME`) to resolve against.
+ * @returns `$CODEX_HOME/config.toml`, by default `~/.codex/config.toml`.
+ */
 export function codexUserConfigPath(ctx: ToolContext): string {
   return path.join(codexHome(ctx), 'config.toml');
 }
 
-const CODEX_PROJECT_HEADER = /^\s*\[\s*projects\s*\.\s*("(?:[^"\\]|\\.)*"|'[^']*')\s*\]\s*(?:#.*)?$/;
-
-function tomlQuotedKey(raw: string): string | undefined {
-  if (raw.startsWith("'")) return raw.slice(1, -1);
-  try {
-    return JSON.parse(raw) as string;
-  } catch {
-    return undefined;
+/**
+ * Split a TOML key (`projects."/repo"`, `"projects".'/repo'`) into its
+ * decoded parts, or undefined when it is not a key this parser understands.
+ */
+function tomlKeyParts(raw: string): string[] | undefined {
+  const parts: string[] = [];
+  const segment = /\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*(\.|$)/y;
+  let index = 0;
+  while (index < raw.length) {
+    segment.lastIndex = index;
+    const match = segment.exec(raw);
+    if (!match) return undefined;
+    if (match[1] !== undefined) {
+      try {
+        parts.push(JSON.parse(`"${match[1]}"`) as string);
+      } catch {
+        return undefined;
+      }
+    } else {
+      parts.push(match[2] ?? match[3]);
+    }
+    index = segment.lastIndex;
+    if (match[4] === '' && index < raw.length) return undefined;
+    if (match[4] === '.' && index >= raw.length) return undefined;
   }
+  return parts.length > 0 ? parts : undefined;
+}
+
+/** The key of a `[table]` header line, or undefined for any other line. */
+function tomlTableKey(line: string): string[] | undefined {
+  const match = TOML_HEADER.exec(line);
+  return match && !line.trim().startsWith('[[') ? tomlKeyParts(match[1]) : undefined;
+}
+
+/** Whether a header line opens `[projects."<root>"]`, however the key is quoted. */
+function isProjectTable(line: string, root: string): boolean {
+  const key = tomlTableKey(line);
+  return Boolean(key && key.length === 2 && key[0] === 'projects' && key[1] === root);
 }
 
 /** Codex's recorded trust for this project. */
 export type CodexTrust = 'trusted' | 'untrusted' | 'unset';
 
-/** Whether Codex will read this project's .codex/config.toml. */
+/**
+ * Whether Codex will read this project's `.codex/config.toml`.
+ *
+ * @param ctx - Project root, home and environment to resolve against.
+ * @returns The trust level recorded for exactly this project's root.
+ */
 export function codexProjectTrust(ctx: ToolContext): CodexTrust {
   const root = codexProjectRoot(ctx);
   const text = readText(codexUserConfigPath(ctx));
   if (text === undefined) return 'unset';
-  const lines = text.split('\n');
   let inRoot = false;
   let trust: CodexTrust = 'unset';
-  for (const line of lines) {
+  for (const line of text.split('\n')) {
     if (TOML_HEADER.test(line)) {
-      const match = CODEX_PROJECT_HEADER.exec(line);
-      inRoot = Boolean(match && tomlQuotedKey(match[1]) === root);
+      inRoot = isProjectTable(line, root);
       continue;
     }
     if (!inRoot) continue;
@@ -328,26 +370,48 @@ export function codexProjectTrust(ctx: ToolContext): CodexTrust {
 }
 
 /**
+ * Whether `projects` is declared anywhere other than `[projects.<path>]`
+ * tables: a `[projects]` table, an inline table, dotted keys, or a header
+ * this parser cannot read. Appending a table then could duplicate a key.
+ */
+function hasUneditableProjects(lines: string[]): boolean {
+  let table: string[] | undefined = [];
+  for (const line of lines) {
+    if (TOML_HEADER.test(line)) {
+      table = tomlTableKey(line);
+      if (table === undefined && /projects/.test(line)) return true;
+      if (table?.[0] === 'projects' && table.length !== 2) return true;
+      continue;
+    }
+    const assignment = /^\s*([^=#]+?)\s*=/.exec(line);
+    if (!assignment || table === undefined) continue;
+    const key = [...table, ...(tomlKeyParts(assignment[1]) ?? [assignment[1]])];
+    if (key[0] === 'projects' && table[0] !== 'projects') return true;
+  }
+  return false;
+}
+
+/**
  * Record this project as trusted in Codex's user config, as Codex's own
  * first-run prompt does. Trust also relaxes Codex's approval defaults in the
- * project, so callers ask first. Refuses (throws) rather than risk a config
- * Codex cannot parse.
+ * project, so callers ask first.
+ *
+ * @param ctx - Project root, home and environment to resolve against.
+ * @throws When the config declares projects in a form this would have to
+ *   restructure, rather than risk a config Codex cannot parse.
  */
 export function trustCodexProject(ctx: ToolContext): void {
   const root = codexProjectRoot(ctx);
   const file = codexUserConfigPath(ctx);
   const text = readText(file) ?? '';
   const lines = text.split('\n');
-  if (lines.some((line) => /^\s*projects\s*[.=]/.test(line) || /^\s*\[\s*projects\s*\]/.test(line))) {
+  if (hasUneditableProjects(lines)) {
     throw new Error(
       `${file} declares projects in a form relay init does not edit; trust ${root} in Codex instead.`
     );
   }
   const header = `[projects.${JSON.stringify(root)}]`;
-  const index = lines.findIndex((line) => {
-    const match = CODEX_PROJECT_HEADER.exec(line);
-    return Boolean(match && tomlQuotedKey(match[1]) === root);
-  });
+  const index = lines.findIndex((line) => isProjectTable(line, root));
   let next: string;
   if (index === -1) {
     const base = text.replace(/\n*$/, '');
@@ -361,7 +425,12 @@ export function trustCodexProject(ctx: ToolContext): void {
   writeKeepingMode(file, next, 0o600);
 }
 
-/** The step left before Codex loads the project entry, if any. */
+/**
+ * The step left before Codex loads the project entry, if any.
+ *
+ * @param ctx - Project root, home and environment to resolve against.
+ * @returns A note for the person, or undefined when Codex already trusts the project.
+ */
 export function codexTrustNote(ctx: ToolContext): string | undefined {
   const trust = codexProjectTrust(ctx);
   if (trust === 'trusted') return undefined;
@@ -375,7 +444,8 @@ export function codexTrustNote(ctx: ToolContext): string | undefined {
   return (
     `Codex reads .codex/config.toml only in projects it trusts, and ${root} is not trusted yet ` +
     '(a trusted parent folder does not count, and codex exec never asks). Open codex here once and trust ' +
-    `the folder, or add [projects.${JSON.stringify(root)}] trust_level = "trusted" to ${codexUserConfigPath(ctx)}.`
+    `the folder, or add these two lines to ${codexUserConfigPath(ctx)}:\n` +
+    `    [projects.${JSON.stringify(root)}]\n    trust_level = "trusted"`
   );
 }
 
@@ -497,7 +567,12 @@ function realpath(file: string): string | undefined {
   }
 }
 
-/** A path npm or Bun may delete at any time: an npx/bunx cache copy. */
+/**
+ * Whether a path is one npm or Bun may delete at any time: an npx/bunx cache copy.
+ *
+ * @param file - Path to check.
+ * @returns True for paths under `_npx`, npm's `_cacache`, or a `bunx-` directory.
+ */
 export function isEphemeralPath(file: string): boolean {
   const normalized = file.replace(/\\/g, '/');
   return (
@@ -553,6 +628,9 @@ function npxLaunch(version: string | undefined, reason: string): McpLaunch {
  * 2. For a temporary npx copy: a lasting `agent-relay` on PATH, else
  *    `npx -y agent-relay@<this version> mcp`.
  * 3. The running CLI by absolute path.
+ *
+ * @param inputs - Tool context, scope, version, and (in tests) the running process.
+ * @returns The command and arguments to write, why, and any warning to show.
  */
 export function resolveMcpLaunch(inputs: LaunchInputs): McpLaunch {
   const { ctx } = inputs;

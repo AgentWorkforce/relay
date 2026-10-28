@@ -94,7 +94,7 @@ it asks about on first run. Codex reads `.codex/config.toml` only when that
 exact project (its git root) is trusted in `~/.codex/config.toml`; a trusted
 parent folder does not count, and `codex exec` never asks. In a terminal
 `relay init` offers to record that trust for you; with `--yes` it prints the
-line to add instead.
+lines to add instead.
 
 In a git repository, `relay init` keeps `.agentworkforce/relay/` (which holds
 the project's workspace key) out of `git status` through `.git/info/exclude`;

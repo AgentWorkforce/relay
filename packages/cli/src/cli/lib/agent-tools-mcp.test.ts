@@ -605,9 +605,31 @@ describe('Codex project trust', () => {
     expect(codexProjectTrust(ctx)).toBe('trusted');
   });
 
-  it('refuses a projects table it would have to restructure', () => {
-    writeCodexConfig('[projects]\n"/somewhere" = { trust_level = "trusted" }\n');
+  it('recognises the project table however its key is quoted', () => {
+    writeCodexConfig(`["projects".${JSON.stringify(realProject())}]\ntrust_level = "trusted"\n`);
+    expect(codexProjectTrust(ctx)).toBe('trusted');
+    writeCodexConfig(`[ "projects" . '${realProject()}' ]\nmodel = "o3"\n`);
+    trustCodexProject(ctx);
+    expect(read(codexConfig())).toBe(
+      `[ "projects" . '${realProject()}' ]\ntrust_level = "trusted"\nmodel = "o3"\n`
+    );
+  });
+
+  it('prints a trust snippet that is valid TOML on two lines', () => {
+    expect(codexTrustNote(ctx)).toContain(
+      `[projects.${JSON.stringify(realProject())}]\n    trust_level = "trusted"`
+    );
+  });
+
+  it.each([
+    ['a [projects] table', '[projects]\n"/somewhere" = { trust_level = "trusted" }\n'],
+    ['an inline table', 'projects = { "/somewhere" = { trust_level = "trusted" } }\n'],
+    ['dotted keys', '"projects"."/somewhere".trust_level = "trusted"\n'],
+    ['an array of tables', '[[projects]]\npath = "/somewhere"\n'],
+  ])('refuses %s it would have to restructure', (_name, text) => {
+    writeCodexConfig(text);
     expect(() => trustCodexProject(ctx)).toThrow(/does not edit/);
+    expect(read(codexConfig())).toBe(text);
   });
 });
 

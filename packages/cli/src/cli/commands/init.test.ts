@@ -441,7 +441,7 @@ describe('relay init agent tools (non-interactive)', () => {
     // --yes never trusts it on the person's behalf.
     expect(output).toContain('Codex reads .codex/config.toml only in projects it trusts');
     expect(output).toContain(
-      `[projects.${JSON.stringify(fs.realpathSync(project))}] trust_level = "trusted"`
+      `[projects.${JSON.stringify(fs.realpathSync(project))}]\n    trust_level = "trusted"`
     );
     expect(fs.existsSync(path.join(toolHome, '.codex', 'config.toml'))).toBe(false);
   });
