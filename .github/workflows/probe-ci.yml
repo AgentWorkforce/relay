@@ -87,6 +87,8 @@ jobs:
       # own agent configuration (or a Cloud sign-in) never leaks in.
       - name: Test
         run: |
+          # Keep the toolchain where it was installed before hiding HOME.
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
           export HOME="$RUNNER_TEMP/probe-home"
           mkdir -p "$HOME"
           cargo test --locked
@@ -108,6 +110,8 @@ jobs:
         run: cargo build --locked
       - name: Test
         run: |
+          # Keep the toolchain where it was installed before hiding HOME.
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
           export HOME="$RUNNER_TEMP/probe-home"
           mkdir -p "$HOME"
           cargo test --locked
