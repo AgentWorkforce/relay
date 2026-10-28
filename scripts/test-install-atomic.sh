@@ -611,6 +611,17 @@ check "relay backup failure: install still succeeds" test "$rc" -eq 0 -a "$("$BI
 check "relay backup failure: relay launcher left unchanged" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
 check "relay backup failure: reported" contains "$(cat "$LOG")" "Could not back up the existing $BIN_DIR/relay launcher"
 
+# a failed relay write (here: its temp path is a directory) never replaces the working launcher
+BIN_DIR="$(newdir)"
+our_relay_launcher "$BIN_DIR/relay" "working"; cp -p "$BIN_DIR/relay" "$WORK/relay.orig"
+mkdir "$BIN_DIR/relay.tmp.$$"
+: > "$LOG"
+( install_binary_launcher /x/agent-relay ) 2>/dev/null; rc=$?
+rmdir "$BIN_DIR/relay.tmp.$$"
+check "relay write failure: agent-relay launcher still written" test "$rc" -eq 0 -a -x "$BIN_DIR/agent-relay"
+check "relay write failure: existing relay launcher unchanged" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
+check "relay write failure: reported" contains "$(cat "$LOG")" "Could not write the $BIN_DIR/relay launcher"
+
 echo "== interrupted install cleans its temp files =="
 for sig in INT TERM; do
     reset_release

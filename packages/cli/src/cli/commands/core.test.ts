@@ -3178,6 +3178,15 @@ describe('registerCoreCommands', () => {
     expect(await runCommand(foreignProgram, ['uninstall'])).toBeUndefined();
     expect(foreign.deps.fs.existsSync(relayPath)).toBe(true);
     expect(foreign.deps.fs.unlinkSync).not.toHaveBeenCalledWith(relayPath);
+
+    // A user-created symlink to a marked launcher is not ours either.
+    const symlinked = createHarness();
+    symlinked.deps.fs.writeFileSync(relayPath, launcher);
+    symlinked.deps.fs.lstatSync = vi.fn(() => ({ isFile: () => false }));
+    const symlinkedProgram = new Command();
+    registerCoreMaintenance(symlinkedProgram, symlinked.deps);
+    expect(await runCommand(symlinkedProgram, ['uninstall'])).toBeUndefined();
+    expect(symlinked.deps.fs.existsSync(relayPath)).toBe(true);
   });
 
   it('up always logs the workspace key after broker starts', async () => {

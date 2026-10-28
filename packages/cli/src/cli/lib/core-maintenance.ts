@@ -303,9 +303,15 @@ async function installVersion(
 /** Marker line install.sh writes into every launcher it creates (see install.sh LAUNCHER_MARKER). */
 export const INSTALLER_LAUNCHER_MARKER = '# agent-relay launcher (written by the Agent Relay installer)';
 
+/**
+ * True when `filePath` itself is a regular file carrying the installer's marker.
+ * A symlink is never ours (install.sh writes regular files), even if it points at a marked launcher.
+ */
 function isInstallerLauncher(filePath: string, fs: CoreFileSystem): boolean {
   try {
-    return fs.existsSync(filePath) && fs.readFileSync(filePath, 'utf-8').includes(INSTALLER_LAUNCHER_MARKER);
+    if (!fs.existsSync(filePath)) return false;
+    if (fs.lstatSync && !fs.lstatSync(filePath).isFile()) return false;
+    return fs.readFileSync(filePath, 'utf-8').includes(INSTALLER_LAUNCHER_MARKER);
   } catch {
     return false;
   }

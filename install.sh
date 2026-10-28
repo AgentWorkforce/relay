@@ -153,8 +153,11 @@ write_executable_file() {
 
     mkdir -p "$(dirname "$target")"
     safe_remove_path "$temp"
-    cat > "$temp"
-    chmod +x "$temp"
+    # Never move a partial or non-executable file over a working one (disk full).
+    if ! cat > "$temp" || ! chmod +x "$temp"; then
+        safe_remove_path "$temp"
+        return 1
+    fi
     mv -f "$temp" "$target"
 }
 
