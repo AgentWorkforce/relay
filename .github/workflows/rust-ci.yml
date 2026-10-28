@@ -7,6 +7,12 @@ on:
 
 # Reusable workflows cannot elevate the caller's token permissions.
 # detect-changes.yml reads pull-request file lists and commit comparisons.
+# A new push to a PR replaces its earlier runs; every other run (main pushes,
+# manual runs) gets its own group so it is never cancelled or dropped.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
   pull-requests: read
