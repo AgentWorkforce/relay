@@ -133,12 +133,18 @@ function findDotGit(dir: string): string | undefined {
  */
 function gitExcludePath(dotGit: string): string | undefined {
   let gitDir = dotGit;
-  // Read rather than stat-then-read: a directory fails with EISDIR.
+  // Check and read through one descriptor, so the answer cannot change
+  // between them. Some platforms refuse to open a directory (EISDIR); others
+  // open it, and FreeBSD would even "read" it, hence fstat.
   let pointerFile: string | undefined;
+  let fd: number | undefined;
   try {
-    pointerFile = fs.readFileSync(dotGit, 'utf-8');
+    fd = fs.openSync(dotGit, 'r');
+    if (!fs.fstatSync(fd).isDirectory()) pointerFile = fs.readFileSync(fd, 'utf-8');
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EISDIR') return undefined;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
   }
   if (pointerFile !== undefined) {
     const match = /^gitdir:\s*(.+?)\s*$/m.exec(pointerFile);
