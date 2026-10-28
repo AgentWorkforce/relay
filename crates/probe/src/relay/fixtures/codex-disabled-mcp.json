@@ -1,1 +1,18 @@
-{"jsonrpc":"2.0","id":7,"result":{"data":[{"name":"agent-relay-sessions","authStatus":"bearerToken","runtimeStatus":"disabled","tools":{},"toolsError":null,"resources":[],"resourceTemplates":[]}],"nextCursor":null}}
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "result": {
+    "data": [
+      {
+        "name": "agent-relay-sessions",
+        "authStatus": "bearerToken",
+        "runtimeStatus": "disabled",
+        "tools": {},
+        "toolsError": null,
+        "resources": [],
+        "resourceTemplates": []
+      }
+    ],
+    "nextCursor": null
+  }
+}

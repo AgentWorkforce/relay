@@ -10,9 +10,7 @@
         "is_agent": false,
         "included": false,
         "status": "not_shared",
-        "models": [
-          "Zulu"
-        ],
+        "models": ["Zulu"],
         "reasoning_effort": "HIGH",
         "first_activity_ms": 300
       },
@@ -30,9 +28,7 @@
         "is_agent": false,
         "included": false,
         "status": "not_shared",
-        "models": [
-          "alpha"
-        ],
+        "models": ["alpha"],
         "reasoning_effort": "low",
         "first_activity_ms": 100
       },
@@ -50,9 +46,7 @@
         "is_agent": false,
         "included": false,
         "status": "not_shared",
-        "models": [
-          "unknown"
-        ],
+        "models": ["unknown"],
         "reasoning_effort": "unknown"
       },
       "status": null,
@@ -63,159 +57,63 @@
   "cases": [
     {
       "column": "Session",
-      "ascending": [
-        "codex:b",
-        "codex:c",
-        "claude:a"
-      ],
-      "descending": [
-        "claude:a",
-        "codex:b",
-        "codex:c"
-      ]
+      "ascending": ["codex:b", "codex:c", "claude:a"],
+      "descending": ["claude:a", "codex:b", "codex:c"]
     },
     {
       "column": "Project",
-      "ascending": [
-        "codex:b",
-        "claude:a",
-        "codex:c"
-      ],
-      "descending": [
-        "claude:a",
-        "codex:b",
-        "codex:c"
-      ]
+      "ascending": ["codex:b", "claude:a", "codex:c"],
+      "descending": ["claude:a", "codex:b", "codex:c"]
     },
     {
       "column": "Status",
-      "ascending": [
-        "codex:b",
-        "claude:a",
-        "codex:c"
-      ],
-      "descending": [
-        "claude:a",
-        "codex:b",
-        "codex:c"
-      ]
+      "ascending": ["codex:b", "claude:a", "codex:c"],
+      "descending": ["claude:a", "codex:b", "codex:c"]
     },
     {
       "column": "Updated",
-      "ascending": [
-        "claude:a",
-        "codex:b",
-        "codex:c"
-      ],
-      "descending": [
-        "codex:b",
-        "claude:a",
-        "codex:c"
-      ]
+      "ascending": ["claude:a", "codex:b", "codex:c"],
+      "descending": ["codex:b", "claude:a", "codex:c"]
     },
     {
       "column": "Messages",
-      "ascending": [
-        "codex:b",
-        "claude:a",
-        "codex:c"
-      ],
-      "descending": [
-        "claude:a",
-        "codex:b",
-        "codex:c"
-      ]
+      "ascending": ["codex:b", "claude:a", "codex:c"],
+      "descending": ["claude:a", "codex:b", "codex:c"]
     },
     {
       "column": "Upload",
-      "ascending": [
-        "claude:a",
-        "codex:b",
-        "codex:c"
-      ],
-      "descending": [
-        "codex:b",
-        "claude:a",
-        "codex:c"
-      ]
+      "ascending": ["claude:a", "codex:b", "codex:c"],
+      "descending": ["codex:b", "claude:a", "codex:c"]
     },
     {
       "column": "Harness",
-      "ascending": [
-        "claude:a",
-        "codex:b",
-        "codex:c"
-      ],
-      "descending": [
-        "codex:b",
-        "codex:c",
-        "claude:a"
-      ]
+      "ascending": ["claude:a", "codex:b", "codex:c"],
+      "descending": ["codex:b", "codex:c", "claude:a"]
     },
     {
       "column": "Model",
-      "ascending": [
-        "codex:b",
-        "claude:a",
-        "codex:c"
-      ],
-      "descending": [
-        "claude:a",
-        "codex:b",
-        "codex:c"
-      ]
+      "ascending": ["codex:b", "claude:a", "codex:c"],
+      "descending": ["claude:a", "codex:b", "codex:c"]
     },
     {
       "column": "Reasoning",
-      "ascending": [
-        "codex:b",
-        "claude:a",
-        "codex:c"
-      ],
-      "descending": [
-        "claude:a",
-        "codex:b",
-        "codex:c"
-      ]
+      "ascending": ["codex:b", "claude:a", "codex:c"],
+      "descending": ["claude:a", "codex:b", "codex:c"]
     },
     {
       "column": "Created",
-      "ascending": [
-        "codex:b",
-        "claude:a",
-        "codex:c"
-      ],
-      "descending": [
-        "claude:a",
-        "codex:b",
-        "codex:c"
-      ]
+      "ascending": ["codex:b", "claude:a", "codex:c"],
+      "descending": ["claude:a", "codex:b", "codex:c"]
     },
     {
       "column": "Directory",
-      "ascending": [
-        "codex:b",
-        "claude:a",
-        "codex:c"
-      ],
-      "descending": [
-        "claude:a",
-        "codex:b",
-        "codex:c"
-      ]
+      "ascending": ["codex:b", "claude:a", "codex:c"],
+      "descending": ["claude:a", "codex:b", "codex:c"]
     },
     {
       "column": "Session ID",
-      "ascending": [
-        "claude:a",
-        "codex:b",
-        "codex:c"
-      ],
-      "descending": [
-        "codex:c",
-        "codex:b",
-        "claude:a"
-      ]
+      "ascending": ["claude:a", "codex:b", "codex:c"],
+      "descending": ["codex:c", "codex:b", "claude:a"]
     }
   ]
 }

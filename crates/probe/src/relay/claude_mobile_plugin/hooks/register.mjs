@@ -1,7 +1,7 @@
 // The private core authenticates the mobile sender and the native Claude PID. No peer
 // inbox content, sender label, or model instruction can create a native turn.
 // Native HTTP opens the socket from Claude itself, never a tool subprocess.
-const PREFIX = "/claude/mobile-handoff/";
+const PREFIX = '/claude/mobile-handoff/';
 const PERIOD_MS = 2000;
 const MAX_RESULTS = 32;
 const PERMISSION_WAIT_MS = 300000;
@@ -12,12 +12,15 @@ const MAX_ANSWER_UNITS = 24000;
 function mobileAnswer(text) {
   if (text.length <= MAX_ANSWER_UNITS) return text;
   let end = MAX_ANSWER_UNITS;
-  if (text.charCodeAt(end - 1) >= 0xD800 && text.charCodeAt(end - 1) <= 0xDBFF) end--;
-  return text.slice(0, end) + "\n\n[Answer shortened for mobile. The complete answer is in Claude on your computer.]";
+  if (text.charCodeAt(end - 1) >= 0xd800 && text.charCodeAt(end - 1) <= 0xdbff) end--;
+  return (
+    text.slice(0, end) +
+    '\n\n[Answer shortened for mobile. The complete answer is in Claude on your computer.]'
+  );
 }
 
 function absolute(path) {
-  return typeof path === "string" && !path.includes("\0") && path.startsWith("/");
+  return typeof path === 'string' && !path.includes('\0') && path.startsWith('/');
 }
 
 let bridge;
@@ -38,17 +41,19 @@ async function request($, route, body) {
   if (!bridge) {
     const config = JSON.parse(await $.fs.read(`${$.plugin.root}/bridge.json`));
     if (!absolute(config.socket)) {
-      throw new Error("Agent Relay mobile bridge is not configured.");
+      throw new Error('Agent Relay mobile bridge is not configured.');
     }
     bridge = config;
   }
-  const response = await $.http.fetch("http://relay" + PREFIX + route, {
-    socketPath: bridge.socket, method: "POST",
-    headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  const response = await $.http.fetch('http://relay' + PREFIX + route, {
+    socketPath: bridge.socket,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
   });
-  if (!response.ok) throw new Error("Agent Relay is unavailable.");
+  if (!response.ok) throw new Error('Agent Relay is unavailable.');
   const value = JSON.parse(response.text);
-  if (value.error || value.ok === false) throw new Error("Agent Relay refused the request.");
+  if (value.error || value.ok === false) throw new Error('Agent Relay refused the request.');
   return value.data ?? value;
 }
 
@@ -64,7 +69,7 @@ async function flush($) {
     while (results.length && !confirming) {
       const answer = results[0];
       try {
-        await request($, "result", answer);
+        await request($, 'result', answer);
       } catch {
         break;
       }
@@ -94,13 +99,14 @@ async function tick($) {
     // A delayed answer must not prevent polling for the next user turn.
     await flush($);
     const version = await $.session.version();
-    const action = await request($, "poll", { version: version.version });
+    const action = await request($, 'poll', { version: version.version });
     if (!action.action || !action.lease_id || attempted.has(action.lease_id)) return;
-    if (await $.session.id() !== current) return;
-    if (action.action !== "submit" || typeof action.control_token !== "string" || !action.control_token) return;
+    if ((await $.session.id()) !== current) return;
+    if (action.action !== 'submit' || typeof action.control_token !== 'string' || !action.control_token)
+      return;
     attempted.add(action.lease_id);
-    if (typeof action.text !== "string" || !action.text.trim()) {
-      await request($, "ack", { lease_id: action.lease_id, outcome: "failed" });
+    if (typeof action.text !== 'string' || !action.text.trim()) {
+      await request($, 'ack', { lease_id: action.lease_id, outcome: 'failed' });
       return;
     }
     // The mod remains identifiable to hooks and policy gates. asUser is the
@@ -119,9 +125,9 @@ async function tick($) {
       } else if (forward) {
         controlToken = action.control_token;
       }
-      await request($, "ack", {
+      await request($, 'ack', {
         lease_id: action.lease_id,
-        outcome: admitted?.drop === undefined ? "started" : "failed",
+        outcome: admitted?.drop === undefined ? 'started' : 'failed',
       });
     } finally {
       confirming = false;
@@ -149,14 +155,14 @@ export function register(on) {
   controlToken = undefined;
   turnTokens = new Map();
   permissionSequence = 0;
-  on("session.start", async ($, event, next) => {
+  on('session.start', async ($, event, next) => {
     const result = await next(event);
     if (timer) timer.cancel();
     timer = $.clock.every(PERIOD_MS, () => tick($));
     return result;
   });
 
-  on("turn.start", async ($, event, next) => {
+  on('turn.start', async ($, event, next) => {
     if (event.agentId) return next(event);
     const at = submitted.findIndex((item) => item.text === event.text);
     const item = at < 0 ? undefined : submitted[at];
@@ -167,35 +173,44 @@ export function register(on) {
     return next(event);
   });
 
-  on("classic.PermissionRequest", async ($, event, next) => {
+  on('classic.PermissionRequest', async ($, event, next) => {
     const result = await next(event);
     // Preserve decisions from the person's existing hooks. Only a turn that
     // originated in the verified mobile queue uses the remote approval path.
-    if (!mobileTurn || result?.decision || result?.block !== undefined || result?.preventContinuation) return result;
+    if (!mobileTurn || result?.decision || result?.block !== undefined || result?.preventContinuation)
+      return result;
     try {
       const body = {
-        request_id: mobileTurn.id + "-" + (++permissionSequence),
-        tool_name: event.tool_name, tool_input: event.tool_input, control_token: mobileTurn.token,
+        request_id: mobileTurn.id + '-' + ++permissionSequence,
+        tool_name: event.tool_name,
+        tool_input: event.tool_input,
+        control_token: mobileTurn.token,
       };
-      const until = await $.clock.now() + PERMISSION_WAIT_MS;
+      const until = (await $.clock.now()) + PERMISSION_WAIT_MS;
       // Native HTTP has a fixed 30-second deadline. Each server poll waits
       // at most 15 seconds while retaining one idempotent permission ticket.
-      for (let attempt = 0; attempt < 24 && await $.clock.now() < until; attempt++) {
-        const reply = await request($, "permission", body);
+      for (let attempt = 0; attempt < 24 && (await $.clock.now()) < until; attempt++) {
+        const reply = await request($, 'permission', body);
         if (!reply.handled) return result;
         if (reply.pending === true) continue;
-        if (reply.decision?.behavior !== "allow" && reply.decision?.behavior !== "deny") {
-          throw new Error("Unrecognized native permission decision.");
+        if (reply.decision?.behavior !== 'allow' && reply.decision?.behavior !== 'deny') {
+          throw new Error('Unrecognized native permission decision.');
         }
         return { ...result, decision: reply.decision };
       }
-      throw new Error("The mobile permission request expired.");
+      throw new Error('The mobile permission request expired.');
     } catch {
-      return { ...result, decision: { behavior: "deny", message: "Agent Relay could not confirm your approval. Try again when it reconnects." } };
+      return {
+        ...result,
+        decision: {
+          behavior: 'deny',
+          message: 'Agent Relay could not confirm your approval. Try again when it reconnects.',
+        },
+      };
     }
   }).catch(($, event, next) => next(event));
 
-  on("turn.complete", async ($, event, next) => {
+  on('turn.complete', async ($, event, next) => {
     const result = await next(event);
     if (event.agentId) return result;
     if (event.turnId === mobileTurn?.id) mobileTurn = undefined;
@@ -205,7 +220,12 @@ export function register(on) {
     if (token && answer?.trim() && results.length < MAX_RESULTS) {
       const current = await $.session.id();
       if (current === session) {
-        results.push({ turn_id: event.turnId, text: mobileAnswer(answer), reason: event.reason, control_token: token });
+        results.push({
+          turn_id: event.turnId,
+          text: mobileAnswer(answer),
+          reason: event.reason,
+          control_token: token,
+        });
         // The owner's verification can take a Cloud round trip; never hold
         // the turn's completion on it.
         void flush($);
