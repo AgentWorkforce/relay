@@ -1,5 +1,5 @@
 ---
-summary: 'Licenses and provenance for third-party source resources bundled with CodexBar.'
+summary: "Licenses and provenance for third-party source resources bundled with CodexBar."
 read_when:
   - Auditing bundled third-party resources and their licenses
 ---
