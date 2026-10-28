@@ -56,11 +56,11 @@ curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.s
 
 The install script puts every Agent Relay binary in one place, `~/.agentworkforce/relay/bin`:
 
-| Binary               | What it is                                           |
-| -------------------- | ---------------------------------------------------- |
-| `agent-relay`        | the CLI (a launcher for it is put in `~/.local/bin`) |
-| `agent-relay-broker` | the local broker the CLI starts                      |
-| `relaycast-engine`   | the local Relaycast server                           |
+| Binary               | What it is                                                                                   |
+| -------------------- | -------------------------------------------------------------------------------------------- |
+| `agent-relay`        | the CLI (launchers for it, `agent-relay` and the shorter `relay`, are put in `~/.local/bin`) |
+| `agent-relay-broker` | the local broker the CLI starts                                                              |
+| `relaycast-engine`   | the local Relaycast server                                                                   |
 
 The CLI, its broker and the desktop app all use the binaries in that directory. Set `AGENT_RELAY_INSTALL_DIR` (or `AGENT_RELAY_HOME`) to move it; binaries then live in its `bin/`.
 
