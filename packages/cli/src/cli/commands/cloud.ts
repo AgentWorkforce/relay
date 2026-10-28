@@ -830,7 +830,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         const storedBeforeAuth = await readStoredAuth();
         const auth = await ensureAuthenticated(apiUrl);
         const revisionAfterAuth = identityRevision();
-        const { response } = await authorizedApiFetch(auth, '/api/v1/auth/whoami', {
+        const { response, auth: activeAuth } = await authorizedApiFetch(auth, '/api/v1/auth/whoami', {
           method: 'GET',
           headers: isCloudAnalyticsEnabled() ? { 'X-Agent-Relay-Analytics': 'enabled' } : {},
         });
@@ -843,7 +843,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
           throw new Error(payload?.error || 'Failed to resolve auth status');
         }
 
-        deps.log(`API URL: ${auth.apiUrl}`);
+        deps.log(`API URL: ${activeAuth.apiUrl}`);
         deps.log(`Auth source: ${payload.source}`);
         deps.log(`Subject type: ${payload.subjectType ?? 'session'}`);
         deps.log(
@@ -859,7 +859,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
 
         // whoami is the canonical "who am I" call, so make it the refresh point
         // for the locally cached identity that tags telemetry.
-        const identity = toCloudIdentity(payload, auth.apiUrl);
+        const identity = toCloudIdentity(payload, activeAuth.apiUrl);
         const storedAfterAuth = identity ? await readStoredAuth() : null;
         if (
           identity &&
@@ -869,8 +869,10 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
             revisionBeforeAuth,
             revisionAfterAuth,
             revisionNow: identityRevision(),
-            resolvedAccessToken: auth.accessToken,
-            resolvedApiUrl: auth.apiUrl,
+            // Compare the token that produced this response. A 401 refresh
+            // replaces the access token without switching accounts.
+            resolvedAccessToken: activeAuth.accessToken,
+            resolvedApiUrl: activeAuth.apiUrl,
             storedAccessToken: storedAfterAuth?.accessToken,
             storedApiUrl: storedAfterAuth?.apiUrl,
           })

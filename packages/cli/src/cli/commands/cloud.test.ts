@@ -1675,6 +1675,46 @@ describe('registerCloudCommands', () => {
     }
   });
 
+  it('cloud whoami saves identity after a same-account token refresh', async () => {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-whoami-refresh-'));
+    vi.stubEnv('AGENT_RELAY_DATA_DIR', dataDir);
+    vi.stubEnv('CLOUD_API_ACCESS_TOKEN', '');
+    fs.writeFileSync(path.join(dataDir, 'cloud-identity.json.generation'), 'rev-A');
+    const original = { apiUrl: 'https://cloud.test', accessToken: 'token-A' };
+    const refreshed = { apiUrl: 'https://cloud.test', accessToken: 'token-refreshed' };
+    const identity = {
+      userId: 'usr_A',
+      apiUrl: refreshed.apiUrl,
+      updatedAt: '2026-10-28T00:00:00.000Z',
+    };
+    vi.mocked(readStoredAuth)
+      .mockResolvedValueOnce(original as never)
+      .mockResolvedValueOnce(refreshed as never);
+    vi.mocked(ensureAuthenticated).mockResolvedValueOnce(original as never);
+    vi.mocked(toCloudIdentity).mockReturnValueOnce(identity);
+    vi.mocked(authorizedApiFetch).mockResolvedValueOnce({
+      response: jsonResponse({
+        authenticated: true,
+        source: 'session',
+        subjectType: 'user',
+        scopes: [],
+        user: { id: 'usr_A', email: null, name: 'A', avatarUrl: null },
+        currentOrganization: null,
+        currentWorkspace: null,
+      }),
+      auth: refreshed,
+    } as never);
+    const { program } = createHarness();
+
+    try {
+      await program.parseAsync(['node', 'agent-relay', 'cloud', 'whoami']);
+      expect(writeStoredIdentity).toHaveBeenCalledWith(identity, process.env, 'rev-A');
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('cloud whoami persists identity for the login it just completed', async () => {
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-whoami-login-'));
     vi.stubEnv('AGENT_RELAY_DATA_DIR', dataDir);
