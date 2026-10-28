@@ -43,6 +43,7 @@ import {
   type DownloadFile,
   type EnginePlatform,
 } from '../lib/relaycast-engine-install.js';
+import { shellQuote } from '../lib/agent-registration.js';
 import { persistWorkspaceSession } from '../lib/workspace-session.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
 import { getProjectPaths } from '@agent-relay/config';
@@ -393,6 +394,59 @@ interface ServerChoice {
 interface ServerSetup {
   headline: string;
   details: string[];
+  /** The workspace saved for this project. */
+  workspace: string;
+  /** Another workspace left active machine-wide, when there was one. */
+  keptActive?: string;
+}
+
+/** A word as the shell reads it: quoted unless it is plainly safe to paste. */
+function shellWord(value: string): string {
+  return /^[A-Za-z0-9._@%+=:,/-]+$/.test(value) ? value : shellQuote(value);
+}
+
+/** The command that makes `name` the machine-wide active workspace. */
+function switchCommand(name: string): string {
+  return `relay workspace switch ${shellWord(name)}`;
+}
+
+/**
+ * Save the workspace and bind it to this project. It becomes the machine-wide
+ * active workspace only when no other one is: a machine already serving a
+ * workspace (a fleet node, other projects) must not be moved by setting up one
+ * project.
+ * @returns The other workspace left active, and the line explaining it.
+ */
+function saveWorkspace(
+  name: string,
+  workspaceKey: string
+): Pick<ServerSetup, 'workspace' | 'keptActive'> & {
+  lines: string[];
+} {
+  const { keptActiveWorkspace } = persistWorkspaceSession({ name, workspaceKey, activate: 'if-none' });
+  if (!keptActiveWorkspace) return { workspace: name, lines: [] };
+  return {
+    workspace: name,
+    keptActive: keptActiveWorkspace,
+    lines: [
+      `This project now uses workspace "${name}"; "${keptActiveWorkspace}" stays active machine-wide. ` +
+        `To make "${name}" the default everywhere, run: ${switchCommand(name)}`,
+    ],
+  };
+}
+
+/**
+ * Agent tools set up globally run in every project, and a project without its
+ * own workspace (and no flag or environment selection) uses the machine-wide
+ * active one. Say so when that is not the
+ * workspace just set up.
+ */
+function globalScopeNote(setup: ServerSetup, scope: InstallScope, installed: ToolId[]): string | undefined {
+  if (scope !== 'global' || installed.length === 0 || !setup.keptActive) return undefined;
+  return (
+    `In projects without their own workspace, globally set up agent tools use the active workspace "${setup.keptActive}". ` +
+    `To make "${setup.workspace}" the machine-wide fallback, run: ${switchCommand(setup.workspace)}`
+  );
 }
 
 /**
@@ -408,10 +462,11 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     await verifyWorkspace(deps, origin, key);
     guardCredentialOrigin(key, url);
     const name = choice.name ?? new URL(origin).hostname;
-    persistWorkspaceSession({ name, workspaceKey: key });
+    const { lines, ...saved } = saveWorkspace(name, key);
     return {
+      ...saved,
       headline: `Connected to your server at ${origin} as workspace "${name}".`,
-      details: ['Your key is only ever sent to this server.'],
+      details: ['Your key is only ever sent to this server.', ...lines],
     };
   }
 
@@ -419,10 +474,12 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     const name = choice.name ?? `relay-${os.hostname().split('.')[0]}`;
     const relay = await deps.createWorkspace(name, HOSTED_ORIGIN);
     if (!relay.workspaceKey) throw new Error('The hosted service did not return a workspace key.');
-    persistWorkspaceSession({ name, workspaceKey: relay.workspaceKey });
+    const { lines, ...saved } = saveWorkspace(name, relay.workspaceKey);
     return {
+      ...saved,
       headline: `Created hosted workspace "${name}".`,
       details: [
+        ...lines,
         'On another machine, join it with (treat this key like a password):',
         `  relay workspace join ${name} ${relay.workspaceKey}`,
       ],
@@ -450,10 +507,11 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     workspaceKey = relay.workspaceKey;
     guardCredentialOrigin(workspaceKey, origin);
   }
-  persistWorkspaceSession({ name, workspaceKey });
+  const { lines, ...saved } = saveWorkspace(name, workspaceKey);
   return {
+    ...saved,
     headline: `Relay is running on this machine (${origin}), workspace "${name}". No account needed.`,
-    details: ['To work with agents on other machines later, run: relay init --hosted'],
+    details: [...lines, 'To work with agents on other machines later, run: relay init --hosted'],
   };
 }
 
@@ -647,6 +705,8 @@ async function runPlain(deps: InitCommandDependencies, o: InitOptions): Promise<
     }
     if (launch.warning) deps.log(`  ! ${launch.warning}`);
     for (const note of notesFor(installed, scope)) deps.log(`  ${note}`);
+    const scopeNote = globalScopeNote(setup, scope, installed);
+    if (scopeNote) deps.log(`  ! ${scopeNote}`);
   } else if (o.tools === undefined) {
     deps.log('');
     deps.log(`No agent tools found (looked for ${TOOL_IDS.join(', ')}). Pass --tools to choose some.`);
@@ -777,6 +837,8 @@ async function runGuided(deps: InitCommandDependencies, o: InitOptions): Promise
     .map((result) => result.id);
   p.note(results.map((result) => describeResult(result, ctx)).join('\n'), 'Relay MCP server');
   for (const note of notesFor(installed, scope)) p.info(note);
+  const scopeNote = globalScopeNote(setup, scope, installed);
+  if (scopeNote) p.warn(scopeNote);
 
   // f. Next step.
   p.note([...nextStep(installed, scope, ctx), '', ...CLI_FALLBACK].join('\n'), 'Next');

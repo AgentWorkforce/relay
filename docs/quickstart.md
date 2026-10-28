@@ -90,6 +90,11 @@ No key or token is written into these files: `agent-relay mcp` finds the
 workspace `relay init` saved, and sends its key only to the server it belongs
 to.
 
+That workspace is saved for this project. If another workspace is already
+active on this machine (for example one a fleet node uses), `relay init` leaves
+it active and says so; run `relay workspace switch <name>` to make the new one
+the default everywhere.
+
 ### Without prompts
 
 `relay init` asks nothing when stdin is not a terminal, or with `--yes`. It then
