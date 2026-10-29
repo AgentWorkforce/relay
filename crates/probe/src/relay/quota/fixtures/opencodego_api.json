@@ -1,0 +1,11 @@
+[
+  {
+    "provider": "opencodego",
+    "source": "api",
+    "usage": {
+      "primary": { "usedPercent": 10, "windowMinutes": 300, "resetsAt": "2026-10-14T05:00:00Z" },
+      "secondary": { "usedPercent": 20, "windowMinutes": 10080, "resetsAt": "2026-10-19T00:00:00Z" },
+      "updatedAt": "2026-10-14T02:00:00Z"
+    }
+  }
+]

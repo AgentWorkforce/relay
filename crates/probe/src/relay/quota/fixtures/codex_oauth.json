@@ -1,0 +1,14 @@
+[
+  {
+    "provider": "codex",
+    "account": "redacted@example.test",
+    "source": "oauth",
+    "usage": {
+      "primary": { "usedPercent": 91, "windowMinutes": 300, "resetsAt": "2026-10-14T05:00:00Z" },
+      "secondary": { "usedPercent": 32, "windowMinutes": 10080, "resetsAt": "2026-10-19T00:00:00Z" },
+      "tertiary": null,
+      "updatedAt": "2026-10-14T02:00:00Z",
+      "identity": { "providerID": "codex", "accountEmail": "redacted@example.test" }
+    }
+  }
+]
