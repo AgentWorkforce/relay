@@ -601,18 +601,29 @@ impl CodexStopHookSettings {
 
     /// Removes Agent Relay's rules file, and the `rules` folder when that
     /// leaves it empty.
-    fn remove_rules(&self) {
+    ///
+    /// A rules file that cannot be removed is an error, so turning the hook
+    /// off can be tried again once the folder is writable.
+    fn remove_rules(&self) -> Result<(), String> {
         let mut removed = false;
         for path in self.rules_files() {
             // Agent Relay writes a plain file; a link is the person's.
             let ours = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file())
                 && std::fs::read_to_string(&path).is_ok_and(|text| text.starts_with(RULES_HEADER));
-            removed |= ours && std::fs::remove_file(&path).is_ok();
+            if !ours {
+                continue;
+            }
+            match std::fs::remove_file(&path) {
+                Ok(()) => removed = true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err("~/.codex/rules/agent-relay.rules cannot be removed.".into()),
+            }
         }
         if removed {
             // Only an empty folder goes; anything else in it stays.
             let _ = std::fs::remove_dir(self.codex_home.join("rules"));
         }
+        Ok(())
     }
 
     /// Removes `config.toml` when trusting the hook created it and nothing
@@ -819,7 +830,7 @@ impl CodexStopHookSettings {
                 self.take_out_of_file()
             })?;
         }
-        self.remove_rules();
+        self.remove_rules()?;
         self.tidy_config();
         Ok(())
     }
@@ -1356,6 +1367,29 @@ mod tests {
         assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
         assert!(std::fs::symlink_metadata(&link).is_ok());
         assert!(!codex.join("rules/agent-relay-3.rules").exists());
+    }
+
+    // Review on #2019: rules that cannot be removed leave the setting to
+    // try again, and a second try finishes the job.
+    #[cfg(unix)]
+    #[test]
+    fn rules_that_cannot_be_removed_are_an_error_and_a_retry_removes_them() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        let settings = full_settings(home.path());
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        let rules = codex.join("rules");
+        std::fs::set_permissions(&rules, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let outcome = settings.set(SETTING, &json!(false));
+        std::fs::set_permissions(&rules, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(outcome, Some(Err(_))), "{outcome:?}");
+        assert!(rules.join("agent-relay.rules").exists());
+
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        assert!(!rules.exists());
+        assert!(!codex.join("hooks.json").exists());
     }
 
     #[test]
