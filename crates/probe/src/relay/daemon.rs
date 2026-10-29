@@ -259,7 +259,7 @@ impl Core {
         let hub = Hub::new(
             DaemonInfo {
                 build_revision: Some(crate::BUILD_REVISION.into()),
-                history_version: Some(crate::HISTORY_VERSION.into()),
+                history_version: crate::history_version().map(Into::into),
                 version: config.version.clone(),
                 bridge_version: BRIDGE_VERSION,
                 pid: std::process::id(),

@@ -178,8 +178,11 @@ pub(crate) use index::Index;
 mod observation;
 pub(crate) use observation::{ExecutionObservation, ObservedSession};
 
+#[cfg(feature = "history")]
 mod catalog;
+#[cfg(feature = "history")]
 pub use catalog::catalog_title;
+#[cfg(feature = "history")]
 pub(crate) use catalog::{CatalogIndex, CatalogVersion};
 
 fn order_key(value: Option<&str>, key: &str, ascending: bool) -> String {

@@ -17,6 +17,7 @@ fn writer() -> FakeProcess {
     }
 }
 
+#[cfg(feature = "history")]
 #[tokio::test]
 async fn a_retained_closed_codex_row_cannot_create_an_automatic_registration() {
     let world = world();
@@ -118,6 +119,7 @@ async fn a_retained_closed_codex_row_cannot_create_an_automatic_registration() {
         .read(|store| store.registrations.iter().any(|row| row.target == target)));
 }
 
+#[cfg(feature = "history")]
 /// `cloud_catalog` with each row's originator (`automation` for a
 /// Devin review).
 pub(super) fn cloud_catalog_from(world: &mut World, rows: &[(&str, &str, Option<&str>)]) {
@@ -160,6 +162,7 @@ pub(super) fn cloud_catalog_from(world: &mut World, rows: &[(&str, &str, Option<
 
 // A Devin review (a session an automation started) has nobody in it to
 // talk to, so it never auto-activates; one a person started still does.
+#[cfg(feature = "history")]
 #[test]
 fn a_devin_review_session_never_auto_activates() {
     let _lock = crate::relay::devin_cloud::tests::ENV_LOCK

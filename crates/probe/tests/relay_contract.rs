@@ -114,7 +114,7 @@ async fn every_registered_method_reaches_a_handler() {
     let status = answer(call("status.get", json!({}))).await;
     assert_eq!(
         status["result"]["daemon"]["history_version"],
-        agent_relay_probe::HISTORY_VERSION
+        json!(agent_relay_probe::history_version())
     );
     assert_eq!(
         status["result"]["daemon"]["build_revision"],

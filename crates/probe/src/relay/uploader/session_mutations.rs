@@ -68,6 +68,7 @@ impl Uploader {
 }
 
 fn capturable_exclusions(keys: &[String]) -> Result<Vec<String>, RpcError> {
+    #[cfg_attr(not(feature = "history"), allow(unused_mut))]
     let mut retained = vec![];
     for key in keys {
         let Some((source, id)) = key.split_once(':') else {
@@ -80,13 +81,16 @@ fn capturable_exclusions(keys: &[String]) -> Result<Vec<String>, RpcError> {
                 "Session keys are source:session_id.",
             ));
         }
+        // Only a source the history capture can ingest needs an exclusion;
+        // without the `history` feature nothing is captured.
+        #[cfg(feature = "history")]
         if ai_hist::Source::parse(source).is_some_and(|s| s.as_str() == source) {
             retained.push(key.clone());
         }
     }
     Ok(retained)
 }
-#[cfg(test)]
+#[cfg(all(test, feature = "history"))]
 mod tests {
     use super::*;
     #[test]

@@ -19,6 +19,7 @@
 use crate::relay::claude::ClaudeConfig;
 use crate::relay::sessions::DiscoveredSession;
 use crate::relay::store::{is_claude_session_id, SessionKind, Target};
+#[cfg(feature = "history")]
 use ai_hist::{CatalogQuery, SessionScope, SessionStore, Source, StoreOptions};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -121,6 +122,7 @@ fn installs(probe_root: &Path) -> Vec<PathBuf> {
     installs
 }
 
+#[cfg(feature = "history")]
 /// One install's recent remote Claude rows with a claude.ai session id.
 fn remote_sessions(catalog_db: &Path, live: bool, now_ms: i64) -> Vec<DiscoveredSession> {
     let mut options = StoreOptions::default().db_path(catalog_db);
@@ -161,7 +163,13 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-#[cfg(test)]
+/// Without the `history` feature there is no catalog: no web sessions.
+#[cfg(not(feature = "history"))]
+fn remote_sessions(_catalog_db: &Path, _live: bool, _now_ms: i64) -> Vec<DiscoveredSession> {
+    Vec::new()
+}
+
+#[cfg(all(test, feature = "history"))]
 mod tests {
     use super::*;
 

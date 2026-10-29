@@ -35,13 +35,50 @@ aligns.
 | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/probe/`                                                        | The `agent-relay-probe` binary: bridge commands, the collector's delivery loop, `live` capture, progress, and `history`, its one path into `SessionStore`                                             |
 | `src/relay/`                                                        | The relay core daemon (`relay serve`): workspace and account, Relaycast, delivery and injection per harness, harness setup (hooks/plugins), spawning, the bridge and its contract (`relay::contract`) |
-| `src/cloud*`, `src/delivery*`, `src/destination*`, `src/retention*` | Cloud sign-in, the upload queue and its worker, the RelayHistory receiver, history retention                                                                                                          |
+| `src/cloud*`, `src/delivery*`, `src/destination*`, `src/retention*` | Cloud sign-in; with `history`, the upload queue and its worker, the RelayHistory receiver, history retention                                                                                                          |
 | `src/install*`                                                      | Where a packaged desktop install keeps its executables (`agent-relay`, `agent-relay-probe`); the core's launch-at-login entry uses it                                                                 |
 | `src/session_model*`                                                | The session catalog's view model (rows, the session search language, upload states) the core's catalog query filters by                                                                               |
 | `src/bin/relay-contract-codegen.rs`                                 | Generates the Swift bridge contract the apps consume                                                                                                                                                  |
 | `contract/CoreContract.swift`                                       | The checked-in generated contract; CI fails on drift                                                                                                                                                  |
 | `scripts/`                                                          | `generate-contract.sh`, `check-open-source.sh`                                                                                                                                                        |
 | `tests/`                                                            | Integration tests, with in-process fakes of Cloud, Relaycast and RelayHistory (`tests/support`)                                                                                                       |
+
+## Two builds: the core, and the core with session history
+
+Session history (capturing local sessions and uploading them to RelayHistory)
+is the only part of the crate built on relayhistory's `ai-hist`. It sits
+behind the `history` Cargo feature, which is on by default:
+
+| Build | Command | relayhistory | Who ships it |
+|---|---|---|---|
+| Core | `cargo build --locked --no-default-features --features production-binaries` | none | relay (`relay init`, `relay serve --headless`) |
+| Core + history | `cargo build --locked` | `ai-hist`, `history-provider-sources` | relay-desktop |
+
+The core alone is the whole messaging runtime: `relay serve` (discovery,
+native delivery and injection into running sessions, harness setup and
+hooks, Relaycast, spawning, the bridge and its contract), `relay call`, the
+harness hooks and `connect`. The binary's history commands (`cloud`, `run`,
+`start`, `status`, `sessions`, `sharing`, `history flush`, …) exist only with
+`history`.
+
+Without `history`, the bridge contract is unchanged (CI checks the generated
+contract is identical), and the history-backed answers degrade:
+
+- `sessions.query` and `sessions.facets` (the session-catalog search) are
+  refused: there is no catalog;
+- the history-retention setting is kept in settings only, with no store to
+  apply it to;
+- Devin Cloud and claude.ai web sessions are not listed, and a send to a
+  Devin Cloud session falls back to the local route (`devin_cloud`,
+  `claude_web`), since both come from the history catalog and connectors;
+- Hermes session titles are not editable (they resolve Hermes's roots
+  through `ai-hist`);
+- the uploader's background status monitor never starts, and
+  `status.get` reports no `history_version`.
+
+`.github/workflows/probe-ci.yml`'s `core-only` job builds and tests this
+build, fails if `ai-hist` or `history-provider-sources` appear in its
+dependency tree, and checks that it generates the same contract.
 
 ## Build and test
 
@@ -50,6 +87,9 @@ cargo build --manifest-path crates/probe/Cargo.toml --locked
 cargo build --manifest-path crates/probe/Cargo.toml --locked --release --bin agent-relay-probe
 # Tests read and write under HOME: use an empty one.
 HOME="$(mktemp -d)" cargo test --manifest-path crates/probe/Cargo.toml --locked
+# The core without session history (what relay ships):
+HOME="$(mktemp -d)" cargo test --manifest-path crates/probe/Cargo.toml --locked \
+  --no-default-features --features production-binaries
 ```
 
 The relayhistory git dependencies fetch over HTTPS; if Cargo's built-in Git
@@ -93,11 +133,13 @@ its own copy:
 
 - **Rust (GTK app):** the Linux/Windows app becomes its own crate that
   depends on `agent-relay-probe` as a library (a git dependency pinned to a
-  relay tag or commit, `default-features = false` to skip the binaries) and
-  imports `agent_relay_probe::{install, session_model, relay::…}`.
+  relay tag or commit, `default-features = false, features = ["history"]`
+  to skip the binaries but keep session history) and imports
+  `agent_relay_probe::{install, session_model, relay::…}`.
 - **Daemon binary:** the apps bundle `agent-relay-probe` built from this
-  crate with `AGENT_RELAY_PROBE_VERSION=<desktop CalVer>`, or the binary from
-  a relay release once relay publishes it.
+  crate with the default features (history included) and
+  `AGENT_RELAY_PROBE_VERSION=<desktop CalVer>`. relay's own release ships
+  the core-only build.
 - **Swift (macOS/iPad):** `CoreContract.swift` comes from
   `contract/CoreContract.swift` (or `generate-contract.sh --app-root`).
 

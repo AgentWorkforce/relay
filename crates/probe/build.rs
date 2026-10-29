@@ -48,7 +48,12 @@ fn main() {
     println!("cargo:rustc-env=RELAY_DESKTOP_REVISION={revision}");
     windows_resources(&version);
 
-    // Cargo.lock is the resolved dependency, not the manifest's version range.
+    // Only the `history` feature links RelayHistory, so only it reports a
+    // history version. Cargo.lock is the resolved dependency, not the
+    // manifest's version range.
+    if env::var_os("CARGO_FEATURE_HISTORY").is_none() {
+        return;
+    }
     let lock = fs::read_to_string(
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("Cargo.lock"),
     )

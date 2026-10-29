@@ -114,6 +114,58 @@ relay-desktop CI checks that are not ported yet:
 - arm64 Linux, x64 macOS and arm64 Windows lanes;
 - the Pi live-session scripts.
 
+## Phase 1.5: the core without relayhistory
+
+relay must not depend on relayhistory, and relay and relay-desktop must be
+able to share one core. Session history, meaning local capture and upload to
+RelayHistory, is the only part of the crate built on `ai-hist`. It is now
+behind a `history` Cargo feature, on by default:
+
+- **relay** builds `--no-default-features --features production-binaries`.
+  That build has no `ai-hist` or `history-provider-sources` in its
+  dependency tree, and CI checks this.
+- **relay-desktop** builds with the defaults and gets everything it has
+  today.
+
+The coupling was narrow: about a dozen of the 474 files under `src/relay/`.
+Behind the feature are:
+
+| Gated | What it is |
+|---|---|
+| `delivery`, `destination`, `retention` | The upload queue, the RelayHistory receiver and history retention |
+| `relay::session_query` (and the uploader's catalog search) | `sessions.query`/`sessions.facets` over `history.db` |
+| The uploader's background monitor and history reader | Reads `history.db` directly |
+| `relay::history_retention`'s store | Saves the retention policy in RelayHistory's store |
+| `relay::devin_cloud`, `relay::claude_web` catalog reads and Devin Cloud send | The remote sessions come from the history catalog and `history-provider-sources` connectors |
+| Hermes title roots (`session_titles::extra`) | `ai-hist`'s provider-root resolver |
+| `cloud::devin_credential` and the auth-refresh send path | Used only by uploads and the Devin connector |
+| The binary's history commands (`cloud`, `run`, `start`, `status`, `sessions`, `sharing`, `history flush`, …) | The collector |
+| 9 integration tests and the `native_visibility_host` example | History tests (`required-features = ["history"]`) |
+
+Things that stay in the core:
+
+- The pure delivery stall rules moved to an ungated `delivery_status`
+  module.
+- The binary's JSON output helpers moved to `src/probe/output.rs`.
+- `HISTORY_VERSION` is history-only. `history_version()` returns `None`
+  without the feature.
+
+The bridge contract is identical in both builds, so the apps need no change.
+Without history, the history-backed methods either refuse (catalog search)
+or answer empty, as the crate README describes.
+
+This is the first step of the split. It is a feature, not yet two crates,
+so it stays reviewable. The next step moves the gated code into its own
+crate (for example `agent-relay-history`, depending on the core and
+`ai-hist`), hooked into the core through traits in place of the `cfg`
+seams above. relay-desktop would then depend on both crates. The `cfg`
+seams mark exactly where those traits go:
+
+- session catalog search;
+- history retention;
+- the remote-session source and sender (Devin Cloud, claude.ai);
+- the uploader's history reader.
+
 ## Remaining phases
 
 2. **The probe reads the CLI's workspace.** Today `src/relay/workspace.rs`

@@ -29,29 +29,18 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
         mpsc::{self, SyncSender, TrySendError},
         Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant, UNIX_EPOCH},
 };
 
-static JSON: AtomicBool = AtomicBool::new(false);
 /// Grok's pre-upgrade catalog rows have no `session_kind`. A selected-mode
 /// process refreshes each explicitly selected Grok ID's provider catalog once
 /// before its first delivery, then ordinary inventory watches later changes.
 static GROK_SELECTION_DISCOVERED: OnceLock<Mutex<HashMap<PathBuf, HashSet<String>>>> =
     OnceLock::new();
-pub fn set_json(value: bool) {
-    JSON.store(value, Ordering::Relaxed);
-}
-pub fn json_mode() -> bool {
-    JSON.load(Ordering::Relaxed)
-}
-pub fn emit(mut value: Value) {
-    value["bridge_version"] = json!(1);
-    println!("{value}");
-}
+pub use crate::output::{emit, json_mode};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]

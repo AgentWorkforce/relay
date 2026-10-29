@@ -716,7 +716,7 @@ fn derive_at(status: &Value, now_ms: i64) -> Value {
         && !paused
         && !replacing
         && !upgrading
-        && crate::delivery::delivery_is_stalled(
+        && crate::delivery_status::delivery_is_stalled(
             pending,
             delivery["last_acknowledged_ms"].as_i64(),
             delivery["oldest_pending_ms"].as_i64(),
@@ -724,7 +724,7 @@ fn derive_at(status: &Value, now_ms: i64) -> Value {
         );
     let transient_progress = failure_code == "transient"
         && !stalled
-        && !crate::delivery::retry_failure_is_sustained(
+        && !crate::delivery_status::retry_failure_is_sustained(
             delivery["attempts"].as_i64().unwrap_or_default(),
             delivery["last_acknowledged_ms"].as_i64(),
             delivery["oldest_pending_ms"].as_i64(),
@@ -879,6 +879,7 @@ pub struct Uploader {
     sessions_read: Mutex<Option<(u64, usize, StatusRead)>>,
     sessions_refresh: tokio::sync::Mutex<()>,
     sessions_limit: Mutex<usize>,
+    #[cfg(feature = "history")]
     query_index: Arc<Mutex<Option<(PathBuf, u64, super::session_query::CatalogIndex)>>>,
     query_refresh: tokio::sync::Mutex<()>,
     /// Bumped when a change command (start, pause, sharing, …) finishes or

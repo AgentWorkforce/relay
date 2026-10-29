@@ -96,6 +96,9 @@ pub type ActiveStore = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
 
 /// [`HistoryRetention`] over RelayHistory's store-level policy
 /// (`ai_hist::retention`).
+// Without the `history` feature the store is never opened, so its handles
+// are kept only for the API's shape.
+#[cfg_attr(not(feature = "history"), allow(dead_code))]
 pub struct InStore {
     active: ActiveStore,
     uploader: Option<Weak<crate::relay::uploader::Uploader>>,
@@ -104,6 +107,7 @@ pub struct InStore {
 }
 
 impl InStore {
+    #[cfg(feature = "history")]
     fn store(&self) -> Option<(PathBuf, Option<crate::relay::uploader::HistoryReader>)> {
         // Acquire before even checking the path; reset may replace it. The
         // owned reader outlives every handle opened by this operation.
@@ -117,6 +121,7 @@ impl InStore {
 
     /// The store at `db`, read-only, and its identity. Opened afresh each
     /// time: a handle kept open would go on reading a store a reset removed.
+    #[cfg(feature = "history")]
     fn open(db: &Path) -> Result<(ai_hist::SessionStore, StoreId), ai_hist::Error> {
         let mut options = ai_hist::StoreOptions::default().db_path(db);
         options.read_only = true;
@@ -130,6 +135,20 @@ impl InStore {
     }
 }
 
+/// Without the `history` feature there is no store to save the policy in:
+/// the choice is kept in the settings file only.
+#[cfg(not(feature = "history"))]
+impl HistoryRetention for InStore {
+    fn saved(&self) -> Option<(StoreId, u32)> {
+        None
+    }
+
+    fn apply(&self, _retention: Retention) -> Result<Option<StoreId>, String> {
+        Ok(None)
+    }
+}
+
+#[cfg(feature = "history")]
 impl HistoryRetention for InStore {
     fn saved(&self) -> Option<(StoreId, u32)> {
         let (db, _reader) = self.store()?;
@@ -455,6 +474,7 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
+    #[cfg(feature = "history")]
     mod concurrency;
 
     /// A store in memory: which one is signed in to (once one is), its days,
@@ -687,6 +707,7 @@ mod tests {
         assert_eq!(setting.get()[SETTING], 30);
     }
 
+    #[cfg(feature = "history")]
     /// The policy round-trips through RelayHistory's own store.
     #[test]
     fn the_policy_is_saved_in_relayhistorys_store() {
