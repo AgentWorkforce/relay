@@ -918,7 +918,12 @@ function fakeCore(
   };
   const writeInbound = (value: string, only: string | undefined) => {
     for (const file of options.claudeFiles ?? []) {
-      const current = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+      let current: Record<string, unknown> = {};
+      try {
+        current = JSON.parse(fs.readFileSync(file, 'utf8'));
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+      }
       if (only !== undefined && current.crossSessionInbound !== only) continue;
       if (value === 'accept' && current.crossSessionInbound !== undefined) continue;
       fs.mkdirSync(path.dirname(file), { recursive: true });
