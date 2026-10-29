@@ -66,6 +66,12 @@ impl PiConfig {
         self.runtime.with_file_name("pi-extension.off")
     }
 
+    /// Whether `pi_extension` was turned off: Pi sessions are then neither
+    /// listed nor delivered to, even one that loaded the extension earlier.
+    pub fn turned_off(&self) -> bool {
+        self.off_marker().exists()
+    }
+
     /// Whether our extension (not a person's file of that name) is in place.
     pub fn extension_installed(&self) -> bool {
         fs::symlink_metadata(self.extension_file()).is_ok_and(|m| m.is_file())
@@ -182,7 +188,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 pub fn bindings(config: &PiConfig, table: &dyn ProcessTable, uid: u32) -> Vec<Binding> {
-    if !config.enabled || !private(&config.runtime, uid, true) {
+    if !config.enabled || config.turned_off() || !private(&config.runtime, uid, true) {
         return vec![];
     }
     let Ok(entries) = fs::read_dir(&config.runtime) else {
@@ -484,6 +490,13 @@ fn send_with(
     if let Some(outcome) = recorded_delivery(config, uid, registration, message_id, text, native) {
         return outcome;
     }
+    // Turned off: nothing new reaches Pi, even a session still running the
+    // extension it loaded before. A recorded receipt above still settles.
+    if config.turned_off() {
+        return InjectOutcome::Refused(
+            "Pi sessions are off: Agent Relay's Pi extension was turned off (pi_extension).".into(),
+        );
+    }
     if native {
         if let Err(outcome) = native_choice::reserve(config, uid, registration, message_id, text) {
             return outcome;
@@ -614,9 +627,13 @@ mod tests {
         crate::relay::store::Registration,
     ) {
         let temp = tempfile::tempdir().unwrap();
-        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        // As the desktop lays it out, so the off marker beside the runtime
+        // stays inside this test's directory.
+        let runtime = temp.path().join("desktop/pi");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
         let config = PiConfig {
-            runtime: temp.path().to_path_buf(),
+            runtime,
             agent_dir: temp.path().join("agent"),
             enabled: true,
         };
@@ -641,6 +658,38 @@ mod tests {
             "registeredAt":"2026-10-20T00:00:00Z","routeBinding":binding.reference}))
             .unwrap();
         (temp, config, held, registration)
+    }
+
+    #[test]
+    fn a_bound_session_gets_nothing_once_the_extension_is_turned_off() {
+        let (temp, config, _held, registration) = fixture();
+        let table = SystemProcesses::default();
+        assert_eq!(discover(&config, &table, current_uid()).len(), 1);
+        fs::write(config.off_marker(), "off").unwrap();
+        assert!(config.off_marker().starts_with(temp.path()));
+        // Still running the extension it loaded, but no longer a target.
+        assert!(bindings(&config, &table, current_uid()).is_empty());
+        assert!(discover(&config, &table, current_uid()).is_empty());
+        let outcome = send(
+            &config,
+            &table,
+            current_uid(),
+            &registration,
+            "m-off",
+            "hello",
+        );
+        assert!(matches!(outcome, InjectOutcome::Refused(_)), "{outcome:?}");
+        let instance = config.runtime.join("123456789012345678901234567890ab");
+        let written: Vec<_> = fs::read_dir(instance)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .filter(|name| name != "session.json")
+            .collect();
+        assert!(written.is_empty(), "{written:?}");
+        // Turned on again, the same session is a target again.
+        fs::remove_file(config.off_marker()).unwrap();
+        assert_eq!(discover(&config, &table, current_uid()).len(), 1);
     }
 
     #[test]
