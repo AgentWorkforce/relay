@@ -46,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `relay init --scope project` now tells the truth about Codex: Codex loads `.codex/config.toml` only when that exact project is trusted in `~/.codex/config.toml` (a trusted parent folder does not count, and `codex exec` never asks). In a terminal, `relay init` offers to record that trust; with `--yes` it prints the lines to add.
 - The project workspace key file (`.agentworkforce/relay/workspace-key.json`) is no longer picked up by `git add -A`: any command that saves it adds `.agentworkforce/relay/` to `.git/info/exclude` (worktrees included), never to `.gitignore`.
 - `relay node up` now reports the actual workspace-key source when startup fails, including the repository's `.agentworkforce/relay/workspace-key.json` pin instead of mislabeling every key as `AGENT_RELAY_WORKSPACE_KEY`.
+- Codex sessions set up by `relay init` now read and answer relayed messages inside Codex's default sandbox with no approval prompt: the Codex hooks add `~/.codex/rules/agent-relay.rules`, which lets only the Agent Relay core's own socket client reach its session socket (no network access is granted), and reply commands are a single `agent-relay-probe relay socket-request … --body` call.
+- Injected reply instructions now tell agents to answer only through this computer's Agent Relay route and never through another Agent Relay connector or app (such as Agent Relay in ChatGPT), which sends as a different identity.
+- `relay init --uninstall` now leaves `~/.codex` as it found it: it removes a `hooks.json` it created (or restores yours byte for byte), its `.relay-desktop-backup`, the Codex hook-trust entries it added to `config.toml`, and its sandbox rules file. Your own hooks, trust entries and rules are kept.
 
 ### Security
 

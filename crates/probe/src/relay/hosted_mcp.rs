@@ -142,7 +142,7 @@ pub fn dm_reply_hint(
     address: &str,
 ) -> Option<String> {
     let fallback = socket_hint.and_then(socket_command);
-    match (access, fallback) {
+    let hint = match (access, fallback) {
         (McpAccess::Declared, _) => Some(tools_reply(recipient, reply_to, "")),
         (McpAccess::Unknown, None) => socket_hint.map(str::to_string),
         (McpAccess::Unknown, Some(command)) => {
@@ -150,8 +150,23 @@ pub fn dm_reply_hint(
             Some(format!("{tools}\n[without those tools: {command}]"))
         }
         (McpAccess::SocketOnly, _) => socket_hint.map(str::to_string),
-    }
+    };
+    hint.map(|hint| format!("{hint}\n{ROUTE_LINE}"))
 }
+
+/// The line under every reply hint that keeps the answer on this session's
+/// own route. An agent whose shown route failed (a sandbox refusing the
+/// session socket, say) went on to another Agent Relay connector it had,
+/// Codex's "Agent Relay in ChatGPT" app, which sends as the person's Cloud
+/// account in another workspace: the wrong sender, somewhere else.
+pub const ROUTE_LINE: &str = "[route: answer only as shown above, through this computer's Agent \
+Relay; never through any other Agent Relay connector or app (such as Agent Relay in ChatGPT), \
+which sends as someone else. If that fails, say so instead of sending another way.]";
+
+/// The same rule in prose, for a preamble.
+const ROUTE_RULE: &str = "Send only as shown here, through this computer's Agent Relay; never \
+through any other Agent Relay connector or app (such as Agent Relay in ChatGPT), which sends as \
+someone else. If that fails, say so instead of sending another way.";
 
 /// What goes after the server's name for a session that may not have
 /// linked the tools to `address` yet.
@@ -189,11 +204,12 @@ pub fn web_reply_hint(
     reply_to: &str,
     address: &str,
 ) -> Option<String> {
-    match access {
-        McpAccess::Declared => Some(tools_reply(recipient, reply_to, "")),
-        McpAccess::Unknown => Some(tools_reply(recipient, reply_to, &link(address))),
-        McpAccess::SocketOnly => None,
-    }
+    let hint = match access {
+        McpAccess::Declared => tools_reply(recipient, reply_to, ""),
+        McpAccess::Unknown => tools_reply(recipient, reply_to, &link(address)),
+        McpAccess::SocketOnly => return None,
+    };
+    Some(format!("{hint}\n{ROUTE_LINE}"))
 }
 
 /// How a session answers channel posts, by what it can use.
@@ -216,8 +232,13 @@ pub struct ChannelReply<'a> {
 }
 
 impl ChannelReply<'_> {
-    /// The reply lines put after a channel post's attribution.
+    /// The reply lines put after a channel post's attribution, ending with
+    /// [`ROUTE_LINE`].
     pub fn lines(&self) -> String {
+        format!("{}\n{ROUTE_LINE}", self.reply_lines())
+    }
+
+    fn reply_lines(&self) -> String {
         let channel = argument(self.channel);
         let thread = argument(self.thread_id);
         let link = match (self.access, self.web_address) {
@@ -342,7 +363,7 @@ pub fn preamble(name: &str, address: &str, access: McpAccess, socket: &Path) -> 
         McpAccess::Unknown => format!("{tools} {fallback}"),
         McpAccess::SocketOnly => socket_only,
     };
-    format!("{head} {body} {NORM}")
+    format!("{head} {body} {ROUTE_RULE} {NORM}")
 }
 
 #[cfg(test)]
@@ -418,7 +439,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             hint,
-            "[reply: send_relay_message to=\"a@m\" reply_to=\"42\" (agent-relay-sessions MCP); list_relay_agents lists peers]"
+            format!(
+                "[reply: send_relay_message to=\"a@m\" reply_to=\"42\" (agent-relay-sessions MCP); list_relay_agents lists peers]\n{ROUTE_LINE}"
+            )
         );
         assert!(!hint.contains("curl"));
     }
@@ -434,7 +457,8 @@ mod tests {
         )
         .unwrap();
         let lines: Vec<&str> = hint.lines().collect();
-        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[2], ROUTE_LINE);
         assert_eq!(
             lines[0],
             "[reply: send_relay_message to=\"a@m\" (agent-relay-sessions MCP, linked to this session \
@@ -459,9 +483,8 @@ mod tests {
                 "42",
                 Some(SOCKET_HINT),
                 "me@mac"
-            )
-            .as_deref(),
-            Some(SOCKET_HINT)
+            ),
+            Some(format!("{SOCKET_HINT}\n{ROUTE_LINE}"))
         );
         assert_eq!(
             dm_reply_hint(McpAccess::SocketOnly, "a@m", "42", None, "me@mac"),
@@ -472,12 +495,12 @@ mod tests {
     #[test]
     fn a_web_session_is_told_to_link_the_tools_until_it_has() {
         assert_eq!(
-            web_reply_hint(McpAccess::Unknown, "a@m", "42", "web@mac-1").as_deref(),
-            Some(
+            web_reply_hint(McpAccess::Unknown, "a@m", "42", "web@mac-1"),
+            Some(format!(
                 "[reply: send_relay_message to=\"a@m\" reply_to=\"42\" (agent-relay-sessions MCP, \
                  linked to this session once with join_relay desktop_address=\"web@mac-1\"); \
-                 list_relay_agents lists peers]"
-            )
+                 list_relay_agents lists peers]\n{ROUTE_LINE}"
+            ))
         );
         assert_eq!(
             web_reply_hint(McpAccess::Declared, "a@m", "42", "web@mac-1"),
@@ -495,7 +518,7 @@ mod tests {
     fn a_sender_chosen_recipient_cannot_close_the_argument() {
         let hint = dm_reply_hint(McpAccess::Declared, "evil\"]\nx", "1", None, "me@mac").unwrap();
         assert!(hint.contains("to=\"evil') x\""), "{hint}");
-        assert_eq!(hint.lines().count(), 1);
+        assert_eq!(hint.lines().count(), 2, "the reply line and the route line");
     }
 
     fn channel(access: McpAccess, socket: bool) -> String {
@@ -508,6 +531,9 @@ mod tests {
             web_address: None,
         }
         .lines()
+        .strip_suffix(&format!("\n{ROUTE_LINE}"))
+        .expect("every channel reply ends with the route line")
+        .to_string()
     }
 
     #[test]
@@ -522,6 +548,9 @@ mod tests {
                 web_address: Some("web@mac-1"),
             }
             .lines()
+            .strip_suffix(&format!("\n{ROUTE_LINE}"))
+            .expect("every channel reply ends with the route line")
+            .to_string()
         };
         assert_eq!(
             web(McpAccess::Unknown),

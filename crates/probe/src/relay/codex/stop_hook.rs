@@ -286,6 +286,44 @@ impl StopHookInbox {
     }
 }
 
+/// Writes `hooks.json` atomically, keeping its mode; `backup` is the copy
+/// kept beside it the first time.
+fn write_hooks(path: &Path, backup: Option<&[u8]>, bytes: &[u8]) -> Result<(), String> {
+    crate::relay::claude_settings::write_keeping_file(path, backup, bytes, BACKUP_SUFFIX, 0o644)
+        .map_err(|_| "~/.codex/hooks.json cannot be written.".to_string())
+}
+
+/// `value` without what adding and taking out the hook makes or drops on
+/// its own: an empty list for one of the hook's events and an empty
+/// `hooks`. Two files equal this way differ in nothing the person set.
+fn without_empty(value: &Value) -> Value {
+    let mut value = value.clone();
+    if let Some(object) = value.as_object_mut() {
+        if let Some(hooks) = object.get_mut("hooks").and_then(Value::as_object_mut) {
+            hooks.retain(|event, groups| {
+                !(EVENTS.contains(&event.as_str()) && groups.as_array().is_some_and(Vec::is_empty))
+            });
+        }
+        if object
+            .get("hooks")
+            .is_some_and(|hooks| hooks.as_object().is_some_and(serde_json::Map::is_empty))
+        {
+            object.remove("hooks");
+        }
+    }
+    value
+}
+
+/// Whether `value` is a `hooks.json` with nothing in it: `{}`, or only an
+/// empty `hooks`.
+fn is_empty_hooks(value: &Value) -> bool {
+    value.as_object().is_some_and(|object| {
+        object.iter().all(|(key, value)| {
+            key == "hooks" && value.as_object().is_some_and(serde_json::Map::is_empty)
+        })
+    })
+}
+
 fn block(reason: &str) -> Value {
     json!({"decision": "block", "reason": reason})
 }
@@ -329,6 +367,72 @@ fn recap(answered: &[(Unseen, String)]) -> String {
 /// Trusts the hook running a command in a Codex home.
 type Trust = Box<dyn Fn(&Path, &str) -> Result<(), String> + Send + Sync>;
 
+/// Takes the hook running a command out of a Codex home with the edit it is
+/// given, and the trust recorded for it (`trust::untrust_with_app_server`).
+type Untrust = Box<
+    dyn Fn(&Path, &str, &mut dyn FnMut() -> Result<(), String>) -> Result<(), String> + Send + Sync,
+>;
+
+/// The suffix of the one-time copy of `hooks.json` as the person had it.
+const BACKUP_SUFFIX: &str = ".relay-desktop-backup";
+
+/// The first line of the Codex rules file Agent Relay writes; a file there
+/// without it is not Agent Relay's and is never rewritten or removed.
+const RULES_HEADER: &str = "# Agent Relay: written and removed by Agent Relay (codex_stop_hook).";
+
+/// The marker, in the core's data, that `~/.codex/config.toml` did not exist
+/// until trusting the hook created it, so taking the hook out again removes
+/// the file once nothing else is in it.
+const CONFIG_CREATED: &str = "codex-config-created";
+
+/// How many names the sandbox rules may try (`SandboxRules`).
+const RULES_NAMES: usize = 9;
+
+/// What lets a session reach its session socket from inside Codex's
+/// sandbox, as a Codex rules file (`~/.codex/rules/agent-relay.rules`).
+///
+/// Codex's default sandbox (`workspace-write` or `read-only`, network off)
+/// denies every Unix socket connect on macOS, so the probe's own socket
+/// client (`relay socket-request`, `relay read`) failed there, and Codex
+/// asked to run it outside the sandbox or reached for another Agent Relay
+/// connector. Codex runs a command outside its sandbox without asking when
+/// every part of it matches an `allow` prefix rule (`exec_policy` in Codex,
+/// verified with Codex 0.163), so the rules allow exactly this probe's two
+/// session-socket commands, each only with `--socket` naming this core's
+/// own session socket (`relay read --socket` refuses `--dev`). Nothing else
+/// is widened: no network, no other program, no other socket.
+#[derive(Clone, Debug)]
+pub struct SandboxRules {
+    /// The probe executable the reply hints name.
+    pub probe: PathBuf,
+    /// The relay-send (session) socket this core serves.
+    pub socket: PathBuf,
+}
+
+impl SandboxRules {
+    /// The rules file's text (Starlark; a JSON string is a Starlark string).
+    fn text(&self) -> String {
+        let quoted = |path: &Path| Value::from(path.to_string_lossy().into_owned()).to_string();
+        let probe = quoted(&self.probe);
+        let socket = quoted(&self.socket);
+        format!(
+            "{RULES_HEADER}\n\
+             # Lets Agent Relay's own client reach this computer's Agent Relay session socket\n\
+             # from Codex's sandbox, so a session can read and answer relayed messages.\n\
+             prefix_rule(\n    \
+             pattern = [{probe}, \"relay\", \"socket-request\", \"--socket\", {socket}],\n    \
+             decision = \"allow\",\n    \
+             justification = \"Agent Relay's session socket, which sends only as this session\",\n\
+             )\n\
+             prefix_rule(\n    \
+             pattern = [{probe}, \"relay\", \"read\", \"--socket\", {socket}],\n    \
+             decision = \"allow\",\n    \
+             justification = \"Reads a message Agent Relay relayed to this session\",\n\
+             )\n"
+        )
+    }
+}
+
 /// Adds, trusts and removes the hook in a Codex home.
 pub struct CodexStopHookSettings {
     /// `~/.codex`.
@@ -337,6 +441,12 @@ pub struct CodexStopHookSettings {
     command: String,
     inbox: std::sync::Arc<StopHookInbox>,
     trust: Trust,
+    untrust: Untrust,
+    /// The sandbox rules written beside the hook, when this core serves a
+    /// session socket.
+    sandbox: Option<SandboxRules>,
+    /// The core's own data folder, which keeps [`CONFIG_CREATED`].
+    state_dir: Option<PathBuf>,
     /// Whether the start-up refresh (or a change) has run, so a hook not
     /// yet trusted again is still reported as on until it has.
     checked: AtomicBool,
@@ -351,6 +461,7 @@ impl CodexStopHookSettings {
         codex: Option<PathBuf>,
         inbox: std::sync::Arc<StopHookInbox>,
     ) -> CodexStopHookSettings {
+        let untrust_codex = codex.clone();
         CodexStopHookSettings {
             codex_home,
             command,
@@ -358,8 +469,25 @@ impl CodexStopHookSettings {
             trust: Box::new(move |home, command| {
                 trust::with_app_server(home, command, codex.as_deref())
             }),
+            untrust: Box::new(move |home, command, edit| {
+                trust::untrust_with_app_server(home, command, untrust_codex.as_deref(), edit)
+            }),
+            sandbox: None,
+            state_dir: None,
             checked: AtomicBool::new(false),
         }
+    }
+
+    /// Also writes [`SandboxRules`] while the hook is on.
+    pub fn with_sandbox_rules(mut self, rules: SandboxRules) -> Self {
+        self.sandbox = Some(rules);
+        self
+    }
+
+    /// Keeps whether trusting the hook created `config.toml` in `state_dir`.
+    pub fn with_state_dir(mut self, state_dir: PathBuf) -> Self {
+        self.state_dir = Some(state_dir);
+        self
     }
 
     /// The shell command for `executable`, with `--dev` for Agent Relay Dev.
@@ -378,6 +506,147 @@ impl CodexStopHookSettings {
     ) -> Self {
         self.trust = Box::new(trust);
         self
+    }
+
+    #[cfg(test)]
+    fn with_untrust(
+        mut self,
+        untrust: impl Fn(&Path, &str, &mut dyn FnMut() -> Result<(), String>) -> Result<(), String>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        self.untrust = Box::new(untrust);
+        self
+    }
+
+    fn development(&self) -> bool {
+        self.command.trim_end().ends_with(" --dev")
+    }
+
+    /// The names the sandbox rules may have, in order: `agent-relay.rules`,
+    /// then `agent-relay-2.rules` and on when a file of the person's holds
+    /// the name (`agent-relay-dev…` for Agent Relay Dev).
+    fn rules_files(&self) -> Vec<PathBuf> {
+        let stem = if self.development() {
+            "agent-relay-dev"
+        } else {
+            "agent-relay"
+        };
+        let folder = self.codex_home.join("rules");
+        std::iter::once(folder.join(format!("{stem}.rules")))
+            .chain((2..=RULES_NAMES).map(|n| folder.join(format!("{stem}-{n}.rules"))))
+            .collect()
+    }
+
+    fn config_file(&self) -> PathBuf {
+        self.codex_home.join("config.toml")
+    }
+
+    fn config_marker(&self) -> Option<PathBuf> {
+        let name = if self.development() {
+            format!("{CONFIG_CREATED}.dev")
+        } else {
+            CONFIG_CREATED.to_string()
+        };
+        self.state_dir.as_ref().map(|dir| dir.join(name))
+    }
+
+    /// Writes the sandbox rules, unless they are already there as written.
+    /// A file of that name that is not Agent Relay's is left alone.
+    fn write_rules(&self) -> Result<(), String> {
+        let Some(rules) = &self.sandbox else {
+            return Ok(());
+        };
+        let text = rules.text();
+        // Agent Relay's own file, else the first free name: a file of the
+        // person's is never rewritten, and never leaves the hook on without
+        // the rules that let its replies out of the sandbox.
+        let mut ours = None;
+        let mut free = None;
+        for path in self.rules_files() {
+            match std::fs::symlink_metadata(&path) {
+                // Free only when nothing is there at all: a link, dangling
+                // or not, is the person's and never replaced.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    free.get_or_insert(path);
+                    continue;
+                }
+                // Codex reads only a plain rules file, and Agent Relay
+                // writes nothing else.
+                Ok(metadata) if metadata.file_type().is_file() => {}
+                _ => continue,
+            }
+            match std::fs::read_to_string(&path) {
+                Ok(current) if current == text => return Ok(()),
+                Ok(current) if current.starts_with(RULES_HEADER) => {
+                    ours.get_or_insert(path);
+                }
+                _ => {}
+            }
+        }
+        let path = ours.or(free).ok_or_else(|| {
+            "~/.codex/rules has no free name for Agent Relay's sandbox rules.".to_string()
+        })?;
+        crate::relay::claude_settings::write_keeping_file(
+            &path,
+            None,
+            text.as_bytes(),
+            BACKUP_SUFFIX,
+            0o644,
+        )
+        .map_err(|_| "~/.codex/rules cannot be written.".to_string())
+    }
+
+    /// Removes Agent Relay's rules file, and the `rules` folder when that
+    /// leaves it empty.
+    ///
+    /// A rules file that cannot be removed is an error, so turning the hook
+    /// off can be tried again once the folder is writable.
+    fn remove_rules(&self) -> Result<(), String> {
+        let mut removed = false;
+        for path in self.rules_files() {
+            // Agent Relay writes a plain file; a link is the person's.
+            let ours = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file())
+                && std::fs::read_to_string(&path).is_ok_and(|text| text.starts_with(RULES_HEADER));
+            if !ours {
+                continue;
+            }
+            match std::fs::remove_file(&path) {
+                Ok(()) => removed = true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => return Err("~/.codex/rules/agent-relay.rules cannot be removed.".into()),
+            }
+        }
+        if removed {
+            // Only an empty folder goes; anything else in it stays.
+            let _ = std::fs::remove_dir(self.codex_home.join("rules"));
+        }
+        Ok(())
+    }
+
+    /// Removes `config.toml` when trusting the hook created it and nothing
+    /// is in it now.
+    fn tidy_config(&self) {
+        let Some(marker) = self.config_marker() else {
+            return;
+        };
+        if !marker.exists() {
+            return;
+        }
+        let config = self.config_file();
+        match std::fs::read_to_string(&config) {
+            Ok(text) if text.trim().is_empty() => {
+                if std::fs::remove_file(&config).is_ok() {
+                    let _ = std::fs::remove_file(&marker);
+                }
+            }
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {}
+            // Gone already, or the person's own settings are in it now.
+            _ => {
+                let _ = std::fs::remove_file(&marker);
+            }
+        }
     }
 
     fn hooks_file(&self) -> PathBuf {
@@ -399,21 +668,52 @@ impl CodexStopHookSettings {
         }
     }
 
-    /// Writes `value` atomically, keeping the file's mode, and the first
-    /// time a copy of the file as it was beside it.
-    fn write(&self, value: &Value) -> Result<(), String> {
+    /// Writes `value` atomically, keeping the file's mode. With `backup`,
+    /// the first time a copy of the file as the person had it goes beside
+    /// it, so taking the hook out can put that back byte for byte; a file
+    /// that already holds this hook is never the person's own copy.
+    fn write(&self, value: &Value, backup: bool) -> Result<(), String> {
         let path = crate::relay::claude_settings::resolve_symlinks(&self.hooks_file());
-        let existing = std::fs::read(&path).ok();
+        let existing = std::fs::read(&path).ok().filter(|existing| {
+            backup
+                && serde_json::from_slice::<Value>(existing)
+                    .is_ok_and(|value| !self.holds_ours(&value))
+        });
         let mut bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
         bytes.push(b'\n');
-        crate::relay::claude_settings::write_keeping_file(
-            &path,
-            existing.as_deref(),
-            &bytes,
-            ".relay-desktop-backup",
-            0o644,
-        )
-        .map_err(|_| "~/.codex/hooks.json cannot be written.".to_string())
+        write_hooks(&path, existing.as_deref(), &bytes)
+    }
+
+    /// Whether `value` holds this build's hook for any event.
+    fn holds_ours(&self, value: &Value) -> bool {
+        value["hooks"].as_object().is_some_and(|hooks| {
+            hooks.values().any(|groups| {
+                groups
+                    .as_array()
+                    .is_some_and(|groups| !self.our_commands(groups).is_empty())
+            })
+        })
+    }
+
+    /// `value` with this build's hooks taken out, and each event they
+    /// leave with no hooks; whether anything changed.
+    fn without_ours(&self, mut value: Value) -> (Value, bool) {
+        let mut changed = false;
+        if let Some(hooks) = value["hooks"].as_object_mut() {
+            for event in EVENTS {
+                let Some(groups) = hooks.get_mut(event).and_then(Value::as_array_mut) else {
+                    continue;
+                };
+                if self.take_out(groups) {
+                    changed = true;
+                    // An event left with no hooks is as if it were absent.
+                    if groups.is_empty() {
+                        hooks.remove(event);
+                    }
+                }
+            }
+        }
+        (value, changed)
     }
 
     /// Whether `command` is this build's hook, in any version: Agent Relay
@@ -497,32 +797,86 @@ impl CodexStopHookSettings {
             }
         }
         if changed {
-            self.write(&value)?;
+            self.write(&value, true)?;
         }
-        (self.trust)(&self.codex_home, &self.command)
-    }
-
-    fn remove(&self) -> Result<(), String> {
-        let mut value = self.read()?;
-        let mut changed = false;
-        if let Some(hooks) = value["hooks"].as_object_mut() {
-            for event in EVENTS {
-                let Some(groups) = hooks.get_mut(event).and_then(Value::as_array_mut) else {
-                    continue;
-                };
-                if self.take_out(groups) {
-                    changed = true;
-                    // An event left with no hooks is as if it were absent.
-                    if groups.is_empty() {
-                        hooks.remove(event);
-                    }
+        self.write_rules()?;
+        let config_existed = std::fs::symlink_metadata(self.config_file()).is_ok();
+        (self.trust)(&self.codex_home, &self.command)?;
+        if !config_existed && self.config_file().exists() {
+            if let Some(marker) = self.config_marker() {
+                if let Some(folder) = marker.parent() {
+                    let _ = crate::platform::fs::create_private_dir_all(folder);
                 }
+                let _ = std::fs::write(marker, b"");
             }
         }
+        Ok(())
+    }
+
+    /// Takes the hook out of `hooks.json`, its trust out of `config.toml`
+    /// and the sandbox rules out of `rules`, leaving the Codex home as it
+    /// was before the hook was added: a `hooks.json` the hook created is
+    /// removed once it holds nothing else, the person's own is put back
+    /// byte for byte when they have not changed it since, and only the
+    /// trust entries for this hook are taken out.
+    ///
+    /// A `hooks.json` that cannot be read or parsed is an error, not an
+    /// absent hook: the hook may still be in it, so nothing else is taken
+    /// out and the setting stays on for another try.
+    fn remove(&self) -> Result<(), String> {
+        if self.holds_ours(&self.read()?) {
+            (self.untrust)(&self.codex_home, &self.command, &mut || {
+                self.take_out_of_file()
+            })?;
+        }
+        self.remove_rules()?;
+        self.tidy_config();
+        Ok(())
+    }
+
+    /// Takes this build's hook out of `hooks.json`; see [`Self::remove`].
+    fn take_out_of_file(&self) -> Result<(), String> {
+        let (value, changed) = self.without_ours(self.read()?);
         if !changed {
             return Ok(());
         }
-        self.write(&value)
+        let path = crate::relay::claude_settings::resolve_symlinks(&self.hooks_file());
+        let mut backup = path.clone().into_os_string();
+        backup.push(BACKUP_SUFFIX);
+        let backup = PathBuf::from(backup);
+        let mut keep_file = false;
+        if let Ok(original) = std::fs::read(&backup) {
+            match serde_json::from_slice::<Value>(&original) {
+                // The person's file as it was, unchanged since: it goes
+                // back exactly, and the copy is no longer needed.
+                Ok(saved)
+                    if !self.holds_ours(&saved)
+                        && without_empty(&saved) == without_empty(&value) =>
+                {
+                    write_hooks(&path, None, &original)?;
+                    let _ = std::fs::remove_file(&backup);
+                    return Ok(());
+                }
+                // An earlier build copied a file that already held this
+                // hook: the copy has nothing the file does not.
+                Ok(saved)
+                    if self.holds_ours(&saved) && self.without_ours(saved.clone()).0 == value =>
+                {
+                    let _ = std::fs::remove_file(&backup);
+                }
+                // The person changed the file since: theirs stays, and so
+                // does the copy.
+                _ => keep_file = true,
+            }
+        }
+        if !keep_file && is_empty_hooks(&value) {
+            return match std::fs::remove_file(&path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(_) => Err("~/.codex/hooks.json cannot be removed.".into()),
+            };
+        }
+        self.write(&value, false)
     }
 
     /// At core start: an installed hook is brought up to date (a moved or
@@ -774,8 +1128,362 @@ mod tests {
         .with_trust(move |_, command| {
             log.lock().unwrap().push(command.to_string());
             Ok(())
-        });
+        })
+        .with_untrust(|_, _, edit| edit());
         (settings, trusted, inbox)
+    }
+
+    /// What trusting the hook adds to `config.toml` in these tests, as
+    /// Codex's app-server would.
+    const TRUST_TABLE: &str =
+        "\n[hooks.state.\"hooks.json:stop:0:0\"]\ntrusted_hash = \"sha256:1\"\n";
+
+    /// Settings with the sandbox rules and a state folder, whose trust and
+    /// untrust edit `config.toml` the way Codex's app-server does: adding
+    /// [`TRUST_TABLE`] (creating the file when there is none) and taking
+    /// exactly that back out after the hook has left `hooks.json`.
+    fn full_settings(home: &Path) -> CodexStopHookSettings {
+        let config = home.join(".codex/config.toml");
+        let untrust_config = config.clone();
+        CodexStopHookSettings::new(
+            home.join(".codex"),
+            ours(),
+            None,
+            Arc::new(StopHookInbox::default()),
+        )
+        .with_sandbox_rules(SandboxRules {
+            probe: PathBuf::from("/Apps/Agent Relay.app/probe"),
+            socket: PathBuf::from("/Users/me/Library/Application Support/x/run/relay.sock"),
+        })
+        .with_state_dir(home.join("app-data"))
+        .with_trust(move |_, _| {
+            let mut text = std::fs::read_to_string(&config).unwrap_or_default();
+            if !text.contains(TRUST_TABLE) {
+                text.push_str(TRUST_TABLE);
+                std::fs::write(&config, text).unwrap();
+            }
+            Ok(())
+        })
+        .with_untrust(move |home, _, edit| {
+            assert!(
+                std::fs::read_to_string(home.join("hooks.json"))
+                    .unwrap()
+                    .contains(SUBCOMMAND),
+                "the hook's keys are listed while it is still there"
+            );
+            edit()?;
+            let text = std::fs::read_to_string(&untrust_config).unwrap();
+            std::fs::write(&untrust_config, text.replace(TRUST_TABLE, "")).unwrap();
+            Ok(())
+        })
+    }
+
+    /// Every file under `dir`, relative, with its bytes.
+    fn tree(dir: &Path) -> Vec<(String, Vec<u8>)> {
+        let mut files = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(next) = stack.pop() {
+            for entry in std::fs::read_dir(&next).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    files.push((
+                        format!("{}/", path.strip_prefix(dir).unwrap().display()),
+                        Vec::new(),
+                    ));
+                    stack.push(path);
+                } else {
+                    let bytes = std::fs::read(&path).unwrap();
+                    files.push((path.strip_prefix(dir).unwrap().display().to_string(), bytes));
+                }
+            }
+        }
+        files.sort();
+        files
+    }
+
+    // The relay init end-to-end run on 2026-10-29: --uninstall left an empty
+    // hooks.json, its .relay-desktop-backup and the trust entries.
+    #[test]
+    fn turning_the_hook_off_after_a_fresh_install_leaves_the_codex_home_as_it_was() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        std::fs::write(home.path().join(".codex/auth.json"), "{}").unwrap();
+        let before = tree(&home.path().join(".codex"));
+        let settings = full_settings(home.path());
+
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        let rules =
+            std::fs::read_to_string(home.path().join(".codex/rules/agent-relay.rules")).unwrap();
+        assert!(rules.starts_with(RULES_HEADER));
+        assert!(home.path().join("app-data").join(CONFIG_CREATED).exists());
+        // Brought up to date at start: no copy of Agent Relay's own file.
+        settings.refresh();
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        assert_eq!(tree(&home.path().join(".codex")), before);
+        assert!(!home.path().join("app-data").join(CONFIG_CREATED).exists());
+    }
+
+    #[test]
+    fn the_persons_own_hooks_config_and_rules_come_back_byte_for_byte() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(codex.join("rules")).unwrap();
+        // Their own formatting, which a JSON round trip would not keep.
+        std::fs::write(
+            codex.join("hooks.json"),
+            "{ \"hooks\": {\"Stop\": [ {\"hooks\": [{\"type\":\"command\",\"command\":\"notify.sh\"}]} ],\n  \"SessionStart\": [] } }",
+        )
+        .unwrap();
+        std::fs::write(
+            codex.join("config.toml"),
+            "# mine\nmodel = \"gpt-5\"   # trailing\n\n[hooks.state.\"/mine:stop:0:0\"]\ntrusted_hash = \"sha256:mine\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            codex.join("rules/default.rules"),
+            "prefix_rule(pattern = [\"git\", \"status\"])\n",
+        )
+        .unwrap();
+        let before = tree(&codex);
+        let settings = full_settings(home.path());
+
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        assert!(codex.join("hooks.json.relay-desktop-backup").exists());
+        assert!(codex.join("rules/agent-relay.rules").exists());
+        assert!(!home.path().join("app-data").join(CONFIG_CREATED).exists());
+
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        assert_eq!(tree(&codex), before);
+    }
+
+    #[test]
+    fn a_hooks_file_the_person_changed_since_keeps_their_change() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        let settings = full_settings(home.path());
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        let mut value: Value =
+            serde_json::from_slice(&std::fs::read(codex.join("hooks.json")).unwrap()).unwrap();
+        value["hooks"]["SessionStart"] =
+            json!([{"hooks": [{"type": "command", "command": "start.sh"}]}]);
+        std::fs::write(codex.join("hooks.json"), value.to_string()).unwrap();
+
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        let value: Value =
+            serde_json::from_slice(&std::fs::read(codex.join("hooks.json")).unwrap()).unwrap();
+        assert_eq!(
+            value,
+            json!({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "start.sh"}]}]}})
+        );
+        assert!(!codex.join("hooks.json.relay-desktop-backup").exists());
+    }
+
+    // What an earlier build left: a copy taken of a file that already held
+    // the hook, which has nothing of the person's.
+    #[test]
+    fn an_earlier_builds_copy_of_its_own_file_goes_with_the_hook() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        let settings = full_settings(home.path());
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        std::fs::copy(
+            codex.join("hooks.json"),
+            codex.join("hooks.json.relay-desktop-backup"),
+        )
+        .unwrap();
+
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        assert!(!codex.join("hooks.json").exists());
+        assert!(!codex.join("hooks.json.relay-desktop-backup").exists());
+    }
+
+    #[test]
+    fn the_sandbox_rules_allow_only_this_probes_socket_commands() {
+        let rules = SandboxRules {
+            probe: PathBuf::from("/Apps/Agent Relay.app/probe"),
+            socket: PathBuf::from("/s/relay.sock"),
+        }
+        .text();
+        assert_eq!(rules.matches("prefix_rule(").count(), 2);
+        assert!(rules.contains(
+            "pattern = [\"/Apps/Agent Relay.app/probe\", \"relay\", \"socket-request\", \"--socket\", \"/s/relay.sock\"]"
+        ));
+        assert!(rules.contains("pattern = [\"/Apps/Agent Relay.app/probe\", \"relay\", \"read\", \"--socket\", \"/s/relay.sock\"]"));
+        assert_eq!(rules.matches("decision = \"allow\"").count(), 2);
+    }
+
+    // Review on #2019: a file of the person's under the name must not leave
+    // the hook on without the rules its replies need.
+    #[test]
+    fn a_rules_file_that_is_not_agent_relays_is_left_alone_and_the_rules_go_beside_it() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(codex.join("rules")).unwrap();
+        std::fs::write(codex.join("rules/agent-relay.rules"), "# mine\n").unwrap();
+        let settings = full_settings(home.path());
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        assert_eq!(
+            std::fs::read_to_string(codex.join("rules/agent-relay.rules")).unwrap(),
+            "# mine\n"
+        );
+        let ours = std::fs::read_to_string(codex.join("rules/agent-relay-2.rules")).unwrap();
+        assert!(ours.starts_with(RULES_HEADER));
+        // Brought up to date in place, not copied to a third name.
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        assert!(!codex.join("rules/agent-relay-3.rules").exists());
+
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        assert_eq!(
+            std::fs::read_to_string(codex.join("rules/agent-relay.rules")).unwrap(),
+            "# mine\n"
+        );
+        assert!(!codex.join("rules/agent-relay-2.rules").exists());
+    }
+
+    // Review on #2019: a dangling link of the person's is not a free name.
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_under_a_rules_name_is_left_alone() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(codex.join("rules")).unwrap();
+        std::fs::write(codex.join("rules/agent-relay.rules"), "# mine\n").unwrap();
+        let link = codex.join("rules/agent-relay-2.rules");
+        std::os::unix::fs::symlink(home.path().join("nowhere.rules"), &link).unwrap();
+        let settings = full_settings(home.path());
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(!home.path().join("nowhere.rules").exists());
+        let ours = std::fs::read_to_string(codex.join("rules/agent-relay-3.rules")).unwrap();
+        assert!(ours.starts_with(RULES_HEADER));
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        assert!(std::fs::symlink_metadata(&link).is_ok());
+        assert!(!codex.join("rules/agent-relay-3.rules").exists());
+    }
+
+    // Review on #2019: Codex skips a linked rules file, so a link to the
+    // very same rules does not count as having them.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_matching_rules_is_not_taken_for_them() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(codex.join("rules")).unwrap();
+        let settings = full_settings(home.path());
+        let text = settings.sandbox.as_ref().unwrap().text();
+        std::fs::write(home.path().join("copy.rules"), &text).unwrap();
+        let link = codex.join("rules/agent-relay.rules");
+        std::os::unix::fs::symlink(home.path().join("copy.rules"), &link).unwrap();
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        let plain = codex.join("rules/agent-relay-2.rules");
+        assert!(std::fs::symlink_metadata(&plain)
+            .unwrap()
+            .file_type()
+            .is_file());
+        assert_eq!(std::fs::read_to_string(&plain).unwrap(), text);
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        assert!(std::fs::symlink_metadata(&link).is_ok(), "the link stays");
+        assert!(!plain.exists());
+    }
+
+    // Review on #2019: rules that cannot be removed leave the setting to
+    // try again, and a second try finishes the job.
+    #[cfg(unix)]
+    #[test]
+    fn rules_that_cannot_be_removed_are_an_error_and_a_retry_removes_them() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        let settings = full_settings(home.path());
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        let rules = codex.join("rules");
+        std::fs::set_permissions(&rules, std::fs::Permissions::from_mode(0o500)).unwrap();
+        // Root ignores the mode: there is nothing to refuse it, so the
+        // retry path cannot be shown.
+        if std::fs::write(rules.join(".probe"), b"").is_ok() {
+            let _ = std::fs::remove_file(rules.join(".probe"));
+            std::fs::set_permissions(&rules, std::fs::Permissions::from_mode(0o700)).unwrap();
+            return;
+        }
+        let outcome = settings.set(SETTING, &json!(false));
+        std::fs::set_permissions(&rules, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(outcome, Some(Err(_))), "{outcome:?}");
+        assert!(rules.join("agent-relay.rules").exists());
+
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        assert!(!rules.exists());
+        assert!(!codex.join("hooks.json").exists());
+    }
+
+    #[test]
+    fn with_every_rules_name_taken_turning_on_fails() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(codex.join("rules")).unwrap();
+        let settings = full_settings(home.path());
+        for path in settings.rules_files() {
+            std::fs::write(path, "# mine\n").unwrap();
+        }
+        assert!(matches!(settings.set(SETTING, &json!(true)), Some(Err(_))));
+    }
+
+    // Review on #2019: an unreadable hooks.json may still hold the hook, so
+    // turning it off is an error and nothing else is taken out.
+    #[test]
+    fn an_unreadable_hooks_file_is_an_error_when_turning_off() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        let settings = full_settings(home.path());
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        let broken = format!("{{ {} ", ours());
+        std::fs::write(codex.join("hooks.json"), &broken).unwrap();
+        assert!(matches!(settings.set(SETTING, &json!(false)), Some(Err(_))));
+        assert_eq!(
+            std::fs::read_to_string(codex.join("hooks.json")).unwrap(),
+            broken
+        );
+        assert!(
+            codex.join("rules/agent-relay.rules").exists(),
+            "the rules stay with the hook"
+        );
+    }
+
+    // Review on #2019: adding the hook makes `hooks` and its events, and
+    // taking it out leaves an empty `hooks`: none of that is the person's.
+    #[test]
+    fn an_empty_hooks_file_comes_back_byte_for_byte() {
+        for original in [
+            "{}",
+            "{ }\n",
+            "{\"hooks\": {}}",
+            "{\"hooks\": {\"Stop\": []}}",
+            "{\"hooks\": {\"Stop\": [], \"PostToolUse\": []}, \"x\": 1}",
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let codex = home.path().join(".codex");
+            std::fs::create_dir_all(&codex).unwrap();
+            std::fs::write(codex.join("hooks.json"), original).unwrap();
+            let settings = full_settings(home.path());
+            assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+            assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+            assert_eq!(
+                std::fs::read_to_string(codex.join("hooks.json")).unwrap(),
+                original
+            );
+            assert!(
+                !codex.join("hooks.json.relay-desktop-backup").exists(),
+                "{original}"
+            );
+        }
     }
 
     #[test]

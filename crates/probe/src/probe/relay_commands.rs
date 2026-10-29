@@ -85,8 +85,13 @@ pub enum RelayCommands {
         #[arg(value_name = "REF")]
         message_ref: String,
         /// Ask Agent Relay Dev instead of Agent Relay.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "socket")]
         dev: bool,
+        /// The session socket to ask; default is the one the running app
+        /// points to. The pointer a session is handed names it, which is
+        /// what Codex's sandbox rules allow.
+        #[arg(long)]
+        socket: Option<PathBuf>,
     },
     /// Make a session-scoped request to the local relay socket.
     SocketRequest {
@@ -96,6 +101,11 @@ pub enum RelayCommands {
         method: String,
         #[arg(long)]
         path: String,
+        /// The request body; read from standard input when omitted. One
+        /// command, with no pipe, is what Codex's sandbox rules allow. A
+        /// reply may start with a hyphen (`- first item`).
+        #[arg(long, allow_hyphen_values = true)]
+        body: Option<String>,
     },
     /// Agent Relay's Codex hook, which Codex runs after each tool call and
     /// as a turn ends: hands the running turn the relayed messages waiting
@@ -220,8 +230,13 @@ pub fn run(command: RelayCommands) -> Result<()> {
             socket,
             method,
             path,
-        } => relay::cli::socket_request(&socket, &method, &path),
-        RelayCommands::Read { message_ref, dev } => relay::cli::read_message(dev, &message_ref),
+            body,
+        } => relay::cli::socket_request(&socket, &method, &path, body.as_deref()),
+        RelayCommands::Read {
+            message_ref,
+            dev,
+            socket,
+        } => relay::cli::read_message(socket.as_deref(), dev, &message_ref),
         RelayCommands::CodexStopHook { dev, socket } => {
             relay::cli::codex_stop_hook(socket.as_deref(), dev)
         }
