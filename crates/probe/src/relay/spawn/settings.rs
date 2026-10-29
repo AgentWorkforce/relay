@@ -11,6 +11,22 @@ use crate::relay::store::Store;
 use serde_json::{json, Map, Value};
 use wire::Billing;
 
+/// Puts the store field `$field` back as it was before `$write`, if it still
+/// holds what `$write` saved there; a newer value another writer saved is
+/// kept. Answers whether it was put back.
+macro_rules! put_back {
+    ($store:expr, $write:expr, $($field:ident).+) => {{
+        let written = &$write.written.$($field).+;
+        let previous = &$write.previous.$($field).+;
+        if $store.$($field).+ == *written && written != previous {
+            $store.$($field).+ = previous.clone();
+            true
+        } else {
+            false
+        }
+    }};
+}
+
 pub mod harnesses;
 pub use harnesses::HarnessSettings;
 
@@ -191,17 +207,19 @@ impl ConfiguredChange {
         }
     }
 
-    /// Puts back, as `previous` had them, the fields [`Self::apply`] writes.
-    fn restore(&self, store: &mut Store, previous: &Store) {
+    /// Puts back each field [`Self::apply`] wrote (see `put_back!`).
+    fn restore(&self, store: &mut Store, write: &StoreWrite) -> bool {
+        let mut restored = false;
         if self.max_agents.is_some() {
-            store.spawn_max_agents = previous.spawn_max_agents;
+            restored |= put_back!(store, write, spawn_max_agents);
         }
         for (id, _) in &self.billing {
-            store.set_spawn_harness(id.name(), previous.spawn_harness(id.name()));
+            restored |= put_back_harness(store, write, *id);
         }
         if self.repositories.is_some() {
-            store.spawn_repositories = previous.spawn_repositories.clone();
+            restored |= put_back!(store, write, spawn_repositories);
         }
+        restored
     }
 }
 
@@ -288,21 +306,22 @@ impl Change {
         self.configured.apply(store);
     }
 
-    /// Puts back, as `previous` had them, the fields [`Self::apply`] writes.
-    fn restore(&self, store: &mut Store, previous: &Store) {
+    /// Puts back each field [`Self::apply`] wrote (see `put_back!`).
+    fn restore(&self, store: &mut Store, write: &StoreWrite) -> bool {
+        let mut restored = false;
         if self.accept.is_some() {
-            store.accept_spawns = previous.accept_spawns;
+            restored |= put_back!(store, write, accept_spawns);
         }
         for (id, _) in &self.full_access {
-            store.set_spawn_harness(id.name(), previous.spawn_harness(id.name()));
+            restored |= put_back_harness(store, write, *id);
         }
         if self.native_input.is_some() {
-            store.extras.spawn_native_input = previous.extras.spawn_native_input;
+            restored |= put_back!(store, write, extras.spawn_native_input);
         }
         if self.allow_teammates.is_some() {
-            store.spawn_allow_teammates = previous.spawn_allow_teammates;
+            restored |= put_back!(store, write, spawn_allow_teammates);
         }
-        self.configured.restore(store, previous);
+        self.configured.restore(store, write) | restored
     }
 
     /// Whether the spawn node must be brought in line with the change:
@@ -310,6 +329,24 @@ impl Change {
     fn moves_node(&self) -> bool {
         self.accept.is_some() || self.allow_teammates.is_some() || !self.configured.is_empty()
     }
+}
+
+/// What a store-settings save changed: the store just before the write and
+/// just after it.
+pub(crate) struct StoreWrite {
+    previous: Store,
+    written: Store,
+}
+
+/// `put_back!` for one harness's spawn settings.
+fn put_back_harness(store: &mut Store, write: &StoreWrite, id: HarnessId) -> bool {
+    let written = write.written.spawn_harness(id.name());
+    let previous = write.previous.spawn_harness(id.name());
+    if store.spawn_harness(id.name()) == written && written != previous {
+        store.set_spawn_harness(id.name(), previous);
+        return true;
+    }
+    false
 }
 
 impl Core {
@@ -320,6 +357,15 @@ impl Core {
     /// (`HandleState::saved`); a change to spawning then brings the spawn
     /// node in line.
     pub(crate) fn set_store_settings(&self, changes: &Map<String, Value>) -> Result<(), RpcError> {
+        self.save_store_settings(changes).map(|_| ())
+    }
+
+    /// [`Self::set_store_settings`], answering what the store held just
+    /// before its write and just after it, when it wrote.
+    pub(crate) fn save_store_settings(
+        &self,
+        changes: &Map<String, Value>,
+    ) -> Result<Option<StoreWrite>, RpcError> {
         let spawn = Change::read(changes).map_err(RpcError::invalid_params)?;
         let change = |key: &str| changes.get(key).and_then(Value::as_bool);
         let flags = crate::relay::store_settings::STORE_SETTINGS.map(change);
@@ -347,9 +393,12 @@ impl Core {
                 mobile_handoff = None;
             }
         }
+        let mut write = None;
         if flags.iter().any(Option::is_some) || !spawn.is_empty() {
-            self.store
+            write = self
+                .store
                 .update(|store| {
+                    let previous = store.clone();
                     store.allow_self_registration = allow.or(store.allow_self_registration);
                     store.auto_activate = auto.or(store.auto_activate);
                     store.mobile_claude_handoff = mobile_handoff.or(store.mobile_claude_handoff);
@@ -359,6 +408,10 @@ impl Core {
                     store.extras.teammate_native_input =
                         teammate_input.or(store.extras.teammate_native_input);
                     spawn.apply(store);
+                    Some(StoreWrite {
+                        previous,
+                        written: store.clone(),
+                    })
                 })
                 .map_err(|e| RpcError::store(&e))?;
         }
@@ -387,65 +440,62 @@ impl Core {
         if native_continuation.is_some() {
             self.native_continuation_setting_changed();
         }
-        Ok(())
+        Ok(write)
     }
 
-    /// Puts the settings [`Self::set_store_settings`] saved from `changes`
-    /// back as `previous` (the store before that save) had them, so a
-    /// `settings.set` batch that then fails keeps none of its store changes.
-    /// The hooks that follow those settings run again for the values put
-    /// back; what a hook already did outside the store (a plugin installed,
-    /// queued teammate messages cancelled) is not undone.
+    /// Puts the settings [`Self::save_store_settings`] saved from `changes`
+    /// back as the store had them before `write`, so a `settings.set` batch
+    /// that then fails keeps none of its store changes. Each key is compared
+    /// and put back under the store's lock: one another writer changed since
+    /// is left as that writer saved it. The hooks that follow those settings
+    /// run again for the keys put back; what a hook already did outside the
+    /// store (a plugin installed, queued teammate messages cancelled) is not
+    /// undone.
     pub(crate) fn restore_store_settings(
         &self,
         changes: &Map<String, Value>,
-        previous: &Store,
+        write: &StoreWrite,
     ) -> Result<(), RpcError> {
         let Ok(spawn) = Change::read(changes) else {
             return Ok(());
         };
         let changed = |key: &str| changes.get(key).and_then(Value::as_bool).is_some();
-        let flags = crate::relay::store_settings::STORE_SETTINGS.map(changed);
-        if !flags.contains(&true) && spawn.is_empty() {
-            return Ok(());
-        }
         let [allow, auto, show, general, mobile_handoff, native_continuation, teammate_input] =
-            flags;
-        self.store
+            crate::relay::store_settings::STORE_SETTINGS.map(changed);
+        let (handoff, continuation, spawning) = self
+            .store
             .update(|store| {
                 if allow {
-                    store.allow_self_registration = previous.allow_self_registration;
+                    put_back!(store, write, allow_self_registration);
                 }
                 if auto {
-                    store.auto_activate = previous.auto_activate;
+                    put_back!(store, write, auto_activate);
                 }
                 if show {
-                    store.show_relay_messages = previous.show_relay_messages;
+                    put_back!(store, write, show_relay_messages);
                 }
                 if general {
-                    store.extras.auto_join_general = previous.extras.auto_join_general;
-                }
-                if mobile_handoff {
-                    store.mobile_claude_handoff = previous.mobile_claude_handoff;
-                }
-                if native_continuation {
-                    store.mobile_native_continuation = previous.mobile_native_continuation;
+                    put_back!(store, write, extras.auto_join_general);
                 }
                 if teammate_input {
-                    store.extras.teammate_native_input = previous.extras.teammate_native_input;
+                    put_back!(store, write, extras.teammate_native_input);
                 }
-                spawn.restore(store, previous);
+                (
+                    mobile_handoff && put_back!(store, write, mobile_claude_handoff),
+                    native_continuation && put_back!(store, write, mobile_native_continuation),
+                    spawn.restore(store, write),
+                )
             })
             .map_err(|e| RpcError::store(&e))?;
-        if mobile_handoff {
-            let _ = self.mobile_claude_setting_changed(previous.mobile_claude_handoff_on());
+        if handoff {
+            let _ = self.mobile_claude_setting_changed(write.previous.mobile_claude_handoff_on());
         }
-        if spawn.moves_node() {
+        if spawning && spawn.moves_node() {
             if let Some(core) = self.arc() {
                 tokio::spawn(async move { core.sync_spawn_node().await });
             }
         }
-        if native_continuation {
+        if continuation {
             self.native_continuation_setting_changed();
         }
         Ok(())

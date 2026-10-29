@@ -1313,8 +1313,7 @@ impl Core {
         // (its own write, or a check `refuse` cannot make): the store's part
         // of the batch is then put back, so a refused batch changes none of
         // the store's settings.
-        let previous = self.store.snapshot();
-        self.set_store_settings(changes)?;
+        let write = self.save_store_settings(changes)?;
         let applied = (|| -> Result<(), RpcError> {
             let _changing = self.integration_settings.lock().unwrap();
             for (key, value) in changes {
@@ -1350,15 +1349,15 @@ impl Core {
             }
             Ok(())
         })();
-        if let Err(error) = applied {
-            if let Err(restore) = self.restore_store_settings(changes, &previous) {
+        if let (Err(_), Some(write)) = (&applied, &write) {
+            if let Err(restore) = self.restore_store_settings(changes, write) {
                 crate::relay::diagnostics::write(format_args!(
                     "relay: settings.set could not put back the store settings: {}",
                     restore.message
                 ));
             }
-            return Err(error);
         }
+        applied?;
         Ok(self.settings())
     }
 
@@ -2176,6 +2175,82 @@ mod tests {
         let settings = core.set_settings(&batch).unwrap();
         assert_ne!(settings[general], before[general]);
         assert_eq!(settings["spawn_max_agents"], 3);
+    }
+
+    /// An extension that, while its `set` runs, lets another writer save
+    /// `auto_join_general` (as `POST /setup/auto-activate` could), then
+    /// fails.
+    struct RacingTool {
+        core: std::sync::Mutex<std::sync::Weak<Core>>,
+        newer: bool,
+    }
+
+    impl SettingsExtension for RacingTool {
+        fn get(&self) -> Map<String, Value> {
+            let mut settings = Map::new();
+            settings.insert("racing_tool".into(), json!(false));
+            settings
+        }
+        fn set(&self, key: &str, _value: &Value) -> Option<Result<(), String>> {
+            if key != "racing_tool" {
+                return None;
+            }
+            let core = self.core.lock().unwrap().upgrade().unwrap();
+            let newer = self.newer;
+            core.store
+                .update(|store| store.extras.auto_join_general = Some(newer))
+                .unwrap();
+            Some(Err("not now".into()))
+        }
+    }
+
+    /// The rollback puts back only what the batch wrote: a key another
+    /// writer saved since keeps that newer value, the rest go back.
+    #[tokio::test]
+    async fn the_rollback_keeps_a_newer_write_by_another_writer() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = crate::relay::daemon::Config {
+            paths: crate::relay::paths::CorePaths::for_socket(temp.path().join("core.sock"))
+                .unwrap(),
+            home: temp.path().into(),
+            app_data_dir: temp.path().join("app-data"),
+            env: std::collections::BTreeMap::new(),
+            version: "0.0.0-test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: crate::relay::push::PushTiming::default(),
+            delivery_timing: crate::relay::delivery::DeliveryTiming::default(),
+        };
+        let racing = Arc::new(RacingTool {
+            core: std::sync::Mutex::new(std::sync::Weak::new()),
+            // The batch turns #general on; the other writer turns it off.
+            newer: false,
+        });
+        let plugins = crate::relay::daemon::Plugins {
+            settings: vec![racing.clone()],
+            ..crate::relay::daemon::Plugins::default()
+        };
+        let (core, _signals) = Core::with_plugins(config, plugins);
+        *racing.core.lock().unwrap() = Arc::downgrade(&core);
+        let general = crate::relay::store_settings::AUTO_JOIN_GENERAL;
+        let saved = core.store.snapshot();
+        assert_ne!(saved.extras.auto_join_general, Some(true));
+        let mut batch = Map::new();
+        batch.insert(general.into(), json!(true));
+        batch.insert("spawn_max_agents".into(), json!(3));
+        batch.insert("racing_tool".into(), json!(true));
+        assert!(core.set_settings(&batch).is_err());
+        core.store.read(|store| {
+            assert_eq!(
+                store.extras.auto_join_general,
+                Some(false),
+                "the other writer's newer value is kept"
+            );
+            assert_eq!(
+                store.spawn_max_agents, saved.spawn_max_agents,
+                "the batch's own write is put back"
+            );
+        });
     }
 
     #[tokio::test]
