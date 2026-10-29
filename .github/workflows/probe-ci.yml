@@ -95,6 +95,43 @@ jobs:
           mkdir -p "$HOME"
           cargo test --locked -- --test-threads=4
 
+  core-only:
+    name: Linux x64 core without history build + test
+    # The build relay ships: the messaging runtime alone, with no
+    # `ai-hist`/relayhistory dependency (see docs/probe-move.md).
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: crates/probe
+          key: core-only
+          cache-bin: false
+      - name: No relayhistory in the dependency tree
+        run: |
+          tree="$(cargo tree --locked --no-default-features --features production-binaries -e normal,build)"
+          if grep -qE '(^|[^a-z-])(ai-hist|history-provider-sources) v' <<<"$tree"; then
+            echo "::error::The core without the history feature depends on relayhistory."
+            exit 1
+          fi
+      - name: Build
+        run: cargo build --locked --no-default-features --features production-binaries
+      - name: Contract matches the history build
+        run: |
+          cargo run --quiet --locked --no-default-features --features production-binaries \
+            --bin relay-contract-codegen -- --out "$RUNNER_TEMP/CoreContract.swift"
+          diff -u contract/CoreContract.swift "$RUNNER_TEMP/CoreContract.swift"
+      - name: Test
+        run: |
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+          export HOME="$RUNNER_TEMP/probe-home"
+          mkdir -p "$HOME"
+          cargo test --locked --no-default-features --features production-binaries -- --test-threads=4
+
   macos:
     name: macOS arm64 build + test
     runs-on: macos-latest
@@ -110,6 +147,9 @@ jobs:
           cache-bin: false
       - name: Build
         run: cargo build --locked
+      # The core relay ships, without session history (see core-only).
+      - name: Build without history
+        run: cargo build --locked --no-default-features --features production-binaries
       - name: Test
         run: |
           # Keep the toolchain where it was installed before hiding HOME.
@@ -144,3 +184,9 @@ jobs:
           # close to Windows' 260-character limit.
           CARGO_HOME: C:\ch
         run: cargo build --locked
+      # The core relay ships, without session history (see core-only).
+      - name: Build without history
+        shell: bash
+        env:
+          CARGO_HOME: C:\ch
+        run: cargo build --locked --no-default-features --features production-binaries

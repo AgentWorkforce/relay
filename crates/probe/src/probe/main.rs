@@ -1,36 +1,66 @@
 //! Standalone Cloud collector. Reuses ai-hist capture/queue and the optional transport.
 // Machine-readable commands must never mix progress prose into stdout.
+#[cfg(feature = "history")]
 macro_rules! humanln {
-    ($($arg:tt)*) => { if !crate::bridge::json_mode() { println!($($arg)*); } };
+    ($($arg:tt)*) => { if !crate::output::json_mode() { println!($($arg)*); } };
 }
+#[cfg(feature = "history")]
 mod bridge;
+#[cfg(feature = "history")]
 mod cloud_commands;
+#[cfg(feature = "history")]
 mod collector;
 mod connect;
+#[cfg(feature = "history")]
 mod control;
+#[cfg(feature = "history")]
 mod flush;
+#[cfg(feature = "history")]
 mod history;
+#[cfg(feature = "history")]
 mod install_sharing;
+#[cfg(feature = "history")]
 mod inventory;
+#[cfg(feature = "history")]
 mod live;
+#[cfg(feature = "history")]
 mod priority;
+#[cfg(feature = "history")]
 mod progress;
+#[cfg(feature = "history")]
 mod reclaim;
+mod output;
 mod relay_commands;
 use relay_commands::RelayCommands;
+#[cfg(feature = "history")]
 mod remote_sources;
+#[cfg(feature = "history")]
 mod session_metadata;
+#[cfg(feature = "history")]
 mod session_reset;
+#[cfg(feature = "history")]
 mod transcript;
+#[cfg(feature = "history")]
 mod transcript_display;
 
-use agent_relay_probe::{cloud, destination, migration, relay};
-use anyhow::{ensure, Context, Result};
-use clap::{Args, Parser, Subcommand};
+use agent_relay_probe::{cloud, relay};
+#[cfg(feature = "history")]
+use agent_relay_probe::{destination, migration};
+use anyhow::Result;
+#[cfg(feature = "history")]
+use anyhow::{ensure, Context};
+#[cfg(feature = "history")]
+use clap::Args;
+use clap::{Parser, Subcommand};
+#[cfg(feature = "history")]
 use cloud_commands::Install;
+#[cfg(feature = "history")]
 use fs2::FileExt;
+#[cfg(feature = "history")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "history")]
 use sha2::{Digest, Sha256};
+#[cfg(feature = "history")]
 use std::{
     fs,
     io::{self, Write},
@@ -57,10 +87,12 @@ enum Commands {
         #[command(subcommand)]
         command: connect::Command,
     },
+    #[cfg(feature = "history")]
     Cloud {
         #[command(subcommand)]
         command: cloud_commands::CloudCommands,
     },
+    #[cfg(feature = "history")]
     #[command(hide = true)]
     Run {
         #[arg(long)]
@@ -68,6 +100,7 @@ enum Commands {
         #[arg(long)]
         startup_id: String,
     },
+    #[cfg(feature = "history")]
     #[command(hide = true)]
     CompleteReplacement {
         #[arg(long)]
@@ -75,22 +108,32 @@ enum Commands {
         #[arg(long)]
         startup_id: String,
     },
+    #[cfg(feature = "history")]
     Stop(Target),
+    #[cfg(feature = "history")]
     Status(Target),
+    #[cfg(feature = "history")]
     Installs,
+    #[cfg(feature = "history")]
     /// Release what decommissioned installs no longer need. `installs` is a
     /// pure read; this is the one command that opens a decommissioned store.
     Reclaim,
+    #[cfg(feature = "history")]
     Start(Target),
+    #[cfg(feature = "history")]
     #[command(flatten)]
     Control(control::Control),
+    #[cfg(feature = "history")]
     Disconnect(Target),
+    #[cfg(feature = "history")]
     /// List receiver-proven delivery conflicts retained for repair.
     Conflicts(Target),
+    #[cfg(feature = "history")]
     Sessions {
         #[command(subcommand)]
         command: bridge::SessionCommand,
     },
+    #[cfg(feature = "history")]
     Sharing {
         #[command(subcommand)]
         command: bridge::SharingCommand,
@@ -100,6 +143,7 @@ enum Commands {
         #[command(subcommand)]
         command: RelayCommands,
     },
+    #[cfg(feature = "history")]
     /// Local history for hosts other than the desktop.
     #[command(hide = true)]
     History {
@@ -107,12 +151,14 @@ enum Commands {
         command: HistoryCommands,
     },
 }
+#[cfg(feature = "history")]
 #[derive(Subcommand)]
 enum HistoryCommands {
     /// Capture every local session and upload it with a push-only
     /// RelayHistory session, until the queue is empty or the deadline passes.
     Flush(flush::Flush),
 }
+#[cfg(feature = "history")]
 #[derive(Args, Clone)]
 struct Target {
     #[arg(long, default_value = "https://agentrelay.com")]
@@ -122,8 +168,10 @@ struct Target {
     #[arg(long)]
     workspace: String,
 }
+#[cfg(feature = "history")]
 /// The `config.json` format this build reads and writes.
 const CONFIG_VERSION: u32 = 1;
+#[cfg(feature = "history")]
 #[derive(Clone, Serialize, Deserialize)]
 struct Config {
     version: u32,
@@ -164,9 +212,14 @@ fn main() {
     // `history flush` captures and uploads the home it is given, which a
     // sandbox sets on purpose: it keeps that home. Every other command is
     // the desktop's, and reads the profile Claude Code and Codex write to.
-    if !flush::requested_on_argv() {
+    #[cfg(feature = "history")]
+    let flushing = flush::requested_on_argv();
+    #[cfg(not(feature = "history"))]
+    let flushing = false;
+    if !flushing {
         agent_relay_probe::platform::adopt_profile_home();
     }
+    #[cfg(feature = "history")]
     flush::refuse_token_on_argv();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -178,13 +231,14 @@ fn main() {
         {
             error.exit()
         }
-        Err(error) if flush::requested_on_argv() => {
+        #[cfg(feature = "history")]
+        Err(error) if flushing => {
             let _ = error.print();
             flush::invalid_arguments()
         }
         Err(error) => error.exit(),
     };
-    bridge::set_json(cli.json);
+    output::set_json(cli.json);
     if let Err(error) = run(cli) {
         // Provider errors can contain bodies, credentials or history; never print them.
         if let Some(safe) = error.downcast_ref::<UserError>() {
@@ -193,7 +247,7 @@ fn main() {
             eprintln!("{safe}");
         } else if let Some(safe) = error.downcast_ref::<cloud::CloudAuthError>() {
             eprintln!("{safe}");
-        } else if let Some(safe) = collector::local_failure_message(&error) {
+        } else if let Some(safe) = local_failure_message(&error) {
             eprintln!("{safe}");
         } else {
             eprintln!("Probe could not finish. Check your connection and run setup again. Credentials and session content were not logged.");
@@ -201,10 +255,22 @@ fn main() {
         std::process::exit(1);
     }
 }
+#[cfg(feature = "history")]
+fn local_failure_message(error: &anyhow::Error) -> Option<String> {
+    collector::local_failure_message(error).map(|message| message.to_string())
+}
+
+#[cfg(not(feature = "history"))]
+fn local_failure_message(_error: &anyhow::Error) -> Option<String> {
+    None
+}
+
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Connect { command } => connect::run(command),
+        #[cfg(feature = "history")]
         Commands::Cloud { command } => cloud_commands::run(command),
+        #[cfg(feature = "history")]
         Commands::Run {
             directory,
             startup_id,
@@ -214,26 +280,39 @@ fn run(cli: Cli) -> Result<()> {
             priority::collector();
             collector::run_background(&directory, &startup_id)
         }
+        #[cfg(feature = "history")]
         Commands::CompleteReplacement {
             directory,
             startup_id,
         } => bridge::complete_replacement(&directory, &startup_id),
+        #[cfg(feature = "history")]
         Commands::Stop(target) => collector::stop(&target.directory()?),
+        #[cfg(feature = "history")]
         Commands::Status(target) if bridge::json_mode() => bridge::status(&target.directory()?),
+        #[cfg(feature = "history")]
         Commands::Status(target) => {
             let directory = target.directory()?;
             collector::print_status(&directory)?;
             bridge::print_sharing_line(&directory);
             Ok(())
         }
+        #[cfg(feature = "history")]
         Commands::Installs => bridge::installs(),
+        #[cfg(feature = "history")]
         Commands::Reclaim => reclaim::reclaim(),
+        #[cfg(feature = "history")]
         Commands::Start(target) => bridge::start(&target.directory()?),
+        #[cfg(feature = "history")]
         Commands::Control(command) => command.run(),
+        #[cfg(feature = "history")]
         Commands::Disconnect(target) => bridge::disconnect(&target.directory()?),
+        #[cfg(feature = "history")]
         Commands::Conflicts(target) => conflicts(&target.directory()?),
+        #[cfg(feature = "history")]
         Commands::Sessions { command } => bridge::sessions(command),
+        #[cfg(feature = "history")]
         Commands::Sharing { command } => bridge::sharing(command),
+        #[cfg(feature = "history")]
         Commands::History {
             command: HistoryCommands::Flush(options),
         } => flush::run(options),
@@ -241,6 +320,7 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
+#[cfg(feature = "history")]
 fn conflicts(directory: &Path) -> Result<()> {
     let conn = agent_relay_probe::delivery::open_db_readonly(&directory.join("history.db"))?;
     let exists: bool = conn.query_row(
@@ -274,6 +354,7 @@ fn conflicts(directory: &Path) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(feature = "history")]
 impl Target {
     fn directory(&self) -> Result<PathBuf> {
         let site = cloud::site_origin(&self.site_url)?;
@@ -282,6 +363,7 @@ impl Target {
         directory(&site, &self.account, &self.workspace)
     }
 }
+#[cfg(feature = "history")]
 fn validate_id(value: &str) -> Result<()> {
     ensure!(
         !value.is_empty()
@@ -293,10 +375,12 @@ fn validate_id(value: &str) -> Result<()> {
     );
     Ok(())
 }
+#[cfg(feature = "history")]
 /// `HOME`, and on Windows `USERPROFILE` when `HOME` is unset.
 fn home() -> Result<PathBuf> {
     agent_relay_probe::platform::home_dir().context("HOME unavailable")
 }
+#[cfg(feature = "history")]
 fn directory(site: &str, account: &str, workspace: &str) -> Result<PathBuf> {
     let key = format!(
         "{:x}",
@@ -304,6 +388,7 @@ fn directory(site: &str, account: &str, workspace: &str) -> Result<PathBuf> {
     );
     Ok(home()?.join(".agentworkforce/probe").join(key))
 }
+#[cfg(feature = "history")]
 fn private_directory(path: &Path) -> Result<()> {
     fs::create_dir_all(path)?;
     #[cfg(unix)]
@@ -313,9 +398,11 @@ fn private_directory(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+#[cfg(feature = "history")]
 fn save_json(path: &Path, value: &impl Serialize) -> Result<()> {
     write_json(path, value, |file| file.sync_all())
 }
+#[cfg(feature = "history")]
 /// [`save_json`] for the status the collector rewrites on every pass:
 /// `progress.json`, `cycle.json` and `capture-diagnostic.json`. They are
 /// flushed through the filesystem before they replace the old file, as the
@@ -330,6 +417,7 @@ fn save_json(path: &Path, value: &impl Serialize) -> Result<()> {
 fn save_status_json(path: &Path, value: &impl Serialize) -> Result<()> {
     write_json(path, value, flush_to_filesystem)
 }
+#[cfg(feature = "history")]
 /// Write `value` to a private temporary file beside `path`, make it durable
 /// with `flush`, and rename it into place.
 fn write_json(
@@ -354,6 +442,7 @@ fn write_json(
     temporary.persist(path).map_err(|e| e.error)?;
     Ok(())
 }
+#[cfg(feature = "history")]
 #[cfg(target_os = "macos")]
 fn flush_to_filesystem(file: &fs::File) -> io::Result<()> {
     use std::os::fd::AsRawFd;
@@ -364,14 +453,17 @@ fn flush_to_filesystem(file: &fs::File) -> io::Result<()> {
         Err(io::Error::last_os_error())
     }
 }
+#[cfg(feature = "history")]
 #[cfg(not(target_os = "macos"))]
 fn flush_to_filesystem(file: &fs::File) -> io::Result<()> {
     file.sync_all()
 }
+#[cfg(feature = "history")]
 fn read_config(directory: &Path) -> Result<Config> {
     read_config_file(&directory.join("config.json"))
 }
 
+#[cfg(feature = "history")]
 // Only explicit authenticated setup may restore a signed-out installation.
 fn saved_config(directory: &Path) -> Result<Option<Config>> {
     for name in ["config.json", "signed-out.json"] {
@@ -383,6 +475,7 @@ fn saved_config(directory: &Path) -> Result<Option<Config>> {
     Ok(None)
 }
 
+#[cfg(feature = "history")]
 fn read_config_file(path: &Path) -> Result<Config> {
     let config: Config = serde_json::from_slice(&fs::read(path)?)?;
     ensure!(
@@ -403,6 +496,7 @@ fn read_config_file(path: &Path) -> Result<Config> {
     );
     Ok(config)
 }
+#[cfg(feature = "history")]
 fn lock(directory: &Path) -> Result<fs::File> {
     private_directory(directory)?;
     let file = fs::OpenOptions::new()
@@ -415,12 +509,14 @@ fn lock(directory: &Path) -> Result<fs::File> {
         .map_err(|_| user_error("This workspace’s uploader is already running."))?;
     Ok(file)
 }
+#[cfg(feature = "history")]
 /// Install-time user messaging only: the same rule is enforced per dispatch
 /// inside the receiver, where an actionable sentence would have nobody to read
 /// it. Both must agree, so neither is allowed to drift into a softer check.
 fn check_legacy_schedules(acknowledge_uninspected_schedules: bool) -> Result<()> {
     legacy_schedule_verdict(migration::status().state, acknowledge_uninspected_schedules)
 }
+#[cfg(feature = "history")]
 /// [`check_legacy_schedules`] for a scheduler `state` already inspected.
 fn legacy_schedule_verdict(state: &str, acknowledge_uninspected_schedules: bool) -> Result<()> {
     if state == "active" {
@@ -431,6 +527,7 @@ fn legacy_schedule_verdict(state: &str, acknowledge_uninspected_schedules: bool)
     }
     Ok(())
 }
+#[cfg(feature = "history")]
 fn validate_setup_mode(options: &Install, json: bool) -> Result<()> {
     ensure!(
         !json || (!options.foreground && !options.once),
@@ -445,6 +542,7 @@ fn validate_setup_mode(options: &Install, json: bool) -> Result<()> {
     );
     Ok(())
 }
+#[cfg(feature = "history")]
 fn install(options: Install) -> Result<()> {
     validate_setup_mode(&options, bridge::json_mode())?;
     let site = cloud::site_origin(&options.site_url)?;
@@ -525,6 +623,7 @@ fn install(options: Install) -> Result<()> {
     )
 }
 
+#[cfg(feature = "history")]
 /// The sharing choice setup applies: a saved install's own, else the one
 /// requested (`None` asks interactively). A different explicit choice for a
 /// saved install is refused, since changing it replaces its delivery
@@ -544,6 +643,7 @@ fn setup_sharing(
     }
 }
 
+#[cfg(feature = "history")]
 /// Setup's work on `directory` once it owns the install's collector.
 fn connect(
     options: &Install,
@@ -755,6 +855,7 @@ fn connect(
     }
 }
 
+#[cfg(feature = "history")]
 /// Runs setup on `directory` as the owner of its collector. A reconnect finds
 /// the collector it set up still running, and setup needs the collector lock,
 /// so it stops that collector; setup starts this build's collector when it
@@ -787,7 +888,7 @@ fn with_collector(
     result
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "history"))]
 mod tests {
     use super::*;
     /// A fresh install takes the choice asked for. Signing in again from an

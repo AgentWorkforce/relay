@@ -1,5 +1,5 @@
 //! Local relay command-line entry points, shared by the desktop helper.
-use crate::{bridge, user_error};
+use crate::{output, user_error};
 use agent_relay_probe::relay;
 use anyhow::Result;
 use clap::Subcommand;
@@ -191,7 +191,7 @@ pub fn run(command: RelayCommands) -> Result<()> {
                 params,
                 std::time::Duration::from_secs(60),
             )?;
-            bridge::emit(serde_json::json!({ "result": result }));
+            output::emit(serde_json::json!({ "result": result }));
             Ok(())
         }
         RelayCommands::DevinSpawnHost {

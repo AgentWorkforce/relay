@@ -1312,7 +1312,7 @@ impl Core {
                 // a list no default pass touches.
                 for extension in &self.plugins.settings {
                     if let Some(result) = extension.set(key, value) {
-                        result.map_err(|message| RpcError::new(ErrorKind::Refused, message))?;
+                        result.map_err(RpcError::setting_refused)?;
                     }
                 }
                 continue;
@@ -1324,7 +1324,7 @@ impl Core {
                 || {
                     for extension in &self.plugins.settings {
                         if let Some(result) = extension.set(key, value) {
-                            result.map_err(|message| RpcError::new(ErrorKind::Refused, message))?;
+                            result.map_err(RpcError::setting_refused)?;
                         }
                     }
                     Ok(())

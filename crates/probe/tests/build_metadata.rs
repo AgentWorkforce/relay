@@ -1,7 +1,7 @@
 #[path = "../build_version.rs"]
 mod build_version;
 
-use agent_relay_probe::{BUILD_REVISION, HISTORY_VERSION, VERSION};
+use agent_relay_probe::{BUILD_REVISION, VERSION};
 
 #[test]
 fn build_identity_is_a_stamped_release_or_git_development_build() {
@@ -23,8 +23,10 @@ fn build_identity_is_a_stamped_release_or_git_development_build() {
     }
 }
 
+#[cfg(feature = "history")]
 #[test]
 fn history_version_matches_the_resolved_dependency() {
+    use agent_relay_probe::HISTORY_VERSION;
     let lock = include_str!("../Cargo.lock");
     assert!(lock.contains(&format!(
         "name = \"ai-hist\"\nversion = \"{HISTORY_VERSION}\""

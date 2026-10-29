@@ -3240,6 +3240,11 @@ public enum ErrorKind: String, Codable, CaseIterable, Hashable, Sendable {
     case fleetUnavailable = "fleet_unavailable"
     /// The probe's uploader command failed; `message` is its own sentence.
     case uploaderFailed = "uploader_failed"
+    /// The method needs session history (capture and upload to
+    /// RelayHistory), and this core was built without it (the crate's
+    /// `history` feature is off, as in relay's build). It stays in the
+    /// contract so every build speaks the same one; no retry can change it.
+    case historyUnavailable = "history_unavailable"
 
     /// A value this build does not know reads as `internal`.
     public init(from decoder: Decoder) throws {
@@ -10337,103 +10342,103 @@ extension CoreClient {
         try await call(CoreMethod.accountConnectWorkspace, params)
     }
 
-    /// `uploader.status`; only a core built with an account answers it.
+    /// `uploader.status`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderStatus() async throws -> UploaderStatus {
         try await call(CoreMethod.uploaderStatus, NoParams())
     }
 
-    /// `uploader.start`; only a core built with an account answers it.
+    /// `uploader.start`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderStart() async throws -> UploaderStarted {
         try await call(CoreMethod.uploaderStart, NoParams())
     }
 
-    /// `uploader.pause`; only a core built with an account answers it.
+    /// `uploader.pause`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderPause() async throws -> UploaderPaused {
         try await call(CoreMethod.uploaderPause, NoParams())
     }
 
-    /// `uploader.resume`; only a core built with an account answers it.
+    /// `uploader.resume`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderResume() async throws -> UploaderPaused {
         try await call(CoreMethod.uploaderResume, NoParams())
     }
 
-    /// `uploader.retry`; only a core built with an account answers it.
+    /// `uploader.retry`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderRetry() async throws -> UploadsRetried {
         try await call(CoreMethod.uploaderRetry, NoParams())
     }
 
-    /// `uploader.compact`; only a core built with an account answers it.
+    /// `uploader.compact`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderCompact() async throws -> JournalCompacted {
         try await call(CoreMethod.uploaderCompact, NoParams())
     }
 
-    /// `uploader.disconnect`; only a core built with an account answers it.
+    /// `uploader.disconnect`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderDisconnect() async throws -> UploaderDisconnected {
         try await call(CoreMethod.uploaderDisconnect, NoParams())
     }
 
-    /// `uploader.sharing.set`; only a core built with an account answers it.
+    /// `uploader.sharing.set`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderSharingSet(_ params: SharingParams) async throws -> SharingChanged {
         try await call(CoreMethod.uploaderSharingSet, params)
     }
 
-    /// `uploader.sessions.list`; only a core built with an account answers it.
+    /// `uploader.sessions.list`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderSessionsList(_ params: LimitParams) async throws -> UploadSessions {
         try await call(CoreMethod.uploaderSessionsList, params)
     }
 
-    /// `uploader.sessions.facets`; only a core built with an account answers it.
+    /// `uploader.sessions.facets`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderSessionsFacets(_ params: SessionFacetParams) async throws -> SessionFacetsPage {
         try await call(CoreMethod.uploaderSessionsFacets, params)
     }
 
-    /// `uploader.sessions.query`; only a core built with an account answers it.
+    /// `uploader.sessions.query`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderSessionsQuery(_ params: SessionQueryParams) async throws -> SessionQueryPage {
         try await call(CoreMethod.uploaderSessionsQuery, params)
     }
 
-    /// `uploader.sessions.preview`; only a core built with an account answers it.
+    /// `uploader.sessions.preview`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderSessionsPreview(_ params: PreviewParams) async throws -> UploadPreview {
         try await call(CoreMethod.uploaderSessionsPreview, params)
     }
 
-    /// `uploader.sessions.include`; only a core built with an account answers it.
+    /// `uploader.sessions.include`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderSessionsInclude(_ params: SessionKeysParams) async throws -> SessionsUpdated {
         try await call(CoreMethod.uploaderSessionsInclude, params)
     }
 
-    /// `uploader.sessions.reset`; only a core built with an account answers it.
+    /// `uploader.sessions.reset`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderSessionsReset(_ params: ResetSessionsParams) async throws -> SessionsReset {
         try await call(CoreMethod.uploaderSessionsReset, params)
     }
 
-    /// `uploader.sessions.delete`; only a core built with an account answers it.
+    /// `uploader.sessions.delete`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderSessionsDelete(_ params: SessionKeysParams) async throws -> SessionsUpdated {
         try await call(CoreMethod.uploaderSessionsDelete, params)
     }
 
-    /// `uploader.sessions.exclude`; only a core built with an account answers it.
+    /// `uploader.sessions.exclude`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func uploaderSessionsExclude(_ params: SessionKeysParams) async throws -> SessionsUpdated {
         try await call(CoreMethod.uploaderSessionsExclude, params)
     }
 
-    /// `sessions.transcript`; only a core built with an account answers it.
+    /// `sessions.transcript`; only a core built with an account answers it; a core built without session history answers `history_unavailable`.
     @discardableResult
     public func sessionsTranscript(_ params: LocalTranscriptParams) async throws -> LocalTranscriptPage {
         try await call(CoreMethod.sessionsTranscript, params)

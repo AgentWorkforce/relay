@@ -37,6 +37,7 @@ const FILE: &str = "history-retention.json";
 
 /// How often the store's policy is read back, which also notices a newly
 /// signed-in workspace's store.
+#[cfg(feature = "history")]
 const RECONCILE_EVERY: Duration = Duration::from_secs(30);
 
 /// How long relayhistory keeps a session's local history.
@@ -96,6 +97,7 @@ pub type ActiveStore = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
 
 /// [`HistoryRetention`] over RelayHistory's store-level policy
 /// (`ai_hist::retention`).
+#[cfg(feature = "history")]
 pub struct InStore {
     active: ActiveStore,
     uploader: Option<Weak<crate::relay::uploader::Uploader>>,
@@ -103,6 +105,7 @@ pub struct InStore {
     after_open: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
+#[cfg(feature = "history")]
 impl InStore {
     fn store(&self) -> Option<(PathBuf, Option<crate::relay::uploader::HistoryReader>)> {
         // Acquire before even checking the path; reset may replace it. The
@@ -130,6 +133,7 @@ impl InStore {
     }
 }
 
+#[cfg(feature = "history")]
 impl HistoryRetention for InStore {
     fn saved(&self) -> Option<(StoreId, u32)> {
         let (db, _reader) = self.store()?;
@@ -166,6 +170,7 @@ struct Saved {
 
 /// The setting as the core serves it, saved under `app_data_dir` and in the
 /// store of the install `uploader` last reported.
+#[cfg(feature = "history")]
 pub fn setting(
     app_data_dir: &Path,
     uploader: &Arc<crate::relay::uploader::Uploader>,
@@ -187,7 +192,35 @@ pub fn setting(
     ))
 }
 
+/// The setting in a core built without session history: there is no
+/// history to keep, so it reads [`DEFAULT_DAYS`] and refuses a change with
+/// `history_unavailable`. The key stays, so `settings.get` has one shape in
+/// every build.
+#[cfg(not(feature = "history"))]
+pub fn setting(
+    _app_data_dir: &Path,
+    _uploader: &Arc<crate::relay::uploader::Uploader>,
+) -> Arc<dyn SettingsExtension> {
+    Arc::new(Unavailable)
+}
+
+/// [`setting`] without the `history` feature.
+pub struct Unavailable;
+
+impl SettingsExtension for Unavailable {
+    fn get(&self) -> Map<String, Value> {
+        let mut settings = Map::new();
+        settings.insert(SETTING.into(), json!(Retention::DEFAULT.setting()));
+        settings
+    }
+
+    fn set(&self, key: &str, _value: &Value) -> Option<Result<(), String>> {
+        (key == SETTING).then(|| Err(crate::relay::protocol::HISTORY_UNAVAILABLE.into()))
+    }
+}
+
 /// [`setting`] with the store at `active`.
+#[cfg(feature = "history")]
 pub fn setting_at(app_data_dir: &Path, active: ActiveStore) -> Arc<dyn SettingsExtension> {
     Arc::new(HistoryRetentionSetting::new(
         app_data_dir,
@@ -455,6 +488,7 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
+    #[cfg(feature = "history")]
     mod concurrency;
 
     /// A store in memory: which one is signed in to (once one is), its days,
@@ -687,6 +721,7 @@ mod tests {
         assert_eq!(setting.get()[SETTING], 30);
     }
 
+    #[cfg(feature = "history")]
     /// The policy round-trips through RelayHistory's own store.
     #[test]
     fn the_policy_is_saved_in_relayhistorys_store() {
@@ -729,6 +764,7 @@ mod tests {
 
     /// The apps and agents change it through `settings.set`, which checks
     /// a value's type before any extension sees it.
+    #[cfg(feature = "history")]
     #[tokio::test]
     async fn the_core_saves_a_choice_made_in_settings() {
         let temp = tempfile::tempdir().unwrap();
@@ -771,6 +807,22 @@ mod tests {
             load(&temp.path().join("app-data").join(FILE)).days,
             Some(30)
         );
+    }
+
+    /// Without session history the setting keeps its key and default, and
+    /// `settings.set` refuses a change with `history_unavailable`.
+    #[cfg(not(feature = "history"))]
+    #[test]
+    fn a_core_without_history_reads_the_default_and_refuses_a_change() {
+        let setting = Unavailable;
+        assert_eq!(setting.get()[SETTING], DEFAULT_DAYS);
+        let refused = setting.set(SETTING, &json!(7)).unwrap().unwrap_err();
+        let error = crate::relay::protocol::RpcError::setting_refused(refused);
+        assert_eq!(
+            error.data.kind,
+            crate::relay::protocol::ErrorKind::HistoryUnavailable
+        );
+        assert_eq!(setting.set("analytics_enabled", &json!(true)), None);
     }
 
     #[test]

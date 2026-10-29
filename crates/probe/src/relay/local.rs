@@ -2167,6 +2167,7 @@ impl effects::ClaudeDeliveryEffects for ClaudeMailboxEffects {
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
+    #[cfg(feature = "history")]
     mod automatic_admission;
 
     mod spawned_delivery;
@@ -3096,6 +3097,7 @@ mod tests {
         assert!(found.live);
     }
 
+    #[cfg(feature = "history")]
     /// A live install `probe/install-a` under the Devin home, its catalog
     /// carrying one remote observation per `rows` entry, with the local
     /// config pointed at the probe root.
@@ -3104,6 +3106,7 @@ mod tests {
         automatic_admission::cloud_catalog_from(world, &rows);
     }
 
+    #[cfg(feature = "history")]
     /// A Devin Cloud session lives only in the history catalog — no lock,
     /// no process — yet discovery lists it so the relay can register it,
     /// hosted by the service that runs it. A session a local lock also
@@ -3184,6 +3187,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "history")]
     /// A cloud row's caller proof is the machine's Devin sign-in — the
     /// same credential the send resolves — so it auto-activates like a
     /// lock-holding local session while the connector is configured, and

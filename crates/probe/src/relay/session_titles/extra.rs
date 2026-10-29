@@ -315,6 +315,14 @@ fn devin_set(path: &Path, id: &str, title: &str) -> Result<String, String> {
     Ok(saved)
 }
 
+/// Without the `history` feature there is no importer resolver to name
+/// Hermes's roots by, so Hermes titles are not editable.
+#[cfg(not(feature = "history"))]
+fn hermes_session(_config: &LocalConfig, _id: &str) -> Option<(PathBuf, String)> {
+    None
+}
+
+#[cfg(feature = "history")]
 fn hermes_session(config: &LocalConfig, id: &str) -> Option<(PathBuf, String)> {
     config.hermes.as_ref()?;
     // Use the importer's own frozen resolver. Explicit HERMES_HOME roots have
@@ -329,10 +337,12 @@ fn hermes_session(config: &LocalConfig, id: &str) -> Option<(PathBuf, String)> {
     hermes_catalog_session(&paths, default.as_deref(), id)
 }
 
+#[cfg(feature = "history")]
 fn hermes_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+#[cfg(feature = "history")]
 fn hermes_catalog_session(
     roots: &[PathBuf],
     default: Option<&Path>,
@@ -351,6 +361,7 @@ fn hermes_catalog_session(
     Some((home, native))
 }
 
+#[cfg(feature = "history")]
 fn hermes_native_id(encoded: &str) -> Option<String> {
     if encoded.is_empty()
         || encoded.len() % 2 != 0
@@ -372,6 +383,7 @@ fn hermes_native_id(encoded: &str) -> Option<String> {
     Some(native)
 }
 
+#[cfg(feature = "history")]
 fn hermes_candidates(roots: &[PathBuf]) -> std::collections::BTreeSet<PathBuf> {
     let mut candidates = std::collections::BTreeSet::new();
     for root in roots {
@@ -404,6 +416,7 @@ fn hermes_candidates(roots: &[PathBuf]) -> std::collections::BTreeSet<PathBuf> {
     candidates
 }
 
+#[cfg(feature = "history")]
 fn hermes_namespace(home: &Path, default: Option<&Path>) -> Option<String> {
     use sha2::{Digest, Sha256};
     Some(match default {
@@ -585,6 +598,7 @@ mod tests {
         assert_eq!(devin_title(&path, "other").as_deref(), Some("Other"));
     }
     // Symlinks need a privilege on Windows that the test runner lacks.
+    #[cfg(feature = "history")]
     #[cfg(unix)]
     #[test]
     fn hermes_catalog_namespaces_resolve_exact_native_ids_in_trusted_roots() {
@@ -659,6 +673,7 @@ mod tests {
         .is_none());
     }
 
+    #[cfg(feature = "history")]
     #[cfg(unix)]
     #[test]
     fn hermes_rejects_database_and_profile_parent_symlink_escapes() {
