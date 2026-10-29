@@ -261,7 +261,7 @@ own, named `<tool>-<project>-<task>`) and, per tool, through `settings.set`:
 | OpenCode    | `opencode_plugin`                                | the Agent Relay plugin under `~/.config/opencode/plugins`                                              |
 | Grok CLI    | `grok_leader`                                    | `[cli] use_leader` in `~/.grok/config.toml`                                                            |
 | Devin       | `devin_direct_delivery`                          | lifecycle hooks in `~/.config/devin/config.json`                                                       |
-| Pi          | none                                             | the Pi extension, which any core installs at start when `~/.pi/agent` exists                           |
+| Pi          | `pi_extension`                                   | the Agent Relay extension in `~/.pi/agent/extensions` (a desktop core installs it at start)            |
 
 A setting that is already on is left alone; the ones init turned on are
 recorded in `<relay home>/local/core-settings.json`, and `relay init
@@ -352,8 +352,10 @@ Known gaps in phase 3:
   the session runs `agent-relay-probe relay read <ref>` for the text.
 - `--uninstall` leaves what the core keeps after turning a hook off: an empty
   `~/.codex/hooks.json`, Codex's hook-trust entries in `~/.codex/config.toml`,
-  and the one-time `.relay-desktop-backup` copies of edited settings files. It
-  cannot remove the Pi extension, which any core installs at start.
+  and the one-time `.relay-desktop-backup` copies of edited settings files.
+  A `--cli-managed` core writes into `~/.pi` only when `pi_extension` is
+  turned on; turning it off removes only Agent Relay's own extension file and
+  records the choice in the core's data (`~/.agentworkforce/desktop/pi-extension.off`).
 - The core's own telemetry (its `analytics_enabled` setting, on by default)
   does not follow the CLI's opt-out (`AGENT_RELAY_TELEMETRY_DISABLED`); turn
   it off with `agent-relay-probe relay call settings.set --params

@@ -1972,7 +1972,7 @@ mod lock_held;
 mod nearest;
 mod opencode_reply;
 mod plugins;
-pub use plugins::{plugins, plugins_with};
+pub use plugins::{plugins, plugins_with, plugins_with_options};
 
 /// The Codex side of the desktop mailbox's delivery passes: the same routes
 /// injection uses, over this computer's Codex.

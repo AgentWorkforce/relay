@@ -686,7 +686,10 @@ pub fn serve(options: ServeOptions) -> Result<()> {
         let stop_signals = StopSignals::register();
         let headless_cleanup = cleanup_gui_autostart(&options, &config.home, &config.env);
         let socket = BoundSocket::bind(&config.paths)?;
-        let mut local = crate::relay::local::plugins_with(&config, None);
+        // A CLI-managed core writes into Pi's folder only once relay init
+        // turns `pi_extension` on for a person who chose Pi.
+        let mut local =
+            crate::relay::local::plugins_with_options(&config, None, !options.cli_managed);
         if let Some(relay_send) = &mut local.relay_send {
             relay_send.agent_led_defaults_at_start = own_defaults(&options).agent_led;
         }

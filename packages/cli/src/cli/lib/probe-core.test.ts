@@ -231,10 +231,15 @@ describe('enableDelivery', () => {
   }
 
   it('turns on only what is off, and reports what it turned on', async () => {
-    const core = client({ auto_activate: true, codex_stop_hook: false, opencode_plugin: true });
+    const core = client({
+      auto_activate: true,
+      codex_stop_hook: false,
+      opencode_plugin: true,
+      pi_extension: false,
+    });
     const outcome = await enableDelivery(core, ['codex', 'opencode', 'pi']);
-    expect(core.sets).toEqual([{ codex_stop_hook: true }]);
-    expect(outcome.turnedOn).toEqual(['codex_stop_hook']);
+    expect(core.sets).toEqual([{ codex_stop_hook: true }, { pi_extension: true }]);
+    expect(outcome.turnedOn).toEqual(['codex_stop_hook', 'pi_extension']);
     expect(outcome.results.map((r) => [r.id, r.status])).toEqual([
       ['codex', 'on'],
       ['opencode', 'on'],

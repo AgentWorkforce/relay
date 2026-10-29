@@ -20,6 +20,8 @@ use inbox::{atomic_write_guarded, delivery_lock};
 
 const MAX_RECORD: u64 = 1024 * 1024;
 const SOURCE: &str = include_str!("pi/agent-relay.mjs");
+/// The first line of our extension, telling it from a person's file.
+const EXTENSION_MARK: &str = "// AGENT_RELAY_PI_EXTENSION=";
 
 #[derive(Clone, Debug)]
 pub struct PiConfig {
@@ -47,17 +49,50 @@ impl PiConfig {
         SOURCE.replace("__RUNTIME__", &runtime.to_string())
     }
 
-    /// Preserve a person's extension at this name. Refresh only our own copy.
-    pub fn install(&self) -> Result<(), String> {
-        if !self.enabled || !self.agent_dir.is_dir() {
+    /// Whether Pi has run here (its agent folder exists) and Pi sessions
+    /// are on: where the extension can go.
+    pub fn installed(&self) -> bool {
+        self.enabled && self.agent_dir.is_dir()
+    }
+
+    /// Where the extension goes in Pi's global extensions.
+    pub fn extension_file(&self) -> PathBuf {
+        self.agent_dir.join("extensions/agent-relay.js")
+    }
+
+    /// The marker turning the extension off leaves, in the core's own data
+    /// beside the Pi runtime rather than in Pi's folder.
+    pub fn off_marker(&self) -> PathBuf {
+        self.runtime.with_file_name("pi-extension.off")
+    }
+
+    /// Whether our extension (not a person's file of that name) is in place.
+    pub fn extension_installed(&self) -> bool {
+        fs::symlink_metadata(self.extension_file()).is_ok_and(|m| m.is_file())
+            && fs::read_to_string(self.extension_file())
+                .is_ok_and(|text| text.starts_with(EXTENSION_MARK))
+    }
+
+    /// Removes our extension; a person's file at that name, or none, is left.
+    pub fn remove(&self) -> Result<(), String> {
+        if !self.extension_installed() {
             return Ok(());
         }
-        let path = self.agent_dir.join("extensions/agent-relay.js");
+        fs::remove_file(self.extension_file())
+            .map_err(|e| format!("Could not remove the Pi extension: {e}"))
+    }
+
+    /// Preserve a person's extension at this name. Refresh only our own copy.
+    pub fn install(&self) -> Result<(), String> {
+        if !self.installed() {
+            return Ok(());
+        }
+        let path = self.extension_file();
         if let Ok(metadata) = fs::symlink_metadata(&path) {
             if !metadata.is_file()
                 || !fs::read_to_string(&path)
                     .unwrap_or_default()
-                    .starts_with("// AGENT_RELAY_PI_EXTENSION=")
+                    .starts_with(EXTENSION_MARK)
             {
                 return Err("A different Pi extension already uses agent-relay.js.".into());
             }

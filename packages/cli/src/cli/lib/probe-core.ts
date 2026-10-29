@@ -358,7 +358,11 @@ export const PROBE_DELIVERY: Record<ToolId, { settings: CoreSetting[]; route: st
     settings: [setting('grok_leader')],
     route: "Grok's leader socket ([cli] use_leader in ~/.grok/config.toml)",
   },
-  pi: { settings: [], route: 'the Agent Relay extension for Pi, which the core installs when it starts' },
+  pi: {
+    // A core relay init started installs the extension only through this setting.
+    settings: [setting('pi_extension')],
+    route: 'the Agent Relay extension in ~/.pi/agent/extensions',
+  },
   devin: {
     settings: [setting('devin_direct_delivery')],
     route: 'lifecycle hooks in ~/.config/devin/config.json',

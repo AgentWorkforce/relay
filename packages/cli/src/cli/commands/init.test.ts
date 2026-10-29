@@ -901,6 +901,7 @@ function fakeCore(
     opencode_plugin: false,
     grok_leader: false,
     devin_direct_delivery: false,
+    pi_extension: false,
     ...options.settings,
   };
   /** The person's own crossSessionInbound, which the default never overrides. */
@@ -1161,6 +1162,32 @@ describe('relay init message injection', () => {
     expect(output).toMatch(/Grok CLI\s+not injected: Grok is not installed\./);
     expect(fs.readFileSync(path.join(project, '.grok', 'config.toml'), 'utf8')).toContain('agent-relay');
     expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
+  });
+
+  it('installs the Pi extension only for Pi, records it, and removes it on --uninstall', async () => {
+    installedProbe();
+    const core = fakeCore();
+    await setup(core.deps).run('--tools', 'codex');
+    expect(core.settings.pi_extension).toBe(false);
+
+    await setup(core.deps).run('--tools', 'pi');
+    expect(core.settings.pi_extension).toBe(true);
+    expect(JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'))).toEqual({
+      turnedOn: ['codex_stop_hook', 'auto_activate', 'pi_extension'],
+    });
+
+    const toMcp = setup(core.deps);
+    await toMcp.run('--tools', 'pi', '--delivery', 'mcp');
+    expect(core.settings.pi_extension).toBe(false);
+    expect(core.settings.codex_stop_hook).toBe(true);
+
+    await setup(core.deps).run('--tools', 'pi');
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(core.settings).toMatchObject({
+      pi_extension: false,
+      codex_stop_hook: false,
+      auto_activate: false,
+    });
   });
 
   it('rolls back the settings of a tool whose delivery fails, so it has only the MCP route', async () => {

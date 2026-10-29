@@ -36,7 +36,7 @@ pub const RECORDS: [&str; 1] = ["agent_changes"];
 /// Claude Code's Keychain login; mobile handoff changes where sessions
 /// run; mobile continuation permits native owner input). An agent may turn
 /// them off.
-pub const PERSON_TURNS_ON: [&str; 22] = [
+pub const PERSON_TURNS_ON: [&str; 23] = [
     "accept_spawns",
     "allow_self_registration",
     "auto_activate",
@@ -53,6 +53,7 @@ pub const PERSON_TURNS_ON: [&str; 22] = [
     "mobile_native_continuation",
     "openclaw_gateway",
     "opencode_plugin",
+    "pi_extension",
     "spawn_allow_teammates",
     "spawn_full_access_claude",
     "spawn_full_access_codex",
@@ -157,6 +158,7 @@ fn unavailable(key: &str) -> String {
     let harness = match key {
         "grok_leader" => Some("Grok"),
         "opencode_plugin" => Some("OpenCode"),
+        "pi_extension" => Some("Pi"),
         "openclaw_gateway" | "openclaw_unlimited_version" => Some("OpenClaw"),
         "hermes_agent" => Some("Hermes"),
         "devin_direct_delivery" => Some("Devin"),

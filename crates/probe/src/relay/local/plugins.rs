@@ -15,9 +15,22 @@ pub fn plugins_with(
     config: &Config,
     agent_environment: Option<claude::AgentEnvironment>,
 ) -> Plugins {
+    plugins_with_options(config, agent_environment, true)
+}
+
+/// `plugins_with`; `install_pi_at_start` false (a core `relay init`
+/// manages) leaves Pi's folder alone until `pi_extension` is turned on.
+pub fn plugins_with_options(
+    config: &Config,
+    agent_environment: Option<claude::AgentEnvironment>,
+    install_pi_at_start: bool,
+) -> Plugins {
     let env = |key: &str| config.env.get(key).cloned();
     let mut local = LocalConfig::from_env(&env, &config.home);
-    let pi_setup = Arc::new(crate::relay::pi::setup::PiSetup::new(&local.pi));
+    let pi_setup = Arc::new(crate::relay::pi::setup::PiSetup::new(
+        &local.pi,
+        install_pi_at_start,
+    ));
     local.spawned_grok = Some(config.app_data_dir.join("spawned-agents/grok"));
     local.existing_grok = enablement::Paths::from_env(&env, &config.app_data_dir);
     crate::relay::message_pointer::configure(&config.app_data_dir);
@@ -236,5 +249,50 @@ pub fn plugins_with(
         }),
         spawner,
         ..Plugins::default()
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::relay::paths::CorePaths;
+    use std::time::Duration;
+
+    fn config(home: &Path) -> Config {
+        Config {
+            paths: CorePaths::for_socket(home.join("core.sock")).unwrap(),
+            home: home.to_path_buf(),
+            app_data_dir: home.join("app-data"),
+            env: [
+                ("AGENT_RELAY_ENABLE_OPENCLAW", "0"),
+                ("AGENT_RELAY_ENABLE_HERMES", "0"),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+            version: "0.0.0-test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: Default::default(),
+            delivery_timing: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_cli_managed_start_leaves_pis_folder_alone_and_the_desktop_installs() {
+        let home = tempfile::tempdir().unwrap();
+        let agent_dir = home.path().join(".pi/agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+
+        let managed = plugins_with_options(&config(home.path()), None, false);
+        assert!(!agent_dir.join("extensions").exists());
+        let pi_extension = managed
+            .settings
+            .iter()
+            .find_map(|s| s.get().get("pi_extension").cloned());
+        assert_eq!(pi_extension, Some(serde_json::Value::Bool(false)));
+
+        plugins_with(&config(home.path()), None);
+        assert!(agent_dir.join("extensions/agent-relay.js").is_file());
     }
 }
