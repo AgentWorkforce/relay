@@ -410,7 +410,9 @@ matches an `allow` prefix rule in `~/.codex/rules/*.rules`. So while
 Dev) with exactly two rules: `<this probe> relay socket-request --socket <this
 core's session socket>` and `<this probe> relay read`. Nothing else leaves the
 sandbox and no network is granted; a rules file of that name that does not
-start with Agent Relay's header is never touched. Reply hints are one command
+start with Agent Relay's header is never touched, and the rules go to
+`agent-relay-2.rules` (up to `-9`) instead; with every name taken, turning
+the hook on fails. Reply hints are one command
 with the body as `--body` (no `printf |` pipe, since every part of a command
 must match a rule), and every reply hint ends with a `[route: …]` line telling
 the agent to answer only that way, never through another Agent Relay

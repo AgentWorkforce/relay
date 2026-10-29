@@ -97,8 +97,9 @@ pub enum RelayCommands {
         #[arg(long)]
         path: String,
         /// The request body; read from standard input when omitted. One
-        /// command, with no pipe, is what Codex's sandbox rules allow.
-        #[arg(long)]
+        /// command, with no pipe, is what Codex's sandbox rules allow. A
+        /// reply may start with a hyphen (`- first item`).
+        #[arg(long, allow_hyphen_values = true)]
         body: Option<String>,
     },
     /// Agent Relay's Codex hook, which Codex runs after each tool call and

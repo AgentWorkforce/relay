@@ -293,6 +293,27 @@ fn write_hooks(path: &Path, backup: Option<&[u8]>, bytes: &[u8]) -> Result<(), S
         .map_err(|_| "~/.codex/hooks.json cannot be written.".to_string())
 }
 
+/// `value` without what adding and taking out the hook makes or drops on
+/// its own: an empty list for one of the hook's events and an empty
+/// `hooks`. Two files equal this way differ in nothing the person set.
+fn without_empty(value: &Value) -> Value {
+    let mut value = value.clone();
+    if let Some(object) = value.as_object_mut() {
+        if let Some(hooks) = object.get_mut("hooks").and_then(Value::as_object_mut) {
+            hooks.retain(|event, groups| {
+                !(EVENTS.contains(&event.as_str()) && groups.as_array().is_some_and(Vec::is_empty))
+            });
+        }
+        if object
+            .get("hooks")
+            .is_some_and(|hooks| hooks.as_object().is_some_and(serde_json::Map::is_empty))
+        {
+            object.remove("hooks");
+        }
+    }
+    value
+}
+
 /// Whether `value` is a `hooks.json` with nothing in it: `{}`, or only an
 /// empty `hooks`.
 fn is_empty_hooks(value: &Value) -> bool {
@@ -363,6 +384,9 @@ const RULES_HEADER: &str = "# Agent Relay: written and removed by Agent Relay (c
 /// until trusting the hook created it, so taking the hook out again removes
 /// the file once nothing else is in it.
 const CONFIG_CREATED: &str = "codex-config-created";
+
+/// How many names the sandbox rules may try (`SandboxRules`).
+const RULES_NAMES: usize = 9;
 
 /// What lets a session reach its session socket from inside Codex's
 /// sandbox, as a Codex rules file (`~/.codex/rules/agent-relay.rules`).
@@ -500,13 +524,19 @@ impl CodexStopHookSettings {
         self.command.trim_end().ends_with(" --dev")
     }
 
-    fn rules_file(&self) -> PathBuf {
-        let name = if self.development() {
-            "agent-relay-dev.rules"
+    /// The names the sandbox rules may have, in order: `agent-relay.rules`,
+    /// then `agent-relay-2.rules` and on when a file of the person's holds
+    /// the name (`agent-relay-dev…` for Agent Relay Dev).
+    fn rules_files(&self) -> Vec<PathBuf> {
+        let stem = if self.development() {
+            "agent-relay-dev"
         } else {
-            "agent-relay.rules"
+            "agent-relay"
         };
-        self.codex_home.join("rules").join(name)
+        let folder = self.codex_home.join("rules");
+        std::iter::once(folder.join(format!("{stem}.rules")))
+            .chain((2..=RULES_NAMES).map(|n| folder.join(format!("{stem}-{n}.rules"))))
+            .collect()
     }
 
     fn config_file(&self) -> PathBuf {
@@ -528,13 +558,28 @@ impl CodexStopHookSettings {
         let Some(rules) = &self.sandbox else {
             return Ok(());
         };
-        let path = self.rules_file();
         let text = rules.text();
-        match std::fs::read_to_string(&path) {
-            Ok(current) if current == text => return Ok(()),
-            Ok(current) if !current.starts_with(RULES_HEADER) => return Ok(()),
-            _ => {}
+        // Agent Relay's own file, else the first free name: a file of the
+        // person's is never rewritten, and never leaves the hook on without
+        // the rules that let its replies out of the sandbox.
+        let mut ours = None;
+        let mut free = None;
+        for path in self.rules_files() {
+            match std::fs::read_to_string(&path) {
+                Ok(current) if current == text => return Ok(()),
+                Ok(current) if current.starts_with(RULES_HEADER) => {
+                    ours.get_or_insert(path);
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    free.get_or_insert(path);
+                }
+                Err(_) => {}
+            }
         }
+        let path = ours.or(free).ok_or_else(|| {
+            "~/.codex/rules has no free name for Agent Relay's sandbox rules.".to_string()
+        })?;
         crate::relay::claude_settings::write_keeping_file(
             &path,
             None,
@@ -548,13 +593,15 @@ impl CodexStopHookSettings {
     /// Removes Agent Relay's rules file, and the `rules` folder when that
     /// leaves it empty.
     fn remove_rules(&self) {
-        let path = self.rules_file();
-        let ours = std::fs::read_to_string(&path).is_ok_and(|text| text.starts_with(RULES_HEADER));
-        if ours && std::fs::remove_file(&path).is_ok() {
-            if let Some(folder) = path.parent() {
-                // Only an empty folder goes; anything else in it stays.
-                let _ = std::fs::remove_dir(folder);
-            }
+        let mut removed = false;
+        for path in self.rules_files() {
+            let ours =
+                std::fs::read_to_string(&path).is_ok_and(|text| text.starts_with(RULES_HEADER));
+            removed |= ours && std::fs::remove_file(&path).is_ok();
+        }
+        if removed {
+            // Only an empty folder goes; anything else in it stays.
+            let _ = std::fs::remove_dir(self.codex_home.join("rules"));
         }
     }
 
@@ -752,17 +799,19 @@ impl CodexStopHookSettings {
     /// removed once it holds nothing else, the person's own is put back
     /// byte for byte when they have not changed it since, and only the
     /// trust entries for this hook are taken out.
+    ///
+    /// A `hooks.json` that cannot be read or parsed is an error, not an
+    /// absent hook: the hook may still be in it, so nothing else is taken
+    /// out and the setting stays on for another try.
     fn remove(&self) -> Result<(), String> {
-        let outcome = if self.read().is_ok_and(|value| self.holds_ours(&value)) {
+        if self.holds_ours(&self.read()?) {
             (self.untrust)(&self.codex_home, &self.command, &mut || {
                 self.take_out_of_file()
-            })
-        } else {
-            Ok(())
-        };
+            })?;
+        }
         self.remove_rules();
         self.tidy_config();
-        outcome
+        Ok(())
     }
 
     /// Takes this build's hook out of `hooks.json`; see [`Self::remove`].
@@ -780,7 +829,10 @@ impl CodexStopHookSettings {
             match serde_json::from_slice::<Value>(&original) {
                 // The person's file as it was, unchanged since: it goes
                 // back exactly, and the copy is no longer needed.
-                Ok(saved) if !self.holds_ours(&saved) && saved == value => {
+                Ok(saved)
+                    if !self.holds_ours(&saved)
+                        && without_empty(&saved) == without_empty(&value) =>
+                {
                     write_hooks(&path, None, &original)?;
                     let _ = std::fs::remove_file(&backup);
                     return Ok(());
@@ -1244,8 +1296,10 @@ mod tests {
         assert_eq!(rules.matches("decision = \"allow\"").count(), 2);
     }
 
+    // Review on #2019: a file of the person's under the name must not leave
+    // the hook on without the rules its replies need.
     #[test]
-    fn a_rules_file_that_is_not_agent_relays_is_left_alone() {
+    fn a_rules_file_that_is_not_agent_relays_is_left_alone_and_the_rules_go_beside_it() {
         let home = tempfile::tempdir().unwrap();
         let codex = home.path().join(".codex");
         std::fs::create_dir_all(codex.join("rules")).unwrap();
@@ -1256,11 +1310,81 @@ mod tests {
             std::fs::read_to_string(codex.join("rules/agent-relay.rules")).unwrap(),
             "# mine\n"
         );
+        let ours = std::fs::read_to_string(codex.join("rules/agent-relay-2.rules")).unwrap();
+        assert!(ours.starts_with(RULES_HEADER));
+        // Brought up to date in place, not copied to a third name.
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        assert!(!codex.join("rules/agent-relay-3.rules").exists());
+
         assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
         assert_eq!(
             std::fs::read_to_string(codex.join("rules/agent-relay.rules")).unwrap(),
             "# mine\n"
         );
+        assert!(!codex.join("rules/agent-relay-2.rules").exists());
+    }
+
+    #[test]
+    fn with_every_rules_name_taken_turning_on_fails() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(codex.join("rules")).unwrap();
+        let settings = full_settings(home.path());
+        for path in settings.rules_files() {
+            std::fs::write(path, "# mine\n").unwrap();
+        }
+        assert!(matches!(settings.set(SETTING, &json!(true)), Some(Err(_))));
+    }
+
+    // Review on #2019: an unreadable hooks.json may still hold the hook, so
+    // turning it off is an error and nothing else is taken out.
+    #[test]
+    fn an_unreadable_hooks_file_is_an_error_when_turning_off() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        let settings = full_settings(home.path());
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        let broken = format!("{{ {} ", ours());
+        std::fs::write(codex.join("hooks.json"), &broken).unwrap();
+        assert!(matches!(settings.set(SETTING, &json!(false)), Some(Err(_))));
+        assert_eq!(
+            std::fs::read_to_string(codex.join("hooks.json")).unwrap(),
+            broken
+        );
+        assert!(
+            codex.join("rules/agent-relay.rules").exists(),
+            "the rules stay with the hook"
+        );
+    }
+
+    // Review on #2019: adding the hook makes `hooks` and its events, and
+    // taking it out leaves an empty `hooks`: none of that is the person's.
+    #[test]
+    fn an_empty_hooks_file_comes_back_byte_for_byte() {
+        for original in [
+            "{}",
+            "{ }\n",
+            "{\"hooks\": {}}",
+            "{\"hooks\": {\"Stop\": []}}",
+            "{\"hooks\": {\"Stop\": [], \"PostToolUse\": []}, \"x\": 1}",
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            let codex = home.path().join(".codex");
+            std::fs::create_dir_all(&codex).unwrap();
+            std::fs::write(codex.join("hooks.json"), original).unwrap();
+            let settings = full_settings(home.path());
+            assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+            assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+            assert_eq!(
+                std::fs::read_to_string(codex.join("hooks.json")).unwrap(),
+                original
+            );
+            assert!(
+                !codex.join("hooks.json.relay-desktop-backup").exists(),
+                "{original}"
+            );
+        }
     }
 
     #[test]
