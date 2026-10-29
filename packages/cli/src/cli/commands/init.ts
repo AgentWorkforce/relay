@@ -981,24 +981,63 @@ async function setupInjection(
     const accepted = unset.filter((file) => claudeInbound(file) === 'accept');
     // Applied to the record as it is now, not as it was read: another
     // relay init may have recorded its own changes meanwhile.
-    updateDeliveryRecord((current) => {
-      if (turnedOff.includes('direct_delivery')) {
-        // Rolled back: the core wrote hold where init had set accept, in this run or an earlier one.
-        restoreClaudeInbound([...new Set([...current.claudeInbound, ...unset])]);
-      }
-      return {
-        turnedOn: [...new Set([...current.turnedOn, ...turnedOn])].filter((key) => !turnedOff.includes(key)),
-        claudeInbound: turnedOff.includes('direct_delivery')
-          ? []
-          : [...new Set([...current.claudeInbound, ...accepted])],
-      };
-    });
+    const save = () =>
+      updateDeliveryRecord((current) => {
+        if (turnedOff.includes('direct_delivery')) {
+          // Rolled back: the core wrote hold where init had set accept, in this run or an earlier one.
+          restoreClaudeInbound([...new Set([...current.claudeInbound, ...unset])]);
+        }
+        return {
+          turnedOn: [...new Set([...current.turnedOn, ...turnedOn])].filter(
+            (key) => !turnedOff.includes(key)
+          ),
+          claudeInbound: turnedOff.includes('direct_delivery')
+            ? []
+            : [...new Set([...current.claudeInbound, ...accepted])],
+        };
+      });
+    try {
+      save();
+    } catch (error) {
+      await undoUnrecorded(session.client, turnedOn, accepted, error as Error);
+      throw error;
+    }
     const workspaceNote = await coreWorkspaceNote(deps, session.client, setup);
     return { core: describeCore(session), results, workspaceNote };
   } catch (error) {
+    if (error instanceof InjectionStuckError) throw error;
     return { reason: `the Agent Relay core could not be set up (${(error as Error).message})` };
   } finally {
     session.client.close();
+  }
+}
+
+/** Settings init turned on that are neither recorded nor turned off: setup stops. */
+class InjectionStuckError extends Error {}
+
+/**
+ * The record of what this run turned on could not be saved: turn those
+ * settings off again, so the MCP fallback is the only route and nothing is
+ * left that `--uninstall` would not know about.
+ * @throws InjectionStuckError when any stays on; no MCP server is added then.
+ */
+async function undoUnrecorded(
+  client: CoreClient,
+  turnedOn: string[],
+  accepted: string[],
+  cause: Error
+): Promise<void> {
+  const failures = await disableDelivery(client, turnedOn);
+  if (turnedOn.includes('direct_delivery') && !failures.some((f) => f.startsWith('direct_delivery:'))) {
+    restoreClaudeInbound(accepted);
+  }
+  if (failures.length > 0) {
+    throw new InjectionStuckError(
+      `Could not save ${deliveryRecordPath()} (${cause.message}), and these settings relay init turned on ` +
+        `could not be turned off again: ${failures.join('; ')}. Turn them off with ` +
+        'agent-relay-probe relay call settings.set --params \'{"<setting>":false}\', then run relay init again.',
+      { cause }
+    );
   }
 }
 

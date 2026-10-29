@@ -1195,6 +1195,46 @@ describe('relay init message injection', () => {
     });
   });
 
+  it('turns off what it enabled when its record cannot be saved, then uses the MCP server', async () => {
+    installedProbe();
+    const core = fakeCore({ running: true });
+    // A directory where the record goes: writing it fails.
+    fs.mkdirSync(path.join(home, 'local', 'core-settings.json'), { recursive: true });
+    const { run, logs } = setup(core.deps);
+    await run('--tools', 'codex');
+    expect(core.settings).toMatchObject({ codex_stop_hook: false, auto_activate: false });
+    expect(logs.join('\n')).toContain(
+      'Message injection is not available (the Agent Relay core could not be set up'
+    );
+    expect(fs.readFileSync(path.join(project, '.codex', 'config.toml'), 'utf8')).toContain('agent-relay');
+  });
+
+  it('stops without adding MCP when an unrecorded setting cannot be turned off again', async () => {
+    installedProbe();
+    const core = fakeCore({ running: true });
+    fs.mkdirSync(path.join(home, 'local', 'core-settings.json'), { recursive: true });
+    const connect = core.deps.connectCore;
+    const { run, errors } = setup({
+      ...core.deps,
+      connectCore: vi.fn(async (socket: string) => {
+        const client = await connect(socket);
+        if (!client) return undefined;
+        return {
+          ...client,
+          call: async <T>(method: string, params?: Record<string, unknown>) => {
+            if (method === 'settings.set' && params && Object.values(params).includes(false)) {
+              throw new Error('the core is busy');
+            }
+            return client.call<T>(method, params);
+          },
+        };
+      }),
+    });
+    await expect(run('--tools', 'codex')).rejects.toEqual(new ExitSignal(1));
+    expect(errors.join('\n')).toContain('could not be turned off again: codex_stop_hook: the core is busy');
+    expect(fs.existsSync(path.join(project, '.codex', 'config.toml'))).toBe(false);
+  });
+
   it('rolls back the settings of a tool whose delivery fails, so it has only the MCP route', async () => {
     installedProbe();
     const claudeSettings = path.join(toolHome, '.claude', 'settings.json');
