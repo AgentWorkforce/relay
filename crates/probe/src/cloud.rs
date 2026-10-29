@@ -388,13 +388,15 @@ fn refresh_lock_path(base_url: &str) -> Result<PathBuf> {
     Ok(auth.with_file_name(name))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "history"))]
 fn acquire_refresh_lock(base_url: &str) -> Result<AuthRefreshLock> {
     acquire_refresh_lock_with_budget(base_url, None)
 }
 
+#[cfg(feature = "history")]
 type RequestBudget<'a> = Option<&'a dyn Fn() -> Result<std::time::Duration>>;
 
+#[cfg(feature = "history")]
 fn acquire_refresh_lock_with_budget(
     base_url: &str,
     budget: RequestBudget<'_>,
@@ -427,10 +429,12 @@ fn acquire_refresh_lock_with_budget(
     Ok(AuthRefreshLock { _file: file })
 }
 
+#[cfg(feature = "history")]
 fn is_unauthorized(error: &ureq::Error) -> bool {
     matches!(error, ureq::Error::Status(401, _))
 }
 
+#[cfg(feature = "history")]
 /// Share one caller budget across lock acquisition, refresh and every retry.
 /// A successful rotation is persisted even if cancellation arrives meanwhile.
 ///
@@ -517,6 +521,7 @@ pub(crate) fn send_with_auth_refresh_checked_with_budget(
     send(&refreshed).map_err(mapped)
 }
 
+#[cfg(feature = "history")]
 /// Send with a command-scoped session that must not consult or mutate the
 /// shared auth store. Hosted teardown flushes receive a push-only bearer from
 /// Cloud and a 401 is final for that bearer: reloading another user's stored
@@ -539,6 +544,7 @@ pub(crate) fn send_with_fixed_auth_checked_with_budget(
 }
 
 // Callers hold the stage refresh lock and reload the current pair before entering.
+#[cfg(feature = "history")]
 fn refresh_and_save_auth(auth: &StoredAuth) -> Result<StoredAuth> {
     let refreshed = refresh_auth(auth).context("refreshing relayhistory session")?;
     // Refresh tokens rotate and invalidate their predecessor. Persist the new pair atomically
@@ -547,6 +553,7 @@ fn refresh_and_save_auth(auth: &StoredAuth) -> Result<StoredAuth> {
     Ok(refreshed)
 }
 
+#[cfg(feature = "history")]
 fn refresh_auth(auth: &StoredAuth) -> Result<StoredAuth> {
     refresh_auth_with_agent(auth, &ureq::AgentBuilder::new().build())
 }
@@ -1110,6 +1117,7 @@ use workspace_session::{issue_workspace_session, Issued};
 
 mod workspace_session;
 
+#[cfg(feature = "history")]
 pub(crate) mod devin_credential;
 
 /// The Agent Relay credential renewal uses, needing no interaction:
@@ -1496,6 +1504,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(feature = "history")]
     #[test]
     fn concurrent_401s_share_one_rotated_refresh_token() {
         with_temp_home(|| {
@@ -1594,6 +1603,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(feature = "history")]
     /// One authenticated upload request, through the refresh path every
     /// delivery takes.
     fn authed_post(auth: &StoredAuth) -> Result<ureq::Response> {
@@ -1616,6 +1626,7 @@ pub(crate) mod tests {
         )
     }
 
+    #[cfg(feature = "history")]
     /// Serve exactly one `POST /v1/auth/token/refresh` with `body`, then stop.
     fn one_refresh_response(body: &'static str) -> (String, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1629,6 +1640,7 @@ pub(crate) mod tests {
         (format!("http://{addr}"), server)
     }
 
+    #[cfg(feature = "history")]
     /// A session stored with no org is repaired by a refresh that reports
     /// tenancy, with no re-login.
     #[test]
@@ -1656,6 +1668,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(feature = "history")]
     /// An older service that reports no tenancy must never erase an org already stored.
     #[test]
     fn refresh_without_reported_tenancy_keeps_the_stored_org() {
@@ -1680,6 +1693,7 @@ pub(crate) mod tests {
 
     // Windows file locks are mandatory: a reader is refused while the
     // rotation lock is held, where Unix's advisory lock lets it through.
+    #[cfg(feature = "history")]
     #[cfg(unix)]
     #[test]
     fn idle_progress_refresh_is_bounded_and_respects_the_rotation_lock() {
@@ -1758,6 +1772,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(feature = "history")]
     #[test]
     fn a_reused_auth_value_adopts_the_persisted_rotation() {
         with_temp_home(|| {
@@ -2296,6 +2311,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(feature = "history")]
     /// Delivery (and any future authenticated request) goes through the shared send path,
     /// which must refuse before the request closure — and so the bearer — is ever invoked.
     #[test]
@@ -2331,6 +2347,7 @@ pub(crate) mod tests {
         });
     }
 
+    #[cfg(feature = "history")]
     /// The same shared path still works for loopback `wrangler dev` without any opt-in.
     #[test]
     fn shared_send_path_allows_loopback_cleartext() {

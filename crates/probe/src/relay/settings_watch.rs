@@ -14,6 +14,13 @@ pub trait SettingsExtension: Send + Sync + 'static {
     /// Sets `key` when it is this extension's: `None` when it is not,
     /// otherwise the outcome, with a message safe to show on failure.
     fn set(&self, key: &str, value: &Value) -> Option<Result<(), String>>;
+    /// A refusal of `key` set to `value` that is known before anything is
+    /// written: `settings.set` asks every extension first, so a batch it
+    /// refuses saves none of its other settings. The message is the one
+    /// [`SettingsExtension::set`] would give.
+    fn refuse(&self, _key: &str, _value: &Value) -> Option<String> {
+        None
+    }
     /// The keys of this extension that connect a tool installed on this
     /// computer to the relay and so are on unless the person turns them off.
     /// Each is turned on once (`Core::apply_integration_defaults`).

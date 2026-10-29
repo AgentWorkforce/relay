@@ -37,6 +37,7 @@ const FILE: &str = "history-retention.json";
 
 /// How often the store's policy is read back, which also notices a newly
 /// signed-in workspace's store.
+#[cfg(feature = "history")]
 const RECONCILE_EVERY: Duration = Duration::from_secs(30);
 
 /// How long relayhistory keeps a session's local history.
@@ -96,6 +97,7 @@ pub type ActiveStore = Arc<dyn Fn() -> Option<PathBuf> + Send + Sync>;
 
 /// [`HistoryRetention`] over RelayHistory's store-level policy
 /// (`ai_hist::retention`).
+#[cfg(feature = "history")]
 pub struct InStore {
     active: ActiveStore,
     uploader: Option<Weak<crate::relay::uploader::Uploader>>,
@@ -103,6 +105,7 @@ pub struct InStore {
     after_open: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
+#[cfg(feature = "history")]
 impl InStore {
     fn store(&self) -> Option<(PathBuf, Option<crate::relay::uploader::HistoryReader>)> {
         // Acquire before even checking the path; reset may replace it. The
@@ -130,6 +133,7 @@ impl InStore {
     }
 }
 
+#[cfg(feature = "history")]
 impl HistoryRetention for InStore {
     fn saved(&self) -> Option<(StoreId, u32)> {
         let (db, _reader) = self.store()?;
@@ -152,6 +156,17 @@ impl HistoryRetention for InStore {
     }
 }
 
+/// Why `settings.set` refuses a value no [`Retention`] names.
+const INVALID: &str = "history_retention_days must be 7, 30 or 90, or 0 to keep history forever.";
+
+/// The [`Retention`] a `settings.set` value names, if any.
+fn parse(value: &Value) -> Option<Retention> {
+    value
+        .as_u64()
+        .and_then(|days| u32::try_from(days).ok())
+        .and_then(Retention::from_setting)
+}
+
 /// The settings file: the choice, the store last in step with it, and
 /// whether a choice is still waiting to be saved in a store.
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -166,6 +181,7 @@ struct Saved {
 
 /// The setting as the core serves it, saved under `app_data_dir` and in the
 /// store of the install `uploader` last reported.
+#[cfg(feature = "history")]
 pub fn setting(
     app_data_dir: &Path,
     uploader: &Arc<crate::relay::uploader::Uploader>,
@@ -187,7 +203,39 @@ pub fn setting(
     ))
 }
 
+/// The setting in a core built without session history: there is no
+/// history to keep, so it reads [`DEFAULT_DAYS`] and refuses a change with
+/// `history_unavailable`. The key stays, so `settings.get` has one shape in
+/// every build.
+#[cfg(not(feature = "history"))]
+pub fn setting(
+    _app_data_dir: &Path,
+    _uploader: &Arc<crate::relay::uploader::Uploader>,
+) -> Arc<dyn SettingsExtension> {
+    Arc::new(Unavailable)
+}
+
+/// [`setting`] without the `history` feature.
+pub struct Unavailable;
+
+impl SettingsExtension for Unavailable {
+    fn get(&self) -> Map<String, Value> {
+        let mut settings = Map::new();
+        settings.insert(SETTING.into(), json!(Retention::DEFAULT.setting()));
+        settings
+    }
+
+    fn set(&self, key: &str, value: &Value) -> Option<Result<(), String>> {
+        self.refuse(key, value).map(Err)
+    }
+
+    fn refuse(&self, key: &str, _value: &Value) -> Option<String> {
+        (key == SETTING).then(|| crate::relay::protocol::HISTORY_UNAVAILABLE.into())
+    }
+}
+
 /// [`setting`] with the store at `active`.
+#[cfg(feature = "history")]
 pub fn setting_at(app_data_dir: &Path, active: ActiveStore) -> Arc<dyn SettingsExtension> {
     Arc::new(HistoryRetentionSetting::new(
         app_data_dir,
@@ -403,14 +451,8 @@ impl SettingsExtension for HistoryRetentionSetting {
         if key != SETTING {
             return None;
         }
-        let Some(retention) = value
-            .as_u64()
-            .and_then(|days| u32::try_from(days).ok())
-            .and_then(Retention::from_setting)
-        else {
-            return Some(Err(
-                "history_retention_days must be 7, 30 or 90, or 0 to keep history forever.".into(),
-            ));
+        let Some(retention) = parse(value) else {
+            return Some(Err(INVALID.into()));
         };
         // Publish the choice and pending flag together; a concurrent store
         // readback must never overwrite a newer local choice.
@@ -431,6 +473,10 @@ impl SettingsExtension for HistoryRetentionSetting {
         let inner = self.inner.clone();
         spawn("history-retention", move || inner.apply());
         Some(Ok(()))
+    }
+
+    fn refuse(&self, key: &str, value: &Value) -> Option<String> {
+        (key == SETTING && parse(value).is_none()).then(|| INVALID.into())
     }
 
     /// Reads the store's policy back now and then: at start, a store in step
@@ -455,6 +501,7 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
+    #[cfg(feature = "history")]
     mod concurrency;
 
     /// A store in memory: which one is signed in to (once one is), its days,
@@ -687,6 +734,7 @@ mod tests {
         assert_eq!(setting.get()[SETTING], 30);
     }
 
+    #[cfg(feature = "history")]
     /// The policy round-trips through RelayHistory's own store.
     #[test]
     fn the_policy_is_saved_in_relayhistorys_store() {
@@ -729,6 +777,7 @@ mod tests {
 
     /// The apps and agents change it through `settings.set`, which checks
     /// a value's type before any extension sees it.
+    #[cfg(feature = "history")]
     #[tokio::test]
     async fn the_core_saves_a_choice_made_in_settings() {
         let temp = tempfile::tempdir().unwrap();
@@ -771,6 +820,70 @@ mod tests {
             load(&temp.path().join("app-data").join(FILE)).days,
             Some(30)
         );
+    }
+
+    /// Without session history the setting keeps its key and default, and
+    /// `settings.set` refuses a change with `history_unavailable`.
+    #[cfg(not(feature = "history"))]
+    #[test]
+    fn a_core_without_history_reads_the_default_and_refuses_a_change() {
+        let setting = Unavailable;
+        assert_eq!(setting.get()[SETTING], DEFAULT_DAYS);
+        let refused = setting.set(SETTING, &json!(7)).unwrap().unwrap_err();
+        let error = crate::relay::protocol::RpcError::setting_refused(refused);
+        assert_eq!(
+            error.data.kind,
+            crate::relay::protocol::ErrorKind::HistoryUnavailable
+        );
+        assert_eq!(setting.set("analytics_enabled", &json!(true)), None);
+    }
+
+    /// A `settings.set` batch the retention setting refuses saves none of
+    /// its other settings: the refusal comes before any write. Without
+    /// session history every change is refused; with it, a value no
+    /// retention names is.
+    #[tokio::test]
+    async fn a_refused_retention_change_saves_nothing_else_in_its_batch() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = crate::relay::daemon::Config {
+            paths: crate::relay::paths::CorePaths::for_socket(temp.path().join("core.sock"))
+                .unwrap(),
+            home: temp.path().into(),
+            app_data_dir: temp.path().join("app-data"),
+            env: std::collections::BTreeMap::new(),
+            version: "0.0.0-test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: crate::relay::push::PushTiming::default(),
+            delivery_timing: crate::relay::delivery::DeliveryTiming::default(),
+        };
+        #[cfg(feature = "history")]
+        let (setting, refused_days, expected) = (
+            super::setting_at(&config.app_data_dir, Arc::new(|| None)),
+            45,
+            crate::relay::protocol::ErrorKind::Refused,
+        );
+        #[cfg(not(feature = "history"))]
+        let (setting, refused_days, expected): (Arc<dyn SettingsExtension>, _, _) = (
+            Arc::new(Unavailable),
+            7,
+            crate::relay::protocol::ErrorKind::HistoryUnavailable,
+        );
+        let plugins = crate::relay::daemon::Plugins {
+            settings: vec![setting],
+            ..crate::relay::daemon::Plugins::default()
+        };
+        let (core, _signals) = crate::relay::daemon::Core::with_plugins(config, plugins);
+        let key = crate::relay::store_settings::AUTO_JOIN_GENERAL;
+        let before = core.settings()[key].clone();
+        let mut change = Map::new();
+        change.insert(key.into(), json!(before != json!(true)));
+        change.insert(SETTING.into(), json!(refused_days));
+        let refused = core.set_settings(&change).unwrap_err();
+        assert_eq!(refused.data.kind, expected, "{}", refused.message);
+        let after = core.settings();
+        assert_eq!(after[key], before, "the batch's other setting is not saved");
+        assert_eq!(after[SETTING], DEFAULT_DAYS);
     }
 
     #[test]

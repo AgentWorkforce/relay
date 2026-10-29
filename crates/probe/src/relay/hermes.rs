@@ -441,11 +441,17 @@ impl crate::relay::agents::SettingsExtension for HermesSettings {
         settings
     }
 
+    fn refuse(&self, key: &str, _value: &Value) -> Option<String> {
+        (key == SETTING)
+            .then(|| platform::unsupported("Hermes"))
+            .flatten()
+    }
+
     fn set(&self, key: &str, value: &Value) -> Option<Result<(), String>> {
         if key != SETTING {
             return None;
         }
-        if let Some(reason) = platform::unsupported("Hermes") {
+        if let Some(reason) = self.refuse(key, value) {
             return Some(Err(reason));
         }
         let Some(enabled) = value.as_bool() else {

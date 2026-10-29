@@ -171,19 +171,27 @@ impl crate::relay::agents::SettingsExtension for CursorSettings {
         settings
     }
 
-    fn set(&self, key: &str, value: &Value) -> Option<Result<(), String>> {
+    fn refuse(&self, key: &str, value: &Value) -> Option<String> {
         if key != SETTING {
             return None;
         }
         if let Some(reason) = platform::unsupported(LABEL) {
+            return Some(reason);
+        }
+        (value.as_bool() == Some(true) && !self.installed())
+            .then(|| "Cursor CLI has never run on this computer.".into())
+    }
+
+    fn set(&self, key: &str, value: &Value) -> Option<Result<(), String>> {
+        if key != SETTING {
+            return None;
+        }
+        if let Some(reason) = self.refuse(key, value) {
             return Some(Err(reason));
         }
         let Some(enabled) = value.as_bool() else {
             return Some(Err(format!("{SETTING} must be true or false.")));
         };
-        if enabled && !self.installed() {
-            return Some(Err("Cursor CLI has never run on this computer.".into()));
-        }
         Some(self.edit(enabled))
     }
 }

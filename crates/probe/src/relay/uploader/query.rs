@@ -1,7 +1,10 @@
 use super::*;
+#[cfg(feature = "history")]
 use std::hash::{Hash, Hasher};
+#[cfg(feature = "history")]
 mod observations;
 
+#[cfg(feature = "history")]
 fn query_failed() -> RpcError {
     RpcError::new(ErrorKind::Internal, "Session search stopped.")
 }
@@ -32,6 +35,7 @@ impl Uploader {
         Ok(self.runner.run(args, Some(timeouts::SESSIONS)).await?)
     }
 
+    #[cfg(feature = "history")]
     /// Query pages never increase the legacy listing/background working set.
     pub(crate) async fn sessions_query(
         &self,
@@ -154,6 +158,7 @@ impl Uploader {
         Ok(page)
     }
 
+    #[cfg(feature = "history")]
     pub(crate) async fn sessions_facets(
         &self,
         request: crate::relay::contract::account::SessionFacetParams,
@@ -188,6 +193,7 @@ impl Uploader {
         .await
         .map_err(|_| query_failed())?
     }
+    #[cfg(feature = "history")]
     async fn query_reader(&self) -> Result<Arc<HistoryReader>, RpcError> {
         let slot = self.query_index.clone();
         self.register_history_reader_cleanup(
@@ -198,10 +204,12 @@ impl Uploader {
         );
         Ok(Arc::new(self.history_reader().await?))
     }
+    #[cfg(feature = "history")]
     pub(super) fn clear_query_index(&self) -> Result<(), RpcError> {
         *self.query_index.lock().map_err(|_| query_failed())? = None;
         Ok(())
     }
+    #[cfg(feature = "history")]
     async fn query_candidates(
         &self,
         request: &crate::relay::contract::account::SessionQueryParams,
@@ -272,6 +280,7 @@ impl Uploader {
         Ok(candidates)
     }
 
+    #[cfg(feature = "history")]
     async fn enrich_candidates(
         &self,
         candidates: &crate::relay::session_query::Candidates,
@@ -300,7 +309,38 @@ impl Uploader {
     }
 }
 
-#[cfg(test)]
+/// Without the `history` feature there is no session catalog to search.
+#[cfg(not(feature = "history"))]
+impl Uploader {
+    fn catalog_unavailable() -> RpcError {
+        RpcError::history_unavailable()
+    }
+
+    pub(crate) async fn sessions_query(
+        &self,
+        _request: crate::relay::contract::account::SessionQueryParams,
+        _local: Vec<crate::relay::contract::agents::LocalSession>,
+        _archived: Arc<std::collections::BTreeSet<String>>,
+        _home: PathBuf,
+        _relay_home: PathBuf,
+        _names: &crate::relay::project::Names,
+    ) -> Result<crate::relay::contract::account::SessionQueryPage, RpcError> {
+        Err(Self::catalog_unavailable())
+    }
+
+    pub(crate) async fn sessions_facets(
+        &self,
+        _request: crate::relay::contract::account::SessionFacetParams,
+    ) -> Result<crate::relay::contract::account::SessionFacetsPage, RpcError> {
+        Err(Self::catalog_unavailable())
+    }
+
+    pub(super) fn clear_query_index(&self) -> Result<(), RpcError> {
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "history"))]
 mod tests {
     use super::*;
     use std::future::Future;

@@ -432,6 +432,16 @@ pub(crate) fn resolve_symlinks(path: &Path) -> PathBuf {
     current
 }
 
+/// The folders a `claude_config_dirs` value lists, if it is a list of them.
+fn folder_list(value: &Value) -> Option<Vec<String>> {
+    value.as_array().and_then(|folders| {
+        folders
+            .iter()
+            .map(|f| f.as_str().map(str::to_string))
+            .collect()
+    })
+}
+
 impl SettingsExtension for ClaudeSettings {
     fn get(&self) -> Map<String, Value> {
         let mut settings = Map::new();
@@ -453,16 +463,42 @@ impl SettingsExtension for ClaudeSettings {
         settings
     }
 
-    fn set(&self, key: &str, value: &Value) -> Option<Result<(), String>> {
+    fn refuse(&self, key: &str, value: &Value) -> Option<String> {
         if key == claude_dirs::CHOICE_SETTING {
-            let (Some(path), Some(shared)) = (value["path"].as_str(), value["shared"].as_bool())
-            else {
-                return Some(Err(format!(
+            if value["path"].as_str().is_none() || value["shared"].as_bool().is_none() {
+                return Some(format!(
                     "{} must name a folder's path and whether it is shared.",
                     claude_dirs::CHOICE_SETTING
-                )));
-            };
-            let Some(home) = self.user_settings.parent() else {
+                ));
+            }
+            if self.user_settings.parent().is_none() {
+                return Some("Claude Code's folder is unknown.".into());
+            }
+        }
+        if key == claude_dirs::SETTING && folder_list(value).is_none() {
+            return Some(format!(
+                "{} must be a list of folders.",
+                claude_dirs::SETTING
+            ));
+        }
+        if key == MANAGED_SETTING {
+            return Some(format!(
+                "{MANAGED_SETTING} is your organization's; it cannot be changed here."
+            ));
+        }
+        None
+    }
+
+    fn set(&self, key: &str, value: &Value) -> Option<Result<(), String>> {
+        if let Some(refused) = self.refuse(key, value) {
+            return Some(Err(refused));
+        }
+        if key == claude_dirs::CHOICE_SETTING {
+            let (Some(path), Some(shared), Some(home)) = (
+                value["path"].as_str(),
+                value["shared"].as_bool(),
+                self.user_settings.parent(),
+            ) else {
                 return Some(Err("Claude Code's folder is unknown.".into()));
             };
             return Some(self.dirs.set_shared(path, shared, home));
@@ -477,12 +513,7 @@ impl SettingsExtension for ClaudeSettings {
             return Some(self.dirs.set_cloud_sessions(on));
         }
         if key == claude_dirs::SETTING {
-            let Some(folders) = value.as_array().and_then(|folders| {
-                folders
-                    .iter()
-                    .map(|f| f.as_str().map(str::to_string))
-                    .collect::<Option<Vec<_>>>()
-            }) else {
+            let Some(folders) = folder_list(value) else {
                 return Some(Err(format!(
                     "{} must be a list of folders.",
                     claude_dirs::SETTING
@@ -490,11 +521,6 @@ impl SettingsExtension for ClaudeSettings {
             };
             let home = crate::relay::paths::home().unwrap_or_default();
             return Some(self.dirs.set_added(&folders, &home));
-        }
-        if key == MANAGED_SETTING {
-            return Some(Err(format!(
-                "{MANAGED_SETTING} is your organization's; it cannot be changed here."
-            )));
         }
         if key == DEFAULT_SETTING {
             let Some(enabled) = value.as_bool() else {
@@ -628,6 +654,23 @@ mod tests {
         assert!(default
             .set(claude_dirs::SETTING, &Value::Bool(true))
             .is_some_and(|r| r.is_err()));
+        // Malformed values are refused before `settings.set` writes anything.
+        assert!(default
+            .refuse(
+                claude_dirs::CHOICE_SETTING,
+                &serde_json::json!({"path": path(".seclaude")})
+            )
+            .is_some());
+        assert!(default
+            .refuse(claude_dirs::SETTING, &Value::Bool(true))
+            .is_some());
+        assert!(default
+            .refuse(MANAGED_SETTING, &Value::Bool(true))
+            .is_some());
+        assert_eq!(
+            default.refuse(claude_dirs::SETTING, &serde_json::json!([path("a")])),
+            None
+        );
         assert!(default
             .set(
                 claude_dirs::SETTING,

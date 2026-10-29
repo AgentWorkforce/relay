@@ -3096,6 +3096,7 @@ mod tests {
         assert!(found.live);
     }
 
+    #[cfg(feature = "history")]
     /// A live install `probe/install-a` under the Devin home, its catalog
     /// carrying one remote observation per `rows` entry, with the local
     /// config pointed at the probe root.
@@ -3104,6 +3105,7 @@ mod tests {
         automatic_admission::cloud_catalog_from(world, &rows);
     }
 
+    #[cfg(feature = "history")]
     /// A Devin Cloud session lives only in the history catalog — no lock,
     /// no process — yet discovery lists it so the relay can register it,
     /// hosted by the service that runs it. A session a local lock also
@@ -3184,6 +3186,39 @@ mod tests {
         }
     }
 
+    /// A stopped local Devin session can have a cloud-shaped id. With no
+    /// route to Devin Cloud (no session history, or no sign-in to send
+    /// with), a send to it waits for the session rather than failing for
+    /// good.
+    #[test]
+    fn a_stopped_devin_session_with_a_cloud_shaped_id_waits() {
+        #[cfg(feature = "history")]
+        let _lock = crate::relay::devin_cloud::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        #[cfg(feature = "history")]
+        let _unsigned = crate::relay::devin_cloud::tests::unsigned_env();
+        let world = world();
+        let injector = LocalInjector::new(
+            world.sessions.config.clone(),
+            world.table.clone(),
+            CodexRouter::new(Arc::new(UnusedCodexRoutes)),
+            ServingPath::default(),
+        );
+        for id in [
+            "4b50574f40324da6bd88e9cbd30501cf",
+            "devin-4b50574f40324da6bd88e9cbd30501cf",
+        ] {
+            let outcome =
+                injector.inject(&Target::new(SessionKind::Devin, id), "m-1", "relay message");
+            assert!(
+                matches!(outcome, InjectOutcome::Waiting(_)),
+                "{id}: {outcome:?}"
+            );
+        }
+    }
+
+    #[cfg(feature = "history")]
     /// A cloud row's caller proof is the machine's Devin sign-in — the
     /// same credential the send resolves — so it auto-activates like a
     /// lock-holding local session while the connector is configured, and

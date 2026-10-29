@@ -343,6 +343,12 @@ pub async fn call(core: &Arc<Core>, name: &str, raw: Value) -> Result<Value, Rpc
             "Agent Relay core is stopping.",
         ));
     }
+    // The contract is the same in every build; a core built without session
+    // history refuses the methods it serves.
+    #[cfg(not(feature = "history"))]
+    if crate::relay::contract::needs_history(name) {
+        return Err(RpcError::history_unavailable());
+    }
     match name {
         method::DiagnosticsRequests::NAME => {
             answer::<method::DiagnosticsRequests, _>(raw, |_| async {

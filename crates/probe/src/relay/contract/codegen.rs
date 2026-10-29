@@ -1064,10 +1064,16 @@ impl Contract {
             .iter()
             .filter(|method| !CONNECTION_METHODS.contains(&method.name))
             .map(|method| {
-                let availability = match method.availability {
+                let mut availability = match method.availability {
                     Availability::Always => "",
                     Availability::Account => "; only a core built with an account answers it",
-                };
+                }
+                .to_string();
+                if super::needs_history(method.name) {
+                    availability.push_str(
+                        "; a core built without session history answers `history_unavailable`",
+                    );
+                }
                 let name = swift_name(method.name);
                 let result = swift_type(&method.result);
                 let (signature, params) = match &method.params {

@@ -114,7 +114,7 @@ async fn every_registered_method_reaches_a_handler() {
     let status = answer(call("status.get", json!({}))).await;
     assert_eq!(
         status["result"]["daemon"]["history_version"],
-        agent_relay_probe::HISTORY_VERSION
+        json!(agent_relay_probe::history_version())
     );
     assert_eq!(
         status["result"]["daemon"]["build_revision"],
@@ -130,8 +130,15 @@ async fn every_registered_method_reaches_a_handler() {
 
     for spec in METHODS {
         let response = answer(call(spec.name, json!("not an object"))).await;
+        // A core built without session history refuses its history-only
+        // methods before it reads their parameters.
+        let expected = if cfg!(feature = "history") || !contract::needs_history(spec.name) {
+            "invalid_params"
+        } else {
+            "history_unavailable"
+        };
         assert_eq!(
-            response["error"]["data"]["kind"], "invalid_params",
+            response["error"]["data"]["kind"], expected,
             "{}: {response}",
             spec.name
         );

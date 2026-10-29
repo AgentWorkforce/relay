@@ -24,7 +24,6 @@ use super::OpenClawConfig;
 use crate::relay::contract::openclaw::{
     OpenClawToolsConnect, OpenClawToolsState, OpenClawToolsStatus,
 };
-use serde_json::Value;
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
