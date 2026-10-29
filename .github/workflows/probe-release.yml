@@ -151,7 +151,11 @@ jobs:
           # A short cargo home on Windows: RelayHistory's fixtures hold paths
           # close to its 260-character limit.
           if [ "$RUNNER_OS" = "Windows" ]; then export CARGO_HOME='C:\ch'; fi
-          AGENT_RELAY_PROBE_VERSION="$VERSION" cargo build --locked --release --target "$TARGET" --bin agent-relay-probe
+          # Release binaries are built with only the production feature set,
+          # so optional extras (such as the RelayHistory backend once it is
+          # feature-gated) stay out of what ships.
+          AGENT_RELAY_PROBE_VERSION="$VERSION" cargo build --locked --release --target "$TARGET" \
+            --no-default-features --features production-binaries --bin agent-relay-probe
       - name: Package with a .sha256 sidecar
         run: |
           set -euo pipefail
