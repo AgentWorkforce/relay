@@ -413,7 +413,7 @@ impl OutboundError {
             ErrorKind::RateLimited => (429, "rate_limited"),
             ErrorKind::StoreFailed => (500, "save_failed"),
             ErrorKind::ShuttingDown => (503, "shutting_down"),
-            ErrorKind::MethodNotFound => (503, "setup_unavailable"),
+            ErrorKind::MethodNotFound | ErrorKind::HistoryUnavailable => (503, "setup_unavailable"),
             ErrorKind::FleetUnavailable => (503, "fleet_unavailable"),
             _ => (502, fallback_code),
         };

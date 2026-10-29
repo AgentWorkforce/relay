@@ -8,17 +8,26 @@
 //! The Devin CLI sign-in never reaches the relay: the connector resolves
 //! the bearer from the same `credentials.toml` the history connector reads.
 
+#[cfg(feature = "history")]
 use crate::cloud::devin_credential::DevinCredentialAnswer;
+#[cfg(feature = "history")]
 use crate::cloud::{self, devin_credential};
+#[cfg(feature = "history")]
 use crate::relay::devin::DevinConfig;
+#[cfg(feature = "history")]
 use crate::relay::inject::InjectOutcome;
+#[cfg(feature = "history")]
 use crate::relay::sessions::DiscoveredSession;
+#[cfg(feature = "history")]
 use crate::relay::store::{SessionKind, Target};
+#[cfg(feature = "history")]
 use ai_hist::{CatalogQuery, SessionScope, SessionStore, Source, StoreOptions};
+#[cfg(feature = "history")]
 use history_provider_sources::remote::{
     remote_connector_statuses_at, send_remote_message_at, send_remote_message_with,
     RemoteCredential, DEVIN_CLOUD_CONNECTOR,
 };
+#[cfg(feature = "history")]
 use std::path::{Path, PathBuf};
 
 /// The `host` a remote catalog row carries in the discovery listing — the
@@ -36,6 +45,7 @@ pub fn is_cloud_session_id(session_id: &str) -> bool {
     hex.len() == 32 && hex.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+#[cfg(feature = "history")]
 /// Whether this machine's Devin sign-in lets the connector reach cloud
 /// sessions — a local credential check, never a request.
 fn connector_ready(config: &DevinConfig) -> bool {
@@ -48,15 +58,18 @@ fn connector_ready(config: &DevinConfig) -> bool {
 // workspace credential — the Cloud-held sign-in a bare machine sends with
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "history")]
 /// How long a workspace-credential answer is trusted before it is re-fetched:
 /// long enough that a discovery pass and a send share one fetch, short enough
 /// that a rotated key or a removed connection is noticed promptly.
 const CREDENTIAL_CACHE_TTL_MS: u64 = 5 * 60 * 1000;
 
+#[cfg(feature = "history")]
 /// The cache file inside a probe install directory holding the workspace's
 /// last Devin credential answer — `devin-credential.json`.
 const CREDENTIAL_CACHE_FILE: &str = "devin-credential.json";
 
+#[cfg(feature = "history")]
 /// The Cloud binding an install's `config.json` records — where to fetch the
 /// workspace's Devin credential. Absent fields mark an install that never
 /// completed sign-in; it binds nothing.
@@ -66,6 +79,7 @@ struct InstallBinding {
     workspace_id: String,
 }
 
+#[cfg(feature = "history")]
 impl InstallBinding {
     /// The identity a cached credential answer is pinned to.
     fn key(&self) -> String {
@@ -73,6 +87,7 @@ impl InstallBinding {
     }
 }
 
+#[cfg(feature = "history")]
 /// The probe installs' Cloud bindings, in the same order `discover` reads
 /// their catalogs: every live install, sorted.
 fn cloud_bindings(probe_root: &Path) -> Vec<InstallBinding> {
@@ -96,6 +111,7 @@ fn cloud_bindings(probe_root: &Path) -> Vec<InstallBinding> {
         .collect()
 }
 
+#[cfg(feature = "history")]
 /// The probe install directories under `probe_root` — the same scan
 /// `discover` runs.
 fn installs(probe_root: &Path) -> Vec<PathBuf> {
@@ -110,6 +126,7 @@ fn installs(probe_root: &Path) -> Vec<PathBuf> {
     installs
 }
 
+#[cfg(feature = "history")]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CredentialCache {
     /// The binding this answer came from — an install re-signed into another
@@ -123,6 +140,7 @@ struct CredentialCache {
     fetched_at_ms: u64,
 }
 
+#[cfg(feature = "history")]
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct CachedCredential {
     api_key: String,
@@ -131,6 +149,7 @@ struct CachedCredential {
     base_url: Option<String>,
 }
 
+#[cfg(feature = "history")]
 /// The credential fetch's outcome for one install.
 enum FetchedCredential {
     /// The workspace has Devin connected — this credential sends.
@@ -143,15 +162,18 @@ enum FetchedCredential {
     Unavailable,
 }
 
+#[cfg(feature = "history")]
 fn credential_cache_path(install: &Path) -> PathBuf {
     install.join(CREDENTIAL_CACHE_FILE)
 }
 
+#[cfg(feature = "history")]
 fn read_credential_cache(install: &Path) -> Option<CredentialCache> {
     let raw = std::fs::read_to_string(credential_cache_path(install)).ok()?;
     serde_json::from_str(&raw).ok()
 }
 
+#[cfg(feature = "history")]
 /// Write the cache owner-only — the same sensitivity class as the Devin
 /// CLI's `credentials.toml` this feature replaces.
 fn write_credential_cache(install: &Path, cache: &CredentialCache) {
@@ -181,10 +203,12 @@ fn write_credential_cache(install: &Path, cache: &CredentialCache) {
     }
 }
 
+#[cfg(feature = "history")]
 fn remove_credential_cache(install: &Path) {
     let _ = std::fs::remove_file(credential_cache_path(install));
 }
 
+#[cfg(feature = "history")]
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -192,6 +216,7 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
+#[cfg(feature = "history")]
 /// The workspace's Devin credential for this install — the cached answer
 /// when it is fresh (or the only thing available), else a fetch through the
 /// install's Cloud binding. `force` re-fetches regardless of freshness — the
@@ -283,6 +308,7 @@ fn workspace_credential(binding: &InstallBinding, force: bool) -> FetchedCredent
     }
 }
 
+#[cfg(feature = "history")]
 /// Whether any install's workspace has Devin connected — the discovery-side
 /// half of "a send path exists", so a machine with no local Devin sign-in
 /// still lists its cloud sessions live. Stale caches refresh inline, bounded
@@ -294,6 +320,7 @@ fn install_credential_ready(binding: &InstallBinding) -> bool {
     )
 }
 
+#[cfg(feature = "history")]
 /// The send through the workspace credential: every install binding in turn,
 /// since the session may belong to any of the orgs they cover. A
 /// `SESSION_NOT_FOUND` just means this org does not own the session — the
@@ -389,6 +416,7 @@ fn send_cloud_workspace(
     refusal
 }
 
+#[cfg(feature = "history")]
 /// Devin Cloud sessions the probe installs' history catalogs know as
 /// remote, as discovered rows. A row is `live` — deliverable, and what
 /// keeps a registration present — while the connector's sign-in resolves;
@@ -421,6 +449,7 @@ pub fn discover(config: &DevinConfig, probe_root: &Path) -> Vec<DiscoveredSessio
     found.into_values().collect()
 }
 
+#[cfg(feature = "history")]
 /// One install's remote Devin Cloud rows as discovered sessions.
 fn remote_sessions(catalog_db: &Path, live: bool) -> Vec<DiscoveredSession> {
     let mut options = StoreOptions::default().db_path(catalog_db);
@@ -450,10 +479,12 @@ fn remote_sessions(catalog_db: &Path, live: bool) -> Vec<DiscoveredSession> {
         .collect()
 }
 
+#[cfg(feature = "history")]
 /// What Devin records as the origin of a session an automation started,
 /// such as a Devin review of a pull request.
 const AUTOMATION_ORIGINATOR: &str = "automation";
 
+#[cfg(feature = "history")]
 /// The Devin Cloud sessions an automation started (Devin reviews), by id.
 /// They never auto-activate: nobody is in them to talk to. Read from each
 /// install's catalog, like `discover`.
@@ -479,6 +510,7 @@ pub fn started_by_automation(probe_root: &Path) -> std::collections::HashSet<Str
     found
 }
 
+#[cfg(feature = "history")]
 /// The remote send's answer, or `None` when the remote route does not
 /// apply — the id names no cloud session, and neither this machine's Devin
 /// sign-in nor a workspace credential could carry it — and the caller's
@@ -541,7 +573,7 @@ pub fn send_cloud(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "history"))]
 pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
@@ -1316,5 +1348,61 @@ pub(crate) mod tests {
             .and_then(|value| value.trim().parse::<usize>().ok())
             .unwrap_or(0);
         body.len() >= expected
+    }
+}
+
+// Without the `history` feature there is no session catalog to list Devin
+// Cloud sessions from and no remote connector to send through: nothing is
+// discovered and nothing is sent. Nothing marks an id as cloud-only either —
+// a cloud-shaped id can name a stopped local Devin session — so the caller's
+// local answer always stands: `Waiting` stays `Waiting`, as it does in a
+// build with history when no Devin sign-in can carry the send.
+#[cfg(not(feature = "history"))]
+pub fn discover(
+    _config: &crate::relay::devin::DevinConfig,
+    _probe_root: &std::path::Path,
+) -> Vec<crate::relay::sessions::DiscoveredSession> {
+    Vec::new()
+}
+
+#[cfg(not(feature = "history"))]
+pub fn started_by_automation(_probe_root: &std::path::Path) -> std::collections::HashSet<String> {
+    std::collections::HashSet::new()
+}
+
+#[cfg(not(feature = "history"))]
+pub fn send_cloud(
+    _config: &crate::relay::devin::DevinConfig,
+    _probe_root: Option<&std::path::Path>,
+    _session_id: &str,
+    _text: &str,
+) -> Option<crate::relay::inject::InjectOutcome> {
+    None
+}
+
+#[cfg(all(test, not(feature = "history")))]
+mod no_history_tests {
+    use super::*;
+
+    /// Without session history nothing is sent to Devin Cloud, and no id is
+    /// refused for its shape: a cloud-shaped id can name a stopped local
+    /// session, so the caller's local answer stands.
+    #[test]
+    fn no_send_is_made_or_refused_and_nothing_is_discovered() {
+        let home = tempfile::tempdir().unwrap();
+        let config = crate::relay::devin::DevinConfig {
+            data_dir: home.path().join("data"),
+            config_dir: home.path().join("config"),
+            home: home.path().into(),
+            development: false,
+        };
+        for id in [
+            "0123456789abcdef0123456789abcdef",
+            "devin-0123456789abcdef0123456789abcdef",
+            "real-gallium",
+        ] {
+            assert!(send_cloud(&config, None, id, "hi").is_none(), "{id}");
+        }
+        assert!(discover(&config, home.path()).is_empty());
     }
 }

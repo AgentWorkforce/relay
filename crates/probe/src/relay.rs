@@ -157,4 +157,5 @@ pub mod trusted;
 pub mod uploader;
 pub mod workspace;
 
+#[cfg(feature = "history")]
 pub mod session_query;

@@ -2196,12 +2196,15 @@ pub fn with_account(
     headless: bool,
 ) -> crate::relay::daemon::Plugins {
     let executable = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-probe"));
-    let uploader = Arc::new(Uploader::new(Arc::new(
-        // The probe's own session renewal reads the Cloud session from this
-        // build's store (Agent Relay Dev keeps its own).
-        crate::relay::uploader::ProcessRunner::new(executable.clone())
-            .with_env(crate::cloud::APP_DATA_DIR_VARIABLE, &config.app_data_dir),
-    )));
+    // The probe's own session renewal reads the Cloud session from this
+    // build's store (Agent Relay Dev keeps its own).
+    #[cfg(feature = "history")]
+    let runner = crate::relay::uploader::ProcessRunner::new(executable.clone())
+        .with_env(crate::cloud::APP_DATA_DIR_VARIABLE, &config.app_data_dir);
+    // Without session history this binary has no uploader commands.
+    #[cfg(not(feature = "history"))]
+    let runner = crate::relay::uploader::NoHistoryRunner;
+    let uploader = Arc::new(Uploader::new(Arc::new(runner)));
     let mut account = Account::new(
         site_url,
         &config.home,

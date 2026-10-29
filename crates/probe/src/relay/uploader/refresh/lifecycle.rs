@@ -33,6 +33,7 @@ impl Uploader {
             sessions_read: Mutex::new(None),
             sessions_refresh: tokio::sync::Mutex::new(()),
             sessions_limit: Mutex::new(SESSION_LIST_LIMIT),
+            #[cfg(feature = "history")]
             query_index: Arc::default(),
             query_refresh: tokio::sync::Mutex::new(()),
             changes: AtomicU64::new(0),
@@ -48,6 +49,7 @@ impl Uploader {
         self.admit_history_reader(guard)
     }
 
+    #[cfg(feature = "history")]
     /// Short synchronous store operations refuse reset rather than waiting
     /// while holding an unrelated settings or SQLite lock.
     pub(crate) fn try_history_reader(&self) -> Result<HistoryReader, RpcError> {
@@ -171,7 +173,7 @@ pub(crate) fn history_access_root(env: &[(String, std::ffi::OsString)]) -> Optio
     home.map(|home| home.join(".agentworkforce"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "history"))]
 mod tests {
     use super::*;
     use std::sync::{atomic::AtomicBool, Weak};

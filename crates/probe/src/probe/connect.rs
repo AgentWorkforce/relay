@@ -13,7 +13,6 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::Read,
     path::{Path, PathBuf},
     process::{Command as Process, Stdio},
     time::Duration,

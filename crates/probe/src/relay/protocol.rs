@@ -157,8 +157,18 @@ pub enum ErrorKind {
     FleetUnavailable,
     /// The probe's uploader command failed; `message` is its own sentence.
     UploaderFailed,
+    /// The method needs session history (capture and upload to
+    /// RelayHistory), and this core was built without it (the crate's
+    /// `history` feature is off, as in relay's build). It stays in the
+    /// contract so every build speaks the same one; no retry can change it.
+    HistoryUnavailable,
     Internal,
 }
+
+/// The sentence a core built without session history answers its
+/// history-only methods with (`ErrorKind::HistoryUnavailable`).
+pub const HISTORY_UNAVAILABLE: &str =
+    "Session history is not available in this build of the Agent Relay core.";
 
 impl ErrorKind {
     /// The JSON-RPC numeric code: the reserved range for protocol errors,
@@ -196,6 +206,22 @@ impl RpcError {
                 kind,
                 retryable: kind.retryable(),
             },
+        }
+    }
+
+    /// A history-only method (or setting) in a core built without session
+    /// history.
+    pub fn history_unavailable() -> RpcError {
+        RpcError::new(ErrorKind::HistoryUnavailable, HISTORY_UNAVAILABLE)
+    }
+
+    /// A settings extension's refusal: `history_unavailable` when it is
+    /// [`HISTORY_UNAVAILABLE`], else `refused`.
+    pub fn setting_refused(message: String) -> RpcError {
+        if message == HISTORY_UNAVAILABLE {
+            RpcError::history_unavailable()
+        } else {
+            RpcError::new(ErrorKind::Refused, message)
         }
     }
 

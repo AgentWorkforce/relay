@@ -434,9 +434,12 @@ impl Setup {
             return;
         }
         // An install answers with its own mode, which is kept. One that does
-        // not answer is asked again by the next setup request.
+        // not answer is asked again by the next setup request. A core built
+        // without session history has no uploader to wait for.
         if let Err(error) = read {
-            failure = Some(OutboundError::from_rpc(&error, "sharing_failed"));
+            if error.data.kind != crate::relay::protocol::ErrorKind::HistoryUnavailable {
+                failure = Some(OutboundError::from_rpc(&error, "sharing_failed"));
+            }
         }
         if !local_applied {
             // The local failure is already the one reported.

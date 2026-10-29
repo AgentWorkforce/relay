@@ -274,32 +274,38 @@ impl TrustedSenders {
     /// Saves `value`, a list of names or addresses: trimmed, empty and
     /// repeated entries dropped.
     pub fn set(&self, value: &Value) -> Result<(), String> {
-        let invalid =
-            || format!("{SETTING} must be a list of at most {MAX} relay names or addresses.");
-        let list = value.as_array().ok_or_else(invalid)?;
-        let mut senders: Vec<String> = Vec::new();
-        for entry in list {
-            let entry = entry.as_str().ok_or_else(invalid)?.trim();
-            if entry.is_empty() {
-                continue;
-            }
-            if entry.chars().count() > 256 || entry.chars().any(char::is_control) {
-                return Err(invalid());
-            }
-            if !senders
-                .iter()
-                .any(|known| known.eq_ignore_ascii_case(entry))
-            {
-                senders.push(entry.to_string());
-            }
-        }
-        if senders.len() > MAX {
-            return Err(invalid());
-        }
+        let senders = parse(value)?;
         let bytes = serde_json::to_vec(&senders).map_err(|e| e.to_string())?;
         crate::relay::mailbox::write_private(&self.path, &bytes)
             .map_err(|e| format!("Could not save the trusted senders: {e}"))
     }
+}
+
+/// The senders `value` names, as [`TrustedSenders::set`] saves them, or why
+/// it cannot be saved. Writes nothing.
+fn parse(value: &Value) -> Result<Vec<String>, String> {
+    let invalid = || format!("{SETTING} must be a list of at most {MAX} relay names or addresses.");
+    let list = value.as_array().ok_or_else(invalid)?;
+    let mut senders: Vec<String> = Vec::new();
+    for entry in list {
+        let entry = entry.as_str().ok_or_else(invalid)?.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        if entry.chars().count() > 256 || entry.chars().any(char::is_control) {
+            return Err(invalid());
+        }
+        if !senders
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(entry))
+        {
+            senders.push(entry.to_string());
+        }
+    }
+    if senders.len() > MAX {
+        return Err(invalid());
+    }
+    Ok(senders)
 }
 
 /// Whether `route`'s sender is in `trusted`: its exact address, or, for an
@@ -441,6 +447,16 @@ impl crate::relay::agents::SettingsExtension for TrustedSettings {
             settings.insert(MEMBERS_LIST.into(), Value::Array(members));
         }
         settings
+    }
+
+    fn refuse(&self, key: &str, value: &Value) -> Option<String> {
+        match key {
+            SETTING => parse(value).err(),
+            MEMBERS_LIST => Some(format!(
+                "{MEMBERS_LIST} is read from your workspace and cannot be set."
+            )),
+            _ => None,
+        }
     }
 
     fn set(&self, key: &str, value: &Value) -> Option<Result<(), String>> {

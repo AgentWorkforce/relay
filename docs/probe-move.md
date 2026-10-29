@@ -98,8 +98,10 @@ client (`linux_app::bridge`), so it stays with that client.
 file). It runs:
 
 - a Linux x64 build and test, with an empty `HOME`;
-- a macOS arm64 build and test;
-- a Windows x64 build (MSVC);
+- a Linux x64 build and test of the core without history (`core-only`, see
+  phase 1.5), with the dependency-tree and contract checks;
+- a macOS arm64 build and test, and a build without history;
+- a Windows x64 build (MSVC), with and without history;
 - the contract-drift check (`generate-contract.sh`, then `git diff
 --exit-code`);
 - the public-source check.
@@ -113,6 +115,97 @@ relay-desktop CI checks that are not ported yet:
 - the glibc 2.34 floor;
 - arm64 Linux, x64 macOS and arm64 Windows lanes;
 - the Pi live-session scripts.
+
+## Phase 1.5: the core without relayhistory
+
+relay must not depend on relayhistory, and relay and relay-desktop must be
+able to share one core. Session history, meaning local capture and upload to
+RelayHistory, is the only part of the crate built on relayhistory (`ai-hist`
+and `history-provider-sources`). It is now behind a `history` Cargo feature,
+on by default:
+
+- **relay** ships `--no-default-features --features production-binaries`.
+  That build has no `ai-hist`, `history-provider-sources` or `notify` in its
+  dependency tree, and CI fails if they come back.
+- **relay-desktop** builds with the default features (`history` on) and gets
+  exactly what it has today. The default build's behaviour is unchanged.
+
+### What is in each build
+
+Without `history` the core is the messaging runtime: `relay serve`
+(discovery, native delivery and injection per harness, harness setup and
+hooks, Relaycast and the workspace, spawning, the bridge and its contract,
+launch at login), `relay call`, `connect` and the install helpers.
+
+Only the `history` build has:
+
+| Gated                                                                                                                              | What it is                                                                                  |
+| ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `delivery`, `destination`, `retention`                                                                                             | The upload queue, the RelayHistory receiver and history retention                           |
+| `relay::session_query` (and the uploader's catalog search)                                                                         | `uploader.sessions.query`/`.facets` over `history.db`                                       |
+| The uploader's background monitor and history reader                                                                               | Reads `history.db` directly                                                                 |
+| `relay::history_retention`'s store                                                                                                 | Saves the retention policy in RelayHistory's store                                          |
+| `relay::devin_cloud`, `relay::claude_web` catalog reads and the Devin Cloud send                                                   | The remote sessions come from the history catalog and `history-provider-sources` connectors |
+| Hermes title roots (`session_titles::extra`)                                                                                       | `ai-hist`'s provider-root resolver                                                          |
+| `cloud::devin_credential` and the auth-refresh send path                                                                           | Used only by uploads and the Devin connector                                                |
+| The binary's history commands (`cloud`, `run`, `start`, `stop`, `status`, `installs`, `sessions`, `sharing`, `history flush`, ...) | The collector, which the uploader runs as child processes                                   |
+| 9 integration tests and the `native_visibility_host` example                                                                       | History tests (`required-features = ["history"]`)                                           |
+
+Moved so both builds share them: the pure delivery stall rules
+(`delivery_status`) and the binary's JSON output helpers
+(`src/probe/output.rs`). `HISTORY_VERSION` exists only with `history`;
+`history_version()` returns `None` without it.
+
+### The bridge without history
+
+The contract does not change with the feature. It is generated from the
+method registry, which no `cfg` touches, so both builds generate the same
+`CoreContract.swift`; the `contract` job checks the history build against the
+checked-in file and the `core-only` job checks the no-history build against
+it too. The apps need no per-build contract.
+
+Without `history`:
+
+- The history-only methods, `relay::contract::HISTORY_METHODS` (every
+  `uploader.*` method and `sessions.transcript`), answer the new error kind
+  `history_unavailable` (code -32000, not retryable) with "Session history is
+  not available in this build of the Agent Relay core." The server refuses
+  them before reading their parameters. The generated Swift call for each
+  says so, and `hello` still lists them.
+- `settings.set` of `history_retention_days` answers `history_unavailable`
+  before anything is written, so no other setting in the same batch is
+  saved; `settings.get` reports the default, 30.
+- `status.get` reports `daemon.history_version` as null.
+- **Devin Cloud delivery is history-only.** Devin Cloud and claude.ai web
+  sessions are not discovered, and nothing is sent to Devin Cloud. A send
+  to a cloud-shaped id keeps the local answer (`Waiting` while no local
+  Devin session holds it), since a stopped local session can have that id
+  shape, as a history build does when no Devin sign-in can carry the send.
+- The uploader runs no child process: it finds no install, reclaims nothing,
+  and refuses every other command with `history_unavailable`. Cloud sign-in
+  (`account.sign_in`) adopts the workspace for messaging, then ends in
+  `error` with that sentence, because its last step is the uploader's
+  `cloud install`. relay resolves its workspace from the CLI (phase 2,
+  below), not from a Cloud sign-in.
+- Agent-led setup on the relay-send socket (`/setup/*`) does not wait for
+  an uploader: its bootstrap closes once direct delivery and automatic
+  activation are set, and `POST /setup/sharing` answers `setup_unavailable`
+  (503), as a core without the account methods does.
+- Hermes session titles are not editable.
+
+### Next step
+
+This is a feature, not yet two crates, so it stays reviewable. The next step
+moves the gated code into its own crate (for example `agent-relay-history`,
+depending on the core and `ai-hist`), hooked into the core through traits in
+place of the `cfg` seams. relay-desktop would then depend on both crates. The
+seams mark where those traits go:
+
+- session catalog search;
+- history retention;
+- the remote-session source and sender (Devin Cloud, claude.ai);
+- the uploader's runner (`ProbeRunner`: `ProcessRunner` with history,
+  `NoHistoryRunner` without) and history reader.
 
 ## Phase 2: the probe reads the CLI's workspace (done)
 
@@ -371,7 +464,7 @@ do the following:
 1. Make the GTK app its own crate (for example `gtk-app/`) depending on
    `agent-relay-probe` from relay (a git dependency on
    `AgentWorkforce/relay` pinned to a tag or commit, `default-features =
-false`). That crate takes `linux_app/`, the `agent-relay` and
+false, features = ["history"]`, so it keeps session history). That crate takes `linux_app/`, the `agent-relay` and
    `agent-relay-fake-core` binaries, the four app tests, `resources/linux`,
    `resources/windows`, and the dependencies `gtk4`, `ksni`, `tray-icon`,
    `tauri-winrt-notification`, `zip` and `tar`.
@@ -380,7 +473,8 @@ agent_relay_probe::install;`. In `linux_app/models.rs`, delete the six
    moved modules and `pub use agent_relay_probe::session_model::*;` (keep
    `settings::origin`, which other models still use).
 3. Delete `probe/src` (everything but the app) and build `agent-relay-probe`
-   from relay's `crates/probe`. That is `scripts/build-probe.sh`,
+   from relay's `crates/probe` with the default features (`history` on; the
+   relay release binary is built without it). That is `scripts/build-probe.sh`,
    `build-linux.sh`, `build-windows.sh`, `package-{linux,macos}-probe.sh`
    and the Desktop Release workflow. Keep passing `AGENT_RELAY_PROBE_VERSION`
    and add `AGENT_RELAY_PROBE_BASE_VERSION` for development builds.

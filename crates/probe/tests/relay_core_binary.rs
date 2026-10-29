@@ -96,7 +96,8 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
     assert_eq!(answer["result"]["account"]["state"], "signed_out");
 
     // The uploader runs this same binary's commands: nothing is connected
-    // in an empty home, and the preview answers.
+    // in an empty home, and the preview answers. A core built without
+    // session history refuses it instead.
     let preview = command(&[
         "relay",
         "call",
@@ -107,9 +108,18 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
     ])
     .output()
     .unwrap();
-    assert!(preview.status.success(), "{preview:?}");
-    let answer: Value = serde_json::from_slice(&preview.stdout).unwrap();
-    assert_eq!(answer["result"]["sessions"], serde_json::json!([]));
+    if cfg!(feature = "history") {
+        assert!(preview.status.success(), "{preview:?}");
+        let answer: Value = serde_json::from_slice(&preview.stdout).unwrap();
+        assert_eq!(answer["result"]["sessions"], serde_json::json!([]));
+    } else {
+        assert!(!preview.status.success(), "{preview:?}");
+        assert!(
+            String::from_utf8_lossy(&preview.stderr)
+                .contains(agent_relay_probe::relay::protocol::HISTORY_UNAVAILABLE),
+            "{preview:?}"
+        );
+    }
 
     drop(daemon.stdin.take());
     let deadline = std::time::Instant::now() + WAIT;

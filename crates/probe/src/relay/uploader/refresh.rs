@@ -3,6 +3,7 @@
 //! history. The bounded reconciliation covers non-database inputs (provider
 //! login, native sharing configuration) and writers outside this protocol.
 use super::*;
+#[cfg(feature = "history")]
 use rusqlite::Connection;
 use std::path::Path;
 use std::time::Instant;
@@ -42,13 +43,15 @@ pub fn with_derived(mut status: Value) -> Value {
 
 #[derive(Default)]
 pub(super) struct Background {
+    #[cfg(feature = "history")]
     database: Option<Database>,
     attachment: u64,
-    #[cfg(test)]
+    #[cfg(all(test, feature = "history"))]
     after_open: Option<Arc<dyn Fn() + Send + Sync>>,
     status: Option<(Token, Instant)>,
     sessions: Option<(Token, usize, Instant)>,
 }
+#[cfg(feature = "history")]
 struct Database {
     path: PathBuf,
     identity: crate::delivery::DatabaseIdentity,
@@ -64,6 +67,19 @@ struct Token {
 }
 
 impl Background {
+    /// Without the `history` feature no collector keeps a history store to
+    /// monitor: there is never a token, so no background snapshot refreshes.
+    #[cfg(not(feature = "history"))]
+    fn token(
+        &mut self,
+        _directory: &Path,
+        _generation: u64,
+        _attachment: u64,
+    ) -> anyhow::Result<Token> {
+        anyhow::bail!("session history is not built into this core")
+    }
+
+    #[cfg(feature = "history")]
     fn token(
         &mut self,
         directory: &Path,
@@ -152,6 +168,7 @@ impl Background {
     }
 }
 
+#[cfg(feature = "history")]
 fn read_small_json(path: &Path) -> Value {
     use std::io::Read;
     let Ok(file) = std::fs::File::open(path) else {
@@ -373,7 +390,7 @@ impl Uploader {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "history"))]
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
