@@ -406,7 +406,8 @@ export function deliveryKeys(id: ToolId): string[] {
  * are not tried, and the ones init turned on for it (in this run, or in an
  * earlier one: `owned`) are turned off again, so the MCP fallback is its only
  * route. Automatic activation is turned on only once a tool is injected; when
- * none is, init's own activation is turned off again.
+ * none is and no tool an earlier run injected into is left, init's own
+ * activation is turned off again.
  * @param client - A connected core
  * @param tools - The agent tools to deliver to
  * @param owned - Read keys an earlier `relay init` recorded as turned on
@@ -480,7 +481,11 @@ export async function enableDelivery(
 
   const injected = results.filter((r) => r.status !== 'failed');
   if (injected.length === 0) {
-    await rollBack([AUTO_ACTIVATE.read]);
+    // A tool an earlier run injected into still needs activation.
+    const stillInjected = owned.some(
+      (key) => key !== AUTO_ACTIVATE.read && values[key] === true && !turnedOff.includes(key)
+    );
+    if (!stillInjected) await rollBack([AUTO_ACTIVATE.read]);
     return { results, turnedOn, turnedOff };
   }
   const activation = await turnOn(AUTO_ACTIVATE);

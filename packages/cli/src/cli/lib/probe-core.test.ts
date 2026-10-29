@@ -288,6 +288,14 @@ describe('enableDelivery', () => {
     expect(outcome.turnedOff).toEqual(['direct_delivery', 'auto_activate']);
   });
 
+  it('keeps automatic activation for a tool an earlier run injected into', async () => {
+    const core = client({ auto_activate: true, codex_stop_hook: true }, ['grok_leader']);
+    const outcome = await enableDelivery(core, ['grok'], ['codex_stop_hook', 'auto_activate']);
+    expect(core.sets).toEqual([{ grok_leader: true }]);
+    expect(outcome.results[0]).toMatchObject({ id: 'grok', status: 'failed' });
+    expect(outcome.turnedOff).toEqual([]);
+  });
+
   it('never turns off a setting init did not turn on', async () => {
     const core = client({ auto_activate: true, direct_delivery: true }, ['claude_session_hook']);
     const outcome = await enableDelivery(core, ['claude']);
