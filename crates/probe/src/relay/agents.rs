@@ -2141,6 +2141,27 @@ mod tests {
         // A boolean is not a list.
         change.insert("trusted_relay_senders".into(), json!(true));
         assert!(core.set_settings(&change).is_err());
+        // A refused list refuses its whole batch before anything is saved:
+        // the store setting beside it keeps its value, and so do the senders.
+        let key = crate::relay::store_settings::AUTO_JOIN_GENERAL;
+        let before = core.settings()[key].clone();
+        let mut batch = Map::new();
+        batch.insert(key.into(), json!(before != json!(true)));
+        batch.insert("trusted_relay_senders".into(), json!([42]));
+        let refused = core.set_settings(&batch).unwrap_err();
+        assert!(
+            refused.message.contains("trusted_relay_senders"),
+            "{}",
+            refused.message
+        );
+        assert_eq!(core.settings()[key], before);
+        assert_eq!(openclaw.trusted.list(), ["ada-lovelace"]);
+        // So does a read-only setting.
+        batch.insert("trusted_relay_senders".into(), json!(["grace-hopper"]));
+        batch.insert(crate::relay::trusted::MEMBERS_LIST.into(), json!([]));
+        assert!(core.set_settings(&batch).is_err());
+        assert_eq!(core.settings()[key], before);
+        assert_eq!(openclaw.trusted.list(), ["ada-lovelace"]);
     }
 
     #[tokio::test]
