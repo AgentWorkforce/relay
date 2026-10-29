@@ -190,6 +190,19 @@ impl ConfiguredChange {
             store.spawn_repositories = (!repositories.is_empty()).then(|| repositories.clone());
         }
     }
+
+    /// Puts back, as `previous` had them, the fields [`Self::apply`] writes.
+    fn restore(&self, store: &mut Store, previous: &Store) {
+        if self.max_agents.is_some() {
+            store.spawn_max_agents = previous.spawn_max_agents;
+        }
+        for (id, _) in &self.billing {
+            store.set_spawn_harness(id.name(), previous.spawn_harness(id.name()));
+        }
+        if self.repositories.is_some() {
+            store.spawn_repositories = previous.spawn_repositories.clone();
+        }
+    }
 }
 
 /// `settings.get`'s spawn values: whether spawns are accepted, each
@@ -275,6 +288,23 @@ impl Change {
         self.configured.apply(store);
     }
 
+    /// Puts back, as `previous` had them, the fields [`Self::apply`] writes.
+    fn restore(&self, store: &mut Store, previous: &Store) {
+        if self.accept.is_some() {
+            store.accept_spawns = previous.accept_spawns;
+        }
+        for (id, _) in &self.full_access {
+            store.set_spawn_harness(id.name(), previous.spawn_harness(id.name()));
+        }
+        if self.native_input.is_some() {
+            store.extras.spawn_native_input = previous.extras.spawn_native_input;
+        }
+        if self.allow_teammates.is_some() {
+            store.spawn_allow_teammates = previous.spawn_allow_teammates;
+        }
+        self.configured.restore(store, previous);
+    }
+
     /// Whether the spawn node must be brought in line with the change:
     /// teammates go out in a heartbeat at once, as the maximum does.
     fn moves_node(&self) -> bool {
@@ -355,6 +385,67 @@ impl Core {
             }
         }
         if native_continuation.is_some() {
+            self.native_continuation_setting_changed();
+        }
+        Ok(())
+    }
+
+    /// Puts the settings [`Self::set_store_settings`] saved from `changes`
+    /// back as `previous` (the store before that save) had them, so a
+    /// `settings.set` batch that then fails keeps none of its store changes.
+    /// The hooks that follow those settings run again for the values put
+    /// back; what a hook already did outside the store (a plugin installed,
+    /// queued teammate messages cancelled) is not undone.
+    pub(crate) fn restore_store_settings(
+        &self,
+        changes: &Map<String, Value>,
+        previous: &Store,
+    ) -> Result<(), RpcError> {
+        let Ok(spawn) = Change::read(changes) else {
+            return Ok(());
+        };
+        let changed = |key: &str| changes.get(key).and_then(Value::as_bool).is_some();
+        let flags = crate::relay::store_settings::STORE_SETTINGS.map(changed);
+        if !flags.contains(&true) && spawn.is_empty() {
+            return Ok(());
+        }
+        let [allow, auto, show, general, mobile_handoff, native_continuation, teammate_input] =
+            flags;
+        self.store
+            .update(|store| {
+                if allow {
+                    store.allow_self_registration = previous.allow_self_registration;
+                }
+                if auto {
+                    store.auto_activate = previous.auto_activate;
+                }
+                if show {
+                    store.show_relay_messages = previous.show_relay_messages;
+                }
+                if general {
+                    store.extras.auto_join_general = previous.extras.auto_join_general;
+                }
+                if mobile_handoff {
+                    store.mobile_claude_handoff = previous.mobile_claude_handoff;
+                }
+                if native_continuation {
+                    store.mobile_native_continuation = previous.mobile_native_continuation;
+                }
+                if teammate_input {
+                    store.extras.teammate_native_input = previous.extras.teammate_native_input;
+                }
+                spawn.restore(store, previous);
+            })
+            .map_err(|e| RpcError::store(&e))?;
+        if mobile_handoff {
+            let _ = self.mobile_claude_setting_changed(previous.mobile_claude_handoff_on());
+        }
+        if spawn.moves_node() {
+            if let Some(core) = self.arc() {
+                tokio::spawn(async move { core.sync_spawn_node().await });
+            }
+        }
+        if native_continuation {
             self.native_continuation_setting_changed();
         }
         Ok(())

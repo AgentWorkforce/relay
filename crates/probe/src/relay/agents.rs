@@ -1309,38 +1309,55 @@ impl Core {
                 return Err(RpcError::setting_refused(refused));
             }
         }
+        // An extension can still fail after the store settings are saved
+        // (its own write, or a check `refuse` cannot make): the store's part
+        // of the batch is then put back, so a refused batch changes none of
+        // the store's settings.
+        let previous = self.store.snapshot();
         self.set_store_settings(changes)?;
-        let _changing = self.integration_settings.lock().unwrap();
-        for (key, value) in changes {
-            if store_setting(key) {
-                continue;
-            }
-            if write_only(key) || is_list_setting(key) {
-                // A one-time default, not a choice to record: once it has
-                // written, the tool's own settings name the value, which the
-                // default pass already leaves alone. The Claude folders are
-                // a list no default pass touches.
-                for extension in &self.plugins.settings {
-                    if let Some(result) = extension.set(key, value) {
-                        result.map_err(RpcError::setting_refused)?;
-                    }
+        let applied = (|| -> Result<(), RpcError> {
+            let _changing = self.integration_settings.lock().unwrap();
+            for (key, value) in changes {
+                if store_setting(key) {
+                    continue;
                 }
-                continue;
-            }
-            // The person's own choice, recorded once the tool has changed, so
-            // no default reverses it and a failed change is never kept.
-            self.with_integration_choice(
-                key,
-                || {
+                if write_only(key) || is_list_setting(key) {
+                    // A one-time default, not a choice to record: once it has
+                    // written, the tool's own settings name the value, which the
+                    // default pass already leaves alone. The Claude folders are
+                    // a list no default pass touches.
                     for extension in &self.plugins.settings {
                         if let Some(result) = extension.set(key, value) {
                             result.map_err(RpcError::setting_refused)?;
                         }
                     }
-                    Ok(())
-                },
-                |e| RpcError::store(&e),
-            )?;
+                    continue;
+                }
+                // The person's own choice, recorded once the tool has changed, so
+                // no default reverses it and a failed change is never kept.
+                self.with_integration_choice(
+                    key,
+                    || {
+                        for extension in &self.plugins.settings {
+                            if let Some(result) = extension.set(key, value) {
+                                result.map_err(RpcError::setting_refused)?;
+                            }
+                        }
+                        Ok(())
+                    },
+                    |e| RpcError::store(&e),
+                )?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = applied {
+            if let Err(restore) = self.restore_store_settings(changes, &previous) {
+                crate::relay::diagnostics::write(format_args!(
+                    "relay: settings.set could not put back the store settings: {}",
+                    restore.message
+                ));
+            }
+            return Err(error);
         }
         Ok(self.settings())
     }
@@ -2100,6 +2117,65 @@ mod tests {
                 Vec::new()
             }
         }
+    }
+
+    /// An extension that fails in `set` (a check `refuse` cannot make) after
+    /// the store settings in the same batch were saved: the store's part is
+    /// put back, so the batch changes nothing it was refused for.
+    #[tokio::test]
+    async fn an_extension_failing_after_the_store_write_puts_the_store_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = crate::relay::daemon::Config {
+            paths: crate::relay::paths::CorePaths::for_socket(temp.path().join("core.sock"))
+                .unwrap(),
+            home: temp.path().into(),
+            app_data_dir: temp.path().join("app-data"),
+            env: std::collections::BTreeMap::new(),
+            version: "0.0.0-test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: crate::relay::push::PushTiming::default(),
+            delivery_timing: crate::relay::delivery::DeliveryTiming::default(),
+        };
+        let failing = FakeIntegration::new("failing_tool", false);
+        failing.refuse.store(true, Ordering::SeqCst);
+        let plugins = crate::relay::daemon::Plugins {
+            settings: vec![failing.clone()],
+            ..crate::relay::daemon::Plugins::default()
+        };
+        let (core, _signals) = Core::with_plugins(config, plugins);
+        let general = crate::relay::store_settings::AUTO_JOIN_GENERAL;
+        let before = core.settings();
+        let saved = core.store.snapshot();
+        let mut batch = Map::new();
+        batch.insert(general.into(), json!(before[general] != json!(true)));
+        batch.insert(
+            "accept_spawns".into(),
+            json!(before["accept_spawns"] != json!(true)),
+        );
+        batch.insert("spawn_max_agents".into(), json!(3));
+        batch.insert("failing_tool".into(), json!(true));
+        // `refuse` lets it through; `set` fails.
+        assert!(failing.refuse("failing_tool", &json!(true)).is_none());
+        let refused = core.set_settings(&batch).unwrap_err();
+        assert_eq!(refused.message, "not now");
+        let after = core.settings();
+        for key in [general, "accept_spawns", "spawn_max_agents"] {
+            assert_eq!(after[key], before[key], "{key} is put back");
+        }
+        core.store.read(|store| {
+            assert_eq!(
+                store.extras.auto_join_general,
+                saved.extras.auto_join_general
+            );
+            assert_eq!(store.accept_spawns, saved.accept_spawns);
+            assert_eq!(store.spawn_max_agents, saved.spawn_max_agents);
+        });
+        // Without the failing key the same store change is saved.
+        batch.remove("failing_tool");
+        let settings = core.set_settings(&batch).unwrap();
+        assert_ne!(settings[general], before[general]);
+        assert_eq!(settings["spawn_max_agents"], 3);
     }
 
     #[tokio::test]
