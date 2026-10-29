@@ -565,25 +565,24 @@ impl CodexStopHookSettings {
         let mut ours = None;
         let mut free = None;
         for path in self.rules_files() {
+            match std::fs::symlink_metadata(&path) {
+                // Free only when nothing is there at all: a link, dangling
+                // or not, is the person's and never replaced.
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    free.get_or_insert(path);
+                    continue;
+                }
+                // Codex reads only a plain rules file, and Agent Relay
+                // writes nothing else.
+                Ok(metadata) if metadata.file_type().is_file() => {}
+                _ => continue,
+            }
             match std::fs::read_to_string(&path) {
                 Ok(current) if current == text => return Ok(()),
-                Ok(current)
-                    if current.starts_with(RULES_HEADER)
-                        && std::fs::symlink_metadata(&path)
-                            .is_ok_and(|m| m.file_type().is_file()) =>
-                {
+                Ok(current) if current.starts_with(RULES_HEADER) => {
                     ours.get_or_insert(path);
                 }
-                Ok(_) => {}
-                // Free only when nothing is there at all: a dangling symlink
-                // of the person's is theirs, and is never replaced.
-                Err(error)
-                    if error.kind() == std::io::ErrorKind::NotFound
-                        && std::fs::symlink_metadata(&path).is_err() =>
-                {
-                    free.get_or_insert(path);
-                }
-                Err(_) => {}
+                _ => {}
             }
         }
         let path = ours.or(free).ok_or_else(|| {
@@ -1367,6 +1366,31 @@ mod tests {
         assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
         assert!(std::fs::symlink_metadata(&link).is_ok());
         assert!(!codex.join("rules/agent-relay-3.rules").exists());
+    }
+
+    // Review on #2019: Codex skips a linked rules file, so a link to the
+    // very same rules does not count as having them.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_matching_rules_is_not_taken_for_them() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(codex.join("rules")).unwrap();
+        let settings = full_settings(home.path());
+        let text = settings.sandbox.as_ref().unwrap().text();
+        std::fs::write(home.path().join("copy.rules"), &text).unwrap();
+        let link = codex.join("rules/agent-relay.rules");
+        std::os::unix::fs::symlink(home.path().join("copy.rules"), &link).unwrap();
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        let plain = codex.join("rules/agent-relay-2.rules");
+        assert!(std::fs::symlink_metadata(&plain)
+            .unwrap()
+            .file_type()
+            .is_file());
+        assert_eq!(std::fs::read_to_string(&plain).unwrap(), text);
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        assert!(std::fs::symlink_metadata(&link).is_ok(), "the link stays");
+        assert!(!plain.exists());
     }
 
     // Review on #2019: rules that cannot be removed leave the setting to
