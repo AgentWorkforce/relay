@@ -2701,7 +2701,7 @@ async fn settings_round_trip_and_refuse_unknown_keys() {
         settings,
         json!({
             "allow_self_registration": true, "auto_activate": false, "show_relay_messages": false,
-            "auto_join_general": false, "mobile_claude_handoff": false, "mobile_claude_handoff_supported": cfg!(unix), "mobile_native_continuation": false, "mobile_native_continuation_supported": cfg!(unix), "teammate_native_input": true, "agent_changes": [],
+            "auto_join_general": false, "mobile_claude_handoff": false, "mobile_claude_handoff_supported": cfg!(unix), "mobile_native_continuation": false, "mobile_native_continuation_supported": cfg!(unix), "teammate_native_input": true, "pi_auto_activate": false, "opencode_auto_activate": false, "agent_changes": [],
             "accept_spawns": true, "spawn_max_agents": 0,
             "spawn_full_access_codex": true, "spawn_full_access_claude": true,
             "spawn_allow_teammates": false, "spawn_native_input": true,
