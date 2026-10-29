@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The CLI and `@agent-relay/harness-driver` now resolve the broker in this order: `BROKER_BINARY_PATH` / `AGENT_RELAY_BIN`, then `~/.agentworkforce/relay/bin`, then the npm platform package, then `PATH`. A broker in the install directory now wins over one found on `PATH`.
 - `install.sh` honours `AGENT_RELAY_HOME` as the install root when `AGENT_RELAY_INSTALL_DIR` is not set. A relocated install exports its root from the `agent-relay` launcher.
 - `relay mcp` without `RELAY_AGENT_NAME` now registers each session as `<tool>-<project folder>` (for example `claude-myproject`, from the MCP client's name), adding a short suffix when another live session holds that name and taking the name back after a restart, instead of registering every session as `orchestrator`.
+- The probe daemon now picks its workspace the way the CLI does: a workspace-key environment variable, then the project's pinned key (`AGENT_RELAY_PROJECT`), then the active workspace in `workspaces.json`, each sent only to the server `relaycast-origins.json` binds it to. Your Cloud sign-in is used only when the CLI selects none, so local and self-hosted `relay init` workspaces work without signing in. If the CLI's workspace files are malformed, the probe reports why and uses no workspace instead of falling back to the Cloud one.
 
 ### Removed
 

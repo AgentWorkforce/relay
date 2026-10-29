@@ -61,14 +61,30 @@ pub struct PersonIdentity {
     pub base_url: String,
 }
 
+/// Whether `workspace` is the Relaycast workspace `identity` sends in. The
+/// identity is minted for the signed-in account's Cloud workspace, whose
+/// Relaycast key is `account_key`: the daemon's workspace is that one only
+/// when it uses the same key on the identity's origin. A CLI workspace on
+/// the same origin (two workspaces on `cast.agentrelay.com`) is another
+/// workspace, so its roster proves nothing about your sends.
+fn is_identity_workspace(
+    identity: &PersonIdentity,
+    workspace: &Workspace,
+    account_key: Option<&Secret>,
+) -> bool {
+    workspace.base_url == identity.base_url && account_key == Some(&workspace.key)
+}
+
 /// The person identity is registered in the team Relaycast workspace, even
 /// though it uses its own agent token. Fall back to that token only while no
-/// matching team workspace is available (for example during startup).
+/// matching team workspace is available (for example during startup, or
+/// while the daemon uses a CLI workspace that is not the account's).
 fn person_workspace_scope(
     identity: &PersonIdentity,
     workspace: Option<&Workspace>,
+    account_key: Option<&Secret>,
 ) -> WorkspaceScope {
-    match workspace.filter(|workspace| workspace.base_url == identity.base_url) {
+    match workspace.filter(|workspace| is_identity_workspace(identity, workspace, account_key)) {
         Some(workspace) => {
             WorkspaceScope::credential(&workspace.base_url, &workspace.key, "this workspace")
         }
@@ -351,7 +367,8 @@ impl Core {
     pub(crate) fn person_push_target(&self) -> Option<PushTarget> {
         let identity = self.current_identity()?;
         let team = self.workspace();
-        let workspace = person_workspace_scope(&identity, team.as_ref());
+        let account_key = self.account_workspace_key();
+        let workspace = person_workspace_scope(&identity, team.as_ref(), account_key.as_ref());
         Some(PushTarget {
             agent: person_channel(&identity.name),
             base_url: identity.base_url,
@@ -425,16 +442,25 @@ impl Core {
         Ok(sent)
     }
 
-    /// Whether the workspace key's roster is the workspace your messages
-    /// go to: your identity sends on its origin and the account does not
-    /// use another workspace.
+    /// The signed-in account's Relaycast workspace key: the workspace your
+    /// relay identity sends in.
+    fn account_workspace_key(&self) -> Option<Secret> {
+        self.store
+            .read(|store| store.cloud.as_ref().map(|cloud| cloud.key.clone()))
+    }
+
+    /// Whether the daemon workspace's roster is the workspace your messages
+    /// go to: the same workspace (by key, not only by origin) as the
+    /// signed-in account your identity sends in. A CLI workspace that is
+    /// not the account's is never taken as proof about your sends.
     pub(crate) async fn roster_is_messaging_workspace(&self) -> bool {
         let Some(workspace) = self.workspace() else {
             return false;
         };
-        self.person_identity(false)
-            .await
-            .is_ok_and(|identity| identity.base_url == workspace.base_url)
+        let account_key = self.account_workspace_key();
+        self.person_identity(false).await.is_ok_and(|identity| {
+            is_identity_workspace(&identity, &workspace, account_key.as_ref())
+        })
     }
 
     /// The recipient of a send to `endpoint` and what Relaycast holds for
@@ -744,6 +770,7 @@ mod tests {
             key: Secret::new("rk_team_workspace"),
             base_url: "https://relay.example".into(),
             workspace_id: Some("rw_team".into()),
+            source: Default::default(),
         };
         let person = PersonIdentity {
             name: "person".into(),
@@ -752,7 +779,7 @@ mod tests {
             base_url: team.base_url.clone(),
         };
         let team_scope = WorkspaceScope::credential(&team.base_url, &team.key, "team");
-        let person_scope = person_workspace_scope(&person, Some(&team));
+        let person_scope = person_workspace_scope(&person, Some(&team), Some(&team.key));
         let gate = RelaycastBackoff::default();
         gate.record_error(
             &team_scope,
@@ -768,6 +795,51 @@ mod tests {
         );
 
         assert!(!gate.allowed(&person_scope));
+    }
+
+    #[test]
+    fn only_the_account_workspace_proves_anything_about_person_sends() {
+        let account = Workspace {
+            key: Secret::new("rk_live_account00"),
+            base_url: "https://cast.agentrelay.com".into(),
+            workspace_id: Some("rw_account".into()),
+            source: Default::default(),
+        };
+        let person = PersonIdentity {
+            name: "person".into(),
+            agent_id: "agent_person".into(),
+            token: Secret::new("at_person"),
+            base_url: account.base_url.clone(),
+        };
+        let account_key = Some(&account.key);
+        assert!(is_identity_workspace(&person, &account, account_key));
+        // The CLI's workspace B on the same origin as account A is another
+        // workspace: its roster says nothing about sends in A.
+        let cli = Workspace {
+            key: Secret::new("rk_live_cli_other"),
+            workspace_id: None,
+            source: crate::relay::workspace::WorkspaceSource::CliEnv("RELAY_WORKSPACE_KEY".into()),
+            ..account.clone()
+        };
+        assert!(!is_identity_workspace(&person, &cli, account_key));
+        // The CLI naming the account's own key is the account's workspace.
+        let same = Workspace {
+            key: account.key.clone(),
+            ..cli.clone()
+        };
+        assert!(is_identity_workspace(&person, &same, account_key));
+        // No account key, or another origin, proves nothing.
+        assert!(!is_identity_workspace(&person, &account, None));
+        let elsewhere = Workspace {
+            base_url: "http://127.0.0.1:8787".into(),
+            ..account.clone()
+        };
+        assert!(!is_identity_workspace(&person, &elsewhere, account_key));
+        // Background calls as you are gated by your own token, not B's.
+        assert_eq!(
+            person_workspace_scope(&person, Some(&cli), account_key),
+            WorkspaceScope::credential(&person.base_url, &person.token, "your messaging workspace"),
+        );
     }
 
     #[test]
@@ -787,7 +859,12 @@ mod tests {
             None
         );
         assert_eq!(
-            endpoint_binding(&conversation, &[], "other@linux-host-233378063229464576", ME),
+            endpoint_binding(
+                &conversation,
+                &[],
+                "other@linux-host-233378063229464576",
+                ME
+            ),
             None
         );
         let own = format!("{ME}@linux-host-agent_person");

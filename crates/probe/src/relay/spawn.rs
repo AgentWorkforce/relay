@@ -1880,6 +1880,7 @@ mod tests {
             key: Secret::new(key.to_string()),
             base_url: "http://localhost:9".into(),
             workspace_id: id.map(str::to_string),
+            source: Default::default(),
         };
         let mut intent = interrupted("w1", true, None);
         intent.workspace_id = Some("rw_1".into());

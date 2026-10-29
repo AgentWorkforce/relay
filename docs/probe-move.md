@@ -114,21 +114,76 @@ relay-desktop CI checks that are not ported yet:
 - arm64 Linux, x64 macOS and arm64 Windows lanes;
 - the Pi live-session scripts.
 
+## Phase 2: the probe reads the CLI's workspace (done)
+
+`src/relay/workspace.rs` now resolves the daemon's one Relaycast workspace
+from two sources, read-only (the probe never writes the CLI's files):
+
+1. **The `agent-relay` CLI** (`src/relay/workspace/cli.rs`), mirroring
+   `packages/cloud/src/project-workspace-key.ts` `resolveWorkspaceSelection`
+   and `packages/cli/src/cli/lib/sdk-client.ts` `resolveWorkspaceTransport`
+   (minus the `--workspace-key` flag):
+   1. the env key: `RELAY_WORKSPACE_KEY` > `AGENT_RELAY_WORKSPACE_KEY` >
+      `RELAY_API_KEY`;
+   2. the project pin `<project>/.agentworkforce/relay/workspace-key.json`,
+      only when `AGENT_RELAY_PROJECT` names the project (the CLI's explicit
+      project root; the daemon has no working directory to search from). A
+      missing or malformed pin falls through, as in the CLI. Persisted
+      Relaycast routes (`relaycastRoute`/`relaycastBaseUrl`, and the route
+      credential `relaycastApiKeyRef` names in `relaycast-credentials.json`)
+      are honoured with the CLI's checks;
+   3. the active entry of `$AGENT_RELAY_HOME|~/.agentworkforce/relay/workspaces.json`.
+
+   Origin: a persisted route (Agent Relay gateways only; a key bound
+   elsewhere is refused), else `RELAY_BASE_URL`, else the key's binding in
+   `relaycast-origins.json` (`src/relay/workspace/origin_binding.rs`:
+   PBKDF2-HMAC-SHA256, salt `agent-relay:relaycast-origin-binding`, 10,000
+   iterations, 16 bytes hex, via the `ring` already linked; tested against
+   `packages/contracts/fixtures/relaycast-origin-binding.json`, the vector the
+   CLI and the broker use), else `https://cast.agentrelay.com`. A bound key
+   goes only to its server; `http://127.0.0.1:8787` and other self-hosted
+   http(s) base URLs (ports and path prefixes included) are accepted as the
+   CLI accepts them. A malformed bindings file, an unreadable `workspaces.json`
+   or a malformed `RELAY_BASE_URL` fails closed.
+
+2. **The Cloud sign-in** (`cloud` in the agent store; `RELAYCAST_URL` still
+   re-origins only this key), used only when the CLI names nothing.
+
+**Combination rule.** The CLI source wins whenever it names a workspace, so
+the probe registers and injects in the same workspace the CLI's MCP tools in
+each session use; within the CLI source an explicit env key or project pin
+outranks the machine store, exactly as in the CLI. The Cloud sign-in is the
+fallback for desktop users who never ran the CLI. A CLI selection that may not
+be used (fail-closed cases above) leaves the daemon with **no** workspace and
+an activity warning: it never falls back to the account's workspace, and
+neither source's key is ever sent to the other's origin. `Workspace.source`
+records which source named the key.
+
+**Refresh, verification and recovery.** The 30 s rediscovery re-reads the
+CLI's files, so a key rotated in `workspaces.json` is picked up and verified
+by the next pass (and the existing same-origin key-migration bookkeeping
+applies). Cloud recovery (`account/workspace_recovery.rs`) runs only for a
+`Cloud`-sourced key; a refused CLI key is left `rejected` until the CLI's
+files change.
+
+**One workspace per daemon.** The daemon holds a single
+`Mutex<Option<Workspace>>` that about 40 call sites (registrations, push,
+delivery, spawn, messaging, verification) read as _the_ workspace, so this
+phase supports one workspace per machine: the env key, the
+`AGENT_RELAY_PROJECT` pin, or the machine's active CLI workspace, else the
+Cloud sign-in. A project whose pin names a different workspace than the
+machine's active one is **not** served by the daemon yet; that needs per-
+registration workspaces (a registration already records its `base_url` and
+`workspace_key`, but discovery, push and verification assume one). Until
+then, `relay init` keeps the machine-wide active workspace (#2007), so the
+common single-workspace machine is covered.
+
+Behaviour change for desktop users: a desktop that is signed in to Cloud
+**and** has an active CLI workspace now uses the CLI's for messaging (uploads
+still go to the signed-in account). This lands in relay-desktop only when it
+consumes this core (phase 4).
+
 ## Remaining phases
-
-2. **The probe reads the CLI's workspace.** Today `src/relay/workspace.rs`
-   resolves the Relaycast workspace only from the Cloud sign-in (`cloud` in
-   the agent store, optionally re-originated by `RELAYCAST_URL`). It must
-   follow the CLI's ladder (`packages/cloud/src/project-workspace-key.ts`):
-   1. the env key;
-   2. the project pin `<project>/.agentworkforce/relay/workspace-key.json`;
-   3. the machine-global active entry in
-      `$AGENT_RELAY_HOME|~/.agentworkforce/relay/workspaces.json`.
-
-   It must honour `relaycast-origins.json` origin bindings, so that
-   self-hosted keys never go to the hosted gateway. Then local and self-hosted
-   setups work without a Cloud sign-in. The core already locates the CLI's
-   home (`workspace::relay_home`) but only reads it.
 
 3. **`relay init` installs and runs the probe.** It downloads
    `agent-relay-probe` into `~/.agentworkforce/relay/bin`, runs `relay serve

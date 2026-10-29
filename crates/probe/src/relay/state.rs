@@ -649,6 +649,7 @@ mod tests {
             key: crate::relay::workspace::Secret::new("rk_live_secret0000"),
             base_url: "https://cast.agentrelay.com".into(),
             workspace_id: Some("rw_1".into()),
+            source: Default::default(),
         };
         let hub = hub();
         hub.update(|status| status.workspace = WorkspaceStatus::discovered(Some(&workspace)));
