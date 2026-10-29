@@ -369,8 +369,17 @@ impl Core {
         let spawn = Change::read(changes).map_err(RpcError::invalid_params)?;
         let change = |key: &str| changes.get(key).and_then(Value::as_bool);
         let flags = crate::relay::store_settings::STORE_SETTINGS.map(change);
-        let [allow, auto, show, general, mobile_handoff, native_continuation, teammate_input] =
-            flags;
+        let [
+            allow,
+            auto,
+            show,
+            general,
+            mobile_handoff,
+            native_continuation,
+            teammate_input,
+            pi_auto,
+            opencode_auto,
+        ] = flags;
         if native_continuation == Some(true) {
             self.require_native_continuation_claim().map_err(|message| {
                 RpcError::new(crate::relay::protocol::ErrorKind::Refused, message)
@@ -407,6 +416,9 @@ impl Core {
                     store.extras.auto_join_general = general.or(store.extras.auto_join_general);
                     store.extras.teammate_native_input =
                         teammate_input.or(store.extras.teammate_native_input);
+                    store.extras.pi_auto_activate = pi_auto.or(store.extras.pi_auto_activate);
+                    store.extras.opencode_auto_activate =
+                        opencode_auto.or(store.extras.opencode_auto_activate);
                     spawn.apply(store);
                     Some(StoreWrite {
                         previous,
@@ -460,8 +472,17 @@ impl Core {
             return Ok(());
         };
         let changed = |key: &str| changes.get(key).and_then(Value::as_bool).is_some();
-        let [allow, auto, show, general, mobile_handoff, native_continuation, teammate_input] =
-            crate::relay::store_settings::STORE_SETTINGS.map(changed);
+        let [
+            allow,
+            auto,
+            show,
+            general,
+            mobile_handoff,
+            native_continuation,
+            teammate_input,
+            pi_auto,
+            opencode_auto,
+        ] = crate::relay::store_settings::STORE_SETTINGS.map(changed);
         let (handoff, continuation, spawning) = self
             .store
             .update(|store| {
@@ -479,6 +500,12 @@ impl Core {
                 }
                 if teammate_input {
                     put_back!(store, write, extras.teammate_native_input);
+                }
+                if pi_auto {
+                    put_back!(store, write, extras.pi_auto_activate);
+                }
+                if opencode_auto {
+                    put_back!(store, write, extras.opencode_auto_activate);
                 }
                 (
                     mobile_handoff && put_back!(store, write, mobile_claude_handoff),

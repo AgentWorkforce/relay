@@ -899,9 +899,11 @@ function fakeCore(
     claude_session_hook: false,
     codex_stop_hook: false,
     opencode_plugin: false,
+    opencode_auto_activate: false,
     grok_leader: false,
     devin_direct_delivery: false,
     pi_extension: false,
+    pi_auto_activate: false,
     ...options.settings,
   };
   /** The person's own crossSessionInbound, which the default never overrides. */
@@ -1174,25 +1176,78 @@ describe('relay init message injection', () => {
     const core = fakeCore();
     await setup(core.deps).run('--tools', 'codex');
     expect(core.settings.pi_extension).toBe(false);
+    expect(core.settings.pi_auto_activate).toBe(false);
 
     await setup(core.deps).run('--tools', 'pi');
-    expect(core.settings.pi_extension).toBe(true);
+    // Pi sessions join on their own only with Pi's own opt-in on top of auto_activate.
+    expect(core.settings).toMatchObject({ pi_extension: true, pi_auto_activate: true, auto_activate: true });
+    expect(core.settings.opencode_auto_activate).toBe(false);
     expect(JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'))).toEqual({
-      turnedOn: ['codex_stop_hook', 'auto_activate', 'pi_extension'],
+      turnedOn: ['codex_stop_hook', 'auto_activate', 'pi_extension', 'pi_auto_activate'],
     });
 
     const toMcp = setup(core.deps);
     await toMcp.run('--tools', 'pi', '--delivery', 'mcp');
-    expect(core.settings.pi_extension).toBe(false);
+    expect(core.settings).toMatchObject({ pi_extension: false, pi_auto_activate: false });
     expect(core.settings.codex_stop_hook).toBe(true);
 
     await setup(core.deps).run('--tools', 'pi');
     await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
     expect(core.settings).toMatchObject({
       pi_extension: false,
+      pi_auto_activate: false,
       codex_stop_hook: false,
       auto_activate: false,
     });
+  });
+
+  it('lets OpenCode sessions join on their own and turns exactly that off on --uninstall', async () => {
+    installedProbe();
+    const core = fakeCore();
+    await setup(core.deps).run('--tools', 'opencode');
+    expect(core.sets()).toEqual([
+      { opencode_plugin: true },
+      { opencode_auto_activate: true },
+      { auto_activate: true },
+    ]);
+    expect(core.settings.pi_auto_activate).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'))).toEqual({
+      turnedOn: ['opencode_plugin', 'opencode_auto_activate', 'auto_activate'],
+    });
+
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(core.settings).toMatchObject({
+      opencode_plugin: false,
+      opencode_auto_activate: false,
+      auto_activate: false,
+    });
+    expect(core.settings.pi_auto_activate).toBe(false);
+  });
+
+  it('leaves a Pi or OpenCode opt-in the person turned on themselves on --uninstall', async () => {
+    installedProbe();
+    const core = fakeCore({ running: true, settings: { opencode_auto_activate: true } });
+    await setup(core.deps).run('--tools', 'opencode');
+    expect(core.sets()).toEqual([{ opencode_plugin: true }, { auto_activate: true }]);
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(core.settings).toMatchObject({
+      opencode_plugin: false,
+      opencode_auto_activate: true,
+      auto_activate: false,
+    });
+  });
+
+  it('gives Pi the MCP server, with no opt-in left on, when the core refuses Pi auto-activation', async () => {
+    installedProbe();
+    const core = fakeCore({ refuse: ['pi_auto_activate'] });
+    const { run, logs } = setup(core.deps);
+    await run('--tools', 'pi');
+    expect(core.settings).toMatchObject({
+      pi_extension: false,
+      pi_auto_activate: false,
+      auto_activate: false,
+    });
+    expect(logs.join('\n')).toMatch(/Pi\s+not injected: pi_auto_activate is not available\./);
   });
 
   it('turns off what it enabled when its record cannot be saved, then uses the MCP server', async () => {

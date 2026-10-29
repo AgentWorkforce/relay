@@ -235,11 +235,17 @@ describe('enableDelivery', () => {
       auto_activate: true,
       codex_stop_hook: false,
       opencode_plugin: true,
+      opencode_auto_activate: true,
       pi_extension: false,
+      pi_auto_activate: false,
     });
     const outcome = await enableDelivery(core, ['codex', 'opencode', 'pi']);
-    expect(core.sets).toEqual([{ codex_stop_hook: true }, { pi_extension: true }]);
-    expect(outcome.turnedOn).toEqual(['codex_stop_hook', 'pi_extension']);
+    expect(core.sets).toEqual([
+      { codex_stop_hook: true },
+      { pi_extension: true },
+      { pi_auto_activate: true },
+    ]);
+    expect(outcome.turnedOn).toEqual(['codex_stop_hook', 'pi_extension', 'pi_auto_activate']);
     expect(outcome.results.map((r) => [r.id, r.status])).toEqual([
       ['codex', 'on'],
       ['opencode', 'on'],

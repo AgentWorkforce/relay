@@ -415,8 +415,15 @@ impl LocalSessions {
                 // and delivery re-proves each one in Muse's own registry
                 // on every send, pinning the courier reference.
                 SessionKind::MuseOpen => true,
-                // Opt-in, like every provider route the plugin opens.
-                SessionKind::OpenCodeOpen | SessionKind::Pi => false,
+                // A Pi row exists only while a live Pi process of this user
+                // holds its private registry open through Agent Relay's
+                // extension, and an open OpenCode row only while a live
+                // OpenCode process of this user serves it through the
+                // plugin's socket; delivery re-proves that process on every
+                // send. Whether either joins by itself is the store's
+                // per-provider opt-in (`activation_applies`), so it is
+                // eligible here like a Codex thread.
+                SessionKind::OpenCodeOpen | SessionKind::Pi => true,
                 // A Devin row exists only while a `devin` process holds
                 // the session's lock open, which is also its caller
                 // proof. Devin Cloud rows return early above; any other

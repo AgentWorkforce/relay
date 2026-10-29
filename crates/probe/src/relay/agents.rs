@@ -1646,12 +1646,14 @@ impl Core {
         // OpenClaw Gateway that answers this user's loopback handshake, and
         // a Hermes API that answers its own key are already caller proof,
         // re-proved on every send — though an explicit Auto-activate off is
-        // still honored. Every other provider needs the setting on.
-        let setting = self.store.read(|s| s.auto_activate);
+        // still honored. Every other provider needs the setting on, and an
+        // open Pi or OpenCode session its own opt-in too.
+        let settings = self.store.read(auto_activation::ActivationSettings::of);
+        let setting = settings.auto_activate;
         if setting == Some(false) {
             return failures;
         }
-        found.retain(|target, _| auto_activation::activation_applies(setting, target.kind));
+        found.retain(|target, _| auto_activation::activation_applies(&settings, target.kind));
         if setting.is_none() && found.is_empty() {
             return failures;
         }

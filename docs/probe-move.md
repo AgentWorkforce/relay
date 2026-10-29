@@ -353,10 +353,17 @@ own, named `<tool>-<project>-<task>`) and, per tool, through `settings.set`:
 | ----------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
 | Claude Code | `direct_delivery_default`, `claude_session_hook` | `crossSessionInbound: "accept"` (only when unset) and a SessionStart hook in `~/.claude/settings.json` |
 | Codex       | `codex_stop_hook`                                | PostToolUse and Stop hooks in `~/.codex/hooks.json`, trusted through Codex's app-server                |
-| OpenCode    | `opencode_plugin`                                | the Agent Relay plugin under `~/.config/opencode/plugins`                                              |
+| OpenCode    | `opencode_plugin`, `opencode_auto_activate`      | the Agent Relay plugin under `~/.config/opencode/plugins`                                              |
 | Grok CLI    | `grok_leader`                                    | `[cli] use_leader` in `~/.grok/config.toml`                                                            |
 | Devin       | `devin_direct_delivery`                          | lifecycle hooks in `~/.config/devin/config.json`                                                       |
-| Pi          | `pi_extension`                                   | the Agent Relay extension in `~/.pi/agent/extensions` (a desktop core installs it at start)            |
+| Pi          | `pi_extension`, `pi_auto_activate`               | the Agent Relay extension in `~/.pi/agent/extensions` (a desktop core installs it at start)            |
+
+`auto_activate` alone never puts an open Pi or OpenCode session on the relay
+(the desktop installs both routes by default, so its Auto-activate switch
+keeps them joining only when added). `pi_auto_activate` and
+`opencode_auto_activate`, off unless turned on, let those sessions join by
+themselves while `auto_activate` is on; init turns on the one for each tool
+chosen, and they are recorded and undone like the rest.
 
 A setting that is already on is left alone; the ones init turned on are
 recorded in `<relay home>/local/core-settings.json`, and `relay init
