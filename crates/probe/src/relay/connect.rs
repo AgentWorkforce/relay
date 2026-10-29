@@ -14,7 +14,7 @@ use crate::relay::delivery::policy::{self, Decision, MessageRef};
 use crate::relay::delivery::{preview, DeliveryActivity, DeliveryOutcome, DeliverySettlement};
 use crate::relay::inject::InjectOutcome;
 use crate::relay::outbound::{
-    probe_client, probe_socket_command, query_encode, shell_quote, OutboundError,
+    probe_client, probe_socket_command_with_body, query_encode, shell_quote, OutboundError,
 };
 use crate::relay::outbox::{create_private_dir, write_atomic};
 use crate::relay::peer::current_uid;
@@ -1951,8 +1951,9 @@ fn connect_reply_hint(
     // On Windows the socket is a named pipe curl cannot reach, so every
     // session gets the probe client.
     if cfg!(windows) || (kind == SessionKind::Codex && probe_client(needs_probe)) {
-        let command = probe_socket_command(Path::new(socket), "POST", &request_path)?;
-        return Some(format!("[reply: printf '%s' 'your reply' | {command}]"));
+        let command =
+            probe_socket_command_with_body(Path::new(socket), "POST", &request_path, "your reply")?;
+        return Some(format!("[reply: {command}]"));
     }
     let url = format!("http://relay{request_path}");
     let parts = [
@@ -2081,7 +2082,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hint.lines().count(), 1);
-        assert!(hint.starts_with("[reply: printf '%s' 'your reply' | "));
+        // One command, no pipe: what Codex's sandbox rules allow.
+        assert!(hint.starts_with("[reply: "));
+        assert!(!hint.contains(" | "));
+        assert!(hint.ends_with(" --body 'your reply']"));
         assert!(hint.contains("relay socket-request --socket"));
         assert!(hint.contains("'/tmp/Relay Socket'\\''s/run.sock'"));
         assert!(hint.contains("to=host%27s%20name"));

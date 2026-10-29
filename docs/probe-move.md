@@ -352,7 +352,7 @@ own, named `<tool>-<project>-<task>`) and, per tool, through `settings.set`:
 | Tool        | Core setting(s)                                  | What the core writes                                                                                   |
 | ----------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
 | Claude Code | `direct_delivery_default`, `claude_session_hook` | `crossSessionInbound: "accept"` (only when unset) and a SessionStart hook in `~/.claude/settings.json` |
-| Codex       | `codex_stop_hook`                                | PostToolUse and Stop hooks in `~/.codex/hooks.json`, trusted through Codex's app-server                |
+| Codex       | `codex_stop_hook`                                | PostToolUse and Stop hooks in `~/.codex/hooks.json`, trusted through Codex's app-server, and `~/.codex/rules/agent-relay.rules` |
 | OpenCode    | `opencode_plugin`                                | the Agent Relay plugin under `~/.config/opencode/plugins`                                              |
 | Grok CLI    | `grok_leader`                                    | `[cli] use_leader` in `~/.grok/config.toml`                                                            |
 | Devin       | `devin_direct_delivery`                          | lifecycle hooks in `~/.config/devin/config.json`                                                       |
@@ -392,6 +392,40 @@ The Claude SessionStart hook now knows automatic activation: a session that
 is not registered yet but will be is told it joins by itself (with the
 session socket's `/whoami`, `/agents` and `/send` commands) instead of being
 told to ask the person whether to register, which raced auto-activation.
+
+**Codex's sandbox.** Codex's default sandbox (`workspace-write` or
+`read-only`, network off) denies every Unix-socket connect on macOS, so a
+Codex session could not run `agent-relay-probe relay read` or its reply
+`relay socket-request` without asking to leave the sandbox, and one went on to
+answer through another Agent Relay connector it had ("Agent Relay in
+ChatGPT"), as a different identity in another workspace. Codex has no
+narrower grant for one socket in its ordinary sandbox settings
+(`sandbox_workspace_write` offers only `writable_roots` and all-or-nothing
+`network_access`; a Unix-socket allowlist exists only in permission profiles
+and managed network policy, which replace the person's sandbox setup). Codex
+does run a command outside its sandbox without asking when every part of it
+matches an `allow` prefix rule in `~/.codex/rules/*.rules`. So while
+`codex_stop_hook` is on, the core also writes
+`~/.codex/rules/agent-relay.rules` (`agent-relay-dev.rules` for Agent Relay
+Dev) with exactly two rules: `<this probe> relay socket-request --socket <this
+core's session socket>` and `<this probe> relay read`. Nothing else leaves the
+sandbox and no network is granted; a rules file of that name that does not
+start with Agent Relay's header is never touched. Reply hints are one command
+with the body as `--body` (no `printf |` pipe, since every part of a command
+must match a rule), and every reply hint ends with a `[route: …]` line telling
+the agent to answer only that way, never through another Agent Relay
+connector or app, and to say so if it fails.
+
+Turning `codex_stop_hook` off puts `~/.codex` back: the hook's keys are listed
+through Codex's app-server while the hook is still in `hooks.json`, the hook
+comes out, then exactly those `hooks.state` entries leave `config.toml` (and
+`[hooks.state]` / `[hooks]` once empty). A `hooks.json` the core created is
+removed once empty; the person's own is restored byte for byte from the
+`.relay-desktop-backup` copy (taken only of a file that did not already hold
+the hook) when they have not changed it since, and the copy is removed. A
+`config.toml` that trusting the hook created (recorded in the core's data as
+`codex-config-created`) is removed once nothing else is in it. The rules file
+goes, and `rules/` with it only when empty.
 
 **Workspace.** The core serves one workspace per machine (phase 2). After
 setting up, init calls `workspace.refresh` and warns when the core serves a
@@ -448,14 +482,11 @@ Known gaps in phase 3:
 
 - No `probe-v*` release exists yet; until one does, `relay init` uses the MCP
   server unless a core is running or `AGENT_RELAY_PROBE_PATH` is set.
-- Codex's default sandbox cannot reach the session socket, so Codex asks to
-  run `agent-relay-probe relay read` and the reply `curl` outside it (the
-  desktop has the same prompts).
 - Messages arrive as pointers (`show_relay_messages` off, the core's default):
   the session runs `agent-relay-probe relay read <ref>` for the text.
-- `--uninstall` leaves what the core keeps after turning a hook off: an empty
-  `~/.codex/hooks.json`, Codex's hook-trust entries in `~/.codex/config.toml`,
-  and the one-time `.relay-desktop-backup` copies of edited settings files.
+- `--uninstall` leaves the one-time `.relay-desktop-backup` copies of edited
+  settings files other than Codex's `hooks.json` (see "Codex's sandbox" below
+  for what Codex gets back).
   A `--cli-managed` core writes into `~/.pi` only when `pi_extension` is
   turned on; turning it off removes only Agent Relay's own extension file and
   records the choice in the core's data (`~/.agentworkforce/desktop/pi-extension.off`).

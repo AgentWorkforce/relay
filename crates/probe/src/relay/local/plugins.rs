@@ -136,15 +136,23 @@ pub fn plugins_with_options(
     let stop_hook_inbox = Arc::new(codex::stop_hook::StopHookInbox::with_turns(
         codex::turn_hook::TurnInbox::open(config.app_data_dir.join(codex::turn_hook::RECORD)),
     ));
-    let stop_hook_settings = Arc::new(codex::stop_hook::CodexStopHookSettings::new(
-        local.codex.home.clone(),
-        codex::stop_hook::CodexStopHookSettings::command_for(
-            &std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-probe")),
-            development,
-        ),
-        local.codex.executable.clone(),
-        stop_hook_inbox.clone(),
-    ));
+    // With the hook, Codex rules that let the probe's own client reach this
+    // core's session socket from Codex's sandbox (`stop_hook::SandboxRules`).
+    let relay_send_socket = outbound::default_socket(&env, &config.app_data_dir, local.uid);
+    let probe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-probe"));
+    let stop_hook_settings = Arc::new(
+        codex::stop_hook::CodexStopHookSettings::new(
+            local.codex.home.clone(),
+            codex::stop_hook::CodexStopHookSettings::command_for(&probe, development),
+            local.codex.executable.clone(),
+            stop_hook_inbox.clone(),
+        )
+        .with_sandbox_rules(codex::stop_hook::SandboxRules {
+            probe: probe.clone(),
+            socket: relay_send_socket.clone(),
+        })
+        .with_state_dir(config.app_data_dir.clone()),
+    );
     {
         let stop_hook_settings = stop_hook_settings.clone();
         let _ = std::thread::Builder::new()
@@ -241,7 +249,7 @@ pub fn plugins_with_options(
         trusted: Some(trusted),
         codex_stop_hook: Some(stop_hook_inbox),
         relay_send: Some(RelaySend {
-            socket: outbound::default_socket(&env, &config.app_data_dir, local.uid),
+            socket: relay_send_socket,
             pointer: outbound::pointer_path(&config.home, &config.app_data_dir),
             direct_delivery: settings,
             serving,

@@ -114,14 +114,26 @@ fn socket_request_allowed(method: &str, path: &str) -> bool {
     }
 }
 
-pub fn socket_request(socket: &Path, method: &str, path: &str) -> Result<()> {
+/// `relay socket-request`: `body` is the request body (`--body`); without
+/// it a POST, DELETE or PATCH reads its body from standard input.
+pub fn socket_request(socket: &Path, method: &str, path: &str, body: Option<&str>) -> Result<()> {
     if !socket_request_allowed(method, path) {
         return Err(SafeError("Unsupported relay socket request.".into()).into());
     }
-    let mut body = Vec::new();
-    if matches!(method, "POST" | "DELETE" | "PATCH") {
-        std::io::stdin().read_to_end(&mut body)?;
-    }
+    let sends_body = matches!(method, "POST" | "DELETE" | "PATCH");
+    let body = match body {
+        Some(_) if !sends_body => {
+            return Err(SafeError(format!("A {method} request takes no --body.")).into());
+        }
+        Some(body) => body.as_bytes().to_vec(),
+        None => {
+            let mut body = Vec::new();
+            if sends_body {
+                std::io::stdin().read_to_end(&mut body)?;
+            }
+            body
+        }
+    };
     socket_exchange(socket, method, path, &body, socket_request_timeout(path))
 }
 
@@ -781,7 +793,8 @@ mod tests {
         ] {
             assert!(!socket_request_allowed(method, path), "{method} {path}");
         }
-        let error = socket_request(Path::new("/unused"), "GET", "/setup/sign-in").unwrap_err();
+        let error =
+            socket_request(Path::new("/unused"), "GET", "/setup/sign-in", None).unwrap_err();
         assert!(error
             .to_string()
             .contains("Unsupported relay socket request"));
