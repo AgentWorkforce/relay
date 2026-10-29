@@ -1647,15 +1647,13 @@ impl Core {
         // a Hermes API that answers its own key are already caller proof,
         // re-proved on every send — though an explicit Auto-activate off is
         // still honored. Every other provider needs the setting on.
-        match self.store.read(|s| s.auto_activate) {
-            Some(false) => return failures,
-            Some(true) => {}
-            None => {
-                found.retain(|target, _| auto_activation::auto_activates_by_default(target.kind));
-                if found.is_empty() {
-                    return failures;
-                }
-            }
+        let setting = self.store.read(|s| s.auto_activate);
+        if setting == Some(false) {
+            return failures;
+        }
+        found.retain(|target, _| auto_activation::activation_applies(setting, target.kind));
+        if setting.is_none() && found.is_empty() {
+            return failures;
         }
 
         let (allowance, wait_reason) = match self
@@ -1721,7 +1719,7 @@ impl Core {
 
 // `auto_activation` shares its line with `aliases` so this file stays under its line ratchet.
 mod aliases;
-mod auto_activation;
+pub(crate) mod auto_activation;
 use aliases::already_registered;
 pub(crate) use aliases::{agent_push, is_listed, update_registered_title};
 

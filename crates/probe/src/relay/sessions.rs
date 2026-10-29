@@ -232,6 +232,12 @@ pub trait SessionDirectory: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// Whether automatic activation would put `session` on the relay, by
+    /// the same check `auto_activation_sessions` applies. May block.
+    fn auto_activates(&self, _session: &DiscoveredSession) -> bool {
+        false
+    }
+
     /// Whether a fleet worker owns `target` now, read fresh from every
     /// broker; an error (safe to show) when any broker cannot be read, so a
     /// second identity is never created on a guess. May block.

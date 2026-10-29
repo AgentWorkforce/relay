@@ -59,6 +59,9 @@ pub enum StatusRead {
         on_relay: bool,
         self_registration: bool,
     },
+    /// Not on the relay yet, but automatic activation is on: the core puts
+    /// the session on the relay by itself within seconds.
+    Joining,
     /// On the relay, with the name, address and access status reported.
     OnRelay {
         name: String,
@@ -90,6 +93,12 @@ pub fn read_status(http_status: u16, body: &[u8]) -> StatusRead {
                 address: address.into(),
                 mcp: McpAccess::parse(session["mcp"].as_str()),
             };
+        }
+        // Only when the core says this session will join: automatic
+        // activation can be on while there is no workspace yet or the
+        // session's folder is excluded from it.
+        if !on_relay && session["auto_activates"].as_bool() == Some(true) {
+            return StatusRead::Joining;
         }
         let self_registration = value["data"]["allow_self_registration"]
             .as_bool()
@@ -162,6 +171,7 @@ pub fn hook_output(status: Option<StatusRead>, socket: &Path, interactive: bool)
         return json!({});
     }
     let (person, agent) = match status {
+        Some(StatusRead::Joining) => (JOINING_FOR_PERSON.to_string(), joining(socket)),
         Some(StatusRead::Registered {
             on_relay: false,
             self_registration: true,
@@ -183,6 +193,48 @@ pub fn hook_output(status: Option<StatusRead>, socket: &Path, interactive: bool)
             "additionalContext": agent
         }
     })
+}
+
+/// What the person sees when automatic activation will put the session on
+/// the relay.
+pub const JOINING_FOR_PERSON: &str =
+    "This Claude Code session joins Agent Relay by itself in a few seconds (automatic activation is on).";
+
+/// What Claude reads when automatic activation will put the session on the
+/// relay: nothing to ask or register, and how to reach peers once it is on.
+pub fn joining(socket: &Path) -> String {
+    let shown = socket.display().to_string();
+    let quoted = crate::relay::outbound::shell_quote(&shown);
+    let body = "'{\"to\":\"<name>\",\"text\":\"…\"}'";
+    let (agents, whoami, send) = match crate::relay::outbound::probe_client(false)
+        .then(|| {
+            Some((
+                crate::relay::outbound::probe_socket_command(socket, "GET", "/agents")?,
+                crate::relay::outbound::probe_socket_command(socket, "GET", "/whoami")?,
+                format!(
+                    "printf '%s' {body} | {}",
+                    crate::relay::outbound::probe_socket_command(socket, "POST", "/send")?
+                ),
+            ))
+        })
+        .flatten()
+    {
+        Some(commands) => commands,
+        None => (
+            format!("curl -s --unix-socket {quoted} http://relay/agents"),
+            format!("curl -s --unix-socket {quoted} http://relay/whoami"),
+            format!("curl -s --unix-socket {quoted} http://relay/send --data-binary {body}"),
+        ),
+    };
+    format!(
+        "This Claude Code session joins Agent Relay by itself within a few seconds: automatic \
+         activation is on. Do not register it and do not ask the person about it. Relayed \
+         messages arrive in this session as messages from another session; each names the \
+         command that reads it and the one that replies. Once on the relay, through the Agent \
+         Relay session socket at {shown}: {whoami} shows this session's name, {agents} lists \
+         the agents it can message, and {send} sends one a message (\"address\" instead of \
+         \"to\" names an exact address)."
+    )
 }
 
 /// What the person sees when the session may register itself. The person
@@ -756,6 +808,44 @@ mod tests {
         assert_eq!(
             claude_ancestor(&processes(&["claude"], true), 200),
             Some(100)
+        );
+    }
+
+    #[test]
+    fn automatic_activation_tells_claude_it_joins_without_asking() {
+        let body = br#"{"ok":true,"data":{"auto_activate":true,"allow_self_registration":true,"session":{"registered":false,"auto_activates":true}}}"#;
+        assert_eq!(read_status(200, body), StatusRead::Joining);
+        // Activation on, but this session will not join (no workspace, or an
+        // excluded folder): the usual guidance, not a promise to join.
+        let skipped = br#"{"ok":true,"data":{"auto_activate":true,"allow_self_registration":true,"session":{"registered":false,"auto_activates":false}}}"#;
+        assert!(matches!(
+            read_status(200, skipped),
+            StatusRead::Registered { .. }
+        ));
+        // Already on the relay: the identity reminder, whatever the setting.
+        let on = br#"{"ok":true,"data":{"auto_activate":true,"session":{"registered":true,"name":"n","address":"n@m"}}}"#;
+        assert!(matches!(read_status(200, on), StatusRead::OnRelay { .. }));
+        let off = br#"{"ok":true,"data":{"auto_activate":false,"session":{"registered":false}}}"#;
+        assert!(matches!(
+            read_status(200, off),
+            StatusRead::Registered { .. }
+        ));
+
+        let socket = Path::new("/run/user/1000/agent-relay/relay.sock");
+        let out = hook_output(Some(StatusRead::Joining), socket, true);
+        let text = out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert_eq!(out["systemMessage"], JOINING_FOR_PERSON);
+        assert!(text.contains("Do not register it"), "{text}");
+        assert!(!text.contains("ask the person whether"), "{text}");
+        assert!(!text.contains("POST /register"), "{text}");
+        assert!(text.contains(socket.to_str().unwrap()), "{text}");
+        assert!(text.contains("/agents"), "{text}");
+        assert!(text.contains("/send"), "{text}");
+        assert_eq!(
+            hook_output(Some(StatusRead::Joining), socket, false),
+            json!({})
         );
     }
 

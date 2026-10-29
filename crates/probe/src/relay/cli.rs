@@ -88,7 +88,8 @@ fn socket_request_allowed(method: &str, path: &str) -> bool {
     }
     match method {
         "POST" => {
-            path.starts_with("/send?")
+            path == "/send"
+                || path.starts_with("/send?")
                 || path.starts_with("/attachments/fetch?file_id=")
                 || path == "/connect/send"
                 || path.starts_with("/connect/send?")
@@ -463,6 +464,7 @@ fn session_registered(socket: &Path) -> Option<crate::relay::claude::session_hoo
         .ok()?;
         match crate::relay::claude::session_hook::read_status(status, &body) {
             registered @ (crate::relay::claude::session_hook::StatusRead::Registered { .. }
+            | crate::relay::claude::session_hook::StatusRead::Joining
             | crate::relay::claude::session_hook::StatusRead::OnRelay { .. }) => {
                 return Some(registered);
             }
@@ -741,6 +743,7 @@ mod tests {
     #[test]
     fn socket_client_allows_only_named_session_routes() {
         for (method, path) in [
+            ("POST", "/send"),
             ("POST", "/send?address=alice"),
             ("POST", "/attachments/fetch?file_id=file_1"),
             ("POST", "/connect/send"),

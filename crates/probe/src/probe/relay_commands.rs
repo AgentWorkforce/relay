@@ -45,6 +45,11 @@ pub enum RelayCommands {
         /// Stop this temporary core after Connect work becomes idle.
         #[arg(long, requires = "headless")]
         connect_ephemeral: bool,
+        /// Run for the relay CLI (`relay init`): leave the desktop app's
+        /// login entry alone and turn on no settings by default (no agent-led
+        /// or integration defaults). The CLI turns on only what it was asked.
+        #[arg(long, requires = "headless", conflicts_with = "connect_ephemeral")]
+        cli_managed: bool,
     },
     /// Send one bridge request to the running core and print its result.
     Call {
@@ -170,6 +175,7 @@ pub fn run(command: RelayCommands) -> Result<()> {
             site_url,
             headless,
             connect_ephemeral,
+            cli_managed,
         } => relay::daemon::serve(relay::daemon::ServeOptions {
             socket,
             app_data_dir,
@@ -177,6 +183,7 @@ pub fn run(command: RelayCommands) -> Result<()> {
             site_url,
             headless,
             connect_ephemeral,
+            cli_managed,
         }),
         RelayCommands::Call {
             method,

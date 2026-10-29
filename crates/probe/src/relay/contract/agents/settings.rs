@@ -116,6 +116,13 @@ pub struct SettingsValues {
     /// where OpenCode has never run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opencode_plugin: Option<bool>,
+    /// Whether Agent Relay's Pi extension is installed in Pi's global
+    /// `extensions/`, the route into a Pi session. The desktop's core
+    /// installs it at start unless it was turned off; a core `relay init`
+    /// manages installs it only when this is turned on. Absent where Pi has
+    /// never run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_extension: Option<bool>,
     /// Whether Agent Relay lists the agents of the local OpenClaw Gateway
     /// and delivers to them, each relay sender in a session of its own.
     /// Absent where OpenClaw is not set up.
@@ -419,6 +426,14 @@ pub struct SettingsChange {
     )]
     #[schemars(with = "bool")]
     pub opencode_plugin: Option<bool>,
+    /// Installs (`true`) or removes (`false`) Agent Relay's Pi extension.
+    #[serde(
+        default,
+        deserialize_with = "given",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "bool")]
+    pub pi_extension: Option<bool>,
     /// Turns the OpenClaw Gateway route on or off.
     #[serde(
         default,

@@ -20,6 +20,8 @@ use inbox::{atomic_write_guarded, delivery_lock};
 
 const MAX_RECORD: u64 = 1024 * 1024;
 const SOURCE: &str = include_str!("pi/agent-relay.mjs");
+/// The first line of our extension, telling it from a person's file.
+const EXTENSION_MARK: &str = "// AGENT_RELAY_PI_EXTENSION=";
 
 #[derive(Clone, Debug)]
 pub struct PiConfig {
@@ -47,17 +49,56 @@ impl PiConfig {
         SOURCE.replace("__RUNTIME__", &runtime.to_string())
     }
 
-    /// Preserve a person's extension at this name. Refresh only our own copy.
-    pub fn install(&self) -> Result<(), String> {
-        if !self.enabled || !self.agent_dir.is_dir() {
+    /// Whether Pi has run here (its agent folder exists) and Pi sessions
+    /// are on: where the extension can go.
+    pub fn installed(&self) -> bool {
+        self.enabled && self.agent_dir.is_dir()
+    }
+
+    /// Where the extension goes in Pi's global extensions.
+    pub fn extension_file(&self) -> PathBuf {
+        self.agent_dir.join("extensions/agent-relay.js")
+    }
+
+    /// The marker turning the extension off leaves, in the core's own data
+    /// beside the Pi runtime rather than in Pi's folder.
+    pub fn off_marker(&self) -> PathBuf {
+        self.runtime.with_file_name("pi-extension.off")
+    }
+
+    /// Whether `pi_extension` was turned off: Pi sessions are then neither
+    /// listed nor delivered to, even one that loaded the extension earlier.
+    pub fn turned_off(&self) -> bool {
+        self.off_marker().exists()
+    }
+
+    /// Whether our extension (not a person's file of that name) is in place.
+    pub fn extension_installed(&self) -> bool {
+        fs::symlink_metadata(self.extension_file()).is_ok_and(|m| m.is_file())
+            && fs::read_to_string(self.extension_file())
+                .is_ok_and(|text| text.starts_with(EXTENSION_MARK))
+    }
+
+    /// Removes our extension; a person's file at that name, or none, is left.
+    pub fn remove(&self) -> Result<(), String> {
+        if !self.extension_installed() {
             return Ok(());
         }
-        let path = self.agent_dir.join("extensions/agent-relay.js");
+        fs::remove_file(self.extension_file())
+            .map_err(|e| format!("Could not remove the Pi extension: {e}"))
+    }
+
+    /// Preserve a person's extension at this name. Refresh only our own copy.
+    pub fn install(&self) -> Result<(), String> {
+        if !self.installed() {
+            return Ok(());
+        }
+        let path = self.extension_file();
         if let Ok(metadata) = fs::symlink_metadata(&path) {
             if !metadata.is_file()
                 || !fs::read_to_string(&path)
                     .unwrap_or_default()
-                    .starts_with("// AGENT_RELAY_PI_EXTENSION=")
+                    .starts_with(EXTENSION_MARK)
             {
                 return Err("A different Pi extension already uses agent-relay.js.".into());
             }
@@ -147,7 +188,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 pub fn bindings(config: &PiConfig, table: &dyn ProcessTable, uid: u32) -> Vec<Binding> {
-    if !config.enabled || !private(&config.runtime, uid, true) {
+    if !config.enabled || config.turned_off() || !private(&config.runtime, uid, true) {
         return vec![];
     }
     let Ok(entries) = fs::read_dir(&config.runtime) else {
@@ -393,6 +434,26 @@ fn recorded_delivery(
     }
 }
 
+/// Whether this exact message is already in the pinned session's inbox,
+/// waiting for its extension (`pending` or `claimed`), in either version.
+fn queued_delivery(
+    config: &PiConfig,
+    uid: u32,
+    registration: &crate::relay::store::Registration,
+    message_id: &str,
+    text: &str,
+) -> bool {
+    let Some(directory) = pinned_directory(config, uid, registration) else {
+        return false;
+    };
+    read::<Delivery>(&directory.join(format!("{}.json", key(message_id))), uid).is_some_and(|d| {
+        d.session_id == registration.target.id
+            && d.message_id == message_id
+            && d.text == text
+            && matches!(d.state.as_str(), "pending" | "claimed")
+    })
+}
+
 pub fn send(
     config: &PiConfig,
     table: &dyn ProcessTable,
@@ -448,6 +509,18 @@ fn send_with(
     // Only new submissions need a live process with the exact pinned identity.
     if let Some(outcome) = recorded_delivery(config, uid, registration, message_id, text, native) {
         return outcome;
+    }
+    // Turned off: nothing new reaches Pi, even a session still running the
+    // extension it loaded before. A recorded receipt above still settles.
+    if config.turned_off() {
+        // A message already queued stays the loaded extension's to deliver;
+        // only a new one is refused.
+        if queued_delivery(config, uid, registration, message_id, text) {
+            return InjectOutcome::Accepted("Waiting for Pi to record this message.".into());
+        }
+        return InjectOutcome::Refused(
+            "Pi sessions are off: Agent Relay's Pi extension was turned off (pi_extension).".into(),
+        );
     }
     if native {
         if let Err(outcome) = native_choice::reserve(config, uid, registration, message_id, text) {
@@ -579,9 +652,13 @@ mod tests {
         crate::relay::store::Registration,
     ) {
         let temp = tempfile::tempdir().unwrap();
-        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        // As the desktop lays it out, so the off marker beside the runtime
+        // stays inside this test's directory.
+        let runtime = temp.path().join("desktop/pi");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
         let config = PiConfig {
-            runtime: temp.path().to_path_buf(),
+            runtime,
             agent_dir: temp.path().join("agent"),
             enabled: true,
         };
@@ -606,6 +683,65 @@ mod tests {
             "registeredAt":"2026-10-20T00:00:00Z","routeBinding":binding.reference}))
             .unwrap();
         (temp, config, held, registration)
+    }
+
+    #[test]
+    fn a_bound_session_gets_nothing_once_the_extension_is_turned_off() {
+        let (temp, config, _held, registration) = fixture();
+        let table = SystemProcesses::default();
+        assert_eq!(discover(&config, &table, current_uid()).len(), 1);
+        fs::write(config.off_marker(), "off").unwrap();
+        assert!(config.off_marker().starts_with(temp.path()));
+        // Still running the extension it loaded, but no longer a target.
+        assert!(bindings(&config, &table, current_uid()).is_empty());
+        assert!(discover(&config, &table, current_uid()).is_empty());
+        let outcome = send(
+            &config,
+            &table,
+            current_uid(),
+            &registration,
+            "m-off",
+            "hello",
+        );
+        assert!(matches!(outcome, InjectOutcome::Refused(_)), "{outcome:?}");
+        let instance = config.runtime.join("123456789012345678901234567890ab");
+        let written: Vec<_> = fs::read_dir(instance)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name())
+            .filter(|name| name != "session.json")
+            .collect();
+        assert!(written.is_empty(), "{written:?}");
+        // Turned on again, the same session is a target again.
+        fs::remove_file(config.off_marker()).unwrap();
+        assert_eq!(discover(&config, &table, current_uid()).len(), 1);
+    }
+
+    #[test]
+    fn a_message_queued_before_the_extension_is_turned_off_stays_accepted() {
+        let (_temp, config, _held, registration) = fixture();
+        let table = SystemProcesses::default();
+        let uid = current_uid();
+        let queued = send(&config, &table, uid, &registration, "m-1", "hello");
+        assert!(matches!(queued, InjectOutcome::Accepted(_)), "{queued:?}");
+        fs::write(config.off_marker(), "off").unwrap();
+        let instance = config.runtime.join("123456789012345678901234567890ab");
+        let files = || {
+            let mut names: Vec<_> = fs::read_dir(&instance)
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = files();
+        // The loaded extension can still deliver the queued version-1 record.
+        let retry = send(&config, &table, uid, &registration, "m-1", "hello");
+        assert!(matches!(retry, InjectOutcome::Accepted(_)), "{retry:?}");
+        let new = send(&config, &table, uid, &registration, "m-2", "hello");
+        assert!(matches!(new, InjectOutcome::Refused(_)), "{new:?}");
+        assert_eq!(files(), before);
     }
 
     #[test]

@@ -13,6 +13,17 @@ pub(crate) fn auto_activates_by_default(kind: SessionKind) -> bool {
     )
 }
 
+/// Whether automatic activation applies to sessions of `kind` under the
+/// `auto_activate` setting: on, every kind; off, none; unset, only the kinds
+/// that join by default. The one policy for activation itself and for
+/// `/setup/status`'s `auto_activates`.
+pub(crate) fn activation_applies(setting: Option<bool>, kind: SessionKind) -> bool {
+    match setting {
+        Some(enabled) => enabled,
+        None => auto_activates_by_default(kind),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -27,5 +38,24 @@ mod tests {
         assert!(!auto_activates_by_default(SessionKind::Codex));
         assert!(!auto_activates_by_default(SessionKind::ClaudeTerminal));
         assert!(!auto_activates_by_default(SessionKind::OpenCodeOpen));
+    }
+
+    #[test]
+    fn the_setting_decides_and_unset_keeps_the_default_kinds() {
+        for kind in [
+            SessionKind::Devin,
+            SessionKind::MuseOpen,
+            SessionKind::Codex,
+        ] {
+            assert!(activation_applies(Some(true), kind));
+            assert!(!activation_applies(Some(false), kind));
+            assert_eq!(
+                activation_applies(None, kind),
+                auto_activates_by_default(kind)
+            );
+        }
+        assert!(activation_applies(None, SessionKind::Devin));
+        assert!(activation_applies(None, SessionKind::MuseOpen));
+        assert!(!activation_applies(None, SessionKind::ClaudeTerminal));
     }
 }

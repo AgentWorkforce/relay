@@ -7444,6 +7444,8 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     /// Turns the OpenClaw Gateway route on or off.
     public let openclawGateway: Bool?
     public let opencodePlugin: Bool?
+    /// Installs (`true`) or removes (`false`) Agent Relay's Pi extension.
+    public let piExtension: Bool?
     /// Shows each relay message whole in agent chats (`true`), or hides it
     /// (`false`, the default): the agent still reads it from hidden history.
     public let showRelayMessages: Bool?
@@ -7464,7 +7466,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     /// Replaces the relay senders trusted like the person.
     public let trustedRelaySenders: [String]?
 
-    public init(acceptSpawns: Bool? = nil, allowSelfRegistration: Bool? = nil, analyticsEnabled: Bool? = nil, autoActivate: Bool? = nil, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDir: ClaudeConfigDirChange? = nil, claudeConfigDirs: [String]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryDefault: Bool? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileNativeContinuation: Bool? = nil, openclawGateway: Bool? = nil, opencodePlugin: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil) {
+    public init(acceptSpawns: Bool? = nil, allowSelfRegistration: Bool? = nil, analyticsEnabled: Bool? = nil, autoActivate: Bool? = nil, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDir: ClaudeConfigDirChange? = nil, claudeConfigDirs: [String]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryDefault: Bool? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileNativeContinuation: Bool? = nil, openclawGateway: Bool? = nil, opencodePlugin: Bool? = nil, piExtension: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil) {
         self.acceptSpawns = acceptSpawns
         self.allowSelfRegistration = allowSelfRegistration
         self.analyticsEnabled = analyticsEnabled
@@ -7487,6 +7489,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         self.mobileNativeContinuation = mobileNativeContinuation
         self.openclawGateway = openclawGateway
         self.opencodePlugin = opencodePlugin
+        self.piExtension = piExtension
         self.showRelayMessages = showRelayMessages
         self.spawnAllowTeammates = spawnAllowTeammates
         self.spawnBillingClaude = spawnBillingClaude
@@ -7525,6 +7528,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         case mobileNativeContinuation = "mobile_native_continuation"
         case openclawGateway = "openclaw_gateway"
         case opencodePlugin = "opencode_plugin"
+        case piExtension = "pi_extension"
         case showRelayMessages = "show_relay_messages"
         case spawnAllowTeammates = "spawn_allow_teammates"
         case spawnBillingClaude = "spawn_billing_claude"
@@ -7564,6 +7568,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         self.mobileNativeContinuation = try c.decodeIfPresent(Bool.self, forKey: .mobileNativeContinuation)
         self.openclawGateway = try c.decodeIfPresent(Bool.self, forKey: .openclawGateway)
         self.opencodePlugin = try c.decodeIfPresent(Bool.self, forKey: .opencodePlugin)
+        self.piExtension = try c.decodeIfPresent(Bool.self, forKey: .piExtension)
         self.showRelayMessages = try c.decodeIfPresent(Bool.self, forKey: .showRelayMessages)
         self.spawnAllowTeammates = try c.decodeIfPresent(Bool.self, forKey: .spawnAllowTeammates)
         self.spawnBillingClaude = try c.decodeIfPresent(String.self, forKey: .spawnBillingClaude)
@@ -7603,6 +7608,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.mobileNativeContinuation, forKey: .mobileNativeContinuation)
         try c.encodeIfPresent(self.openclawGateway, forKey: .openclawGateway)
         try c.encodeIfPresent(self.opencodePlugin, forKey: .opencodePlugin)
+        try c.encodeIfPresent(self.piExtension, forKey: .piExtension)
         try c.encodeIfPresent(self.showRelayMessages, forKey: .showRelayMessages)
         try c.encodeIfPresent(self.spawnAllowTeammates, forKey: .spawnAllowTeammates)
         try c.encodeIfPresent(self.spawnBillingClaude, forKey: .spawnBillingClaude)
@@ -7710,6 +7716,12 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// global `plugins/`, the route into a plain OpenCode session. Absent
     /// where OpenCode has never run.
     public let opencodePlugin: Bool?
+    /// Whether Agent Relay's Pi extension is installed in Pi's global
+    /// `extensions/`, the route into a Pi session. The desktop's core
+    /// installs it at start unless it was turned off; a core `relay init`
+    /// manages installs it only when this is turned on. Absent where Pi has
+    /// never run.
+    public let piExtension: Bool?
     /// Whether relay messages show in agent chats. Off unless turned on: the
     /// agent reads each message from hidden history and the chat shows none
     /// of it.
@@ -7761,7 +7773,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// off, signed out, or Cloud's list has not been read lately.
     public let workspaceMembers: [TrustedWorkspaceMember]?
 
-    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileClaudeHandoffSupported: Bool? = nil, mobileNativeContinuation: Bool? = nil, mobileNativeContinuationSupported: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodePlugin: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil, workspaceMembers: [TrustedWorkspaceMember]? = nil) {
+    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileClaudeHandoffSupported: Bool? = nil, mobileNativeContinuation: Bool? = nil, mobileNativeContinuationSupported: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodePlugin: Bool? = nil, piExtension: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil, workspaceMembers: [TrustedWorkspaceMember]? = nil) {
         self.acceptSpawns = acceptSpawns
         self.agentChanges = agentChanges
         self.allowSelfRegistration = allowSelfRegistration
@@ -7787,6 +7799,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.openclawGateway = openclawGateway
         self.openclawUnlimitedVersion = openclawUnlimitedVersion
         self.opencodePlugin = opencodePlugin
+        self.piExtension = piExtension
         self.showRelayMessages = showRelayMessages
         self.spawnAllowTeammates = spawnAllowTeammates
         self.spawnBillingClaude = spawnBillingClaude
@@ -7829,6 +7842,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         case openclawGateway = "openclaw_gateway"
         case openclawUnlimitedVersion = "openclaw_unlimited_version"
         case opencodePlugin = "opencode_plugin"
+        case piExtension = "pi_extension"
         case showRelayMessages = "show_relay_messages"
         case spawnAllowTeammates = "spawn_allow_teammates"
         case spawnBillingClaude = "spawn_billing_claude"
@@ -7872,6 +7886,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.openclawGateway = try c.decodeIfPresent(Bool.self, forKey: .openclawGateway)
         self.openclawUnlimitedVersion = try c.decodeIfPresent(String.self, forKey: .openclawUnlimitedVersion)
         self.opencodePlugin = try c.decodeIfPresent(Bool.self, forKey: .opencodePlugin)
+        self.piExtension = try c.decodeIfPresent(Bool.self, forKey: .piExtension)
         self.showRelayMessages = try c.decodeIfPresent(Bool.self, forKey: .showRelayMessages)
         self.spawnAllowTeammates = try c.decodeIfPresent(Bool.self, forKey: .spawnAllowTeammates)
         self.spawnBillingClaude = try c.decodeIfPresent(String.self, forKey: .spawnBillingClaude)
@@ -7915,6 +7930,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.openclawGateway, forKey: .openclawGateway)
         try c.encodeIfPresent(self.openclawUnlimitedVersion, forKey: .openclawUnlimitedVersion)
         try c.encodeIfPresent(self.opencodePlugin, forKey: .opencodePlugin)
+        try c.encodeIfPresent(self.piExtension, forKey: .piExtension)
         try c.encodeIfPresent(self.showRelayMessages, forKey: .showRelayMessages)
         try c.encodeIfPresent(self.spawnAllowTeammates, forKey: .spawnAllowTeammates)
         try c.encodeIfPresent(self.spawnBillingClaude, forKey: .spawnBillingClaude)
