@@ -14,7 +14,7 @@
  * that path), see crates/probe/docs/relay-core.md.
  */
 
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -125,6 +125,23 @@ function trustedSocketDirectory(socket: string): void {
 }
 
 /**
+ * Refuse a socket the core did not make for this user: the core binds it
+ * 0600 and owned by the user it runs as. Node cannot read a Unix socket's
+ * peer credentials, so the socket file's owner and mode stand in for them
+ * (only its owner, or root, can make or chmod it in a directory only this
+ * user can write to).
+ */
+function trustedSocketFile(socket: string): void {
+  if (process.platform === 'win32' || typeof process.getuid !== 'function') return;
+  const entry = fs.lstatSync(socket);
+  if (!entry.isSocket() || entry.uid !== process.getuid() || (entry.mode & 0o077) !== 0) {
+    throw new Error(
+      `${socket} must be a socket only you can use (owned by you, mode 0600); refusing to speak to it.`
+    );
+  }
+}
+
+/**
  * Connect to the core at `socket` and greet it. Resolves undefined when
  * nothing is listening there.
  * @param socket - The core's bridge socket path
@@ -138,6 +155,7 @@ export async function connectCore(
   if (process.platform !== 'win32') {
     if (!fs.existsSync(socket)) return undefined;
     trustedSocketDirectory(socket);
+    trustedSocketFile(socket);
   }
   const address = process.platform === 'win32' ? pipeName(socket) : socket;
   const stream = await new Promise<net.Socket | undefined>((resolve) => {
@@ -220,8 +238,9 @@ export async function connectCore(
       stream.destroy();
     },
   };
+  let greeting: { bridge_version?: unknown; pid?: unknown } | null;
   try {
-    await client.call('hello', { bridge_version: BRIDGE_VERSION });
+    greeting = await client.call('hello', { bridge_version: BRIDGE_VERSION });
   } catch (error) {
     client.close();
     throw new Error(
@@ -230,7 +249,35 @@ export async function connectCore(
       { cause: error }
     );
   }
+  // The core's greeting names its bridge and pid; anything else is not the core.
+  if (typeof greeting?.bridge_version !== 'number' || typeof greeting.pid !== 'number') {
+    client.close();
+    throw new Error(`What answers at ${socket} is not an Agent Relay core; refusing to speak to it.`);
+  }
   return client;
+}
+
+/** `agent-relay-probe --version` prints exactly this: clap's `<name> <version>`. */
+const PROBE_VERSION_LINE = /^agent-relay-probe (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/;
+
+/**
+ * The version an `agent-relay-probe` binary reports for `--version`. Only
+ * the core's own one-line answer counts, so another program that happens to
+ * print a version is not taken for the core.
+ * @param binary - Path to the binary
+ * @returns e.g. `15.0.0`, or undefined when it is not the core or does not run
+ */
+export function readProbeVersion(binary: string): string | undefined {
+  try {
+    const out = execFileSync(binary, ['--version'], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return PROBE_VERSION_LINE.exec(out.trim())?.[1];
+  } catch {
+    return undefined;
+  }
 }
 
 /** The part of the core's `status.get` that init reads. */
@@ -268,6 +315,9 @@ export function startCoreProcess({
       env: process.env,
       windowsHide: true,
     });
+    // A failed spawn (EACCES, ENOENT, a missing interpreter) is also reported
+    // as an 'error' event; without a listener it would crash the CLI.
+    child.on('error', () => undefined);
     child.unref();
     if (child.pid === undefined) throw new Error('Could not start the Agent Relay core.');
     return child.pid;
@@ -328,21 +378,44 @@ export interface DeliveryOutcome {
   results: DeliveryResult[];
   /** Settings (by read key) that were off and that init turned on. */
   turnedOn: string[];
+  /** Settings init had turned on (in this run or an earlier one) that this run turned off again. */
+  turnedOff: string[];
 }
 
 type SettingsValues = Record<string, unknown>;
 
 /**
- * Turn on the core's delivery for each tool, and automatic activation. A
+ * The read keys of a tool's core settings.
+ * @param id - The agent tool
+ * @returns e.g. `['direct_delivery', 'claude_session_hook']` for Claude Code
+ */
+export function deliveryKeys(id: ToolId): string[] {
+  return PROBE_DELIVERY[id].settings.map((s) => s.read);
+}
+
+/**
+ * Turn on the core's delivery for each tool, then automatic activation. A
  * setting already on is left alone; only the ones turned on here are
  * reported in `turnedOn`, so `--uninstall` turns off exactly those.
+ *
+ * Each tool ends on one route. When one of a tool's settings fails, the rest
+ * are not tried, and the ones init turned on for it (in this run, or in an
+ * earlier one: `owned`) are turned off again, so the MCP fallback is its only
+ * route. Automatic activation is turned on only once a tool is injected; when
+ * none is, init's own activation is turned off again.
  * @param client - A connected core
  * @param tools - The agent tools to deliver to
- * @returns Per-tool results and the settings turned on
+ * @param owned - Read keys an earlier `relay init` recorded as turned on
+ * @returns Per-tool results, and the settings turned on and off
  */
-export async function enableDelivery(client: CoreClient, tools: ToolId[]): Promise<DeliveryOutcome> {
+export async function enableDelivery(
+  client: CoreClient,
+  tools: ToolId[],
+  owned: string[] = []
+): Promise<DeliveryOutcome> {
   let values = await client.call<SettingsValues>('settings.get');
   const turnedOn: string[] = [];
+  const turnedOff: string[] = [];
   const turnOn = async (s: CoreSetting): Promise<string | undefined> => {
     if (values[s.read] === true) return undefined;
     try {
@@ -357,19 +430,36 @@ export async function enableDelivery(client: CoreClient, tools: ToolId[]): Promi
     // A default that respects the person's own choice may stay off; see the Claude result.
     return s.write === s.read ? `the core did not turn on ${s.write}` : undefined;
   };
+  /** Turn off what init owns among `keys`; says which could not be. */
+  const rollBack = async (keys: string[]): Promise<string[]> => {
+    const stuck: string[] = [];
+    for (const key of keys) {
+      const ours = turnedOn.includes(key) || owned.includes(key);
+      if (!ours || values[key] !== true) continue;
+      try {
+        values = await client.call<SettingsValues>('settings.set', { [key]: false });
+      } catch (error) {
+        stuck.push(`${key} stays on (${(error as Error).message})`);
+        continue;
+      }
+      const index = turnedOn.indexOf(key);
+      if (index >= 0) turnedOn.splice(index, 1);
+      turnedOff.push(key);
+    }
+    return stuck;
+  };
 
   const results: DeliveryResult[] = [];
-  const activation = await turnOn(AUTO_ACTIVATE);
   for (const id of tools) {
     const { settings, route } = PROBE_DELIVERY[id];
-    const failures: string[] = [];
+    let failure: string | undefined;
     for (const s of settings) {
-      const failure = await turnOn(s);
-      if (failure) failures.push(failure);
+      failure = await turnOn(s);
+      if (failure) break;
     }
-    if (activation) failures.unshift(`automatic activation: ${activation}`);
-    if (failures.length > 0) {
-      results.push({ id, status: 'failed', route, message: failures.join('; ') });
+    if (failure) {
+      const stuck = await rollBack(deliveryKeys(id));
+      results.push({ id, status: 'failed', route, message: [failure, ...stuck].join('; ') });
     } else if (id === 'claude' && values.direct_delivery !== true) {
       results.push({
         id,
@@ -383,7 +473,22 @@ export async function enableDelivery(client: CoreClient, tools: ToolId[]): Promi
       results.push({ id, status: 'on', route });
     }
   }
-  return { results, turnedOn };
+
+  const injected = results.filter((r) => r.status !== 'failed');
+  if (injected.length === 0) {
+    await rollBack([AUTO_ACTIVATE.read]);
+    return { results, turnedOn, turnedOff };
+  }
+  const activation = await turnOn(AUTO_ACTIVATE);
+  if (activation) {
+    // Without activation no session joins through the core: every tool goes to MCP.
+    for (const result of injected) {
+      const stuck = await rollBack(deliveryKeys(result.id));
+      result.status = 'failed';
+      result.message = [`automatic activation: ${activation}`, ...stuck].join('; ');
+    }
+  }
+  return { results, turnedOn, turnedOff };
 }
 
 /**
@@ -436,14 +541,35 @@ export function writePrivateJson(file: string, value: unknown): void {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
 }
 
+/** What `relay init` turned on in the core, kept for `--uninstall` and `--delivery mcp`. */
+export interface DeliveryRecord {
+  /** Core settings (by read key) init turned on. */
+  turnedOn: string[];
+  /**
+   * Claude settings files whose `crossSessionInbound` was unset until the
+   * core's direct-delivery default set it, on every Claude login it follows.
+   */
+  claudeInbound: string[];
+}
+
+const strings = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+
+/**
+ * The record of what init turned on.
+ * @param file - `<relay home>/local/core-settings.json`
+ * @returns The record, empty when there is none or it is unreadable
+ */
+export function readDeliveryRecord(file: string): DeliveryRecord {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown> | null;
+    return { turnedOn: strings(parsed?.turnedOn), claudeInbound: strings(parsed?.claudeInbound) };
+  } catch {
+    return { turnedOn: [], claudeInbound: [] };
+  }
+}
+
 /** The core settings init turned on, kept for `--uninstall`. */
 export function readTurnedOn(file: string): string[] {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { turnedOn?: unknown };
-    return Array.isArray(parsed.turnedOn)
-      ? parsed.turnedOn.filter((key): key is string => typeof key === 'string')
-      : [];
-  } catch {
-    return [];
-  }
+  return readDeliveryRecord(file).turnedOn;
 }

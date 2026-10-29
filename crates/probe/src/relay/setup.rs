@@ -699,6 +699,18 @@ impl Setup {
         let workspace = account["workspace_id"]
             .as_str()
             .map(|id| json!({"id": id, "name": account["workspace_name"]}));
+        // Whether the core will put this session on the relay by itself:
+        // automatic activation is on, there is a workspace to join, and the
+        // session's folder is not one activation skips.
+        let auto_activates = self.core.store.read(|s| s.auto_activates())
+            && self.core.workspace().is_some()
+            && session.directory.as_deref().is_some_and(|directory| {
+                !self
+                    .core
+                    .plugins
+                    .sessions
+                    .auto_activation_excluded(std::path::Path::new(directory))
+            });
         // The signed-in person, as `account.status` names them.
         let person = &account["person"];
         let named = !person["name"].is_null() || !person["email"].is_null();
@@ -728,6 +740,7 @@ impl Setup {
                 "id": session.target.id,
                 "kind": session.target.kind,
                 "registered": registration.is_some(),
+                "auto_activates": auto_activates,
                 "name": registration.as_ref().map(|r| r.name.clone()),
                 "address": registration.as_ref().map(|r| r.direct_address(&self.core.machine_prefix)),
                 "direct_delivery": self.session_delivers_directly(session.target.kind),

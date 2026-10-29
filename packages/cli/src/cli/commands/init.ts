@@ -51,22 +51,26 @@ import {
   type EnginePlatform,
 } from '../lib/relaycast-engine-install.js';
 import {
+  AUTO_ACTIVATE,
   CORE_START_TIMEOUT_MS,
   PROBE_DELIVERY,
   PROBE_VERSION,
   connectCore,
   coreSocketPath,
+  deliveryKeys,
   disableDelivery,
   enableDelivery,
   probeAssetName,
   probeAssetUrl,
   readCoreState,
-  readTurnedOn,
+  readDeliveryRecord,
+  readProbeVersion,
   startCoreProcess,
   writePrivateJson,
   type CoreClient,
   type CoreState,
   type CoreStatus,
+  type DeliveryRecord,
   type DeliveryResult,
 } from '../lib/probe-core.js';
 import { shellQuote } from '../lib/agent-registration.js';
@@ -298,7 +302,7 @@ export function withInitDefaults(overrides: Partial<InitCommandDependencies> = {
     connectCore: (socket) => connectCore(socket),
     startCore: startCoreProcess,
     downloadProbe: fetchDownload,
-    probeVersion: readEngineVersion,
+    probeVersion: readProbeVersion,
     ...overrides,
   };
 }
@@ -403,7 +407,15 @@ async function ensureLocalServer(deps: InitCommandDependencies, port: number): P
 /** The server answered and refused the key, as opposed to being unreachable or failing. */
 class WorkspaceKeyRejectedError extends Error {}
 
-async function verifyWorkspace(deps: InitCommandDependencies, origin: string, key: string): Promise<void> {
+/**
+ * Check a workspace key against its server.
+ * @returns The workspace's Relaycast id, when the server names it
+ */
+async function verifyWorkspace(
+  deps: InitCommandDependencies,
+  origin: string,
+  key: string
+): Promise<string | undefined> {
   let response: Response;
   try {
     response = await deps.fetch(new URL('/v1/workspace', origin), {
@@ -423,6 +435,27 @@ async function verifyWorkspace(deps: InitCommandDependencies, origin: string, ke
     throw new WorkspaceKeyRejectedError(`${origin} rejected the workspace key.`);
   }
   if (!response.ok) throw new Error(`${origin} answered ${response.status} when checking the workspace.`);
+  return workspaceIdIn(response);
+}
+
+/** The `id` of a `GET /v1/workspace` answer (`{ok, data: {id}}`), read leniently. */
+async function workspaceIdIn(response: Response): Promise<string | undefined> {
+  try {
+    const body = (await response.json()) as { data?: { id?: unknown }; id?: unknown } | null;
+    const id = body?.data?.id ?? body?.id;
+    return typeof id === 'string' && id.trim() ? id.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The workspace id a key belongs to, when its server can say; never throws. */
+async function workspaceIdOf(
+  deps: InitCommandDependencies,
+  origin: string,
+  key: string
+): Promise<string | undefined> {
+  return verifyWorkspace(deps, origin, key).catch(() => undefined);
 }
 
 function parsePort(value: string): number {
@@ -465,6 +498,8 @@ interface ServerSetup {
   origin: string;
   /** The workspace saved for this project. */
   workspace: string;
+  /** Its Relaycast workspace id (`GET /v1/workspace`), when the server named it. */
+  workspaceId?: string;
   /** Another workspace left active machine-wide, when there was one. */
   keptActive?: string;
 }
@@ -528,12 +563,13 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     if (!url || !key) throw new Error('Pass --url and --key together for your own server.');
     const origin = configuredOrigin(url, '--url');
     if (!origin) throw new Error('--url is empty.');
-    await verifyWorkspace(deps, origin, key);
+    const workspaceId = await verifyWorkspace(deps, origin, key);
     guardCredentialOrigin(key, url);
     const name = choice.name ?? new URL(origin).hostname;
     const { lines, ...saved } = saveWorkspace(name, key);
     return {
       ...saved,
+      workspaceId,
       mode: 'own',
       origin,
       headline: `Connected to your server at ${origin} as workspace "${name}".`,
@@ -548,6 +584,7 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     const { lines, ...saved } = saveWorkspace(name, relay.workspaceKey);
     return {
       ...saved,
+      workspaceId: await workspaceIdOf(deps, HOSTED_ORIGIN, relay.workspaceKey),
       mode: 'hosted',
       origin: HOSTED_ORIGIN,
       headline: `Created hosted workspace "${name}".`,
@@ -564,13 +601,15 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
   // Re-running init keeps the same local workspace and its agents.
   const stored = readWorkspaceStore().workspaces[name]?.key;
   let workspaceKey = stored && boundOrigin(stored) === origin ? stored : undefined;
+  let workspaceId: string | undefined;
   if (workspaceKey) {
     // Only a key the server refuses is replaced. A timeout or server
     // error is reported instead, so a hiccup never swaps the workspace
     // (and its agents and messages) for a new one.
-    await verifyWorkspace(deps, origin, workspaceKey).catch((error: unknown) => {
+    workspaceId = await verifyWorkspace(deps, origin, workspaceKey).catch((error: unknown) => {
       if (!(error instanceof WorkspaceKeyRejectedError)) throw error;
       workspaceKey = undefined;
+      return undefined;
     });
   }
   if (!workspaceKey) {
@@ -579,10 +618,12 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     if (!relay.workspaceKey) throw new Error('The local server did not return a workspace key.');
     workspaceKey = relay.workspaceKey;
     guardCredentialOrigin(workspaceKey, origin);
+    workspaceId = await workspaceIdOf(deps, origin, workspaceKey);
   }
   const { lines, ...saved } = saveWorkspace(name, workspaceKey);
   return {
     ...saved,
+    workspaceId,
     mode: 'local',
     origin,
     headline: `Relay is running on this machine (${origin}), workspace "${name}". No account needed.`,
@@ -800,7 +841,12 @@ async function ensureCore(deps: InitCommandDependencies): Promise<CoreSession | 
   fs.mkdirSync(localDir(), { recursive: true, mode: 0o700 });
   const logFile = path.join(localDir(), 'core.log');
   deps.log('Starting the Agent Relay core…');
-  const pid = deps.startCore({ binary: probe.binary, socket, logFile });
+  let pid: number;
+  try {
+    pid = deps.startCore({ binary: probe.binary, socket, logFile });
+  } catch (error) {
+    return { reason: `the Agent Relay core could not be started (${(error as Error).message})` };
+  }
   const deadline = Date.now() + CORE_START_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const up = await connectTo(deps, socket).catch(() => undefined);
@@ -848,6 +894,20 @@ function sameOrigin(a: string | null | undefined, b: string): boolean {
 }
 
 /**
+ * Whether the core serves this project's workspace; undefined when it cannot
+ * be told. One server can host many workspaces, so the verified workspace
+ * ids decide whenever both are known; names stand in only for workspaces
+ * init named itself (a self-hosted one is saved under the person's name).
+ */
+function sameWorkspace(workspace: CoreStatus['workspace'], setup: ServerSetup): boolean | undefined {
+  if (!sameOrigin(workspace.base_url, setup.origin)) return false;
+  const coreId = workspace.verification === 'verified' ? workspace.workspace_id : undefined;
+  if (coreId && setup.workspaceId) return coreId === setup.workspaceId;
+  if (setup.mode === 'own') return undefined;
+  return !workspace.workspace_name || workspace.workspace_name === setup.workspace;
+}
+
+/**
  * The core serves one workspace per machine (the machine-wide active one,
  * unless its environment names another). Say so when that is not this
  * project's, since its agents would then be injected from a different
@@ -875,9 +935,14 @@ async function coreWorkspaceNote(
   if (workspace.verification === 'rejected') {
     return `The Agent Relay core's workspace key was refused by ${workspace.base_url ?? 'its server'}.`;
   }
-  const sameName =
-    setup.mode === 'own' || !workspace.workspace_name || workspace.workspace_name === setup.workspace;
-  if (sameOrigin(workspace.base_url, setup.origin) && sameName) return undefined;
+  const same = sameWorkspace(workspace, setup);
+  if (same === true) return undefined;
+  if (same === undefined) {
+    return (
+      `Could not confirm that the Agent Relay core serves "${setup.workspace}" (${setup.origin} names no ` +
+      `workspace id it can compare). See which one it serves with: agent-relay-probe relay call status.get`
+    );
+  }
   const served = workspace.workspace_name ? `workspace "${workspace.workspace_name}"` : 'another workspace';
   return (
     `The Agent Relay core on this machine serves ${served} (${workspace.base_url ?? 'unknown server'}), ` +
@@ -905,9 +970,29 @@ async function setupInjection(
   const session = await ensureCore(deps);
   if ('reason' in session) return session;
   try {
-    const { results, turnedOn } = await enableDelivery(session.client, tools);
-    const recorded = new Set([...readTurnedOn(deliveryRecordPath()), ...turnedOn]);
-    if (recorded.size > 0) writePrivateJson(deliveryRecordPath(), { turnedOn: [...recorded] });
+    const record = readDeliveryRecord(deliveryRecordPath());
+    const ctx = deps.toolContext();
+    // The Claude logins whose crossSessionInbound is unset: the ones the
+    // direct-delivery default may set, and uninstall must unset again.
+    const unset = tools.includes('claude')
+      ? claudeLoginSettings(ctx).filter((file) => claudeInbound(file) === null)
+      : [];
+    const { results, turnedOn, turnedOff } = await enableDelivery(session.client, tools, record.turnedOn);
+    const accepted = unset.filter((file) => claudeInbound(file) === 'accept');
+    // Applied to the record as it is now, not as it was read: another
+    // relay init may have recorded its own changes meanwhile.
+    updateDeliveryRecord((current) => {
+      if (turnedOff.includes('direct_delivery')) {
+        // Rolled back: the core wrote hold where init had set accept, in this run or an earlier one.
+        restoreClaudeInbound([...new Set([...current.claudeInbound, ...unset])]);
+      }
+      return {
+        turnedOn: [...new Set([...current.turnedOn, ...turnedOn])].filter((key) => !turnedOff.includes(key)),
+        claudeInbound: turnedOff.includes('direct_delivery')
+          ? []
+          : [...new Set([...current.claudeInbound, ...accepted])],
+      };
+    });
     const workspaceNote = await coreWorkspaceNote(deps, session.client, setup);
     return { core: describeCore(session), results, workspaceNote };
   } catch (error) {
@@ -935,13 +1020,26 @@ const INJECTION_SCOPE_NOTE =
 /**
  * Remove the MCP entry an earlier `relay init` added for tools whose messages
  * are now injected, in both scopes: the session's identity is the core's, and
- * a second one through MCP would split its messages.
+ * a second one through MCP would split its messages. A removal that failed is
+ * returned too, so the person can finish it.
  */
 function removeSupersededMcp(tools: ToolId[], ctx: ToolContext): ToolResult[] {
   return tools.flatMap((id) =>
     (['project', 'global'] as const)
       .map((scope) => uninstallTool(findToolTarget(id)!, { ctx, scope }))
-      .filter((result) => result.status === 'removed')
+      .filter((result) => result.status === 'removed' || result.status === 'failed')
+  );
+}
+
+function describeSupersededMcp(result: ToolResult, ctx: ToolContext): string {
+  const where = displayPath(result.path, ctx);
+  if (result.status === 'removed') {
+    return `✓ ${result.label.padEnd(18)} removed the earlier Relay MCP entry from ${where}: one identity per session`;
+  }
+  return (
+    `✗ ${result.label.padEnd(18)} could not remove the earlier Relay MCP entry from ${where}` +
+    `${result.message ? ` (${result.message})` : ''}.\n    Remove its agent-relay entry by hand: ` +
+    'until then its sessions also join through MCP, as a second identity.'
   );
 }
 
@@ -955,30 +1053,168 @@ function injectionNextStep(injected: ToolId[]): string[] {
   ];
 }
 
-/**
- * The core turns Claude Code's direct delivery off by writing
- * `crossSessionInbound: "hold"` (Claude Code's own default). When relay init
- * had turned it on, the key was absent before (the default only fills an
- * absent key), so it is removed again rather than left as `hold`.
- */
-function restoreClaudeInbound(ctx: ToolContext): void {
+/** The Claude Code config folder the CLI's environment uses. */
+function claudeConfigDir(ctx: ToolContext): string {
   const configured = ctx.env.CLAUDE_CONFIG_DIR;
-  const dir = configured && path.isAbsolute(configured) ? configured : path.join(ctx.home, '.claude');
-  const file = path.join(dir, 'settings.json');
+  return configured && path.isAbsolute(configured) ? configured : path.join(ctx.home, '.claude');
+}
+
+/**
+ * The settings files of every Claude login the core's direct delivery
+ * follows (`ClaudeSettings::login_settings` in crates/probe): this login,
+ * then the `.claude` and `.claude-<name>` folders beside it, the folders in
+ * `AGENT_RELAY_CLAUDE_CONFIG_DIRS`, and those the core recorded in
+ * `claude-config-dirs.json`, each counted only when it holds `.claude.json`.
+ */
+function claudeLoginSettings(ctx: ToolContext): string[] {
+  const own = claudeConfigDir(ctx);
+  const others = [...claudeSiblings(own), ...claudeEnvironmentDirs(ctx), ...claudeRecordedDirs()];
+  const seen = new Set<string>();
+  const files: string[] = [];
+  for (const folder of [own, ...others]) {
+    if (folder !== own && !fs.existsSync(path.join(folder, '.claude.json'))) continue;
+    const file = path.join(folder, 'settings.json');
+    const real = realOrResolved(file);
+    if (seen.has(real)) continue;
+    seen.add(real);
+    files.push(file);
+  }
+  return files;
+}
+
+function realOrResolved(file: string): string {
   try {
-    const settings = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
-    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return;
-    if (settings.crossSessionInbound !== 'hold') return;
-    delete settings.crossSessionInbound;
-    writeKeepingMode(file, `${JSON.stringify(settings, null, 2)}\n`);
+    return fs.realpathSync(file);
   } catch {
-    // Unreadable or not JSON: left as the core wrote it.
+    return path.resolve(file);
   }
 }
 
-/** Turn off what relay init turned on in the core, starting a core for it when none runs. */
-async function uninstallInjection(deps: InitCommandDependencies): Promise<string[]> {
-  const keys = readTurnedOn(deliveryRecordPath());
+/** The `.claude` and `.claude-<name>` folders beside `own`, as account switchers keep. */
+function claudeSiblings(own: string): string[] {
+  const parent = path.dirname(own);
+  try {
+    return fs
+      .readdirSync(parent)
+      .sort()
+      .filter((name) => name === '.claude' || name.startsWith('.claude-'))
+      .map((name) => path.join(parent, name));
+  } catch {
+    return [];
+  }
+}
+
+/** `AGENT_RELAY_CLAUDE_CONFIG_DIRS`, as the core reads it. */
+function claudeEnvironmentDirs(ctx: ToolContext): string[] {
+  return (ctx.env.AGENT_RELAY_CLAUDE_CONFIG_DIRS ?? '')
+    .split(path.delimiter)
+    .map((entry) => entry.trim().replace(/^~(?=$|[\\/])/, ctx.home))
+    .filter((folder) => folder && path.isAbsolute(folder));
+}
+
+/** The folders added in the desktop's Settings or seen running, from `claude-config-dirs.json`. */
+function claudeRecordedDirs(): string[] {
+  try {
+    const recorded = JSON.parse(
+      fs.readFileSync(path.join(relayHome(), 'claude-config-dirs.json'), 'utf8')
+    ) as { added?: unknown; running?: unknown } | null;
+    return [recorded?.added, recorded?.running]
+      .flatMap((list) => (Array.isArray(list) ? list : []))
+      .filter((folder): folder is string => typeof folder === 'string' && path.isAbsolute(folder));
+  } catch {
+    return [];
+  }
+}
+
+/** A Claude settings file's `crossSessionInbound`, `null` when unset, undefined when unreadable. */
+function claudeInbound(file: string): string | null | undefined {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : undefined;
+  }
+  try {
+    const settings = JSON.parse(text) as unknown;
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return undefined;
+    const value = (settings as Record<string, unknown>).crossSessionInbound;
+    return value === undefined ? null : typeof value === 'string' ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The core turns Claude Code's direct delivery off by writing
+ * `crossSessionInbound: "hold"` (Claude Code's own default) on every login
+ * where it was on. Where relay init had turned it on, the key was absent
+ * before (the default only fills an absent key), so it is removed again
+ * rather than left as `hold`.
+ * @param files - The settings files init recorded as changed
+ */
+function restoreClaudeInbound(files: string[]): void {
+  for (const file of files) {
+    try {
+      const settings = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+      if (!settings || typeof settings !== 'object' || Array.isArray(settings)) continue;
+      if (settings.crossSessionInbound !== 'hold') continue;
+      delete settings.crossSessionInbound;
+      writeKeepingMode(file, `${JSON.stringify(settings, null, 2)}\n`);
+    } catch {
+      // Unreadable or not JSON: left as the core wrote it.
+    }
+  }
+}
+
+/** The Claude files to restore: the recorded ones, else (an older record) this login's. */
+function recordedClaudeFiles(record: DeliveryRecord, ctx: ToolContext): string[] {
+  return record.claudeInbound.length > 0
+    ? record.claudeInbound
+    : [path.join(claudeConfigDir(ctx), 'settings.json')];
+}
+
+/**
+ * Change the record of what init turned on, reading it just before the
+ * write so concurrent runs do not drop each other's changes.
+ */
+function updateDeliveryRecord(change: (current: DeliveryRecord) => DeliveryRecord): void {
+  writeDeliveryRecord(change(readDeliveryRecord(deliveryRecordPath())));
+}
+
+/** Save what init turned on; no record at all once nothing is. */
+function writeDeliveryRecord(record: DeliveryRecord): void {
+  if (record.turnedOn.length === 0) {
+    fs.rmSync(deliveryRecordPath(), { force: true });
+    return;
+  }
+  writePrivateJson(deliveryRecordPath(), {
+    turnedOn: record.turnedOn,
+    ...(record.claudeInbound.length > 0 ? { claudeInbound: record.claudeInbound } : {}),
+  });
+}
+
+/**
+ * The recorded settings to turn off when `tools` leave injection: theirs,
+ * and automatic activation once no tool init injects into is left.
+ */
+function recordedKeysFor(tools: ToolId[]): string[] {
+  const recorded = readDeliveryRecord(deliveryRecordPath()).turnedOn;
+  const leaving = new Set(tools.flatMap(deliveryKeys));
+  const keys = recorded.filter((key) => leaving.has(key));
+  const remaining = recorded.filter((key) => !leaving.has(key) && key !== AUTO_ACTIVATE.read);
+  if (keys.length > 0 && remaining.length === 0 && recorded.includes(AUTO_ACTIVATE.read)) {
+    keys.push(AUTO_ACTIVATE.read);
+  }
+  return keys;
+}
+
+/**
+ * Turn off recorded core settings, starting a core for it when none runs
+ * (and stopping that one again). Throws, keeping the record of what stayed
+ * on, when any could not be turned off.
+ * @returns The keys turned off
+ */
+async function turnOffInjection(deps: InitCommandDependencies, keys: string[]): Promise<string[]> {
   if (keys.length === 0) return [];
   const session = await ensureCore(deps);
   if ('reason' in session) {
@@ -986,20 +1222,29 @@ async function uninstallInjection(deps: InitCommandDependencies): Promise<string
   }
   try {
     const failures = await disableDelivery(session.client, keys);
+    const done = keys.filter((key) => !failures.some((failure) => failure.startsWith(`${key}:`)));
+    const ctx = deps.toolContext();
+    updateDeliveryRecord((current) => {
+      if (done.includes('direct_delivery')) restoreClaudeInbound(recordedClaudeFiles(current, ctx));
+      return {
+        turnedOn: current.turnedOn.filter((key) => !done.includes(key)),
+        claudeInbound: done.includes('direct_delivery') ? [] : current.claudeInbound,
+      };
+    });
     if (failures.length > 0) {
-      writePrivateJson(deliveryRecordPath(), {
-        turnedOn: keys.filter((key) => failures.some((failure) => failure.startsWith(`${key}:`))),
-      });
       throw new Error(`Some injection settings could not be turned off: ${failures.join('; ')}`);
     }
-    fs.rmSync(deliveryRecordPath(), { force: true });
-    if (keys.includes('direct_delivery')) restoreClaudeInbound(deps.toolContext());
-    return keys;
+    return done;
   } finally {
     session.client.close();
     // A core started only to undo the settings is stopped again.
     if (session.origin === 'started') await stopCore(deps, true);
   }
+}
+
+/** Turn off everything relay init turned on in the core. */
+async function uninstallInjection(deps: InitCommandDependencies): Promise<string[]> {
+  return turnOffInjection(deps, readDeliveryRecord(deliveryRecordPath()).turnedOn);
 }
 
 /**
@@ -1026,9 +1271,10 @@ async function stopCore(deps: InitCommandDependencies, quiet = false): Promise<v
     say(
       'Stopped the Agent Relay core relay init started. Messages are no longer injected until it runs again.'
     );
-  } else if (deps.isAlive(state.pid)) {
-    deps.stop(state.pid);
-    say('Stopped the Agent Relay core relay init started.');
+  } else {
+    // No core answers: the one init started has exited. Its pid may belong to
+    // another program by now, so it is never signalled; the record is dropped.
+    say('The Agent Relay core relay init started is no longer running.');
   }
   fs.rmSync(coreStatePath(), { force: true });
 }
@@ -1084,7 +1330,7 @@ async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise
   // Injection settings are the user's own, not a project's: turned off with
   // the global scope (or both), and only for all tools at once.
   let turnedOff: string[] = [];
-  const injectionKept = readTurnedOn(deliveryRecordPath()).length > 0;
+  const injectionKept = readDeliveryRecord(deliveryRecordPath()).turnedOn.length > 0;
   if (injectionKept && o.scope !== 'project' && o.tools === undefined) {
     turnedOff = await uninstallInjection(deps);
     deps.log(`✓ Message injection    turned off what relay init turned on (${turnedOff.join(', ')})`);
@@ -1110,6 +1356,8 @@ interface DeliveryPlan {
   injected: ToolId[];
   mcp: ToolId[];
   removedMcp: ToolResult[];
+  /** Core settings init had turned on for tools now on the MCP server, turned off again. */
+  turnedOff: string[];
 }
 
 /** Set up injection for `tools` when wanted; whatever it cannot serve goes to the MCP server. */
@@ -1120,17 +1368,32 @@ async function planDelivery(
   setup: ServerSetup,
   ctx: ToolContext
 ): Promise<DeliveryPlan> {
-  if (delivery === 'mcp' || tools.length === 0) return { injected: [], mcp: tools, removedMcp: [] };
+  if (tools.length === 0) return { injected: [], mcp: tools, removedMcp: [], turnedOff: [] };
+  if (delivery === 'mcp') {
+    // One route per tool: what init injected into these tools is turned off
+    // before their MCP server is added, or the MCP server is not added.
+    const turnedOff = await turnOffInjection(deps, recordedKeysFor(tools));
+    return { injected: [], mcp: tools, removedMcp: [], turnedOff };
+  }
   const injection = await setupInjection(deps, tools, setup);
   if ('reason' in injection)
-    return { unavailable: injection.reason, injected: [], mcp: tools, removedMcp: [] };
+    return { unavailable: injection.reason, injected: [], mcp: tools, removedMcp: [], turnedOff: [] };
   const injected = injection.results.filter((r) => r.status !== 'failed').map((r) => r.id);
   return {
     injection,
     injected,
     mcp: injection.results.filter((r) => r.status === 'failed').map((r) => r.id),
     removedMcp: removeSupersededMcp(injected, ctx),
+    turnedOff: [],
   };
+}
+
+/** The line saying injection was turned off for a switch to the MCP server. */
+function turnedOffLine(keys: string[]): string {
+  return (
+    `✓ Message injection    turned off what relay init had turned on (${keys.join(', ')}): ` +
+    'these tools now use only the Relay MCP server, one identity per session'
+  );
 }
 
 function unavailableLine(reason: string): string {
@@ -1145,11 +1408,7 @@ function injectionLines(plan: DeliveryPlan, ctx: ToolContext): string[] {
   return [
     plan.injection.core,
     ...plan.injection.results.map(describeDelivery),
-    ...plan.removedMcp.map(
-      (result) =>
-        `✓ ${result.label.padEnd(18)} removed the earlier Relay MCP entry from ${displayPath(result.path, ctx)}: ` +
-        'one identity per session'
-    ),
+    ...plan.removedMcp.map((result) => describeSupersededMcp(result, ctx)),
     ...(plan.injection.workspaceNote ? [`! ${plan.injection.workspaceNote}`] : []),
     INJECTION_SCOPE_NOTE,
   ];
@@ -1175,6 +1434,10 @@ async function runPlain(deps: InitCommandDependencies, o: InitOptions): Promise<
   } else if (plan.unavailable) {
     deps.log('');
     deps.log(unavailableLine(plan.unavailable));
+  }
+  if (plan.turnedOff.length > 0) {
+    deps.log('');
+    deps.log(turnedOffLine(plan.turnedOff));
   }
 
   const installed: ToolId[] = [];
@@ -1370,6 +1633,7 @@ async function runGuided(deps: InitCommandDependencies, o: InitOptions): Promise
     injecting.stop('Message injection is not available.');
     p.warn(unavailableLine(plan.unavailable));
   }
+  if (plan.turnedOff.length > 0) p.info(turnedOffLine(plan.turnedOff));
 
   let results: ToolResult[] = [];
   if (plan.mcp.length > 0) {

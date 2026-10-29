@@ -94,7 +94,10 @@ pub fn read_status(http_status: u16, body: &[u8]) -> StatusRead {
                 mcp: McpAccess::parse(session["mcp"].as_str()),
             };
         }
-        if !on_relay && value["data"]["auto_activate"].as_bool() == Some(true) {
+        // Only when the core says this session will join: automatic
+        // activation can be on while there is no workspace yet or the
+        // session's folder is excluded from it.
+        if !on_relay && session["auto_activates"].as_bool() == Some(true) {
             return StatusRead::Joining;
         }
         let self_registration = value["data"]["allow_self_registration"]
@@ -810,8 +813,15 @@ mod tests {
 
     #[test]
     fn automatic_activation_tells_claude_it_joins_without_asking() {
-        let body = br#"{"ok":true,"data":{"auto_activate":true,"allow_self_registration":true,"session":{"registered":false}}}"#;
+        let body = br#"{"ok":true,"data":{"auto_activate":true,"allow_self_registration":true,"session":{"registered":false,"auto_activates":true}}}"#;
         assert_eq!(read_status(200, body), StatusRead::Joining);
+        // Activation on, but this session will not join (no workspace, or an
+        // excluded folder): the usual guidance, not a promise to join.
+        let skipped = br#"{"ok":true,"data":{"auto_activate":true,"allow_self_registration":true,"session":{"registered":false,"auto_activates":false}}}"#;
+        assert!(matches!(
+            read_status(200, skipped),
+            StatusRead::Registered { .. }
+        ));
         // Already on the relay: the identity reminder, whatever the setting.
         let on = br#"{"ok":true,"data":{"auto_activate":true,"session":{"registered":true,"name":"n","address":"n@m"}}}"#;
         assert!(matches!(read_status(200, on), StatusRead::OnRelay { .. }));

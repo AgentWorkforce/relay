@@ -232,6 +232,12 @@ pub trait SessionDirectory: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// Whether automatic activation skips sessions in `directory`
+    /// (`AGENT_RELAY_AUTO_ACTIVATE_EXCLUDED_DIRS`).
+    fn auto_activation_excluded(&self, _directory: &std::path::Path) -> bool {
+        false
+    }
+
     /// Whether a fleet worker owns `target` now, read fresh from every
     /// broker; an error (safe to show) when any broker cannot be read, so a
     /// second identity is never created on a guess. May block.

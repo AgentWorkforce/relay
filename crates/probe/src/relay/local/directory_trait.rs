@@ -364,6 +364,10 @@ impl SessionDirectory for LocalSessions {
         claude::registry(&self.config.claude, &*self.table).unreadable
     }
 
+    fn auto_activation_excluded(&self, directory: &Path) -> bool {
+        is_under(directory, &self.config.auto_activate_excluded_dirs)
+    }
+
     fn fleet_owned(&self, target: &Target) -> Result<bool, String> {
         self.config
             .fleet

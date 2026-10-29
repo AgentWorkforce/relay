@@ -232,8 +232,14 @@ does init start `agent-relay-probe relay serve --headless --cli-managed
 --socket <socket>` detached (log `<relay home>/local/core.log`) and wait up
 to 30 s for it; the core's own `flock` on `core.sock.lock` settles a race, and
 init then attaches to the winner. Re-running init reuses the running core.
-`relay init --stop` stops only the core whose pid init recorded (through
-`daemon.shutdown`, SIGTERM as a fallback), never the desktop app's.
+`relay init --stop` stops only the core whose pid init recorded and that
+still answers on the socket with that pid (through `daemon.shutdown`, SIGTERM
+as a fallback), never the desktop app's; a recorded core that no longer
+answers is never signalled, since its pid may have been reused, and its
+record is dropped. Init speaks only to a socket owned by the user with mode
+0600 in a directory only the user can write to, whose `hello` names a bridge
+version and pid (Node cannot read peer credentials; the core itself admits
+only this user's peers).
 `agent-relay-probe relay call status.get` shows which core runs.
 
 `--cli-managed` (new, requires `--headless`) is headless without the parts
@@ -260,10 +266,16 @@ own, named `<tool>-<project>-<task>`) and, per tool, through `settings.set`:
 A setting that is already on is left alone; the ones init turned on are
 recorded in `<relay home>/local/core-settings.json`, and `relay init
 --uninstall` (both scopes, or `--scope global`) turns off exactly those. The
-core turns Claude's direct delivery off by writing `hold`; init then removes
-the key it had added. A tool whose setting fails, and every tool when the core
-cannot be had, gets the Relay MCP server instead, as before; `--delivery mcp`
-asks for that explicitly. An MCP entry an earlier `relay init` added is
+core turns Claude's direct delivery off by writing `hold` on every Claude login
+it follows; init records each login file whose `crossSessionInbound` it saw go
+from unset to `accept`, and removes the key again from each. Each tool is on
+exactly one route. When one of a tool's settings fails, init stops there, turns
+off what it had turned on for that tool, and gives it the Relay MCP server;
+`auto_activate` is turned on only once a tool is injected, and every tool
+gets the MCP server when the core cannot be had. `--delivery mcp` asks for
+the MCP server explicitly, and first turns off the recorded settings of those
+tools (and `auto_activate` once no injected tool is left); when that fails,
+no MCP server is added. An MCP entry an earlier `relay init` added is
 removed for each injected tool, in both scopes.
 
 These are settings of the user account, so they apply in every project
@@ -280,7 +292,9 @@ told to ask the person whether to register, which raced auto-activation.
 
 **Workspace.** The core serves one workspace per machine (phase 2). After
 setting up, init calls `workspace.refresh` and warns when the core serves a
-different workspace than the project's (for example a desktop signed in to
+different workspace than the project's: the verified Relaycast workspace id
+decides when both sides know it (one server can host many workspaces), and a
+self-hosted setup whose id cannot be compared says so (for example a desktop signed in to
 another workspace, or a machine-wide active workspace this project does not
 use), with the `relay workspace switch` command that aligns them.
 

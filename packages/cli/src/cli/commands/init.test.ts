@@ -882,7 +882,16 @@ describe('engineAssetName', () => {
  * someone else (the desktop app).
  */
 function fakeCore(
-  options: { running?: boolean; settings?: Record<string, unknown>; workspaceName?: string } = {}
+  options: {
+    running?: boolean;
+    settings?: Record<string, unknown>;
+    workspaceName?: string;
+    workspaceId?: string;
+    /** Settings the core refuses to turn on. */
+    refuse?: string[];
+    /** Claude settings files the core's direct delivery writes, as `set_direct_delivery` does. */
+    claudeFiles?: string[];
+  } = {}
 ) {
   const settings: Record<string, unknown> = {
     auto_activate: false,
@@ -903,8 +912,17 @@ function fakeCore(
     state: 'found',
     base_url: 'http://127.0.0.1:8787',
     workspace_name: options.workspaceName ?? 'local',
-    workspace_id: 'ws_1',
+    workspace_id: options.workspaceId ?? 'ws_1',
     verification: 'verified',
+  };
+  const writeInbound = (value: string, only: string | undefined) => {
+    for (const file of options.claudeFiles ?? []) {
+      const current = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+      if (only !== undefined && current.crossSessionInbound !== only) continue;
+      if (value === 'accept' && current.crossSessionInbound !== undefined) continue;
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ ...current, crossSessionInbound: value }));
+    }
   };
   const client: CoreClient = {
     async call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
@@ -916,11 +934,18 @@ function fakeCore(
           return { ...settings } as T;
         case 'settings.set':
           for (const [key, value] of Object.entries(params)) {
+            if (value === true && options.refuse?.includes(key)) throw new Error(`${key} is not available.`);
             if (key === 'direct_delivery_default') {
-              if (!userChoseInbound) settings.direct_delivery = true;
+              if (!userChoseInbound) {
+                settings.direct_delivery = true;
+                writeInbound('accept', undefined);
+              }
             } else {
               settings[key] = value;
-              if (key === 'direct_delivery') userChoseInbound = false;
+              if (key === 'direct_delivery') {
+                userChoseInbound = false;
+                if (value === false) writeInbound('hold', 'accept');
+              }
             }
           }
           return { ...settings } as T;
@@ -976,10 +1001,10 @@ describe('relay init message injection', () => {
       })
     );
     expect(core.sets()).toEqual([
-      { auto_activate: true },
       { direct_delivery_default: true },
       { claude_session_hook: true },
       { codex_stop_hook: true },
+      { auto_activate: true },
     ]);
     const output = logs.join('\n');
     expect(output).toContain('Started the Agent Relay core (agent-relay-probe 15.0.0, pid 5151)');
@@ -992,7 +1017,7 @@ describe('relay init message injection', () => {
     expect(output).not.toContain('only in projects it trusts');
     expect(output).toContain('Each session joins Relay on its own');
     expect(JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'))).toEqual({
-      turnedOn: ['auto_activate', 'direct_delivery', 'claude_session_hook', 'codex_stop_hook'],
+      turnedOn: ['direct_delivery', 'claude_session_hook', 'codex_stop_hook', 'auto_activate'],
     });
 
     const again = setup(core.deps);
@@ -1137,6 +1162,194 @@ describe('relay init message injection', () => {
     expect(fs.readFileSync(path.join(project, '.grok', 'config.toml'), 'utf8')).toContain('agent-relay');
     expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
   });
+
+  it('rolls back the settings of a tool whose delivery fails, so it has only the MCP route', async () => {
+    installedProbe();
+    const claudeSettings = path.join(toolHome, '.claude', 'settings.json');
+    const core = fakeCore({ refuse: ['claude_session_hook'], claudeFiles: [claudeSettings] });
+    fs.mkdirSync(path.dirname(claudeSettings), { recursive: true });
+    fs.writeFileSync(claudeSettings, JSON.stringify({ theme: 'dark' }));
+    const { run, logs } = setup(core.deps);
+    await run('--tools', 'claude');
+    expect(core.settings).toMatchObject({
+      direct_delivery: false,
+      claude_session_hook: false,
+      auto_activate: false,
+    });
+    expect(JSON.parse(fs.readFileSync(claudeSettings, 'utf8'))).toEqual({ theme: 'dark' });
+    expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
+    expect(logs.join('\n')).toMatch(/Claude Code\s+not injected: claude_session_hook is not available\./);
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  it('turns off what it injected before adding the MCP server for --delivery mcp', async () => {
+    installedProbe();
+    const core = fakeCore({ running: true });
+    await setup(core.deps).run('--tools', 'claude,codex');
+    expect(core.settings).toMatchObject({
+      auto_activate: true,
+      claude_session_hook: true,
+      codex_stop_hook: true,
+    });
+
+    const toMcp = setup(core.deps);
+    await toMcp.run('--tools', 'claude', '--delivery', 'mcp');
+    // Claude leaves injection; Codex keeps it, and so automatic activation stays.
+    expect(core.settings).toMatchObject({
+      auto_activate: true,
+      direct_delivery: false,
+      claude_session_hook: false,
+      codex_stop_hook: true,
+    });
+    expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
+    expect(toMcp.logs.join('\n')).toContain(
+      'turned off what relay init had turned on (direct_delivery, claude_session_hook)'
+    );
+    expect(JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'))).toEqual({
+      turnedOn: ['codex_stop_hook', 'auto_activate'],
+    });
+
+    await setup(core.deps).run('--tools', 'codex', '--delivery', 'mcp');
+    expect(core.settings).toMatchObject({ auto_activate: false, codex_stop_hook: false });
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  it('adds no MCP server for --delivery mcp when injection it turned on cannot be turned off', async () => {
+    installedProbe();
+    const core = fakeCore({ running: true });
+    await setup(core.deps).run('--tools', 'claude');
+    // The core has gone and one started for the change never answers.
+    const { run, errors } = setup({
+      ...core.deps,
+      connectCore: vi.fn(async () => undefined),
+      isAlive: vi.fn(() => false),
+    });
+    await expect(run('--tools', 'claude', '--delivery', 'mcp')).rejects.toEqual(new ExitSignal(1));
+    expect(errors.join('\n')).toContain('Could not reach the Agent Relay core to turn off message injection');
+    expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
+    expect(core.settings.claude_session_hook).toBe(true);
+  });
+
+  it('never signals the pid of a recorded core that no longer answers', async () => {
+    installedProbe();
+    const core = fakeCore();
+    await setup(core.deps).run('--tools', 'opencode');
+    // The core exits and its pid is reused by an unrelated process.
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--stop');
+    expect(fs.existsSync(path.join(home, 'local', 'core.json'))).toBe(false);
+    fs.writeFileSync(
+      path.join(home, 'local', 'core.json'),
+      JSON.stringify({ pid: 5151, socket: path.join(home, 'no-core.sock'), binary: '/b' })
+    );
+    const stop = vi.fn();
+    const later = setup({ ...core.deps, isAlive: vi.fn(() => true), stop });
+    await later.run('--stop');
+    expect(stop).not.toHaveBeenCalledWith(5151);
+    expect(later.logs.join('\n')).toContain('The Agent Relay core relay init started is no longer running.');
+    expect(fs.existsSync(path.join(home, 'local', 'core.json'))).toBe(false);
+  });
+
+  it('warns when the core serves another workspace on the same self-hosted server', async () => {
+    installedProbe();
+    const core = fakeCore({ running: true, workspaceId: 'rw_core' });
+    core.settings.auto_activate = true;
+    const workspaceFetch = (id: string) =>
+      vi.fn(async (input: string | URL | Request) => {
+        const url = new URL(String(input));
+        if (url.pathname === '/v1/workspace') return jsonResponse(200, { ok: true, data: { id, name: 'x' } });
+        return jsonResponse(404);
+      }) as never;
+    // The core's workspace is on http://127.0.0.1:8787, as this server is.
+    const other = setup({ ...core.deps, fetch: workspaceFetch('rw_project') });
+    await other.run(
+      '--url',
+      'http://127.0.0.1:8787',
+      '--key',
+      'rk_live_b',
+      '--name',
+      'b',
+      '--tools',
+      'codex'
+    );
+    expect(other.logs.join('\n')).toContain('serves workspace "local" (http://127.0.0.1:8787), not "b"');
+
+    const same = setup({ ...core.deps, fetch: workspaceFetch('rw_core') });
+    await same.run('--url', 'http://127.0.0.1:8787', '--key', 'rk_live_a', '--name', 'a', '--tools', 'codex');
+    expect(same.logs.join('\n')).not.toContain('agents here join that workspace');
+    expect(same.logs.join('\n')).not.toContain('Could not confirm');
+    expect(same.logs.join('\n')).not.toContain('rk_live_');
+
+    const unknown = setup({ ...core.deps, fetch: workspaceFetch('') });
+    await unknown.run(
+      '--url',
+      'http://127.0.0.1:8787',
+      '--key',
+      'rk_live_c',
+      '--name',
+      'c',
+      '--tools',
+      'codex'
+    );
+    expect(unknown.logs.join('\n')).toContain('Could not confirm that the Agent Relay core serves "c"');
+  });
+
+  it('restores crossSessionInbound on every Claude login the core changed', async () => {
+    installedProbe();
+    const own = path.join(toolHome, '.claude', 'settings.json');
+    const work = path.join(toolHome, '.claude-work', 'settings.json');
+    const chosen = path.join(toolHome, '.claude-mine', 'settings.json');
+    for (const file of [own, work, chosen]) fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(path.join(toolHome, '.claude-work', '.claude.json'), '{}');
+    fs.writeFileSync(path.join(toolHome, '.claude-mine', '.claude.json'), '{}');
+    fs.writeFileSync(own, JSON.stringify({ theme: 'dark' }));
+    fs.writeFileSync(work, JSON.stringify({}));
+    fs.writeFileSync(chosen, JSON.stringify({ crossSessionInbound: 'accept' }));
+    const core = fakeCore({
+      running: true,
+      settings: { auto_activate: true, claude_session_hook: true },
+      claudeFiles: [own, work, chosen],
+    });
+    await setup(core.deps).run('--tools', 'claude');
+    expect(JSON.parse(fs.readFileSync(work, 'utf8'))).toEqual({ crossSessionInbound: 'accept' });
+
+    await setup(core.deps).run('--uninstall');
+    expect(JSON.parse(fs.readFileSync(own, 'utf8'))).toEqual({ theme: 'dark' });
+    expect(JSON.parse(fs.readFileSync(work, 'utf8'))).toEqual({});
+    // The person's own accept was theirs: the core turns it to hold, and init does not remove it.
+    expect(JSON.parse(fs.readFileSync(chosen, 'utf8'))).toEqual({ crossSessionInbound: 'hold' });
+  });
+
+  it('falls back to the MCP server when the core cannot be started', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const { run, logs } = setup({
+      ...core.deps,
+      startCore: vi.fn(() => {
+        throw new Error('spawn EACCES');
+      }),
+    });
+    await run('--tools', 'claude');
+    expect(logs.join('\n')).toContain('the Agent Relay core could not be started (spawn EACCES)');
+    expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'says so when an earlier MCP entry could not be removed',
+    async () => {
+      await setup().run('--tools', 'claude', '--delivery', 'mcp');
+      installedProbe();
+      fs.chmodSync(project, 0o555);
+      try {
+        const { run, logs } = setup(fakeCore().deps);
+        await run('--tools', 'claude');
+        expect(logs.join('\n')).toMatch(
+          /Claude Code\s+could not remove the earlier Relay MCP entry from \.mcp\.json[^]*second identity/
+        );
+      } finally {
+        fs.chmodSync(project, 0o755);
+      }
+    }
+  );
 
   it('falls back to the MCP server when the core cannot be had', async () => {
     const { run, logs } = setup();

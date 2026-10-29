@@ -76,6 +76,12 @@ jobs:
             echo "::error::'$VERSION' is not a version like 15.0.0 or 15.0.0-rc.1"
             exit 1
           fi
+          # workflow_dispatch runs whatever ref the dispatcher picks, and relay init
+          # downloads and runs what this publishes: only main is ever released.
+          if [ "$DRY_RUN" != "true" ] && [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Real releases are cut from main only (this run is on $GITHUB_REF); dispatch it from main or keep dry_run on."
+            exit 1
+          fi
           if [ "$DRY_RUN" != "true" ] && gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/probe-v${VERSION}" >/dev/null 2>&1; then
             echo "::error::Tag probe-v${VERSION} already exists; release a new version."
             exit 1
@@ -187,7 +193,7 @@ jobs:
   publish:
     name: Publish probe-v${{ needs.prepare.outputs.version }}
     needs: [prepare, build]
-    if: needs.prepare.outputs.dry_run == 'false'
+    if: needs.prepare.outputs.dry_run == 'false' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
