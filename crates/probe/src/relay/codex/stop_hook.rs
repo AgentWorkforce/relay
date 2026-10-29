@@ -398,9 +398,9 @@ const RULES_NAMES: usize = 9;
 /// connector. Codex runs a command outside its sandbox without asking when
 /// every part of it matches an `allow` prefix rule (`exec_policy` in Codex,
 /// verified with Codex 0.163), so the rules allow exactly this probe's two
-/// session-socket commands, `socket-request` only on this core's own
-/// session socket. Nothing else is widened: no network, no other program,
-/// no other socket.
+/// session-socket commands, each only with `--socket` naming this core's
+/// own session socket (`relay read --socket` refuses `--dev`). Nothing else
+/// is widened: no network, no other program, no other socket.
 #[derive(Clone, Debug)]
 pub struct SandboxRules {
     /// The probe executable the reply hints name.
@@ -425,7 +425,7 @@ impl SandboxRules {
              justification = \"Agent Relay's session socket, which sends only as this session\",\n\
              )\n\
              prefix_rule(\n    \
-             pattern = [{probe}, \"relay\", \"read\"],\n    \
+             pattern = [{probe}, \"relay\", \"read\", \"--socket\", {socket}],\n    \
              decision = \"allow\",\n    \
              justification = \"Reads a message Agent Relay relayed to this session\",\n\
              )\n"
@@ -1292,7 +1292,7 @@ mod tests {
         assert!(rules.contains(
             "pattern = [\"/Apps/Agent Relay.app/probe\", \"relay\", \"socket-request\", \"--socket\", \"/s/relay.sock\"]"
         ));
-        assert!(rules.contains("pattern = [\"/Apps/Agent Relay.app/probe\", \"relay\", \"read\"]"));
+        assert!(rules.contains("pattern = [\"/Apps/Agent Relay.app/probe\", \"relay\", \"read\", \"--socket\", \"/s/relay.sock\"]"));
         assert_eq!(rules.matches("decision = \"allow\"").count(), 2);
     }
 

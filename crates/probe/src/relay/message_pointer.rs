@@ -54,14 +54,19 @@ static APP_DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// Sets where messages are kept and the probe pointers name, from the app
 /// data directory (Agent Relay Dev's ends `.dev`).
-pub fn configure(app_data_dir: &Path) {
+pub fn configure(app_data_dir: &Path, socket: &Path) {
     let _ = APP_DATA_DIR.set(app_data_dir.to_path_buf());
-    let development = app_data_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(".dev"));
     let executable = crate::relay::outbound::fetch::probe_executable();
-    let _ = READER.set(reader(executable.as_deref(), development));
+    let _ = READER.set(socket_reader(executable.as_deref(), socket));
+}
+
+/// `relay read --socket <socket>` through `executable`: the read bound to
+/// this core's own session socket, which is what Codex's sandbox rules
+/// allow (`codex::stop_hook::SandboxRules`); `--dev` cannot be added to it.
+pub fn socket_reader(executable: Option<&Path>, socket: &Path) -> Option<String> {
+    let executable = shell_quote(executable?.to_str()?);
+    let socket = shell_quote(socket.to_str()?);
+    Some(format!("{executable} relay read --socket {socket}"))
 }
 
 /// The reader `configure` set.

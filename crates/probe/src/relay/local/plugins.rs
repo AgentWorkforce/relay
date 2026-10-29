@@ -33,7 +33,10 @@ pub fn plugins_with_options(
     ));
     local.spawned_grok = Some(config.app_data_dir.join("spawned-agents/grok"));
     local.existing_grok = enablement::Paths::from_env(&env, &config.app_data_dir);
-    crate::relay::message_pointer::configure(&config.app_data_dir);
+    // The relay-send (session) socket this core serves: reads, reply hints
+    // and Codex's sandbox rules (`stop_hook::SandboxRules`) all name it.
+    let relay_send_socket = outbound::default_socket(&env, &config.app_data_dir, local.uid);
+    crate::relay::message_pointer::configure(&config.app_data_dir, &relay_send_socket);
     // The journal is this route's dedupe record under app data, created on
     // the first delivery. It is not gated on the probe's Muse directory: a
     // Paseo `muse serve` can be the only Muse store on the machine, and a
@@ -138,7 +141,6 @@ pub fn plugins_with_options(
     ));
     // With the hook, Codex rules that let the probe's own client reach this
     // core's session socket from Codex's sandbox (`stop_hook::SandboxRules`).
-    let relay_send_socket = outbound::default_socket(&env, &config.app_data_dir, local.uid);
     let probe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-probe"));
     let stop_hook_settings = Arc::new(
         codex::stop_hook::CodexStopHookSettings::new(

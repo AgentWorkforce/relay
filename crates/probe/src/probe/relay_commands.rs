@@ -85,8 +85,13 @@ pub enum RelayCommands {
         #[arg(value_name = "REF")]
         message_ref: String,
         /// Ask Agent Relay Dev instead of Agent Relay.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "socket")]
         dev: bool,
+        /// The session socket to ask; default is the one the running app
+        /// points to. The pointer a session is handed names it, which is
+        /// what Codex's sandbox rules allow.
+        #[arg(long)]
+        socket: Option<PathBuf>,
     },
     /// Make a session-scoped request to the local relay socket.
     SocketRequest {
@@ -227,7 +232,11 @@ pub fn run(command: RelayCommands) -> Result<()> {
             path,
             body,
         } => relay::cli::socket_request(&socket, &method, &path, body.as_deref()),
-        RelayCommands::Read { message_ref, dev } => relay::cli::read_message(dev, &message_ref),
+        RelayCommands::Read {
+            message_ref,
+            dev,
+            socket,
+        } => relay::cli::read_message(socket.as_deref(), dev, &message_ref),
         RelayCommands::CodexStopHook { dev, socket } => {
             relay::cli::codex_stop_hook(socket.as_deref(), dev)
         }

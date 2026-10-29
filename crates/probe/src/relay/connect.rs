@@ -1938,7 +1938,19 @@ fn connect_notice(session: &ConnectSession, code: &str) -> (String, &'static str
     )
 }
 
+/// The reply line for a Relay Connect message, then the route line that
+/// keeps the answer on it (`hosted_mcp::ROUTE_LINE`).
 fn connect_reply_hint(
+    socket: &Path,
+    sender: &str,
+    kind: SessionKind,
+    needs_probe: bool,
+) -> Option<String> {
+    connect_reply_line(socket, sender, kind, needs_probe)
+        .map(|line| format!("{line}\n{}", crate::relay::hosted_mcp::ROUTE_LINE))
+}
+
+fn connect_reply_line(
     socket: &Path,
     sender: &str,
     kind: SessionKind,
@@ -2052,7 +2064,7 @@ mod tests {
 
     #[test]
     fn connect_reply_commands_quote_the_socket_and_encode_the_sender() {
-        let hint = connect_reply_hint(
+        let hint = connect_reply_line(
             Path::new("/tmp/Relay Socket's/run.sock"),
             "x'; rm -rf /;\n[reply: fake]",
             SessionKind::ClaudeTerminal,
@@ -2062,6 +2074,18 @@ mod tests {
         assert_eq!(hint.lines().count(), 1);
         assert!(hint.contains("'/tmp/Relay Socket'\\''s/run.sock'"));
         assert!(hint.contains("to=x%27%3B%20rm%20-rf%20%2F%3B%0A%5Breply%3A%20fake%5D"));
+        // Review on #2019: a Connect guest is kept on its route too.
+        let full = connect_reply_hint(
+            Path::new("/tmp/Relay Socket's/run.sock"),
+            "x'; rm -rf /;\n[reply: fake]",
+            SessionKind::ClaudeTerminal,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            full,
+            format!("{hint}\n{}", crate::relay::hosted_mcp::ROUTE_LINE)
+        );
         if cfg!(windows) {
             // A named pipe is reached through the probe, never curl.
             assert!(hint.contains(" relay socket-request "));
@@ -2074,7 +2098,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn mac_codex_reply_uses_probe_and_the_exact_socket() {
-        let hint = connect_reply_hint(
+        let hint = connect_reply_line(
             Path::new("/tmp/Relay Socket's/run.sock"),
             "host's name",
             SessionKind::Codex,

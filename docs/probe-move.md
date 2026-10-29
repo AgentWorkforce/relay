@@ -408,7 +408,7 @@ matches an `allow` prefix rule in `~/.codex/rules/*.rules`. So while
 `codex_stop_hook` is on, the core also writes
 `~/.codex/rules/agent-relay.rules` (`agent-relay-dev.rules` for Agent Relay
 Dev) with exactly two rules: `<this probe> relay socket-request --socket <this
-core's session socket>` and `<this probe> relay read`. Nothing else leaves the
+core's session socket>` and `<this probe> relay read --socket <the same socket>` (the pointer a session is handed now names the socket, and `--socket` refuses `--dev`). Nothing else leaves the
 sandbox and no network is granted; a rules file of that name that does not
 start with Agent Relay's header is never touched, and the rules go to
 `agent-relay-2.rules` (up to `-9`) instead; with every name taken, turning
@@ -485,7 +485,7 @@ Known gaps in phase 3:
 - No `probe-v*` release exists yet; until one does, `relay init` uses the MCP
   server unless a core is running or `AGENT_RELAY_PROBE_PATH` is set.
 - Messages arrive as pointers (`show_relay_messages` off, the core's default):
-  the session runs `agent-relay-probe relay read <ref>` for the text.
+  the session runs `agent-relay-probe relay read --socket <socket> <ref>` for the text.
 - `--uninstall` leaves the one-time `.relay-desktop-backup` copies of edited
   settings files other than Codex's `hooks.json` (see "Codex's sandbox" below
   for what Codex gets back).

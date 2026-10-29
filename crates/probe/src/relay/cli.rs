@@ -141,8 +141,11 @@ pub fn socket_request(socket: &Path, method: &str, path: &str, body: Option<&str
 /// pointer, then its note (`message_pointer::read_note`). Like
 /// `socket-request`, the session is told from this process, so it reads only
 /// its own messages.
-pub fn read_message(development: bool, message_ref: &str) -> Result<()> {
-    let socket = pointed_socket(&paths::home()?, development)?;
+pub fn read_message(socket: Option<&Path>, development: bool, message_ref: &str) -> Result<()> {
+    let socket = match socket {
+        Some(socket) => socket.to_path_buf(),
+        None => pointed_socket(&paths::home()?, development)?,
+    };
     let text = read_text(&socket, message_ref)?;
     let note = crate::relay::message_pointer::read_note(&text);
     std::io::stdout().write_all(format!("{text}\n\n{note}\n").as_bytes())?;
