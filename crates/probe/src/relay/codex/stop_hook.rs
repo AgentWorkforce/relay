@@ -567,11 +567,20 @@ impl CodexStopHookSettings {
         for path in self.rules_files() {
             match std::fs::read_to_string(&path) {
                 Ok(current) if current == text => return Ok(()),
-                Ok(current) if current.starts_with(RULES_HEADER) => {
+                Ok(current)
+                    if current.starts_with(RULES_HEADER)
+                        && std::fs::symlink_metadata(&path)
+                            .is_ok_and(|m| m.file_type().is_file()) =>
+                {
                     ours.get_or_insert(path);
                 }
                 Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // Free only when nothing is there at all: a dangling symlink
+                // of the person's is theirs, and is never replaced.
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        && std::fs::symlink_metadata(&path).is_err() =>
+                {
                     free.get_or_insert(path);
                 }
                 Err(_) => {}
@@ -595,8 +604,9 @@ impl CodexStopHookSettings {
     fn remove_rules(&self) {
         let mut removed = false;
         for path in self.rules_files() {
-            let ours =
-                std::fs::read_to_string(&path).is_ok_and(|text| text.starts_with(RULES_HEADER));
+            // Agent Relay writes a plain file; a link is the person's.
+            let ours = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file())
+                && std::fs::read_to_string(&path).is_ok_and(|text| text.starts_with(RULES_HEADER));
             removed |= ours && std::fs::remove_file(&path).is_ok();
         }
         if removed {
@@ -1322,6 +1332,30 @@ mod tests {
             "# mine\n"
         );
         assert!(!codex.join("rules/agent-relay-2.rules").exists());
+    }
+
+    // Review on #2019: a dangling link of the person's is not a free name.
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_link_under_a_rules_name_is_left_alone() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(codex.join("rules")).unwrap();
+        std::fs::write(codex.join("rules/agent-relay.rules"), "# mine\n").unwrap();
+        let link = codex.join("rules/agent-relay-2.rules");
+        std::os::unix::fs::symlink(home.path().join("nowhere.rules"), &link).unwrap();
+        let settings = full_settings(home.path());
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(!home.path().join("nowhere.rules").exists());
+        let ours = std::fs::read_to_string(codex.join("rules/agent-relay-3.rules")).unwrap();
+        assert!(ours.starts_with(RULES_HEADER));
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        assert!(std::fs::symlink_metadata(&link).is_ok());
+        assert!(!codex.join("rules/agent-relay-3.rules").exists());
     }
 
     #[test]
