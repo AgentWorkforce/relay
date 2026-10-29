@@ -114,91 +114,15 @@ impl SessionDirectory for LocalSessions {
     }
 
     fn auto_activation_sessions(&self) -> Vec<DiscoveredSession> {
-        let claude_sessions = claude::registry(&self.config.claude, &*self.table).sessions;
-        let grok_reachable = |session_id: &str| self.grok_open_reachable(session_id);
-        let automated = std::cell::OnceCell::new();
-        let started_by_automation = |session_id: &str| {
-            automated
-                .get_or_init(|| {
-                    self.config
-                        .probe_root
-                        .as_deref()
-                        .map(crate::relay::devin_cloud::started_by_automation)
-                        .unwrap_or_default()
-                })
-                .contains(session_id)
-        };
+        let eligible = self.activation_check();
         self.fresh_sessions()
             .into_iter()
-            .filter(|session| {
-                if !session.live {
-                    return false;
-                }
-                // A Devin Cloud row's `live` already proved this machine's
-                // sign-in can reach it — the caller proof a local lock
-                // proves for a local row — so it activates the same way,
-                // and a remote directory has nothing local to exclude. One
-                // an automation started (a Devin review) has nobody in it
-                // to talk to, so it never joins.
-                if session.target.kind == SessionKind::Devin
-                    && session.host.as_deref() == Some(crate::relay::devin_cloud::CLOUD_HOST)
-                {
-                    return !started_by_automation(&session.target.id);
-                }
-                if let Some(admitted) = self.gateway_admits(session.target.kind) {
-                    return admitted;
-                }
-                let Some(directory) = session.directory.as_deref().map(Path::new) else {
-                    return false;
-                };
-                if is_under(directory, &self.config.auto_activate_excluded_dirs) {
-                    return false;
-                }
-                match session.target.kind {
-                    SessionKind::ClaudeTerminal => claude::terminal_session(
-                        &self.config.claude,
-                        &*self.table,
-                        &session.target.id,
-                    )
-                    .is_some_and(|terminal| {
-                        claude::is_interactive_terminal(&*self.table, &terminal)
-                            || claude::is_conductor_chat(
-                                &*self.table,
-                                self.config.uid,
-                                &terminal,
-                                &claude_sessions,
-                            )
-                            || claude::is_app_hosted_chat(&*self.table, &terminal, &claude_sessions)
-                    }),
-                    SessionKind::Codex => true,
-                    SessionKind::ClaudeCloud => false,
-                    // A Grok TUI session is live only while a leader of this
-                    // user is running, the one route into it; registering it
-                    // binds and proves that leader first, and a binding that
-                    // does not prove is refused, so nothing is sent.
-                    SessionKind::GrokOpen => grok_reachable(&session.target.id),
-                    // Launched by the probe, which registers it itself.
-                    SessionKind::Grok | SessionKind::OpenCode => false,
-                    // An open Muse session registers like a Codex one: the
-                    // row already admits only live message-capable sessions,
-                    // and delivery re-proves each one in Muse's own registry
-                    // on every send, pinning the courier reference.
-                    SessionKind::MuseOpen => true,
-                    // Opt-in, like every provider route the plugin opens.
-                    SessionKind::OpenCodeOpen | SessionKind::Pi => false,
-                    // A Devin row exists only while a `devin` process holds
-                    // the session's lock open, which is also its caller
-                    // proof. Devin Cloud rows return early above; any other
-                    // hosted row is never activated.
-                    SessionKind::Devin => session.host.is_none(),
-                    // A Cursor CLI row exists only while a `cursor-agent`
-                    // holds its conversation open, which is also its caller
-                    // proof; like Codex, it joins only with the opt-in.
-                    SessionKind::CursorCli => true,
-                    SessionKind::OpenClaw | SessionKind::Hermes => false,
-                }
-            })
+            .filter(|session| eligible(session))
             .collect()
+    }
+
+    fn auto_activates(&self, session: &DiscoveredSession) -> bool {
+        (self.activation_check())(session)
     }
 
     fn activity(
@@ -364,10 +288,6 @@ impl SessionDirectory for LocalSessions {
         claude::registry(&self.config.claude, &*self.table).unreadable
     }
 
-    fn auto_activation_excluded(&self, directory: &Path) -> bool {
-        is_under(directory, &self.config.auto_activate_excluded_dirs)
-    }
-
     fn fleet_owned(&self, target: &Target) -> Result<bool, String> {
         self.config
             .fleet
@@ -415,6 +335,99 @@ impl SessionDirectory for LocalSessions {
                 owner_uid: binding.owner_uid,
             }),
             GrokRoute::Ambiguous | GrokRoute::Unavailable | GrokRoute::None => None,
+        }
+    }
+}
+
+impl LocalSessions {
+    /// Whether automatic activation puts `session` on the relay: one
+    /// predicate for activation itself and for `/setup/status`'s
+    /// `auto_activates`, so the SessionStart hook never promises a join
+    /// activation would not make.
+    fn activation_check(&self) -> impl Fn(&DiscoveredSession) -> bool + '_ {
+        let claude_sessions = claude::registry(&self.config.claude, &*self.table).sessions;
+        let grok_reachable = move |session_id: &str| self.grok_open_reachable(session_id);
+        let automated = std::cell::OnceCell::new();
+        let started_by_automation = move |session_id: &str| {
+            automated
+                .get_or_init(|| {
+                    self.config
+                        .probe_root
+                        .as_deref()
+                        .map(crate::relay::devin_cloud::started_by_automation)
+                        .unwrap_or_default()
+                })
+                .contains(session_id)
+        };
+        move |session: &DiscoveredSession| {
+            if !session.live {
+                return false;
+            }
+            // A Devin Cloud row's `live` already proved this machine's
+            // sign-in can reach it — the caller proof a local lock
+            // proves for a local row — so it activates the same way,
+            // and a remote directory has nothing local to exclude. One
+            // an automation started (a Devin review) has nobody in it
+            // to talk to, so it never joins.
+            if session.target.kind == SessionKind::Devin
+                && session.host.as_deref() == Some(crate::relay::devin_cloud::CLOUD_HOST)
+            {
+                return !started_by_automation(&session.target.id);
+            }
+            if let Some(admitted) = self.gateway_admits(session.target.kind) {
+                return admitted;
+            }
+            let Some(directory) = session.directory.as_deref().map(Path::new) else {
+                return false;
+            };
+            if is_under(directory, &self.config.auto_activate_excluded_dirs) {
+                return false;
+            }
+            match session.target.kind {
+                SessionKind::ClaudeTerminal => {
+                    claude::terminal_session(&self.config.claude, &*self.table, &session.target.id)
+                        .is_some_and(|terminal| {
+                            claude::is_interactive_terminal(&*self.table, &terminal)
+                                || claude::is_conductor_chat(
+                                    &*self.table,
+                                    self.config.uid,
+                                    &terminal,
+                                    &claude_sessions,
+                                )
+                                || claude::is_app_hosted_chat(
+                                    &*self.table,
+                                    &terminal,
+                                    &claude_sessions,
+                                )
+                        })
+                }
+                SessionKind::Codex => true,
+                SessionKind::ClaudeCloud => false,
+                // A Grok TUI session is live only while a leader of this
+                // user is running, the one route into it; registering it
+                // binds and proves that leader first, and a binding that
+                // does not prove is refused, so nothing is sent.
+                SessionKind::GrokOpen => grok_reachable(&session.target.id),
+                // Launched by the probe, which registers it itself.
+                SessionKind::Grok | SessionKind::OpenCode => false,
+                // An open Muse session registers like a Codex one: the
+                // row already admits only live message-capable sessions,
+                // and delivery re-proves each one in Muse's own registry
+                // on every send, pinning the courier reference.
+                SessionKind::MuseOpen => true,
+                // Opt-in, like every provider route the plugin opens.
+                SessionKind::OpenCodeOpen | SessionKind::Pi => false,
+                // A Devin row exists only while a `devin` process holds
+                // the session's lock open, which is also its caller
+                // proof. Devin Cloud rows return early above; any other
+                // hosted row is never activated.
+                SessionKind::Devin => session.host.is_none(),
+                // A Cursor CLI row exists only while a `cursor-agent`
+                // holds its conversation open, which is also its caller
+                // proof; like Codex, it joins only with the opt-in.
+                SessionKind::CursorCli => true,
+                SessionKind::OpenClaw | SessionKind::Hermes => false,
+            }
         }
     }
 }

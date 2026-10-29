@@ -700,17 +700,16 @@ impl Setup {
             .as_str()
             .map(|id| json!({"id": id, "name": account["workspace_name"]}));
         // Whether the core will put this session on the relay by itself:
-        // automatic activation is on, there is a workspace to join, and the
-        // session's folder is not one activation skips.
-        let auto_activates = self.core.store.read(|s| s.auto_activates())
-            && self.core.workspace().is_some()
-            && session.directory.as_deref().is_some_and(|directory| {
-                !self
-                    .core
-                    .plugins
-                    .sessions
-                    .auto_activation_excluded(std::path::Path::new(directory))
-            });
+        // automatic activation is on, there is a workspace to join, and
+        // activation's own check admits this session.
+        let auto_activates =
+            self.core.store.read(|s| s.auto_activates()) && self.core.workspace().is_some() && {
+                let directory = self.core.plugins.sessions.clone();
+                let session = session.clone();
+                tokio::task::spawn_blocking(move || directory.auto_activates(&session))
+                    .await
+                    .unwrap_or(false)
+            };
         // The signed-in person, as `account.status` names them.
         let person = &account["person"];
         let named = !person["name"].is_null() || !person["email"].is_null();

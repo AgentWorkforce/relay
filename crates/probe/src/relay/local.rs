@@ -3473,6 +3473,30 @@ mod tests {
         assert_eq!(world.sessions.fleet_owned(&found[0].target), Ok(false));
     }
 
+    /// `/setup/status`'s `auto_activates` is activation's own check: an
+    /// `sdk-` Claude session, which activation skips, is never told it joins.
+    #[test]
+    fn auto_activates_matches_activation_for_an_sdk_session() {
+        let world = world();
+        {
+            let mut processes = world.table.processes.lock().unwrap();
+            let claude = processes.get_mut(&300).unwrap();
+            claude.arguments = vec!["claude".into()];
+            claude.has_terminal = true;
+        }
+        let session = world.sessions.sessions().remove(0);
+        assert!(world.sessions.auto_activates(&session));
+        assert_eq!(world.sessions.auto_activation_sessions().len(), 1);
+
+        let registry = world._temp.path().join(".claude/sessions/300.json");
+        let mut record: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&registry).unwrap()).unwrap();
+        record["name"] = "sdk-pipeline".into();
+        std::fs::write(&registry, record.to_string()).unwrap();
+        assert!(world.sessions.auto_activation_sessions().is_empty());
+        assert!(!world.sessions.auto_activates(&session));
+    }
+
     #[test]
     fn auto_activation_only_lists_interactive_non_temporary_sessions() {
         let mut world = world();

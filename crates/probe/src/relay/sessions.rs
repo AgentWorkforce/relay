@@ -232,9 +232,9 @@ pub trait SessionDirectory: Send + Sync + 'static {
         Vec::new()
     }
 
-    /// Whether automatic activation skips sessions in `directory`
-    /// (`AGENT_RELAY_AUTO_ACTIVATE_EXCLUDED_DIRS`).
-    fn auto_activation_excluded(&self, _directory: &std::path::Path) -> bool {
+    /// Whether automatic activation would put `session` on the relay, by
+    /// the same check `auto_activation_sessions` applies. May block.
+    fn auto_activates(&self, _session: &DiscoveredSession) -> bool {
         false
     }
 

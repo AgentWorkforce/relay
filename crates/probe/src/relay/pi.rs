@@ -434,6 +434,26 @@ fn recorded_delivery(
     }
 }
 
+/// Whether this exact message is already in the pinned session's inbox,
+/// waiting for its extension (`pending` or `claimed`), in either version.
+fn queued_delivery(
+    config: &PiConfig,
+    uid: u32,
+    registration: &crate::relay::store::Registration,
+    message_id: &str,
+    text: &str,
+) -> bool {
+    let Some(directory) = pinned_directory(config, uid, registration) else {
+        return false;
+    };
+    read::<Delivery>(&directory.join(format!("{}.json", key(message_id))), uid).is_some_and(|d| {
+        d.session_id == registration.target.id
+            && d.message_id == message_id
+            && d.text == text
+            && matches!(d.state.as_str(), "pending" | "claimed")
+    })
+}
+
 pub fn send(
     config: &PiConfig,
     table: &dyn ProcessTable,
@@ -493,6 +513,11 @@ fn send_with(
     // Turned off: nothing new reaches Pi, even a session still running the
     // extension it loaded before. A recorded receipt above still settles.
     if config.turned_off() {
+        // A message already queued stays the loaded extension's to deliver;
+        // only a new one is refused.
+        if queued_delivery(config, uid, registration, message_id, text) {
+            return InjectOutcome::Accepted("Waiting for Pi to record this message.".into());
+        }
         return InjectOutcome::Refused(
             "Pi sessions are off: Agent Relay's Pi extension was turned off (pi_extension).".into(),
         );
@@ -690,6 +715,33 @@ mod tests {
         // Turned on again, the same session is a target again.
         fs::remove_file(config.off_marker()).unwrap();
         assert_eq!(discover(&config, &table, current_uid()).len(), 1);
+    }
+
+    #[test]
+    fn a_message_queued_before_the_extension_is_turned_off_stays_accepted() {
+        let (_temp, config, _held, registration) = fixture();
+        let table = SystemProcesses::default();
+        let uid = current_uid();
+        let queued = send(&config, &table, uid, &registration, "m-1", "hello");
+        assert!(matches!(queued, InjectOutcome::Accepted(_)), "{queued:?}");
+        fs::write(config.off_marker(), "off").unwrap();
+        let instance = config.runtime.join("123456789012345678901234567890ab");
+        let files = || {
+            let mut names: Vec<_> = fs::read_dir(&instance)
+                .unwrap()
+                .flatten()
+                .map(|entry| entry.file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = files();
+        // The loaded extension can still deliver the queued version-1 record.
+        let retry = send(&config, &table, uid, &registration, "m-1", "hello");
+        assert!(matches!(retry, InjectOutcome::Accepted(_)), "{retry:?}");
+        let new = send(&config, &table, uid, &registration, "m-2", "hello");
+        assert!(matches!(new, InjectOutcome::Refused(_)), "{new:?}");
+        assert_eq!(files(), before);
     }
 
     #[test]
