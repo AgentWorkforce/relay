@@ -48,7 +48,7 @@ async fn a_retained_closed_codex_row_cannot_create_an_automatic_registration() {
     let data = home.join("app-data");
     fake_relaycast::sign_in_store(&data, fake_relaycast::WORKSPACE_KEY, &fake.base_url);
     let sessions = Arc::new(world.sessions);
-    let (core, signals) = Core::with_plugins(
+    let (core, _signals) = Core::with_plugins(
         Config {
             paths: CorePaths::for_socket(home.join("core.sock")).unwrap(),
             home: home.into(),
