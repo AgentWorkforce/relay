@@ -2426,8 +2426,9 @@ async fn a_session_that_can_reply_itself_is_told_how_and_gets_no_automatic_answe
     let text = &h.injector.injected()[0].text;
     assert!(
         text.contains(&format!(
-            "\n[reply: curl relay] to=- address={} reply_to={message}\n\nhi",
-            alice.address
+            "\n[reply: curl relay] to=- address={} reply_to={message}\n{}\n\nhi",
+            alice.address,
+            agent_relay_probe::relay::hosted_mcp::ROUTE_LINE
         )),
         "{text}"
     );
@@ -2486,7 +2487,10 @@ async fn a_host_note_follows_the_reply_hint_before_the_message() {
     .await;
     let text = &h.injector.injected()[0].text;
     assert!(
-        text.contains(&format!("reply_to={message}\n[conductor: quote it]\n\nhi")),
+        text.contains(&format!(
+            "reply_to={message}\n{}\n[conductor: quote it]\n\nhi",
+            agent_relay_probe::relay::hosted_mcp::ROUTE_LINE
+        )),
         "{text}"
     );
     // Without a reply hint the note still precedes the message.

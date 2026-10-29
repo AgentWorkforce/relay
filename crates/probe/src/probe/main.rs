@@ -1182,3 +1182,50 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod socket_request_tests {
+    use super::*;
+
+    // Review on #2019: a reply that starts with a hyphen is still the body.
+    #[test]
+    fn a_socket_request_body_may_start_with_a_hyphen() {
+        for body in ["- first item", "--help", "-"] {
+            let cli = Cli::try_parse_from([
+                "probe",
+                "relay",
+                "socket-request",
+                "--socket",
+                "/s/relay.sock",
+                "--method",
+                "POST",
+                "--path",
+                "/send?to=a",
+                "--body",
+                body,
+            ])
+            .unwrap();
+            let Commands::Relay {
+                command: relay_commands::RelayCommands::SocketRequest { body: parsed, .. },
+            } = cli.command
+            else {
+                panic!("socket-request expected")
+            };
+            assert_eq!(parsed.as_deref(), Some(body));
+        }
+    }
+
+    // Review on #2019: the read Codex's sandbox rules allow names the
+    // socket, and `--dev` cannot point it at another one.
+    #[test]
+    fn a_read_bound_to_a_socket_refuses_dev() {
+        let read = |extra: &[&str]| {
+            let mut args = vec!["probe", "relay", "read", "--socket", "/s/relay.sock"];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args)
+        };
+        assert!(read(&["0123456789ab"]).is_ok());
+        assert!(read(&["0123456789ab", "--dev"]).is_err());
+        assert!(read(&["--dev", "0123456789ab"]).is_err());
+    }
+}

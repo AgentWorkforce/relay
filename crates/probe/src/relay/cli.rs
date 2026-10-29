@@ -114,14 +114,26 @@ fn socket_request_allowed(method: &str, path: &str) -> bool {
     }
 }
 
-pub fn socket_request(socket: &Path, method: &str, path: &str) -> Result<()> {
+/// `relay socket-request`: `body` is the request body (`--body`); without
+/// it a POST, DELETE or PATCH reads its body from standard input.
+pub fn socket_request(socket: &Path, method: &str, path: &str, body: Option<&str>) -> Result<()> {
     if !socket_request_allowed(method, path) {
         return Err(SafeError("Unsupported relay socket request.".into()).into());
     }
-    let mut body = Vec::new();
-    if matches!(method, "POST" | "DELETE" | "PATCH") {
-        std::io::stdin().read_to_end(&mut body)?;
-    }
+    let sends_body = matches!(method, "POST" | "DELETE" | "PATCH");
+    let body = match body {
+        Some(_) if !sends_body => {
+            return Err(SafeError(format!("A {method} request takes no --body.")).into());
+        }
+        Some(body) => body.as_bytes().to_vec(),
+        None => {
+            let mut body = Vec::new();
+            if sends_body {
+                std::io::stdin().read_to_end(&mut body)?;
+            }
+            body
+        }
+    };
     socket_exchange(socket, method, path, &body, socket_request_timeout(path))
 }
 
@@ -129,8 +141,11 @@ pub fn socket_request(socket: &Path, method: &str, path: &str) -> Result<()> {
 /// pointer, then its note (`message_pointer::read_note`). Like
 /// `socket-request`, the session is told from this process, so it reads only
 /// its own messages.
-pub fn read_message(development: bool, message_ref: &str) -> Result<()> {
-    let socket = pointed_socket(&paths::home()?, development)?;
+pub fn read_message(socket: Option<&Path>, development: bool, message_ref: &str) -> Result<()> {
+    let socket = match socket {
+        Some(socket) => socket.to_path_buf(),
+        None => pointed_socket(&paths::home()?, development)?,
+    };
     let text = read_text(&socket, message_ref)?;
     let note = crate::relay::message_pointer::read_note(&text);
     std::io::stdout().write_all(format!("{text}\n\n{note}\n").as_bytes())?;
@@ -781,7 +796,8 @@ mod tests {
         ] {
             assert!(!socket_request_allowed(method, path), "{method} {path}");
         }
-        let error = socket_request(Path::new("/unused"), "GET", "/setup/sign-in").unwrap_err();
+        let error =
+            socket_request(Path::new("/unused"), "GET", "/setup/sign-in", None).unwrap_err();
         assert!(error
             .to_string()
             .contains("Unsupported relay socket request"));

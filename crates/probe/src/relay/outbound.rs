@@ -229,11 +229,9 @@ pub fn reply_hint(
         query_encode(reply_to)
     );
     if probe_client(needs_probe) {
-        let send = probe_socket_command(socket, "POST", &request_path)?;
+        let send = probe_socket_command_with_body(socket, "POST", &request_path, "your reply")?;
         let agents = probe_socket_command(socket, "GET", "/agents")?;
-        return Some(format!(
-            "[reply: printf '%s' 'your reply' | {send}]\n[agents: {agents}]"
-        ));
+        return Some(format!("[reply: {send}]\n[agents: {agents}]"));
     }
     let url = format!("http://relay{request_path}");
     let send = [
@@ -289,8 +287,24 @@ pub fn fetch_hint(
 /// macOS when Apple's system curl does not expose CODEX_THREAD_ID or
 /// AGENT_RELAY_OPENCODE_SESSION.
 pub(crate) fn probe_socket_command(socket: &Path, method: &str, path: &str) -> Option<String> {
+    probe_command(socket, method, path, None)
+}
+
+/// [`probe_socket_command`] with its request body as `--body`: one command
+/// with no pipe, which Codex's sandbox rules let reach the session socket
+/// (`codex::stop_hook::SandboxRules`).
+pub(crate) fn probe_socket_command_with_body(
+    socket: &Path,
+    method: &str,
+    path: &str,
+    body: &str,
+) -> Option<String> {
+    probe_command(socket, method, path, Some(body))
+}
+
+fn probe_command(socket: &Path, method: &str, path: &str, body: Option<&str>) -> Option<String> {
     let executable = fetch::probe_executable()?;
-    let parts = [
+    let mut parts = vec![
         executable.to_str()?,
         "relay",
         "socket-request",
@@ -301,6 +315,9 @@ pub(crate) fn probe_socket_command(socket: &Path, method: &str, path: &str) -> O
         "--path",
         path,
     ];
+    if let Some(body) = body {
+        parts.extend(["--body", body]);
+    }
     Some(
         parts
             .iter()
@@ -2290,6 +2307,14 @@ mod tests {
         assert!(hint.contains("'/tmp/Relay Socket'\\''s/relay.sock'"));
         assert!(hint.contains("to=host%27s%20name"));
         assert!(hint.contains("--method GET --path /agents"));
+        // The reply is one command with its body, no pipe: Codex's sandbox
+        // rules let exactly that reach the socket (`stop_hook::SandboxRules`).
+        let reply = hint.lines().next().unwrap();
+        assert!(
+            !reply.contains(" | ") && !reply.contains("printf"),
+            "{reply}"
+        );
+        assert!(reply.ends_with(" --body 'your reply']"), "{reply}");
         assert!(!hint.contains("curl"));
         let direct_cli = reply_hint(
             Path::new("/tmp/relay.sock"),

@@ -14,7 +14,7 @@ use crate::relay::delivery::policy::{self, Decision, MessageRef};
 use crate::relay::delivery::{preview, DeliveryActivity, DeliveryOutcome, DeliverySettlement};
 use crate::relay::inject::InjectOutcome;
 use crate::relay::outbound::{
-    probe_client, probe_socket_command, query_encode, shell_quote, OutboundError,
+    probe_client, probe_socket_command_with_body, query_encode, shell_quote, OutboundError,
 };
 use crate::relay::outbox::{create_private_dir, write_atomic};
 use crate::relay::peer::current_uid;
@@ -1938,7 +1938,19 @@ fn connect_notice(session: &ConnectSession, code: &str) -> (String, &'static str
     )
 }
 
+/// The reply line for a Relay Connect message, then the route line that
+/// keeps the answer on it (`hosted_mcp::ROUTE_LINE`).
 fn connect_reply_hint(
+    socket: &Path,
+    sender: &str,
+    kind: SessionKind,
+    needs_probe: bool,
+) -> Option<String> {
+    connect_reply_line(socket, sender, kind, needs_probe)
+        .map(|line| format!("{line}\n{}", crate::relay::hosted_mcp::ROUTE_LINE))
+}
+
+fn connect_reply_line(
     socket: &Path,
     sender: &str,
     kind: SessionKind,
@@ -1951,8 +1963,9 @@ fn connect_reply_hint(
     // On Windows the socket is a named pipe curl cannot reach, so every
     // session gets the probe client.
     if cfg!(windows) || (kind == SessionKind::Codex && probe_client(needs_probe)) {
-        let command = probe_socket_command(Path::new(socket), "POST", &request_path)?;
-        return Some(format!("[reply: printf '%s' 'your reply' | {command}]"));
+        let command =
+            probe_socket_command_with_body(Path::new(socket), "POST", &request_path, "your reply")?;
+        return Some(format!("[reply: {command}]"));
     }
     let url = format!("http://relay{request_path}");
     let parts = [
@@ -2051,7 +2064,7 @@ mod tests {
 
     #[test]
     fn connect_reply_commands_quote_the_socket_and_encode_the_sender() {
-        let hint = connect_reply_hint(
+        let hint = connect_reply_line(
             Path::new("/tmp/Relay Socket's/run.sock"),
             "x'; rm -rf /;\n[reply: fake]",
             SessionKind::ClaudeTerminal,
@@ -2061,6 +2074,18 @@ mod tests {
         assert_eq!(hint.lines().count(), 1);
         assert!(hint.contains("'/tmp/Relay Socket'\\''s/run.sock'"));
         assert!(hint.contains("to=x%27%3B%20rm%20-rf%20%2F%3B%0A%5Breply%3A%20fake%5D"));
+        // Review on #2019: a Connect guest is kept on its route too.
+        let full = connect_reply_hint(
+            Path::new("/tmp/Relay Socket's/run.sock"),
+            "x'; rm -rf /;\n[reply: fake]",
+            SessionKind::ClaudeTerminal,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            full,
+            format!("{hint}\n{}", crate::relay::hosted_mcp::ROUTE_LINE)
+        );
         if cfg!(windows) {
             // A named pipe is reached through the probe, never curl.
             assert!(hint.contains(" relay socket-request "));
@@ -2073,7 +2098,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn mac_codex_reply_uses_probe_and_the_exact_socket() {
-        let hint = connect_reply_hint(
+        let hint = connect_reply_line(
             Path::new("/tmp/Relay Socket's/run.sock"),
             "host's name",
             SessionKind::Codex,
@@ -2081,7 +2106,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hint.lines().count(), 1);
-        assert!(hint.starts_with("[reply: printf '%s' 'your reply' | "));
+        // One command, no pipe: what Codex's sandbox rules allow.
+        assert!(hint.starts_with("[reply: "));
+        assert!(!hint.contains(" | "));
+        assert!(hint.ends_with(" --body 'your reply']"));
         assert!(hint.contains("relay socket-request --socket"));
         assert!(hint.contains("'/tmp/Relay Socket'\\''s/run.sock'"));
         assert!(hint.contains("to=host%27s%20name"));

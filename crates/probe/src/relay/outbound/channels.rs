@@ -323,11 +323,10 @@ pub fn socket_command(
             )
             && needs_probe)
     {
-        let command = probe_socket_command(socket, method, request_path)?;
-        return Some(match body {
-            Some(body) => format!("printf '%s' {} | {command}", shell_quote(body)),
-            None => command,
-        });
+        return match body {
+            Some(body) => super::probe_socket_command_with_body(socket, method, request_path, body),
+            None => probe_socket_command(socket, method, request_path),
+        };
     }
     let url = format!("http://relay{request_path}");
     let mut parts = vec!["curl", "-s", "-X", method, "--unix-socket", path, &url];

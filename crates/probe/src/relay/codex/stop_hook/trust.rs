@@ -22,21 +22,12 @@ pub(super) fn with_app_server(
 ) -> Result<(), String> {
     let executable =
         codex_for_hooks(installed).ok_or("No Codex to trust the hook with was found.")?;
-    let mut session = AppServer::start(&executable, codex_home)?;
-    session.request(
-        "initialize",
-        json!({"clientInfo": {"name": "agent-relay", "version": env!("CARGO_PKG_VERSION")}}),
-    )?;
-    session.notify("initialized")?;
+    let mut session = AppServer::open(&executable, codex_home)?;
     let listed = session.request("hooks/list", json!({"cwds": [codex_home]}))?;
     let mut untrusted = Map::new();
-    for event in ["stop", "postToolUse"] {
-        let hook = listed["data"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .flat_map(|entry| entry["hooks"].as_array().into_iter().flatten())
-            .find(|hook| hook["command"] == command && hook["eventName"] == event)
+    for event in EVENTS {
+        let hook = listed_hooks(&listed, command)
+            .find(|hook| hook["eventName"] == event)
             .ok_or("Codex does not list Agent Relay's hook.")?;
         if hook["trustStatus"] == "trusted" {
             continue;
@@ -57,6 +48,77 @@ pub(super) fn with_app_server(
             "value": untrusted,
         }),
     )?;
+    Ok(())
+}
+
+/// The hook events trusted, as `hooks/list` names them.
+const EVENTS: [&str; 2] = ["stop", "postToolUse"];
+
+/// The hooks `hooks/list` lists that run `command`.
+fn listed_hooks<'a>(listed: &'a Value, command: &'a str) -> impl Iterator<Item = &'a Value> {
+    listed["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|entry| entry["hooks"].as_array().into_iter().flatten())
+        .filter(move |hook| hook["command"] == command)
+}
+
+/// Takes the hook running `command` out of a Codex home with `edit`, and
+/// the trust [`with_app_server`] recorded for it out of Codex's
+/// `config.toml`: the hook's keys are listed while it is still in
+/// `hooks.json`, `edit` takes it out, then those keys leave `hooks.state`,
+/// and `hooks.state` (or `[hooks]`) goes too once nothing else is in it.
+/// Other entries, the person's own trust included, stay as they are.
+///
+/// The trust is tidied as well as it can be: with no Codex to ask, or one
+/// that does not answer, `edit` still runs and its outcome is returned.
+pub(super) fn untrust_with_app_server(
+    codex_home: &Path,
+    command: &str,
+    installed: Option<&Path>,
+    edit: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    let session = codex_for_hooks(installed)
+        .and_then(|executable| AppServer::open(&executable, codex_home).ok());
+    let Some(mut session) = session else {
+        return edit();
+    };
+    let keys: Vec<String> = session
+        .request("hooks/list", json!({"cwds": [codex_home]}))
+        .map(|listed| {
+            listed_hooks(&listed, command)
+                .filter(|hook| EVENTS.iter().any(|event| hook["eventName"] == *event))
+                .filter_map(|hook| hook["key"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    edit()?;
+    if keys.is_empty() {
+        return Ok(());
+    }
+    for key in &keys {
+        let _ = session.clear(&format!("hooks.state.{}", Value::from(key.as_str())));
+    }
+    // What is left of the person's own `[hooks]` in `config.toml`.
+    let Ok(read) = session.request("config/read", json!({"includeLayers": true})) else {
+        return Ok(());
+    };
+    let user = read["layers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|layer| layer["name"]["type"] == "user");
+    let Some(hooks) = user.and_then(|layer| layer["config"]["hooks"].as_object()) else {
+        return Ok(());
+    };
+    let state_empty = hooks
+        .get("state")
+        .is_some_and(|state| state.as_object().is_some_and(Map::is_empty));
+    if state_empty {
+        let only_state = hooks.len() == 1;
+        let _ = session.clear(if only_state { "hooks" } else { "hooks.state" });
+    }
     Ok(())
 }
 
@@ -155,6 +217,25 @@ impl AppServer {
         })
     }
 
+    /// A started app-server, initialized.
+    fn open(executable: &Path, codex_home: &Path) -> Result<AppServer, String> {
+        let mut session = AppServer::start(executable, codex_home)?;
+        session.request(
+            "initialize",
+            json!({"clientInfo": {"name": "agent-relay", "version": env!("CARGO_PKG_VERSION")}}),
+        )?;
+        session.notify("initialized")?;
+        Ok(session)
+    }
+
+    /// Removes the user `config.toml` value at `key_path`.
+    fn clear(&mut self, key_path: &str) -> Result<Value, String> {
+        self.request(
+            "config/value/write",
+            json!({"keyPath": key_path, "mergeStrategy": "replace", "value": null}),
+        )
+    }
+
     fn send(&mut self, message: &Value) -> Result<(), String> {
         let mut line = serde_json::to_vec(message).map_err(|error| error.to_string())?;
         line.push(b'\n');
@@ -226,6 +307,38 @@ mod tests {
         assert_eq!(
             choose_codex(home.path(), None, || Some("/usr/bin/codex".into())),
             Some(PathBuf::from("/usr/bin/codex"))
+        );
+    }
+
+    // Against a real Codex (0.163 when written), in a throwaway Codex home:
+    //   cargo test --lib real_codex_untrust -- --ignored
+    #[test]
+    #[ignore = "runs a real Codex app-server"]
+    fn real_codex_untrust_puts_config_toml_back_byte_for_byte() {
+        let home = tempfile::tempdir().unwrap();
+        let codex_home = home.path();
+        let command = "'/Apps/Agent Relay.app/probe' relay codex-stop-hook";
+        let hook = json!([{"hooks": [{"type": "command", "command": command, "timeout": 10}]}]);
+        let theirs = "{\"hooks\": {\"Stop\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"notify.sh\"}]}]}}";
+        let with_ours = json!({"hooks": {
+            "Stop": [{"hooks": [{"type": "command", "command": "notify.sh"}]}, hook[0]],
+            "PostToolUse": hook,
+        }});
+        std::fs::write(codex_home.join("hooks.json"), with_ours.to_string()).unwrap();
+        let config = "# mine\nmodel = \"gpt-5\"   # trailing\n\n[projects.\"/x\"]\ntrust_level = \"trusted\"\n";
+        std::fs::write(codex_home.join("config.toml"), config).unwrap();
+
+        with_app_server(codex_home, command, None).unwrap();
+        let trusted = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
+        assert_eq!(trusted.matches("trusted_hash").count(), 2, "{trusted}");
+
+        untrust_with_app_server(codex_home, command, None, &mut || {
+            std::fs::write(codex_home.join("hooks.json"), theirs).map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(codex_home.join("config.toml")).unwrap(),
+            config
         );
     }
 
