@@ -275,6 +275,35 @@ pub const CONNECTION_METHODS: &[&str] = &[
     method::DaemonShutdown::NAME,
 ];
 
+/// Methods served by session history (capture and upload to RelayHistory,
+/// the `history` Cargo feature). They are in the contract of every build,
+/// so clients see one contract; a core built without session history (relay's
+/// build) answers each with `history_unavailable`.
+pub const HISTORY_METHODS: &[&str] = &[
+    method::UploaderStatus::NAME,
+    method::UploaderStart::NAME,
+    method::UploaderPause::NAME,
+    method::UploaderResume::NAME,
+    method::UploaderRetry::NAME,
+    method::UploaderCompact::NAME,
+    method::UploaderDisconnect::NAME,
+    method::UploaderSharingSet::NAME,
+    method::UploaderSessionsList::NAME,
+    method::UploaderSessionsFacets::NAME,
+    method::UploaderSessionsQuery::NAME,
+    method::UploaderSessionsPreview::NAME,
+    method::UploaderSessionsInclude::NAME,
+    method::UploaderSessionsReset::NAME,
+    method::UploaderSessionsDelete::NAME,
+    method::UploaderSessionsExclude::NAME,
+    method::SessionsTranscript::NAME,
+];
+
+/// Whether `method` is one of the [`HISTORY_METHODS`].
+pub fn needs_history(method: &str) -> bool {
+    HISTORY_METHODS.contains(&method)
+}
+
 /// One event topic's payload type.
 pub trait EventData: Serialize + DeserializeOwned {
     const TOPIC: Topic;
@@ -416,6 +445,21 @@ mod tests {
             METHODS.len(),
             "a method is registered twice"
         );
+    }
+
+    #[test]
+    fn history_methods_are_registered_and_every_uploader_method_is_one() {
+        let registered: BTreeSet<&str> = METHODS.iter().map(|m| m.name).collect();
+        for name in HISTORY_METHODS {
+            assert!(registered.contains(name), "{name} is not registered");
+            assert!(!CONNECTION_METHODS.contains(name), "{name}");
+        }
+        for name in registered
+            .iter()
+            .filter(|name| name.starts_with("uploader."))
+        {
+            assert!(needs_history(name), "{name} reads the uploader");
+        }
     }
 
     #[test]

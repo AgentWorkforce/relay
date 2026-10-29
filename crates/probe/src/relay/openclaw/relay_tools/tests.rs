@@ -1,6 +1,7 @@
 use super::cli::{await_login, from_dirs, from_gateway, LoginLines, Step};
 use super::*;
 use crate::relay::process::{FakeProcess, FakeProcesses};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

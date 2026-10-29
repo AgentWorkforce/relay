@@ -35,7 +35,7 @@ aligns.
 | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `src/probe/`                                                        | The `agent-relay-probe` binary: bridge commands, the collector's delivery loop, `live` capture, progress, and `history`, its one path into `SessionStore`                                             |
 | `src/relay/`                                                        | The relay core daemon (`relay serve`): workspace and account, Relaycast, delivery and injection per harness, harness setup (hooks/plugins), spawning, the bridge and its contract (`relay::contract`) |
-| `src/cloud*`, `src/delivery*`, `src/destination*`, `src/retention*` | Cloud sign-in; with `history`, the upload queue and its worker, the RelayHistory receiver, history retention                                                                                                          |
+| `src/cloud*`, `src/delivery*`, `src/destination*`, `src/retention*` | Cloud sign-in; with `history`, the upload queue and its worker, the RelayHistory receiver, history retention                                                                                          |
 | `src/install*`                                                      | Where a packaged desktop install keeps its executables (`agent-relay`, `agent-relay-probe`); the core's launch-at-login entry uses it                                                                 |
 | `src/session_model*`                                                | The session catalog's view model (rows, the session search language, upload states) the core's catalog query filters by                                                                               |
 | `src/bin/relay-contract-codegen.rs`                                 | Generates the Swift bridge contract the apps consume                                                                                                                                                  |
@@ -46,39 +46,51 @@ aligns.
 ## Two builds: the core, and the core with session history
 
 Session history (capturing local sessions and uploading them to RelayHistory)
-is the only part of the crate built on relayhistory's `ai-hist`. It sits
-behind the `history` Cargo feature, which is on by default:
+is the only part of the crate built on relayhistory's `ai-hist` and
+`history-provider-sources`. It sits behind the `history` Cargo feature, which
+is on by default:
 
-| Build | Command | relayhistory | Who ships it |
-|---|---|---|---|
-| Core | `cargo build --locked --no-default-features --features production-binaries` | none | relay (`relay init`, `relay serve --headless`) |
-| Core + history | `cargo build --locked` | `ai-hist`, `history-provider-sources` | relay-desktop |
+| Build          | Command                                                                     | relayhistory                          | Who ships it                                   |
+| -------------- | --------------------------------------------------------------------------- | ------------------------------------- | ---------------------------------------------- |
+| Core           | `cargo build --locked --no-default-features --features production-binaries` | none                                  | relay (`relay init`, `relay serve --headless`) |
+| Core + history | `cargo build --locked`                                                      | `ai-hist`, `history-provider-sources` | relay-desktop                                  |
 
 The core alone is the whole messaging runtime: `relay serve` (discovery,
 native delivery and injection into running sessions, harness setup and
-hooks, Relaycast, spawning, the bridge and its contract), `relay call`, the
-harness hooks and `connect`. The binary's history commands (`cloud`, `run`,
-`start`, `status`, `sessions`, `sharing`, `history flush`, …) exist only with
+hooks, Relaycast and the workspace, spawning, the bridge and its contract),
+`relay call`, the harness hooks, `connect` and the install helpers. The
+binary's history commands (`cloud`, `run`, `start`, `stop`, `status`,
+`installs`, `sessions`, `sharing`, `history flush`, ...) exist only with
 `history`.
 
-Without `history`, the bridge contract is unchanged (CI checks the generated
-contract is identical), and the history-backed answers degrade:
+The bridge contract is the same in both builds: it is generated from the
+method registry, which no feature changes, and CI checks that both builds
+generate the checked-in `contract/CoreContract.swift`. Without `history`:
 
-- `sessions.query` and `sessions.facets` (the session-catalog search) are
-  refused: there is no catalog;
-- the history-retention setting is kept in settings only, with no store to
-  apply it to;
-- Devin Cloud and claude.ai web sessions are not listed, and a send to a
-  Devin Cloud session falls back to the local route (`devin_cloud`,
-  `claude_web`), since both come from the history catalog and connectors;
-- Hermes session titles are not editable (they resolve Hermes's roots
-  through `ai-hist`);
-- the uploader's background status monitor never starts, and
-  `status.get` reports no `history_version`.
+- the history-only methods (`relay::contract::HISTORY_METHODS`: every
+  `uploader.*` method and `sessions.transcript`) answer the typed error
+  `history_unavailable` (not retryable), before their parameters are read;
+- `settings.set` of `history_retention_days` answers `history_unavailable`,
+  and `settings.get` reports its default (30);
+- `status.get` reports `daemon.history_version` as null, which is how a
+  client can tell the build;
+- Devin Cloud and claude.ai web sessions are not discovered (both are read
+  from the history catalog), and a send to a Devin Cloud session id fails
+  as refused, permanently: Devin Cloud delivery is history-only;
+- agent-led setup (`/setup/*`) does not wait for an uploader, and
+  `POST /setup/sharing` answers `setup_unavailable`;
+- Hermes session titles are not editable (Hermes's roots resolve through
+  `ai-hist`);
+- the uploader finds no install, so nothing is uploaded and no background
+  history monitor runs. Cloud sign-in (`account.sign_in`) still adopts the
+  workspace, then ends in `error` with the `history_unavailable` sentence,
+  because its last step sets up the uploader (`cloud install`); relay
+  resolves its workspace from the CLI instead.
 
 `.github/workflows/probe-ci.yml`'s `core-only` job builds and tests this
-build, fails if `ai-hist` or `history-provider-sources` appear in its
-dependency tree, and checks that it generates the same contract.
+build on Linux, fails if `ai-hist` or `history-provider-sources` appear in its
+dependency tree, and checks it generates the same contract. The macOS and
+Windows jobs build it too.
 
 ## Build and test
 

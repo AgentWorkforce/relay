@@ -1293,7 +1293,13 @@ async fn sign_out_revokes_the_session_and_disconnects_the_uploader() {
     })
     .await;
     let (kind, _) = client.error("uploader.status", json!({})).await;
-    assert_eq!(kind, "not_signed_in");
+    // Without session history the method is refused whatever the account.
+    let expected = if cfg!(feature = "history") {
+        "not_signed_in"
+    } else {
+        "history_unavailable"
+    };
+    assert_eq!(kind, expected);
     assert!(harness.account.account().is_none());
     harness.stop().await;
 }
@@ -1546,6 +1552,8 @@ async fn legacy_workspace_name_rejects_another_workspace_or_person() {
     }
 }
 
+// Drives the uploader's bridge methods, which need session history.
+#[cfg(feature = "history")]
 #[tokio::test]
 async fn an_existing_connection_is_found_at_start_and_the_uploader_answers() {
     let harness = Harness::start_with(|cloud, setup| {
@@ -1626,6 +1634,8 @@ async fn connect_workspace_resolves_with_the_kept_session() {
     harness.stop().await;
 }
 
+// Drives the uploader's bridge methods, which need session history.
+#[cfg(feature = "history")]
 #[tokio::test]
 async fn the_bridge_lists_every_account_method_and_the_sign_in_topic() {
     let harness = Harness::start().await;
@@ -1962,6 +1972,8 @@ fn operation<'a>(events: &'a [Value], operation: &str, outcome: &str) -> Option<
     })
 }
 
+// Drives the uploader's bridge methods, which need session history.
+#[cfg(feature = "history")]
 #[tokio::test]
 async fn usage_actions_keep_properties_and_failures_without_content() {
     let harness = Harness::start_with(|cloud, setup| {
@@ -2086,6 +2098,8 @@ async fn cancelling_sign_in_is_recorded_once_by_the_core() {
     harness.stop().await;
 }
 
+// Drives the uploader's bridge methods, which need session history.
+#[cfg(feature = "history")]
 #[tokio::test]
 async fn disconnect_during_sign_in_renewal_does_not_record_sign_in_cancellation() {
     let harness = Harness::start_with(|cloud, setup| {
@@ -2270,6 +2284,8 @@ async fn a_setup_cancelled_after_it_connected_disconnects_what_it_made() {
     harness.stop().await;
 }
 
+// Drives the uploader's bridge methods, which need session history.
+#[cfg(feature = "history")]
 #[tokio::test]
 async fn a_cancelled_setup_that_reused_a_kept_session_leaves_it_kept() {
     let harness = Harness::start().await;

@@ -96,7 +96,7 @@ jobs:
           cargo test --locked -- --test-threads=4
 
   core-only:
-    name: Linux x64 core without history (no relayhistory)
+    name: Linux x64 core without history build + test
     # The build relay ships: the messaging runtime alone, with no
     # `ai-hist`/relayhistory dependency (see docs/probe-move.md).
     runs-on: ubuntu-latest
@@ -147,6 +147,9 @@ jobs:
           cache-bin: false
       - name: Build
         run: cargo build --locked
+      # The core relay ships, without session history (see core-only).
+      - name: Build without history
+        run: cargo build --locked --no-default-features --features production-binaries
       - name: Test
         run: |
           # Keep the toolchain where it was installed before hiding HOME.
@@ -181,3 +184,9 @@ jobs:
           # close to Windows' 260-character limit.
           CARGO_HOME: C:\ch
         run: cargo build --locked
+      # The core relay ships, without session history (see core-only).
+      - name: Build without history
+        shell: bash
+        env:
+          CARGO_HOME: C:\ch
+        run: cargo build --locked --no-default-features --features production-binaries

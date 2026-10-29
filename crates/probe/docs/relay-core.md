@@ -244,6 +244,20 @@ to show a person. Messages never carry provider bodies, keys or tokens.
 | `cloud_failed` | -32000 | yes | Agent Relay Cloud (or relayfile) could not be reached or failed |
 | `cloud_refused` | -32000 | no | Agent Relay Cloud refused the request; `message` is its own text when it sent one |
 | `uploader_failed` | -32000 | no | The probe's uploader command failed or ran out of time; `message` is the probe's own sentence |
+| `history_unavailable` | -32000 | no | The method needs session history and this core was built without it (the `history` feature is off, as in relay's build); see below |
+
+A core built without session history (`--no-default-features --features
+production-binaries`, the build relay ships) keeps every method in the
+contract, so the apps see one contract. It answers the history-only methods
+(`relay::contract::HISTORY_METHODS`: every `uploader.*` method and
+`sessions.transcript`) with `history_unavailable` before reading their
+parameters, and a change to `history_retention_days` likewise (the setting
+reads its default, 30). `status.get`'s `daemon.history_version` is null in
+that build. A send to a Devin Cloud session fails as refused, and Cloud
+sign-in (`account.sign_in`) adopts the workspace but ends in `error` with the
+same sentence, since its `cloud install` sets up the uploader. Agent-led setup
+closes its bootstrap without an uploader, and `POST /setup/sharing` answers
+`setup_unavailable`.
 
 Provider `plan_limit_exceeded` responses (including HTTP 429) are reported
 as `relaycast_refused`, with a safe instruction to upgrade the workspace plan

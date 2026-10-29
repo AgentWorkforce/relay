@@ -91,6 +91,8 @@ impl From<UploaderError> for RpcError {
     fn from(error: UploaderError) -> RpcError {
         let kind = if error.message == crate::history_access::RESET_BUSY {
             ErrorKind::Busy
+        } else if error.message == crate::relay::protocol::HISTORY_UNAVAILABLE {
+            ErrorKind::HistoryUnavailable
         } else {
             ErrorKind::UploaderFailed
         };
@@ -179,6 +181,45 @@ pub trait ProbeRunner: Send + Sync + 'static {
     /// Stops every command in flight and refuses those queued before this
     /// call, so nothing started before a sign-out runs after it.
     fn cancel_all(&self) -> BoxFuture<'_, Result<(), UploaderError>>;
+}
+
+/// The runner of a core built without session history: this binary has
+/// none of the uploader's commands. It lists no installs and reclaims
+/// nothing, so the account's discovery and start-up stay quiet, and refuses
+/// every other command (and sign-in's `cloud install`) with
+/// `history_unavailable`.
+pub struct NoHistoryRunner;
+
+impl ProbeRunner for NoHistoryRunner {
+    fn run(
+        &self,
+        args: Vec<String>,
+        _timeout: Option<Duration>,
+    ) -> BoxFuture<'_, Result<Value, UploaderError>> {
+        Box::pin(async move {
+            match args.first().map(String::as_str) {
+                Some("installs") => Ok(serde_json::json!({ "installs": [] })),
+                Some("reclaim") => Ok(serde_json::json!({})),
+                _ => Err(UploaderError::new(
+                    crate::relay::protocol::HISTORY_UNAVAILABLE,
+                )),
+            }
+        })
+    }
+
+    fn install(
+        &self,
+        _args: Vec<String>,
+        _bearer: Option<Secret>,
+    ) -> Result<InstallRun, UploaderError> {
+        Err(UploaderError::new(
+            crate::relay::protocol::HISTORY_UNAVAILABLE,
+        ))
+    }
+
+    fn cancel_all(&self) -> BoxFuture<'_, Result<(), UploaderError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// Runs this binary's own commands as child processes.
@@ -2078,6 +2119,47 @@ mod tests {
             .unwrap();
         assert!(writer.wait().unwrap().success());
         path
+    }
+
+    /// A core without session history finds no install and reclaims
+    /// nothing, quietly, and refuses everything else as unavailable.
+    #[tokio::test]
+    async fn the_no_history_runner_lists_nothing_and_refuses_the_rest() {
+        let uploader = Uploader::new(Arc::new(NoHistoryRunner));
+        assert_eq!(
+            uploader
+                .installs("https://agentrelay.com", None)
+                .await
+                .unwrap(),
+            None
+        );
+        let runner = NoHistoryRunner;
+        assert!(runner.run(command::reclaim(), None).await.is_ok());
+        let target = Target {
+            site_url: "https://agentrelay.com".into(),
+            account_id: None,
+            workspace_id: Some("w".into()),
+        };
+        for args in [
+            command::simple("status", &target),
+            command::sessions_list(&target, 10),
+            command::cloud_install(&target, SharingMode::All, false),
+        ] {
+            let error: RpcError = runner.run(args, None).await.unwrap_err().into();
+            assert_eq!(error.data.kind, ErrorKind::HistoryUnavailable);
+        }
+        let refused = runner
+            .install(
+                command::cloud_install(&target, SharingMode::All, false),
+                None,
+            )
+            .err()
+            .unwrap();
+        assert_eq!(
+            RpcError::from(refused).data.kind,
+            ErrorKind::HistoryUnavailable
+        );
+        assert!(runner.cancel_all().await.is_ok());
     }
 
     #[cfg(unix)]

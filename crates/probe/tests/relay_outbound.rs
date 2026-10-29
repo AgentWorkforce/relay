@@ -252,12 +252,14 @@ const CLOUD_SITE: &str = "http://127.0.0.1:9";
 
 /// A probe whose install is found at once but whose uploader never
 /// answers: `status` and `sharing set` wait forever, as a collector stuck on
-/// the network leaves them.
+/// the network leaves them. Only the uploader tests (session history) use it.
+#[cfg_attr(not(feature = "history"), allow(dead_code))]
 #[derive(Default)]
 struct StalledProbe {
     calls: Mutex<Vec<String>>,
 }
 
+#[cfg_attr(not(feature = "history"), allow(dead_code))]
 impl StalledProbe {
     fn called(&self, command: &str) -> bool {
         self.calls.lock().unwrap().iter().any(|c| c == command)
@@ -4179,6 +4181,8 @@ async fn status_reports_a_new_key_pending_while_relaycast_is_stalled() {
 // The headless service's startup bootstrap waits on an uploader stuck on the
 // network; status reports the uploader and the defaults pending instead of
 // waiting with it.
+// The uploader's status and sharing need session history.
+#[cfg(feature = "history")]
 #[tokio::test]
 async fn status_answers_while_the_uploader_is_stalled() {
     let probe = Arc::new(StalledProbe::default());
@@ -4220,6 +4224,8 @@ async fn status_answers_while_the_uploader_is_stalled() {
 // The bootstrap never changes an install's sharing mode: an owner's `new`
 // or `all` is kept, as is the `selected` a sign-in installs, and the
 // defaults still count as applied once the uploader answers.
+// The uploader's status and sharing need session history.
+#[cfg(feature = "history")]
 #[tokio::test]
 async fn the_bootstrap_keeps_an_installs_own_sharing_mode() {
     for mode in ["new", "all", "selected"] {
@@ -4838,6 +4844,7 @@ impl ProbeRunner for StatusProbe {
 /// `/setup/status` once its uploader summary satisfies `done`. The daemon
 /// refreshes the shared snapshot every five seconds; pace this caller below
 /// the real 30-requests-per-minute limit across all three stage transitions.
+#[cfg(feature = "history")]
 async fn uploader_status(h: &Harness, done: impl Fn(&Value) -> bool) -> Value {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -4854,6 +4861,8 @@ async fn uploader_status(h: &Harness, done: impl Fn(&Value) -> bool) -> Value {
 // upload sign-in could not be renewed, and when an upload was last
 // acknowledged. Records waiting too long with no acknowledgement degrade
 // health whatever the failure, even with none reported.
+// The uploader's status and sharing need session history.
+#[cfg(feature = "history")]
 #[tokio::test]
 async fn setup_status_reports_the_upload_stage_failure_and_last_acknowledgement() {
     let now = std::time::SystemTime::now()

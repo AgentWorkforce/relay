@@ -1353,8 +1353,9 @@ pub(crate) mod tests {
 
 // Without the `history` feature there is no session catalog to list Devin
 // Cloud sessions from and no remote connector to send through: nothing is
-// discovered, and the remote route never applies, so the caller's local
-// answer stands.
+// discovered, and a send to a Devin Cloud session id (one a core built with
+// history registered, in a shared store) is refused for good, since no retry
+// can reach it. Any other id keeps the caller's local answer.
 #[cfg(not(feature = "history"))]
 pub fn discover(
     _config: &crate::relay::devin::DevinConfig,
@@ -1372,8 +1373,38 @@ pub fn started_by_automation(_probe_root: &std::path::Path) -> std::collections:
 pub fn send_cloud(
     _config: &crate::relay::devin::DevinConfig,
     _probe_root: Option<&std::path::Path>,
-    _session_id: &str,
+    session_id: &str,
     _text: &str,
 ) -> Option<crate::relay::inject::InjectOutcome> {
-    None
+    is_cloud_session_id(session_id).then(|| {
+        crate::relay::inject::InjectOutcome::Refused(
+            "Devin Cloud delivery needs session history, which this build of the Agent Relay core does not include".into(),
+        )
+    })
+}
+
+#[cfg(all(test, not(feature = "history")))]
+mod no_history_tests {
+    use super::*;
+    use crate::relay::inject::InjectOutcome;
+
+    /// A Devin Cloud session cannot be reached without session history, so a
+    /// send to one fails for good; a local session keeps its own answer.
+    #[test]
+    fn a_cloud_send_is_refused_and_a_local_one_left_alone() {
+        let home = tempfile::tempdir().unwrap();
+        let config = crate::relay::devin::DevinConfig {
+            data_dir: home.path().join("data"),
+            config_dir: home.path().join("config"),
+            home: home.path().into(),
+            development: false,
+        };
+        let cloud = "devin-0123456789abcdef0123456789abcdef";
+        assert!(matches!(
+            send_cloud(&config, None, cloud, "hi"),
+            Some(InjectOutcome::Refused(reason)) if reason.contains("session history")
+        ));
+        assert!(send_cloud(&config, None, "real-gallium", "hi").is_none());
+        assert!(discover(&config, home.path()).is_empty());
+    }
 }

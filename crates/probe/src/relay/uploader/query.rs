@@ -313,10 +313,7 @@ impl Uploader {
 #[cfg(not(feature = "history"))]
 impl Uploader {
     fn catalog_unavailable() -> RpcError {
-        RpcError::new(
-            ErrorKind::Refused,
-            "Session search needs session history, which this core is built without.",
-        )
+        RpcError::history_unavailable()
     }
 
     pub(crate) async fn sessions_query(

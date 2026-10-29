@@ -356,6 +356,9 @@ mod tests {
             loop {
                 match self_hosted.accept() {
                     Ok((mut stream, _)) => {
+                        // macOS hands back an accepted socket that inherits the
+                        // listener's non-blocking mode; Linux does not.
+                        stream.set_nonblocking(false).unwrap();
                         let mut request = [0u8; 1024];
                         let read = stream.read(&mut request).unwrap();
                         stream
