@@ -1382,6 +1382,13 @@ mod tests {
         assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
         let rules = codex.join("rules");
         std::fs::set_permissions(&rules, std::fs::Permissions::from_mode(0o500)).unwrap();
+        // Root ignores the mode: there is nothing to refuse it, so the
+        // retry path cannot be shown.
+        if std::fs::write(rules.join(".probe"), b"").is_ok() {
+            let _ = std::fs::remove_file(rules.join(".probe"));
+            std::fs::set_permissions(&rules, std::fs::Permissions::from_mode(0o700)).unwrap();
+            return;
+        }
         let outcome = settings.set(SETTING, &json!(false));
         std::fs::set_permissions(&rules, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(matches!(outcome, Some(Err(_))), "{outcome:?}");
