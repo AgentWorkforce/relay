@@ -705,8 +705,13 @@ impl Setup {
         // Whether the core will put this session on the relay by itself:
         // automatic activation is on, there is a workspace to join, and
         // activation's own check admits this session.
-        let auto_activates =
-            self.core.store.read(|s| s.auto_activates()) && self.core.workspace().is_some() && {
+        let setting = self.core.store.read(|s| s.auto_activate);
+        let auto_activates = self.core.workspace().is_some()
+            && crate::relay::agents::auto_activation::activation_applies(
+                setting,
+                session.target.kind,
+            )
+            && {
                 let directory = self.core.plugins.sessions.clone();
                 let session = session.clone();
                 tokio::task::spawn_blocking(move || directory.auto_activates(&session))

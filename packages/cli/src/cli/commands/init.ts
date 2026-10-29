@@ -972,35 +972,46 @@ async function setupInjection(
   try {
     const record = readDeliveryRecord(deliveryRecordPath());
     const ctx = deps.toolContext();
-    // The Claude logins whose crossSessionInbound is unset: the ones the
-    // direct-delivery default may set, and uninstall must unset again.
-    const unset = tools.includes('claude')
-      ? claudeLoginSettings(ctx).filter((file) => claudeInbound(file) === null)
-      : [];
+    // Every Claude login's crossSessionInbound before anything changes: what
+    // turning direct delivery off again puts back, the person's own choices
+    // included, instead of the hold the core writes on each login.
+    const before = tools.includes('claude') ? claudeInboundValues(ctx) : {};
     const { results, turnedOn, turnedOff } = await enableDelivery(session.client, tools, record.turnedOn);
-    const accepted = unset.filter((file) => claudeInbound(file) === 'accept');
     // Applied to the record as it is now, not as it was read: another
     // relay init may have recorded its own changes meanwhile.
     const save = () =>
       updateDeliveryRecord((current) => {
-        if (turnedOff.includes('direct_delivery')) {
-          // Rolled back: the core wrote hold where init had set accept, in this run or an earlier one.
-          restoreClaudeInbound([...new Set([...current.claudeInbound, ...unset])]);
-        }
+        // Older originals win: they were recorded before init first changed anything.
+        const originals = { ...before, ...current.claudeInbound };
+        if (turnedOff.includes('direct_delivery')) restoreClaudeInbound(originals);
         return {
           turnedOn: [...new Set([...current.turnedOn, ...turnedOn])].filter(
             (key) => !turnedOff.includes(key)
           ),
           claudeInbound: turnedOff.includes('direct_delivery')
-            ? []
-            : [...new Set([...current.claudeInbound, ...accepted])],
+            ? {}
+            : turnedOn.includes('direct_delivery')
+              ? originals
+              : current.claudeInbound,
         };
       });
     try {
       save();
     } catch (error) {
-      await undoUnrecorded(session.client, turnedOn, accepted, error as Error);
+      await undoUnrecorded(session.client, turnedOn, before, error as Error);
       throw error;
+    }
+    // A failed tool whose settings could not be turned off is still on the
+    // core's route: it gets no MCP server, and setup stops (it is recorded,
+    // so --uninstall can still turn it off).
+    const stuck = results.filter((result) => result.stuck && result.stuck.length > 0);
+    if (stuck.length > 0) {
+      throw new InjectionStuckError(
+        stuck.map((result) => `${findToolTarget(result.id)!.label}: ${result.message}`).join('\n') +
+          '\nThese settings relay init turned on could not be turned off after the tool failed, so no ' +
+          'Relay MCP server was added for it (two routes would split its messages). Run relay init ' +
+          'again once the core answers, or relay init --uninstall.'
+      );
     }
     const workspaceNote = await coreWorkspaceNote(deps, session.client, setup);
     return { core: describeCore(session), results, workspaceNote };
@@ -1024,12 +1035,12 @@ class InjectionStuckError extends Error {}
 async function undoUnrecorded(
   client: CoreClient,
   turnedOn: string[],
-  accepted: string[],
+  before: Record<string, string | null>,
   cause: Error
 ): Promise<void> {
   const failures = await disableDelivery(client, turnedOn);
   if (turnedOn.includes('direct_delivery') && !failures.some((f) => f.startsWith('direct_delivery:'))) {
-    restoreClaudeInbound(accepted);
+    restoreClaudeInbound(before);
   }
   if (failures.length > 0) {
     throw new InjectionStuckError(
@@ -1183,21 +1194,37 @@ function claudeInbound(file: string): string | null | undefined {
   }
 }
 
+/** Each readable Claude login's `crossSessionInbound` (null: absent), by settings file. */
+function claudeInboundValues(ctx: ToolContext): Record<string, string | null> {
+  const values: Record<string, string | null> = {};
+  for (const file of claudeLoginSettings(ctx)) {
+    // A login folder Claude Code has never made holds nothing to put back.
+    if (!fs.existsSync(path.dirname(file))) continue;
+    const value = claudeInbound(file);
+    if (value !== undefined) values[file] = value;
+  }
+  return values;
+}
+
 /**
  * The core turns Claude Code's direct delivery off by writing
  * `crossSessionInbound: "hold"` (Claude Code's own default) on every login
- * where it was on. Where relay init had turned it on, the key was absent
- * before (the default only fills an absent key), so it is removed again
- * rather than left as `hold`.
- * @param files - The settings files init recorded as changed
+ * where it was on, the person's own `accept` included. Run after that core
+ * call (the core writes it then, and not again until direct delivery is
+ * turned on), this puts back each login's value from before init: removed
+ * where it was absent, the person's own value where they had one. A login
+ * the person changed since (anything but `hold`) is left as it is.
+ * @param originals - Settings file to its value before init (null: absent)
  */
-function restoreClaudeInbound(files: string[]): void {
-  for (const file of files) {
+function restoreClaudeInbound(originals: Record<string, string | null>): void {
+  for (const [file, original] of Object.entries(originals)) {
+    if (original === 'hold') continue;
     try {
       const settings = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
       if (!settings || typeof settings !== 'object' || Array.isArray(settings)) continue;
       if (settings.crossSessionInbound !== 'hold') continue;
-      delete settings.crossSessionInbound;
+      if (original === null) delete settings.crossSessionInbound;
+      else settings.crossSessionInbound = original;
       writeKeepingMode(file, `${JSON.stringify(settings, null, 2)}\n`);
     } catch {
       // Unreadable or not JSON: left as the core wrote it.
@@ -1205,11 +1232,11 @@ function restoreClaudeInbound(files: string[]): void {
   }
 }
 
-/** The Claude files to restore: the recorded ones, else (an older record) this login's. */
-function recordedClaudeFiles(record: DeliveryRecord, ctx: ToolContext): string[] {
-  return record.claudeInbound.length > 0
+/** The Claude values to restore: the recorded ones, else (an older record) this login's unset. */
+function recordedClaudeFiles(record: DeliveryRecord, ctx: ToolContext): Record<string, string | null> {
+  return Object.keys(record.claudeInbound).length > 0
     ? record.claudeInbound
-    : [path.join(claudeConfigDir(ctx), 'settings.json')];
+    : { [path.join(claudeConfigDir(ctx), 'settings.json')]: null };
 }
 
 /**
@@ -1228,7 +1255,7 @@ function writeDeliveryRecord(record: DeliveryRecord): void {
   }
   writePrivateJson(deliveryRecordPath(), {
     turnedOn: record.turnedOn,
-    ...(record.claudeInbound.length > 0 ? { claudeInbound: record.claudeInbound } : {}),
+    ...(Object.keys(record.claudeInbound).length > 0 ? { claudeInbound: record.claudeInbound } : {}),
   });
 }
 
@@ -1267,7 +1294,7 @@ async function turnOffInjection(deps: InitCommandDependencies, keys: string[]): 
       if (done.includes('direct_delivery')) restoreClaudeInbound(recordedClaudeFiles(current, ctx));
       return {
         turnedOn: current.turnedOn.filter((key) => !done.includes(key)),
-        claudeInbound: done.includes('direct_delivery') ? [] : current.claudeInbound,
+        claudeInbound: done.includes('direct_delivery') ? {} : current.claudeInbound,
       };
     });
     if (failures.length > 0) {

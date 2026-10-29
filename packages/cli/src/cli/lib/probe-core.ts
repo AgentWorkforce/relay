@@ -375,6 +375,11 @@ export interface DeliveryResult {
   status: 'on' | 'failed' | 'held';
   route: string;
   message?: string;
+  /**
+   * Settings init turned on for a failed tool that could not be turned off
+   * again: the tool is still on the core's route, so it must not get MCP.
+   */
+  stuck?: string[];
 }
 
 /** What one `enableDelivery` did. */
@@ -464,7 +469,13 @@ export async function enableDelivery(
     }
     if (failure) {
       const stuck = await rollBack(deliveryKeys(id));
-      results.push({ id, status: 'failed', route, message: [failure, ...stuck].join('; ') });
+      results.push({
+        id,
+        status: 'failed',
+        route,
+        message: [failure, ...stuck].join('; '),
+        ...(stuck.length > 0 ? { stuck } : {}),
+      });
     } else if (id === 'claude' && values.direct_delivery !== true) {
       results.push({
         id,
@@ -495,6 +506,7 @@ export async function enableDelivery(
       const stuck = await rollBack(deliveryKeys(result.id));
       result.status = 'failed';
       result.message = [`automatic activation: ${activation}`, ...stuck].join('; ');
+      if (stuck.length > 0) result.stuck = stuck;
     }
   }
   return { results, turnedOn, turnedOff };
@@ -555,14 +567,26 @@ export interface DeliveryRecord {
   /** Core settings (by read key) init turned on. */
   turnedOn: string[];
   /**
-   * Claude settings files whose `crossSessionInbound` was unset until the
-   * core's direct-delivery default set it, on every Claude login it follows.
+   * Each Claude login's `crossSessionInbound` (null: absent) from before init
+   * turned direct delivery on, by settings file: what turning it off again
+   * puts back in place of the `hold` the core writes.
    */
-  claudeInbound: string[];
+  claudeInbound: Record<string, string | null>;
 }
 
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+
+/** Recorded originals; an older record's list named files that were unset. */
+function originals(value: unknown): Record<string, string | null> {
+  if (Array.isArray(value)) return Object.fromEntries(strings(value).map((file) => [file, null]));
+  if (!value || typeof value !== 'object') return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, string | null] => entry[1] === null || typeof entry[1] === 'string'
+    )
+  );
+}
 
 /**
  * The record of what init turned on.
@@ -572,9 +596,9 @@ const strings = (value: unknown): string[] =>
 export function readDeliveryRecord(file: string): DeliveryRecord {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown> | null;
-    return { turnedOn: strings(parsed?.turnedOn), claudeInbound: strings(parsed?.claudeInbound) };
+    return { turnedOn: strings(parsed?.turnedOn), claudeInbound: originals(parsed?.claudeInbound) };
   } catch {
-    return { turnedOn: [], claudeInbound: [] };
+    return { turnedOn: [], claudeInbound: {} };
   }
 }
 

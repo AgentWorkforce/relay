@@ -354,9 +354,21 @@ describe('records', () => {
 
   it('reads the recorded Claude settings files, strings only', () => {
     const file = path.join(dir, 'core-settings.json');
+    // An older record listed the files that were unset.
     fs.writeFileSync(file, JSON.stringify({ turnedOn: ['direct_delivery'], claudeInbound: ['/a', 7] }));
-    expect(readDeliveryRecord(file)).toEqual({ turnedOn: ['direct_delivery'], claudeInbound: ['/a'] });
+    expect(readDeliveryRecord(file)).toEqual({
+      turnedOn: ['direct_delivery'],
+      claudeInbound: { '/a': null },
+    });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        turnedOn: ['direct_delivery'],
+        claudeInbound: { '/a': null, '/b': 'accept', '/c': 3 },
+      })
+    );
+    expect(readDeliveryRecord(file).claudeInbound).toEqual({ '/a': null, '/b': 'accept' });
     fs.writeFileSync(file, 'null');
-    expect(readDeliveryRecord(file)).toEqual({ turnedOn: [], claudeInbound: [] });
+    expect(readDeliveryRecord(file)).toEqual({ turnedOn: [], claudeInbound: {} });
   });
 });

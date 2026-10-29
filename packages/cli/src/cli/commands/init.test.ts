@@ -1387,8 +1387,101 @@ describe('relay init message injection', () => {
     await setup(core.deps).run('--uninstall');
     expect(JSON.parse(fs.readFileSync(own, 'utf8'))).toEqual({ theme: 'dark' });
     expect(JSON.parse(fs.readFileSync(work, 'utf8'))).toEqual({});
-    // The person's own accept was theirs: the core turns it to hold, and init does not remove it.
-    expect(JSON.parse(fs.readFileSync(chosen, 'utf8'))).toEqual({ crossSessionInbound: 'hold' });
+    // The person's own accept was theirs: the core turns it to hold, and init puts it back.
+    expect(JSON.parse(fs.readFileSync(chosen, 'utf8'))).toEqual({ crossSessionInbound: 'accept' });
+  });
+
+  /** This login unset, another with the person's own accept, both followed by the core. */
+  function twoClaudeLogins() {
+    const own = path.join(toolHome, '.claude', 'settings.json');
+    const work = path.join(toolHome, '.claude-work', 'settings.json');
+    for (const file of [own, work]) fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(path.join(toolHome, '.claude-work', '.claude.json'), '{}');
+    fs.writeFileSync(own, JSON.stringify({ theme: 'dark' }));
+    fs.writeFileSync(work, JSON.stringify({ crossSessionInbound: 'accept' }));
+    const read = (file: string) => JSON.parse(fs.readFileSync(file, 'utf8'));
+    return { own, work, read, files: [own, work] };
+  }
+
+  it("puts back each login's own crossSessionInbound when its record cannot be saved", async () => {
+    installedProbe();
+    const logins = twoClaudeLogins();
+    const core = fakeCore({
+      running: true,
+      settings: { auto_activate: true, claude_session_hook: true },
+      claudeFiles: logins.files,
+    });
+    fs.mkdirSync(path.join(home, 'local', 'core-settings.json'), { recursive: true });
+    await setup(core.deps).run('--tools', 'claude');
+    expect(core.settings.direct_delivery).toBe(false);
+    expect(logins.read(logins.own)).toEqual({ theme: 'dark' });
+    expect(logins.read(logins.work)).toEqual({ crossSessionInbound: 'accept' });
+  });
+
+  it("puts back each login's own crossSessionInbound on a switch to MCP", async () => {
+    installedProbe();
+    const logins = twoClaudeLogins();
+    const core = fakeCore({
+      running: true,
+      settings: { auto_activate: true, claude_session_hook: true },
+      claudeFiles: logins.files,
+    });
+    await setup(core.deps).run('--tools', 'claude');
+    expect(logins.read(logins.own)).toEqual({ theme: 'dark', crossSessionInbound: 'accept' });
+    await setup(core.deps).run('--tools', 'claude', '--delivery', 'mcp');
+    expect(core.settings.direct_delivery).toBe(false);
+    expect(logins.read(logins.own)).toEqual({ theme: 'dark' });
+    expect(logins.read(logins.work)).toEqual({ crossSessionInbound: 'accept' });
+  });
+
+  it("puts back each login's own crossSessionInbound when Claude's delivery is rolled back", async () => {
+    installedProbe();
+    const logins = twoClaudeLogins();
+    const core = fakeCore({
+      running: true,
+      settings: { auto_activate: true },
+      refuse: ['claude_session_hook'],
+      claudeFiles: logins.files,
+    });
+    await setup(core.deps).run('--tools', 'claude');
+    expect(core.settings.direct_delivery).toBe(false);
+    expect(logins.read(logins.own)).toEqual({ theme: 'dark' });
+    expect(logins.read(logins.work)).toEqual({ crossSessionInbound: 'accept' });
+  });
+
+  it('stops without adding MCP when a failed tool cannot be rolled back', async () => {
+    installedProbe();
+    const core = fakeCore({
+      running: true,
+      settings: { auto_activate: true },
+      refuse: ['claude_session_hook'],
+    });
+    const connect = core.deps.connectCore;
+    const { run, errors } = setup({
+      ...core.deps,
+      connectCore: vi.fn(async (socket: string) => {
+        const client = await connect(socket);
+        if (!client) return undefined;
+        return {
+          ...client,
+          call: async <T>(method: string, params?: Record<string, unknown>) => {
+            if (method === 'settings.set' && params && Object.values(params).includes(false)) {
+              throw new Error('the core is busy');
+            }
+            return client.call<T>(method, params);
+          },
+        };
+      }),
+    });
+    await expect(run('--tools', 'claude')).rejects.toEqual(new ExitSignal(1));
+    const shown = errors.join('\n');
+    expect(shown).toContain('direct_delivery stays on (the core is busy)');
+    expect(shown).toContain('no Relay MCP server was added');
+    expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
+    // Recorded, so --uninstall can still turn it off.
+    expect(
+      JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8')).turnedOn
+    ).toContain('direct_delivery');
   });
 
   it('falls back to the MCP server when the core cannot be started', async () => {

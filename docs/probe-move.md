@@ -310,8 +310,10 @@ directory (`$AGENT_RELAY_INSTALL_DIR/bin`, else `$AGENT_RELAY_HOME/bin`, else
 written to a temp file beside the target, run with `--version`, then renamed
 into place atomically. A binary that already reports the pinned version or a
 newer one is kept; `AGENT_RELAY_PROBE_PATH` names a binary to use instead.
-There is no musl, arm64 Windows or 32-bit build: those machines, and any
-failed download, keep the MCP server.
+There is no musl, arm64 Windows or 32-bit build. When a download or update
+fails, init uses the binary already in the bin slot if there is one; the MCP
+server is the fallback only when no core answers and no usable core binary
+is there to start (those machines included).
 
 **One core per machine (the attach rule).** Before installing anything, init
 connects to the core's bridge socket (`AGENT_RELAY_CORE_SOCKET`, else
@@ -360,16 +362,24 @@ A setting that is already on is left alone; the ones init turned on are
 recorded in `<relay home>/local/core-settings.json`, and `relay init
 --uninstall` (both scopes, or `--scope global`) turns off exactly those. The
 core turns Claude's direct delivery off by writing `hold` on every Claude login
-it follows; init records each login file whose `crossSessionInbound` it saw go
-from unset to `accept`, and removes the key again from each. Each tool is on
-exactly one route. When one of a tool's settings fails, init stops there, turns
-off what it had turned on for that tool, and gives it the Relay MCP server;
-`auto_activate` is turned on only once a tool is injected, and every tool
-gets the MCP server when the core cannot be had. `--delivery mcp` asks for
-the MCP server explicitly, and first turns off the recorded settings of those
-tools (and `auto_activate` once no injected tool is left); when that fails,
-no MCP server is added. An MCP entry an earlier `relay init` added is
-removed for each injected tool, in both scopes.
+it follows, the person's own `accept` included. Before turning it on, init
+records each login's `crossSessionInbound` (or its absence), and after every
+turn-off (a rollback, a record it could not save, `--delivery mcp`,
+`--uninstall`) puts those values back where the core left `hold`.
+
+Each tool is on exactly one route. When one of a tool's settings fails, init
+stops there, turns off what it had turned on for that tool, and gives it the
+Relay MCP server; `auto_activate` is turned on only once a tool is injected,
+and every tool gets the MCP server when the core cannot be had. When a
+setting init turned on cannot be turned off again (after a failed tool, or
+when the record cannot be saved), setup stops with that error and adds no
+MCP server for it. `--delivery mcp` asks for the MCP server explicitly, and
+first turns off the recorded settings of those tools (and `auto_activate`
+once no injected tool is left); when that fails, no MCP server is added. An
+MCP entry an earlier `relay init` added is removed for each injected tool, in
+both scopes. The one case that can leave a tool on both routes is a removal
+that fails (a read-only config, for example): init reports it with the file,
+and the entry must be removed by hand.
 
 These are settings of the user account, so they apply in every project
 whatever `--scope` says; `--scope` now only places the MCP fallback, and the
@@ -391,9 +401,9 @@ self-hosted setup whose id cannot be compared says so (for example a desktop sig
 another workspace, or a machine-wide active workspace this project does not
 use), with the `relay workspace switch` command that aligns them.
 
-**Service.** The core init starts is a background process, not a service: it
-stops at logout or reboot, and `relay init` starts it again. For an always-on
-core, install the desktop app (its systemd unit or LaunchAgent), or run the
+**Service.** `relay init` starts the core as a detached background process
+and installs no service; when it is not running, `relay init` starts it
+again. For an always-on core, install the desktop app (its systemd unit or LaunchAgent), or run the
 core as a user service yourself, for example:
 
 ```ini
