@@ -463,6 +463,7 @@ fn session_registered(socket: &Path) -> Option<crate::relay::claude::session_hoo
         .ok()?;
         match crate::relay::claude::session_hook::read_status(status, &body) {
             registered @ (crate::relay::claude::session_hook::StatusRead::Registered { .. }
+            | crate::relay::claude::session_hook::StatusRead::Joining
             | crate::relay::claude::session_hook::StatusRead::OnRelay { .. }) => {
                 return Some(registered);
             }

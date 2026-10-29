@@ -183,21 +183,169 @@ Behaviour change for desktop users: a desktop that is signed in to Cloud
 still go to the signed-in account). This lands in relay-desktop only when it
 consumes this core (phase 4).
 
+## Phase 3: `relay init` installs and runs the core (done)
+
+`relay init` now injects messages into running sessions through the core
+instead of adding the Relay MCP server (`packages/cli/src/cli/commands/init.ts`,
+`packages/cli/src/cli/lib/probe-core.ts`).
+
+**Release artifacts.** `.github/workflows/probe-release.yml` builds
+`agent-relay-probe` with `AGENT_RELAY_PROBE_VERSION=<version>` for
+linux-x64 and linux-arm64 (glibc, Ubuntu 22.04 runners), darwin-arm64,
+darwin-x64 (cross-compiled on Apple silicon, not smoke-tested) and
+windows-x64, checks that each binary reports `agent-relay-probe <version>`,
+and publishes it with a `.sha256` sidecar (`<hex>  <asset>`):
+
+```text
+probe-v<version>/agent-relay-probe-<version>-<os>-<arch>[.exe]
+probe-v<version>/agent-relay-probe-<version>-<os>-<arch>[.exe].sha256
+```
+
+`probe-v*` tags never collide with the CLI's `v*` tags, and the release is
+created with `--latest=false` because `install.sh` resolves the CLI through
+`releases/latest`. The workflow is `workflow_dispatch` only (inputs `version`,
+`dry_run`, which defaults to true and builds without tagging), plus a dry run
+on pull requests that change the workflow. No release has been cut: the CLI
+pins `PROBE_VERSION = '15.0.0'`, so `probe-v15.0.0` must be released before
+relay 15.0.0 ships, or `relay init` falls back to the MCP server.
+
+**Install.** The CLI downloads the pinned asset into the canonical bin
+directory (`$AGENT_RELAY_INSTALL_DIR/bin`, else `$AGENT_RELAY_HOME/bin`, else
+`~/.agentworkforce/relay/bin`; `getCanonicalProbePath` in
+`@agent-relay/harness-driver/install-paths`) exactly as it installs
+`relaycast-engine` (`ensureReleaseBinary`): checksum first, SHA-256 verified,
+written to a temp file beside the target, run with `--version`, then renamed
+into place atomically. A binary that already reports the pinned version or a
+newer one is kept; `AGENT_RELAY_PROBE_PATH` names a binary to use instead.
+There is no musl, arm64 Windows or 32-bit build: those machines, and any
+failed download, keep the MCP server.
+
+**One core per machine (the attach rule).** Before installing anything, init
+connects to the core's bridge socket (`AGENT_RELAY_CORE_SOCKET`, else
+`~/.agentworkforce/desktop/core.sock`; on Windows the named pipe derived from
+it, a vector shared with `relay::transport`'s tests). It refuses a socket in a
+directory another user can write to, greets with `hello` (bridge version 2)
+and reads `status.get`. A core that answers is used: the desktop app's
+service, a systemd unit, or the one an earlier `relay init` started (told
+apart by the pid in `<relay home>/local/core.json`). Only when nothing answers
+does init start `agent-relay-probe relay serve --headless --cli-managed
+--socket <socket>` detached (log `<relay home>/local/core.log`) and wait up
+to 30 s for it; the core's own `flock` on `core.sock.lock` settles a race, and
+init then attaches to the winner. Re-running init reuses the running core.
+`relay init --stop` stops only the core whose pid init recorded (through
+`daemon.shutdown`, SIGTERM as a fallback), never the desktop app's.
+`agent-relay-probe relay call status.get` shows which core runs.
+
+`--cli-managed` (new, requires `--headless`) is headless without the parts
+that belong to the desktop's service: it keeps the desktop app's login entry,
+and the core turns on nothing by itself, neither the agent-led defaults at
+start nor the integration defaults of each refresh pass
+(`apply_integration_defaults`), so every per-user file it edits is one the
+person chose in `relay init`.
+
+**Hooks or MCP, per tool.** Each injected tool gets the core's own delivery
+route and no MCP server, so a session has exactly one Relay identity: the one
+the core registers. Init turns on `auto_activate` (sessions join on their
+own, named `<tool>-<project>-<task>`) and, per tool, through `settings.set`:
+
+| Tool        | Core setting(s)                                  | What the core writes                                                                                   |
+| ----------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| Claude Code | `direct_delivery_default`, `claude_session_hook` | `crossSessionInbound: "accept"` (only when unset) and a SessionStart hook in `~/.claude/settings.json` |
+| Codex       | `codex_stop_hook`                                | PostToolUse and Stop hooks in `~/.codex/hooks.json`, trusted through Codex's app-server                |
+| OpenCode    | `opencode_plugin`                                | the Agent Relay plugin under `~/.config/opencode/plugins`                                              |
+| Grok CLI    | `grok_leader`                                    | `[cli] use_leader` in `~/.grok/config.toml`                                                            |
+| Devin       | `devin_direct_delivery`                          | lifecycle hooks in `~/.config/devin/config.json`                                                       |
+| Pi          | none                                             | the Pi extension, which any core installs at start when `~/.pi/agent` exists                           |
+
+A setting that is already on is left alone; the ones init turned on are
+recorded in `<relay home>/local/core-settings.json`, and `relay init
+--uninstall` (both scopes, or `--scope global`) turns off exactly those. The
+core turns Claude's direct delivery off by writing `hold`; init then removes
+the key it had added. A tool whose setting fails, and every tool when the core
+cannot be had, gets the Relay MCP server instead, as before; `--delivery mcp`
+asks for that explicitly. An MCP entry an earlier `relay init` added is
+removed for each injected tool, in both scopes.
+
+These are settings of the user account, so they apply in every project
+whatever `--scope` says; `--scope` now only places the MCP fallback, and the
+guided flow no longer asks for it unless `--delivery mcp`. The earlier fixes
+stay: no `_npx` paths or home paths in project files, the workspace key is
+git-excluded, the active workspace is not switched, and Codex's project-trust
+offer still applies to a project-scope MCP fallback.
+
+The Claude SessionStart hook now knows automatic activation: a session that
+is not registered yet but will be is told it joins by itself (with the
+session socket's `/whoami`, `/agents` and `/send` commands) instead of being
+told to ask the person whether to register, which raced auto-activation.
+
+**Workspace.** The core serves one workspace per machine (phase 2). After
+setting up, init calls `workspace.refresh` and warns when the core serves a
+different workspace than the project's (for example a desktop signed in to
+another workspace, or a machine-wide active workspace this project does not
+use), with the `relay workspace switch` command that aligns them.
+
+**Service.** The core init starts is a background process, not a service: it
+stops at logout or reboot, and `relay init` starts it again. For an always-on
+core, install the desktop app (its systemd unit or LaunchAgent), or run the
+core as a user service yourself, for example:
+
+```ini
+# ~/.config/systemd/user/agent-relay-core.service
+[Unit]
+Description=Agent Relay core
+[Service]
+ExecStart=%h/.agentworkforce/relay/bin/agent-relay-probe relay serve --headless --cli-managed
+Restart=on-failure
+UMask=0077
+[Install]
+WantedBy=default.target
+```
+
+`relay init` attaches to it like any other running core.
+
+**End-to-end proof** (Linux, Claude Code 2.1.280, Codex 0.154.0; isolated
+`HOME`, `XDG_*`, `AGENT_RELAY_HOME`, `AGENT_RELAY_INSTALL_DIR`, socket and
+app data, with a throwaway git project): `relay init --tools claude,codex`
+started the core; an interactive Claude Code session in tmux joined by
+itself; `relay message dm send … --as alice` was injected into the live
+session as a turn three seconds later (no inbox call), and its reply reached
+alice. Claude then messaged the Codex session over the session socket; the
+message was injected into the idle Codex TUI through Codex's queue, and
+Codex's reply was injected back into Claude. A core started outside init (as
+the desktop's would be) was attached to, not doubled, and survived `relay
+init --stop`; `relay init --uninstall` turned the four settings back off.
+
 ## Remaining phases
 
-3. **`relay init` installs and runs the probe.** It downloads
-   `agent-relay-probe` into `~/.agentworkforce/relay/bin`, runs `relay serve
---headless` as a per-user service, and installs the probe's delivery hooks
-   through its `harness_setup` (Claude Code SessionStart and Stop hooks, the
-   Codex app-server, the OpenCode and Pi plugins, and so on). This replaces
-   today's MCP-only setup.
 4. **relay-desktop consumes the core from relay releases**, one core per
-   machine. Whichever of the relay CLI or a desktop app installed the core,
-   the other attaches to the running daemon (`~/.agentworkforce/desktop/core.sock`)
-   instead of starting a second one.
-5. **Real end-to-end proof.** A Codex DM is injected into a running Claude
-   Code session without polling, for local, hosted and self-hosted
-   workspaces.
+   machine (see below). The attach rule above already makes `relay init` use
+   the desktop's running core.
+5. **Per-project workspaces.** The core still serves one workspace per
+   machine; a project pinned to another workspace is warned about, not
+   served. That needs per-registration workspaces in the core.
+6. **`AGENT_RELAY_PROJECT` inference.** The daemon has no working directory,
+   so it uses a project's pin only when `AGENT_RELAY_PROJECT` is in its
+   environment; the core could infer the project from each session's `cwd`.
+
+Known gaps in phase 3:
+
+- No `probe-v*` release exists yet; until one does, `relay init` uses the MCP
+  server unless a core is running or `AGENT_RELAY_PROBE_PATH` is set.
+- Codex's default sandbox cannot reach the session socket, so Codex asks to
+  run `agent-relay-probe relay read` and the reply `curl` outside it (the
+  desktop has the same prompts).
+- Messages arrive as pointers (`show_relay_messages` off, the core's default):
+  the session runs `agent-relay-probe relay read <ref>` for the text.
+- `--uninstall` leaves what the core keeps after turning a hook off: an empty
+  `~/.codex/hooks.json`, Codex's hook-trust entries in `~/.codex/config.toml`,
+  and the one-time `.relay-desktop-backup` copies of edited settings files. It
+  cannot remove the Pi extension, which any core installs at start.
+- The core's own telemetry (its `analytics_enabled` setting, on by default)
+  does not follow the CLI's opt-out (`AGENT_RELAY_TELEMETRY_DISABLED`); turn
+  it off with `agent-relay-probe relay call settings.set --params
+'{"analytics_enabled":false}'`.
+- relay-desktop CI lanes still not ported (above): glibc floor check, arm64
+  Linux tests, x64 macOS and arm64 Windows lanes.
 
 ## What relay-desktop must change to consume the core
 
@@ -235,3 +383,18 @@ agent_relay_probe::install;`. In `linux_app/models.rs`, delete the six
 7. Replace relay-desktop's `docs/relay-core.md` and
    `docs/agent-relay-probe.md` with pointers to `crates/probe/docs/`. The
    core's contract test now checks relay's copy.
+
+Phase 3 adds, for one core per machine:
+
+8. Take over from a core `relay init` started. That core runs
+   `relay serve --headless --cli-managed` from `~/.agentworkforce/relay/bin`
+   and holds `core.sock.lock`, so the desktop's systemd unit, logon task or
+   LaunchAgent would exit with "already running for this socket" and restart
+   in a loop. When its own core cannot take the lock, the desktop should read
+   `status.get` and, if the running core is not its own build, retire it with
+   `daemon.shutdown` (no handshake needed) and start its own, as the macOS
+   headless core already yields to the app's LaunchAgent. `relay init`
+   attaches to whichever core answers, so it needs no change for this.
+9. Optionally stop bundling the core and install the `probe-v<version>`
+   release asset instead (same names, same `.sha256` sidecars), so the CLI
+   and the desktop run byte-identical cores.

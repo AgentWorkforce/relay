@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `relay init` now delivers messages by injecting them into running agent sessions instead of having agents poll an MCP inbox. It installs the Agent Relay core (`agent-relay-probe`, SHA-256-verified from a `probe-v<version>` GitHub release) into the install directory's `bin`, runs it in the background or attaches to the one the desktop app already runs, and turns on its delivery for each chosen tool: Claude Code's session inbox and SessionStart hook, Codex hooks, the OpenCode and Pi plugins, Devin hooks and Grok's leader socket. These are per-user settings for every project. Re-running removes an MCP entry an earlier `relay init` added, so each session has one identity. `--delivery mcp` keeps the MCP server, which is also the fallback where the core cannot run.
+- `relay init --stop` also stops the core `relay init` started (never the desktop app's), and `relay init --uninstall` turns off exactly the injection settings it turned on.
 - `install.sh` and `relay init` use Relaycast engine 11.1.0, which ships as a standalone binary: `install.sh` now installs `relaycast-engine` into `~/.agentworkforce/relay/bin`, so the local server no longer needs Node.js or a native addon.
 - The CLI and `@agent-relay/harness-driver` now resolve the broker in this order: `BROKER_BINARY_PATH` / `AGENT_RELAY_BIN`, then `~/.agentworkforce/relay/bin`, then the npm platform package, then `PATH`. A broker in the install directory now wins over one found on `PATH`.
 - `install.sh` honours `AGENT_RELAY_HOME` as the install root when `AGENT_RELAY_INSTALL_DIR` is not set. A relocated install exports its root from the `agent-relay` launcher.

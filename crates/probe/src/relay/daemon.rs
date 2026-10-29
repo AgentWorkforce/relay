@@ -72,6 +72,12 @@ pub struct ServeOptions {
     /// and the agent-led setup defaults apply at start.
     pub headless: bool,
     pub connect_ephemeral: bool,
+    /// Started by the relay CLI (`relay init`, `--cli-managed`): headless,
+    /// but the desktop app's login entry is kept, and neither the agent-led
+    /// defaults at start nor the integration defaults of each refresh pass
+    /// are applied, because the CLI turns on exactly the settings the person
+    /// chose (and turns them off again on `relay init --uninstall`).
+    pub cli_managed: bool,
 }
 
 /// Everything the core reads from its surroundings, fixed at start. Its
@@ -235,6 +241,10 @@ pub struct Core {
     /// One relayfile subscription change at a time: they share workspace
     /// subscription state.
     pub(crate) integration_lock: tokio::sync::Mutex<()>,
+    /// Whether the refresh pass turns on the integration defaults
+    /// (`apply_integration_defaults`). Off for a core the relay CLI manages
+    /// (`--cli-managed`): it turns on only the tools the person chose.
+    pub(crate) integration_defaults: std::sync::atomic::AtomicBool,
     /// Serializes credential-bearing Cloud reconciliations. A sign-out or
     /// workspace clear queued behind an upsert is therefore always last.
     pub(crate) desktop_identity_sync: crate::relay::desktop_identity::DesktopIdentitySync,
@@ -331,6 +341,7 @@ impl Core {
             connect_lifetime: Default::default(),
             messaging: Mutex::default(),
             integration_lock: tokio::sync::Mutex::new(()),
+            integration_defaults: std::sync::atomic::AtomicBool::new(true),
             desktop_identity_sync: Default::default(),
             contractors: std::sync::OnceLock::new(),
             spawn_node: tokio::sync::Mutex::new(None),
@@ -677,7 +688,7 @@ pub fn serve(options: ServeOptions) -> Result<()> {
         let socket = BoundSocket::bind(&config.paths)?;
         let mut local = crate::relay::local::plugins_with(&config, None);
         if let Some(relay_send) = &mut local.relay_send {
-            relay_send.agent_led_defaults_at_start = options.headless;
+            relay_send.agent_led_defaults_at_start = own_defaults(&options).agent_led;
         }
         let plugins = crate::relay::account::with_account(
             local,
@@ -686,6 +697,10 @@ pub fn serve(options: ServeOptions) -> Result<()> {
             options.headless,
         );
         let (core, signals) = Core::with_plugins(config, plugins);
+        core.integration_defaults.store(
+            own_defaults(&options).integration,
+            std::sync::atomic::Ordering::SeqCst,
+        );
         // A user may install and open the app after a standalone probe was
         // started. Once the app's launchd core is registered for this HOME,
         // yield the socket so its KeepAlive job can take over.
@@ -916,9 +931,16 @@ async fn refresh_loop(core: Arc<Core>) {
         ticks.tick().await;
         // The workspace, then the hosted MCP links that pick reply hints.
         core.refresh_pass().await;
-        // A tool installed since the last pass gets its integration default.
-        let defaults = core.clone();
-        let _ = tokio::task::spawn_blocking(move || defaults.apply_integration_defaults()).await;
+        // A tool installed since the last pass gets its integration default,
+        // unless the relay CLI manages this core and chose the tools itself.
+        if core
+            .integration_defaults
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            let defaults = core.clone();
+            let _ =
+                tokio::task::spawn_blocking(move || defaults.apply_integration_defaults()).await;
+        }
     }
 }
 
@@ -1028,12 +1050,30 @@ fn watch_connect_idle(core: Arc<Core>) {
     });
 }
 
+/// The defaults a core turns on by itself.
+#[derive(Debug, PartialEq, Eq)]
+struct OwnDefaults {
+    /// The agent-led setup defaults, applied at start (headless only).
+    agent_led: bool,
+    /// The integration defaults, applied on each refresh pass.
+    integration: bool,
+}
+
+/// What a core started with `options` turns on by itself: nothing when the
+/// relay CLI manages it, since the CLI turns on only what the person chose.
+fn own_defaults(options: &ServeOptions) -> OwnDefaults {
+    OwnDefaults {
+        agent_led: options.headless && !options.cli_managed,
+        integration: !options.cli_managed,
+    }
+}
+
 fn cleanup_gui_autostart(
     options: &ServeOptions,
     home: &Path,
     env: &BTreeMap<String, String>,
 ) -> Option<std::io::Result<bool>> {
-    (options.headless && !options.connect_ephemeral)
+    (options.headless && !options.connect_ephemeral && !options.cli_managed)
         .then(|| crate::relay::login_item::remove_gui_autostart(home, env))
 }
 #[cfg(test)]
@@ -1052,6 +1092,60 @@ mod connect_startup_tests {
             site_url: None,
             headless: true,
             connect_ephemeral: true,
+            cli_managed: false,
+        };
+        assert!(cleanup_gui_autostart(&options, home.path(), &BTreeMap::new()).is_none());
+        assert_eq!(fs::read_to_string(path).unwrap(), "desktop preference");
+    }
+
+    #[test]
+    fn a_cli_managed_core_turns_nothing_on_by_itself() {
+        let options = |headless, cli_managed| ServeOptions {
+            socket: None,
+            app_data_dir: None,
+            exit_on_stdin_eof: false,
+            site_url: None,
+            headless,
+            connect_ephemeral: false,
+            cli_managed,
+        };
+        assert_eq!(
+            own_defaults(&options(true, true)),
+            OwnDefaults {
+                agent_led: false,
+                integration: false
+            }
+        );
+        assert_eq!(
+            own_defaults(&options(true, false)),
+            OwnDefaults {
+                agent_led: true,
+                integration: true
+            }
+        );
+        assert_eq!(
+            own_defaults(&options(false, false)),
+            OwnDefaults {
+                agent_led: false,
+                integration: true
+            }
+        );
+    }
+
+    #[test]
+    fn cli_managed_run_preserves_desktop_login_entry() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".config/autostart/agent-relay.desktop");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "desktop preference").unwrap();
+        let options = ServeOptions {
+            socket: None,
+            app_data_dir: None,
+            exit_on_stdin_eof: false,
+            site_url: None,
+            headless: true,
+            connect_ephemeral: false,
+            cli_managed: true,
         };
         assert!(cleanup_gui_autostart(&options, home.path(), &BTreeMap::new()).is_none());
         assert_eq!(fs::read_to_string(path).unwrap(), "desktop preference");

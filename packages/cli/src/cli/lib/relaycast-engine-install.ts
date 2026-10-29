@@ -168,26 +168,55 @@ export type EnsureEngineResult =
  * @returns What happened, with a reason on failure
  */
 export async function ensureStandaloneEngine(input: EnsureEngineInput): Promise<EnsureEngineResult> {
-  const { version, target } = input;
+  const asset = engineAssetName(input.version, input.platform);
+  return ensureReleaseBinary({
+    ...input,
+    asset,
+    url: asset ? `${RELEASE_BASE}/v${input.version}/${asset}` : undefined,
+    unsupported: `relaycast publishes no standalone server for ${input.platform.platform}-${input.platform.arch}`,
+    description: `the local Relaycast server (relaycast-engine v${input.version}, ${asset})`,
+  });
+}
+
+/** One release binary to put in place: where it comes from and what it is called. */
+export interface EnsureReleaseBinaryInput {
+  version: string;
+  /** Final path in the bin slot. */
+  target: string;
+  /** The release asset name, or undefined when none is published for this platform. */
+  asset: string | undefined;
+  /** The asset's download URL; its checksum is at `${url}.sha256`. */
+  url: string | undefined;
+  /** Why there is no asset, when `asset` is undefined. */
+  unsupported: string;
+  /** What is being downloaded, for the progress line. */
+  description: string;
+  download: DownloadFile;
+  readVersion: (binary: string) => string | undefined;
+  progress: (line: string) => void;
+}
+
+/**
+ * Make sure a GitHub release binary of at least `version` is at `target`:
+ * download the asset and its `.sha256` sidecar, verify the digest, check the
+ * downloaded file runs and reports `version`, then rename it into place
+ * atomically. Never throws; a failure leaves `target` untouched.
+ * @param input - Version, asset, destination and injected effects
+ * @returns What happened, with a reason on failure
+ */
+export async function ensureReleaseBinary(input: EnsureReleaseBinaryInput): Promise<EnsureEngineResult> {
+  const { version, target, asset, url } = input;
   if (fs.existsSync(target)) {
     const installed = input.readVersion(target);
     if (installed === version || (installed && versionGreater(installed, version))) {
       return { status: 'present', version: installed };
     }
   }
-
-  const asset = engineAssetName(version, input.platform);
-  if (!asset) {
-    return {
-      status: 'failed',
-      reason: `relaycast publishes no standalone server for ${input.platform.platform}-${input.platform.arch}`,
-    };
-  }
-  const url = `${RELEASE_BASE}/v${version}/${asset}`;
+  if (!asset || !url) return { status: 'failed', reason: input.unsupported };
 
   let temp: string | undefined;
   try {
-    input.progress(`Downloading the local Relaycast server (relaycast-engine v${version}, ${asset})…`);
+    input.progress(`Downloading ${input.description}…`);
     // The small checksum first: an unpublished asset fails fast, before the large download.
     const sums = await input.download(`${url}.sha256`, { timeoutMs: ENGINE_CHECKSUM_TIMEOUT_MS });
     const expected = Buffer.from(sums).toString('utf8').trim().split(/\s+/)[0]?.toLowerCase() ?? '';
@@ -210,7 +239,7 @@ export async function ensureStandaloneEngine(input: EnsureEngineInput): Promise<
     fs.writeFileSync(temp, binary, { mode: 0o755, flag: 'wx' });
     fs.chmodSync(temp, 0o755);
     // A verified file can still fail to run here (too old an OS, missing libraries);
-    // never let it replace a working binary or shadow the npm package.
+    // never let it replace a working binary.
     const runs = input.readVersion(temp);
     if (runs !== version) {
       return { status: 'failed', reason: `the downloaded ${asset} does not run on this machine` };

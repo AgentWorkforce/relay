@@ -1,0 +1,220 @@
+name: Probe Release
+
+# Builds the Agent Relay core (`agent-relay-probe`, crates/probe) for every
+# platform `relay init` installs it on, and publishes each binary with a
+# `.sha256` sidecar to a GitHub release tagged `probe-v<version>`, apart from
+# the CLI's `v*` tags:
+#
+#   probe-v<version>/agent-relay-probe-<version>-<os>-<arch>[.exe]
+#   probe-v<version>/agent-relay-probe-<version>-<os>-<arch>[.exe].sha256   ("<hex>  <asset>")
+#
+# <os>-<arch> is linux-x64, linux-arm64 (glibc), darwin-arm64, darwin-x64 or
+# windows-x64, the names packages/cli/src/cli/lib/probe-core.ts downloads.
+#
+# Dispatch with dry_run (the default) to build, smoke-test and upload the
+# binaries as workflow artifacts only. With dry_run off it creates the tag at
+# the dispatched commit and the release. A pull request that changes this file
+# runs it dry.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Core version, e.g. 15.0.0 (released as tag probe-v<version>)'
+        required: true
+        type: string
+      dry_run:
+        description: 'Dry run: build and upload artifacts, but create no tag or release'
+        required: false
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - '.github/workflows/probe-release.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || inputs.version }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Git fetches the relayhistory git dependencies.
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
+jobs:
+  prepare:
+    name: Version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      dry_run: ${{ steps.version.outputs.dry_run }}
+    steps:
+      - name: Validate the version and the tag
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "pull_request" ]; then
+            VERSION="0.0.0-pr.${PR_NUMBER}"
+            DRY_RUN=true
+          else
+            VERSION="${INPUT_VERSION#v}"
+            VERSION="${VERSION#probe-v}"
+            DRY_RUN="${INPUT_DRY_RUN}"
+          fi
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$VERSION' is not a version like 15.0.0 or 15.0.0-rc.1"
+            exit 1
+          fi
+          if [ "$DRY_RUN" != "true" ] && gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/probe-v${VERSION}" >/dev/null 2>&1; then
+            echo "::error::Tag probe-v${VERSION} already exists; release a new version."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+          echo "Agent Relay core ${VERSION} (tag probe-v${VERSION}), dry run: ${DRY_RUN}" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build ${{ matrix.suffix }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04 keeps the glibc floor at 2.35.
+          - suffix: linux-x64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            ext: ''
+            smoke: true
+          - suffix: linux-arm64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            ext: ''
+            smoke: true
+          - suffix: darwin-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            ext: ''
+            smoke: true
+          # Cross-compiled on Apple silicon; it is not run there.
+          - suffix: darwin-x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            ext: ''
+            smoke: false
+          - suffix: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: .exe
+            smoke: true
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      SUFFIX: ${{ matrix.suffix }}
+      EXT: ${{ matrix.ext }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Allow long paths
+        if: runner.os == 'Windows'
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: crates/probe
+          key: release-${{ matrix.target }}
+          cache-bin: false
+      - name: Build
+        working-directory: crates/probe
+        run: |
+          # A short cargo home on Windows: RelayHistory's fixtures hold paths
+          # close to its 260-character limit.
+          if [ "$RUNNER_OS" = "Windows" ]; then export CARGO_HOME='C:\ch'; fi
+          AGENT_RELAY_PROBE_VERSION="$VERSION" cargo build --locked --release --target "$TARGET" --bin agent-relay-probe
+      - name: Package with a .sha256 sidecar
+        run: |
+          set -euo pipefail
+          ASSET="agent-relay-probe-${VERSION}-${SUFFIX}${EXT}"
+          mkdir -p dist
+          cp "crates/probe/target/${TARGET}/release/agent-relay-probe${EXT}" "dist/${ASSET}"
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$ASSET" > "${ASSET}.sha256"
+          else
+            shasum -a 256 "$ASSET" > "${ASSET}.sha256"
+          fi
+          cat "${ASSET}.sha256"
+          echo "ASSET=${ASSET}" >> "$GITHUB_ENV"
+      - name: Smoke test (--version reports the release version)
+        if: matrix.smoke
+        run: |
+          set -euo pipefail
+          reported="$("dist/${ASSET}" --version)"
+          echo "$reported"
+          [ "$reported" = "agent-relay-probe ${VERSION}" ] || { echo "::error::expected agent-relay-probe ${VERSION}"; exit 1; }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: agent-relay-probe-${{ matrix.suffix }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish probe-v${{ needs.prepare.outputs.version }}
+    needs: [prepare, build]
+    if: needs.prepare.outputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: agent-relay-probe-*
+          path: dist
+          merge-multiple: true
+      - name: Verify every checksum
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          ls -la
+          test "$(ls *.sha256 | wc -l)" -eq 5
+          for sums in *.sha256; do sha256sum -c "$sums"; done
+      - name: Create the tag and the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="probe-v${VERSION}"
+          PRERELEASE=""
+          case "$VERSION" in *-*) PRERELEASE="--prerelease" ;; esac
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Agent Relay core ${VERSION}" \
+            --notes "The Agent Relay core (agent-relay-probe ${VERSION}) built from crates/probe at ${GITHUB_SHA}. \`relay init\` downloads it and checks each binary against its .sha256 sidecar." \
+            --latest=false \
+            $PRERELEASE

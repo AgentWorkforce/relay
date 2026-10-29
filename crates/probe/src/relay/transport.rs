@@ -255,6 +255,8 @@ mod tests {
         let name = pipe_name(Path::new(r"C:\Users\A\.agentworkforce\desktop\core.sock"));
         assert!(name.starts_with(r"\\.\pipe\agent-relay-"), "{name}");
         assert_eq!(name.len(), r"\\.\pipe\agent-relay-".len() + 16);
+        // The relay CLI derives the same name (packages/cli/src/cli/lib/probe-core.ts).
+        assert_eq!(name, r"\\.\pipe\agent-relay-367ccf5106272db6");
         assert_eq!(
             name,
             pipe_name(Path::new("c:/users/a/.agentworkforce/desktop/core.sock"))

@@ -29,6 +29,7 @@ import {
   resolveMcpLaunch,
   trustCodexProject,
   uninstallTool,
+  writeKeepingMode,
   type InstallScope,
   type McpLaunch,
   type RunTool,
@@ -42,17 +43,42 @@ import { sessionBaseName } from '../lib/mcp-session-name.js';
 import { runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import {
   currentEnginePlatform,
+  ensureReleaseBinary,
   ensureStandaloneEngine,
   fetchDownload,
   readEngineVersion,
   type DownloadFile,
   type EnginePlatform,
 } from '../lib/relaycast-engine-install.js';
+import {
+  CORE_START_TIMEOUT_MS,
+  PROBE_DELIVERY,
+  PROBE_VERSION,
+  connectCore,
+  coreSocketPath,
+  disableDelivery,
+  enableDelivery,
+  probeAssetName,
+  probeAssetUrl,
+  readCoreState,
+  readTurnedOn,
+  startCoreProcess,
+  writePrivateJson,
+  type CoreClient,
+  type CoreState,
+  type CoreStatus,
+  type DeliveryResult,
+} from '../lib/probe-core.js';
 import { shellQuote } from '../lib/agent-registration.js';
 import { persistWorkspaceSession } from '../lib/workspace-session.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
 import { getProjectPaths } from '@agent-relay/config';
-import { getCanonicalRelaycastEnginePath } from '@agent-relay/harness-driver/install-paths';
+import {
+  PROBE_PATH_ENV,
+  getCanonicalProbePath,
+  getCanonicalRelaycastEnginePath,
+  isUsableBinary,
+} from '@agent-relay/harness-driver/install-paths';
 
 /** The Relaycast server `relay init` runs locally. Pinned so every machine runs the same server. */
 export const LOCAL_ENGINE_VERSION = '11.1.0';
@@ -91,6 +117,16 @@ export interface InitCommandDependencies extends SdkCommandDeps {
   engineVersion: (binary: string) => string | undefined;
   /** Platform, architecture and libc that pick the standalone server asset. */
   enginePlatform: () => EnginePlatform;
+  /** The Agent Relay core's bridge socket. */
+  coreSocket: () => string;
+  /** Connect to the core at a socket; undefined when none answers. */
+  connectCore: (socket: string) => Promise<CoreClient | undefined>;
+  /** Start the core detached; returns its pid. */
+  startCore: (input: { binary: string; socket: string; logFile: string }) => number;
+  /** Downloads one file of the core's release (binary or `.sha256`). */
+  downloadProbe: DownloadFile;
+  /** The version an installed `agent-relay-probe` reports for `--version`. */
+  probeVersion: (binary: string) => string | undefined;
 }
 
 interface LocalServerState {
@@ -258,6 +294,11 @@ export function withInitDefaults(overrides: Partial<InitCommandDependencies> = {
     downloadEngine: fetchDownload,
     engineVersion: readEngineVersion,
     enginePlatform: currentEnginePlatform,
+    coreSocket: () => coreSocketPath(process.env, os.homedir()),
+    connectCore: (socket) => connectCore(socket),
+    startCore: startCoreProcess,
+    downloadProbe: fetchDownload,
+    probeVersion: readEngineVersion,
     ...overrides,
   };
 }
@@ -418,6 +459,10 @@ interface ServerChoice {
 interface ServerSetup {
   headline: string;
   details: string[];
+  /** Where the workspace lives. */
+  mode: ServerMode;
+  /** The Relaycast server the workspace is on. */
+  origin: string;
   /** The workspace saved for this project. */
   workspace: string;
   /** Another workspace left active machine-wide, when there was one. */
@@ -489,6 +534,8 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     const { lines, ...saved } = saveWorkspace(name, key);
     return {
       ...saved,
+      mode: 'own',
+      origin,
       headline: `Connected to your server at ${origin} as workspace "${name}".`,
       details: ['Your key is only ever sent to this server.', ...lines],
     };
@@ -501,6 +548,8 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     const { lines, ...saved } = saveWorkspace(name, relay.workspaceKey);
     return {
       ...saved,
+      mode: 'hosted',
+      origin: HOSTED_ORIGIN,
       headline: `Created hosted workspace "${name}".`,
       details: [
         ...lines,
@@ -534,6 +583,8 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
   const { lines, ...saved } = saveWorkspace(name, workspaceKey);
   return {
     ...saved,
+    mode: 'local',
+    origin,
     headline: `Relay is running on this machine (${origin}), workspace "${name}". No account needed.`,
     details: [...lines, 'To work with agents on other machines later, run: relay init --hosted'],
   };
@@ -652,6 +703,337 @@ function installAll(
 }
 
 // ---------------------------------------------------------------------------
+// Message injection: the Agent Relay core
+
+/** How messages reach an agent tool's sessions. */
+type Delivery = 'inject' | 'mcp';
+
+function coreStatePath(): string {
+  return path.join(localDir(), 'core.json');
+}
+
+/** The core settings relay init turned on, so `--uninstall` turns off exactly those. */
+function deliveryRecordPath(): string {
+  return path.join(localDir(), 'core-settings.json');
+}
+
+/** How init came to be talking to the core. */
+type CoreOrigin = 'started' | 'reused' | 'attached';
+
+interface CoreSession {
+  client: CoreClient;
+  status: CoreStatus;
+  origin: CoreOrigin;
+  logFile?: string;
+}
+
+/** The core binary: `AGENT_RELAY_PROBE_PATH`, else the pinned release in the canonical bin slot. */
+async function installProbe(deps: InitCommandDependencies): Promise<{ binary: string } | { reason: string }> {
+  const explicit = process.env[PROBE_PATH_ENV]?.trim();
+  if (explicit) {
+    return isUsableBinary(explicit)
+      ? { binary: explicit }
+      : { reason: `${PROBE_PATH_ENV} (${explicit}) is not an executable file` };
+  }
+  const target = getCanonicalProbePath();
+  const platform = deps.enginePlatform();
+  const asset = probeAssetName(PROBE_VERSION, platform);
+  const result = await ensureReleaseBinary({
+    version: PROBE_VERSION,
+    target,
+    asset,
+    url: asset ? probeAssetUrl(PROBE_VERSION, asset) : undefined,
+    unsupported: `no Agent Relay core is published for ${platform.platform}-${platform.arch}${
+      platform.musl ? ' (musl)' : ''
+    }`,
+    description: `the Agent Relay core (agent-relay-probe v${PROBE_VERSION}, ${asset})`,
+    download: deps.downloadProbe,
+    readVersion: deps.probeVersion,
+    progress: (line) => deps.log(line),
+  });
+  if (result.status === 'installed') deps.log(`Installed agent-relay-probe v${PROBE_VERSION} to ${target}.`);
+  if (result.status !== 'failed') return { binary: target };
+  if (isUsableBinary(target)) {
+    deps.log(`Could not update the Agent Relay core (${result.reason}); using the one at ${target}.`);
+    return { binary: target };
+  }
+  return { reason: result.reason };
+}
+
+async function connectTo(
+  deps: InitCommandDependencies,
+  socket: string
+): Promise<{ client: CoreClient; status: CoreStatus } | undefined> {
+  const client = await deps.connectCore(socket);
+  if (!client) return undefined;
+  try {
+    return { client, status: await client.call<CoreStatus>('status.get') };
+  } catch (error) {
+    client.close();
+    throw error;
+  }
+}
+
+/**
+ * Attach to the core running on this machine, or start one. One core runs
+ * per machine: the desktop app's, a service's, or the one an earlier
+ * `relay init` started; a second is never started beside it.
+ */
+async function ensureCore(deps: InitCommandDependencies): Promise<CoreSession | { reason: string }> {
+  const socket = deps.coreSocket();
+  const state = readCoreState(coreStatePath());
+  let running: Awaited<ReturnType<typeof connectTo>>;
+  try {
+    running = await connectTo(deps, socket);
+  } catch (error) {
+    return { reason: (error as Error).message };
+  }
+  if (running) {
+    return { ...running, origin: state?.pid === running.status.daemon.pid ? 'reused' : 'attached' };
+  }
+  const probe = await installProbe(deps);
+  if ('reason' in probe) return probe;
+  // The download can take a while; a desktop app may have started its core meanwhile.
+  const meanwhile = await connectTo(deps, socket).catch(() => undefined);
+  if (meanwhile) return { ...meanwhile, origin: 'attached' };
+
+  fs.mkdirSync(localDir(), { recursive: true, mode: 0o700 });
+  const logFile = path.join(localDir(), 'core.log');
+  deps.log('Starting the Agent Relay core…');
+  const pid = deps.startCore({ binary: probe.binary, socket, logFile });
+  const deadline = Date.now() + CORE_START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const up = await connectTo(deps, socket).catch(() => undefined);
+    if (up) {
+      // Another core may have taken the socket first; that one is then attached to.
+      const started = up.status.daemon.pid === pid;
+      if (started) {
+        const record: CoreState = { pid, socket, binary: probe.binary, version: up.status.daemon.version };
+        writePrivateJson(coreStatePath(), record);
+      }
+      return { ...up, origin: started ? 'started' : 'attached', logFile };
+    }
+    if (!deps.isAlive(pid)) break;
+    await deps.sleep(250);
+  }
+  deps.stop(pid);
+  const tail = logTail(logFile);
+  return {
+    reason: `the Agent Relay core did not start${tail ? `. Last lines of ${logFile}:\n${tail}` : ''}`,
+  };
+}
+
+function describeCore(session: CoreSession): string {
+  const { pid, version } = session.status.daemon;
+  switch (session.origin) {
+    case 'started':
+      return `Started the Agent Relay core (agent-relay-probe ${version}, pid ${pid}) in the background. Log: ${session.logFile}`;
+    case 'reused':
+      return `The Agent Relay core relay init started earlier is running (agent-relay-probe ${version}, pid ${pid}).`;
+    case 'attached':
+      return (
+        `Using the Agent Relay core already running on this machine (agent-relay-probe ${version}, pid ${pid}), ` +
+        `the desktop app's or a service's. relay init does not start a second one.`
+      );
+  }
+}
+
+function sameOrigin(a: string | null | undefined, b: string): boolean {
+  if (!a) return false;
+  try {
+    return new URL(a).origin === new URL(b).origin;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The core serves one workspace per machine (the machine-wide active one,
+ * unless its environment names another). Say so when that is not this
+ * project's, since its agents would then be injected from a different
+ * workspace than the one the CLI uses here.
+ */
+async function coreWorkspaceNote(
+  deps: InitCommandDependencies,
+  client: CoreClient,
+  setup: ServerSetup
+): Promise<string | undefined> {
+  let workspace: CoreStatus['workspace'];
+  try {
+    workspace = await client.call<CoreStatus['workspace']>('workspace.refresh');
+    // Verifying a newly found key is quick but asynchronous.
+    for (let i = 0; i < 20 && workspace.state === 'found' && workspace.verification === 'pending'; i += 1) {
+      await deps.sleep(500);
+      workspace = (await client.call<CoreStatus>('status.get')).workspace;
+    }
+  } catch {
+    return undefined;
+  }
+  if (workspace.state !== 'found') {
+    return `The Agent Relay core has not found workspace "${setup.workspace}" yet; it looks again every 30 seconds.`;
+  }
+  if (workspace.verification === 'rejected') {
+    return `The Agent Relay core's workspace key was refused by ${workspace.base_url ?? 'its server'}.`;
+  }
+  const sameName =
+    setup.mode === 'own' || !workspace.workspace_name || workspace.workspace_name === setup.workspace;
+  if (sameOrigin(workspace.base_url, setup.origin) && sameName) return undefined;
+  const served = workspace.workspace_name ? `workspace "${workspace.workspace_name}"` : 'another workspace';
+  return (
+    `The Agent Relay core on this machine serves ${served} (${workspace.base_url ?? 'unknown server'}), ` +
+    `not "${setup.workspace}": agents here join that workspace. The core follows the machine-wide active ` +
+    `workspace; to use "${setup.workspace}" everywhere, run: ${switchCommand(setup.workspace)}`
+  );
+}
+
+interface InjectionSetup {
+  core: string;
+  results: DeliveryResult[];
+  workspaceNote?: string;
+}
+
+/**
+ * Attach to or start the core, then turn on its delivery for `tools`. The
+ * settings are the person's own (under their home), so they apply to every
+ * project on this machine whatever the install scope.
+ */
+async function setupInjection(
+  deps: InitCommandDependencies,
+  tools: ToolId[],
+  setup: ServerSetup
+): Promise<InjectionSetup | { reason: string }> {
+  const session = await ensureCore(deps);
+  if ('reason' in session) return session;
+  try {
+    const { results, turnedOn } = await enableDelivery(session.client, tools);
+    const recorded = new Set([...readTurnedOn(deliveryRecordPath()), ...turnedOn]);
+    if (recorded.size > 0) writePrivateJson(deliveryRecordPath(), { turnedOn: [...recorded] });
+    const workspaceNote = await coreWorkspaceNote(deps, session.client, setup);
+    return { core: describeCore(session), results, workspaceNote };
+  } catch (error) {
+    return { reason: `the Agent Relay core could not be set up (${(error as Error).message})` };
+  } finally {
+    session.client.close();
+  }
+}
+
+const DELIVERY_MARK: Record<DeliveryResult['status'], string> = { on: '✓', held: '!', failed: '✗' };
+
+function describeDelivery(result: DeliveryResult): string {
+  const label = findToolTarget(result.id)!.label.padEnd(18);
+  if (result.status === 'failed') {
+    return `${DELIVERY_MARK.failed} ${label} not injected: ${result.message}\n    Using the Relay MCP server for it instead.`;
+  }
+  const line = `${DELIVERY_MARK[result.status]} ${label} injected through ${result.route}`;
+  return result.status === 'held' ? `${line}\n    ${result.message}` : line;
+}
+
+const INJECTION_SCOPE_NOTE =
+  'These are settings of your user account, so they apply in every project on this machine. ' +
+  'relay init --uninstall turns off what it turned on; relay init --stop stops a core it started.';
+
+/**
+ * Remove the MCP entry an earlier `relay init` added for tools whose messages
+ * are now injected, in both scopes: the session's identity is the core's, and
+ * a second one through MCP would split its messages.
+ */
+function removeSupersededMcp(tools: ToolId[], ctx: ToolContext): ToolResult[] {
+  return tools.flatMap((id) =>
+    (['project', 'global'] as const)
+      .map((scope) => uninstallTool(findToolTarget(id)!, { ctx, scope }))
+      .filter((result) => result.status === 'removed')
+  );
+}
+
+/** What is next when messages are injected. */
+function injectionNextStep(injected: ToolId[]): string[] {
+  const labels = injected.map((id) => findToolTarget(id)!.label);
+  const tools = labels.length > 1 ? `${labels.slice(0, -1).join(', ')} or ${labels.at(-1)}` : labels[0];
+  return [
+    `Open ${tools} in any project. Each session joins Relay on its own, and messages to it are`,
+    'typed into the running session: no inbox to check. See who is on Relay with: relay agent list',
+  ];
+}
+
+/**
+ * The core turns Claude Code's direct delivery off by writing
+ * `crossSessionInbound: "hold"` (Claude Code's own default). When relay init
+ * had turned it on, the key was absent before (the default only fills an
+ * absent key), so it is removed again rather than left as `hold`.
+ */
+function restoreClaudeInbound(ctx: ToolContext): void {
+  const configured = ctx.env.CLAUDE_CONFIG_DIR;
+  const dir = configured && path.isAbsolute(configured) ? configured : path.join(ctx.home, '.claude');
+  const file = path.join(dir, 'settings.json');
+  try {
+    const settings = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return;
+    if (settings.crossSessionInbound !== 'hold') return;
+    delete settings.crossSessionInbound;
+    writeKeepingMode(file, `${JSON.stringify(settings, null, 2)}\n`);
+  } catch {
+    // Unreadable or not JSON: left as the core wrote it.
+  }
+}
+
+/** Turn off what relay init turned on in the core, starting a core for it when none runs. */
+async function uninstallInjection(deps: InitCommandDependencies): Promise<string[]> {
+  const keys = readTurnedOn(deliveryRecordPath());
+  if (keys.length === 0) return [];
+  const session = await ensureCore(deps);
+  if ('reason' in session) {
+    throw new Error(`Could not reach the Agent Relay core to turn off message injection: ${session.reason}`);
+  }
+  try {
+    const failures = await disableDelivery(session.client, keys);
+    if (failures.length > 0) {
+      writePrivateJson(deliveryRecordPath(), {
+        turnedOn: keys.filter((key) => failures.some((failure) => failure.startsWith(`${key}:`))),
+      });
+      throw new Error(`Some injection settings could not be turned off: ${failures.join('; ')}`);
+    }
+    fs.rmSync(deliveryRecordPath(), { force: true });
+    if (keys.includes('direct_delivery')) restoreClaudeInbound(deps.toolContext());
+    return keys;
+  } finally {
+    session.client.close();
+    // A core started only to undo the settings is stopped again.
+    if (session.origin === 'started') await stopCore(deps, true);
+  }
+}
+
+/**
+ * Stop the core relay init started, never one it attached to.
+ * @param quiet - Say nothing (used after a core started only for `--uninstall`)
+ */
+async function stopCore(deps: InitCommandDependencies, quiet = false): Promise<void> {
+  const say = (line: string) => {
+    if (!quiet) deps.log(line);
+  };
+  const state = readCoreState(coreStatePath());
+  if (!state) return;
+  const running = await connectTo(deps, state.socket).catch(() => undefined);
+  if (running && running.status.daemon.pid !== state.pid) {
+    running.client.close();
+    say(
+      'The Agent Relay core running now was not started by relay init (the desktop app or a service); left running.'
+    );
+  } else if (running) {
+    await running.client.call('daemon.shutdown').catch(() => undefined);
+    running.client.close();
+    for (let i = 0; i < 40 && deps.isAlive(state.pid); i += 1) await deps.sleep(250);
+    if (deps.isAlive(state.pid)) deps.stop(state.pid);
+    say(
+      'Stopped the Agent Relay core relay init started. Messages are no longer injected until it runs again.'
+    );
+  } else if (deps.isAlive(state.pid)) {
+    deps.stop(state.pid);
+    say('Stopped the Agent Relay core relay init started.');
+  }
+  fs.rmSync(coreStatePath(), { force: true });
+}
+
+// ---------------------------------------------------------------------------
 // Command
 
 interface InitOptions {
@@ -663,6 +1045,7 @@ interface InitOptions {
   stop?: boolean;
   tools?: ToolId[];
   scope?: InstallScope;
+  delivery?: Delivery;
   yes?: boolean;
   uninstall?: boolean;
 }
@@ -676,7 +1059,7 @@ function serverChoiceFromFlags(o: InitOptions): ServerChoice | undefined {
   return undefined;
 }
 
-function stopLocalServer(deps: InitCommandDependencies): void {
+async function stopLocalServer(deps: InitCommandDependencies): Promise<void> {
   const state = readState();
   if (!state || !deps.isAlive(state.pid)) {
     deps.log('No local Relay server is running.');
@@ -685,9 +1068,10 @@ function stopLocalServer(deps: InitCommandDependencies): void {
     deps.log(`Stopped the local Relay server on ${state.origin}. Its data is kept in ${localDir()}.`);
   }
   fs.rmSync(statePath(), { force: true });
+  await stopCore(deps);
 }
 
-function uninstall(deps: InitCommandDependencies, o: InitOptions): void {
+async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise<void> {
   const ctx = deps.toolContext();
   const scopes: InstallScope[] = o.scope ? [o.scope] : ['project', 'global'];
   const tools = o.tools ?? [...TOOL_IDS];
@@ -695,13 +1079,80 @@ function uninstall(deps: InitCommandDependencies, o: InitOptions): void {
     tools.map((id) => uninstallTool(findToolTarget(id)!, { ctx, scope }))
   );
   const shown = results.filter((result) => result.status !== 'absent');
-  if (shown.length === 0) {
+  for (const result of shown) deps.log(describeResult(result, ctx));
+
+  // Injection settings are the user's own, not a project's: turned off with
+  // the global scope (or both), and only for all tools at once.
+  let turnedOff: string[] = [];
+  const injectionKept = readTurnedOn(deliveryRecordPath()).length > 0;
+  if (injectionKept && o.scope !== 'project' && o.tools === undefined) {
+    turnedOff = await uninstallInjection(deps);
+    deps.log(`✓ Message injection    turned off what relay init turned on (${turnedOff.join(', ')})`);
+  } else if (injectionKept) {
+    deps.log(
+      '! Message injection is a per-user setting and was left on. Run relay init --uninstall without ' +
+        '--scope project or --tools to turn it off.'
+    );
+  }
+  if (shown.length === 0 && turnedOff.length === 0 && !injectionKept) {
     deps.log('relay init had not added Relay to any agent tool here; nothing to remove.');
     return;
   }
-  for (const result of shown) deps.log(describeResult(result, ctx));
   if (results.some((result) => result.status === 'failed'))
     throw new Error('Some entries could not be removed.');
+}
+
+/** The tools that end up on the MCP server, and the injection results, for one run. */
+interface DeliveryPlan {
+  injection?: InjectionSetup;
+  /** Why injection is not used, when it was wanted. */
+  unavailable?: string;
+  injected: ToolId[];
+  mcp: ToolId[];
+  removedMcp: ToolResult[];
+}
+
+/** Set up injection for `tools` when wanted; whatever it cannot serve goes to the MCP server. */
+async function planDelivery(
+  deps: InitCommandDependencies,
+  tools: ToolId[],
+  delivery: Delivery,
+  setup: ServerSetup,
+  ctx: ToolContext
+): Promise<DeliveryPlan> {
+  if (delivery === 'mcp' || tools.length === 0) return { injected: [], mcp: tools, removedMcp: [] };
+  const injection = await setupInjection(deps, tools, setup);
+  if ('reason' in injection)
+    return { unavailable: injection.reason, injected: [], mcp: tools, removedMcp: [] };
+  const injected = injection.results.filter((r) => r.status !== 'failed').map((r) => r.id);
+  return {
+    injection,
+    injected,
+    mcp: injection.results.filter((r) => r.status === 'failed').map((r) => r.id),
+    removedMcp: removeSupersededMcp(injected, ctx),
+  };
+}
+
+function unavailableLine(reason: string): string {
+  return (
+    `Message injection is not available (${reason}). Using the Relay MCP server instead: ` +
+    'agents check its inbox themselves.'
+  );
+}
+
+function injectionLines(plan: DeliveryPlan, ctx: ToolContext): string[] {
+  if (!plan.injection) return [];
+  return [
+    plan.injection.core,
+    ...plan.injection.results.map(describeDelivery),
+    ...plan.removedMcp.map(
+      (result) =>
+        `✓ ${result.label.padEnd(18)} removed the earlier Relay MCP entry from ${displayPath(result.path, ctx)}: ` +
+        'one identity per session'
+    ),
+    ...(plan.injection.workspaceNote ? [`! ${plan.injection.workspaceNote}`] : []),
+    INJECTION_SCOPE_NOTE,
+  ];
 }
 
 /** `relay init` without prompts: flags, then sensible defaults. */
@@ -716,15 +1167,25 @@ async function runPlain(deps: InitCommandDependencies, o: InitOptions): Promise<
   const ctx = deps.toolContext();
   const tools = o.tools ?? detectTools(ctx).map((tool) => tool.id);
   const scope = o.scope ?? 'project';
+  const plan = await planDelivery(deps, tools, o.delivery ?? 'inject', setup, ctx);
+  if (plan.injection) {
+    deps.log('');
+    deps.log('Injecting messages into your agent sessions:');
+    for (const line of injectionLines(plan, ctx)) deps.log(`  ${line}`);
+  } else if (plan.unavailable) {
+    deps.log('');
+    deps.log(unavailableLine(plan.unavailable));
+  }
+
   const installed: ToolId[] = [];
-  if (tools.length > 0) {
+  if (plan.mcp.length > 0) {
     const launch = deps.resolveLaunch(ctx, scope);
     deps.warmLaunch(launch);
     deps.log('');
     deps.log(
       `Adding the Relay MCP server (${[launch.command, ...launch.args].join(' ')}) to your agent tools:`
     );
-    for (const result of installAll(deps, { tools, scope }, ctx, launch)) {
+    for (const result of installAll(deps, { tools: plan.mcp, scope }, ctx, launch)) {
       deps.log(`  ${describeResult(result, ctx)}`);
       if (['installed', 'updated', 'unchanged'].includes(result.status)) installed.push(result.id);
     }
@@ -732,12 +1193,13 @@ async function runPlain(deps: InitCommandDependencies, o: InitOptions): Promise<
     for (const note of notesFor(installed, scope, ctx)) deps.log(`  ${note}`);
     const scopeNote = globalScopeNote(setup, scope, installed);
     if (scopeNote) deps.log(`  ! ${scopeNote}`);
-  } else if (o.tools === undefined) {
+  } else if (tools.length === 0 && o.tools === undefined) {
     deps.log('');
     deps.log(`No agent tools found (looked for ${TOOL_IDS.join(', ')}). Pass --tools to choose some.`);
   }
   deps.log('');
   deps.log('Next:');
+  if (plan.injected.length > 0) for (const line of injectionNextStep(plan.injected)) deps.log(`  ${line}`);
   for (const line of installed.length > 0 ? nextStep(installed, scope, ctx) : []) deps.log(`  ${line}`);
   for (const line of CLI_FALLBACK) deps.log(`  ${line}`);
 }
@@ -844,9 +1306,10 @@ async function runGuided(deps: InitCommandDependencies, o: InitOptions): Promise
     return;
   }
 
-  // d. Scope.
+  // d. Scope: where the MCP server goes. Injection is per user, so only the MCP route asks.
+  const delivery = o.delivery ?? 'inject';
   let scope = o.scope;
-  if (!scope) {
+  if (!scope && delivery === 'mcp') {
     const picked = await p.select<InstallScope>({
       message: 'Installation scope',
       initialValue: 'project',
@@ -858,51 +1321,95 @@ async function runGuided(deps: InitCommandDependencies, o: InitOptions): Promise
     if (picked === CANCELLED) return cancelled();
     scope = picked;
   }
+  const mcpScope = scope ?? 'project';
 
   // e. Install.
-  const launch = deps.resolveLaunch(ctx, scope);
-  const summary = [
-    ...tools.map((id) => {
-      const target = findToolTarget(id)!;
-      return `${target.label.padEnd(18)} ${displayPath(target.configPath(scope, ctx), ctx)}  (${plannedMethod(
-        target,
-        scope,
-        ctx
-      )})`;
-    }),
-    '',
-    `Runs: ${[launch.command, ...launch.args].join(' ')}`,
-    `      ${launch.reason}`,
-  ];
+  const launch = deps.resolveLaunch(ctx, mcpScope);
+  const summary =
+    delivery === 'inject'
+      ? [
+          ...tools.map((id) => `${findToolTarget(id)!.label.padEnd(18)} ${PROBE_DELIVERY[id].route}`),
+          '',
+          'Messages are injected into running sessions by the Agent Relay core, which relay init',
+          'starts in the background (or reuses, when the desktop app already runs one).',
+          INJECTION_SCOPE_NOTE,
+        ]
+      : [
+          ...tools.map((id) => {
+            const target = findToolTarget(id)!;
+            return `${target.label.padEnd(18)} ${displayPath(target.configPath(mcpScope, ctx), ctx)}  (${plannedMethod(
+              target,
+              mcpScope,
+              ctx
+            )})`;
+          }),
+          '',
+          `Runs: ${[launch.command, ...launch.args].join(' ')}`,
+          `      ${launch.reason}`,
+        ];
   p.note(summary.join('\n'), 'Installation Summary');
-  if (launch.warning) p.warn(launch.warning);
+  if (delivery === 'mcp' && launch.warning) p.warn(launch.warning);
   if (!o.yes) {
     const proceed = await p.confirm({ message: 'Proceed with installation?', initialValue: true });
     if (proceed === CANCELLED || !proceed) return cancelled();
   }
-  deps.warmLaunch(launch);
-  const results = installAll(deps, { tools, scope }, ctx, launch);
+
+  const injecting = p.spinner();
+  if (delivery === 'inject') injecting.start('Setting up message injection');
+  const plan = await planDelivery(
+    { ...deps, log: (...args) => injecting.message(args.join(' ')) },
+    tools,
+    delivery,
+    setup,
+    ctx
+  );
+  if (plan.injection) {
+    injecting.stop('Message injection is set up.');
+    p.note(injectionLines(plan, ctx).join('\n'), 'Message injection');
+  } else if (plan.unavailable) {
+    injecting.stop('Message injection is not available.');
+    p.warn(unavailableLine(plan.unavailable));
+  }
+
+  let results: ToolResult[] = [];
+  if (plan.mcp.length > 0) {
+    if (delivery === 'inject' && launch.warning) p.warn(launch.warning);
+    deps.warmLaunch(launch);
+    results = installAll(deps, { tools: plan.mcp, scope: mcpScope }, ctx, launch);
+    p.note(results.map((result) => describeResult(result, ctx)).join('\n'), 'Relay MCP server');
+  }
   const installed = results
     .filter((result) => ['installed', 'updated', 'unchanged'].includes(result.status))
     .map((result) => result.id);
-  p.note(results.map((result) => describeResult(result, ctx)).join('\n'), 'Relay MCP server');
-  if (scope === 'project' && installed.includes('codex')) await offerCodexTrust(p, ctx);
-  for (const note of notesFor(installed, scope, ctx)) p.info(note);
-  const scopeNote = globalScopeNote(setup, scope, installed);
+  if (mcpScope === 'project' && installed.includes('codex')) await offerCodexTrust(p, ctx);
+  for (const note of notesFor(installed, mcpScope, ctx)) p.info(note);
+  const scopeNote = globalScopeNote(setup, mcpScope, installed);
   if (scopeNote) p.warn(scopeNote);
 
   // f. Next step.
-  p.note([...nextStep(installed, scope, ctx), '', ...CLI_FALLBACK].join('\n'), 'Next');
-  p.outro(installed.length > 0 ? 'Relay is ready.' : 'Relay is running, but no agent tool was set up.');
+  const next = [
+    ...(plan.injected.length > 0 ? injectionNextStep(plan.injected) : []),
+    ...(installed.length > 0 ? nextStep(installed, mcpScope, ctx) : []),
+  ];
+  p.note([...next, '', ...CLI_FALLBACK].join('\n'), 'Next');
+  const ready = plan.injected.length > 0 || installed.length > 0;
+  p.outro(ready ? 'Relay is ready.' : 'Relay is running, but no agent tool was set up.');
   if (results.some((result) => result.status === 'failed'))
     throw new Error('Some agent tools could not be set up.');
 }
 
+function parseDelivery(value: string): Delivery {
+  if (value === 'inject' || value === 'mcp') return value;
+  throw new InvalidArgumentError('Expected inject or mcp.');
+}
+
 /**
  * Register `relay init`: set up where agents talk (a private server on this
- * machine by default, the hosted service, or your own server), then install
- * the Relay MCP server into your agent tools. In a terminal it asks; with
- * `--yes` or without a TTY it uses flags and defaults.
+ * machine by default, the hosted service, or your own server), then connect
+ * your agent tools. By default the Agent Relay core injects messages into
+ * their running sessions; `--delivery mcp` (or a machine the core cannot run
+ * on) uses the Relay MCP server instead. In a terminal it asks; with `--yes`
+ * or without a TTY it uses flags and defaults.
  *
  * @param program - The commander program to add the command to.
  * @param overrides - Dependencies to replace, typically in tests.
@@ -916,8 +1423,8 @@ export function registerInitCommand(
     .command('init')
     .description(
       'Set up Relay and connect your agent tools: a private server on this machine (default), the hosted ' +
-        'service (--hosted), or your own server (--url and --key), then the Relay MCP server in Claude Code, ' +
-        'Codex, OpenCode, Grok, Pi and Devin'
+        'service (--hosted), or your own server (--url and --key); then the Agent Relay core injects messages ' +
+        'into running Claude Code, Codex, OpenCode, Grok, Pi and Devin sessions'
     )
     .option('--hosted', 'Use the hosted service so agents on other machines can join')
     .option('--url <url>', 'Your own Relaycast server')
@@ -929,10 +1436,23 @@ export function registerInitCommand(
       `Agent tools to connect: ${TOOL_IDS.join(',')}, all, or none (default: the ones installed here)`,
       parseTools
     )
-    .option('--scope <scope>', 'Install for this project or every project: project or global', parseScope)
+    .option(
+      '--delivery <delivery>',
+      'inject (default): the Agent Relay core types messages into running sessions; mcp: the Relay MCP ' +
+        'server, whose inbox agents check',
+      parseDelivery
+    )
+    .option(
+      '--scope <scope>',
+      'Where the Relay MCP server goes: project or global (injection is always per user)',
+      parseScope
+    )
     .option('-y, --yes', 'Do not ask; use flags and defaults')
-    .option('--uninstall', 'Remove the Relay MCP entries relay init added (both scopes unless --scope)')
-    .option('--stop', 'Stop the local server started by relay init')
+    .option(
+      '--uninstall',
+      'Remove the Relay MCP entries relay init added (both scopes unless --scope) and turn off the injection it turned on'
+    )
+    .option('--stop', 'Stop the local server and the Agent Relay core started by relay init')
     .action(async (o: InitOptions) => {
       await runSdk(deps, async () => {
         if (o.stop) return stopLocalServer(deps);

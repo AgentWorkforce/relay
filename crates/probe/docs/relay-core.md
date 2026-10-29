@@ -10,7 +10,7 @@ in the `agent-relay-probe` binary every desktop build already bundles and
 signs, and it runs as one long-lived daemon per user:
 
 ```sh
-agent-relay-probe relay serve [--socket PATH] [--app-data-dir PATH] [--site-url URL] [--exit-on-stdin-eof] [--headless]
+agent-relay-probe relay serve [--socket PATH] [--app-data-dir PATH] [--site-url URL] [--exit-on-stdin-eof] [--headless [--cli-managed]]
 ```
 
 A relative `--socket` lives beside the default socket and a relative
@@ -156,6 +156,14 @@ watchdog exposes retry and diagnostics if the service has not become ready.
   turning the setting off first turns off the systemd unit with the person's
   agreement. A core an earlier run left running on another version is
   stopped and replaced.
+- **The relay CLI.** `relay init` attaches to whichever core answers on the
+  socket and starts one only when none does:
+  `agent-relay-probe relay serve --headless --cli-managed`. `--cli-managed`
+  keeps the app's login entry and turns on no defaults by itself (neither the
+  agent-led defaults at start nor the integration defaults of each refresh
+  pass); the CLI turns on the delivery settings the person chose through
+  `settings.set` and turns them off again on `relay init --uninstall`. See
+  `docs/probe-move.md` at the relay repository root.
 - **Shutdown.** SIGTERM, SIGINT, `daemon.shutdown`, or stdin closing (with
   `--exit-on-stdin-eof`). The daemon publishes the `shutdown` event to every
   greeted client, stops push channels, closes connections, and removes its
