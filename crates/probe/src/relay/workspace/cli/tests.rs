@@ -226,6 +226,47 @@ fn an_unreadable_store_fails_closed() {
 }
 
 #[test]
+fn a_store_the_cli_would_throw_on_fails_closed() {
+    // packages/cloud/src/workspace-store.ts readWorkspaceStore reads
+    // `parsed.previous` (a TypeError on `null`), and
+    // resolveActiveWorkspaceSelection `?.trim()`s `active` and the entry's
+    // `key` (a TypeError on any other non-string).
+    for contents in [
+        "null",
+        r#"{"active":7,"workspaces":{"7":{"key":"rk_live_local0000"}}}"#,
+        r#"{"active":true,"workspaces":{}}"#,
+        r#"{"active":"local","workspaces":{"local":{"key":7}}}"#,
+        r#"{"active":"local","workspaces":{"local":{"key":{"value":"rk_live_local0000"}}}}"#,
+    ] {
+        let machine = Machine::new().write_relay(WORKSPACE_STORE_FILE, contents);
+        let error = machine.resolve().unwrap_err();
+        assert!(error.contains(WORKSPACE_STORE_FILE), "{contents}: {error}");
+        assert!(!error.contains("rk_live"), "{contents}: {error}");
+    }
+}
+
+#[test]
+fn a_store_the_cli_reads_as_empty_selects_nothing() {
+    // `parsed.workspaces ?? {}`: a null or missing map is empty in the CLI,
+    // and an entry that is not an object has no `key`.
+    for contents in [
+        r#"{"active":"local","workspaces":null}"#,
+        r#"{"active":"local"}"#,
+        r#"{"active":null,"workspaces":{"local":{"key":"rk_live_local0000"}}}"#,
+        r#"{"active":"local","workspaces":{"local":null}}"#,
+        r#"{"active":"local","workspaces":{"local":"rk_live_local0000"}}"#,
+        r#"{"active":"local","workspaces":{"local":{"key":null}}}"#,
+        r#"{"active":"local","workspaces":"local"}"#,
+        "[]",
+        "7",
+        r#""rk_live_local0000""#,
+    ] {
+        let machine = Machine::new().write_relay(WORKSPACE_STORE_FILE, contents);
+        assert_eq!(machine.resolve(), Ok(None), "{contents}");
+    }
+}
+
+#[test]
 fn a_rotated_store_key_is_picked_up_on_the_next_resolve() {
     let machine = Machine::new()
         .store("local", &[("local", "rk_live_before000")])
@@ -522,6 +563,73 @@ fn resolving_never_writes_the_cli_state() {
     assert_eq!(machine.found().base_url, "https://relay.corp.test");
     assert_eq!(snapshot(&machine.relay), relay);
     assert_eq!(snapshot(&machine.data_dir()), project);
+}
+
+#[test]
+fn verbatim_windows_paths_print_as_node_prints_them() {
+    for (canonicalized, node) in [
+        (r"\\?\C:\Users\dev\checkout", r"C:\Users\dev\checkout"),
+        (r"\\?\C:\", r"C:\"),
+        (r"\\?\d:", r"d:"),
+        (r"\\?\UNC\server\share\checkout", r"\\server\share\checkout"),
+        // Already plain, or a verbatim form with no plain spelling.
+        (r"C:\Users\dev", r"C:\Users\dev"),
+        (r"\\server\share", r"\\server\share"),
+        (
+            r"\\?\Volume{0b1c2d3e-0000-0000-0000-000000000000}\x",
+            r"\\?\Volume{0b1c2d3e-0000-0000-0000-000000000000}\x",
+        ),
+    ] {
+        assert_eq!(
+            without_verbatim_prefix(canonicalized),
+            node,
+            "{canonicalized}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn the_credential_reference_matches_the_cli_on_windows() {
+    // relaycastCredentialRef(dataDir, "ws_1", "agent37-isolated",
+    // "https://agent37-cast.agentrelay.com/") on Windows: only `C:\` exists,
+    // which realpathSync.native prints as `C:\`; the missing tail is kept
+    // and the whole path lowercased. That is the SHA-256 of
+    // "c:\nonexistent-relay-probe-test\checkout\.agentworkforce\relay\0ws_1\0agent37-isolated\0https://agent37-cast.agentrelay.com".
+    let expected = "ec05ee466537a841736141b4fe2e820c17a13c17f0d3072ceb248f5eeefb8342";
+    for spelling in [
+        r"C:\nonexistent-relay-probe-test\checkout\.agentworkforce\relay",
+        r"c:\NonExistent-Relay-Probe-Test\Checkout\.AgentWorkforce\Relay",
+    ] {
+        let reference = credential_ref(
+            Path::new(spelling),
+            "ws_1",
+            "agent37-isolated",
+            "https://agent37-cast.agentrelay.com/",
+        );
+        assert_eq!(reference, expected, "{spelling}");
+    }
+
+    // An existing directory canonicalizes to `\\?\C:\…` in Rust; the CLI
+    // hashes the plain, lowercased path, and any casing alias of it.
+    let machine = Machine::new().in_project();
+    let data_dir = machine.data_dir();
+    let canonical = canonical_data_dir(&data_dir);
+    assert!(!canonical.starts_with(r"\\?\"), "{canonical}");
+    assert!(is_drive_path(&canonical), "{canonical}");
+    assert_eq!(canonical, canonical.to_lowercase());
+    let alias = PathBuf::from(data_dir.to_string_lossy().to_uppercase());
+    assert_eq!(canonical_data_dir(&alias), canonical);
+    let digest = Sha256::digest(
+        format!("{canonical}\0ws_1\0agent37-isolated\0{AGENT37_RELAYCAST_ORIGIN}").as_bytes(),
+    );
+    let expected: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    for dir in [&data_dir, &alias] {
+        assert_eq!(
+            credential_ref(dir, "ws_1", "agent37-isolated", AGENT37_RELAYCAST_ORIGIN),
+            expected
+        );
+    }
 }
 
 #[cfg(unix)]
