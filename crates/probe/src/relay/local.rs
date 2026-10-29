@@ -2167,7 +2167,6 @@ impl effects::ClaudeDeliveryEffects for ClaudeMailboxEffects {
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
-    #[cfg(feature = "history")]
     mod automatic_admission;
 
     mod spawned_delivery;
@@ -3184,6 +3183,38 @@ mod tests {
                     "{kind:?} cannot claim a valid Devin Cloud ID"
                 );
             }
+        }
+    }
+
+    /// A stopped local Devin session can have a cloud-shaped id. With no
+    /// route to Devin Cloud (no session history, or no sign-in to send
+    /// with), a send to it waits for the session rather than failing for
+    /// good.
+    #[test]
+    fn a_stopped_devin_session_with_a_cloud_shaped_id_waits() {
+        #[cfg(feature = "history")]
+        let _lock = crate::relay::devin_cloud::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        #[cfg(feature = "history")]
+        let _unsigned = crate::relay::devin_cloud::tests::unsigned_env();
+        let world = world();
+        let injector = LocalInjector::new(
+            world.sessions.config.clone(),
+            world.table.clone(),
+            CodexRouter::new(Arc::new(UnusedCodexRoutes)),
+            ServingPath::default(),
+        );
+        for id in [
+            "4b50574f40324da6bd88e9cbd30501cf",
+            "devin-4b50574f40324da6bd88e9cbd30501cf",
+        ] {
+            let outcome =
+                injector.inject(&Target::new(SessionKind::Devin, id), "m-1", "relay message");
+            assert!(
+                matches!(outcome, InjectOutcome::Waiting(_)),
+                "{id}: {outcome:?}"
+            );
         }
     }
 

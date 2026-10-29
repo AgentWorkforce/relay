@@ -156,6 +156,17 @@ impl HistoryRetention for InStore {
     }
 }
 
+/// Why `settings.set` refuses a value no [`Retention`] names.
+const INVALID: &str = "history_retention_days must be 7, 30 or 90, or 0 to keep history forever.";
+
+/// The [`Retention`] a `settings.set` value names, if any.
+fn parse(value: &Value) -> Option<Retention> {
+    value
+        .as_u64()
+        .and_then(|days| u32::try_from(days).ok())
+        .and_then(Retention::from_setting)
+}
+
 /// The settings file: the choice, the store last in step with it, and
 /// whether a choice is still waiting to be saved in a store.
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -214,8 +225,12 @@ impl SettingsExtension for Unavailable {
         settings
     }
 
-    fn set(&self, key: &str, _value: &Value) -> Option<Result<(), String>> {
-        (key == SETTING).then(|| Err(crate::relay::protocol::HISTORY_UNAVAILABLE.into()))
+    fn set(&self, key: &str, value: &Value) -> Option<Result<(), String>> {
+        self.refuse(key, value).map(Err)
+    }
+
+    fn refuse(&self, key: &str, _value: &Value) -> Option<String> {
+        (key == SETTING).then(|| crate::relay::protocol::HISTORY_UNAVAILABLE.into())
     }
 }
 
@@ -436,14 +451,8 @@ impl SettingsExtension for HistoryRetentionSetting {
         if key != SETTING {
             return None;
         }
-        let Some(retention) = value
-            .as_u64()
-            .and_then(|days| u32::try_from(days).ok())
-            .and_then(Retention::from_setting)
-        else {
-            return Some(Err(
-                "history_retention_days must be 7, 30 or 90, or 0 to keep history forever.".into(),
-            ));
+        let Some(retention) = parse(value) else {
+            return Some(Err(INVALID.into()));
         };
         // Publish the choice and pending flag together; a concurrent store
         // readback must never overwrite a newer local choice.
@@ -464,6 +473,10 @@ impl SettingsExtension for HistoryRetentionSetting {
         let inner = self.inner.clone();
         spawn("history-retention", move || inner.apply());
         Some(Ok(()))
+    }
+
+    fn refuse(&self, key: &str, value: &Value) -> Option<String> {
+        (key == SETTING && parse(value).is_none()).then(|| INVALID.into())
     }
 
     /// Reads the store's policy back now and then: at start, a store in step
@@ -823,6 +836,54 @@ mod tests {
             crate::relay::protocol::ErrorKind::HistoryUnavailable
         );
         assert_eq!(setting.set("analytics_enabled", &json!(true)), None);
+    }
+
+    /// A `settings.set` batch the retention setting refuses saves none of
+    /// its other settings: the refusal comes before any write. Without
+    /// session history every change is refused; with it, a value no
+    /// retention names is.
+    #[tokio::test]
+    async fn a_refused_retention_change_saves_nothing_else_in_its_batch() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = crate::relay::daemon::Config {
+            paths: crate::relay::paths::CorePaths::for_socket(temp.path().join("core.sock"))
+                .unwrap(),
+            home: temp.path().into(),
+            app_data_dir: temp.path().join("app-data"),
+            env: std::collections::BTreeMap::new(),
+            version: "0.0.0-test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: crate::relay::push::PushTiming::default(),
+            delivery_timing: crate::relay::delivery::DeliveryTiming::default(),
+        };
+        #[cfg(feature = "history")]
+        let (setting, refused_days, expected) = (
+            super::setting_at(&config.app_data_dir, Arc::new(|| None)),
+            45,
+            crate::relay::protocol::ErrorKind::Refused,
+        );
+        #[cfg(not(feature = "history"))]
+        let (setting, refused_days, expected): (Arc<dyn SettingsExtension>, _, _) = (
+            Arc::new(Unavailable),
+            7,
+            crate::relay::protocol::ErrorKind::HistoryUnavailable,
+        );
+        let plugins = crate::relay::daemon::Plugins {
+            settings: vec![setting],
+            ..crate::relay::daemon::Plugins::default()
+        };
+        let (core, _signals) = crate::relay::daemon::Core::with_plugins(config, plugins);
+        let key = crate::relay::store_settings::AUTO_JOIN_GENERAL;
+        let before = core.settings()[key].clone();
+        let mut change = Map::new();
+        change.insert(key.into(), json!(before != json!(true)));
+        change.insert(SETTING.into(), json!(refused_days));
+        let refused = core.set_settings(&change).unwrap_err();
+        assert_eq!(refused.data.kind, expected, "{}", refused.message);
+        let after = core.settings();
+        assert_eq!(after[key], before, "the batch's other setting is not saved");
+        assert_eq!(after[SETTING], DEFAULT_DAYS);
     }
 
     #[test]

@@ -1298,6 +1298,16 @@ impl Core {
                     "{key} must be true or false."
                 )));
             }
+            // A refusal known now refuses the whole batch before anything
+            // is saved.
+            if let Some(refused) = self
+                .plugins
+                .settings
+                .iter()
+                .find_map(|extension| extension.refuse(key, value))
+            {
+                return Err(RpcError::setting_refused(refused));
+            }
         }
         self.set_store_settings(changes)?;
         let _changing = self.integration_settings.lock().unwrap();

@@ -82,10 +82,11 @@ generate the checked-in `contract/CoreContract.swift`. Without `history`:
 - Hermes session titles are not editable (Hermes's roots resolve through
   `ai-hist`);
 - the uploader finds no install, so nothing is uploaded and no background
-  history monitor runs. Cloud sign-in (`account.sign_in`) still adopts the
-  workspace, then ends in `error` with the `history_unavailable` sentence,
-  because its last step sets up the uploader (`cloud install`); relay
-  resolves its workspace from the CLI instead.
+  history monitor runs. Cloud sign-in (`account.sign_in`) is how this build
+  gets its workspace today: it adopts the workspace, then ends in `error`
+  with the `history_unavailable` sentence, because its last step sets up the
+  uploader (`cloud install`). Resolving the workspace the agent-relay CLI
+  selects, instead of signing in, is coming in #2013.
 
 `.github/workflows/probe-ci.yml`'s `core-only` job builds and tests this
 build on Linux, fails if `ai-hist` or `history-provider-sources` appear in its
@@ -97,7 +98,9 @@ Windows jobs build it too.
 ```sh
 cargo build --manifest-path crates/probe/Cargo.toml --locked
 cargo build --manifest-path crates/probe/Cargo.toml --locked --release --bin agent-relay-probe
-# Tests read and write under HOME: use an empty one.
+# Tests read and write under HOME: use an empty one, keeping the toolchain
+# (rustup and cargo) where it was installed under the real HOME.
+export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
 HOME="$(mktemp -d)" cargo test --manifest-path crates/probe/Cargo.toml --locked
 # The core without session history (what relay ships):
 HOME="$(mktemp -d)" cargo test --manifest-path crates/probe/Cargo.toml --locked \

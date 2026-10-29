@@ -17,7 +17,6 @@ fn writer() -> FakeProcess {
     }
 }
 
-#[cfg(feature = "history")]
 #[tokio::test]
 async fn a_retained_closed_codex_row_cannot_create_an_automatic_registration() {
     let world = world();

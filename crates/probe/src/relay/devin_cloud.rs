@@ -1353,9 +1353,10 @@ pub(crate) mod tests {
 
 // Without the `history` feature there is no session catalog to list Devin
 // Cloud sessions from and no remote connector to send through: nothing is
-// discovered, and a send to a Devin Cloud session id (one a core built with
-// history registered, in a shared store) is refused for good, since no retry
-// can reach it. Any other id keeps the caller's local answer.
+// discovered and nothing is sent. Nothing marks an id as cloud-only either —
+// a cloud-shaped id can name a stopped local Devin session — so the caller's
+// local answer always stands: `Waiting` stays `Waiting`, as it does in a
+// build with history when no Devin sign-in can carry the send.
 #[cfg(not(feature = "history"))]
 pub fn discover(
     _config: &crate::relay::devin::DevinConfig,
@@ -1373,25 +1374,21 @@ pub fn started_by_automation(_probe_root: &std::path::Path) -> std::collections:
 pub fn send_cloud(
     _config: &crate::relay::devin::DevinConfig,
     _probe_root: Option<&std::path::Path>,
-    session_id: &str,
+    _session_id: &str,
     _text: &str,
 ) -> Option<crate::relay::inject::InjectOutcome> {
-    is_cloud_session_id(session_id).then(|| {
-        crate::relay::inject::InjectOutcome::Refused(
-            "Devin Cloud delivery needs session history, which this build of the Agent Relay core does not include".into(),
-        )
-    })
+    None
 }
 
 #[cfg(all(test, not(feature = "history")))]
 mod no_history_tests {
     use super::*;
-    use crate::relay::inject::InjectOutcome;
 
-    /// A Devin Cloud session cannot be reached without session history, so a
-    /// send to one fails for good; a local session keeps its own answer.
+    /// Without session history nothing is sent to Devin Cloud, and no id is
+    /// refused for its shape: a cloud-shaped id can name a stopped local
+    /// session, so the caller's local answer stands.
     #[test]
-    fn a_cloud_send_is_refused_and_a_local_one_left_alone() {
+    fn no_send_is_made_or_refused_and_nothing_is_discovered() {
         let home = tempfile::tempdir().unwrap();
         let config = crate::relay::devin::DevinConfig {
             data_dir: home.path().join("data"),
@@ -1399,12 +1396,13 @@ mod no_history_tests {
             home: home.path().into(),
             development: false,
         };
-        let cloud = "devin-0123456789abcdef0123456789abcdef";
-        assert!(matches!(
-            send_cloud(&config, None, cloud, "hi"),
-            Some(InjectOutcome::Refused(reason)) if reason.contains("session history")
-        ));
-        assert!(send_cloud(&config, None, "real-gallium", "hi").is_none());
+        for id in [
+            "0123456789abcdef0123456789abcdef",
+            "devin-0123456789abcdef0123456789abcdef",
+            "real-gallium",
+        ] {
+            assert!(send_cloud(&config, None, id, "hi").is_none(), "{id}");
+        }
         assert!(discover(&config, home.path()).is_empty());
     }
 }

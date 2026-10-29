@@ -172,12 +172,15 @@ Without `history`:
   not available in this build of the Agent Relay core." The server refuses
   them before reading their parameters. The generated Swift call for each
   says so, and `hello` still lists them.
-- `settings.set` of `history_retention_days` answers `history_unavailable`;
-  `settings.get` reports the default, 30.
+- `settings.set` of `history_retention_days` answers `history_unavailable`
+  before anything is written, so no other setting in the same batch is
+  saved; `settings.get` reports the default, 30.
 - `status.get` reports `daemon.history_version` as null.
 - **Devin Cloud delivery is history-only.** Devin Cloud and claude.ai web
-  sessions are not discovered, and a send to a Devin Cloud session id (one a
-  history build registered in a shared store) fails as refused, for good.
+  sessions are not discovered, and nothing is sent to Devin Cloud. A send
+  to a cloud-shaped id keeps the local answer (`Waiting` while no local
+  Devin session holds it), since a stopped local session can have that id
+  shape, as a history build does when no Devin sign-in can carry the send.
 - The uploader runs no child process: it finds no install, reclaims nothing,
   and refuses every other command with `history_unavailable`. Cloud sign-in
   (`account.sign_in`) adopts the workspace for messaging, then ends in
