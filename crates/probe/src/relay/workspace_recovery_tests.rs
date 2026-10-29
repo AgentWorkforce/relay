@@ -652,3 +652,82 @@ async fn recovery_refused_key_is_not_rechecked_in_a_loop() {
 fn workspace_stale_ms() -> i64 {
     super::key_rotation::REVERIFY_VERIFIED_AFTER.as_millis() as i64 + 1_000
 }
+
+/// Points this machine's `agent-relay` CLI at `key`, bound to `site`.
+fn select_cli_workspace(h: &Harness, key: &str) {
+    let relay = h._temp.path().join(".agentworkforce/relay");
+    std::fs::create_dir_all(&relay).unwrap();
+    std::fs::write(
+        relay.join("workspaces.json"),
+        json!({"active":"local","workspaces":{"local":{"key":key}}}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        relay.join("relaycast-origins.json"),
+        json!({"version":1,"origins":{
+            crate::relay::workspace::origin_binding::credential_fingerprint(key): h.fake.site,
+        }})
+        .to_string(),
+    )
+    .unwrap();
+}
+
+/// A refused key the CLI named is never recovered through the Cloud
+/// account, even when it is the account's key too: the CLI owns it.
+#[tokio::test]
+async fn recovery_never_applies_to_a_cli_workspace() {
+    let h = Harness::new().await;
+    select_cli_workspace(&h, OLD);
+    h.core.rediscover_workspace();
+    let workspace = h.core.workspace().unwrap();
+    assert!(!workspace.source.is_cloud());
+    assert_eq!(workspace.base_url, h.fake.site);
+    assert!(h.verify().await.is_err());
+    assert_eq!(
+        h.core.status().workspace.verification,
+        Verification::Rejected
+    );
+    assert_eq!(h.fake.count("/auth/token/refresh"), 0);
+    assert_eq!(h.fake.count("/resolve"), 0);
+    assert!(h.cloud_key_is(OLD));
+}
+
+/// A key rotated in the CLI's `workspaces.json` is picked up and verified by
+/// the next refresh pass, without asking Cloud.
+#[tokio::test]
+async fn refresh_picks_up_a_key_rotated_in_the_cli_store() {
+    let h = Harness::new().await;
+    h.fake.state.lock().unwrap().old_status = 200;
+    select_cli_workspace(&h, OLD);
+    assert_eq!(
+        h.core.refresh_workspace().await.verification,
+        Verification::Verified
+    );
+    select_cli_workspace(&h, NEW);
+    let status = h.core.refresh_workspace().await;
+    assert_eq!(status.verification, Verification::Verified);
+    assert_eq!(status.workspace_id.as_deref(), Some("rw_review"));
+    assert_eq!(h.core.workspace().unwrap().key.expose(), NEW);
+    assert_eq!(h.fake.new_gets(), 1);
+    assert_eq!(h.fake.count("/resolve"), 0);
+    // The account's own key is untouched.
+    assert!(h.cloud_key_is(OLD));
+}
+
+/// A CLI selection that may not be used leaves the daemon with no
+/// workspace rather than falling back to the account's.
+#[tokio::test]
+async fn a_refused_cli_selection_does_not_fall_back_to_the_account() {
+    let h = Harness::new().await;
+    assert!(h.core.workspace().unwrap().source.is_cloud());
+    select_cli_workspace(&h, OLD);
+    std::fs::write(
+        h._temp
+            .path()
+            .join(".agentworkforce/relay/relaycast-origins.json"),
+        "{",
+    )
+    .unwrap();
+    assert!(!h.core.rediscover_workspace());
+    assert!(h.core.workspace().is_none());
+}

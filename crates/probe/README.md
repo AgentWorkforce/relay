@@ -70,23 +70,26 @@ generate the checked-in `contract/CoreContract.swift`. Without `history`:
 - the history-only methods (`relay::contract::HISTORY_METHODS`: every
   `uploader.*` method and `sessions.transcript`) answer the typed error
   `history_unavailable` (not retryable), before their parameters are read;
-- `settings.set` of `history_retention_days` answers `history_unavailable`,
-  and `settings.get` reports its default (30);
+- `settings.set` of `history_retention_days` answers `history_unavailable`
+  before anything in its batch is saved, and `settings.get` reports its
+  default (30);
 - `status.get` reports `daemon.history_version` as null, which is how a
   client can tell the build;
 - Devin Cloud and claude.ai web sessions are not discovered (both are read
-  from the history catalog), and a send to a Devin Cloud session id fails
-  as refused, permanently: Devin Cloud delivery is history-only;
+  from the history catalog), and nothing is sent to Devin Cloud: a send to
+  a cloud-shaped Devin id keeps the local answer (`Waiting` while no local
+  session holds it), since a stopped local session can have that id shape;
 - agent-led setup (`/setup/*`) does not wait for an uploader, and
   `POST /setup/sharing` answers `setup_unavailable`;
 - Hermes session titles are not editable (Hermes's roots resolve through
   `ai-hist`);
 - the uploader finds no install, so nothing is uploaded and no background
-  history monitor runs. Cloud sign-in (`account.sign_in`) is how this build
-  gets its workspace today: it adopts the workspace, then ends in `error`
-  with the `history_unavailable` sentence, because its last step sets up the
-  uploader (`cloud install`). Resolving the workspace the agent-relay CLI
-  selects, instead of signing in, is coming in #2013.
+  history monitor runs. The core uses the workspace the `agent-relay` CLI
+  selects (`src/relay/workspace/cli.rs`), with no sign-in needed. Cloud
+  sign-in (`account.sign_in`) remains the fallback when the CLI names no
+  workspace: it adopts the workspace, then ends in `error` with the
+  `history_unavailable` sentence, because its last step sets up the uploader
+  (`cloud install`).
 
 `.github/workflows/probe-ci.yml`'s `core-only` job builds and tests this
 build on Linux, fails if `ai-hist` or `history-provider-sources` appear in its
