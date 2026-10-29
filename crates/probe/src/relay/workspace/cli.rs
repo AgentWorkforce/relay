@@ -376,14 +376,43 @@ fn canonical_data_dir(data_dir: &Path) -> String {
     };
     let text = canonical.to_string_lossy().into_owned();
     if cfg!(windows) {
-        text.to_lowercase()
+        without_verbatim_prefix(&text).to_lowercase()
     } else {
         text
     }
 }
 
+/// A Windows path as Node's `fs.realpathSync.native` prints it: libuv strips
+/// the `\\?\` verbatim prefix `GetFinalPathNameByHandle` (and so
+/// `std::fs::canonicalize`) returns, and turns `\\?\UNC\server\share` back
+/// into `\\server\share`. Any other verbatim form (a volume GUID) is kept.
+fn without_verbatim_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) if is_drive_path(rest) => rest.to_string(),
+        _ => path.to_string(),
+    }
+}
+
+/// `C:` or `C:\…`.
+fn is_drive_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes.len() == 2 || bytes[2] == b'\\')
+}
+
 /// The active store entry's name and key. A missing file selects nothing;
 /// one that cannot be read or parsed is an error, as in the CLI.
+///
+/// The CLI (`readWorkspaceStore` then `resolveActiveWorkspaceSelection`)
+/// throws on a top-level `null` and on an `active` or entry `key` that is
+/// present but not a string, so those fail closed here too. A `null` or
+/// missing `workspaces` is `{}` there (`parsed.workspaces ?? {}`), so it
+/// selects nothing, as does an entry that is not an object.
 fn read_active_store_key(file: &Path) -> Result<Option<(String, String)>, String> {
     let raw = match std::fs::read_to_string(file) {
         Ok(raw) => raw,
@@ -397,20 +426,48 @@ fn read_active_store_key(file: &Path) -> Result<Option<(String, String)>, String
     };
     let parsed: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|_| format!("{} is not valid JSON; fix or remove it.", file.display()))?;
-    let Some(active) = parsed
-        .get("active")
-        .and_then(|v| v.as_str())
+    let malformed = |what: &str| {
+        format!(
+            "{} is not a valid workspace store ({what}); fix or remove it.",
+            file.display()
+        )
+    };
+    if parsed.is_null() {
+        return Err(malformed("it is null"));
+    }
+    let Some(active) = optional_string(parsed.get("active"))
+        .map_err(|_| malformed("\"active\" is not a string"))?
         .and_then(trimmed_str)
     else {
         return Ok(None);
     };
-    let key = parsed
-        .get("workspaces")
-        .and_then(|workspaces| workspaces.get(&active))
-        .and_then(|entry| entry.get("key"))
-        .and_then(|key| key.as_str())
-        .and_then(trimmed_str);
+    let entry = match parsed.get("workspaces") {
+        Some(serde_json::Value::Object(workspaces)) => workspaces.get(&active),
+        // `workspaces[active]` on an array reads an index, as in JavaScript.
+        Some(serde_json::Value::Array(workspaces)) => active
+            .parse::<usize>()
+            .ok()
+            .filter(|index| index.to_string() == active)
+            .and_then(|index| workspaces.get(index)),
+        _ => None,
+    };
+    let key = match entry {
+        Some(serde_json::Value::Object(entry)) => optional_string(entry.get("key"))
+            .map_err(|_| malformed("the active entry's \"key\" is not a string"))?
+            .and_then(trimmed_str),
+        _ => None,
+    };
     Ok(key.map(|key| (active, key)))
+}
+
+/// A field JavaScript would `?.trim()`: absent or `null` is unset, a string
+/// is itself, anything else throws.
+fn optional_string(value: Option<&serde_json::Value>) -> Result<Option<&str>, ()> {
+    match value {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(text)) => Ok(Some(text)),
+        Some(_) => Err(()),
+    }
 }
 
 fn trimmed(value: String) -> Option<String> {

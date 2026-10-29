@@ -244,7 +244,11 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
-        resolve(cloud.as_ref(), &move |key: &str| env.get(key).cloned(), home.path())
+        resolve(
+            cloud.as_ref(),
+            &move |key: &str| env.get(key).cloned(),
+            home.path(),
+        )
     }
 
     fn store(relay: &Path, key: &str) {
@@ -357,6 +361,14 @@ mod tests {
             &[],
             Some(account("rk_live_account00", DEFAULT_BASE_URL)),
             |relay| std::fs::write(relay.join("workspaces.json"), "not json").unwrap(),
+        )
+        .unwrap_err();
+        assert!(error.contains("workspaces.json"), "{error}");
+        // A store the CLI throws on is not "nothing selected" either.
+        let error = combined(
+            &[],
+            Some(account("rk_live_account00", DEFAULT_BASE_URL)),
+            |relay| std::fs::write(relay.join("workspaces.json"), "null").unwrap(),
         )
         .unwrap_err();
         assert!(error.contains("workspaces.json"), "{error}");
