@@ -1056,6 +1056,25 @@ async function setupInjection(
   }
 }
 
+/** A regular file's bytes; undefined when there is none (or it is a link or folder). */
+function readIfFile(file: string): Buffer | undefined {
+  try {
+    return fs.lstatSync(file).isFile() ? fs.readFileSync(file) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Puts `bytes` back in `file` when they differ; a failure leaves the core's marker, which means the same. */
+function restoreBytes(file: string, bytes: Buffer): void {
+  try {
+    const now = readIfFile(file);
+    if (now === undefined || !now.equals(bytes)) fs.writeFileSync(file, bytes);
+  } catch {
+    // The core's own marker stays: Pi is still off.
+  }
+}
+
 /** Settings init turned on that are neither recorded nor turned off: setup stops. */
 class InjectionStuckError extends Error {}
 
@@ -1377,10 +1396,13 @@ async function turnOffInjection(deps: InitCommandDependencies, keys: string[]): 
   }
   try {
     // A Pi off marker already there was the person's own opt-out after init
-    // (the desktop app's switch), not this run's: it is kept.
+    // (the desktop app's switch), not this run's: it is kept, byte for byte,
+    // though turning pi_extension off rewrites it.
     const pi = readDeliveryRecord(deliveryRecordPath()).pi;
-    const piOptedOut = keys.includes('pi_extension') && pi !== undefined && fs.existsSync(pi.marker);
+    const piMarker = keys.includes('pi_extension') && pi !== undefined ? readIfFile(pi.marker) : undefined;
+    const piOptedOut = piMarker !== undefined;
     const failures = await disableDelivery(session.client, keys);
+    if (pi && piMarker) restoreBytes(pi.marker, piMarker);
     const done = keys.filter((key) => !failures.some((failure) => failure.startsWith(`${key}:`)));
     const ctx = deps.toolContext();
     updateDeliveryRecord((current) => {

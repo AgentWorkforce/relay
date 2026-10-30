@@ -1332,9 +1332,9 @@ describe('relay init message injection', () => {
     // As the desktop app's Pi switch: the extension goes and the marker stays.
     fs.rmSync(path.join(agent, 'extensions', 'agent-relay.js'));
     fs.mkdirSync(path.dirname(marker), { recursive: true });
-    fs.writeFileSync(marker, "Agent Relay's Pi extension was turned off (pi_extension).\n");
+    fs.writeFileSync(marker, 'off by me\n');
     await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
-    expect(fs.existsSync(marker)).toBe(true);
+    expect(fs.readFileSync(marker, 'utf8')).toBe('off by me\n');
     expect(fs.readdirSync(agent)).toEqual([]);
     expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
   });
