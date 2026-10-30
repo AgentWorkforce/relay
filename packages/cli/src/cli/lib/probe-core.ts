@@ -21,7 +21,7 @@ import net from 'node:net';
 import path from 'node:path';
 
 import type { ToolId } from './agent-tools-mcp.js';
-import type { ClaudeFileState, OpenCodeState } from './init-leftovers.js';
+import type { ClaudeFileState, OpenCodeState, PiState } from './init-leftovers.js';
 import type { EnginePlatform } from './relaycast-engine-install.js';
 
 /** The core `relay init` installs. Pinned so every machine runs the same core. */
@@ -587,6 +587,8 @@ export interface DeliveryRecord {
   claudeFiles?: Record<string, ClaudeFileState>;
   /** The OpenCode plugin's place as init found it (`tidyOpenCodePlugin`). */
   openCode?: OpenCodeState;
+  /** The Pi extension's place as init found it (`tidyPiExtension`). */
+  pi?: PiState;
 }
 
 const strings = (value: unknown): string[] =>
@@ -635,6 +637,19 @@ function openCodeStateOf(value: unknown): OpenCodeState | undefined {
   return { file, plugin, off, dir };
 }
 
+/** The recorded Pi state, if sane. */
+function piStateOf(value: unknown): PiState | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const { file, marker } = value as Record<string, unknown>;
+  const extension = flag(value, 'extension');
+  const off = flag(value, 'off');
+  const dir = flag(value, 'dir');
+  if (typeof file !== 'string' || !path.isAbsolute(file)) return undefined;
+  if (typeof marker !== 'string' || !path.isAbsolute(marker)) return undefined;
+  if (extension === undefined || off === undefined || dir === undefined) return undefined;
+  return { file, marker, extension, off, dir };
+}
+
 /**
  * The record of what init turned on.
  * @param file - `<relay home>/local/core-settings.json`
@@ -645,11 +660,13 @@ export function readDeliveryRecord(file: string): DeliveryRecord {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown> | null;
     const claudeFiles = claudeFileStatesOf(parsed?.claudeFiles);
     const openCode = openCodeStateOf(parsed?.openCode);
+    const pi = piStateOf(parsed?.pi);
     return {
       turnedOn: strings(parsed?.turnedOn),
       claudeInbound: originals(parsed?.claudeInbound),
       ...(claudeFiles ? { claudeFiles } : {}),
       ...(openCode ? { openCode } : {}),
+      ...(pi ? { pi } : {}),
     };
   } catch {
     return { turnedOn: [], claudeInbound: {} };

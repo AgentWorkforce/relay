@@ -78,10 +78,14 @@ import {
   claudeFileStates,
   openCodeConfigDir,
   openCodeState,
+  piAgentDir,
+  piState,
   tidyClaudeSettings,
   tidyOpenCodePlugin,
+  tidyPiExtension,
   type ClaudeFileState,
   type OpenCodeState,
+  type PiState,
 } from '../lib/init-leftovers.js';
 import { persistWorkspaceSession } from '../lib/workspace-session.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
@@ -986,10 +990,12 @@ async function setupInjection(
     // included, instead of the hold the core writes on each login.
     const before = tools.includes('claude') ? claudeInboundValues(ctx) : {};
     // The files the core is about to edit, as they are now: what --uninstall
-    // tidies back to (a settings.json or plugins folder init created).
+    // tidies back to (a settings.json, plugins or extensions folder, or off
+    // marker init created).
     const files: Leftovers = {
       claudeFiles: tools.includes('claude') ? claudeFileStates(claudeLoginSettings(ctx)) : undefined,
       openCode: tools.includes('opencode') ? openCodeState(openCodeConfigDir(ctx.env, ctx.home)) : undefined,
+      pi: tools.includes('pi') ? piState(piAgentDir(ctx.env, ctx.home), ctx.home) : undefined,
     };
     const { results, turnedOn, turnedOff } = await enableDelivery(session.client, tools, record.turnedOn);
     // Applied to the record as it is now, not as it was read: another
@@ -1019,6 +1025,7 @@ async function setupInjection(
           openCode: touched.includes('opencode_plugin')
             ? (current.openCode ?? files.openCode)
             : current.openCode,
+          pi: touched.includes('pi_extension') ? (current.pi ?? files.pi) : current.pi,
         });
       });
     try {
@@ -1075,6 +1082,9 @@ async function undoUnrecorded(
   }
   if (turnedOn.includes('opencode_plugin') && !failed('opencode_plugin') && files.openCode) {
     tidyOpenCodePlugin(files.openCode);
+  }
+  if (turnedOn.includes('pi_extension') && !failed('pi_extension') && files.pi) {
+    tidyPiExtension(files.pi);
   }
   if (failures.length > 0) {
     throw new InjectionStuckError(
@@ -1280,18 +1290,20 @@ const CLAUDE_FILE_KEYS = ['direct_delivery', 'claude_session_hook'];
 interface Leftovers {
   claudeFiles?: Record<string, ClaudeFileState>;
   openCode?: OpenCodeState;
+  pi?: PiState;
 }
 
 /**
  * Once nothing init turned on edits a tool's files any more, tidies them
  * back to how init found them (a Claude settings.json init created, the
- * OpenCode plugin's off marker) and drops their recorded state. Run after
+ * OpenCode plugin's and Pi extension's off markers) and drops their
+ * recorded state. Run after
  * the core turned the settings off and the original crossSessionInbound is
  * back.
  * @returns The record without the states it used
  */
 function tidyLeftovers(record: DeliveryRecord): DeliveryRecord {
-  let { claudeFiles, openCode } = record;
+  let { claudeFiles, openCode, pi } = record;
   if (claudeFiles && !record.turnedOn.some((key) => CLAUDE_FILE_KEYS.includes(key))) {
     tidyClaudeSettings(claudeFiles);
     claudeFiles = undefined;
@@ -1300,11 +1312,16 @@ function tidyLeftovers(record: DeliveryRecord): DeliveryRecord {
     tidyOpenCodePlugin(openCode);
     openCode = undefined;
   }
+  if (pi && !record.turnedOn.includes('pi_extension')) {
+    tidyPiExtension(pi);
+    pi = undefined;
+  }
   return {
     turnedOn: record.turnedOn,
     claudeInbound: record.claudeInbound,
     ...(claudeFiles ? { claudeFiles } : {}),
     ...(openCode ? { openCode } : {}),
+    ...(pi ? { pi } : {}),
   };
 }
 
@@ -1327,6 +1344,7 @@ function writeDeliveryRecord(record: DeliveryRecord): void {
     ...(Object.keys(record.claudeInbound).length > 0 ? { claudeInbound: record.claudeInbound } : {}),
     ...(record.claudeFiles ? { claudeFiles: record.claudeFiles } : {}),
     ...(record.openCode ? { openCode: record.openCode } : {}),
+    ...(record.pi ? { pi: record.pi } : {}),
   });
 }
 

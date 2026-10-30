@@ -6,7 +6,8 @@
  * rules back out, and copies a file it changes once, beside it, as
  * `.relay-desktop-backup`), but it cannot know which files relay init made:
  * a Claude `settings.json` that only existed for `crossSessionInbound` and
- * the SessionStart hook, or the OpenCode plugin's off marker. This records
+ * the SessionStart hook, or the OpenCode plugin's or Pi extension's off
+ * marker. This records
  * that before init turns anything on and tidies only those afterwards.
  */
 
@@ -23,6 +24,9 @@ export const OPENCODE_OFF_SUFFIX = '.off';
 
 /** The first words of the core's OpenCode off marker; any other file there is not the core's. */
 const OPENCODE_OFF_TEXT = "Agent Relay's OpenCode plugin was turned off";
+
+/** The first words of the core's Pi off marker (`pi::setup`); any other file there is not the core's. */
+const PI_OFF_TEXT = "Agent Relay's Pi extension was turned off";
 
 /** A Claude login's `settings.json` before init. */
 export interface ClaudeFileState {
@@ -43,6 +47,20 @@ export interface OpenCodeState {
   /** Its off marker existed. */
   off: boolean;
   /** The plugins folder existed. */
+  dir: boolean;
+}
+
+/** The Pi extension's place before init. */
+export interface PiState {
+  /** `<Pi agent folder>/extensions/agent-relay.js`. */
+  file: string;
+  /** The core's off marker, `~/.agentworkforce/desktop/pi-extension.off` (`PiConfig::off_marker`). */
+  marker: string;
+  /** A file of the extension's name existed. */
+  extension: boolean;
+  /** The off marker existed. */
+  off: boolean;
+  /** The extensions folder existed. */
   dir: boolean;
 }
 
@@ -101,6 +119,29 @@ export function openCodeConfigDir(env: NodeJS.ProcessEnv, home: string): string 
     configured && configured.startsWith('/') ? configured : path.join(home, '.config'),
     'opencode'
   );
+}
+
+/** Pi's agent folder, as the core reads it (`PiConfig::from_env`): an absolute `PI_CODING_AGENT_DIR`, else `~/.pi/agent`. */
+export function piAgentDir(env: NodeJS.ProcessEnv, home: string): string {
+  const configured = env.PI_CODING_AGENT_DIR;
+  return configured && path.isAbsolute(configured) ? configured : path.join(home, '.pi', 'agent');
+}
+
+/**
+ * The Pi extension's place before init.
+ * @param agentDir - Pi's agent folder ({@link piAgentDir})
+ * @param home - The home the core keeps its data under
+ */
+export function piState(agentDir: string, home: string): PiState {
+  const file = path.join(agentDir, 'extensions', 'agent-relay.js');
+  const marker = path.join(home, '.agentworkforce', 'desktop', 'pi-extension.off');
+  return {
+    file,
+    marker,
+    extension: exists(file),
+    off: exists(marker),
+    dir: exists(path.dirname(file)),
+  };
 }
 
 function readJson(file: string): unknown {
@@ -205,6 +246,29 @@ export function tidyOpenCodePlugin(state: OpenCodeState): void {
   const marker = `${state.file}${OPENCODE_OFF_SUFFIX}`;
   try {
     if (fs.readFileSync(marker, 'utf8').startsWith(OPENCODE_OFF_TEXT)) fs.rmSync(marker, { force: true });
+  } catch {
+    // No marker.
+  }
+  if (!state.dir) removeEmptyDir(path.dirname(state.file));
+}
+
+/**
+ * Removes what turning off a Pi extension init installed left behind: the
+ * core's off marker (`pi-extension.off`), which would otherwise keep the
+ * desktop app from installing the extension and keep Pi sessions off, and
+ * the extensions folder when init created it and nothing else is in it.
+ * Only where there was neither an extension file nor a marker before init:
+ * a marker that was there is the person's choice (or the desktop app's),
+ * and a marker the core did not write is not touched. Run once the core has
+ * turned the extension off.
+ * @param state - The state {@link piState} recorded before init
+ */
+export function tidyPiExtension(state: PiState): void {
+  if (state.extension || state.off) return;
+  if (exists(state.file)) return;
+  try {
+    if (fs.readFileSync(state.marker, 'utf8').startsWith(PI_OFF_TEXT))
+      fs.rmSync(state.marker, { force: true });
   } catch {
     // No marker.
   }
