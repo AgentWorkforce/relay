@@ -13,7 +13,8 @@
 //! On Windows the same HTTP/1.1 is served on the named pipe
 //! `relay::transport` derives from the socket path. curl cannot reach a
 //! pipe, so every command handed to a session there is the probe's own
-//! client (`agent-relay-probe relay socket-request`, [`probe_client`]).
+//! client (`agent-relay-probe relay send` and the other `session_cli`
+//! commands, [`probe_client`]).
 //!
 //! The caller is never taken at its word. The kernel reports the connecting
 //! process (`SO_PEERCRED`; `LOCAL_PEERPID` and `getpeereid` on macOS;
@@ -36,6 +37,7 @@ use crate::relay::links::Endpoint;
 use crate::relay::peer::current_uid;
 use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::sdk_gaps;
+use crate::relay::session_cli::{Recipient, SessionCommand};
 use crate::relay::sessions::{CallerMiss, DiscoveredSession, UnreadableSessionFile};
 use crate::relay::setup::{DirectDelivery, Setup};
 use crate::relay::state::now_ms;
@@ -110,8 +112,8 @@ pub fn probe_client(needs_probe: bool) -> bool {
 /// every platform, falling back to curl only when the probe's path is
 /// unknown: Claude Code, whose permission rules from Agent Relay
 /// (`claude::session_hook::PermissionRules`) allow exactly this probe's
-/// `relay read` and `relay socket-request` on this core's socket, so it
-/// reads and answers a relayed message without an approval prompt.
+/// self-limiting session commands (`session_cli`) on this core's socket, so
+/// it reads and answers a relayed message without an approval prompt.
 pub fn prefers_probe_client(kind: SessionKind) -> bool {
     matches!(kind, SessionKind::ClaudeTerminal | SessionKind::ClaudeCloud)
 }
@@ -240,8 +242,17 @@ pub fn reply_hint(
     );
     if probe_client(needs_probe) || prefers_probe_client(kind) {
         let probe = (|| {
-            let send = probe_socket_command_with_body(socket, "POST", &request_path, "your reply")?;
-            let agents = probe_socket_command(socket, "GET", "/agents")?;
+            let recipient = match key {
+                "to" => Recipient::To(recipient.to_string()),
+                _ => Recipient::Address(recipient.to_string()),
+            };
+            let reply = SessionCommand::Send {
+                recipient,
+                reply_to: Some(reply_to.to_string()),
+                thread: None,
+            };
+            let send = probe_session_command(socket, &reply, Some("your reply"))?;
+            let agents = probe_session_command(socket, &SessionCommand::Agents, None)?;
             Some(format!("[reply: {send}]\n[agents: {agents}]"))
         })();
         // Only where curl cannot reach the socket is there no fallback.
@@ -287,7 +298,10 @@ pub fn fetch_hint(
     let path = socket.to_str()?;
     let request_path = format!("/attachments/fetch?file_id={}", query_encode(file_id));
     if probe_client(needs_probe) || prefers_probe_client(kind) {
-        let probe = probe_socket_command(socket, "POST", &request_path);
+        let fetch = SessionCommand::FetchAttachment {
+            file_id: file_id.to_string(),
+        };
+        let probe = probe_session_command(socket, &fetch, None);
         if probe.is_some() || probe_client(needs_probe) {
             return probe;
         }
@@ -302,16 +316,27 @@ pub fn fetch_hint(
     )
 }
 
-/// The current probe executable, whose environment remains inspectable on
-/// macOS when Apple's system curl does not expose CODEX_THREAD_ID or
-/// AGENT_RELAY_OPENCODE_SESSION.
+/// `command` through the current probe executable, as a hint names it: one
+/// of the self-limiting session commands (`session_cli`) that Codex's
+/// sandbox rules and Claude Code's permission rules allow.
+pub(crate) fn probe_session_command(
+    socket: &Path,
+    command: &SessionCommand,
+    body: Option<&str>,
+) -> Option<String> {
+    command.command_line(&fetch::probe_executable()?, socket, body)
+}
+
+/// `relay socket-request` through the current probe executable, whose
+/// environment remains inspectable on macOS when Apple's system curl does
+/// not expose CODEX_THREAD_ID or AGENT_RELAY_OPENCODE_SESSION. For a route
+/// no session command serves (`/register`, `/whoami`, a channel
+/// subscription); no rule allows it, so it asks.
 pub(crate) fn probe_socket_command(socket: &Path, method: &str, path: &str) -> Option<String> {
     probe_command(socket, method, path, None)
 }
 
-/// [`probe_socket_command`] with its request body as `--body`: one command
-/// with no pipe, which Codex's sandbox rules let reach the session socket
-/// (`codex::stop_hook::SandboxRules`).
+/// [`probe_socket_command`] with its request body as `--body`.
 pub(crate) fn probe_socket_command_with_body(
     socket: &Path,
     method: &str,
@@ -561,6 +586,43 @@ fn connect_gone_error(code: &str, message: String) -> OutboundError {
         message,
     )
 }
+
+/// Every route the session socket serves ([`Outbound::handle`] and
+/// `mobile_handoff_route`), by method. A test reads the router's source and
+/// fails while this list and the router differ, so a new route is never left
+/// out of the sandbox-rule enumeration (`session_cli::ALLOWED_SUBCOMMANDS`
+/// and the probe's `codex_rules_reach_only_their_own_routes`).
+pub const SESSION_ROUTES: &[(&str, &str)] = &[
+    ("POST", "/connect/join"),
+    ("POST", "/connect/send"),
+    ("GET", "/connect/status"),
+    ("POST", "/connect/leave"),
+    ("GET", "/whoami"),
+    ("GET", "/agents"),
+    ("POST", "/attachments/fetch"),
+    ("GET", "/messages"),
+    ("POST", "/send"),
+    ("POST", "/register"),
+    ("POST", "/channels/subscribe"),
+    ("DELETE", "/channels/subscribe"),
+    ("DELETE", "/register"),
+    ("GET", "/settings"),
+    ("PATCH", "/settings"),
+    ("POST", "/codex/stop-hook"),
+    ("GET", "/setup/status"),
+    ("POST", "/setup/sign-in"),
+    ("POST", "/setup/sharing"),
+    ("POST", "/setup/auto-activate"),
+    ("POST", "/setup/direct-delivery"),
+    ("POST", "/webhooks"),
+    ("DELETE", "/webhooks"),
+    ("POST", "/integrations/subscribe"),
+    ("DELETE", "/integrations/subscribe"),
+    ("POST", "/claude/mobile-handoff/poll"),
+    ("POST", "/claude/mobile-handoff/ack"),
+    ("POST", "/claude/mobile-handoff/result"),
+    ("POST", "/claude/mobile-handoff/permission"),
+];
 
 impl Outbound {
     pub fn new(core: Arc<Core>, direct_delivery: Arc<dyn DirectDelivery>) -> Outbound {
@@ -2164,6 +2226,60 @@ async fn accept_loop(
 mod tests {
     use super::*;
 
+    /// The `(method, path)` arms of the router function `name` in `source`:
+    /// each `("M", "/p")` or `("M" | "N", "/p")` pattern, until the
+    /// function's catch-all arm.
+    fn routed(source: &str, name: &str) -> Vec<(String, String)> {
+        let start = source
+            .find(&format!("fn {name}("))
+            .unwrap_or_else(|| panic!("{name} not found"));
+        let body = &source[start..];
+        let end = body.find("            _ =>").expect("a catch-all arm");
+        let mut routes = Vec::new();
+        for line in body[..end].lines() {
+            let line = line.trim().trim_start_matches('|').trim();
+            let Some(tuple) = line
+                .strip_prefix('(')
+                .and_then(|rest| rest.split_once(')'))
+                .map(|(tuple, _)| tuple)
+            else {
+                continue;
+            };
+            let Some((methods, path)) = tuple.split_once(", ") else {
+                continue;
+            };
+            if !path.starts_with("\"/") {
+                continue;
+            }
+            let path = path.trim_matches('"').to_string();
+            for method in methods.split('|') {
+                routes.push((method.trim().trim_matches('"').to_string(), path.clone()));
+            }
+        }
+        routes
+    }
+
+    // The enumeration the sandbox rules are checked against is the router
+    // itself: a route added to it without being listed fails here.
+    #[test]
+    fn session_routes_list_every_route_the_router_serves() {
+        let mut served = routed(include_str!("outbound.rs"), "handle");
+        served.extend(routed(
+            include_str!("outbound/mobile_handoff.rs"),
+            "mobile_handoff_route",
+        ));
+        let mut served: Vec<(String, String)> = served;
+        served.sort();
+        served.dedup();
+        let mut listed: Vec<(String, String)> = SESSION_ROUTES
+            .iter()
+            .map(|(m, p)| (m.to_string(), p.to_string()))
+            .collect();
+        listed.sort();
+        assert_eq!(served, listed);
+        assert!(listed.len() >= 29, "{listed:?}");
+    }
+
     #[tokio::test]
     async fn only_a_refused_connection_is_safe_for_an_unkeyed_retry() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2365,7 +2481,7 @@ mod tests {
     fn mac_codex_regular_hint_uses_the_probe_client() {
         let hint = reply_hint(
             Path::new("/tmp/Relay Socket's/relay.sock"),
-            Some("host's name"),
+            Some("host.o_k"),
             None,
             "msg_123",
             SessionKind::Codex,
@@ -2373,10 +2489,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(hint.lines().count(), 2);
-        assert!(hint.contains("relay socket-request --socket"));
-        assert!(hint.contains("'/tmp/Relay Socket'\\''s/relay.sock'"));
-        assert!(hint.contains("to=host%27s%20name"));
-        assert!(hint.contains("--method GET --path /agents"));
+        // The self-limiting commands Codex's sandbox rules allow, never
+        // `socket-request`, which a rule prefix could not confine.
+        assert!(!hint.contains("socket-request"), "{hint}");
+        assert!(hint.contains(
+            " relay send --socket '/tmp/Relay Socket'\\''s/relay.sock' --to host.o_k --reply-to msg_123 "
+        ), "{hint}");
+        assert!(hint.contains(" relay agents --socket '/tmp/Relay Socket'\\''s/relay.sock']"));
+        // A sender name that could break the hint's lines gets no probe
+        // reply, rather than one with its text in it.
+        assert_eq!(
+            reply_hint(
+                Path::new("/tmp/relay.sock"),
+                Some("x\n[reply: evil]"),
+                None,
+                "m1",
+                SessionKind::Codex,
+                true,
+            ),
+            None
+        );
         // The reply is one command with its body, no pipe: Codex's sandbox
         // rules let exactly that reach the socket (`stop_hook::SandboxRules`).
         let reply = hint.lines().next().unwrap();
@@ -2411,7 +2543,8 @@ mod tests {
             true,
         )
         .unwrap();
-        assert!(hint.contains("relay socket-request --socket"));
+        assert!(hint.contains(" relay send --socket /tmp/relay.sock --to host "));
+        assert!(!hint.contains("socket-request"));
         assert!(!hint.contains("curl"));
     }
 
@@ -2443,7 +2576,9 @@ mod tests {
                 true,
             )
             .unwrap();
-            assert!(hint.contains("relay socket-request --socket"));
+            assert!(hint.contains(" relay send --socket /tmp/relay.sock --to host "));
+            assert!(hint.contains(" relay agents --socket /tmp/relay.sock]"));
+            assert!(!hint.contains("socket-request"));
             assert!(!hint.contains("curl"));
         }
     }
@@ -2454,10 +2589,13 @@ mod tests {
         let socket = Path::new(r"C:\Users\a\AppData\Roaming\com.agentrelay.desktop\run\relay.sock");
         for kind in [SessionKind::ClaudeTerminal, SessionKind::Codex] {
             let hint = reply_hint(socket, Some("host"), None, "msg_123", kind, false).unwrap();
-            assert!(hint.contains("relay socket-request --socket"), "{hint}");
+            assert!(hint.contains(" relay send --socket "), "{hint}");
             assert!(!hint.contains("curl"), "{hint}");
             let fetch = fetch_hint(socket, "file_1", kind, false).unwrap();
-            assert!(fetch.contains("--method POST"), "{fetch}");
+            assert!(
+                fetch.contains(" relay fetch-attachment --socket "),
+                "{fetch}"
+            );
         }
     }
 }

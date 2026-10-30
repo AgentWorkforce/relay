@@ -326,19 +326,16 @@ pub fn preamble(name: &str, address: &str, access: McpAccess, socket: &Path) -> 
         );
         (
             format!(
-                "Without those tools: printf '%s' '{{\"to\":\"<name>\",\"text\":\"…\"}}' | \
-                 {probe} relay socket-request --socket {shown} --method POST --path /send \
-                 (--method GET --path /agents lists peers)."
+                "Without those tools: {probe} relay send --socket {shown} --to '<name>' \
+                 --body '…' ({probe} relay agents --socket {shown} lists peers)."
             ),
             format!(
-                "On the Agent Relay session socket: list peers with {probe} relay \
-                 socket-request --socket {shown} --method GET --path /agents; send with \
-                 printf '%s' '{{\"to\":\"<name>\",\"text\":\"…\"}}' | {probe} relay \
-                 socket-request --socket {shown} --method POST --path /send (\"channel\" \
-                 instead of \"to\" posts to a channel; add \"thread_id\" to reply in a post's \
-                 thread); subscribe to a channel with {probe} relay socket-request --socket \
-                 {shown} --method POST --path '/channels/subscribe?channel=<name>' (--method \
-                 DELETE to stop)."
+                "On the Agent Relay session socket: list peers with {probe} relay agents \
+                 --socket {shown}; send with {probe} relay send --socket {shown} --to '<name>' \
+                 --body '…' (--channel <name> instead of --to posts to a channel; add \
+                 --thread <id> to reply in a post's thread); subscribe to a channel with \
+                 {probe} relay socket-request --socket {shown} --method POST --path \
+                 '/channels/subscribe?channel=<name>' (--method DELETE to stop)."
             ),
         )
     } else {
@@ -614,11 +611,7 @@ mod tests {
         let unknown = preamble("api", "api@mac-1", McpAccess::Unknown, &socket);
         assert!(unknown.contains("list_relay_agents"));
         // Windows sessions are told the probe command instead of curl.
-        let fallback = if cfg!(windows) {
-            "socket-request"
-        } else {
-            "curl"
-        };
+        let fallback = if cfg!(windows) { "relay send" } else { "curl" };
         assert_eq!(unknown.matches(fallback).count(), 1);
 
         let socket_only = preamble("api", "api@mac-1", McpAccess::SocketOnly, &socket);
@@ -633,7 +626,7 @@ mod tests {
             assert!(!socket_only.contains(tool), "{tool} in {socket_only}");
         }
         let agents = if cfg!(windows) {
-            "--method GET --path /agents"
+            "relay agents --socket"
         } else {
             "http://relay/agents"
         };

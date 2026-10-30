@@ -2,33 +2,35 @@
 //!
 //! A relayed message reaches a Claude Code session as a pointer whose read
 //! command (`<probe> relay read --socket <socket> <ref>`) prints the message
-//! and its reply command (`<probe> relay socket-request --socket <socket>
-//! … --body '<reply>'`). In Claude Code's default ("manual") permission mode
-//! each of those asked for approval. With the hook, Agent Relay adds
-//! `permissions.allow` rules to the same user `settings.json` for exactly the
-//! commands a relayed message hands the session, each only for this probe on
-//! this core's own session socket:
+//! and its reply command (`<probe> relay send --socket <socket> --to …
+//! --reply-to … --body '<reply>'`). In Claude Code's default ("manual")
+//! permission mode each of those asked for approval. With the hook, Agent
+//! Relay adds `permissions.allow` rules to the same user `settings.json` for
+//! exactly the commands a relayed message hands the session, each only for
+//! this probe on this core's own session socket:
 //!
 //! ```text
 //! Bash(<probe> relay read --socket <socket> *)
-//! Bash(<probe> relay socket-request --socket <socket> --method POST --path '/send?*)
-//! Bash(<probe> relay socket-request --socket <socket> --method POST --path '/connect/send?*)
-//! Bash(<probe> relay socket-request --socket <socket> --method POST --path '/attachments/fetch?file_id=*)
-//! Bash(<probe> relay socket-request --socket <socket> --method GET --path /agents)
+//! Bash(<probe> relay send --socket <socket> *)
+//! Bash(<probe> relay connect-send --socket <socket> *)
+//! Bash(<probe> relay fetch-attachment --socket <socket> *)
+//! Bash(<probe> relay agents --socket <socket>)
+//! Bash(<probe> relay whoami --socket <socket>)
 //! ```
 //!
 //! That is: read a message handed to this session, reply (a DM, a channel
 //! thread or a Relay Connect room), fetch an attachment it was sent, and
-//! list who it can message. Every other session route (`/register`,
-//! `PATCH /settings`, `/integrations/subscribe`, …) still asks. The method
-//! and path are pinned before the `*`, and `relay socket-request` refuses a
-//! second `--socket`, `--method` or `--path`, so nothing after the `*` can
-//! change them.
+//! list who it can message and who it is. These are the same self-limiting commands
+//! Codex's sandbox rules allow (`session_cli`): each fixes its own method
+//! and route and checks every other argument, so nothing after the `*`
+//! reaches another route. Every other session route (`/register`,
+//! `PATCH /settings`, `/integrations/subscribe`, …) is reached only through
+//! `relay socket-request`, which no rule allows, so it still asks.
 //!
 //! Claude Code matches the text before a rule's `*` as written, after it
 //! splits compound commands and strips a few wrappers (verified against
-//! Claude Code 2.1.314): the probe, socket and path are written exactly as
-//! the hints quote them (`outbound::shell_quote`), so a socket under
+//! Claude Code 2.1.314): the probe and socket are written exactly as the
+//! hints quote them (`outbound::shell_quote`), so a socket under
 //! `Application Support` is the single-quoted form the hints hand out.
 //! A double-quoted or backslash-escaped spelling, another socket, another
 //! program, or anything chained after the command (`&&`, `;`, `|`, `$(…)`
@@ -71,19 +73,20 @@ impl PermissionRules {
         {
             return Vec::new();
         }
-        let request = format!("{probe} relay socket-request --socket {socket}");
+        let command = |name: &str| format!("{probe} relay {name} --socket {socket}");
         vec![
-            format!("Bash({probe} relay read --socket {socket} *)"),
+            format!("Bash({} *)", command("read")),
             // A reply: a DM or a channel thread (`outbound::reply_hint`,
-            // `channels::channel_reply_command`). The path has a query, so the
-            // hints always quote it.
-            format!("Bash({request} --method POST --path '/send?*)"),
+            // `channels::channel_reply_command`).
+            format!("Bash({} *)", command("send")),
             // A reply in a Relay Connect room (`connect::connect_reply_line`).
-            format!("Bash({request} --method POST --path '/connect/send?*)"),
+            format!("Bash({} *)", command("connect-send")),
             // An attachment this session was sent (`outbound::fetch_hint`).
-            format!("Bash({request} --method POST --path '/attachments/fetch?file_id=*)"),
+            format!("Bash({} *)", command("fetch-attachment")),
             // The `[agents: …]` line.
-            format!("Bash({request} --method GET --path /agents)"),
+            format!("Bash({})", command("agents")),
+            // The session's own name (`session_hook::joining`).
+            format!("Bash({})", command("whoami")),
         ]
     }
 }
@@ -286,15 +289,17 @@ mod tests {
     #[test]
     fn the_rules_name_only_this_probe_and_socket_as_the_hints_quote_them() {
         let all = rules().rules();
-        let request = "/tmp/r/bin/agent-relay-probe relay socket-request --socket '/Users/me/Library/Application Support/x/run/relay.sock'";
+        let on = "--socket '/Users/me/Library/Application Support/x/run/relay.sock'";
+        let probe = "/tmp/r/bin/agent-relay-probe";
         assert_eq!(
             all,
             vec![
-                "Bash(/tmp/r/bin/agent-relay-probe relay read --socket '/Users/me/Library/Application Support/x/run/relay.sock' *)".to_string(),
-                format!("Bash({request} --method POST --path '/send?*)"),
-                format!("Bash({request} --method POST --path '/connect/send?*)"),
-                format!("Bash({request} --method POST --path '/attachments/fetch?file_id=*)"),
-                format!("Bash({request} --method GET --path /agents)"),
+                format!("Bash({probe} relay read {on} *)"),
+                format!("Bash({probe} relay send {on} *)"),
+                format!("Bash({probe} relay connect-send {on} *)"),
+                format!("Bash({probe} relay fetch-attachment {on} *)"),
+                format!("Bash({probe} relay agents {on})"),
+                format!("Bash({probe} relay whoami {on})"),
             ]
         );
         // The text before the read's `*` is exactly how the pointer's read
@@ -306,27 +311,29 @@ mod tests {
     }
 
     // Review on #2021: a relayed message must not get any other session
-    // route run without a prompt.
+    // route run without a prompt. Every allowed command fixes its own
+    // route (`session_cli`); `socket-request` has no rule.
     #[test]
     fn no_other_session_route_is_allowed() {
         let all = rules().rules();
-        let request = "/tmp/r/bin/agent-relay-probe relay socket-request --socket '/Users/me/Library/Application Support/x/run/relay.sock'";
+        let probe = "/tmp/r/bin/agent-relay-probe";
+        let on = "--socket '/Users/me/Library/Application Support/x/run/relay.sock'";
         let allowed = |command: &str| all.iter().any(|rule| covers(rule, command));
+        for command in [
+            format!("{probe} relay send {on} --to a --reply-to m1 --body 'x'"),
+            format!("{probe} relay send {on} --channel c --thread 1 --body 'x'"),
+            format!("{probe} relay connect-send {on} --to host --body 'x'"),
+            format!("{probe} relay fetch-attachment {on} f1"),
+            format!("{probe} relay agents {on}"),
+            format!("{probe} relay whoami {on}"),
+            format!("{probe} relay read {on} 0123456789ab"),
+        ] {
+            assert!(allowed(&command), "{command}");
+        }
+        let request = format!("{probe} relay socket-request {on}");
         for (method, path) in [
             ("POST", "'/send?to=a'"),
-            ("POST", "'/send?channel=c&thread_id=1'"),
-            ("POST", "'/connect/send?to=host'"),
-            ("POST", "'/attachments/fetch?file_id=f1'"),
             ("GET", "/agents"),
-        ] {
-            assert!(
-                allowed(&format!(
-                    "{request} --method {method} --path {path} --body 'x'"
-                )) || allowed(&format!("{request} --method {method} --path {path}")),
-                "{method} {path}"
-            );
-        }
-        for (method, path) in [
             ("POST", "/register"),
             ("DELETE", "/register"),
             ("PATCH", "/settings"),
@@ -337,21 +344,22 @@ mod tests {
             ("DELETE", "/connect/join"),
             ("GET", "/whoami"),
             ("GET", "'/messages?ref=0123456789ab'"),
-            ("GET", "/agents --body x"),
-            ("POST", "/send"),
         ] {
             assert!(
                 !allowed(&format!("{request} --method {method} --path {path}")),
                 "{method} {path}"
             );
         }
-        // Another socket, or the method not first: not covered.
-        assert!(!allowed(
-            "/tmp/r/bin/agent-relay-probe relay socket-request --socket /tmp/other.sock --method POST --path '/send?to=a'"
-        ));
-        assert!(!allowed(&format!(
-            "{request} --path '/send?to=a' --method POST"
-        )));
+        for command in [
+            format!("{probe} relay settings {on} auto_join_general=true"),
+            format!("{probe} relay subscribe {on} acme/api#1"),
+            format!("{probe} relay agents {on} --body x"),
+            // Another socket.
+            format!("{probe} relay send --socket /tmp/other.sock --to a --body x"),
+            format!("{probe} relay send {on}x --to a --body x"),
+        ] {
+            assert!(!allowed(&command), "{command}");
+        }
     }
 
     #[test]
@@ -368,7 +376,7 @@ mod tests {
             probe: PathBuf::from("/Apps/Bob's Relay/probe"),
             socket: PathBuf::from("/s/relay.sock"),
         };
-        assert_eq!(rules.rules().len(), 5);
+        assert_eq!(rules.rules().len(), 6);
     }
 
     #[test]

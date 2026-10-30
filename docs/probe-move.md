@@ -425,6 +425,28 @@ must match a rule), and every reply hint ends with a `[route: …]` line telling
 the agent to answer only that way, never through another Agent Relay
 connector or app, and to say so if it fails.
 
+**Fixed routes for Codex's rules.** A Codex prefix rule constrains only a
+command's leading words, so the `relay socket-request --socket <socket>`
+rule let anything after the socket through: a relayed (untrusted) message
+could steer Codex into `--method PATCH --path /settings` or
+`--method POST --path /register`, which ran with no prompt. The rules now
+allow only the probe's self-limiting session commands, each with `--socket`
+naming this core's session socket: `relay send` (`POST /send`, with `--to`,
+`--address` or `--channel`, `--reply-to` and `--thread`), `relay agents`
+(`GET /agents`), `relay whoami` (`GET /whoami`), `relay read` (`GET /messages`), `relay fetch-attachment`
+(`POST /attachments/fetch`) and `relay connect-send` (`POST /connect/send`).
+Each fixes its own method and route, checks every other argument (one name
+or `agent@machine` address with no whitespace or URL characters, plain ids)
+and percent-encodes it into the query, and clap refuses a repeated
+`--socket`. Every hint a session is handed names these commands, and the
+Claude rules allow the same ones. `relay socket-request` stays for people
+and debugging, with no rule, so it asks. A test enumerates every route the
+session socket serves (read from the router's source) and checks that no
+argument list after any allowed prefix reaches one other than that rule's
+own; another runs `codex execpolicy check` when Codex is installed. A core
+that finds an older Agent Relay rules file (any name) rewrites or removes
+it, so an upgrade leaves no `socket-request` rule behind.
+
 Turning `codex_stop_hook` off puts `~/.codex` back: the hook's keys are listed
 through Codex's app-server while the hook is still in `hooks.json`, the hook
 comes out, then exactly those `hooks.state` entries leave `config.toml` (and

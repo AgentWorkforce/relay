@@ -24,8 +24,9 @@
 //! (`watched_logins`). A directory the desktop does not watch is left alone.
 //!
 //! With the hook come Claude Code permission rules ([`PermissionRules`],
-//! in `permissions`) that let the session run this probe's `relay read` and
-//! `relay socket-request` on this core's session socket without an approval
+//! in `permissions`) that let the session run this probe's self-limiting
+//! session commands (`relay read`, `send`, `agents`, `whoami`,
+//! `fetch-attachment`, `connect-send`) on this core's session socket without an approval
 //! prompt, so it can read and answer a relayed message in Claude's default
 //! permission mode. They go into and out of the same `settings.json` with
 //! the hook. Taking the hook out leaves the file as the person had it: their
@@ -228,13 +229,24 @@ pub fn joining(socket: &Path) -> String {
     let body = "'{\"to\":\"<name>\",\"text\":\"…\"}'";
     let (agents, whoami, send) = match crate::relay::outbound::probe_client(false)
         .then(|| {
+            use crate::relay::session_cli::{Recipient, SessionCommand};
+            let send = SessionCommand::Send {
+                recipient: Recipient::To("<name>".into()),
+                reply_to: None,
+                thread: None,
+            };
             Some((
-                crate::relay::outbound::probe_socket_command(socket, "GET", "/agents")?,
-                crate::relay::outbound::probe_socket_command(socket, "GET", "/whoami")?,
-                format!(
-                    "printf '%s' {body} | {}",
-                    crate::relay::outbound::probe_socket_command(socket, "POST", "/send")?
-                ),
+                crate::relay::outbound::probe_session_command(
+                    socket,
+                    &SessionCommand::Agents,
+                    None,
+                )?,
+                crate::relay::outbound::probe_session_command(
+                    socket,
+                    &SessionCommand::Whoami,
+                    None,
+                )?,
+                crate::relay::outbound::probe_session_command(socket, &send, Some("…"))?,
             ))
         })
         .flatten()

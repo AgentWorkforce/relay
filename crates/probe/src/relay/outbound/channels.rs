@@ -19,6 +19,7 @@ use super::{
 };
 use crate::relay::client;
 use crate::relay::hosted_mcp::valid_declaration;
+use crate::relay::session_cli::{Recipient, SessionCommand};
 use crate::relay::sessions::DiscoveredSession;
 use crate::relay::store::Registration;
 use crate::relay::store::SessionKind;
@@ -305,6 +306,10 @@ fn not_a_member(error: &relaycast::RelayError) -> bool {
 /// One socket request as a command the session can run: the probe on macOS
 /// where Apple's curl hides the session's environment and on Windows (see
 /// [`super::reply_hint`]), curl elsewhere. `body` is sent as the request body.
+///
+/// The probe form is `session` (`session_cli`) when one serves the route,
+/// which the sandbox and permission rules allow, else `relay socket-request`,
+/// which asks.
 pub fn socket_command(
     socket: &Path,
     method: &str,
@@ -312,6 +317,7 @@ pub fn socket_command(
     body: Option<&str>,
     kind: SessionKind,
     needs_probe: bool,
+    session: Option<&SessionCommand>,
 ) -> Option<String> {
     let path = socket.to_str()?;
     // Windows: curl cannot reach the named pipe, so every kind uses the probe.
@@ -325,9 +331,12 @@ pub fn socket_command(
     // Claude Code's permission rules from Agent Relay allow the probe's
     // client (`super::prefers_probe_client`); curl only when it is unknown.
     if required || super::prefers_probe_client(kind) {
-        let probe = match body {
-            Some(body) => super::probe_socket_command_with_body(socket, method, request_path, body),
-            None => probe_socket_command(socket, method, request_path),
+        let probe = match (session, body) {
+            (Some(session), body) => super::probe_session_command(socket, session, body),
+            (None, Some(body)) => {
+                super::probe_socket_command_with_body(socket, method, request_path, body)
+            }
+            (None, None) => probe_socket_command(socket, method, request_path),
         };
         if probe.is_some() || required {
             return probe;
@@ -368,6 +377,11 @@ pub fn channel_reply_command(
         query_encode(channel),
         query_encode(thread_id)
     );
+    let reply = SessionCommand::Send {
+        recipient: Recipient::Channel(channel.to_string()),
+        reply_to: None,
+        thread: Some(thread_id.to_string()),
+    };
     socket_command(
         socket,
         "POST",
@@ -375,6 +389,7 @@ pub fn channel_reply_command(
         Some("your reply"),
         kind,
         needs_probe,
+        Some(&reply),
     )
 }
 
@@ -389,7 +404,7 @@ pub fn channel_subscription_command(
 ) -> Option<String> {
     let method = if subscribe { "POST" } else { "DELETE" };
     let request_path = format!("/channels/subscribe?channel={}", query_encode(channel));
-    socket_command(socket, method, &request_path, None, kind, needs_probe)
+    socket_command(socket, method, &request_path, None, kind, needs_probe, None)
 }
 
 #[cfg(test)]

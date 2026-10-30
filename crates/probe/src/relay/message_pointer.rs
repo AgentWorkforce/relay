@@ -403,21 +403,18 @@ mod tests {
             Some("/opt/dev/probe relay read --dev")
         );
         assert_eq!(reader(None, false), None);
-        // The same resolver as `probe_socket_command`, which builds the reply
-        // hint's probe form.
+        // The same resolver as `probe_session_command`, which builds the
+        // reply hint's probe form.
         let executable = crate::relay::outbound::fetch::probe_executable();
         let ours = reader(executable.as_deref(), false).unwrap();
-        let hint = crate::relay::outbound::probe_socket_command(
+        let hint = crate::relay::outbound::probe_session_command(
             Path::new("/tmp/relay.sock"),
-            "GET",
-            "/agents",
+            &crate::relay::session_cli::SessionCommand::Agents,
+            None,
         )
         .unwrap();
         let probe = ours.strip_suffix(" relay read").unwrap();
-        assert!(
-            hint.starts_with(&format!("{probe} relay socket-request")),
-            "{hint}"
-        );
+        assert!(hint.starts_with(&format!("{probe} relay agents")), "{hint}");
     }
 
     #[test]
