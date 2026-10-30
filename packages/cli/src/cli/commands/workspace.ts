@@ -9,6 +9,7 @@ import { readWorkspaceStore, setWorkspaceKey } from '../lib/workspace-store.js';
 import {
   assertOriginBindingsWritable,
   configuredBaseUrl,
+  boundOrigin,
   guardCredentialOrigin,
 } from '../lib/relaycast-origin-binding.js';
 import {
@@ -46,11 +47,15 @@ function bindKeyToConfiguredServer(key: string): void {
   }
 }
 
-/** Where a joined key is used: the configured server, else the hosted service. */
 const HOSTED_ORIGIN = 'https://cast.agentrelay.com';
 
-function joinOrigin(): string {
-  const configured = process.env.RELAY_BASE_URL?.trim();
+/**
+ * Where a joined key is used: the configured server, else the server the
+ * key is already bound to, else the hosted service. A self-hosted key is
+ * never pointed at the hosted service.
+ */
+function joinOrigin(key: string): string {
+  const configured = process.env.RELAY_BASE_URL?.trim() || boundOrigin(key);
   return configured ? shellWord(configured) : HOSTED_ORIGIN;
 }
 
@@ -225,7 +230,7 @@ export function registerWorkspaceCommands(
         deps.log(`Joined and switched to workspace "${name}".`);
         deps.log(
           'This only saves the workspace. To connect agent tools and have messages injected into their ' +
-            `sessions, run in the project: relay init --url ${joinOrigin()} --key <key> --name ${shellWord(name)}`
+            `sessions, run in the project: relay init --url ${joinOrigin(key)} --key <key> --name ${shellWord(name)}`
         );
         reportClearedEnrollment(result, deps);
       });

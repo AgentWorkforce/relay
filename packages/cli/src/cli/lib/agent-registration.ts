@@ -23,11 +23,12 @@ export function shellQuote(value: string): string {
 
 /**
  * A word as the shell reads it: quoted unless it is plainly safe to paste.
+ * A leading `=` is quoted too, since zsh expands `=cmd` to a path.
  * @param value - The word to print in a copy-pasteable command.
  * @returns The word, single-quoted when it holds anything else.
  */
 export function shellWord(value: string): string {
-  return /^[A-Za-z0-9._@%+=:,/-]+$/.test(value) ? value : shellQuote(value);
+  return /^[A-Za-z0-9._@%+:,/-][A-Za-z0-9._@%+=:,/-]*$/.test(value) ? value : shellQuote(value);
 }
 
 /**

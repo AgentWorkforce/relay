@@ -1,5 +1,10 @@
 import { Command } from 'commander';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+import { bindOrigin } from '../lib/relaycast-origin-binding.js';
 
 vi.mock('@agent-relay/cloud', () => ({
   readWorkspaceStore: vi.fn(() => ({ workspaces: {} })),
@@ -265,6 +270,27 @@ describe('registerWorkspaceCommands', () => {
     expect(output).toContain('relay init --url https://cast.agentrelay.com --key <key> --name shared');
     expect(output).not.toContain('rk_live_shared');
     vi.unstubAllEnvs();
+  });
+
+  // Review on #2028: a key already bound to a self-hosted server is never
+  // pointed at the hosted service, and a name zsh would expand is quoted.
+  it('workspace join names the server the key is bound to', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-join-home-'));
+    vi.stubEnv('AGENT_RELAY_HOME', home);
+    try {
+      bindOrigin('rk_live_corp', 'https://relay.corp.test:8443');
+      vi.stubEnv('RELAY_BASE_URL', '');
+      const { program, deps } = createHarness();
+
+      await program.parseAsync(['node', 'agent-relay', 'workspace', 'join', '=corp', 'rk_live_corp']);
+
+      const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+      expect(output).toContain("relay init --url https://relay.corp.test:8443 --key <key> --name '=corp'");
+      expect(output).not.toContain('cast.agentrelay.com');
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('workspace switch reports an enrolled fleet node dropped by the move', async () => {
