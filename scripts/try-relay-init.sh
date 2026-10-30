@@ -327,7 +327,9 @@ leftovers=""
 for f in "$TRY_HOME/.claude/settings.json" "$TRY_HOME/.claude/settings.json.relay-desktop-backup" \
   "$TRY_HOME/.codex/hooks.json" "$TRY_HOME/.codex/hooks.json.relay-desktop-backup" \
   "$TRY_HOME/.codex/rules/agent-relay.rules" \
-  "$PROJ/.mcp.json" "$PROJ/.claude/settings.json" "$PROJ/.claude/settings.local.json" "$PROJ/.codex/config.toml"; do
+  "$PROJ/.mcp.json" "$PROJ/.claude/settings.json" "$PROJ/.codex/config.toml"; do
+  # (.claude/settings.local.json is Claude Code's own: it records the disabled
+  # ~/.mcp.json servers set up above.)
   if [[ -e "$f" ]]; then leftovers+="      $f"$'\n'; fi
 done
 if grep -q -E 'hooks\.state|agent-relay' "$TRY_HOME/.codex/config.toml" 2>/dev/null; then
