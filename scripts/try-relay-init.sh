@@ -302,7 +302,12 @@ while (( SECONDS < deadline )); do
     [[ -n "$(getv NAME "$t")" && -z "$(getv GOT "$t")" ]] || continue
     # Check the pane first, so a prompt is caught even when the reply is in.
     if prompted "$t"; then setv PROMPT "$t" 1; fi
-    if printf '%s' "$inbox" | grep -q "pong-$t"; then setv GOT "$t" 1; else pending=1; fi
+    # Only the expected session, with exactly the requested reply, counts.
+    if printf '%s' "$inbox" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let ok=false;try{ok=(JSON.parse(s).unreadDms||[]).some(d=>d.from===process.argv[1]&&String(d.lastMessage&&d.lastMessage.text||"").trim()===process.argv[2])}catch{}process.exit(ok?0:1)})' "$(getv NAME "$t")" "pong-$t"; then
+      setv GOT "$t" 1
+    else
+      pending=1
+    fi
   done
   (( pending == 0 )) && break
   sleep 3
