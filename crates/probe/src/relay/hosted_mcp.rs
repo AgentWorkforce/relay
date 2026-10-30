@@ -366,10 +366,88 @@ pub fn preamble(name: &str, address: &str, access: McpAccess, socket: &Path) -> 
     format!("{head} {body} {ROUTE_RULE} {NORM}")
 }
 
+/// The session socket commands a Codex session is given at start, each the
+/// probe's own client on this core's socket, which Agent Relay's Codex
+/// sandbox rules let run without an approval prompt
+/// (`codex::stop_hook::SandboxRules`).
+pub struct CodexSocketCommands {
+    /// Lists the workspace's agents (`GET /agents`).
+    pub agents: String,
+    /// Sends a DM to an agent by name (`POST /send?to=<name>`).
+    pub send: String,
+    /// Names this session (`GET /whoami`).
+    pub whoami: String,
+}
+
+/// What a Codex session is told as it starts (Agent Relay's Codex
+/// SessionStart hook): who it is on the relay, the exact commands that
+/// list agents and send a DM through this computer's session socket, and
+/// never to send another way. Without it, a fresh Codex asked to message an
+/// agent knew no local route until a relayed message showed one, and
+/// reached for the account-level "Agent Relay in ChatGPT" connector, which
+/// sends as the person's Cloud account into another workspace.
+/// `identity` is the name and address, or `None` for a session that is
+/// being put on the relay and has no name yet.
+pub fn codex_preamble(identity: Option<(&str, &str)>, commands: &CodexSocketCommands) -> String {
+    let head = match identity {
+        Some((name, address)) => format!(
+            "This session is on Agent Relay as @{} ({}).",
+            argument(name),
+            argument(address)
+        ),
+        None => format!(
+            "This session is joining Agent Relay on this computer; {} names it once it has joined.",
+            commands.whoami
+        ),
+    };
+    format!(
+        "{head} Reach other agents only through this computer's Agent Relay session socket, with \
+         these commands (Agent Relay's sandbox rules let them run without asking): list agents \
+         with {agents}; send a DM with {send} (the body is the message; address=<address> in place \
+         of to=<name> names an agent by its address). {ROUTE_RULE} {NORM}",
+        agents = commands.agents,
+        send = commands.send,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn codex_commands() -> CodexSocketCommands {
+        CodexSocketCommands {
+            agents: "/p relay socket-request --socket /s --method GET --path /agents".into(),
+            send: "/p relay socket-request --socket /s --method POST --path '/send?to=<name>' --body 'your message'".into(),
+            whoami: "/p relay socket-request --socket /s --method GET --path /whoami".into(),
+        }
+    }
+
+    // A fresh Codex asked to DM an agent used the "Agent Relay in ChatGPT"
+    // connector until a relayed message had shown it the local route.
+    #[test]
+    fn a_codex_session_is_told_who_it_is_and_its_local_route_as_it_starts() {
+        let commands = codex_commands();
+        let text = codex_preamble(Some(("codex-api", "codex-api@mac")), &commands);
+        assert!(text.starts_with("This session is on Agent Relay as @codex-api (codex-api@mac)."));
+        assert!(text.contains(&format!("list agents with {};", commands.agents)));
+        assert!(text.contains(&format!("send a DM with {} ", commands.send)));
+        assert!(text.contains(ROUTE_RULE), "{text}");
+        assert!(text.contains("Agent Relay in ChatGPT"));
+        assert!(text.ends_with(NORM));
+        assert!(
+            !text.contains("curl"),
+            "Codex's sandbox allows only the probe"
+        );
+        assert!(!text.contains("send_relay_message"));
+
+        let joining = codex_preamble(None, &commands);
+        assert!(joining.starts_with(&format!(
+            "This session is joining Agent Relay on this computer; {} names it",
+            commands.whoami
+        )));
+        assert!(joining.contains(ROUTE_RULE));
+    }
 
     const SOCKET_HINT: &str = "[reply: curl -s --unix-socket /s 'http://relay/send?address=a@m&reply_to=42' --data-binary 'your reply']\n[agents: curl -s --unix-socket /s http://relay/agents]";
 

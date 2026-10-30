@@ -662,6 +662,28 @@ impl Setup {
         }
     }
 
+    /// Whether the core will put `session` on the relay by itself:
+    /// automatic activation is on, there is a workspace to join, and
+    /// activation's own check admits this session.
+    pub async fn auto_activates(&self, session: &DiscoveredSession) -> bool {
+        let settings = self
+            .core
+            .store
+            .read(crate::relay::agents::auto_activation::ActivationSettings::of);
+        self.core.workspace().is_some()
+            && crate::relay::agents::auto_activation::activation_applies(
+                &settings,
+                session.target.kind,
+            )
+            && {
+                let directory = self.core.plugins.sessions.clone();
+                let session = session.clone();
+                tokio::task::spawn_blocking(move || directory.auto_activates(&session))
+                    .await
+                    .unwrap_or(false)
+            }
+    }
+
     /// `GET /setup/status`, from the last known state: it waits on no
     /// network call, uploader command or setup change in progress.
     pub async fn status(self: &Arc<Self>, session: &DiscoveredSession) -> Value {
@@ -710,25 +732,7 @@ impl Setup {
         let workspace = account["workspace_id"]
             .as_str()
             .map(|id| json!({"id": id, "name": account["workspace_name"]}));
-        // Whether the core will put this session on the relay by itself:
-        // automatic activation is on, there is a workspace to join, and
-        // activation's own check admits this session.
-        let settings = self
-            .core
-            .store
-            .read(crate::relay::agents::auto_activation::ActivationSettings::of);
-        let auto_activates = self.core.workspace().is_some()
-            && crate::relay::agents::auto_activation::activation_applies(
-                &settings,
-                session.target.kind,
-            )
-            && {
-                let directory = self.core.plugins.sessions.clone();
-                let session = session.clone();
-                tokio::task::spawn_blocking(move || directory.auto_activates(&session))
-                    .await
-                    .unwrap_or(false)
-            };
+        let auto_activates = self.auto_activates(session).await;
         // The signed-in person, as `account.status` names them.
         let person = &account["person"];
         let named = !person["name"].is_null() || !person["email"].is_null();

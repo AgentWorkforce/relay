@@ -198,6 +198,14 @@ impl SessionDirectory for FakeSessions {
             .ok_or(CallerMiss::NotASession)
     }
 
+    /// A process inside a Codex session holds that session's thread.
+    fn holds_codex_thread(&self, pid: i32, thread: &str) -> bool {
+        self.1.lock().unwrap().get(&pid).is_some_and(|session| {
+            session.target.kind == agent_relay_probe::relay::store::SessionKind::Codex
+                && session.target.id.eq_ignore_ascii_case(thread)
+        })
+    }
+
     fn unreadable_session_files(&self) -> Vec<UnreadableSessionFile> {
         let mut files: Vec<_> = self.3.lock().unwrap().values().cloned().collect();
         files.sort_by_key(|file| file.pid);

@@ -22,12 +22,18 @@
 //! ends (Stop), so a message for any other Codex thread that is working is
 //! handed over inside its running turn (`turn_hook::TurnInbox`).
 //!
+//! It also runs as a session starts (SessionStart), and gives a session on
+//! the relay its preamble: who it is there, and the exact session-socket
+//! commands that list agents and send a DM, so a fresh Codex never reaches
+//! for another Agent Relay connector before a relayed message has shown it
+//! the local route (`hosted_mcp::codex_preamble`).
+//!
 //! The hook runs `agent-relay-probe relay codex-stop-hook`, which hands its
 //! input to the relay-send socket (`POST /codex/stop-hook`). The socket
 //! answers only a caller whose nearest trusted Codex holds the named
 //! thread's writer lock, so a process can collect only its own thread's
 //! messages. The setting `codex_stop_hook` adds the hook to
-//! `~/.codex/hooks.json` for both events and trusts it through Codex's own
+//! `~/.codex/hooks.json` for each event and trusts it through Codex's own
 //! app-server (`hooks/list`, `config/value/write`).
 
 use super::turn_hook::TurnInbox;
@@ -51,7 +57,9 @@ pub const SUBCOMMAND: &str = "relay codex-stop-hook";
 pub const HELD: &str = "Waiting — handed over when the Conductor chat's turn ends";
 
 /// The Codex hook events the hook runs for, as `hooks.json` names them.
-const EVENTS: [&str; 2] = ["Stop", "PostToolUse"];
+/// At SessionStart it gives the session its Agent Relay preamble
+/// (`hosted_mcp::codex_preamble`).
+const EVENTS: [&str; 3] = ["Stop", "PostToolUse", "SessionStart"];
 
 /// The most idle deliveries one recap shows.
 const RECAP_LIMIT: usize = 10;
@@ -1250,6 +1258,16 @@ mod tests {
         let settings = full_settings(home.path());
 
         assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        let hooks: Value =
+            serde_json::from_slice(&std::fs::read(home.path().join(".codex/hooks.json")).unwrap())
+                .unwrap();
+        for event in EVENTS {
+            assert_eq!(
+                hooks["hooks"][event][0]["hooks"][0]["command"],
+                ours(),
+                "{event}"
+            );
+        }
         let rules =
             std::fs::read_to_string(home.path().join(".codex/rules/agent-relay.rules")).unwrap();
         assert!(rules.starts_with(RULES_HEADER));
@@ -1261,6 +1279,38 @@ mod tests {
         assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
         assert_eq!(tree(&home.path().join(".codex")), before);
         assert!(!home.path().join("app-data").join(CONFIG_CREATED).exists());
+    }
+
+    // A Codex home set up by a build from before the SessionStart entry
+    // gains it at start, and turning the hook off still leaves the home as
+    // it was before the hook was ever added.
+    #[test]
+    fn an_install_from_before_session_start_is_updated_and_still_comes_out_cleanly() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        std::fs::write(codex.join("auth.json"), "{}").unwrap();
+        let before = tree(&codex);
+        let entry = json!([{"hooks": [{"type": "command", "command": ours(), "timeout": 10}]}]);
+        let older = json!({"hooks": {"Stop": entry, "PostToolUse": entry}});
+        std::fs::write(
+            codex.join("hooks.json"),
+            serde_json::to_vec_pretty(&older).unwrap(),
+        )
+        .unwrap();
+        let settings = full_settings(home.path());
+
+        settings.refresh();
+        let value: Value =
+            serde_json::from_slice(&std::fs::read(codex.join("hooks.json")).unwrap()).unwrap();
+        assert_eq!(value["hooks"]["SessionStart"], entry);
+        assert!(
+            !codex.join("hooks.json.relay-desktop-backup").exists(),
+            "Agent Relay's own file is not the person's copy"
+        );
+
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        assert_eq!(tree(&codex), before);
     }
 
     #[test]
@@ -1566,6 +1616,7 @@ mod tests {
             "{\"hooks\": {}}",
             "{\"hooks\": {\"Stop\": []}}",
             "{\"hooks\": {\"Stop\": [], \"PostToolUse\": []}, \"x\": 1}",
+            "{\"hooks\": {\"SessionStart\": []}}",
         ] {
             let home = tempfile::tempdir().unwrap();
             let codex = home.path().join(".codex");
@@ -1610,10 +1661,12 @@ mod tests {
         let after_tools = value["hooks"]["PostToolUse"].as_array().unwrap();
         assert_eq!(after_tools.len(), 1);
         assert_eq!(after_tools[0], stop[1]);
-        assert_eq!(
-            value["hooks"]["SessionStart"],
-            theirs["hooks"]["SessionStart"]
-        );
+        // And as a session starts, for its Agent Relay preamble, after the
+        // person's own SessionStart hook.
+        let start = value["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(start.len(), 2);
+        assert_eq!(start[0], theirs["hooks"]["SessionStart"][0]);
+        assert_eq!(start[1], stop[1]);
         assert_eq!(trusted.lock().unwrap().len(), 1);
         assert_eq!(settings.get()[SETTING], true);
         assert!(settings.default_on().is_empty());
@@ -1624,6 +1677,7 @@ mod tests {
                 .unwrap();
         assert_eq!(value["hooks"]["Stop"].as_array().unwrap().len(), 2);
         assert_eq!(value["hooks"]["PostToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(value["hooks"]["SessionStart"].as_array().unwrap().len(), 2);
         assert_eq!(trusted.lock().unwrap().len(), 2, "trusted again");
 
         assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
@@ -1657,6 +1711,11 @@ mod tests {
             value["hooks"]["PostToolUse"][0]["hooks"][0]["command"],
             ours(),
             "an older copy for Stop alone gains the PostToolUse entry"
+        );
+        assert_eq!(
+            value["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            ours(),
+            "and the SessionStart entry"
         );
 
         let settings = settings.with_trust(|_, _| Err("untrusted".into()));

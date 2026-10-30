@@ -10,6 +10,7 @@ mod support {
 
 use agent_relay_probe::relay::account::Account;
 use agent_relay_probe::relay::cloud_session::CloudAccess;
+use agent_relay_probe::relay::codex::stop_hook::StopHookInbox;
 use agent_relay_probe::relay::connect::{
     ConnectAvailability, ConnectHost, ConnectJoinClient, JoinResponse, JoinedParticipant,
     Participant,
@@ -461,6 +462,7 @@ impl Harness {
             injector: injector.clone(),
             sessions: sessions.clone(),
             connect_cloud: join.clone(),
+            codex_stop_hook: Some(Arc::new(StopHookInbox::default())),
             relay_send: serve.then(|| RelaySend {
                 socket: relay_socket.clone(),
                 pointer: outbound::pointer_path(&home, &home.join("app-data")),
@@ -593,6 +595,7 @@ impl Harness {
             injector: self.injector.clone(),
             sessions: self.sessions.clone(),
             connect_cloud: self.join.clone(),
+            codex_stop_hook: Some(Arc::new(StopHookInbox::default())),
             relay_send: self.serve.then(|| RelaySend {
                 socket: self.relay_socket.clone(),
                 pointer: outbound::pointer_path(&self.home, &self.home.join("app-data")),
@@ -2467,6 +2470,67 @@ async fn an_expired_connect_is_never_adopted() {
 
 // OutboundTests.testSendsAddressWithIdempotencyKey,
 // test_sends_with_the_calling_sessions_own_token and test_sends_by_name_too.
+// A fresh Codex asked to DM an agent reached for the "Agent Relay in
+// ChatGPT" connector: until a relayed message arrived it knew no local
+// route. Agent Relay's Codex hook now gives it one as the session starts.
+#[tokio::test]
+async fn a_starting_codex_session_is_told_who_it_is_and_its_local_route() {
+    let h = Harness::start().await;
+    let start = json!({"session_id": CODEX, "hook_event_name": "SessionStart"});
+    // Not on the relay, and not being put there: nothing to say.
+    assert_eq!(
+        h.call(IN_CODEX, "POST", "/codex/stop-hook", start.clone())
+            .await
+            .unwrap(),
+        json!({})
+    );
+    h.register(IN_CODEX, json!({"name": "codex-api"})).await;
+    let answer = h
+        .call(IN_CODEX, "POST", "/codex/stop-hook", start.clone())
+        .await
+        .unwrap();
+    let output = &answer["hookSpecificOutput"];
+    assert_eq!(output["hookEventName"], "SessionStart");
+    let text = output["additionalContext"].as_str().unwrap();
+    assert!(
+        text.starts_with("This session is on Agent Relay as @codex-api (codex-api@"),
+        "{text}"
+    );
+    // The probe's own client on this core's socket, which Agent Relay's
+    // Codex sandbox rules allow, never curl.
+    let socket = format!("--socket '{}'", h.relay_socket.display());
+    for command in [
+        format!("relay socket-request {socket} --method GET --path /agents;"),
+        format!(
+            "relay socket-request {socket} --method POST --path '/send?to=<name>' --body 'your message'"
+        ),
+    ] {
+        assert!(text.contains(&command), "{command} in {text}");
+    }
+    assert!(!text.contains("curl"), "{text}");
+    assert!(text.contains("never through any other Agent Relay connector or app"));
+    assert!(text.contains("Agent Relay in ChatGPT"));
+
+    // Only the Codex holding the thread is answered.
+    let (status, refused) = code(
+        h.call(OUTSIDE, "POST", "/codex/stop-hook", start.clone())
+            .await,
+    );
+    assert_eq!((status, refused.as_str()), (403, "not_a_relay_session"));
+    let other = json!({"session_id": "11111111-2222-3333-4444-555555555555", "hook_event_name": "SessionStart"});
+    let (status, _) = code(h.call(IN_CODEX, "POST", "/codex/stop-hook", other).await);
+    assert_eq!(status, 403);
+    // The other events still carry only relayed messages.
+    let tool = json!({"session_id": CODEX, "hook_event_name": "PostToolUse"});
+    assert_eq!(
+        h.call(IN_CODEX, "POST", "/codex/stop-hook", tool)
+            .await
+            .unwrap(),
+        json!({})
+    );
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn a_session_sends_as_itself_by_name_or_address() {
     let h = Harness::start().await;

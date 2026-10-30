@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `relay init --uninstall` now removes a `~/.claude/settings.json` it created (or restores yours byte for byte) and the OpenCode plugin's `agent-relay.js.off` marker when init installed the plugin.
 - `relay init --uninstall` now removes the core's `~/.agentworkforce/desktop/pi-extension.off` marker and an empty `~/.pi/agent/extensions` folder when init installed the Pi extension, so the desktop app installs the extension and Pi sessions work again afterwards. A marker that was there before init is kept.
 - `relay init --uninstall` now leaves `~/.codex` as it found it: it removes a `hooks.json` it created (or restores yours byte for byte), its `.relay-desktop-backup`, the Codex hook-trust entries it added to `config.toml`, and its sandbox rules file. Your own hooks, trust entries and rules are kept.
+- New Codex sessions set up by `relay init` are told their Agent Relay name and the exact local commands to list agents and send a DM as they start (a SessionStart entry in Agent Relay's Codex hook), so a fresh session no longer reaches for the Agent Relay in ChatGPT connector before its first relayed message. Turning the hook off or `relay init --uninstall` removes it with the others.
 
 ### Security
 

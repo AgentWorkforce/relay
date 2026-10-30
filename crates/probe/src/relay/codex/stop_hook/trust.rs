@@ -26,9 +26,14 @@ pub(super) fn with_app_server(
     let listed = session.request("hooks/list", json!({"cwds": [codex_home]}))?;
     let mut untrusted = Map::new();
     for event in EVENTS {
-        let hook = listed_hooks(&listed, command)
-            .find(|hook| hook["eventName"] == event)
-            .ok_or("Codex does not list Agent Relay's hook.")?;
+        let Some(hook) = listed_hooks(&listed, command).find(|hook| hook["eventName"] == event)
+        else {
+            // A Codex without SessionStart hooks still runs the others.
+            if OPTIONAL_EVENTS.contains(&event) {
+                continue;
+            }
+            return Err("Codex does not list Agent Relay's hook.".into());
+        };
         if hook["trustStatus"] == "trusted" {
             continue;
         }
@@ -52,7 +57,11 @@ pub(super) fn with_app_server(
 }
 
 /// The hook events trusted, as `hooks/list` names them.
-const EVENTS: [&str; 2] = ["stop", "postToolUse"];
+const EVENTS: [&str; 3] = ["stop", "postToolUse", "sessionStart"];
+
+/// Events trusted when Codex lists them: the hook delivers messages without
+/// them, so a Codex that does not run them still has it trusted.
+const OPTIONAL_EVENTS: [&str; 1] = ["sessionStart"];
 
 /// The hooks `hooks/list` lists that run `command`.
 fn listed_hooks<'a>(listed: &'a Value, command: &'a str) -> impl Iterator<Item = &'a Value> {
@@ -323,6 +332,7 @@ mod tests {
         let with_ours = json!({"hooks": {
             "Stop": [{"hooks": [{"type": "command", "command": "notify.sh"}]}, hook[0]],
             "PostToolUse": hook,
+            "SessionStart": hook,
         }});
         std::fs::write(codex_home.join("hooks.json"), with_ours.to_string()).unwrap();
         let config = "# mine\nmodel = \"gpt-5\"   # trailing\n\n[projects.\"/x\"]\ntrust_level = \"trusted\"\n";
@@ -330,7 +340,7 @@ mod tests {
 
         with_app_server(codex_home, command, None).unwrap();
         let trusted = std::fs::read_to_string(codex_home.join("config.toml")).unwrap();
-        assert_eq!(trusted.matches("trusted_hash").count(), 2, "{trusted}");
+        assert_eq!(trusted.matches("trusted_hash").count(), 3, "{trusted}");
 
         untrust_with_app_server(codex_home, command, None, &mut || {
             std::fs::write(codex_home.join("hooks.json"), theirs).map_err(|e| e.to_string())

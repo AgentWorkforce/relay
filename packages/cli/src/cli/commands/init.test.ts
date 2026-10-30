@@ -1052,7 +1052,7 @@ describe('relay init message injection', () => {
     const output = logs.join('\n');
     expect(output).toContain(`Started the Agent Relay core (agent-relay-probe ${PROBE_VERSION}, pid 5151)`);
     expect(output).toMatch(/Claude Code\s+injected through Claude Code's session inbox/);
-    expect(output).toMatch(/Codex\s+injected through PostToolUse and Stop hooks/);
+    expect(output).toMatch(/Codex\s+injected through PostToolUse, Stop and SessionStart hooks/);
     expect(output).toContain('apply in every project on this machine');
     // One identity per session: no MCP server is added for injected tools.
     expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
