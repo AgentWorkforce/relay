@@ -105,7 +105,9 @@ fn valid_name(value: &str) -> bool {
 /// first nor last. Relaycast addresses may hold more than one
 /// (`x@ops@new-desk`); every part between them is a plain word.
 fn valid_address(value: &str) -> bool {
-    value.contains('@') && value.chars().count() <= MAX_FIELD && value.split('@').all(plain_word)
+    // Each part is bounded by `plain_word`; the whole is not, as Relaycast
+    // publishes long names' addresses.
+    value.contains('@') && value.split('@').all(plain_word)
 }
 
 /// A channel as a session writes it: `swarm` or `#swarm`.
