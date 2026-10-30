@@ -2,6 +2,7 @@ import type { Command } from 'commander';
 import { InvalidArgumentError } from 'commander';
 import { resolveActiveWorkspace } from '@agent-relay/cloud';
 
+import { shellWord } from '../lib/agent-registration.js';
 import { maskSecret } from '../lib/redact.js';
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import { readWorkspaceStore, setWorkspaceKey } from '../lib/workspace-store.js';
@@ -43,6 +44,14 @@ function bindKeyToConfiguredServer(key: string): void {
   if (process.env.RELAY_BASE_URL !== undefined) {
     guardCredentialOrigin(key, process.env.RELAY_BASE_URL);
   }
+}
+
+/** Where a joined key is used: the configured server, else the hosted service. */
+const HOSTED_ORIGIN = 'https://cast.agentrelay.com';
+
+function joinOrigin(): string {
+  const configured = process.env.RELAY_BASE_URL?.trim();
+  return configured ? shellWord(configured) : HOSTED_ORIGIN;
 }
 
 function parsePositiveInteger(value: string): number {
@@ -214,6 +223,10 @@ export function registerWorkspaceCommands(
         bindKeyToConfiguredServer(key);
         const result = persistWorkspaceSession({ name, workspaceKey: key });
         deps.log(`Joined and switched to workspace "${name}".`);
+        deps.log(
+          'This only saves the workspace. To connect agent tools and have messages injected into their ' +
+            `sessions, run in the project: relay init --url ${joinOrigin()} --key <key> --name ${shellWord(name)}`
+        );
         reportClearedEnrollment(result, deps);
       });
     });

@@ -168,8 +168,37 @@ describe('relay init', () => {
     const { run, logs, createWorkspace } = setup();
     await run('--hosted', '--name', 'team');
     expect(createWorkspace).toHaveBeenCalledWith('team', 'https://cast.agentrelay.com');
-    expect(logs.join('\n')).toContain('relay workspace join team rk_live_team_remote');
+    const output = logs.join('\n');
+    // The teammate's command is init itself: it saves the workspace and
+    // sets up injection. `relay workspace join` only saves it.
+    expect(output).toContain(
+      'relay init --url https://cast.agentrelay.com --key rk_live_team_remote --name team'
+    );
+    expect(output).not.toContain('relay workspace join');
     expect(boundOrigin('rk_live_team_remote')).toBeUndefined();
+  });
+
+  it('shell-quotes a hosted workspace name in the join command', async () => {
+    const { run, logs } = setup({
+      createWorkspace: vi.fn(async () => ({ workspaceKey: 'rk_live_quoted' })) as never,
+    });
+    await run('--hosted', '--name', "bob's team");
+    expect(logs.join('\n')).toContain(
+      `relay init --url https://cast.agentrelay.com --key rk_live_quoted --name 'bob'\\''s team'`
+    );
+  });
+
+  it('joins a hosted workspace with the printed command, as hosted rather than self-hosted', async () => {
+    const { run, logs, createWorkspace } = setup();
+    await run('--url', 'https://cast.agentrelay.com', '--key', 'rk_live_team_remote', '--name', 'team');
+    expect(createWorkspace).not.toHaveBeenCalled();
+    expect(readWorkspaceStore().workspaces.team?.key).toBe('rk_live_team_remote');
+    const output = logs.join('\n');
+    expect(output).toContain('Joined hosted workspace "team" (https://cast.agentrelay.com).');
+    expect(output).toContain('only ever sent to the hosted service');
+    expect(output).not.toContain('your server');
+    // A teammate does not get told to invite others with a create-only hint.
+    expect(output).not.toContain('On another machine');
   });
 
   it('keeps the saved local workspace when checking it fails for a reason other than a rejected key', async () => {

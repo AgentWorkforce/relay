@@ -154,11 +154,12 @@ agent can still choose its own name with the `register_agent` tool, and
 
 On the first machine, choose _Hosted_ in `relay init` (or run
 `relay init --hosted`). It creates a hosted workspace and prints one command.
-Run that command on each other machine, then `relay init` there to connect its
-agent tools:
+Run that command in the project folder on each other machine: it joins the
+workspace and connects that machine's agent tools, the same way `relay init`
+did on the first one:
 
 ```bash
-relay workspace join <name> <key>
+relay init --url https://cast.agentrelay.com --key <key> --name <name>
 ```
 
 Treat the key like a password: anyone with it can join the workspace. The

@@ -255,6 +255,20 @@ describe('registerWorkspaceCommands', () => {
     expect(switchWorkspace).not.toHaveBeenCalled();
   });
 
+  it('workspace join points at relay init for injection without echoing the key', async () => {
+    vi.stubEnv('RELAY_BASE_URL', '');
+    const { program, deps } = createHarness();
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'join', 'shared', 'rk_live_shared']);
+
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toContain(
+      'relay init --url https://cast.agentrelay.com --key <key> --name shared'
+    );
+    expect(output).not.toContain('rk_live_shared');
+    vi.unstubAllEnvs();
+  });
+
   it('workspace switch reports an enrolled fleet node dropped by the move', async () => {
     vi.mocked(readWorkspaceStore).mockReturnValue({
       active: 'default',

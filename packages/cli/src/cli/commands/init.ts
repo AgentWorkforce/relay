@@ -73,7 +73,7 @@ import {
   type DeliveryRecord,
   type DeliveryResult,
 } from '../lib/probe-core.js';
-import { shellQuote } from '../lib/agent-registration.js';
+import { shellWord } from '../lib/agent-registration.js';
 import {
   claudeFileStates,
   openCodeConfigDir,
@@ -517,14 +517,18 @@ interface ServerSetup {
   keptActive?: string;
 }
 
-/** A word as the shell reads it: quoted unless it is plainly safe to paste. */
-function shellWord(value: string): string {
-  return /^[A-Za-z0-9._@%+=:,/-]+$/.test(value) ? value : shellQuote(value);
-}
-
 /** The command that makes `name` the machine-wide active workspace. */
 function switchCommand(name: string): string {
   return `relay workspace switch ${shellWord(name)}`;
+}
+
+/**
+ * The one command a teammate runs in their project to join a workspace: it
+ * saves the workspace, starts the Agent Relay core and turns on message
+ * injection for their agent tools. `relay workspace join` only saves it.
+ */
+function joinCommand(origin: string, key: string, name: string): string {
+  return `relay init --url ${shellWord(origin)} --key ${shellWord(key)} --name ${shellWord(name)}`;
 }
 
 /**
@@ -580,6 +584,18 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     guardCredentialOrigin(key, url);
     const name = choice.name ?? new URL(origin).hostname;
     const { lines, ...saved } = saveWorkspace(name, key);
+    // A teammate joining a hosted workspace passes the hosted origin here;
+    // that is the hosted service, not a server of their own.
+    if (origin === HOSTED_ORIGIN) {
+      return {
+        ...saved,
+        workspaceId,
+        mode: 'hosted',
+        origin,
+        headline: `Joined hosted workspace "${name}" (${origin}).`,
+        details: ['Your key is only ever sent to the hosted service.', ...lines],
+      };
+    }
     return {
       ...saved,
       workspaceId,
@@ -603,8 +619,9 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
       headline: `Created hosted workspace "${name}".`,
       details: [
         ...lines,
-        'On another machine, join it with (treat this key like a password):',
-        `  relay workspace join ${name} ${relay.workspaceKey}`,
+        'On another machine, run this in the project to join it and connect its agent tools ' +
+          '(treat this key like a password):',
+        `  ${joinCommand(HOSTED_ORIGIN, relay.workspaceKey, name)}`,
       ],
     };
   }
