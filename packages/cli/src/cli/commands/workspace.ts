@@ -232,11 +232,14 @@ export function registerWorkspaceCommands(
     .action(async (name: string, key: string) => {
       await runSdk(deps, async () => {
         bindKeyToConfiguredServer(key);
+        // Read before anything changes, so a bindings file that cannot be
+        // read stops the join instead of interrupting it.
+        const serverFlag = joinServerFlag(key);
         const result = persistWorkspaceSession({ name, workspaceKey: key });
         deps.log(`Joined and switched to workspace "${name}".`);
         deps.log(
           'This only saves the workspace. To connect agent tools and have messages injected into their ' +
-            `sessions, run in the project: relay init ${joinServerFlag(key)}--key <key> --name ${shellWord(name)}`
+            `sessions, run in the project: relay init ${serverFlag}--key <key> --name ${shellWord(name)}`
         );
         reportClearedEnrollment(result, deps);
       });

@@ -1941,10 +1941,9 @@ async function runGuided(deps: InitCommandDependencies, o: InitOptions): Promise
         ];
   p.note(summary.join('\n'), 'Installation Summary');
   if (delivery === 'mcp' && launch.warning) p.warn(launch.warning);
-  if (!o.yes) {
-    const proceed = await p.confirm({ message: 'Proceed with installation?', initialValue: true });
-    if (proceed === CANCELLED || !proceed) return cancelled();
-  }
+  // `--interactive` asks to the end; `--yes` changes nothing here either.
+  const proceed = await p.confirm({ message: 'Proceed with installation?', initialValue: true });
+  if (proceed === CANCELLED || !proceed) return cancelled();
 
   const injecting = p.spinner();
   if (delivery === 'inject') injecting.start('Setting up message injection');

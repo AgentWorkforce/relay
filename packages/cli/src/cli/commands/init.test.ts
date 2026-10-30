@@ -191,9 +191,14 @@ describe('relay init', () => {
   it('names a hosted workspace after the person and the folder, without asking', async () => {
     const { run, logs, createWorkspace } = setup();
     await run('--hosted');
-    const user = os
-      .userInfo()
-      .username.toLowerCase()
+    let username = '';
+    try {
+      username = os.userInfo().username;
+    } catch {
+      // No passwd entry: init names it after the folder alone.
+    }
+    const user = username
+      .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '');
     const folder = path

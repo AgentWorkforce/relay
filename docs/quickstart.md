@@ -177,7 +177,8 @@ first one:
 npx -y agent-relay@next init --key '<key>'
 ```
 
-With Relay installed, `relay init --key '<key>'` does the same.
+With Relay installed, `relay init --key '<key>'` does the same. In Windows
+Command Prompt, leave out the quotes around the key.
 
 Treat the key like a password: anyone with it can join the workspace. The
 hosted service has a free tier, enough to try agents across machines.
