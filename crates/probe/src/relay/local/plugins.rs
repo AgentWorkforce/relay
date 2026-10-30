@@ -163,14 +163,22 @@ pub fn plugins_with_options(
     }
     // Optional Claude Code SessionStart hook (`claude::session_hook`). Off
     // unless the person turns it on; an installed copy is brought up to date
-    // and copied to a login added since.
-    let session_hook_settings = Arc::new(claude::session_hook::ClaudeSessionHookSettings::new(
-        &local.claude,
-        claude::session_hook::ClaudeSessionHookSettings::command_for(
-            &std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-probe")),
-            development,
+    // and copied to a login added since. With the hook, Claude Code rules
+    // that let the session run this probe's read and reply commands on this
+    // core's session socket without a prompt (`session_hook::PermissionRules`).
+    let session_hook_settings = Arc::new(
+        claude::session_hook::ClaudeSessionHookSettings::new(
+            &local.claude,
+            claude::session_hook::ClaudeSessionHookSettings::command_for(&probe, development),
+        )
+        .with_permission_rules(
+            claude::session_hook::PermissionRules {
+                probe: probe.clone(),
+                socket: relay_send_socket.clone(),
+            },
+            config.app_data_dir.clone(),
         ),
-    ));
+    );
     {
         let session_hook_settings = session_hook_settings.clone();
         let _ = std::thread::Builder::new()

@@ -315,18 +315,23 @@ pub fn socket_command(
 ) -> Option<String> {
     let path = socket.to_str()?;
     // Windows: curl cannot reach the named pipe, so every kind uses the probe.
-    if cfg!(windows)
+    let required = cfg!(windows)
         || (cfg!(target_os = "macos")
             && matches!(
                 kind,
                 SessionKind::Codex | SessionKind::OpenCodeOpen | SessionKind::GrokOpen
             )
-            && needs_probe)
-    {
-        return match body {
+            && needs_probe);
+    // Claude Code's permission rules from Agent Relay allow the probe's
+    // client (`super::prefers_probe_client`); curl only when it is unknown.
+    if required || super::prefers_probe_client(kind) {
+        let probe = match body {
             Some(body) => super::probe_socket_command_with_body(socket, method, request_path, body),
             None => probe_socket_command(socket, method, request_path),
         };
+        if probe.is_some() || required {
+            return probe;
+        }
     }
     let url = format!("http://relay{request_path}");
     let mut parts = vec!["curl", "-s", "-X", method, "--unix-socket", path, &url];
@@ -482,16 +487,14 @@ mod tests {
     fn commands_quote_and_encode_the_channel_and_thread() {
         let socket = PathBuf::from("/run/user/1000/agent-relay/relay.sock");
         let reply =
-            channel_reply_command(&socket, "swarm", "123", SessionKind::ClaudeTerminal, false)
-                .unwrap();
+            channel_reply_command(&socket, "swarm", "123", SessionKind::Codex, false).unwrap();
         assert_eq!(
             reply,
             "curl -s -X POST --unix-socket /run/user/1000/agent-relay/relay.sock \
              'http://relay/send?channel=swarm&thread_id=123' --data-binary 'your reply'"
         );
         let leave =
-            channel_subscription_command(&socket, "a b", false, SessionKind::ClaudeTerminal, false)
-                .unwrap();
+            channel_subscription_command(&socket, "a b", false, SessionKind::Codex, false).unwrap();
         assert_eq!(
             leave,
             "curl -s -X DELETE --unix-socket /run/user/1000/agent-relay/relay.sock \

@@ -349,14 +349,14 @@ route and no MCP server, so a session has exactly one Relay identity: the one
 the core registers. Init turns on `auto_activate` (sessions join on their
 own, named `<tool>-<project>-<task>`) and, per tool, through `settings.set`:
 
-| Tool        | Core setting(s)                                  | What the core writes                                                                                                            |
-| ----------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| Claude Code | `direct_delivery_default`, `claude_session_hook` | `crossSessionInbound: "accept"` (only when unset) and a SessionStart hook in `~/.claude/settings.json`                          |
-| Codex       | `codex_stop_hook`                                | PostToolUse and Stop hooks in `~/.codex/hooks.json`, trusted through Codex's app-server, and `~/.codex/rules/agent-relay.rules` |
-| OpenCode    | `opencode_plugin`, `opencode_auto_activate`      | the Agent Relay plugin under `~/.config/opencode/plugins`                                                                       |
-| Grok CLI    | `grok_leader`                                    | `[cli] use_leader` in `~/.grok/config.toml`                                                                                     |
-| Devin       | `devin_direct_delivery`                          | lifecycle hooks in `~/.config/devin/config.json`                                                                                |
-| Pi          | `pi_extension`, `pi_auto_activate`               | the Agent Relay extension in `~/.pi/agent/extensions` (a desktop core installs it at start)                                     |
+| Tool        | Core setting(s)                                  | What the core writes                                                                                                              |
+| ----------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Code | `direct_delivery_default`, `claude_session_hook` | `crossSessionInbound: "accept"` (only when unset), a SessionStart hook and `permissions.allow` rules in `~/.claude/settings.json` |
+| Codex       | `codex_stop_hook`                                | PostToolUse and Stop hooks in `~/.codex/hooks.json`, trusted through Codex's app-server, and `~/.codex/rules/agent-relay.rules`   |
+| OpenCode    | `opencode_plugin`, `opencode_auto_activate`      | the Agent Relay plugin under `~/.config/opencode/plugins`                                                                         |
+| Grok CLI    | `grok_leader`                                    | `[cli] use_leader` in `~/.grok/config.toml`                                                                                       |
+| Devin       | `devin_direct_delivery`                          | lifecycle hooks in `~/.config/devin/config.json`                                                                                  |
+| Pi          | `pi_extension`, `pi_auto_activate`               | the Agent Relay extension in `~/.pi/agent/extensions` (a desktop core installs it at start)                                       |
 
 `auto_activate` alone never puts an open Pi or OpenCode session on the relay
 (the desktop installs both routes by default, so its Auto-activate switch
@@ -436,6 +436,57 @@ the hook) when they have not changed it since, and the copy is removed. A
 `codex-config-created`) is removed once nothing else is in it. The rules file
 goes, and `rules/` with it only when empty.
 
+**Claude's permission prompts.** In Claude Code's default ("manual")
+permission mode a session asked to approve the pointer's `relay read`, then
+again for its curl reply. While `claude_session_hook` is on, the core adds
+rules to `permissions.allow` in each login's `settings.json` it puts the hook
+in, for exactly the commands a relayed message hands the session, each only
+for this probe on this core's session socket (`<req>` is `<this probe> relay
+socket-request --socket <this core's session socket>`):
+`Bash(<this probe> relay read --socket <the same socket> *)`,
+`Bash(<req> --method POST --path '/send?*)` (a DM or channel-thread reply),
+`Bash(<req> --method POST --path '/connect/send?*)` (a Relay Connect reply),
+`Bash(<req> --method POST --path '/attachments/fetch?file_id=*)` and
+`Bash(<req> --method GET --path /agents)`. Every other session route
+(`/register`, `PATCH /settings`, `/integrations/subscribe`, …) still asks, and
+`relay socket-request` refuses a second `--socket`, `--method` or `--path`, so
+nothing after a `*` can change them. The probe, socket and path are quoted
+exactly as the hints quote them (a socket under `Application Support` is
+single-quoted). Claude Code matches the
+text before a rule's `*` as written, after splitting compound commands
+(verified against Claude Code 2.1.314 in print mode: the hint's own spelling
+runs without a prompt, a body with `;`, `&&` or `$(…)` inside single quotes
+included; a double-quoted or backslash-escaped socket, another socket, a
+chained `&& touch …`, a double-quoted `$(…)` body, `PATCH /settings`,
+`POST /register` and `POST /integrations/subscribe` all still ask). So the
+reply, `[agents: …]` and attachment hints a Claude session is handed are now
+the probe's one-command `relay socket-request … --body` form on every
+platform (curl only when the probe's path is unknown), as Codex's are. A
+symlinked or space-free socket alias was not needed: the quoted path matches
+reliably, and an alias would be one more path for the rules to name. The
+rules Agent Relay added are recorded in the core's data
+(`claude-permission-rules.json`), so turning the hook off takes out only
+those: a rule the person had already, even the same one, stays. A moved app
+or socket replaces only Agent Relay's own rules. Turning the hook off also
+puts the file back: the person's `.relay-desktop-backup` copy (now taken only
+of a file that did not already hold the hook) is restored byte for byte when
+nothing else changed, and a file the hook created is removed once empty.
+
+**`--uninstall` and the tools' own folders.** Before the core edits them,
+init records each Claude login's `settings.json` (whether it, its
+`.relay-desktop-backup` and its folder existed) and the OpenCode plugin's
+place (whether `agent-relay.js`, its `.off` marker and `plugins/` existed).
+Once nothing init turned on edits them any more, it tidies them back: a
+Claude `settings.json` init created is removed once it is `{}` (with the
+core's copy of it, and the folder when init made it and it is empty), a file
+that existed comes back byte for byte from the core's copy when its content
+is unchanged, and a file the person changed since, a linked file and a copy
+from before init are left alone. The `.off` marker is the core's record that
+the person turned the plugin off, so the desktop's on-by-default does not
+put it back; init removes it (and an empty `plugins/` it created) only when
+init installed the plugin where there was neither a plugin file nor a marker
+before. A desktop core turning the plugin off still leaves the marker.
+
 **Workspace.** The core serves one workspace per machine (phase 2). After
 setting up, init calls `workspace.refresh` and warns when the core serves a
 different workspace than the project's: the verified Relaycast workspace id
@@ -494,8 +545,9 @@ Known gaps in phase 3:
 - Messages arrive as pointers (`show_relay_messages` off, the core's default):
   the session runs `agent-relay-probe relay read --socket <socket> <ref>` for the text.
 - `--uninstall` leaves the one-time `.relay-desktop-backup` copies of edited
-  settings files other than Codex's `hooks.json` (see "Codex's sandbox" below
-  for what Codex gets back).
+  settings files other than Codex's `hooks.json` and Claude's `settings.json`
+  (see "Codex's sandbox" and "Claude's permission prompts" above for what
+  those get back).
   A `--cli-managed` core writes into `~/.pi` only when `pi_extension` is
   turned on; turning it off removes only Agent Relay's own extension file and
   records the choice in the core's data (`~/.agentworkforce/desktop/pi-extension.off`).

@@ -22,6 +22,15 @@
 //! logins (`login_settings`). Turning it off, and a refresh while it is on,
 //! also clear it from a watched login that has since been unshared
 //! (`watched_logins`). A directory the desktop does not watch is left alone.
+//!
+//! With the hook come Claude Code permission rules ([`PermissionRules`],
+//! in `permissions`) that let the session run this probe's `relay read` and
+//! `relay socket-request` on this core's session socket without an approval
+//! prompt, so it can read and answer a relayed message in Claude's default
+//! permission mode. They go into and out of the same `settings.json` with
+//! the hook. Taking the hook out leaves the file as the person had it: their
+//! own copy (`.relay-desktop-backup`) goes back byte for byte when nothing
+//! else changed, and a file Agent Relay created goes once it is empty.
 
 use crate::relay::agents::SettingsExtension;
 use crate::relay::claude::ClaudeConfig;
@@ -33,6 +42,17 @@ use crate::relay::process::ProcessTable;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+#[cfg(test)]
+mod permission_tests;
+mod permissions;
+#[cfg(test)]
+pub use permissions::covers;
+pub use permissions::PermissionRules;
+
+/// Appended to a settings file's name for the one-time copy of the person's
+/// own file.
+const BACKUP_SUFFIX: &str = ".relay-desktop-backup";
 
 /// The `settings.set` key this extension owns.
 pub const SETTING: &str = "claude_session_hook";
@@ -332,6 +352,9 @@ fn restore_written(
 pub struct ClaudeSessionHookSettings {
     claude: ClaudeSettings,
     command: String,
+    /// The permission rules that come with the hook, and the core's data
+    /// folder, which records the rules Agent Relay added.
+    permissions: Option<(PermissionRules, PathBuf)>,
     lock: Mutex<()>,
 }
 
@@ -340,7 +363,38 @@ impl ClaudeSessionHookSettings {
         ClaudeSessionHookSettings {
             claude: ClaudeSettings::new(claude),
             command,
+            permissions: None,
             lock: Mutex::new(()),
+        }
+    }
+
+    /// Also writes [`PermissionRules`] while the hook is on, recording the
+    /// ones it adds in `state_dir` (the core's data folder).
+    pub fn with_permission_rules(mut self, rules: PermissionRules, state_dir: PathBuf) -> Self {
+        self.permissions = Some((rules, state_dir));
+        self
+    }
+
+    /// The permission rules wanted with the hook; none without them.
+    fn rules(&self) -> Vec<String> {
+        self.permissions
+            .as_ref()
+            .map(|(rules, _)| rules.rules())
+            .unwrap_or_default()
+    }
+
+    /// The rules Agent Relay added, by file.
+    fn added(&self) -> permissions::Added {
+        self.permissions
+            .as_ref()
+            .map(|(_, dir)| permissions::Added::load(dir))
+            .unwrap_or_default()
+    }
+
+    fn save_added(&self, added: &permissions::Added) -> Result<(), String> {
+        match &self.permissions {
+            Some((_, dir)) => added.save(dir),
+            None => Ok(()),
         }
     }
 
@@ -439,6 +493,9 @@ impl ClaudeSessionHookSettings {
         }
     }
 
+    /// Writes `value`, the first time copying the file as it was beside it
+    /// (`.relay-desktop-backup`). A file that already holds the hook is
+    /// never the person's own copy.
     fn write(&self, path: &Path, value: &Value) -> Result<(), String> {
         let path = resolve_symlinks(path);
         let existing = match std::fs::read(&path) {
@@ -446,16 +503,34 @@ impl ClaudeSessionHookSettings {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(_) => return Err(Self::fail(&path, "cannot be read")),
         };
+        let existing = existing.filter(|bytes| {
+            !serde_json::from_slice::<Value>(bytes).is_ok_and(|value| self.holds_ours(&value))
+        });
         let mut bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
         bytes.push(b'\n');
-        write_keeping_file(
-            &path,
-            existing.as_deref(),
-            &bytes,
-            ".relay-desktop-backup",
-            0o600,
-        )
-        .map_err(|_| Self::fail(&path, "cannot be written"))
+        write_keeping_file(&path, existing.as_deref(), &bytes, BACKUP_SUFFIX, 0o600)
+            .map_err(|_| Self::fail(&path, "cannot be written"))
+    }
+
+    /// Whether `value` holds this build's hook. Its permission rules come
+    /// and go with it; a rule alone may be the person's own.
+    fn holds_ours(&self, value: &Value) -> bool {
+        value["hooks"]["SessionStart"]
+            .as_array()
+            .is_some_and(|groups| !self.our_commands(groups).is_empty())
+    }
+
+    /// `value` with this build's hook and its permission rules (the current
+    /// ones and `added`) taken out.
+    fn without_ours(&self, value: &Value, added: &[String]) -> Value {
+        let Some(mut object) = value.as_object().cloned() else {
+            return value.clone();
+        };
+        self.remove_from(&mut object);
+        let mut rules = self.rules();
+        rules.extend(added.iter().cloned());
+        permissions::take_out(&mut object, &rules);
+        Value::Object(object)
     }
 
     /// This build's hook, in any version of the executable. Agent Relay and
@@ -590,6 +665,9 @@ impl ClaudeSessionHookSettings {
         if targets.is_empty() {
             return Err("No Claude Code login was found, so the hook was not changed.".into());
         }
+        let rules = self.rules();
+        let added_before = self.added();
+        let mut added = added_before.clone();
         let mut planned = Vec::new();
         for path in targets {
             let shared = install.contains(&path);
@@ -601,20 +679,49 @@ impl ClaudeSessionHookSettings {
             let before = Value::Object(object.clone());
             if enable && shared {
                 self.install_into(&path, &mut object)?;
+                if self.permissions.is_some() {
+                    let owned = permissions::add(&mut object, &rules, added_before.of(&path))
+                        .map_err(|why| Self::fail(&path, why))?;
+                    added.set(&path, owned);
+                }
             } else {
                 self.remove_from(&mut object);
+                permissions::take_out(&mut object, added_before.of(&path));
+                added.set(&path, Vec::new());
             }
             let after = Value::Object(object);
             if after != before {
                 planned.push((path, after));
             }
         }
-        store_planned(
+        // While the files are written, the record names every rule that may
+        // be in them, so none Agent Relay added is ever left unrecorded.
+        if added != added_before {
+            self.save_added(&added_before.union(&added))?;
+        }
+        // Copies of the person's files go only once every login is written:
+        // a later login that fails rolls the earlier ones back, and they
+        // still need their copy.
+        let mut spent = Vec::new();
+        let stored = store_planned(
             &planned,
             |path| self.snapshot(path),
-            |path, value| self.store(path, value),
+            |path, value| self.store(path, value, added_before.of(path), &mut spent),
             |path, previous| self.restore(path, previous),
-        )
+        );
+        if stored.is_ok() {
+            for backup in spent {
+                let _ = std::fs::remove_file(backup);
+            }
+        }
+        if added != added_before {
+            let _ = self.save_added(if stored.is_ok() {
+                &added
+            } else {
+                &added_before
+            });
+        }
+        stored
     }
 
     /// Bytes of the resolved file before this edit changes it. `None` when
@@ -633,14 +740,8 @@ impl ClaudeSessionHookSettings {
         match previous {
             Some(bytes) => {
                 let existing = std::fs::read(&path).ok();
-                write_keeping_file(
-                    &path,
-                    existing.as_deref(),
-                    bytes,
-                    ".relay-desktop-backup",
-                    0o600,
-                )
-                .map_err(|_| Self::fail(&path, "cannot be restored"))
+                write_keeping_file(&path, existing.as_deref(), bytes, BACKUP_SUFFIX, 0o600)
+                    .map_err(|_| Self::fail(&path, "cannot be restored"))
             }
             None => match std::fs::remove_file(&path) {
                 Ok(()) => Ok(()),
@@ -650,10 +751,60 @@ impl ClaudeSessionHookSettings {
         }
     }
 
-    /// Writes `value`. An empty object is written back as `{}` rather than
-    /// deleted: the file may have been there before the hook, and deleting
-    /// a symlink's target would leave the link dangling.
-    fn store(&self, path: &Path, value: &Value) -> Result<(), String> {
+    /// Writes `value`. Once the hook and its rules are out, the file goes
+    /// back to how the person had it: their own copy (`.relay-desktop-backup`) is put back byte for byte when the
+    /// file differs from it in nothing they set, and a file Agent Relay
+    /// created (no copy) is removed once it is an empty object. A file the
+    /// person changed since keeps their change, and the copy is kept. A
+    /// file reached through a link is never removed: that would leave the
+    /// link dangling. A copy no longer needed is added to `spent`, for the
+    /// edit to remove once every login is written.
+    fn store(
+        &self,
+        path: &Path,
+        value: &Value,
+        added: &[String],
+        spent: &mut Vec<PathBuf>,
+    ) -> Result<(), String> {
+        if self.holds_ours(value) {
+            return self.write(path, value);
+        }
+        let resolved = resolve_symlinks(path);
+        let mut backup = resolved.clone().into_os_string();
+        backup.push(BACKUP_SUFFIX);
+        let backup = PathBuf::from(backup);
+        let mut keep_file = false;
+        if let Ok(original) = std::fs::read(&backup) {
+            let normal = permissions::without_empty(value);
+            match serde_json::from_slice::<Value>(&original) {
+                Ok(saved)
+                    if !self.holds_ours(&saved) && permissions::without_empty(&saved) == normal =>
+                {
+                    write_keeping_file(&resolved, None, &original, BACKUP_SUFFIX, 0o600)
+                        .map_err(|_| Self::fail(&resolved, "cannot be restored"))?;
+                    spent.push(backup);
+                    return Ok(());
+                }
+                // An earlier build copied a file that already held the hook:
+                // the copy has nothing the file does not.
+                Ok(saved)
+                    if self.holds_ours(&saved)
+                        && permissions::without_empty(&self.without_ours(&saved, added))
+                            == normal =>
+                {
+                    spent.push(backup.clone());
+                }
+                _ => keep_file = true,
+            }
+        }
+        let linked = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+        if !keep_file && !linked && value.as_object().is_some_and(Map::is_empty) {
+            return match std::fs::remove_file(&resolved) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(_) => Err(Self::fail(&resolved, "cannot be removed")),
+            };
+        }
         self.write(path, value)
     }
 
@@ -1054,11 +1205,18 @@ mod tests {
             removed["hooks"]["Stop"][0]["hooks"][0]["command"],
             "echo hi"
         );
-        assert_eq!(
-            read(&root.path().join(".claude-work/settings.json")),
-            json!({}),
-            "a settings.json the hook created is left as an empty object, not deleted"
+        assert!(
+            !root.path().join(".claude-work/settings.json").exists(),
+            "a settings.json the hook created goes once it is empty"
         );
+        // The person's own file came back byte for byte, and its copy went.
+        assert_eq!(
+            std::fs::read(&primary).unwrap(),
+            b"{\"crossSessionInbound\":\"hold\",\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"echo hi\"}]}]}}\n"
+        );
+        assert!(!primary
+            .with_file_name("settings.json.relay-desktop-backup")
+            .exists());
         assert_eq!(settings.get()[SETTING], false);
         let kept = std::fs::read(&primary).unwrap();
         assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
@@ -1246,7 +1404,7 @@ mod tests {
             &planned,
             |path| settings.snapshot(path),
             |path, value| {
-                let stored = settings.store(path, value);
+                let stored = settings.store(path, value, &[], &mut Vec::new());
                 if stored.is_ok() && path == first {
                     let mut perms = std::fs::metadata(&second).unwrap().permissions();
                     perms.set_mode(0o000);
@@ -1366,13 +1524,14 @@ mod tests {
         );
         settings.refresh();
         assert!(
-            read(&work).get("hooks").is_none(),
+            !work.exists(),
             "refresh takes the hook out of a folder that is no longer shared"
         );
         assert_eq!(command(&read(&primary)).len(), 1);
         assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
-        assert!(read(&primary).get("hooks").is_none());
-        assert!(read(&work).get("hooks").is_none());
+        // Both files were the hook's own: gone once it is out.
+        assert!(!primary.exists());
+        assert!(!work.exists());
         assert_eq!(settings.get()[SETTING], false);
     }
 
@@ -1458,7 +1617,10 @@ mod tests {
         assert_eq!(command(&read(&primary)).len(), 1);
         assert_eq!(std::fs::read(&work).unwrap(), b"not json");
         assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
-        assert!(read(&primary).get("hooks").is_none());
+        assert!(
+            !primary.exists(),
+            "the hook's own file goes once it is empty"
+        );
         assert_eq!(std::fs::read(&work).unwrap(), b"not json");
         assert_eq!(settings.get()[SETTING], false);
     }
