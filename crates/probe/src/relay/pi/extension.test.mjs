@@ -49,7 +49,7 @@ test('the banner asks to enable the session unless the core says it joins by its
     ['Agent Relay extension loaded. Enable Receives messages for this session in Agent Relay.']);
   const automatic = await fixture(t, { autoJoin: true });
   assert.deepEqual(automatic.notices,
-    ['Agent Relay extension loaded. This session joins Agent Relay automatically and receives messages.']);
+    ['Agent Relay extension loaded. While the Agent Relay core runs, this session joins Agent Relay on its own and receives messages; if it does not appear there, enable Receives messages for it in Agent Relay.']);
 });
 
 test('busy sessions wait; history confirms delivery; final answers exclude tool progress', async t => {

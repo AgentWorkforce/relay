@@ -113,6 +113,21 @@ describe('workspace session persistence', () => {
     expect(fs.existsSync(path.join(relayHome, 'workspace-key.json'))).toBe(false);
   });
 
+  it('ignores a pin an older version left in the relay home, so a switch from ~ takes effect', () => {
+    const root = tempRoot();
+    const env = isolatedEnv(root);
+    const relayHome = env.AGENT_RELAY_HOME!;
+    fs.mkdirSync(relayHome, { recursive: true });
+    fs.writeFileSync(
+      path.join(relayHome, 'workspace-key.json'),
+      JSON.stringify({ workspaceKey: 'rk_live_stale' })
+    );
+
+    persistWorkspaceSession({ workspaceKey: 'rk_live_new', name: 'new-ws', projectDataDir: relayHome, env });
+
+    expect(resolveWorkspaceSessionKey({ projectDataDir: relayHome, env })).toBe('rk_live_new');
+  });
+
   it('records the previous global workspace when a named session changes it', () => {
     const root = tempRoot();
     const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');

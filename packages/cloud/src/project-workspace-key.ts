@@ -566,7 +566,10 @@ export function resolveWorkspaceSelection(
   const env = options.env ?? process.env;
   const credentialHome = path.resolve(path.dirname(relaycastCredentialStorePath(env)));
   const credentialHomeSelection = { credentialHome };
-  const dataDir = options.projectDataDir ?? projectDataDir(options.projectRoot);
+  const candidateDataDir = options.projectDataDir ?? projectDataDir(options.projectRoot);
+  // A pin found in a relay home is not a project's: older versions wrote one
+  // there when run in ~. It is ignored, so the machine-wide store decides.
+  const dataDir = candidateDataDir && !isRelayHomeDir(candidateDataDir, env) ? candidateDataDir : undefined;
   const project = dataDir ? readProjectWorkspaceSession(dataDir, options.fileSystem ?? fs, env) : undefined;
   const flag = trimOrUndefined(options.workspaceKey);
   if (flag) {

@@ -781,6 +781,15 @@ interface CoreSession {
   logFile?: string;
 }
 
+/**
+ * The core's command line as a person can paste it: the binary relay init
+ * runs, by path, since its bin folder is not on PATH (and a core relay init
+ * starts keeps no copy in ~/.local/bin).
+ */
+function probeCommand(): string {
+  return shellWord(process.env[PROBE_PATH_ENV]?.trim() || getCanonicalProbePath());
+}
+
 /** The core binary: `AGENT_RELAY_PROBE_PATH`, else the pinned release in the canonical bin slot. */
 async function installProbe(deps: InitCommandDependencies): Promise<{ binary: string } | { reason: string }> {
   const explicit = process.env[PROBE_PATH_ENV]?.trim();
@@ -953,7 +962,7 @@ async function coreWorkspaceNote(
   if (same === undefined) {
     return (
       `Could not confirm that the Agent Relay core serves "${setup.workspace}" (${setup.origin} names no ` +
-      `workspace id it can compare). See which one it serves with: agent-relay-probe relay call status.get`
+      `workspace id it can compare). See which one it serves with: ${probeCommand()} relay call status.get`
     );
   }
   const served = workspace.workspace_name ? `workspace "${workspace.workspace_name}"` : 'another workspace';
@@ -1113,7 +1122,7 @@ async function undoUnrecorded(
     throw new InjectionStuckError(
       `Could not save ${deliveryRecordPath()} (${cause.message}), and these settings relay init turned on ` +
         `could not be turned off again: ${failures.join('; ')}. Turn them off with ` +
-        'agent-relay-probe relay call settings.set --params \'{"<setting>":false}\', then run relay init again.',
+        `${probeCommand()} relay call settings.set --params '{"<setting>":false}', then run relay init again.`,
       { cause }
     );
   }
@@ -1523,12 +1532,13 @@ function removeProbeCopy(ctx: ToolContext): string | undefined {
     'bin',
     process.platform === 'win32' ? 'agent-relay-probe.exe' : 'agent-relay-probe'
   );
-  // lstat, so a symlink there (someone's own install) is never followed.
-  if (!fs.lstatSync(copy, { throwIfNoEntry: false })?.isFile()) return undefined;
-  const ours = readIfFile(getCanonicalProbePath());
-  const theirs = ours ? readIfFile(copy) : undefined;
-  if (!ours || !theirs || !ours.equals(theirs)) return undefined;
+  // Best effort: an unreadable ~/.local/bin never fails the uninstall.
   try {
+    // lstat, so a symlink there (someone's own install) is never followed.
+    if (!fs.lstatSync(copy, { throwIfNoEntry: false })?.isFile()) return undefined;
+    const ours = readIfFile(getCanonicalProbePath());
+    const theirs = ours ? readIfFile(copy) : undefined;
+    if (!ours || !theirs || !ours.equals(theirs)) return undefined;
     fs.rmSync(copy);
     return copy;
   } catch {

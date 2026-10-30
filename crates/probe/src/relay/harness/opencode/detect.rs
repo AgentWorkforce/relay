@@ -119,17 +119,17 @@ const SCRATCH_XDG: [(&str, &str); 4] = [
 /// throwaway folder: detecting OpenCode never leaves an empty
 /// `~/.config/opencode` (and the rest) for someone who has not set it up.
 pub fn system_version(executable: &Path) -> Option<String> {
-    // Without a scratch folder the version is still asked, as before.
+    // Never asked without a scratch folder: that would create the folders
+    // this avoids. A failure is retried after `VERSION_RETRY`, like any
+    // unreadable version.
     let scratch = tempfile::Builder::new()
         .prefix("agent-relay-opencode-version-")
         .tempdir()
-        .ok();
-    let env: Vec<(&str, PathBuf)> = scratch.as_ref().map_or_else(Vec::new, |scratch| {
-        SCRATCH_XDG
-            .iter()
-            .map(|(key, dir)| (*key, scratch.path().join(dir)))
-            .collect()
-    });
+        .ok()?;
+    let env: Vec<(&str, PathBuf)> = SCRATCH_XDG
+        .iter()
+        .map(|(key, dir)| (*key, scratch.path().join(dir)))
+        .collect();
     match SystemRunner.run_with_env(executable, &["--version".into()], VERSION_TIMEOUT, &env) {
         RunOutcome::Exited {
             code: 0, stdout, ..

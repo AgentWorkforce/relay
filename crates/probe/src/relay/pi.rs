@@ -80,7 +80,9 @@ impl PiConfig {
     /// off.
     pub fn sync_auto_join(&self, auto_join: bool) {
         let marker = self.auto_join_marker();
-        if !auto_join {
+        // Turned off (`pi_extension`), a loaded extension's session is
+        // refused, so its banner must not promise otherwise.
+        if !auto_join || self.turned_off() {
             let _ = fs::remove_file(&marker);
             return;
         }
@@ -964,6 +966,11 @@ mod tests {
         config.sync_auto_join(false);
         assert!(!marker.exists());
         config.sync_auto_join(false);
+        assert!(!marker.exists());
+        // Pi sessions turned off: the banner never says they join.
+        config.sync_auto_join(true);
+        fs::write(config.off_marker(), "off").unwrap();
+        config.sync_auto_join(true);
         assert!(!marker.exists());
     }
 
