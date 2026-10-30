@@ -2496,6 +2496,23 @@ mod tests {
             " relay send --socket '/tmp/Relay Socket'\\''s/relay.sock' --to host.o_k --reply-to msg_123 "
         ), "{hint}");
         assert!(hint.contains(" relay agents --socket '/tmp/Relay Socket'\\''s/relay.sock']"));
+        // Review on #2031: an exact address with more than one `@` keeps its
+        // probe reply.
+        let multi = reply_hint(
+            Path::new("/tmp/relay.sock"),
+            None,
+            Some("x@ops@new-desk"),
+            "m1",
+            SessionKind::Codex,
+            true,
+        )
+        .unwrap();
+        assert!(
+            multi.contains(
+                " relay send --socket /tmp/relay.sock --address x@ops@new-desk --reply-to m1 "
+            ),
+            "{multi}"
+        );
         // A sender name that could break the hint's lines gets no probe
         // reply, rather than one with its text in it.
         assert_eq!(

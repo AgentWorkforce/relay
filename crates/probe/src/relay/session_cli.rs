@@ -101,12 +101,11 @@ fn valid_name(value: &str) -> bool {
     plain_word(value.strip_prefix('@').unwrap_or(value))
 }
 
-/// `agent@machine`, with one `@`.
+/// `agent@machine`, as `links::Endpoint::parse` reads one: an `@` neither
+/// first nor last. Relaycast addresses may hold more than one
+/// (`x@ops@new-desk`); every part between them is a plain word.
 fn valid_address(value: &str) -> bool {
-    match value.split_once('@') {
-        Some((agent, machine)) => plain_word(agent) && plain_word(machine),
-        None => false,
-    }
+    value.contains('@') && value.chars().count() <= MAX_FIELD && value.split('@').all(plain_word)
 }
 
 /// A channel as a session writes it: `swarm` or `#swarm`.
@@ -353,6 +352,12 @@ mod tests {
                 "POST",
                 "/send?address=alice@mac-1",
             ),
+            // Review on #2031: Relaycast addresses may hold more than one `@`.
+            (
+                send(Recipient::Address("x@ops@new-desk".into())),
+                "POST",
+                "/send?address=x@ops@new-desk",
+            ),
             (
                 SessionCommand::Send {
                     recipient: Recipient::To("alice".into()),
@@ -439,7 +444,7 @@ mod tests {
             );
         }
         for bad in [
-            "alice", "@m", "a@", "a@b@c", "a@b?x=1", "a@b&to=c", "a b@m", "a@m/x",
+            "alice", "@m", "a@", "a@@b", "a@b?x=1", "a@b&to=c", "a b@m", "a@m/x",
         ] {
             assert!(
                 send(Recipient::Address(bad.into())).request().is_err(),
