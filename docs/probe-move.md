@@ -528,9 +528,10 @@ init --stop`; `relay init --uninstall` turned the four settings back off.
 
 ## Remaining phases
 
-4. **relay-desktop consumes the core from relay releases**, one core per
-   machine (see below). The attach rule above already makes `relay init` use
-   the desktop's running core.
+4. **relay-desktop consumes the core from relay**, as a Rust crate pinned to a
+   relay commit, the way it consumes relayhistory, with one core per machine
+   (see below). The attach rule above already makes `relay init` use the
+   desktop's running core. This first needs step 2b of "Until the switch".
 5. **Per-project workspaces.** The core still serves one workspace per
    machine; a project pinned to another workspace is warned about, not
    served. That needs per-registration workspaces in the core.
@@ -540,8 +541,6 @@ init --stop`; `relay init --uninstall` turned the four settings back off.
 
 Known gaps in phase 3:
 
-- No `probe-v*` release exists yet; until one does, `relay init` uses the MCP
-  server unless a core is running or `AGENT_RELAY_PROBE_PATH` is set.
 - Messages arrive as pointers (`show_relay_messages` off, the core's default):
   the session runs `agent-relay-probe relay read --socket <socket> <ref>` for the text.
 - `--uninstall` leaves the one-time `.relay-desktop-backup` copies of edited
@@ -558,10 +557,46 @@ Known gaps in phase 3:
 - relay-desktop CI lanes still not ported (above): glibc floor check, arm64
   Linux tests, x64 macOS and arm64 Windows lanes.
 
+## Until the switch: two cores
+
+relay's `crates/probe` is the relay-desktop core at `5601b739`
+(2026-10-28). Both copies kept changing after that:
+
+- relay-desktop's `probe/` has gained about 39 merges. Among them are the
+  OMP harness, Windows agent-led setup, spawn approvals, plan limits, Claude
+  session attestation, auth health and the Claude plugin push.
+- Those merges add bridge methods (`account.mcp_headers`, `agents.end`,
+  `tools.*`) and contract fields that the macOS and GTK apps use and relay's
+  core lacks.
+- relay's copy has the CLI work: phases 1.5 to 3, and the `relay init`
+  fixes for Codex's sandbox, Claude's permission prompts, the space-free
+  probe link and uninstall cleanup.
+
+So relay-desktop cannot build relay's core today: the apps would not compile,
+and desktop features would disappear. Until it can:
+
+1. **Duplicate fixes desktop users need.** A core fix in relay that changes
+   desktop behaviour is ported to relay-desktop's `probe/` as well, staying as
+   close to relay's code as desktop's newer code allows. The first port carries
+   the Codex sandbox route and rules, the Claude allow rules and the
+   space-free probe link.
+2. **Make relay the core's home.** The step that unblocks the switch:
+   1. (2a) Freeze core edits in relay-desktop's `probe/`, and send new core
+      work to relay.
+   2. (2b) Port relay-desktop's core changes since `5601b739` into
+      `crates/probe`, keeping relay's `install`/`session_model` split and the
+      `history` feature. Then regenerate `contract/CoreContract.swift`, so that
+      relay's contract is a superset of the desktop's.
+3. **Switch.** relay-desktop depends on `agent-relay-probe` as a Rust crate,
+   pinned to a relay commit, the way it depends on relayhistory. It uses a
+   git dependency with `default-features = false` plus the features it needs,
+   and builds the bundled binary from that same commit, so CalVer stamping,
+   signing and notarization stay in the desktop build. The steps are below.
+
 ## What relay-desktop must change to consume the core
 
-Phase 1 changes nothing in relay-desktop. To switch over, relay-desktop must
-do the following:
+Phase 1 changes nothing in relay-desktop. Once relay's contract covers the
+desktop's (step 2b above), relay-desktop must do the following to switch over:
 
 1. Make the GTK app its own crate (for example `gtk-app/`) depending on
    `agent-relay-probe` from relay (a git dependency on
