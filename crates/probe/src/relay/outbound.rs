@@ -2314,38 +2314,39 @@ mod tests {
             socket: socket.to_path_buf(),
         }
         .rules();
-        let prefix = |rule: &str| {
-            rule.strip_prefix("Bash(")
-                .and_then(|rule| rule.strip_suffix(" *)"))
-                .unwrap()
-                .to_string()
+        let covered = |command: &str| {
+            rules
+                .iter()
+                .any(|rule| crate::relay::claude::session_hook::covers(rule, command))
         };
         for kind in [SessionKind::ClaudeTerminal, SessionKind::ClaudeCloud] {
-            let hint = reply_hint(socket, None, Some("alice@direct"), "m1", kind, false).unwrap();
-            assert!(!hint.contains("curl"), "{hint}");
-            for line in hint.lines() {
-                let command = line
-                    .strip_prefix("[reply: ")
-                    .or_else(|| line.strip_prefix("[agents: "))
-                    .and_then(|line| line.strip_suffix(']'))
-                    .unwrap();
-                assert!(!command.contains(" | "), "{command}");
-                assert!(
-                    command.starts_with(&format!("{} ", prefix(&rules[1]))),
-                    "{command} is not covered by {}",
-                    rules[1]
-                );
+            for (to, address) in [(None, Some("alice@direct")), (Some("bob"), None)] {
+                let hint = reply_hint(socket, to, address, "m1", kind, false).unwrap();
+                assert!(!hint.contains("curl"), "{hint}");
+                for line in hint.lines() {
+                    let command = line
+                        .strip_prefix("[reply: ")
+                        .or_else(|| line.strip_prefix("[agents: "))
+                        .and_then(|line| line.strip_suffix(']'))
+                        .unwrap();
+                    assert!(!command.contains(" | "), "{command}");
+                    assert!(covered(command), "{command} is not covered by {rules:?}");
+                }
+                assert!(hint
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .ends_with(" --body 'your reply']"));
             }
-            assert!(hint
-                .lines()
-                .next()
-                .unwrap()
-                .ends_with(" --body 'your reply']"));
             let fetch = fetch_hint(socket, "file_1", kind, false).unwrap();
-            assert!(
-                fetch.starts_with(&format!("{} ", prefix(&rules[1]))),
-                "{fetch}"
-            );
+            assert!(covered(&fetch), "{fetch}");
+            let thread =
+                channels::channel_reply_command(socket, "swarm", "123", kind, false).unwrap();
+            assert!(covered(&thread), "{thread}");
+            // Joining a channel is not a reply: it still asks.
+            let join =
+                channels::channel_subscription_command(socket, "swarm", true, kind, false).unwrap();
+            assert!(!covered(&join), "{join}");
         }
     }
 

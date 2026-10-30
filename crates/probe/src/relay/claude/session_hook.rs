@@ -46,6 +46,8 @@ use std::sync::Mutex;
 #[cfg(test)]
 mod permission_tests;
 mod permissions;
+#[cfg(test)]
+pub use permissions::covers;
 pub use permissions::PermissionRules;
 
 /// Appended to a settings file's name for the one-time copy of the person's
@@ -697,12 +699,21 @@ impl ClaudeSessionHookSettings {
         if added != added_before {
             self.save_added(&added_before.union(&added))?;
         }
+        // Copies of the person's files go only once every login is written:
+        // a later login that fails rolls the earlier ones back, and they
+        // still need their copy.
+        let mut spent = Vec::new();
         let stored = store_planned(
             &planned,
             |path| self.snapshot(path),
-            |path, value| self.store(path, value, added_before.of(path)),
+            |path, value| self.store(path, value, added_before.of(path), &mut spent),
             |path, previous| self.restore(path, previous),
         );
+        if stored.is_ok() {
+            for backup in spent {
+                let _ = std::fs::remove_file(backup);
+            }
+        }
         if added != added_before {
             let _ = self.save_added(if stored.is_ok() {
                 &added
@@ -740,14 +751,21 @@ impl ClaudeSessionHookSettings {
         }
     }
 
-    /// Writes `value`. Once the hook and its rules are out, the file goes back to how the person had it: their
-    /// own copy (`.relay-desktop-backup`) is put back byte for byte when the
+    /// Writes `value`. Once the hook and its rules are out, the file goes
+    /// back to how the person had it: their own copy (`.relay-desktop-backup`) is put back byte for byte when the
     /// file differs from it in nothing they set, and a file Agent Relay
     /// created (no copy) is removed once it is an empty object. A file the
     /// person changed since keeps their change, and the copy is kept. A
     /// file reached through a link is never removed: that would leave the
-    /// link dangling.
-    fn store(&self, path: &Path, value: &Value, added: &[String]) -> Result<(), String> {
+    /// link dangling. A copy no longer needed is added to `spent`, for the
+    /// edit to remove once every login is written.
+    fn store(
+        &self,
+        path: &Path,
+        value: &Value,
+        added: &[String],
+        spent: &mut Vec<PathBuf>,
+    ) -> Result<(), String> {
         if self.holds_ours(value) {
             return self.write(path, value);
         }
@@ -764,7 +782,7 @@ impl ClaudeSessionHookSettings {
                 {
                     write_keeping_file(&resolved, None, &original, BACKUP_SUFFIX, 0o600)
                         .map_err(|_| Self::fail(&resolved, "cannot be restored"))?;
-                    let _ = std::fs::remove_file(&backup);
+                    spent.push(backup);
                     return Ok(());
                 }
                 // An earlier build copied a file that already held the hook:
@@ -774,7 +792,7 @@ impl ClaudeSessionHookSettings {
                         && permissions::without_empty(&self.without_ours(&saved, added))
                             == normal =>
                 {
-                    let _ = std::fs::remove_file(&backup);
+                    spent.push(backup.clone());
                 }
                 _ => keep_file = true,
             }
@@ -1386,7 +1404,7 @@ mod tests {
             &planned,
             |path| settings.snapshot(path),
             |path, value| {
-                let stored = settings.store(path, value, &[]);
+                let stored = settings.store(path, value, &[], &mut Vec::new());
                 if stored.is_ok() && path == first {
                     let mut perms = std::fs::metadata(&second).unwrap().permissions();
                     perms.set_mode(0o000);

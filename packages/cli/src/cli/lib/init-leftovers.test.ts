@@ -38,7 +38,12 @@ function tree(dir: string): Record<string, string> {
 /** What the core does to a Claude settings file: its first write copies the original beside it. */
 function coreWrites(file: string, value: unknown): void {
   const backup = `${file}${BACKUP_SUFFIX}`;
-  if (fs.existsSync(file) && !fs.existsSync(backup)) fs.copyFileSync(file, backup);
+  try {
+    // Once: an existing copy is kept (COPYFILE_EXCL), and no file means no copy.
+    fs.copyFileSync(file, backup, fs.constants.COPYFILE_EXCL);
+  } catch {
+    // No file yet, or already copied.
+  }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }

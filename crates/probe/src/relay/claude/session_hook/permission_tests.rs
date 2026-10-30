@@ -81,12 +81,17 @@ fn the_hook_brings_the_rules_for_this_probes_read_and_reply() {
     let path = login(root.path());
     let settings = settings(root.path());
     assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+    let all = allow(&path);
+    assert_eq!(all, rules().rules());
     assert_eq!(
-        allow(&path),
-        vec![
-            format!("Bash({PROBE} relay read --socket '{SOCKET}' *)"),
-            format!("Bash({PROBE} relay socket-request --socket '{SOCKET}' *)"),
-        ]
+        all[0],
+        format!("Bash({PROBE} relay read --socket '{SOCKET}' *)")
+    );
+    assert_eq!(
+        all[1],
+        format!(
+            "Bash({PROBE} relay socket-request --socket '{SOCKET}' --method POST --path '/send?*)"
+        )
     );
     // Recorded as Agent Relay's, by file.
     let added = permissions::Added::load(&root.path().join("app-data"));
@@ -133,7 +138,7 @@ fn the_persons_own_settings_and_rules_come_back_byte_for_byte() {
 
     assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
     let installed = allow(&path);
-    assert_eq!(installed.len(), 3, "{installed:?}");
+    assert_eq!(installed.len(), 1 + rules().rules().len(), "{installed:?}");
     assert_eq!(installed[0], "Bash(npm test *)");
     // Only the rule that was not already theirs is Agent Relay's.
     let added = permissions::Added::load(&root.path().join("app-data"));
@@ -202,4 +207,43 @@ fn a_permissions_value_of_another_shape_leaves_the_file_unchanged() {
         std::fs::read(&path).unwrap(),
         b"{\"permissions\":[\"x\"]}\n"
     );
+}
+
+// Review on #2021: a later login that fails while the hook is taken out
+// rolls the earlier ones back, and those keep their copy for the retry.
+#[test]
+#[cfg(unix)]
+fn a_failed_removal_keeps_each_logins_copy_for_the_retry() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let primary = login(root.path());
+    std::fs::write(&primary, "{}\n").unwrap();
+    let work = root.path().join(".claude-work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::fs::write(work.join(".claude.json"), "{}\n").unwrap();
+    let settings = settings(root.path());
+    assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+    assert!(work.join("settings.json").exists());
+    let backup = primary.with_file_name("settings.json.relay-desktop-backup");
+    assert!(backup.exists());
+
+    let mode = |mode: u32| {
+        let mut permissions = std::fs::metadata(&work).unwrap().permissions();
+        permissions.set_mode(mode);
+        std::fs::set_permissions(&work, permissions).unwrap();
+    };
+    mode(0o555);
+    if std::fs::File::create(work.join(".probe-write")).is_ok() {
+        mode(0o755);
+        return; // Running as root: the folder cannot be made unwritable.
+    }
+    let failed = settings.set(SETTING, &json!(false)).unwrap();
+    mode(0o755);
+    assert!(failed.is_err(), "{failed:?}");
+    assert!(backup.exists(), "the rolled-back login keeps its copy");
+
+    assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+    assert_eq!(std::fs::read(&primary).unwrap(), b"{}\n");
+    assert!(!backup.exists());
+    assert!(!work.join("settings.json").exists());
 }

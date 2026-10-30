@@ -4,25 +4,36 @@
 //! command (`<probe> relay read --socket <socket> <ref>`) prints the message
 //! and its reply command (`<probe> relay socket-request --socket <socket>
 //! … --body '<reply>'`). In Claude Code's default ("manual") permission mode
-//! each of those asked for approval. With the hook, Agent Relay adds two
-//! `permissions.allow` rules to the same user `settings.json`, each allowing
-//! only this probe's command on this core's own session socket:
+//! each of those asked for approval. With the hook, Agent Relay adds
+//! `permissions.allow` rules to the same user `settings.json` for exactly the
+//! commands a relayed message hands the session, each only for this probe on
+//! this core's own session socket:
 //!
 //! ```text
 //! Bash(<probe> relay read --socket <socket> *)
-//! Bash(<probe> relay socket-request --socket <socket> *)
+//! Bash(<probe> relay socket-request --socket <socket> --method POST --path '/send?*)
+//! Bash(<probe> relay socket-request --socket <socket> --method POST --path '/connect/send?*)
+//! Bash(<probe> relay socket-request --socket <socket> --method POST --path '/attachments/fetch?file_id=*)
+//! Bash(<probe> relay socket-request --socket <socket> --method GET --path /agents)
 //! ```
+//!
+//! That is: read a message handed to this session, reply (a DM, a channel
+//! thread or a Relay Connect room), fetch an attachment it was sent, and
+//! list who it can message. Every other session route (`/register`,
+//! `PATCH /settings`, `/integrations/subscribe`, …) still asks. The method
+//! and path are pinned before the `*`, and `relay socket-request` refuses a
+//! second `--socket`, `--method` or `--path`, so nothing after the `*` can
+//! change them.
 //!
 //! Claude Code matches the text before a rule's `*` as written, after it
 //! splits compound commands and strips a few wrappers (verified against
-//! Claude Code 2.1.314): the probe and socket are written exactly as the
-//! hints quote them (`outbound::shell_quote`), so a socket under
+//! Claude Code 2.1.314): the probe, socket and path are written exactly as
+//! the hints quote them (`outbound::shell_quote`), so a socket under
 //! `Application Support` is the single-quoted form the hints hand out.
 //! A double-quoted or backslash-escaped spelling, another socket, another
 //! program, or anything chained after the command (`&&`, `;`, `|`, `$(…)`
-//! outside single quotes) still asks. Nothing else is allowed: the socket
-//! answers only the calling session's own requests, and `relay read
-//! --socket` refuses `--dev`.
+//! outside single quotes) still asks. The socket answers only the calling
+//! session's own requests, and `relay read --socket` refuses `--dev`.
 //!
 //! Which rules Agent Relay added is recorded in the core's data folder
 //! ([`RECORD`]), so turning the hook off takes out only those: a rule the
@@ -46,7 +57,7 @@ pub struct PermissionRules {
 }
 
 impl PermissionRules {
-    /// The two rules, or none when a path cannot be written into one: not
+    /// The rules, or none when a path cannot be written into one: not
     /// UTF-8, or holding `*` (a rule's wildcard) or a parenthesis (which
     /// ends it).
     pub fn rules(&self) -> Vec<String> {
@@ -60,10 +71,37 @@ impl PermissionRules {
         {
             return Vec::new();
         }
-        ["read", "socket-request"]
-            .iter()
-            .map(|command| format!("Bash({probe} relay {command} --socket {socket} *)"))
-            .collect()
+        let request = format!("{probe} relay socket-request --socket {socket}");
+        vec![
+            format!("Bash({probe} relay read --socket {socket} *)"),
+            // A reply: a DM or a channel thread (`outbound::reply_hint`,
+            // `channels::channel_reply_command`). The path has a query, so the
+            // hints always quote it.
+            format!("Bash({request} --method POST --path '/send?*)"),
+            // A reply in a Relay Connect room (`connect::connect_reply_line`).
+            format!("Bash({request} --method POST --path '/connect/send?*)"),
+            // An attachment this session was sent (`outbound::fetch_hint`).
+            format!("Bash({request} --method POST --path '/attachments/fetch?file_id=*)"),
+            // The `[agents: …]` line.
+            format!("Bash({request} --method GET --path /agents)"),
+        ]
+    }
+}
+
+/// Whether Claude Code would let `rule` run `command` with no prompt, as it
+/// matches a single command (no compound): the text before a trailing `*`
+/// as written, else the whole command. For tests of what the hints hand out.
+#[cfg(test)]
+pub fn covers(rule: &str, command: &str) -> bool {
+    let Some(pattern) = rule.strip_prefix("Bash(").and_then(|r| r.strip_suffix(')')) else {
+        return false;
+    };
+    match pattern.strip_suffix('*') {
+        Some(prefix) => {
+            command.starts_with(prefix)
+                || prefix.strip_suffix(' ').is_some_and(|bare| command == bare)
+        }
+        None => command == pattern,
     }
 }
 
@@ -248,23 +286,71 @@ mod tests {
     #[test]
     fn the_rules_name_only_this_probe_and_socket_as_the_hints_quote_them() {
         let all = rules().rules();
+        let request = "/tmp/r/bin/agent-relay-probe relay socket-request --socket '/Users/me/Library/Application Support/x/run/relay.sock'";
         assert_eq!(
             all,
             vec![
-                "Bash(/tmp/r/bin/agent-relay-probe relay read --socket '/Users/me/Library/Application Support/x/run/relay.sock' *)",
-                "Bash(/tmp/r/bin/agent-relay-probe relay socket-request --socket '/Users/me/Library/Application Support/x/run/relay.sock' *)",
+                "Bash(/tmp/r/bin/agent-relay-probe relay read --socket '/Users/me/Library/Application Support/x/run/relay.sock' *)".to_string(),
+                format!("Bash({request} --method POST --path '/send?*)"),
+                format!("Bash({request} --method POST --path '/connect/send?*)"),
+                format!("Bash({request} --method POST --path '/attachments/fetch?file_id=*)"),
+                format!("Bash({request} --method GET --path /agents)"),
             ]
         );
-        // The text before each `*` is exactly how the pointer's read and the
-        // reply hint begin.
+        // The text before the read's `*` is exactly how the pointer's read
+        // begins.
         let socket = rules().socket;
         let read =
             crate::relay::message_pointer::socket_reader(Some(&rules().probe), &socket).unwrap();
-        assert_eq!(all[0], format!("Bash({read} *)"));
-        let probe = crate::relay::outbound::shell_quote(rules().probe.to_str().unwrap());
-        let quoted = crate::relay::outbound::shell_quote(socket.to_str().unwrap());
-        assert!(all[1].starts_with(&format!(
-            "Bash({probe} relay socket-request --socket {quoted} "
+        assert!(covers(&all[0], &format!("{read} 0123456789ab")));
+    }
+
+    // Review on #2021: a relayed message must not get any other session
+    // route run without a prompt.
+    #[test]
+    fn no_other_session_route_is_allowed() {
+        let all = rules().rules();
+        let request = "/tmp/r/bin/agent-relay-probe relay socket-request --socket '/Users/me/Library/Application Support/x/run/relay.sock'";
+        let allowed = |command: &str| all.iter().any(|rule| covers(rule, command));
+        for (method, path) in [
+            ("POST", "'/send?to=a'"),
+            ("POST", "'/send?channel=c&thread_id=1'"),
+            ("POST", "'/connect/send?to=host'"),
+            ("POST", "'/attachments/fetch?file_id=f1'"),
+            ("GET", "/agents"),
+        ] {
+            assert!(
+                allowed(&format!(
+                    "{request} --method {method} --path {path} --body 'x'"
+                )) || allowed(&format!("{request} --method {method} --path {path}")),
+                "{method} {path}"
+            );
+        }
+        for (method, path) in [
+            ("POST", "/register"),
+            ("DELETE", "/register"),
+            ("PATCH", "/settings"),
+            ("GET", "/settings"),
+            ("POST", "/integrations/subscribe"),
+            ("DELETE", "/integrations/subscribe"),
+            ("POST", "/connect/leave"),
+            ("DELETE", "/connect/join"),
+            ("GET", "/whoami"),
+            ("GET", "'/messages?ref=0123456789ab'"),
+            ("GET", "/agents --body x"),
+            ("POST", "/send"),
+        ] {
+            assert!(
+                !allowed(&format!("{request} --method {method} --path {path}")),
+                "{method} {path}"
+            );
+        }
+        // Another socket, or the method not first: not covered.
+        assert!(!allowed(
+            "/tmp/r/bin/agent-relay-probe relay socket-request --socket /tmp/other.sock --method POST --path '/send?to=a'"
+        ));
+        assert!(!allowed(&format!(
+            "{request} --path '/send?to=a' --method POST"
         )));
     }
 
@@ -282,7 +368,7 @@ mod tests {
             probe: PathBuf::from("/Apps/Bob's Relay/probe"),
             socket: PathBuf::from("/s/relay.sock"),
         };
-        assert_eq!(rules.rules().len(), 2);
+        assert_eq!(rules.rules().len(), 5);
     }
 
     #[test]
@@ -295,11 +381,10 @@ mod tests {
         .unwrap()
         .clone();
         let owned = add(&mut object, &ours, &[]).unwrap();
-        assert_eq!(owned, vec![ours[1].clone()]);
-        assert_eq!(
-            object["permissions"]["allow"],
-            json!(["Bash(npm test *)", ours[0], ours[1]])
-        );
+        assert_eq!(owned, ours[1..]);
+        let mut expected = vec![json!("Bash(npm test *)")];
+        expected.extend(ours.iter().map(|rule| json!(rule)));
+        assert_eq!(object["permissions"]["allow"], Value::Array(expected));
         assert!(take_out(&mut object, &owned));
         assert_eq!(
             Value::Object(object),
@@ -317,14 +402,16 @@ mod tests {
             .clone();
         let owned = add(&mut object, &ours, &old).unwrap();
         assert_eq!(owned, ours);
-        assert_eq!(
-            object["permissions"]["allow"],
-            json!(["Bash(ls *)", ours[0], ours[1]])
-        );
-        // Added again: nothing changes, and both stay owned.
+        let mut expected = vec![json!("Bash(ls *)")];
+        expected.extend(ours.iter().map(|rule| json!(rule)));
+        assert_eq!(object["permissions"]["allow"], Value::Array(expected));
+        // Added again: nothing changes, and all stay owned.
         let again = add(&mut object, &ours, &owned).unwrap();
         assert_eq!(again, ours);
-        assert_eq!(object["permissions"]["allow"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            object["permissions"]["allow"].as_array().unwrap().len(),
+            ours.len() + 1
+        );
     }
 
     #[test]

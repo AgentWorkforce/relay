@@ -1272,6 +1272,20 @@ describe('relay init message injection', () => {
     expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
   });
 
+  // Review on #2021: a tool rolled back in the same run is tidied too.
+  it('removes the Claude settings file it created when Claude is rolled back to MCP', async () => {
+    installedProbe();
+    const claude = path.join(toolHome, '.claude');
+    fs.mkdirSync(claude);
+    const core = fakeCore({
+      claudeFiles: [path.join(claude, 'settings.json')],
+      refuse: ['claude_session_hook'],
+    });
+    await setup(core.deps).run('--tools', 'claude');
+    expect(core.settings).toMatchObject({ direct_delivery: false, claude_session_hook: false });
+    expect(fs.readdirSync(claude)).toEqual([]);
+  });
+
   it('keeps a Claude settings file and an OpenCode marker that were there before init', async () => {
     installedProbe();
     const claude = path.join(toolHome, '.claude');

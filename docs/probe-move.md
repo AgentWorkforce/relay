@@ -349,14 +349,14 @@ route and no MCP server, so a session has exactly one Relay identity: the one
 the core registers. Init turns on `auto_activate` (sessions join on their
 own, named `<tool>-<project>-<task>`) and, per tool, through `settings.set`:
 
-| Tool        | Core setting(s)                                  | What the core writes                                                                                                                  |
-| ----------- | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Claude Code | `direct_delivery_default`, `claude_session_hook` | `crossSessionInbound: "accept"` (only when unset), a SessionStart hook and two `permissions.allow` rules in `~/.claude/settings.json` |
-| Codex       | `codex_stop_hook`                                | PostToolUse and Stop hooks in `~/.codex/hooks.json`, trusted through Codex's app-server, and `~/.codex/rules/agent-relay.rules`       |
-| OpenCode    | `opencode_plugin`, `opencode_auto_activate`      | the Agent Relay plugin under `~/.config/opencode/plugins`                                                                             |
-| Grok CLI    | `grok_leader`                                    | `[cli] use_leader` in `~/.grok/config.toml`                                                                                           |
-| Devin       | `devin_direct_delivery`                          | lifecycle hooks in `~/.config/devin/config.json`                                                                                      |
-| Pi          | `pi_extension`, `pi_auto_activate`               | the Agent Relay extension in `~/.pi/agent/extensions` (a desktop core installs it at start)                                           |
+| Tool        | Core setting(s)                                  | What the core writes                                                                                                              |
+| ----------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Code | `direct_delivery_default`, `claude_session_hook` | `crossSessionInbound: "accept"` (only when unset), a SessionStart hook and `permissions.allow` rules in `~/.claude/settings.json` |
+| Codex       | `codex_stop_hook`                                | PostToolUse and Stop hooks in `~/.codex/hooks.json`, trusted through Codex's app-server, and `~/.codex/rules/agent-relay.rules`   |
+| OpenCode    | `opencode_plugin`, `opencode_auto_activate`      | the Agent Relay plugin under `~/.config/opencode/plugins`                                                                         |
+| Grok CLI    | `grok_leader`                                    | `[cli] use_leader` in `~/.grok/config.toml`                                                                                       |
+| Devin       | `devin_direct_delivery`                          | lifecycle hooks in `~/.config/devin/config.json`                                                                                  |
+| Pi          | `pi_extension`, `pi_auto_activate`               | the Agent Relay extension in `~/.pi/agent/extensions` (a desktop core installs it at start)                                       |
 
 `auto_activate` alone never puts an open Pi or OpenCode session on the relay
 (the desktop installs both routes by default, so its Auto-activate switch
@@ -439,16 +439,26 @@ goes, and `rules/` with it only when empty.
 **Claude's permission prompts.** In Claude Code's default ("manual")
 permission mode a session asked to approve the pointer's `relay read`, then
 again for its curl reply. While `claude_session_hook` is on, the core adds
-two rules to `permissions.allow` in each login's `settings.json` it puts the
-hook in: `Bash(<this probe> relay read --socket <this core's session socket>
-*)` and `Bash(<this probe> relay socket-request --socket <the same socket>
-*)`, with the probe and socket quoted exactly as the hints quote them (a
-socket under `Application Support` is single-quoted). Claude Code matches the
+rules to `permissions.allow` in each login's `settings.json` it puts the hook
+in, for exactly the commands a relayed message hands the session, each only
+for this probe on this core's session socket (`<req>` is `<this probe> relay
+socket-request --socket <this core's session socket>`):
+`Bash(<this probe> relay read --socket <the same socket> *)`,
+`Bash(<req> --method POST --path '/send?*)` (a DM or channel-thread reply),
+`Bash(<req> --method POST --path '/connect/send?*)` (a Relay Connect reply),
+`Bash(<req> --method POST --path '/attachments/fetch?file_id=*)` and
+`Bash(<req> --method GET --path /agents)`. Every other session route
+(`/register`, `PATCH /settings`, `/integrations/subscribe`, …) still asks, and
+`relay socket-request` refuses a second `--socket`, `--method` or `--path`, so
+nothing after a `*` can change them. The probe, socket and path are quoted
+exactly as the hints quote them (a socket under `Application Support` is
+single-quoted). Claude Code matches the
 text before a rule's `*` as written, after splitting compound commands
 (verified against Claude Code 2.1.314 in print mode: the hint's own spelling
 runs without a prompt, a body with `;`, `&&` or `$(…)` inside single quotes
 included; a double-quoted or backslash-escaped socket, another socket, a
-chained `&& touch …` and a double-quoted `$(…)` body all still ask). So the
+chained `&& touch …`, a double-quoted `$(…)` body, `PATCH /settings`,
+`POST /register` and `POST /integrations/subscribe` all still ask). So the
 reply, `[agents: …]` and attachment hints a Claude session is handed are now
 the probe's one-command `relay socket-request … --body` form on every
 platform (curl only when the probe's path is unknown), as Codex's are. A

@@ -999,7 +999,10 @@ async function setupInjection(
         // Older originals win: they were recorded before init first changed anything.
         const originals = { ...before, ...current.claudeInbound };
         if (turnedOff.includes('direct_delivery')) restoreClaudeInbound(originals);
-        const claudeOn = turnedOn.some((key) => CLAUDE_FILE_KEYS.includes(key));
+        // A setting this run turned on, kept or rolled back again (then in
+        // turnedOff): its files are tidied below once nothing edits them.
+        const touched = [...turnedOn, ...turnedOff];
+        const claudeOn = touched.some((key) => CLAUDE_FILE_KEYS.includes(key));
         return tidyLeftovers({
           turnedOn: [...new Set([...current.turnedOn, ...turnedOn])].filter(
             (key) => !turnedOff.includes(key)
@@ -1013,7 +1016,7 @@ async function setupInjection(
             claudeOn && files.claudeFiles
               ? { ...files.claudeFiles, ...current.claudeFiles }
               : current.claudeFiles,
-          openCode: turnedOn.includes('opencode_plugin')
+          openCode: touched.includes('opencode_plugin')
             ? (current.openCode ?? files.openCode)
             : current.openCode,
         });
