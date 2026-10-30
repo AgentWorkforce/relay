@@ -55,13 +55,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Relay credentials or overrides inherited from the caller would outrank the
+# throwaway workspace and send the test to a real one.
+while IFS= read -r var; do unset "$var"; done < <(env | sed -n -E 's/^((AGENT_RELAY|RELAY|RELAYCAST)_[A-Za-z0-9_]*)=.*/\1/p')
+
 REAL_HOME="$HOME"
-# Short paths: macOS caps Unix socket paths at 104 bytes.
-E=/tmp/relay-try
+# Short and per-user: macOS caps Unix socket paths at 104 bytes.
+E="/tmp/relay-try-$(id -u)"
 # Not under /tmp or $TMPDIR: sessions there never join Relay by themselves.
 PROJ="$REAL_HOME/relay-try-project"
-TMUX_SERVER=relay-try
+TMUX_SERVER="relay-try-$(id -u)"
 PKG="agent-relay@$VERSION"
+MARKER=.relay-try-owned
 
 TRY_HOME="$E/home"
 ENV_FILE="$E/env.sh"
@@ -71,56 +76,76 @@ green() { printf '\033[32m%s\033[0m\n' "$*"; }
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 redact() { sed -E 's/(sk-ant-|rk_|at_|nt_|phc_)[A-Za-z0-9_-]+/\1<redacted>/g'; }
 
-write_env() {
-  cat > "$ENV_FILE" <<EOF
-export HOME=$TRY_HOME
-export AGENT_RELAY_HOME=$E/relay
-export INSTALL_DIR=$E/install
-export CODEX_HOME=$TRY_HOME/.codex
-export XDG_CONFIG_HOME=$TRY_HOME/.config
-export XDG_DATA_HOME=$TRY_HOME/.local/share
-export XDG_STATE_HOME=$TRY_HOME/.local/state
-export XDG_CACHE_HOME=$TRY_HOME/.cache
-export AGENT_RELAY_CORE_SOCKET=$TRY_HOME/.agentworkforce/desktop/core.sock
-export npm_config_cache=$REAL_HOME/.npm
-export AGENT_RELAY_TELEMETRY_DISABLED=1
-EOF
+# The throwaway environment, for this script's own commands.
+use_env() {
+  export HOME="$TRY_HOME"
+  export AGENT_RELAY_HOME="$E/relay"
+  export INSTALL_DIR="$E/install"
+  export CODEX_HOME="$TRY_HOME/.codex"
+  export XDG_CONFIG_HOME="$TRY_HOME/.config"
+  export XDG_DATA_HOME="$TRY_HOME/.local/share"
+  export XDG_STATE_HOME="$TRY_HOME/.local/state"
+  export XDG_CACHE_HOME="$TRY_HOME/.cache"
+  export AGENT_RELAY_CORE_SOCKET="$TRY_HOME/.agentworkforce/desktop/core.sock"
+  export AGENT_RELAY_TELEMETRY_DISABLED=1
+  export npm_config_cache="$REAL_HOME/.npm"
   # mise keeps its trust decisions under HOME; point it at the real ones so a
   # trusted ~/mise.toml above the project doesn't prompt inside the sessions.
   if command -v mise >/dev/null; then
-    cat >> "$ENV_FILE" <<EOF
-export MISE_CONFIG_DIR=${MISE_CONFIG_DIR:-$REAL_HOME/.config/mise}
-export MISE_DATA_DIR=${MISE_DATA_DIR:-$REAL_HOME/.local/share/mise}
-export MISE_STATE_DIR=${MISE_STATE_DIR:-$REAL_HOME/.local/state/mise}
-export MISE_CACHE_DIR=${MISE_CACHE_DIR:-$REAL_HOME/Library/Caches/mise}
-EOF
+    export MISE_CONFIG_DIR="${MISE_CONFIG_DIR:-$REAL_HOME/.config/mise}"
+    export MISE_DATA_DIR="${MISE_DATA_DIR:-$REAL_HOME/.local/share/mise}"
+    export MISE_STATE_DIR="${MISE_STATE_DIR:-$REAL_HOME/.local/state/mise}"
+    export MISE_CACHE_DIR="${MISE_CACHE_DIR:-$REAL_HOME/Library/Caches/mise}"
   fi
 }
 
+# The same environment as a file the tmux windows source.
+write_env() {
+  (
+    use_env
+    for v in HOME AGENT_RELAY_HOME INSTALL_DIR CODEX_HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME \
+      XDG_CACHE_HOME AGENT_RELAY_CORE_SOCKET AGENT_RELAY_TELEMETRY_DISABLED npm_config_cache \
+      MISE_CONFIG_DIR MISE_DATA_DIR MISE_STATE_DIR MISE_CACHE_DIR; do
+      [[ -n "${!v:-}" ]] && printf 'export %s=%q\n' "$v" "${!v}"
+    done
+    printf 'cd %q\n' "$PROJ"
+  ) > "$ENV_FILE"
+}
+
 # Runs agent-relay inside the throwaway environment.
-# shellcheck disable=SC1090
-relay() { (source "$ENV_FILE"; cd "$PROJ"; npx -y "$PKG" "$@") 2> >(grep -v -E '^npm (warn|notice)' >&2); }
+relay() { (use_env; cd "$PROJ"; npx -y "$PKG" "$@") 2> >(grep -v -E '^npm (warn|notice)' >&2); }
+
+# A directory this script made: owned by this user and carrying its marker.
+owned() { [[ -d "$1" && -O "$1" && -f "$1/$MARKER" && -O "$1/$MARKER" ]]; }
 
 cleanup() {
   step "Cleaning up"
-  if [[ -f "$ENV_FILE" ]]; then
+  if owned "$E" && [[ -d "$E/relay" ]]; then
     relay init --uninstall 2>&1 | redact | tail -3 || true
     relay init --stop 2>&1 | redact | tail -2 || true
   fi
   tmux -L "$TMUX_SERVER" kill-server 2>/dev/null || true
   # Processes the tools left running from the throwaway HOME (e.g. Codex's app-server).
-  pkill -f "$E/" 2>/dev/null || true
-  pkill -f "/private$E/" 2>/dev/null || true
-  rm -rf "$E" "$PROJ"
-  echo "Removed $E and $PROJ."
+  pkill -U "$(id -u)" -f "$E/" 2>/dev/null || true
+  pkill -U "$(id -u)" -f "/private$E/" 2>/dev/null || true
+  for d in "$E" "$PROJ"; do
+    if owned "$d"; then
+      rm -rf "$d" && echo "Removed $d."
+    elif [[ -e "$d" ]]; then
+      red "Left $d alone: this script did not create it."
+    fi
+  done
 }
 
 if $CLEANUP_ONLY; then cleanup; exit 0; fi
 
-if [[ -e "$E" || -e "$PROJ" ]]; then
-  red "$E or $PROJ already exists. Run with --cleanup first."
-  exit 1
-fi
+for d in "$E" "$PROJ"; do
+  if [[ -e "$d" ]]; then
+    if owned "$d"; then red "$d is left from an earlier run. Run with --cleanup first."
+    else red "$d already exists and was not made by this script. Move it out of the way first."; fi
+    exit 1
+  fi
+done
 
 IFS=',' read -r -a TOOL_LIST <<< "$TOOLS"
 has_tool() { [[ ",$TOOLS," == *",$1,"* ]]; }
@@ -160,41 +185,52 @@ if has_tool claude; then
   [[ -n "$TOKEN" ]] || { red "No Claude token given"; exit 1; }
 fi
 
-trap 'red "Interrupted."; $KEEP || cleanup' INT TERM
+# From here on, any exit (a failed command, Ctrl-C) cleans up unless --keep.
+on_exit() {
+  local status=$?
+  trap - EXIT INT TERM
+  # A --keep run that got as far as leaving its sessions up stays up.
+  if [[ ${KEPT:-} != yes ]]; then cleanup; fi
+  exit "$status"
+}
+trap on_exit EXIT
+trap 'exit 130' INT TERM
 
 step "Setting up a throwaway HOME in $E"
-mkdir -p "$TRY_HOME/.codex" "$E/relay" "$E/install" "$PROJ"
-chmod 700 "$E" "$TRY_HOME"
+(umask 077 && mkdir "$E" "$PROJ")
+touch "$E/$MARKER" "$PROJ/$MARKER"
+mkdir -p "$TRY_HOME/.codex" "$E/relay" "$E/install"
 write_env
-(cd "$PROJ" && git init -q && echo "# relay-try" > README.md)
+(cd "$PROJ" && git init -q && echo "# relay-try" > README.md && printf '%s\n' "$MARKER" > .gitignore)
 if has_tool codex; then
-  cp "$REAL_HOME/.codex/auth.json" "$TRY_HOME/.codex/auth.json"
-  chmod 600 "$TRY_HOME/.codex/auth.json"
+  (umask 077 && cp "$REAL_HOME/.codex/auth.json" "$TRY_HOME/.codex/auth.json")
   printf '[projects."%s"]\ntrust_level = "trusted"\n' "$PROJ" > "$TRY_HOME/.codex/config.toml"
 fi
 if has_tool claude; then
   # Skip onboarding and the trust dialog, and keep any ~/.mcp.json above the
   # project from prompting.
-  disabled="$(cat "$REAL_HOME/.mcp.json" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.stringify(Object.keys(JSON.parse(s).mcpServers||{})))}catch{console.log("[]")}})')"
-  cat > "$TRY_HOME/.claude.json" <<EOF
-{"hasCompletedOnboarding": true, "theme": "dark", "projects": {"$PROJ": {"hasTrustDialogAccepted": true, "hasCompletedProjectOnboarding": true, "disabledMcpjsonServers": ${disabled:-[]}}}}
-EOF
+  disabled="[]"
+  if [[ -f "$REAL_HOME/.mcp.json" ]]; then
+    disabled="$(node -e 'try{console.log(JSON.stringify(Object.keys(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).mcpServers||{})))}catch{console.log("[]")}' "$REAL_HOME/.mcp.json")"
+  fi
+  node -e 'const [f,p,d]=process.argv.slice(1);require("fs").writeFileSync(f,JSON.stringify({hasCompletedOnboarding:true,theme:"dark",projects:{[p]:{hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true,disabledMcpjsonServers:JSON.parse(d)}}}))' \
+    "$TRY_HOME/.claude.json" "$PROJ" "$disabled"
 fi
-find "$TRY_HOME" | sort > "$E/before.txt"
 
 step "relay init from $PKG"
 relay init --yes --tools "$TOOLS" --port "$PORT" 2>&1 | redact
 
-tmux -L "$TMUX_SERVER" new-session -d -s relay-try -n shell "bash -c 'source $ENV_FILE; cd $PROJ; exec bash -i'"
-[[ -n "$TOKEN" ]] && tmux -L "$TMUX_SERVER" set-environment -g CLAUDE_CODE_OAUTH_TOKEN "$TOKEN"
+shell_cmd() { printf 'bash -c %q' "source $(printf '%q' "$ENV_FILE"); exec $*"; }
+tmux -L "$TMUX_SERVER" new-session -d -s relay-try -n shell "$(shell_cmd bash -i)"
+if [[ -n "$TOKEN" ]]; then tmux -L "$TMUX_SERVER" set-environment -g CLAUDE_CODE_OAUTH_TOKEN "$TOKEN"; fi
 TOKEN=""
 
 step "Starting real sessions"
 for t in "${TOOL_LIST[@]}"; do
   bin_var="BIN_$t"
-  cmd="${!bin_var}"
+  cmd="$(printf '%q' "${!bin_var}")"
   [[ $t == claude ]] && cmd="$cmd --permission-mode manual"
-  tmux -L "$TMUX_SERVER" new-window -d -t relay-try -n "$t" "bash -c 'source $ENV_FILE; cd $PROJ; exec $cmd'"
+  tmux -L "$TMUX_SERVER" new-window -d -t relay-try -n "$t" "$(shell_cmd "$cmd")"
 done
 sleep 8
 for t in "${TOOL_LIST[@]}"; do
@@ -246,7 +282,7 @@ while (( SECONDS < deadline )); do
   for t in "${TOOL_LIST[@]}"; do
     [[ -n "$(getv NAME "$t")" && -z "$(getv GOT "$t")" ]] || continue
     if printf '%s' "$inbox" | grep -q "pong-$t"; then setv GOT "$t" 1; else
-      prompted "$t" && setv PROMPT "$t" 1
+      if prompted "$t"; then setv PROMPT "$t" 1; fi
       pending=1
     fi
   done
@@ -259,35 +295,40 @@ for t in "${TOOL_LIST[@]}"; do
     if [[ -n "$(getv PROMPT "$t")" ]]; then red "  ✗ $t replied, but only after an approval prompt"; FAILED=true
     else green "  ✓ $t: DM injected and the reply reached alice, with no approval prompt"; fi
   else
-    [[ -n "$(getv PROMPT "$t")" ]] && red "  ✗ $t is waiting on an approval prompt (tmux -L $TMUX_SERVER attach -t relay-try:$t)" \
-      || red "  ✗ no reply from $t within ${TIMEOUT}s"
+    if [[ -n "$(getv PROMPT "$t")" ]]; then red "  ✗ $t is waiting on an approval prompt (tmux -L $TMUX_SERVER attach -t relay-try:$t)"
+    else red "  ✗ no reply from $t within ${TIMEOUT}s"; fi
     FAILED=true
   fi
 done
 
 if $KEEP; then
+  KEPT=yes
   step "Left running (--keep)"
   cat <<EOF
   Attach:   tmux -L $TMUX_SERVER attach -t relay-try        (windows: shell, ${TOOLS//,/, })
   In the 'shell' window, npx -y $PKG ... runs against the throwaway setup.
   Tear down: $0 --cleanup
 EOF
-  $FAILED && exit 1 || exit 0
+  if $FAILED; then exit 1; fi
+  exit 0
 fi
 
 step "Uninstall"
 for t in "${TOOL_LIST[@]}"; do tmux -L "$TMUX_SERVER" kill-window -t "relay-try:$t" 2>/dev/null || true; done
 relay init --uninstall 2>&1 | redact | tail -3
-leftovers="$(
-  for f in .claude/settings.json .claude/settings.json.relay-desktop-backup .codex/hooks.json .codex/hooks.json.relay-desktop-backup .codex/rules/agent-relay.rules; do
-    [[ -e "$TRY_HOME/$f" ]] && echo "$f"
-  done
-  grep -l -E 'hooks\.state|agent-relay' "$TRY_HOME/.codex/config.toml" 2>/dev/null | sed "s#$TRY_HOME/##"
-)" || true
+leftovers=""
+for f in "$TRY_HOME/.claude/settings.json" "$TRY_HOME/.claude/settings.json.relay-desktop-backup" \
+  "$TRY_HOME/.codex/hooks.json" "$TRY_HOME/.codex/hooks.json.relay-desktop-backup" \
+  "$TRY_HOME/.codex/rules/agent-relay.rules" \
+  "$PROJ/.mcp.json" "$PROJ/.claude/settings.json" "$PROJ/.claude/settings.local.json" "$PROJ/.codex/config.toml"; do
+  if [[ -e "$f" ]]; then leftovers+="      $f"$'\n'; fi
+done
+if grep -q -E 'hooks\.state|agent-relay' "$TRY_HOME/.codex/config.toml" 2>/dev/null; then
+  leftovers+="      $TRY_HOME/.codex/config.toml (Relay entries)"$'\n'
+fi
 if [[ -z "$leftovers" ]]; then green "  ✓ --uninstall left no Relay files behind"
-else red "  ✗ left behind:"; printf '      %s\n' $leftovers; FAILED=true; fi
+else red "  ✗ left behind:"; printf '%s' "$leftovers"; FAILED=true; fi
 
-cleanup
 echo
 if $FAILED; then red "Some checks failed."; exit 1; fi
 green "All checks passed for ${TOOLS//,/, } with $PKG."
