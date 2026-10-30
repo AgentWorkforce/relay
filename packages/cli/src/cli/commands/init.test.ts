@@ -1015,7 +1015,7 @@ describe('relay init message injection', () => {
       { auto_activate: true },
     ]);
     const output = logs.join('\n');
-    expect(output).toContain('Started the Agent Relay core (agent-relay-probe 15.0.0, pid 5151)');
+    expect(output).toContain(`Started the Agent Relay core (agent-relay-probe ${PROBE_VERSION}, pid 5151)`);
     expect(output).toMatch(/Claude Code\s+injected through Claude Code's session inbox/);
     expect(output).toMatch(/Codex\s+injected through PostToolUse and Stop hooks/);
     expect(output).toContain('apply in every project on this machine');
