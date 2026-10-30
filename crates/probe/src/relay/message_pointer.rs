@@ -308,11 +308,8 @@ pub fn prepare(
         return None;
     }
     let message_ref = MessageRef::in_text(text)?;
-    let reader = reader?;
-    let pointer = pointer(text, &read_command(reader, &message_ref))?;
+    let pointer = pointer(text, &read_command(reader?, &message_ref))?;
     kept.keep(owner, message_id, text, now_ms).ok()?;
-    // A pointer through the probe's link keeps the link until it is read.
-    crate::relay::probe_alias::note_pointer(reader, &message_ref, now_ms);
     Some(pointer)
 }
 
@@ -339,7 +336,6 @@ pub fn answer(
         "message_not_found",
         format!("No message {message_ref} was kept for this session, or it expired."),
     ))?;
-    crate::relay::probe_alias::pointer_read(message_ref, now_ms);
     Ok(json!({
         "message_id": kept.message_id,
         "ref": kept.message_ref,

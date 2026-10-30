@@ -494,10 +494,11 @@ inode), and it points at exactly the running probe. Anything else at that name,
 including a link someone put in its place, is never replaced, removed or used,
 and the hints and rules name the probe's own path as before; every hint checks
 the link again. Once neither hook is on (turned off, or `relay init
---uninstall`), the link goes, with its folder once empty, unless a pointer
-handed out through it has not been read yet (a Codex queue can hold one until
-the next turn): then it stays until that pointer is read or expires, or until
-the next core start, while new hints name the probe's own path. The rules
+--uninstall`), the link goes, with its folder once empty, and hints name the
+probe's own path again; a hint handed out earlier that names the link no longer
+runs (without the rules it would have asked anyway). The record also names the
+link being replaced while the app moves, so a core stopped mid-move finishes
+the move at its next start. The rules
 still allow only the same two (Codex) and five (Claude) command shapes.
 
 **`--uninstall` and the tools' own folders.** Before the core edits them,
