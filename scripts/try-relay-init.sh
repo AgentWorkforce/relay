@@ -115,8 +115,15 @@ write_env() {
 # Runs agent-relay inside the throwaway environment.
 relay() { (use_env; cd "$PROJ"; npx -y "$PKG" "$@") 2> >(grep -v -E '^npm (warn|notice)' >&2); }
 
-# A directory this script made: owned by this user and carrying its marker.
-owned() { [[ -d "$1" && -O "$1" && -f "$1/$MARKER" && -O "$1/$MARKER" ]]; }
+# Directories this run created, so a failure before they are marked still
+# cleans them up.
+CREATED=" "
+# A directory this script made: created by this run, or owned by this user and
+# carrying its marker.
+owned() {
+  [[ -d "$1" && -O "$1" ]] || return 1
+  [[ $CREATED == *" $1 "* ]] || [[ -f "$1/$MARKER" && -O "$1/$MARKER" ]]
+}
 
 cleanup() {
   step "Cleaning up"
@@ -182,6 +189,8 @@ TOKEN=""
 if has_tool claude; then
   if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]]; then
     TOKEN="$CLAUDE_CODE_OAUTH_TOKEN"
+    # Kept out of every other process: only the tmux server gets it.
+    unset CLAUDE_CODE_OAUTH_TOKEN
   elif [[ -n "$OP_REF" ]]; then
     TOKEN="$(op read "$OP_REF")" || { red "op read failed (approve the 1Password prompt and retry)"; exit 1; }
   else
@@ -204,8 +213,11 @@ trap on_exit EXIT
 trap 'exit 130' INT TERM
 
 step "Setting up a throwaway HOME in $E"
-(umask 077 && mkdir "$E" "$PROJ")
-touch "$E/$MARKER" "$PROJ/$MARKER"
+for d in "$E" "$PROJ"; do
+  (umask 077 && mkdir "$d")
+  CREATED+="$d "
+  touch "$d/$MARKER"
+done
 mkdir -p "$TRY_HOME/.codex" "$E/relay" "$E/install"
 write_env
 (cd "$PROJ" && git init -q && echo "# relay-try" > README.md && printf '%s\n' "$MARKER" > .gitignore)
@@ -288,10 +300,9 @@ while (( SECONDS < deadline )); do
   pending=0
   for t in "${TOOL_LIST[@]}"; do
     [[ -n "$(getv NAME "$t")" && -z "$(getv GOT "$t")" ]] || continue
-    if printf '%s' "$inbox" | grep -q "pong-$t"; then setv GOT "$t" 1; else
-      if prompted "$t"; then setv PROMPT "$t" 1; fi
-      pending=1
-    fi
+    # Check the pane first, so a prompt is caught even when the reply is in.
+    if prompted "$t"; then setv PROMPT "$t" 1; fi
+    if printf '%s' "$inbox" | grep -q "pong-$t"; then setv GOT "$t" 1; else pending=1; fi
   done
   (( pending == 0 )) && break
   sleep 3
