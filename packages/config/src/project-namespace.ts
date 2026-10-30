@@ -61,26 +61,31 @@ function canonicalPath(target: string): string {
 
 /**
  * Whether `dataDir` is a relay home rather than a project's data folder:
- * this process's relay home, compared as canonical paths (symlinks resolved;
- * the same file system object when both exist, which also covers a
- * case-insensitive volume), or any folder holding a machine-wide workspace
- * store (`workspaces.json`), which no project folder does, such as the real
- * `~/.agentworkforce/relay` while `HOME` or `AGENT_RELAY_HOME` points
- * elsewhere.
+ * - this process's relay home (`AGENT_RELAY_HOME`), or the default
+ *   `~/.agentworkforce/relay` even while `AGENT_RELAY_HOME` points elsewhere,
+ *   compared as canonical paths (symlinks resolved; the same file system
+ *   object when both exist, which also covers a case-insensitive volume);
+ * - any folder holding a machine-wide workspace store (`workspaces.json`),
+ *   which no project folder does, such as the real home's relay folder while
+ *   `HOME` itself points elsewhere.
  * @param dataDir - A project's `.agentworkforce/relay` folder
  * @param env - Environment to read `AGENT_RELAY_HOME` from
  */
 export function isRelayHomeDir(dataDir: string, env: NodeJS.ProcessEnv = process.env): boolean {
   if (fs.existsSync(path.join(dataDir, WORKSPACE_STORE_FILE))) return true;
-  const home = relayHomeDir(env);
+  const defaultHome = path.join(os.homedir(), PROJECT_DATA_DIR);
+  return [relayHomeDir(env), defaultHome].some((home) => samePath(dataDir, home));
+}
+
+function samePath(a: string, b: string): boolean {
   try {
-    const a = fs.statSync(dataDir);
-    const b = fs.statSync(home);
-    if (a.dev === b.dev && a.ino === b.ino) return true;
+    const left = fs.statSync(a);
+    const right = fs.statSync(b);
+    if (left.dev === right.dev && left.ino === right.ino) return true;
   } catch {
     // One of them does not exist yet: compare where they would be.
   }
-  return canonicalPath(dataDir) === canonicalPath(home);
+  return canonicalPath(a) === canonicalPath(b);
 }
 
 /** A project pin was about to be written into the relay home. */

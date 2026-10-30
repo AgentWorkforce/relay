@@ -93,6 +93,20 @@ describe('the relay home is never a project', () => {
     expect(findProjectRoot(project)).toBe(project);
   });
 
+  it('keeps the default relay home out of projects while AGENT_RELAY_HOME is relocated', () => {
+    const home = path.join(root, 'home');
+    const notes = path.join(home, 'notes');
+    fs.mkdirSync(relay(home), { recursive: true });
+    fs.mkdirSync(notes);
+    // A pin an earlier init left in the default home, which has no workspaces.json.
+    fs.writeFileSync(path.join(relay(home), 'workspace-key.json'), '{}');
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('AGENT_RELAY_HOME', path.join(root, 'relocated'));
+    expect(isRelayHomeDir(relay(home))).toBe(true);
+    expect(findProjectRoot(notes)).toBe(notes);
+    expect(() => assertNotRelayHome(relay(home))).toThrow(RelayHomeProjectError);
+  });
+
   it('compares canonical paths: a symlink to the relay home, and one not created yet', () => {
     const home = path.join(root, 'home');
     fs.mkdirSync(home);
