@@ -125,9 +125,16 @@ cleanup() {
     relay init --stop 2>&1 | redact | tail -2 || true
   fi
   tmux -L "$TMUX_SERVER" kill-server 2>/dev/null || true
-  # Processes the tools left running from the throwaway HOME (e.g. Codex's app-server).
-  pkill -U "$(id -u)" -f "$E/" 2>/dev/null || true
-  pkill -U "$(id -u)" -f "/private$E/" 2>/dev/null || true
+  # Processes the tools left running from the throwaway HOME (e.g. Codex's
+  # app-server). Wait for them to exit: one still shutting down can recreate
+  # its folders after they are removed.
+  local pattern="(/private)?$E/"
+  pkill -U "$(id -u)" -f "$pattern" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -U "$(id -u)" -f "$pattern" >/dev/null || break
+    sleep 1
+  done
+  pkill -9 -U "$(id -u)" -f "$pattern" 2>/dev/null || true
   for d in "$E" "$PROJ"; do
     if owned "$d"; then
       rm -rf "$d" && echo "Removed $d."
