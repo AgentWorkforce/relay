@@ -637,6 +637,9 @@ function openCodeStateOf(value: unknown): OpenCodeState | undefined {
   return { file, plugin, off, dir };
 }
 
+const PI_EXTENSION_TAIL = path.join(path.sep, 'extensions', 'agent-relay.js');
+const PI_MARKER_TAIL = path.join(path.sep, '.agentworkforce', 'desktop', 'pi-extension.off');
+
 /** The recorded Pi state, if sane. */
 function piStateOf(value: unknown): PiState | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
@@ -644,8 +647,11 @@ function piStateOf(value: unknown): PiState | undefined {
   const extension = flag(value, 'extension');
   const off = flag(value, 'off');
   const dir = flag(value, 'dir');
-  if (typeof file !== 'string' || !path.isAbsolute(file)) return undefined;
-  if (typeof marker !== 'string' || !path.isAbsolute(marker)) return undefined;
+  // Only the places the core uses: tidying removes the marker and an empty folder.
+  if (typeof file !== 'string' || !path.isAbsolute(file) || !file.endsWith(PI_EXTENSION_TAIL))
+    return undefined;
+  if (typeof marker !== 'string' || !path.isAbsolute(marker) || !marker.endsWith(PI_MARKER_TAIL))
+    return undefined;
   if (extension === undefined || off === undefined || dir === undefined) return undefined;
   return { file, marker, extension, off, dir };
 }

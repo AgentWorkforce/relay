@@ -1376,6 +1376,10 @@ async function turnOffInjection(deps: InitCommandDependencies, keys: string[]): 
     throw new Error(`Could not reach the Agent Relay core to turn off message injection: ${session.reason}`);
   }
   try {
+    // A Pi off marker already there was the person's own opt-out after init
+    // (the desktop app's switch), not this run's: it is kept.
+    const pi = readDeliveryRecord(deliveryRecordPath()).pi;
+    const piOptedOut = keys.includes('pi_extension') && pi !== undefined && fs.existsSync(pi.marker);
     const failures = await disableDelivery(session.client, keys);
     const done = keys.filter((key) => !failures.some((failure) => failure.startsWith(`${key}:`)));
     const ctx = deps.toolContext();
@@ -1383,6 +1387,7 @@ async function turnOffInjection(deps: InitCommandDependencies, keys: string[]): 
       if (done.includes('direct_delivery')) restoreClaudeInbound(recordedClaudeFiles(current, ctx));
       return tidyLeftovers({
         ...current,
+        ...(piOptedOut && done.includes('pi_extension') ? { pi: undefined } : {}),
         turnedOn: current.turnedOn.filter((key) => !done.includes(key)),
         claudeInbound: done.includes('direct_delivery') ? {} : current.claudeInbound,
       });

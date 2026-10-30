@@ -1321,6 +1321,23 @@ describe('relay init message injection', () => {
     expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
   });
 
+  // Review on #2022: turning Pi off in the desktop app after init is the person's choice.
+  it('keeps a Pi opt-out marker the person left after init on --uninstall', async () => {
+    installedProbe();
+    const agent = path.join(toolHome, '.pi', 'agent');
+    fs.mkdirSync(agent, { recursive: true });
+    const marker = path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off');
+    const core = fakeCore({ piAgentDir: agent });
+    await setup(core.deps).run('--tools', 'pi');
+    // As the desktop app's Pi switch: the extension goes and the marker stays.
+    fs.rmSync(path.join(agent, 'extensions', 'agent-relay.js'));
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, "Agent Relay's Pi extension was turned off (pi_extension).\n");
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(fs.existsSync(marker)).toBe(true);
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
   it('keeps a Pi opt-out marker that was there before init', async () => {
     installedProbe();
     const agent = path.join(toolHome, '.pi', 'agent');

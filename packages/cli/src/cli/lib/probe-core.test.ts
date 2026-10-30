@@ -426,5 +426,19 @@ describe('records', () => {
       })
     );
     expect(readDeliveryRecord(file)).toEqual({ turnedOn: [], claudeInbound: {} });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        turnedOn: [],
+        pi: {
+          file: '/h/.pi/agent/extensions/agent-relay.js',
+          marker: '/h/important.txt',
+          extension: false,
+          off: false,
+          dir: false,
+        },
+      })
+    );
+    expect(readDeliveryRecord(file)).toEqual({ turnedOn: [], claudeInbound: {} });
   });
 });
