@@ -916,6 +916,8 @@ function fakeCore(
     settings?: Record<string, unknown>;
     workspaceName?: string;
     workspaceId?: string;
+    /** The Relaycast server the core's workspace is on. */
+    baseUrl?: string;
     /** Settings the core refuses to turn on. */
     refuse?: string[];
     /** Claude settings files the core's direct delivery writes, as `set_direct_delivery` does. */
@@ -946,7 +948,7 @@ function fakeCore(
   const calls: Array<[string, unknown]> = [];
   const workspace = {
     state: 'found',
-    base_url: 'http://127.0.0.1:8787',
+    base_url: options.baseUrl ?? 'http://127.0.0.1:8787',
     workspace_name: options.workspaceName ?? 'local',
     workspace_id: options.workspaceId ?? 'ws_1',
     verification: 'verified',
@@ -1631,6 +1633,34 @@ describe('relay init message injection', () => {
       'codex'
     );
     expect(unknown.logs.join('\n')).toContain('Could not confirm that the Agent Relay core serves "c"');
+  });
+
+  // Review on #2028: a joined hosted workspace's name is the person's, so a
+  // core serving another hosted workspace of the same name is not taken
+  // for it when neither side names a workspace id.
+  it('does not confirm a joined hosted workspace by its name alone', async () => {
+    installedProbe();
+    const core = fakeCore({
+      running: true,
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceName: 'team',
+      workspaceId: '',
+    });
+    core.settings.auto_activate = true;
+    const { run, logs } = setup(core.deps);
+    await run(
+      '--url',
+      'https://cast.agentrelay.com',
+      '--key',
+      'rk_live_other_team',
+      '--name',
+      'team',
+      '--tools',
+      'codex'
+    );
+    const output = logs.join('\n');
+    expect(output).toContain('Joined hosted workspace "team"');
+    expect(output).toContain('Could not confirm that the Agent Relay core serves "team"');
   });
 
   it('restores crossSessionInbound on every Claude login the core changed', async () => {

@@ -585,12 +585,15 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     const name = choice.name ?? new URL(origin).hostname;
     const { lines, ...saved } = saveWorkspace(name, key);
     // A teammate joining a hosted workspace passes the hosted origin here;
-    // that is the hosted service, not a server of their own.
+    // that is the hosted service, not a server of their own. It stays an
+    // `own` setup: the name came from the person, not from init, so it
+    // never stands in for a workspace id when checking which workspace the
+    // core serves (`sameWorkspace`).
     if (origin === HOSTED_ORIGIN) {
       return {
         ...saved,
         workspaceId,
-        mode: 'hosted',
+        mode: 'own',
         origin,
         headline: `Joined hosted workspace "${name}" (${origin}).`,
         details: ['Your key is only ever sent to the hosted service.', ...lines],
