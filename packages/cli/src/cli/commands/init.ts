@@ -1058,18 +1058,22 @@ async function setupInjection(
 
 /** The bytes of the regular file `file` is or links to; undefined when there is none. */
 function readIfFile(file: string): Buffer | undefined {
+  let fd: number | undefined;
   try {
-    return fs.statSync(file).isFile() ? fs.readFileSync(file) : undefined;
+    // One descriptor for the check and the read, so they see the same file.
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    return fs.fstatSync(fd).isFile() ? fs.readFileSync(fd) : undefined;
   } catch {
     return undefined;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
   }
 }
 
-/** Puts `bytes` back in `file` when they differ; a failure leaves the core's marker, which means the same. */
+/** Puts `bytes` back in `file`; a failure leaves the core's marker, which means the same. */
 function restoreBytes(file: string, bytes: Buffer): void {
   try {
-    const now = readIfFile(file);
-    if (now === undefined || !now.equals(bytes)) fs.writeFileSync(file, bytes);
+    fs.writeFileSync(file, bytes);
   } catch {
     // The core's own marker stays: Pi is still off.
   }
