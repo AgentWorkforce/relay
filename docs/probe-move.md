@@ -349,14 +349,14 @@ route and no MCP server, so a session has exactly one Relay identity: the one
 the core registers. Init turns on `auto_activate` (sessions join on their
 own, named `<tool>-<project>-<task>`) and, per tool, through `settings.set`:
 
-| Tool        | Core setting(s)                                  | What the core writes                                                                                                              |
-| ----------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| Claude Code | `direct_delivery_default`, `claude_session_hook` | `crossSessionInbound: "accept"` (only when unset), a SessionStart hook and `permissions.allow` rules in `~/.claude/settings.json` |
-| Codex       | `codex_stop_hook`                                | PostToolUse, Stop and SessionStart hooks in `~/.codex/hooks.json`, trusted through Codex's app-server, and `~/.codex/rules/agent-relay.rules`   |
-| OpenCode    | `opencode_plugin`, `opencode_auto_activate`      | the Agent Relay plugin under `~/.config/opencode/plugins`                                                                         |
-| Grok CLI    | `grok_leader`                                    | `[cli] use_leader` in `~/.grok/config.toml`                                                                                       |
-| Devin       | `devin_direct_delivery`                          | lifecycle hooks in `~/.config/devin/config.json`                                                                                  |
-| Pi          | `pi_extension`, `pi_auto_activate`               | the Agent Relay extension in `~/.pi/agent/extensions` (a desktop core installs it at start)                                       |
+| Tool        | Core setting(s)                                  | What the core writes                                                                                                                          |
+| ----------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Code | `direct_delivery_default`, `claude_session_hook` | `crossSessionInbound: "accept"` (only when unset), a SessionStart hook and `permissions.allow` rules in `~/.claude/settings.json`             |
+| Codex       | `codex_stop_hook`                                | PostToolUse, Stop and SessionStart hooks in `~/.codex/hooks.json`, trusted through Codex's app-server, and `~/.codex/rules/agent-relay.rules` |
+| OpenCode    | `opencode_plugin`, `opencode_auto_activate`      | the Agent Relay plugin under `~/.config/opencode/plugins`                                                                                     |
+| Grok CLI    | `grok_leader`                                    | `[cli] use_leader` in `~/.grok/config.toml`                                                                                                   |
+| Devin       | `devin_direct_delivery`                          | lifecycle hooks in `~/.config/devin/config.json`                                                                                              |
+| Pi          | `pi_extension`, `pi_auto_activate`               | the Agent Relay extension in `~/.pi/agent/extensions` (a desktop core installs it at start)                                                   |
 
 `auto_activate` alone never puts an open Pi or OpenCode session on the relay
 (the desktop installs both routes by default, so its Auto-activate switch
