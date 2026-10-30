@@ -20,15 +20,24 @@
 //!
 //! The link is used only when it is safe to: its folder must be a real
 //! folder this user owns that nobody else may write (it is made `0700`), and
-//! its parent too; the link must be one this core recorded making
-//! ([`RECORD`] in the core's data folder) and point at exactly this
-//! executable. Anything else there is never replaced or used, and the hints
-//! and rules name the probe's own path as before. When neither hook is on any
-//! more, the link goes, with its folder once empty.
+//! its parent too; the link must be the one this core recorded making
+//! ([`RECORD`] in the core's data folder: its name, target and inode) and
+//! point at exactly this executable. Anything else there, a link someone
+//! replaced it with included, is never replaced, removed or used, and the
+//! hints and rules name the probe's own path as before. Every hint checks the
+//! link again (`active`), so one deleted or replaced since is never handed
+//! out.
+//!
+//! When neither hook is on any more, the link goes, with its folder once
+//! empty. A pointer handed out through it that its session has not read yet
+//! (a Codex queue can hold one until the next turn) keeps it until that
+//! pointer is read or expires (`message_pointer::LIFETIME_MS`); hints name
+//! the probe's own path again at once. Only this core run knows of those
+//! pointers: the next core start with both hooks off takes the link out.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 /// The record, in the core's data folder, of the link this core made.
 pub const RECORD: &str = "probe-alias.json";
@@ -45,15 +54,34 @@ pub enum User {
     Claude,
 }
 
-/// The name the hints use, once the core has a link (`probe_executable`).
-static ACTIVE: RwLock<Option<PathBuf>> = RwLock::new(None);
+/// The core's own link, whose hints `probe_executable` names.
+static SYSTEM: RwLock<Option<Arc<ProbeAlias>>> = RwLock::new(None);
 
-/// The link this core keeps, if any, for `outbound::fetch::probe_executable`.
-pub fn active() -> Option<PathBuf> {
-    ACTIVE
+fn system() -> Option<Arc<ProbeAlias>> {
+    SYSTEM
         .read()
         .unwrap_or_else(|poison| poison.into_inner())
         .clone()
+}
+
+/// The link the hints name now, for `outbound::fetch::probe_executable`:
+/// only while rules use it and it is still this core's, at this probe.
+pub fn active() -> Option<PathBuf> {
+    system()?.published()
+}
+
+/// A pointer naming `reader` was handed out for `message_ref`.
+pub fn note_pointer(reader: &str, message_ref: &str, now_ms: i64) {
+    if let Some(alias) = system() {
+        alias.note_pointer(reader, message_ref, now_ms);
+    }
+}
+
+/// The session read the message a pointer named.
+pub fn pointer_read(message_ref: &str, now_ms: i64) {
+    if let Some(alias) = system() {
+        alias.pointer_read(message_ref, now_ms);
+    }
 }
 
 /// Whether `path` is one plain shell word, which Codex's rules can match as
@@ -61,6 +89,22 @@ pub fn active() -> Option<PathBuf> {
 pub fn is_plain(path: &Path) -> bool {
     path.to_str()
         .is_some_and(|text| crate::relay::outbound::shell_quote(text) == text)
+}
+
+/// The link this core made, as [`RECORD`] keeps it.
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct Made {
+    link: PathBuf,
+    target: PathBuf,
+    /// The link's own inode, so a link put in its place is not taken for it.
+    inode: u64,
+}
+
+#[derive(Default)]
+struct State {
+    users: BTreeSet<User>,
+    /// Unread pointers handed out through the link: their expiry, by ref.
+    pointers: HashMap<String, i64>,
 }
 
 /// The link to this probe, and who needs it.
@@ -71,17 +115,20 @@ pub struct ProbeAlias {
     link: PathBuf,
     /// [`RECORD`] in the core's data folder.
     record: PathBuf,
-    /// Whether this is the core's own, whose link the hints use.
-    publish: bool,
-    users: Mutex<BTreeSet<User>>,
+    state: Mutex<State>,
 }
 
 impl ProbeAlias {
     /// The core's link for `real`, under `home`, recorded in `app_data_dir`;
     /// the hints name it while it is kept.
-    pub fn system(real: PathBuf, home: &Path, app_data_dir: &Path, development: bool) -> Self {
-        let mut alias = ProbeAlias::new(real, home, app_data_dir, development);
-        alias.publish = true;
+    pub fn system(
+        real: PathBuf,
+        home: &Path,
+        app_data_dir: &Path,
+        development: bool,
+    ) -> Arc<ProbeAlias> {
+        let alias = Arc::new(ProbeAlias::new(real, home, app_data_dir, development));
+        *SYSTEM.write().unwrap_or_else(|poison| poison.into_inner()) = Some(alias.clone());
         alias
     }
 
@@ -96,23 +143,12 @@ impl ProbeAlias {
             real,
             link: home.join(DIR).join(name),
             record: app_data_dir.join(RECORD),
-            publish: false,
-            users: Mutex::new(BTreeSet::new()),
+            state: Mutex::new(State::default()),
         }
     }
 
-    /// The probe's own executable.
-    pub fn real(&self) -> &Path {
-        &self.real
-    }
-
-    /// Where the link goes.
-    pub fn link(&self) -> &Path {
-        &self.link
-    }
-
-    /// The probe the rules and hints name now, changing nothing: the link
-    /// when it is in place and safe, else the probe's own path.
+    /// The probe the rules name now, changing nothing: the link when it is
+    /// in place and safe, else the probe's own path.
     pub fn probe(&self) -> PathBuf {
         if self.wanted() && self.usable() {
             self.link.clone()
@@ -121,49 +157,76 @@ impl ProbeAlias {
         }
     }
 
+    /// The link the hints name: only while rules use it, and only while it
+    /// is in place and safe.
+    pub fn published(&self) -> Option<PathBuf> {
+        let state = self.state();
+        (!state.users.is_empty() && self.wanted() && self.usable()).then(|| self.link.clone())
+    }
+
     /// `user`'s rules need the link: it is made, or pointed at this probe
     /// again, when the probe's path needs quoting. Answers the probe the
     /// rules should name: the link, or the probe's own path when the link
     /// is not needed or cannot be made safely.
     pub fn acquire(&self, user: User) -> PathBuf {
-        let mut users = self.users();
-        users.insert(user);
-        let probe = if self.wanted() {
-            match self.ensure() {
-                Ok(()) => self.link.clone(),
-                Err(_) => self.real.clone(),
-            }
-        } else {
+        let mut state = self.state();
+        state.users.insert(user);
+        if !self.wanted() {
             // The probe moved to a path that needs no link: an old one goes.
             self.remove_ours();
-            self.real.clone()
-        };
-        self.set_active(probe != self.real, &probe);
-        probe
-    }
-
-    /// `user`'s rules are gone; the link goes once no rules need it.
-    pub fn release(&self, user: User) {
-        let mut users = self.users();
-        users.remove(&user);
-        if users.is_empty() {
-            self.remove_ours();
-            self.set_active(false, &self.real);
+            return self.real.clone();
+        }
+        match self.ensure() {
+            Ok(()) => self.link.clone(),
+            Err(_) => self.real.clone(),
         }
     }
 
-    fn users(&self) -> std::sync::MutexGuard<'_, BTreeSet<User>> {
-        self.users
+    /// `user`'s rules are gone; the link goes once no rules and no unread
+    /// pointer need it.
+    pub fn release(&self, user: User) {
+        self.release_at(user, crate::relay::state::now_ms());
+    }
+
+    fn release_at(&self, user: User, now_ms: i64) {
+        let mut state = self.state();
+        state.users.remove(&user);
+        self.retire_if_unused(&mut state, now_ms);
+    }
+
+    /// A pointer naming `reader` was handed out for `message_ref`: when it
+    /// runs the link, the link is kept until it is read or expires.
+    pub fn note_pointer(&self, reader: &str, message_ref: &str, now_ms: i64) {
+        let Some(link) = self.link.to_str() else {
+            return;
+        };
+        if reader.starts_with(&format!("{link} ")) {
+            self.state().pointers.insert(
+                message_ref.to_string(),
+                now_ms + crate::relay::message_pointer::LIFETIME_MS,
+            );
+        }
+    }
+
+    /// The session read the message a pointer named.
+    pub fn pointer_read(&self, message_ref: &str, now_ms: i64) {
+        let mut state = self.state();
+        if state.pointers.remove(message_ref).is_some() {
+            self.retire_if_unused(&mut state, now_ms);
+        }
+    }
+
+    fn retire_if_unused(&self, state: &mut State, now_ms: i64) {
+        state.pointers.retain(|_, expires| *expires > now_ms);
+        if state.users.is_empty() && state.pointers.is_empty() {
+            self.remove_ours();
+        }
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-    }
-
-    fn set_active(&self, kept: bool, probe: &Path) {
-        if !self.publish {
-            return;
-        }
-        let mut active = ACTIVE.write().unwrap_or_else(|poison| poison.into_inner());
-        *active = kept.then(|| probe.to_path_buf());
     }
 
     /// Whether the probe's path needs a link, and a link could be matched.
@@ -187,34 +250,32 @@ impl ProbeAlias {
         })
     }
 
-    /// Whether this core recorded making the link.
-    fn recorded(&self) -> bool {
-        std::fs::read(&self.record)
+    /// The link this core recorded making, at this name.
+    fn made(&self) -> Option<Made> {
+        let bytes = std::fs::read(&self.record).ok()?;
+        serde_json::from_slice::<Made>(&bytes)
             .ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            .is_some_and(|value| value["link"].as_str() == self.link.to_str())
+            .filter(|made| made.link == self.link)
     }
 
-    fn record_link(&self) -> std::io::Result<()> {
-        if let Some(folder) = self.record.parent() {
-            crate::platform::fs::create_private_dir_all(folder)?;
-        }
-        let text = serde_json::json!({"link": self.link.to_string_lossy()}).to_string();
-        crate::relay::claude_settings::write_keeping_file(
-            &self.record,
-            None,
-            text.as_bytes(),
-            "",
-            0o600,
-        )
+    /// Whether the link there now is the one this core made: the same link
+    /// (inode) at the same target. A link put in its place is someone
+    /// else's.
+    fn ours_on_disk(&self) -> bool {
+        let Some(made) = self.made() else {
+            return false;
+        };
+        std::fs::symlink_metadata(&self.link).is_ok_and(|metadata| {
+            metadata.file_type().is_symlink()
+                && crate::platform::fs::inode(&metadata) == Some(made.inode)
+        }) && std::fs::read_link(&self.link).is_ok_and(|target| target == made.target)
     }
 
     /// Whether the link is there, this core's, in safe folders, and at
     /// exactly this probe.
     fn usable(&self) -> bool {
         self.safe_folders()
-            && self.recorded()
-            && std::fs::symlink_metadata(&self.link).is_ok_and(|m| m.file_type().is_symlink())
+            && self.ours_on_disk()
             && std::fs::read_link(&self.link).is_ok_and(|target| target == self.real)
     }
 
@@ -231,26 +292,39 @@ impl ProbeAlias {
         }
         match std::fs::symlink_metadata(&self.link) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Ok(metadata) if metadata.file_type().is_symlink() && self.recorded() => {
-                if std::fs::read_link(&self.link).is_ok_and(|target| target == self.real) {
+            Ok(_) if self.ours_on_disk() => {
+                if self.usable() {
                     return Ok(());
                 }
             }
             Ok(_) => return Err("something this core did not make is at the link".into()),
             Err(error) => return Err(error.to_string()),
         }
-        // Recorded first, so a link is never left that this core does not
-        // know it made; then made beside and renamed into place, so the
-        // name never points at anything but a probe.
-        self.record_link().map_err(|error| error.to_string())?;
+        // Made beside and renamed into place, so the name never points at
+        // anything but a probe; recorded (with the new link's inode, which
+        // the rename keeps) before it is in place, so a link is never left
+        // that this core does not know it made.
         let mut staged = self.link.clone().into_os_string();
         staged.push(format!(".{}.new", std::process::id()));
         let staged = PathBuf::from(staged);
         let _ = std::fs::remove_file(&staged);
         crate::platform::fs::symlink(&self.real, &staged).map_err(|error| error.to_string())?;
-        if let Err(error) = std::fs::rename(&staged, &self.link) {
+        let placed = (|| {
+            let inode = std::fs::symlink_metadata(&staged)
+                .ok()
+                .and_then(|metadata| crate::platform::fs::inode(&metadata))
+                .ok_or("the new link cannot be read")?;
+            self.record_made(&Made {
+                link: self.link.clone(),
+                target: self.real.clone(),
+                inode,
+            })
+            .map_err(|error| error.to_string())?;
+            std::fs::rename(&staged, &self.link).map_err(|error| error.to_string())
+        })();
+        if let Err(error) = placed {
             let _ = std::fs::remove_file(&staged);
-            return Err(error.to_string());
+            return Err(error);
         }
         let _ = crate::platform::fs::sync_dir(folder);
         if self.usable() {
@@ -260,22 +334,29 @@ impl ProbeAlias {
         }
     }
 
-    /// Removes the link if this core made it, its folder once empty, and
-    /// the record.
+    fn record_made(&self, made: &Made) -> std::io::Result<()> {
+        if let Some(folder) = self.record.parent() {
+            crate::platform::fs::create_private_dir_all(folder)?;
+        }
+        let bytes = serde_json::to_vec(made).map_err(std::io::Error::other)?;
+        crate::relay::claude_settings::write_keeping_file(&self.record, None, &bytes, "", 0o600)
+    }
+
+    /// Removes the link if it is still the one this core made, its folder
+    /// once empty, and the record. A link put in its place stays.
     fn remove_ours(&self) {
-        if !self.recorded() {
+        if self.made().is_none() {
             return;
         }
-        let ours = std::fs::symlink_metadata(&self.link).is_ok_and(|m| m.file_type().is_symlink());
-        if ours {
+        if self.ours_on_disk() {
             match std::fs::remove_file(&self.link) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(_) => return,
             }
-        }
-        if let Some(folder) = self.link.parent() {
-            let _ = std::fs::remove_dir(folder);
+            if let Some(folder) = self.link.parent() {
+                let _ = std::fs::remove_dir(folder);
+            }
         }
         let _ = std::fs::remove_file(&self.record);
     }
@@ -428,9 +509,75 @@ mod tests {
         std::fs::remove_file(&folder).unwrap();
         let ours = alias.acquire(User::Codex);
         assert_eq!(ours, link);
+        assert_eq!(alias.published(), Some(link.clone()));
         std::fs::remove_file(&link).unwrap();
         std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
         assert_eq!(alias.probe(), real);
+        // The hints stop naming it at once, and the replacement is never
+        // pointed back at the probe or removed.
+        assert_eq!(alias.published(), None);
+        assert_eq!(alias.acquire(User::Codex), real);
+        assert_eq!(std::fs::read_link(&link).unwrap(), elsewhere);
+        alias.release(User::Codex);
+        assert_eq!(std::fs::read_link(&link).unwrap(), elsewhere);
+    }
+
+    // Review on #2024: the record names the link this core made (its
+    // inode), not just the name, so a link put in its place, even one to
+    // the same probe, is someone else's.
+    #[test]
+    fn a_link_put_in_place_of_ours_is_never_overwritten_or_removed() {
+        let fixture = fixture();
+        let real = probe_at(&fixture, "Agent Relay.app");
+        let alias = ProbeAlias::new(real.clone(), &fixture.home, &fixture.data, false);
+        let link = alias.acquire(User::Codex);
+        let script = fixture.apps.join("mine.sh");
+        std::fs::write(&script, b"").unwrap();
+        for target in [&script, &real] {
+            std::fs::remove_file(&link).unwrap();
+            std::os::unix::fs::symlink(target, &link).unwrap();
+            assert_eq!(alias.published(), None);
+            // A core start (or the hook turned on again) leaves it alone.
+            let moved = probe_at(&fixture, "Agent Relay 2.app");
+            let next = ProbeAlias::new(moved.clone(), &fixture.home, &fixture.data, false);
+            assert_eq!(next.acquire(User::Codex), moved);
+            assert_eq!(&std::fs::read_link(&link).unwrap(), target);
+            next.release(User::Codex);
+            alias.release(User::Codex);
+            assert_eq!(&std::fs::read_link(&link).unwrap(), target);
+        }
+    }
+
+    // Review on #2024: a Codex queue can hold a pointer through the link
+    // until its next turn; turning the hooks off keeps the link until that
+    // pointer is read or expires, while hints go back to the probe's path.
+    #[test]
+    fn an_unread_pointer_keeps_the_link_after_the_hooks_go() {
+        let fixture = fixture();
+        let real = probe_at(&fixture, "Agent Relay.app");
+        let alias = ProbeAlias::new(real, &fixture.home, &fixture.data, false);
+        let link = alias.acquire(User::Codex);
+        let reader = format!("{} relay read --socket /s/relay.sock", link.display());
+        alias.note_pointer(&reader, "0123456789ab", 1_000);
+        // One not through the link is not counted.
+        alias.note_pointer("'/x y/probe' relay read", "ba9876543210", 1_000);
+        alias.release_at(User::Codex, 2_000);
+        assert!(
+            std::fs::symlink_metadata(&link).is_ok(),
+            "kept for the pointer"
+        );
+        assert_eq!(alias.published(), None, "hints name the probe again");
+        alias.pointer_read("ba9876543210", 3_000);
+        assert!(std::fs::symlink_metadata(&link).is_ok());
+        alias.pointer_read("0123456789ab", 3_000);
+        assert!(std::fs::symlink_metadata(&link).is_err());
+
+        // An unread pointer that expired no longer keeps it.
+        let link = alias.acquire(User::Claude);
+        alias.note_pointer(&reader, "0123456789ab", 1_000);
+        let expired = 1_000 + crate::relay::message_pointer::LIFETIME_MS + 1;
+        alias.release_at(User::Claude, expired);
+        assert!(std::fs::symlink_metadata(&link).is_err());
     }
 
     #[test]
@@ -440,12 +587,14 @@ mod tests {
         let alias = ProbeAlias::new(real, &fixture.home, &fixture.data, false);
         let link = alias.acquire(User::Codex);
         alias.acquire(User::Claude);
+        assert_eq!(alias.published(), Some(link.clone()));
         alias.release(User::Codex);
         assert!(
             std::fs::symlink_metadata(&link).is_ok(),
             "Claude's rules use it"
         );
         alias.release(User::Claude);
+        assert_eq!(alias.published(), None);
         assert!(std::fs::symlink_metadata(&link).is_err());
         assert!(!fixture.home.join(DIR).exists(), "its empty folder goes");
         assert!(fixture.home.join(".agentworkforce/desktop").exists());

@@ -145,12 +145,12 @@ pub fn plugins_with_options(
     // Codex matches its rules only against an unquoted program, so while
     // either hook's rules are in place a probe whose path needs quoting is
     // named by a space-free link to it, in the rules and the hints alike.
-    let probe_alias = Arc::new(crate::relay::probe_alias::ProbeAlias::system(
+    let probe_alias = crate::relay::probe_alias::ProbeAlias::system(
         probe.clone(),
         &config.home,
         &config.app_data_dir,
         development,
-    ));
+    );
     let stop_hook_settings = Arc::new(
         codex::stop_hook::CodexStopHookSettings::new(
             local.codex.home.clone(),

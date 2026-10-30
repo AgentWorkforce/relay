@@ -488,11 +488,16 @@ The link is pointed at the running probe again whenever a hook turns on and at
 each core start, so a moved or updated app never leaves it at an old binary;
 a probe that moved to a space-free path drops it. The core uses the link only
 when its folder and that folder's parent are real folders this user owns that
-nobody else may write (the folder is made `0700`), the core recorded making it
-(`probe-alias.json` in its data), and it points at exactly the running probe;
-anything else at that name is never replaced or used, and the hints and rules
-name the probe's own path as before. Once neither hook is on (turned off, or
-`relay init --uninstall`), the link goes, with its folder once empty. The rules
+nobody else may write (the folder is made `0700`), it is the link the core
+recorded making (`probe-alias.json` in its data: name, target and the link's
+inode), and it points at exactly the running probe. Anything else at that name,
+including a link someone put in its place, is never replaced, removed or used,
+and the hints and rules name the probe's own path as before; every hint checks
+the link again. Once neither hook is on (turned off, or `relay init
+--uninstall`), the link goes, with its folder once empty, unless a pointer
+handed out through it has not been read yet (a Codex queue can hold one until
+the next turn): then it stays until that pointer is read or expires, or until
+the next core start, while new hints name the probe's own path. The rules
 still allow only the same two (Codex) and five (Claude) command shapes.
 
 **`--uninstall` and the tools' own folders.** Before the core edits them,
