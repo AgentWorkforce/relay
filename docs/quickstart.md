@@ -27,7 +27,22 @@ cd my-project
 relay init
 ```
 
-In a terminal it asks four questions, the same way `npx skills add` does:
+It asks nothing. It starts a private server on this machine, connects every
+agent tool installed here, at global scope, and ends with what it chose and
+the flag that changes each choice:
+
+```
+Chosen without asking:
+  Server:  this machine (--hosted for agents on other machines, or --url and --key for your own server)
+  Tools:   claude, codex (the ones installed here; --tools to choose)
+  Scope:   global (--scope project for this project only)
+To choose each step yourself, run: relay init --interactive
+```
+
+### Choosing each step (`--interactive`)
+
+`relay init --interactive` (or `-i`) asks four questions in a terminal, the
+same way `npx skills add` does:
 
 ```
 ┌   relay init
@@ -92,9 +107,9 @@ Claude Code asks you to approve a project `.mcp.json` server the first time it
 opens the folder. Pi reads `.pi/mcp.json` only once you trust the project, which
 it asks about on first run. Codex reads `.codex/config.toml` only when that
 exact project (its git root) is trusted in `~/.codex/config.toml`; a trusted
-parent folder does not count, and `codex exec` never asks. In a terminal
-`relay init` offers to record that trust for you; with `--yes` it prints the
-lines to add instead.
+parent folder does not count, and `codex exec` never asks. With
+`--interactive`, `relay init` offers to record that trust for you; otherwise
+it prints the lines to add.
 
 In a git repository, `relay init` keeps `.agentworkforce/relay/` (which holds
 the project's workspace key) out of `git status` through `.git/info/exclude`;
@@ -109,15 +124,14 @@ active on this machine (for example one a fleet node uses), `relay init` leaves
 it active and says so; run `relay workspace switch <name>` to make the new one
 the default everywhere.
 
-### Without prompts
+### Flags
 
-`relay init` asks nothing when stdin is not a terminal, or with `--yes`. It then
-uses this machine, the agent tools it detects, and project scope, unless flags
-say otherwise:
+Flags change the defaults; `relay init` still asks nothing (and behaves the
+same in CI or a pipe). `--yes` is accepted and changes nothing:
 
 ```bash
-relay init --tools claude,codex --scope project --yes
-relay init --hosted --tools all --scope global --yes
+relay init --tools claude,codex --scope project
+relay init --hosted --tools all
 relay init --url https://relay.example.com:8443 --key <workspace-key> --tools none
 ```
 
@@ -152,15 +166,18 @@ agent can still choose its own name with the `register_agent` tool, and
 
 ## Across machines (hosted)
 
-On the first machine, choose _Hosted_ in `relay init` (or run
-`relay init --hosted`). It creates a hosted workspace and prints one command.
-Run that command in the project folder on each other machine: it joins the
-workspace and connects that machine's agent tools, the same way `relay init`
-did on the first one:
+On the first machine, run `relay init --hosted`. It creates a hosted
+workspace, named after you and the folder unless you pass `--name`, and prints
+one command. Run that command in the project folder on each other machine; it
+needs only Node.js. It joins the workspace under the name it has there and
+connects that machine's agent tools, the same way `relay init` did on the
+first one:
 
 ```bash
-relay init --url https://cast.agentrelay.com --key <key> --name <name>
+npx -y agent-relay@next init --key '<key>'
 ```
+
+With Relay installed, `relay init --key '<key>'` does the same.
 
 Treat the key like a password: anyone with it can join the workspace. The
 hosted service has a free tier, enough to try agents across machines.

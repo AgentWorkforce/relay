@@ -50,13 +50,19 @@ function bindKeyToConfiguredServer(key: string): void {
 const HOSTED_ORIGIN = 'https://cast.agentrelay.com';
 
 /**
- * Where a joined key is used: the configured server, else the server the
- * key is already bound to, else the hosted service. A self-hosted key is
- * never pointed at the hosted service.
+ * The `--url` a joined key needs in `relay init`: the configured server,
+ * else the server the key is already bound to; none for the hosted service,
+ * which `--key` alone joins. A self-hosted key is never pointed at it.
  */
-function joinOrigin(key: string): string {
+function joinServerFlag(key: string): string {
   const configured = process.env.RELAY_BASE_URL?.trim() || boundOrigin(key);
-  return configured ? shellWord(configured) : HOSTED_ORIGIN;
+  if (!configured) return '';
+  try {
+    if (new URL(configured).origin === HOSTED_ORIGIN) return '';
+  } catch {
+    // Not a URL: shown as given, for the person to correct.
+  }
+  return `--url ${shellWord(configured)} `;
 }
 
 function parsePositiveInteger(value: string): number {
@@ -230,7 +236,7 @@ export function registerWorkspaceCommands(
         deps.log(`Joined and switched to workspace "${name}".`);
         deps.log(
           'This only saves the workspace. To connect agent tools and have messages injected into their ' +
-            `sessions, run in the project: relay init --url ${joinOrigin(key)} --key <key> --name ${shellWord(name)}`
+            `sessions, run in the project: relay init ${joinServerFlag(key)}--key <key> --name ${shellWord(name)}`
         );
         reportClearedEnrollment(result, deps);
       });

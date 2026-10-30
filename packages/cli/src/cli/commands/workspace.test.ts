@@ -267,7 +267,7 @@ describe('registerWorkspaceCommands', () => {
     await program.parseAsync(['node', 'agent-relay', 'workspace', 'join', 'shared', 'rk_live_shared']);
 
     const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
-    expect(output).toContain('relay init --url https://cast.agentrelay.com --key <key> --name shared');
+    expect(output).toContain('relay init --key <key> --name shared');
     expect(output).not.toContain('rk_live_shared');
     vi.unstubAllEnvs();
   });
