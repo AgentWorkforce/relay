@@ -36,7 +36,7 @@ pub const RECORDS: [&str; 1] = ["agent_changes"];
 /// Claude Code's Keychain login; mobile handoff changes where sessions
 /// run; mobile continuation permits native owner input). An agent may turn
 /// them off.
-pub const PERSON_TURNS_ON: [&str; 23] = [
+pub const PERSON_TURNS_ON: [&str; 25] = [
     "accept_spawns",
     "allow_self_registration",
     "auto_activate",
@@ -52,7 +52,9 @@ pub const PERSON_TURNS_ON: [&str; 23] = [
     "mobile_claude_handoff",
     "mobile_native_continuation",
     "openclaw_gateway",
+    "opencode_auto_activate",
     "opencode_plugin",
+    "pi_auto_activate",
     "pi_extension",
     "spawn_allow_teammates",
     "spawn_full_access_claude",

@@ -123,6 +123,18 @@ pub struct SettingsValues {
     /// never run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pi_extension: Option<bool>,
+    /// Whether an open Pi session joins the relay by itself while
+    /// `auto_activate` is on. Off unless turned on (`relay init` turns it on
+    /// for a person who chose Pi): with it off, a Pi session joins only when
+    /// added. Absent in older cores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pi_auto_activate: Option<bool>,
+    /// Whether an open OpenCode session joins the relay by itself while
+    /// `auto_activate` is on. Off unless turned on (`relay init` turns it on
+    /// for a person who chose OpenCode): with it off, an OpenCode session
+    /// joins only when added. Absent in older cores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opencode_auto_activate: Option<bool>,
     /// Whether Agent Relay lists the agents of the local OpenClaw Gateway
     /// and delivers to them, each relay sender in a session of its own.
     /// Absent where OpenClaw is not set up.
@@ -434,6 +446,24 @@ pub struct SettingsChange {
     )]
     #[schemars(with = "bool")]
     pub pi_extension: Option<bool>,
+    /// Whether open Pi sessions join by themselves while `auto_activate`
+    /// is on.
+    #[serde(
+        default,
+        deserialize_with = "given",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "bool")]
+    pub pi_auto_activate: Option<bool>,
+    /// Whether open OpenCode sessions join by themselves while
+    /// `auto_activate` is on.
+    #[serde(
+        default,
+        deserialize_with = "given",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "bool")]
+    pub opencode_auto_activate: Option<bool>,
     /// Turns the OpenClaw Gateway route on or off.
     #[serde(
         default,

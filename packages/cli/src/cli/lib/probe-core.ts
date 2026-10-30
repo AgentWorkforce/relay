@@ -353,14 +353,21 @@ export const PROBE_DELIVERY: Record<ToolId, { settings: CoreSetting[]; route: st
     settings: [setting('codex_stop_hook')],
     route: "PostToolUse and Stop hooks in ~/.codex/hooks.json, and Codex's own queue between turns",
   },
-  opencode: { settings: [setting('opencode_plugin')], route: 'the Agent Relay plugin for OpenCode' },
+  opencode: {
+    // `auto_activate` alone never puts an open OpenCode session on the relay;
+    // its own opt-in does.
+    settings: [setting('opencode_plugin'), setting('opencode_auto_activate')],
+    route: 'the Agent Relay plugin for OpenCode',
+  },
   grok: {
     settings: [setting('grok_leader')],
     route: "Grok's leader socket ([cli] use_leader in ~/.grok/config.toml)",
   },
   pi: {
-    // A core relay init started installs the extension only through this setting.
-    settings: [setting('pi_extension')],
+    // A core relay init started installs the extension only through
+    // `pi_extension`; `auto_activate` alone never puts a Pi session on the
+    // relay, `pi_auto_activate` does.
+    settings: [setting('pi_extension'), setting('pi_auto_activate')],
     route: 'the Agent Relay extension in ~/.pi/agent/extensions',
   },
   devin: {

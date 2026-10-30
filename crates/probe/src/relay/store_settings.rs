@@ -18,7 +18,7 @@ pub const AUTO_JOIN_GENERAL: &str = "auto_join_general";
 
 /// The store's settings, in `store_settings` order; `spawn::settings` saves
 /// them with spawning's in one write (`Core::set_store_settings`).
-pub(crate) const STORE_SETTINGS: [&str; 7] = [
+pub(crate) const STORE_SETTINGS: [&str; 9] = [
     "allow_self_registration",
     "auto_activate",
     SHOW_RELAY_MESSAGES,
@@ -26,7 +26,18 @@ pub(crate) const STORE_SETTINGS: [&str; 7] = [
     "mobile_claude_handoff",
     "mobile_native_continuation",
     TEAMMATE_NATIVE_INPUT,
+    PI_AUTO_ACTIVATE,
+    OPENCODE_AUTO_ACTIVATE,
 ];
+
+/// Whether an open Pi session joins the relay by itself while
+/// `auto_activate` is on. Off unless turned on (`relay init` turns it on for
+/// a person who chose Pi), so turning `auto_activate` on alone keeps Pi
+/// sessions joining only when added.
+pub const PI_AUTO_ACTIVATE: &str = "pi_auto_activate";
+
+/// As [`PI_AUTO_ACTIVATE`], for an open OpenCode session.
+pub const OPENCODE_AUTO_ACTIVATE: &str = "opencode_auto_activate";
 
 /// Whether a teammate's direct message to a Claude Code session with Agent
 /// Relay's plugin starts a user turn, labelled with the sender. On unless
@@ -70,6 +81,17 @@ impl Store {
         self.extras.teammate_native_input != Some(false)
     }
 
+    /// Whether open Pi sessions join by themselves (`PI_AUTO_ACTIVATE`).
+    pub fn pi_auto_activates(&self) -> bool {
+        self.extras.pi_auto_activate == Some(true)
+    }
+
+    /// Whether open OpenCode sessions join by themselves
+    /// (`OPENCODE_AUTO_ACTIVATE`).
+    pub fn opencode_auto_activates(&self) -> bool {
+        self.extras.opencode_auto_activate == Some(true)
+    }
+
     pub fn hides_relay_messages(&self) -> bool {
         !self.shows_relay_messages()
     }
@@ -107,6 +129,8 @@ impl Core {
                     && claimed
                     && s.mobile_native_continuation_on(),
                 s.teammate_native_input_on(),
+                s.pi_auto_activates(),
+                s.opencode_auto_activates(),
             ];
             (values, s.extras.agent_changes.clone())
         });

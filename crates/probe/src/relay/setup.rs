@@ -299,8 +299,16 @@ impl Setup {
         let found = tokio::task::spawn_blocking(move || directory.auto_activation_sessions())
             .await
             .unwrap_or_default();
+        let settings = self
+            .core
+            .store
+            .read(crate::relay::agents::auto_activation::ActivationSettings::of);
         found.iter().any(|session| {
             session.live
+                && crate::relay::agents::auto_activation::activation_applies(
+                    &settings,
+                    session.target.kind,
+                )
                 && self
                     .core
                     .store
@@ -705,10 +713,13 @@ impl Setup {
         // Whether the core will put this session on the relay by itself:
         // automatic activation is on, there is a workspace to join, and
         // activation's own check admits this session.
-        let setting = self.core.store.read(|s| s.auto_activate);
+        let settings = self
+            .core
+            .store
+            .read(crate::relay::agents::auto_activation::ActivationSettings::of);
         let auto_activates = self.core.workspace().is_some()
             && crate::relay::agents::auto_activation::activation_applies(
-                setting,
+                &settings,
                 session.target.kind,
             )
             && {
