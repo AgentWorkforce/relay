@@ -1339,6 +1339,23 @@ describe('relay init message injection', () => {
     expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
   });
 
+  it("keeps a Pi opt-out marker that links to the person's own file on --uninstall", async () => {
+    installedProbe();
+    const agent = path.join(toolHome, '.pi', 'agent');
+    fs.mkdirSync(agent, { recursive: true });
+    const marker = path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off');
+    const core = fakeCore({ piAgentDir: agent });
+    await setup(core.deps).run('--tools', 'pi');
+    fs.rmSync(path.join(agent, 'extensions', 'agent-relay.js'));
+    const mine = path.join(toolHome, 'pi-off.txt');
+    fs.writeFileSync(mine, 'off by me\n');
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.symlinkSync(mine, marker);
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(fs.lstatSync(marker).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(mine, 'utf8')).toBe('off by me\n');
+  });
+
   it('keeps a Pi opt-out marker that was there before init', async () => {
     installedProbe();
     const agent = path.join(toolHome, '.pi', 'agent');

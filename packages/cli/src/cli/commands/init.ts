@@ -1056,10 +1056,10 @@ async function setupInjection(
   }
 }
 
-/** A regular file's bytes; undefined when there is none (or it is a link or folder). */
+/** The bytes of the regular file `file` is or links to; undefined when there is none. */
 function readIfFile(file: string): Buffer | undefined {
   try {
-    return fs.lstatSync(file).isFile() ? fs.readFileSync(file) : undefined;
+    return fs.statSync(file).isFile() ? fs.readFileSync(file) : undefined;
   } catch {
     return undefined;
   }
@@ -1399,8 +1399,11 @@ async function turnOffInjection(deps: InitCommandDependencies, keys: string[]): 
     // (the desktop app's switch), not this run's: it is kept, byte for byte,
     // though turning pi_extension off rewrites it.
     const pi = readDeliveryRecord(deliveryRecordPath()).pi;
-    const piMarker = keys.includes('pi_extension') && pi !== undefined ? readIfFile(pi.marker) : undefined;
-    const piOptedOut = piMarker !== undefined;
+    const piOptedOut =
+      keys.includes('pi_extension') &&
+      pi !== undefined &&
+      fs.lstatSync(pi.marker, { throwIfNoEntry: false }) !== undefined;
+    const piMarker = piOptedOut && pi ? readIfFile(pi.marker) : undefined;
     const failures = await disableDelivery(session.client, keys);
     if (pi && piMarker) restoreBytes(pi.marker, piMarker);
     const done = keys.filter((key) => !failures.some((failure) => failure.startsWith(`${key}:`)));
