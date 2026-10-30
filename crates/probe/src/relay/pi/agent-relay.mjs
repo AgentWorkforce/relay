@@ -201,7 +201,9 @@ export default function (pi) {
       active = { id, dir, fd, ctx, finished: new Set(), pumping: false, timer: undefined };
       active.timer = setInterval(pump, 250);
       active.timer.unref?.();
-      ctx.ui?.notify?.('Agent Relay extension loaded. Enable Receives messages for this session in Agent Relay.', 'info');
+      ctx.ui?.notify?.(fs.existsSync(join(runtime, '..', 'pi-auto-join'))
+        ? 'Agent Relay extension loaded. This session joins Agent Relay automatically and receives messages.'
+        : 'Agent Relay extension loaded. Enable Receives messages for this session in Agent Relay.', 'info');
     } catch { stop(); }
   });
   pi.on('message_end', () => pump());

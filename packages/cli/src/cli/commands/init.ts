@@ -89,7 +89,7 @@ import {
 } from '../lib/init-leftovers.js';
 import { persistWorkspaceSession } from '../lib/workspace-session.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
-import { getProjectPaths } from '@agent-relay/config';
+import { assertNotRelayHome, getProjectPaths, isRelayHomeDir } from '@agent-relay/config';
 import {
   PROBE_PATH_ENV,
   getCanonicalProbePath,
@@ -1508,9 +1508,45 @@ async function stopLocalServer(deps: InitCommandDependencies): Promise<void> {
   await stopCore(deps);
 }
 
+/**
+ * Remove `~/.local/bin/agent-relay-probe` when it is a byte-for-byte copy of
+ * the core relay init installs. The desktop app's core keeps that copy up to
+ * date for terminal use, and cores up to 15.0.3 did so even when relay init
+ * started them; a copy of any other build (the desktop's own) is left alone,
+ * and the desktop puts its copy back when it next starts.
+ * @returns The removed copy's path, when there was one to remove.
+ */
+function removeProbeCopy(ctx: ToolContext): string | undefined {
+  const copy = path.join(
+    ctx.home,
+    '.local',
+    'bin',
+    process.platform === 'win32' ? 'agent-relay-probe.exe' : 'agent-relay-probe'
+  );
+  // lstat, so a symlink there (someone's own install) is never followed.
+  if (!fs.lstatSync(copy, { throwIfNoEntry: false })?.isFile()) return undefined;
+  const ours = readIfFile(getCanonicalProbePath());
+  const theirs = ours ? readIfFile(copy) : undefined;
+  if (!ours || !theirs || !ours.equals(theirs)) return undefined;
+  try {
+    fs.rmSync(copy);
+    return copy;
+  } catch {
+    return undefined;
+  }
+}
+
 async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise<void> {
   const ctx = deps.toolContext();
-  const scopes: InstallScope[] = o.scope ? [o.scope] : ['project', 'global'];
+  // Outside a project (in ~, or a folder whose nearest Relay folder is a relay
+  // home) there is no project scope: its paths would be the user's own global
+  // configs (~/.grok/config.toml), which only the global scope may touch.
+  const noProject = isRelayHomeDir(getProjectPaths(ctx.projectRoot).dataDir);
+  if (noProject && o.scope === 'project') {
+    deps.log('Not inside a project, so there is no project scope to remove Relay from.');
+    return;
+  }
+  const scopes: InstallScope[] = o.scope ? [o.scope] : noProject ? ['global'] : ['project', 'global'];
   const tools = o.tools ?? [...TOOL_IDS];
   const results = scopes.flatMap((scope) =>
     tools.map((id) => uninstallTool(findToolTarget(id)!, { ctx, scope }))
@@ -1531,7 +1567,10 @@ async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise
         '--scope project or --tools to turn it off.'
     );
   }
-  if (shown.length === 0 && turnedOff.length === 0 && !injectionKept) {
+  const removedCopy = o.scope !== 'project' && o.tools === undefined ? removeProbeCopy(ctx) : undefined;
+  if (removedCopy)
+    deps.log(`✓ Agent Relay core     removed the copy a core relay init started left at ${removedCopy}`);
+  if (shown.length === 0 && turnedOff.length === 0 && !injectionKept && !removedCopy) {
     deps.log('relay init had not added Relay to any agent tool here; nothing to remove.');
     return;
   }
@@ -1912,6 +1951,9 @@ export function registerInitCommand(
       await runSdk(deps, async () => {
         if (o.stop) return stopLocalServer(deps);
         if (o.uninstall) return uninstall(deps, o);
+        // Before anything starts or is written: the workspace pin goes in this
+        // project's .agentworkforce/relay, which in ~ is the relay home itself.
+        assertNotRelayHome(getProjectPaths(projectRoot()).dataDir);
         if (!o.yes && deps.isInteractive()) return runGuided(deps, o);
         return runPlain(deps, o);
       });

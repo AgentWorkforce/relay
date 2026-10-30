@@ -1,4 +1,4 @@
-import { getProjectPaths } from '@agent-relay/config';
+import { getProjectPaths, isRelayHomeDir, RelayHomeProjectError } from '@agent-relay/config';
 import { resolveWorkspaceKeyWithSource } from '@agent-relay/cloud/workspace-key';
 
 import {
@@ -67,6 +67,11 @@ export interface PersistWorkspaceSessionResult {
    * `if-none` and a different saved workspace was already active.
    */
   keptActiveWorkspace?: string;
+  /**
+   * No project pin was written: the project folder resolved to the relay home
+   * (`~`), so only the machine-wide workspace store changed.
+   */
+  projectPinSkipped?: boolean;
 }
 
 /**
@@ -107,6 +112,17 @@ export function persistWorkspaceSession(
   const name = options.name === undefined ? undefined : validateWorkspaceSessionName(options.name);
 
   const projectDataDir = options.projectDataDir ?? getProjectPaths(options.projectRoot).dataDir;
+  // Outside any project (in `~`, whose `.agentworkforce/relay` is the relay
+  // home itself) there is no project to pin: a named selection still becomes
+  // the machine-wide workspace, as `relay workspace switch` from `~` means;
+  // a bare key, which only ever pins a project, is refused.
+  if (isRelayHomeDir(projectDataDir, options.env ?? process.env)) {
+    if (!name) throw new RelayHomeProjectError(projectDataDir);
+    const otherActive = options.activate === 'if-none' ? otherActiveWorkspace(name, options.env) : undefined;
+    setWorkspaceKey(name, workspaceKey, options.env);
+    if (!otherActive) switchWorkspace(name, options.env);
+    return { projectPinSkipped: true, ...(otherActive ? { keptActiveWorkspace: otherActive } : {}) };
+  }
   const existing = readProjectWorkspaceSession(projectDataDir, undefined, options.env);
   // Re-selecting the same workspace must keep the enrolled node: dropping it
   // there manufactured the pin `node up` now warns about, where the next start

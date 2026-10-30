@@ -66,6 +66,38 @@ impl PiConfig {
         self.runtime.with_file_name("pi-extension.off")
     }
 
+    /// The marker telling the extension that an open Pi session joins the
+    /// relay by itself (`auto_activate` and `pi_auto_activate`, which
+    /// `relay init` turns on), so its banner does not ask the person to
+    /// enable the session by hand. Core data beside the Pi runtime.
+    pub fn auto_join_marker(&self) -> PathBuf {
+        self.runtime.with_file_name("pi-auto-join")
+    }
+
+    /// Keeps [`Self::auto_join_marker`] in step with whether Pi sessions
+    /// join by themselves. Only the banner wording reads it, so a failure is
+    /// ignored; nothing is written where Pi has not run or Pi sessions are
+    /// off.
+    pub fn sync_auto_join(&self, auto_join: bool) {
+        let marker = self.auto_join_marker();
+        if !auto_join {
+            let _ = fs::remove_file(&marker);
+            return;
+        }
+        if !self.installed() || marker.exists() {
+            return;
+        }
+        if let Some(parent) = marker.parent() {
+            if private_fs::create_private_dir_all(parent).is_err() {
+                return;
+            }
+        }
+        let _ = fs::write(
+            &marker,
+            "Open Pi sessions join Agent Relay automatically (auto_activate and pi_auto_activate).\n",
+        );
+    }
+
     /// Whether `pi_extension` was turned off: Pi sessions are then neither
     /// listed nor delivered to, even one that loaded the extension earlier.
     pub fn turned_off(&self) -> bool {
@@ -913,6 +945,26 @@ mod tests {
         fs::remove_file(&path).unwrap();
         config.install().unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn the_auto_join_marker_follows_the_setting_only_where_pi_has_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = PiConfig::from_env(&|_| None, temp.path());
+        let marker = config.auto_join_marker();
+        assert_eq!(marker, temp.path().join(".agentworkforce/desktop/pi-auto-join"));
+        config.sync_auto_join(true);
+        assert!(!marker.exists(), "Pi has not run here");
+        assert!(!temp.path().join(".agentworkforce").exists());
+        fs::create_dir_all(&config.agent_dir).unwrap();
+        config.sync_auto_join(true);
+        assert!(marker.is_file());
+        config.sync_auto_join(true);
+        assert!(marker.is_file());
+        config.sync_auto_join(false);
+        assert!(!marker.exists());
+        config.sync_auto_join(false);
+        assert!(!marker.exists());
     }
 
     fn advertise_native(config: &PiConfig, version: u32) -> PathBuf {

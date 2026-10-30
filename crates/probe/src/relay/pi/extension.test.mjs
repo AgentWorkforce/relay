@@ -9,18 +9,20 @@ const id = '12345678-1234-4234-8234-123456789abc';
 const hash = text => createHash('sha256').update(text).digest('hex');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-async function fixture(t) {
+async function fixture(t, { autoJoin = false } = {}) {
   const root = fs.mkdtempSync(join(tmpdir(), 'relay-pi-test-'));
   const runtime = join(root, 'runtime');
   const source = fs.readFileSync(new URL('./agent-relay.mjs', import.meta.url), 'utf8')
     .replace('__RUNTIME__', JSON.stringify(runtime));
   const path = join(root, 'extension.mjs');
   fs.writeFileSync(path, source);
+  if (autoJoin) fs.writeFileSync(join(root, 'pi-auto-join'), 'on\n');
+  const notices = [];
   const handlers = new Map();
   const branch = [];
   const sent = [];
   let idle = true;
-  const ctx = { hasUI: true, cwd: root, ui: {}, isIdle: () => idle,
+  const ctx = { hasUI: true, cwd: root, ui: { notify: text => notices.push(text) }, isIdle: () => idle,
     sessionManager: { getSessionFile: () => join(root, 'session.jsonl'),
       getSessionId: () => id, getBranch: () => branch } };
   let title = 'Old title';
@@ -37,9 +39,18 @@ async function fixture(t) {
     fs.writeFileSync(path, JSON.stringify({ version, sessionId: id, messageId, sequence,
       text, state: 'pending' }), { mode: 0o600 });
   }
-  return { root, dir, file, ctx, branch, sent, handlers, enqueue, pi,
+  return { root, dir, file, ctx, branch, sent, handlers, enqueue, pi, notices,
     setIdle: value => { idle = value; }, record: () => JSON.parse(fs.readFileSync(file)) };
 }
+
+test('the banner asks to enable the session unless the core says it joins by itself', async t => {
+  const manual = await fixture(t);
+  assert.deepEqual(manual.notices,
+    ['Agent Relay extension loaded. Enable Receives messages for this session in Agent Relay.']);
+  const automatic = await fixture(t, { autoJoin: true });
+  assert.deepEqual(automatic.notices,
+    ['Agent Relay extension loaded. This session joins Agent Relay automatically and receives messages.']);
+});
 
 test('busy sessions wait; history confirms delivery; final answers exclude tool progress', async t => {
   const f = await fixture(t);

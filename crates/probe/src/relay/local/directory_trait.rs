@@ -121,6 +121,10 @@ impl SessionDirectory for LocalSessions {
             .collect()
     }
 
+    fn pi_auto_join(&self, auto_join: bool) {
+        self.config.pi.sync_auto_join(auto_join);
+    }
+
     fn auto_activates(&self, session: &DiscoveredSession) -> bool {
         (self.activation_check())(session)
     }

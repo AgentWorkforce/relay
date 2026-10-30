@@ -7,7 +7,7 @@
 //! A failed or unreadable version probe expires, so a cold-start timeout
 //! does not hide an otherwise supported install until the core restarts.
 
-use crate::relay::codex::runner::{CodexRunner, RunOutcome, SystemRunner};
+use crate::relay::codex::runner::{RunOutcome, SystemRunner};
 use crate::relay::existing_session::platform::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -103,9 +103,34 @@ pub fn supported(output: Option<&str>) -> Result<(), String> {
     }
 }
 
+/// The folders OpenCode creates on start (`xdg-basedir`), redirected for
+/// the version probe.
+const SCRATCH_XDG: [(&str, &str); 4] = [
+    ("XDG_CONFIG_HOME", "config"),
+    ("XDG_DATA_HOME", "data"),
+    ("XDG_CACHE_HOME", "cache"),
+    ("XDG_STATE_HOME", "state"),
+];
+
 /// `executable --version`, when it answers in time and succeeds.
+///
+/// OpenCode creates its config, data, cache and state folders whenever it
+/// starts, `--version` included, so it is asked with those pointed at a
+/// throwaway folder: detecting OpenCode never leaves an empty
+/// `~/.config/opencode` (and the rest) for someone who has not set it up.
 pub fn system_version(executable: &Path) -> Option<String> {
-    match SystemRunner.run(executable, &["--version".into()], VERSION_TIMEOUT) {
+    // Without a scratch folder the version is still asked, as before.
+    let scratch = tempfile::Builder::new()
+        .prefix("agent-relay-opencode-version-")
+        .tempdir()
+        .ok();
+    let env: Vec<(&str, PathBuf)> = scratch.as_ref().map_or_else(Vec::new, |scratch| {
+        SCRATCH_XDG
+            .iter()
+            .map(|(key, dir)| (*key, scratch.path().join(dir)))
+            .collect()
+    });
+    match SystemRunner.run_with_env(executable, &["--version".into()], VERSION_TIMEOUT, &env) {
         RunOutcome::Exited {
             code: 0, stdout, ..
         } => Some(stdout.trim().to_string()),

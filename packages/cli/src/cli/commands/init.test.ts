@@ -1808,3 +1808,102 @@ describe('relay init message injection', () => {
     expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
   });
 });
+
+describe('relay init outside a project', () => {
+  /** A user home whose .agentworkforce/relay is the relay home, as `~` is. */
+  function homeFolder(): { userHome: string; relayHome: string } {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-init-userhome-'));
+    const relayHome = path.join(userHome, '.agentworkforce', 'relay');
+    fs.mkdirSync(relayHome, { recursive: true });
+    fs.writeFileSync(path.join(relayHome, 'cloud-auth.json'), '{"secret":"kept"}');
+    vi.stubEnv('AGENT_RELAY_HOME', relayHome);
+    vi.stubEnv('AGENT_RELAY_PROJECT', userHome);
+    return { userHome, relayHome };
+  }
+
+  it('refuses to run in the home folder and writes no pin into the relay home', async () => {
+    const { userHome, relayHome } = homeFolder();
+    try {
+      const { run, errors, deps } = setup();
+      await expect(run('--tools', 'claude')).rejects.toEqual(new ExitSignal(1));
+      expect(errors.join('\n')).toMatch(/Relay home.*inside a project folder/s);
+      expect(fs.readdirSync(relayHome)).toEqual(['cloud-auth.json']);
+      expect(deps.startEngine).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true });
+    }
+  });
+
+  it('also refuses through a symlink to the home folder', async () => {
+    const { userHome, relayHome } = homeFolder();
+    const link = `${userHome}-link`;
+    fs.symlinkSync(userHome, link);
+    vi.stubEnv('AGENT_RELAY_PROJECT', link);
+    try {
+      const { run, errors } = setup();
+      await expect(run('--tools', 'none')).rejects.toEqual(new ExitSignal(1));
+      expect(errors.join('\n')).toContain('Relay home');
+      expect(fs.readdirSync(relayHome)).toEqual(['cloud-auth.json']);
+    } finally {
+      fs.rmSync(link, { force: true });
+      fs.rmSync(userHome, { recursive: true, force: true });
+    }
+  });
+
+  it('--uninstall in the home folder looks at no project-scope config, only global ones', async () => {
+    const { userHome } = homeFolder();
+    try {
+      // In ~, Grok's project config would be the person's own ~/.grok/config.toml.
+      const grok = path.join(userHome, '.grok', 'config.toml');
+      fs.mkdirSync(path.dirname(grok), { recursive: true });
+      fs.writeFileSync(grok, '[mcp_servers.agent-relay]\ncommand = "mine"\n');
+      const inHome = { toolContext: () => ({ projectRoot: userHome, home: toolHome, env: { PATH: '' } }) };
+      const { run, logs } = setup(inHome);
+      await run('--uninstall');
+      expect(logs.join('\n')).not.toContain(grok);
+      expect(fs.readFileSync(grok, 'utf8')).toContain('"mine"');
+      const scoped = setup(inHome);
+      await scoped.run('--uninstall', '--scope', 'project');
+      expect(scoped.logs.join('\n')).toContain('Not inside a project');
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('relay init --uninstall and the command-line copy of the core', () => {
+  const copyPath = () => path.join(toolHome, '.local', 'bin', 'agent-relay-probe');
+  const corePath = () => path.join(home, 'bin', 'agent-relay-probe');
+  function place(file: string, bytes: string): void {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, bytes, { mode: 0o755 });
+  }
+
+  it('removes ~/.local/bin/agent-relay-probe when it is a copy of the core relay init installed', async () => {
+    place(corePath(), 'core 15.0.3');
+    place(copyPath(), 'core 15.0.3');
+    const { run, logs } = setup();
+    await run('--uninstall');
+    expect(fs.existsSync(copyPath())).toBe(false);
+    expect(fs.existsSync(corePath())).toBe(true);
+    expect(logs.join('\n')).toContain(`removed the copy a core relay init started left at ${copyPath()}`);
+  });
+
+  it("leaves any other build there (the desktop app's), a link, and a partial uninstall alone", async () => {
+    place(corePath(), 'core 15.0.3');
+    place(copyPath(), 'desktop core 16.0.0');
+    await setup().run('--uninstall');
+    expect(fs.readFileSync(copyPath(), 'utf8')).toBe('desktop core 16.0.0');
+
+    fs.rmSync(copyPath());
+    fs.symlinkSync(corePath(), copyPath());
+    await setup().run('--uninstall');
+    expect(fs.lstatSync(copyPath()).isSymbolicLink()).toBe(true);
+
+    fs.rmSync(copyPath());
+    place(copyPath(), 'core 15.0.3');
+    await setup().run('--uninstall', '--scope', 'project');
+    await setup().run('--uninstall', '--tools', 'claude');
+    expect(fs.existsSync(copyPath())).toBe(true);
+  });
+});

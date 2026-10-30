@@ -88,6 +88,31 @@ describe('workspace session persistence', () => {
     });
   });
 
+  it('outside a project (the relay home) switches a named workspace machine-wide and pins nothing', () => {
+    const root = tempRoot();
+    const env = isolatedEnv(root);
+    const relayHome = env.AGENT_RELAY_HOME!;
+
+    const result = persistWorkspaceSession({
+      workspaceKey: 'rk_live_home',
+      name: 'home-ws',
+      projectDataDir: relayHome,
+      env,
+    });
+
+    expect(result).toEqual({ projectPinSkipped: true });
+    expect(fs.existsSync(path.join(relayHome, 'workspace-key.json'))).toBe(false);
+    expect(readWorkspaceStore(env).active).toBe('home-ws');
+    // A bare key only ever pins a project, so there it is refused.
+    expect(() =>
+      persistWorkspaceSession({ workspaceKey: 'rk_live_bare', projectDataDir: relayHome, env })
+    ).toThrow(/inside a project folder/);
+    expect(() =>
+      pinProjectWorkspaceSession({ workspaceKey: 'rk_live_bare', projectDataDir: relayHome, env })
+    ).toThrow(/Relay home/);
+    expect(fs.existsSync(path.join(relayHome, 'workspace-key.json'))).toBe(false);
+  });
+
   it('records the previous global workspace when a named session changes it', () => {
     const root = tempRoot();
     const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');

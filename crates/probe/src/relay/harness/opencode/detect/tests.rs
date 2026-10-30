@@ -103,3 +103,39 @@ fn changed_executable_is_reprobed_before_failure_backoff_expires() {
     cache.get_at(&executable.0, &probe, now + Duration::from_secs(1));
     assert_eq!(asked.load(Ordering::SeqCst), 2);
 }
+
+// `opencode --version` creates OpenCode's XDG folders; detection points them
+// at a throwaway folder, so it leaves none behind in the person's home.
+#[cfg(unix)]
+#[test]
+fn the_version_probe_keeps_opencodes_folders_out_of_the_home() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let seen = dir.path().join("seen");
+    let script = dir.path().join("opencode");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nmkdir -p \"$XDG_CONFIG_HOME/opencode\" \"$XDG_DATA_HOME/opencode\" \
+             \"$XDG_CACHE_HOME/opencode\" \"$XDG_STATE_HOME/opencode\" || exit 1\n\
+             echo \"$XDG_CONFIG_HOME\" > '{}'\necho 1.14.22\n",
+            seen.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(system_version(&script).as_deref(), Some("1.14.22"));
+    let config = PathBuf::from(std::fs::read_to_string(&seen).unwrap().trim());
+    assert!(
+        config.file_name().is_some_and(|name| name == "config")
+            && config
+                .parent()
+                .and_then(Path::file_name)
+                .is_some_and(|name| name
+                    .to_string_lossy()
+                    .starts_with("agent-relay-opencode-version-")),
+        "{}",
+        config.display()
+    );
+    assert!(!config.exists(), "the scratch folder is removed afterwards");
+}
