@@ -891,6 +891,8 @@ function fakeCore(
     refuse?: string[];
     /** Claude settings files the core's direct delivery writes, as `set_direct_delivery` does. */
     claudeFiles?: string[];
+    /** The OpenCode plugin file `opencode_plugin` writes, and whose off marker it leaves. */
+    openCodePlugin?: string;
   } = {}
 ) {
   const settings: Record<string, unknown> = {
@@ -932,6 +934,20 @@ function fakeCore(
       fs.writeFileSync(file, JSON.stringify({ ...current, crossSessionInbound: value }));
     }
   };
+  /** As `OpenCodeSettings::set_plugin`: on writes the plugin, off leaves the marker. */
+  const writePlugin = (key: string, value: unknown) => {
+    const plugin = key === 'opencode_plugin' ? options.openCodePlugin : undefined;
+    const on = value === true;
+    if (!plugin) return;
+    fs.mkdirSync(path.dirname(plugin), { recursive: true });
+    fs.rmSync(on ? `${plugin}.off` : plugin, { force: true });
+    if (on) fs.writeFileSync(plugin, '// AGENT_RELAY_OPENCODE_PLUGIN=7\n');
+    else
+      fs.writeFileSync(
+        `${plugin}.off`,
+        "Agent Relay's OpenCode plugin was turned off in Agent Relay's settings.\n"
+      );
+  };
   const client: CoreClient = {
     async call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
       calls.push([method, params]);
@@ -950,6 +966,7 @@ function fakeCore(
               }
             } else {
               settings[key] = value;
+              writePlugin(key, value);
               if (key === 'direct_delivery') {
                 userChoseInbound = false;
                 if (value === false) writeInbound('hold', 'accept');
@@ -1026,6 +1043,10 @@ describe('relay init message injection', () => {
     expect(output).toContain('Each session joins Relay on its own');
     expect(JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'))).toEqual({
       turnedOn: ['direct_delivery', 'claude_session_hook', 'codex_stop_hook', 'auto_activate'],
+      // What --uninstall tidies back to: no Claude settings file or folder yet.
+      claudeFiles: {
+        [path.join(toolHome, '.claude', 'settings.json')]: { existed: false, backup: false, dir: false },
+      },
     });
 
     const again = setup(core.deps);
@@ -1213,6 +1234,12 @@ describe('relay init message injection', () => {
     expect(core.settings.pi_auto_activate).toBe(false);
     expect(JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'))).toEqual({
       turnedOn: ['opencode_plugin', 'opencode_auto_activate', 'auto_activate'],
+      openCode: {
+        file: path.join(toolHome, '.config', 'opencode', 'plugins', 'agent-relay.js'),
+        plugin: false,
+        off: false,
+        dir: false,
+      },
     });
 
     await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
@@ -1222,6 +1249,50 @@ describe('relay init message injection', () => {
       auto_activate: false,
     });
     expect(core.settings.pi_auto_activate).toBe(false);
+  });
+
+  // The relay init end-to-end run on 2026-10-29: --uninstall left `{}` in
+  // ~/.claude/settings.json and plugins/agent-relay.js.off behind.
+  it('leaves the Claude and OpenCode folders as it found them on --uninstall', async () => {
+    installedProbe();
+    const claude = path.join(toolHome, '.claude');
+    fs.mkdirSync(claude);
+    fs.writeFileSync(path.join(claude, 'history.jsonl'), 'x\n');
+    const opencode = path.join(toolHome, '.config', 'opencode');
+    fs.mkdirSync(opencode, { recursive: true });
+    const plugin = path.join(opencode, 'plugins', 'agent-relay.js');
+    const core = fakeCore({ claudeFiles: [path.join(claude, 'settings.json')], openCodePlugin: plugin });
+    await setup(core.deps).run('--tools', 'claude,opencode');
+    expect(fs.existsSync(path.join(claude, 'settings.json'))).toBe(true);
+    expect(fs.existsSync(plugin)).toBe(true);
+
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(fs.readdirSync(claude)).toEqual(['history.jsonl']);
+    expect(fs.readdirSync(opencode)).toEqual([]);
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  it('keeps a Claude settings file and an OpenCode marker that were there before init', async () => {
+    installedProbe();
+    const claude = path.join(toolHome, '.claude');
+    fs.mkdirSync(claude);
+    const file = path.join(claude, 'settings.json');
+    const mine = '{ "model": "opus",\n  "permissions": { "allow": ["Bash(npm test *)"] } }';
+    fs.writeFileSync(file, mine);
+    const plugins = path.join(toolHome, '.config', 'opencode', 'plugins');
+    fs.mkdirSync(plugins, { recursive: true });
+    fs.writeFileSync(
+      path.join(plugins, 'agent-relay.js.off'),
+      "Agent Relay's OpenCode plugin was turned off.\n"
+    );
+    const core = fakeCore({ claudeFiles: [file], openCodePlugin: path.join(plugins, 'agent-relay.js') });
+    await setup(core.deps).run('--tools', 'claude,opencode');
+    // The core's first edit copies the person's file beside it.
+    fs.writeFileSync(`${file}.relay-desktop-backup`, mine);
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(fs.readFileSync(file, 'utf8')).toBe(mine);
+    expect(fs.existsSync(`${file}.relay-desktop-backup`)).toBe(false);
+    expect(fs.existsSync(path.join(plugins, 'agent-relay.js.off'))).toBe(true);
   });
 
   it('leaves a Pi or OpenCode opt-in the person turned on themselves on --uninstall', async () => {

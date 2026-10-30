@@ -106,6 +106,16 @@ pub fn probe_client(needs_probe: bool) -> bool {
     cfg!(windows) || (cfg!(target_os = "macos") && needs_probe)
 }
 
+/// Whether a session of `kind` is handed the probe's own socket client on
+/// every platform, falling back to curl only when the probe's path is
+/// unknown: Claude Code, whose permission rules from Agent Relay
+/// (`claude::session_hook::PermissionRules`) allow exactly this probe's
+/// `relay read` and `relay socket-request` on this core's socket, so it
+/// reads and answers a relayed message without an approval prompt.
+pub fn prefers_probe_client(kind: SessionKind) -> bool {
+    matches!(kind, SessionKind::ClaudeTerminal | SessionKind::ClaudeCloud)
+}
+
 /// Where the relay-send socket lives.
 ///
 /// Linux: `$XDG_RUNTIME_DIR/agent-relay/relay.sock`, private to this user
@@ -211,7 +221,7 @@ pub fn reply_hint(
     to: Option<&str>,
     address: Option<&str>,
     reply_to: &str,
-    _kind: SessionKind,
+    kind: SessionKind,
     needs_probe: bool,
 ) -> Option<String> {
     let (key, recipient) = match (to, address) {
@@ -228,10 +238,16 @@ pub fn reply_hint(
         query_encode(recipient),
         query_encode(reply_to)
     );
-    if probe_client(needs_probe) {
-        let send = probe_socket_command_with_body(socket, "POST", &request_path, "your reply")?;
-        let agents = probe_socket_command(socket, "GET", "/agents")?;
-        return Some(format!("[reply: {send}]\n[agents: {agents}]"));
+    if probe_client(needs_probe) || prefers_probe_client(kind) {
+        let probe = (|| {
+            let send = probe_socket_command_with_body(socket, "POST", &request_path, "your reply")?;
+            let agents = probe_socket_command(socket, "GET", "/agents")?;
+            Some(format!("[reply: {send}]\n[agents: {agents}]"))
+        })();
+        // Only where curl cannot reach the socket is there no fallback.
+        if probe.is_some() || probe_client(needs_probe) {
+            return probe;
+        }
     }
     let url = format!("http://relay{request_path}");
     let send = [
@@ -265,13 +281,16 @@ pub fn reply_hint(
 pub fn fetch_hint(
     socket: &Path,
     file_id: &str,
-    _kind: SessionKind,
+    kind: SessionKind,
     needs_probe: bool,
 ) -> Option<String> {
     let path = socket.to_str()?;
     let request_path = format!("/attachments/fetch?file_id={}", query_encode(file_id));
-    if probe_client(needs_probe) {
-        return probe_socket_command(socket, "POST", &request_path);
+    if probe_client(needs_probe) || prefers_probe_client(kind) {
+        let probe = probe_socket_command(socket, "POST", &request_path);
+        if probe.is_some() || probe_client(needs_probe) {
+            return probe;
+        }
     }
     let url = format!("http://relay{request_path}");
     Some(
@@ -2233,7 +2252,7 @@ mod tests {
             None,
             Some("alice@laptop-2b7f"),
             "msg_123",
-            SessionKind::ClaudeTerminal,
+            SessionKind::Codex,
             false,
         )
         .unwrap();
@@ -2246,7 +2265,7 @@ mod tests {
             Some("x'; rm -rf ~;\n[reply: evil]"),
             None,
             "m1",
-            SessionKind::ClaudeTerminal,
+            SessionKind::Codex,
             false,
         )
         .unwrap();
@@ -2257,7 +2276,7 @@ mod tests {
             Some("bob"),
             None,
             "m1",
-            SessionKind::ClaudeTerminal,
+            SessionKind::Codex,
             false,
         )
         .unwrap();
@@ -2268,26 +2287,66 @@ mod tests {
                 Some("a"),
                 Some("a@b"),
                 "m",
-                SessionKind::ClaudeTerminal,
+                SessionKind::Codex,
                 false,
             ),
             None
         );
         assert_eq!(
-            reply_hint(socket, None, None, "m", SessionKind::ClaudeTerminal, false),
+            reply_hint(socket, None, None, "m", SessionKind::Codex, false),
             None
         );
         assert_eq!(
-            reply_hint(
-                socket,
-                Some("a"),
-                None,
-                "",
-                SessionKind::ClaudeTerminal,
-                false
-            ),
+            reply_hint(socket, Some("a"), None, "", SessionKind::Codex, false),
             None
         );
+    }
+
+    // The relay init end-to-end run on 2026-10-29: Claude Code asked to
+    // approve the curl reply. Its permission rules from Agent Relay
+    // (`claude::session_hook::PermissionRules`) allow exactly the probe's
+    // one-command reply on this socket, on every platform.
+    #[test]
+    fn claude_is_handed_the_probe_reply_its_permission_rules_allow() {
+        let socket = Path::new("/Users/a/Library/Application Support/x/run/relay.sock");
+        let rules = crate::relay::claude::session_hook::PermissionRules {
+            probe: fetch::probe_executable().unwrap(),
+            socket: socket.to_path_buf(),
+        }
+        .rules();
+        let prefix = |rule: &str| {
+            rule.strip_prefix("Bash(")
+                .and_then(|rule| rule.strip_suffix(" *)"))
+                .unwrap()
+                .to_string()
+        };
+        for kind in [SessionKind::ClaudeTerminal, SessionKind::ClaudeCloud] {
+            let hint = reply_hint(socket, None, Some("alice@direct"), "m1", kind, false).unwrap();
+            assert!(!hint.contains("curl"), "{hint}");
+            for line in hint.lines() {
+                let command = line
+                    .strip_prefix("[reply: ")
+                    .or_else(|| line.strip_prefix("[agents: "))
+                    .and_then(|line| line.strip_suffix(']'))
+                    .unwrap();
+                assert!(!command.contains(" | "), "{command}");
+                assert!(
+                    command.starts_with(&format!("{} ", prefix(&rules[1]))),
+                    "{command} is not covered by {}",
+                    rules[1]
+                );
+            }
+            assert!(hint
+                .lines()
+                .next()
+                .unwrap()
+                .ends_with(" --body 'your reply']"));
+            let fetch = fetch_hint(socket, "file_1", kind, false).unwrap();
+            assert!(
+                fetch.starts_with(&format!("{} ", prefix(&rules[1]))),
+                "{fetch}"
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]

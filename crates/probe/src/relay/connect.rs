@@ -1962,10 +1962,15 @@ fn connect_reply_line(
     // Use the probe executable so an app-server command keeps its thread ID.
     // On Windows the socket is a named pipe curl cannot reach, so every
     // session gets the probe client.
-    if cfg!(windows) || (kind == SessionKind::Codex && probe_client(needs_probe)) {
+    // Claude Code's permission rules from Agent Relay allow the probe's
+    // client (`outbound::prefers_probe_client`); curl only when it is unknown.
+    let required = cfg!(windows) || (kind == SessionKind::Codex && probe_client(needs_probe));
+    if required || crate::relay::outbound::prefers_probe_client(kind) {
         let command =
-            probe_socket_command_with_body(Path::new(socket), "POST", &request_path, "your reply")?;
-        return Some(format!("[reply: {command}]"));
+            probe_socket_command_with_body(Path::new(socket), "POST", &request_path, "your reply");
+        if command.is_some() || required {
+            return Some(format!("[reply: {}]", command?));
+        }
     }
     let url = format!("http://relay{request_path}");
     let parts = [
@@ -2086,12 +2091,24 @@ mod tests {
             full,
             format!("{hint}\n{}", crate::relay::hosted_mcp::ROUTE_LINE)
         );
+        // Claude Code is handed the probe's one-command reply everywhere: its
+        // permission rules from Agent Relay allow exactly that.
+        assert!(hint.contains(" relay socket-request "));
+        assert!(hint.ends_with(" --body 'your reply']"), "{hint}");
+        assert!(!hint.contains("curl"));
+        let codex = connect_reply_line(
+            Path::new("/tmp/run.sock"),
+            "host",
+            SessionKind::Codex,
+            false,
+        )
+        .unwrap();
         if cfg!(windows) {
             // A named pipe is reached through the probe, never curl.
-            assert!(hint.contains(" relay socket-request "));
-            assert!(!hint.contains("curl"));
+            assert!(codex.contains(" relay socket-request "));
+            assert!(!codex.contains("curl"));
         } else {
-            assert!(hint.ends_with("--data-binary @-]"));
+            assert!(codex.ends_with("--data-binary @-]"), "{codex}");
         }
     }
 

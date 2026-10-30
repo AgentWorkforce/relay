@@ -377,4 +377,32 @@ describe('records', () => {
     fs.writeFileSync(file, 'null');
     expect(readDeliveryRecord(file)).toEqual({ turnedOn: [], claudeInbound: {} });
   });
+
+  it('reads the recorded tool file states, dropping any of another shape', () => {
+    const file = path.join(dir, 'core-settings.json');
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        turnedOn: ['claude_session_hook', 'opencode_plugin'],
+        claudeFiles: {
+          '/h/.claude/settings.json': { existed: false, backup: false, dir: true },
+          '/h/.claude-x/settings.json': { existed: 'no' },
+        },
+        openCode: {
+          file: '/h/.config/opencode/plugins/agent-relay.js',
+          plugin: false,
+          off: false,
+          dir: false,
+        },
+      })
+    );
+    expect(readDeliveryRecord(file)).toEqual({
+      turnedOn: ['claude_session_hook', 'opencode_plugin'],
+      claudeInbound: {},
+      claudeFiles: { '/h/.claude/settings.json': { existed: false, backup: false, dir: true } },
+      openCode: { file: '/h/.config/opencode/plugins/agent-relay.js', plugin: false, off: false, dir: false },
+    });
+    fs.writeFileSync(file, JSON.stringify({ turnedOn: [], openCode: { file: 'relative', plugin: false } }));
+    expect(readDeliveryRecord(file)).toEqual({ turnedOn: [], claudeInbound: {} });
+  });
 });

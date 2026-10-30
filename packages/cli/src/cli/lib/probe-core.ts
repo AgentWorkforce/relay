@@ -21,10 +21,11 @@ import net from 'node:net';
 import path from 'node:path';
 
 import type { ToolId } from './agent-tools-mcp.js';
+import type { ClaudeFileState, OpenCodeState } from './init-leftovers.js';
 import type { EnginePlatform } from './relaycast-engine-install.js';
 
 /** The core `relay init` installs. Pinned so every machine runs the same core. */
-export const PROBE_VERSION = '15.0.1';
+export const PROBE_VERSION = '15.0.2';
 /** Release tags of the core; distinct from the CLI's `v*` tags. */
 export const PROBE_TAG_PREFIX = 'probe-v';
 const RELEASE_BASE = 'https://github.com/AgentWorkforce/relay/releases/download';
@@ -579,6 +580,13 @@ export interface DeliveryRecord {
    * puts back in place of the `hold` the core writes.
    */
   claudeInbound: Record<string, string | null>;
+  /**
+   * Each Claude login's `settings.json` as init found it, by file, before the
+   * core first edited it: what `--uninstall` tidies back (`tidyClaudeSettings`).
+   */
+  claudeFiles?: Record<string, ClaudeFileState>;
+  /** The OpenCode plugin's place as init found it (`tidyOpenCodePlugin`). */
+  openCode?: OpenCodeState;
 }
 
 const strings = (value: unknown): string[] =>
@@ -595,6 +603,38 @@ function originals(value: unknown): Record<string, string | null> {
   );
 }
 
+const flag = (value: unknown, key: string): boolean | undefined => {
+  const item = (value as Record<string, unknown>)[key];
+  return typeof item === 'boolean' ? item : undefined;
+};
+
+/** Recorded Claude file states; entries of another shape are dropped. */
+function claudeFileStatesOf(value: unknown): Record<string, ClaudeFileState> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const states: Record<string, ClaudeFileState> = {};
+  for (const [file, state] of Object.entries(value)) {
+    if (!state || typeof state !== 'object') continue;
+    const existed = flag(state, 'existed');
+    const backup = flag(state, 'backup');
+    const dir = flag(state, 'dir');
+    if (existed === undefined || backup === undefined || dir === undefined) continue;
+    states[file] = { existed, backup, dir };
+  }
+  return Object.keys(states).length > 0 ? states : undefined;
+}
+
+/** The recorded OpenCode state, if sane. */
+function openCodeStateOf(value: unknown): OpenCodeState | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const file = (value as Record<string, unknown>).file;
+  const plugin = flag(value, 'plugin');
+  const off = flag(value, 'off');
+  const dir = flag(value, 'dir');
+  if (typeof file !== 'string' || !path.isAbsolute(file)) return undefined;
+  if (plugin === undefined || off === undefined || dir === undefined) return undefined;
+  return { file, plugin, off, dir };
+}
+
 /**
  * The record of what init turned on.
  * @param file - `<relay home>/local/core-settings.json`
@@ -603,7 +643,14 @@ function originals(value: unknown): Record<string, string | null> {
 export function readDeliveryRecord(file: string): DeliveryRecord {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown> | null;
-    return { turnedOn: strings(parsed?.turnedOn), claudeInbound: originals(parsed?.claudeInbound) };
+    const claudeFiles = claudeFileStatesOf(parsed?.claudeFiles);
+    const openCode = openCodeStateOf(parsed?.openCode);
+    return {
+      turnedOn: strings(parsed?.turnedOn),
+      claudeInbound: originals(parsed?.claudeInbound),
+      ...(claudeFiles ? { claudeFiles } : {}),
+      ...(openCode ? { openCode } : {}),
+    };
   } catch {
     return { turnedOn: [], claudeInbound: {} };
   }

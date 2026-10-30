@@ -74,6 +74,15 @@ import {
   type DeliveryResult,
 } from '../lib/probe-core.js';
 import { shellQuote } from '../lib/agent-registration.js';
+import {
+  claudeFileStates,
+  openCodeConfigDir,
+  openCodeState,
+  tidyClaudeSettings,
+  tidyOpenCodePlugin,
+  type ClaudeFileState,
+  type OpenCodeState,
+} from '../lib/init-leftovers.js';
 import { persistWorkspaceSession } from '../lib/workspace-session.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
 import { getProjectPaths } from '@agent-relay/config';
@@ -976,6 +985,12 @@ async function setupInjection(
     // turning direct delivery off again puts back, the person's own choices
     // included, instead of the hold the core writes on each login.
     const before = tools.includes('claude') ? claudeInboundValues(ctx) : {};
+    // The files the core is about to edit, as they are now: what --uninstall
+    // tidies back to (a settings.json or plugins folder init created).
+    const files: Leftovers = {
+      claudeFiles: tools.includes('claude') ? claudeFileStates(claudeLoginSettings(ctx)) : undefined,
+      openCode: tools.includes('opencode') ? openCodeState(openCodeConfigDir(ctx.env, ctx.home)) : undefined,
+    };
     const { results, turnedOn, turnedOff } = await enableDelivery(session.client, tools, record.turnedOn);
     // Applied to the record as it is now, not as it was read: another
     // relay init may have recorded its own changes meanwhile.
@@ -984,7 +999,8 @@ async function setupInjection(
         // Older originals win: they were recorded before init first changed anything.
         const originals = { ...before, ...current.claudeInbound };
         if (turnedOff.includes('direct_delivery')) restoreClaudeInbound(originals);
-        return {
+        const claudeOn = turnedOn.some((key) => CLAUDE_FILE_KEYS.includes(key));
+        return tidyLeftovers({
           turnedOn: [...new Set([...current.turnedOn, ...turnedOn])].filter(
             (key) => !turnedOff.includes(key)
           ),
@@ -993,12 +1009,19 @@ async function setupInjection(
             : turnedOn.includes('direct_delivery')
               ? originals
               : current.claudeInbound,
-        };
+          claudeFiles:
+            claudeOn && files.claudeFiles
+              ? { ...files.claudeFiles, ...current.claudeFiles }
+              : current.claudeFiles,
+          openCode: turnedOn.includes('opencode_plugin')
+            ? (current.openCode ?? files.openCode)
+            : current.openCode,
+        });
       });
     try {
       save();
     } catch (error) {
-      await undoUnrecorded(session.client, turnedOn, before, error as Error);
+      await undoUnrecorded(session.client, turnedOn, before, files, error as Error);
       throw error;
     }
     // A failed tool whose settings could not be turned off is still on the
@@ -1036,11 +1059,19 @@ async function undoUnrecorded(
   client: CoreClient,
   turnedOn: string[],
   before: Record<string, string | null>,
+  files: Leftovers,
   cause: Error
 ): Promise<void> {
   const failures = await disableDelivery(client, turnedOn);
-  if (turnedOn.includes('direct_delivery') && !failures.some((f) => f.startsWith('direct_delivery:'))) {
+  const failed = (key: string) => failures.some((f) => f.startsWith(`${key}:`));
+  if (turnedOn.includes('direct_delivery') && !failed('direct_delivery')) {
     restoreClaudeInbound(before);
+  }
+  if (turnedOn.some((key) => CLAUDE_FILE_KEYS.includes(key)) && !CLAUDE_FILE_KEYS.some(failed)) {
+    if (files.claudeFiles) tidyClaudeSettings(files.claudeFiles);
+  }
+  if (turnedOn.includes('opencode_plugin') && !failed('opencode_plugin') && files.openCode) {
+    tidyOpenCodePlugin(files.openCode);
   }
   if (failures.length > 0) {
     throw new InjectionStuckError(
@@ -1239,6 +1270,41 @@ function recordedClaudeFiles(record: DeliveryRecord, ctx: ToolContext): Record<s
     : { [path.join(claudeConfigDir(ctx), 'settings.json')]: null };
 }
 
+/** The core settings that edit a Claude login's `settings.json`. */
+const CLAUDE_FILE_KEYS = ['direct_delivery', 'claude_session_hook'];
+
+/** The tool files init found before the core edited them (see `init-leftovers.ts`). */
+interface Leftovers {
+  claudeFiles?: Record<string, ClaudeFileState>;
+  openCode?: OpenCodeState;
+}
+
+/**
+ * Once nothing init turned on edits a tool's files any more, tidies them
+ * back to how init found them (a Claude settings.json init created, the
+ * OpenCode plugin's off marker) and drops their recorded state. Run after
+ * the core turned the settings off and the original crossSessionInbound is
+ * back.
+ * @returns The record without the states it used
+ */
+function tidyLeftovers(record: DeliveryRecord): DeliveryRecord {
+  let { claudeFiles, openCode } = record;
+  if (claudeFiles && !record.turnedOn.some((key) => CLAUDE_FILE_KEYS.includes(key))) {
+    tidyClaudeSettings(claudeFiles);
+    claudeFiles = undefined;
+  }
+  if (openCode && !record.turnedOn.includes('opencode_plugin')) {
+    tidyOpenCodePlugin(openCode);
+    openCode = undefined;
+  }
+  return {
+    turnedOn: record.turnedOn,
+    claudeInbound: record.claudeInbound,
+    ...(claudeFiles ? { claudeFiles } : {}),
+    ...(openCode ? { openCode } : {}),
+  };
+}
+
 /**
  * Change the record of what init turned on, reading it just before the
  * write so concurrent runs do not drop each other's changes.
@@ -1256,6 +1322,8 @@ function writeDeliveryRecord(record: DeliveryRecord): void {
   writePrivateJson(deliveryRecordPath(), {
     turnedOn: record.turnedOn,
     ...(Object.keys(record.claudeInbound).length > 0 ? { claudeInbound: record.claudeInbound } : {}),
+    ...(record.claudeFiles ? { claudeFiles: record.claudeFiles } : {}),
+    ...(record.openCode ? { openCode: record.openCode } : {}),
   });
 }
 
@@ -1292,10 +1360,11 @@ async function turnOffInjection(deps: InitCommandDependencies, keys: string[]): 
     const ctx = deps.toolContext();
     updateDeliveryRecord((current) => {
       if (done.includes('direct_delivery')) restoreClaudeInbound(recordedClaudeFiles(current, ctx));
-      return {
+      return tidyLeftovers({
+        ...current,
         turnedOn: current.turnedOn.filter((key) => !done.includes(key)),
         claudeInbound: done.includes('direct_delivery') ? {} : current.claudeInbound,
-      };
+      });
     });
     if (failures.length > 0) {
       throw new Error(`Some injection settings could not be turned off: ${failures.join('; ')}`);
