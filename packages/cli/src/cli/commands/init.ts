@@ -89,7 +89,7 @@ import {
 } from '../lib/init-leftovers.js';
 import { persistWorkspaceSession } from '../lib/workspace-session.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
-import { assertNotRelayHome, getProjectPaths, isRelayHomeDir } from '@agent-relay/config';
+import { assertProjectRoot, getProjectPaths, isHomeProjectRoot } from '@agent-relay/config';
 import {
   PROBE_PATH_ENV,
   getCanonicalProbePath,
@@ -1551,7 +1551,7 @@ async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise
   // Outside a project (in ~, or a folder whose nearest Relay folder is a relay
   // home) there is no project scope: its paths would be the user's own global
   // configs (~/.grok/config.toml), which only the global scope may touch.
-  const noProject = isRelayHomeDir(getProjectPaths(ctx.projectRoot).dataDir);
+  const noProject = isHomeProjectRoot(ctx.projectRoot);
   if (noProject && o.scope === 'project') {
     deps.log('Not inside a project, so there is no project scope to remove Relay from.');
     return;
@@ -1961,9 +1961,12 @@ export function registerInitCommand(
       await runSdk(deps, async () => {
         if (o.stop) return stopLocalServer(deps);
         if (o.uninstall) return uninstall(deps, o);
-        // Before anything starts or is written: the workspace pin goes in this
-        // project's .agentworkforce/relay, which in ~ is the relay home itself.
-        assertNotRelayHome(getProjectPaths(projectRoot()).dataDir);
+        // Before anything starts or is written: the workspace pin, and the
+        // project-scoped MCP files (.mcp.json, opencode.json, .devin/...), go in
+        // the project root. In ~ (or a root walked up to ~) they would land in
+        // the person's home and its relay home.
+        assertProjectRoot(projectRoot());
+        assertProjectRoot(deps.toolContext().projectRoot);
         if (!o.yes && deps.isInteractive()) return runGuided(deps, o);
         return runPlain(deps, o);
       });

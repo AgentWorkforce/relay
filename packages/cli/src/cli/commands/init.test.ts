@@ -1907,3 +1907,72 @@ describe('relay init --uninstall and the command-line copy of the core', () => {
     expect(fs.existsSync(copyPath())).toBe(true);
   });
 });
+
+describe('relay init in an empty folder under the home folder', () => {
+  let userHome: string;
+  let folder: string;
+  let cwd: string;
+  const projectFilesInHome = () =>
+    [
+      '.mcp.json',
+      'opencode.json',
+      path.join('.devin', 'mcp_config.json'),
+      path.join('.agentworkforce', 'relay', 'workspace-key.json'),
+    ].filter((file) => fs.existsSync(path.join(userHome, file)));
+
+  beforeEach(() => {
+    cwd = process.cwd();
+    userHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'relay-init-walkup-')));
+    folder = path.join(userHome, 'scratch', 'empty');
+    fs.mkdirSync(folder, { recursive: true });
+    fs.mkdirSync(path.join(userHome, '.agentworkforce', 'relay'), { recursive: true });
+    vi.stubEnv('HOME', userHome);
+    vi.stubEnv('AGENT_RELAY_HOME', path.join(userHome, '.agentworkforce', 'relay'));
+    vi.stubEnv('AGENT_RELAY_PROJECT', '');
+    process.chdir(folder);
+  });
+
+  afterEach(() => {
+    process.chdir(cwd);
+    fs.rmSync(userHome, { recursive: true, force: true });
+  });
+
+  /** Init with project-scoped MCP files, resolving the project as the CLI does. */
+  const runHere = () =>
+    setup({
+      toolContext: () => ({ projectRoot: getProjectPaths().projectRoot, home: userHome, env: { PATH: '' } }),
+    });
+
+  it('sets up the empty folder itself, not ~, when a relay home is present', async () => {
+    const { run } = runHere();
+    await run('--tools', 'claude,opencode,devin', '--delivery', 'mcp', '--scope', 'project');
+    expect(getProjectPaths().projectRoot).toBe(folder);
+    expect(readProjectWorkspaceKey(path.join(folder, '.agentworkforce', 'relay'))).toBeDefined();
+    expect(fs.existsSync(path.join(folder, 'opencode.json'))).toBe(true);
+    expect(projectFilesInHome()).toEqual([]);
+  });
+
+  it('refuses when walking up reaches ~ (a dotfiles ~/.git), writing nothing there', async () => {
+    fs.mkdirSync(path.join(userHome, '.git'));
+    expect(getProjectPaths().projectRoot).toBe(userHome);
+    const { run, errors, deps } = runHere();
+    await expect(
+      run('--tools', 'claude,opencode,devin', '--delivery', 'mcp', '--scope', 'project')
+    ).rejects.toEqual(new ExitSignal(1));
+    expect(errors.join('\n')).toMatch(/home folder.*inside a project folder/s);
+    expect(deps.startEngine).not.toHaveBeenCalled();
+    expect(projectFilesInHome()).toEqual([]);
+  });
+
+  it('refuses ~ even when the relay home lives elsewhere', async () => {
+    vi.stubEnv('AGENT_RELAY_HOME', path.join(os.tmpdir(), 'relay-init-elsewhere'));
+    fs.rmSync(path.join(userHome, '.agentworkforce'), { recursive: true });
+    process.chdir(userHome);
+    const { run, errors } = runHere();
+    await expect(run('--tools', 'opencode', '--delivery', 'mcp', '--scope', 'project')).rejects.toEqual(
+      new ExitSignal(1)
+    );
+    expect(errors.join('\n')).toContain('home folder');
+    expect(fs.existsSync(path.join(userHome, 'opencode.json'))).toBe(false);
+  });
+});

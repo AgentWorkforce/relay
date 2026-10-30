@@ -4,8 +4,10 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   assertNotRelayHome,
+  assertProjectRoot,
   ensureGitExclude,
   findProjectRoot,
+  isHomeProjectRoot,
   isRelayHomeDir,
   RelayHomeProjectError,
 } from './project-namespace.js';
@@ -120,6 +122,26 @@ describe('the relay home is never a project', () => {
     vi.stubEnv('AGENT_RELAY_HOME', relay(link));
     expect(isRelayHomeDir(relay(home))).toBe(true);
     expect(isRelayHomeDir(relay(path.join(root, 'project')))).toBe(false);
+  });
+
+  it('takes neither ~ nor a root holding the relay home for a project, even when walked up to', () => {
+    const home = path.join(root, 'home');
+    const empty = path.join(home, 'scratch', 'empty');
+    fs.mkdirSync(empty, { recursive: true });
+    fs.mkdirSync(relay(home), { recursive: true });
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('AGENT_RELAY_HOME', path.join(root, 'relocated'));
+    // An empty folder under ~ with a relay home present is its own project.
+    expect(findProjectRoot(empty)).toBe(empty);
+    expect(isHomeProjectRoot(empty)).toBe(false);
+    // A dotfiles ~/.git walks it up to ~, which is no project.
+    fs.mkdirSync(path.join(home, '.git'));
+    expect(findProjectRoot(empty)).toBe(home);
+    expect(isHomeProjectRoot(home)).toBe(true);
+    expect(() => assertProjectRoot(home)).toThrow(/home folder/);
+    // The relay home's grandparent, wherever AGENT_RELAY_HOME points.
+    vi.stubEnv('AGENT_RELAY_HOME', relay(path.join(root, 'elsewhere')));
+    expect(isHomeProjectRoot(path.join(root, 'elsewhere'))).toBe(true);
   });
 
   it('refuses with an error that says to run inside a project folder', () => {

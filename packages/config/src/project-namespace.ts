@@ -88,14 +88,27 @@ function samePath(a: string, b: string): boolean {
   return canonicalPath(a) === canonicalPath(b);
 }
 
-/** A project pin was about to be written into the relay home. */
+const INSIDE_A_PROJECT =
+  'Run this inside a project folder (cd into the project first), or set AGENT_RELAY_PROJECT ' +
+  'to the project folder.';
+
+/** A project pin, or another project-scoped file, was about to be written outside any project. */
 export class RelayHomeProjectError extends Error {
-  constructor(public readonly dataDir: string) {
+  /**
+   * @param dataDir - The Relay folder that would have held the pin
+   * @param projectRoot - The project root, when the home folder itself was taken for one
+   */
+  constructor(
+    public readonly dataDir: string,
+    public readonly projectRoot?: string
+  ) {
     super(
-      `Refusing to use ${dataDir} as this project's Relay folder: it is the Relay home ` +
-        '(AGENT_RELAY_HOME), where Relay keeps its machine-wide workspaces, sign-in and binaries. ' +
-        'Run this inside a project folder (cd into the project first), or set AGENT_RELAY_PROJECT ' +
-        'to the project folder.'
+      projectRoot
+        ? `Refusing to set up ${projectRoot} as a project: it is your home folder (or holds the Relay ` +
+            `home), and project files written there would land among your own settings. ${INSIDE_A_PROJECT}`
+        : `Refusing to use ${dataDir} as this project's Relay folder: it is the Relay home ` +
+            '(AGENT_RELAY_HOME), where Relay keeps its machine-wide workspaces, sign-in and binaries. ' +
+            INSIDE_A_PROJECT
     );
     this.name = 'RelayHomeProjectError';
   }
@@ -110,6 +123,32 @@ export class RelayHomeProjectError extends Error {
  */
 export function assertNotRelayHome(dataDir: string, env: NodeJS.ProcessEnv = process.env): void {
   if (isRelayHomeDir(dataDir, env)) throw new RelayHomeProjectError(dataDir);
+}
+
+/**
+ * Whether `projectRoot` is no project at all: the home folder itself, or a
+ * folder whose `.agentworkforce/relay` is a relay home ({@link isRelayHomeDir}).
+ * A project root found by walking up from an unmarked folder under `~` (a
+ * dotfiles `~/.git`, a stray `~/package.json`) lands here too.
+ * @param projectRoot - A detected or configured project root
+ * @param env - Environment to read `AGENT_RELAY_HOME` from
+ */
+export function isHomeProjectRoot(projectRoot: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return samePath(projectRoot, os.homedir()) || isRelayHomeDir(path.join(projectRoot, PROJECT_DATA_DIR), env);
+}
+
+/**
+ * Refuse a project root that is the home folder (or holds the relay home),
+ * before any project-scoped file (the workspace pin, `.mcp.json`,
+ * `opencode.json`, `.devin/mcp_config.json`, ...) is written there.
+ * @param projectRoot - The project root about to receive project-scoped files
+ * @param env - Environment to read `AGENT_RELAY_HOME` from
+ * @throws RelayHomeProjectError when `projectRoot` is no project
+ */
+export function assertProjectRoot(projectRoot: string, env: NodeJS.ProcessEnv = process.env): void {
+  if (isHomeProjectRoot(projectRoot, env)) {
+    throw new RelayHomeProjectError(path.join(projectRoot, PROJECT_DATA_DIR), projectRoot);
+  }
 }
 
 /**
