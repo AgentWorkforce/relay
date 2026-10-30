@@ -130,6 +130,7 @@ pub mod paths;
 pub mod peer;
 pub mod people;
 pub mod pi;
+pub mod probe_alias;
 pub mod probe_copy;
 pub mod process;
 pub mod project;

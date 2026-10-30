@@ -472,6 +472,35 @@ puts the file back: the person's `.relay-desktop-backup` copy (now taken only
 of a file that did not already hold the hook) is restored byte for byte when
 nothing else changed, and a file the hook created is removed once empty.
 
+**A probe path with spaces.** Codex's rules match a command only when its
+program is a plain, unquoted word (`shell-command/src/bash.rs` in Codex 0.163:
+the command name must be a `word` node; quoted arguments, single or double,
+are read as one word and match). The macOS app's probe is
+`/Applications/Agent Relay.app/Contents/Helpers/Agent Relay Helper`, which the
+hints must quote, so Codex asked for every read and reply even with the rules
+in place. So while `codex_stop_hook` or `claude_session_hook` is on and the
+probe's path needs quoting, the core keeps a link to it at
+`~/.agentworkforce/desktop/bin/agent-relay-probe` (`agent-relay-probe-dev` for
+Agent Relay Dev), and the Codex rules, the Claude rules, the pointers and every
+reply hint (Codex, Claude Code, OpenCode, Grok) name the link. The socket keeps
+its own, quoted path: Codex matches a quoted argument, so it needs no alias.
+The link is pointed at the running probe again whenever a hook turns on and at
+each core start, so a moved or updated app never leaves it at an old binary;
+a probe that moved to a space-free path drops it. The core uses the link only
+when its folder and that folder's parent are real folders this user owns that
+nobody else may write (the folder is made `0700`), it is the link the core
+recorded making (`probe-alias.json` in its data: name, target and the link's
+inode), and it points at exactly the running probe. Anything else at that name,
+including a link someone put in its place, is never replaced, removed or used,
+and the hints and rules name the probe's own path as before; every hint checks
+the link again. Once neither hook is on (turned off, or `relay init
+--uninstall`), the link goes, with its folder once empty, and hints name the
+probe's own path again; a hint handed out earlier that names the link no longer
+runs (without the rules it would have asked anyway). The record also names the
+link being replaced while the app moves, so a core stopped mid-move finishes
+the move at its next start. The rules
+still allow only the same two (Codex) and five (Claude) command shapes.
+
 **`--uninstall` and the tools' own folders.** Before the core edits them,
 init records each Claude login's `settings.json` (whether it, its
 `.relay-desktop-backup` and its folder existed) and the OpenCode plugin's

@@ -247,3 +247,67 @@ fn a_failed_removal_keeps_each_logins_copy_for_the_retry() {
     assert!(!backup.exists());
     assert!(!work.join("settings.json").exists());
 }
+
+// The macOS app's probe is `…/Agent Relay.app/Contents/Helpers/Agent Relay
+// Helper`: its rules and hints name the core's space-free link, as Codex's
+// do, and turning the hook off takes the link out with the rules.
+#[test]
+#[cfg(unix)]
+fn a_probe_path_with_a_space_is_named_by_its_link() {
+    use crate::relay::probe_alias::{ProbeAlias, DIR};
+    let root = tempfile::tempdir().unwrap();
+    let path = login(root.path());
+    let claude = path.parent().unwrap().to_path_buf();
+    let before = tree(&claude);
+    let helpers = root.path().join("Agent Relay.app/Contents/Helpers");
+    std::fs::create_dir_all(&helpers).unwrap();
+    let real = helpers.join("Agent Relay Helper");
+    std::fs::write(&real, b"").unwrap();
+    let alias = std::sync::Arc::new(ProbeAlias::new(
+        real.clone(),
+        root.path(),
+        &root.path().join("app-data"),
+        false,
+    ));
+    let settings = settings_with(
+        root.path(),
+        PermissionRules {
+            probe: real.clone(),
+            socket: PathBuf::from(SOCKET),
+        },
+    )
+    .with_probe_alias(alias.clone());
+    assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+    let link = root.path().join(DIR).join("agent-relay-probe");
+    assert_eq!(std::fs::read_link(&link).unwrap(), real);
+    let all = allow(&path);
+    let named = link.display().to_string();
+    assert_eq!(
+        all[0],
+        format!("Bash({named} relay read --socket '{SOCKET}' *)")
+    );
+    assert!(all.iter().all(|rule| !rule.contains("Agent Relay Helper")));
+    // What the pointer and the reply hint hand the session, through the
+    // link, is what the rules allow.
+    let socket = Path::new(SOCKET);
+    let read = crate::relay::message_pointer::socket_reader(Some(&link), socket).unwrap();
+    let reply = crate::relay::outbound::probe_command_for(
+        &link,
+        socket,
+        "POST",
+        "/send?to=alice&reply_to=m1",
+        Some("thanks"),
+    )
+    .unwrap();
+    let agents =
+        crate::relay::outbound::probe_command_for(&link, socket, "GET", "/agents", None).unwrap();
+    for command in [format!("{read} 0123456789ab"), reply, agents] {
+        assert!(command.starts_with(&format!("{named} relay ")), "{command}");
+        assert!(all.iter().any(|rule| covers(rule, &command)), "{command}");
+    }
+
+    assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+    assert!(std::fs::symlink_metadata(&link).is_err());
+    assert!(!root.path().join(DIR).exists());
+    assert_eq!(tree(&claude), before);
+}

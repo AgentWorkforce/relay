@@ -401,6 +401,11 @@ const RULES_NAMES: usize = 9;
 /// session-socket commands, each only with `--socket` naming this core's
 /// own session socket (`relay read --socket` refuses `--dev`). Nothing else
 /// is widened: no network, no other program, no other socket.
+///
+/// Codex matches a command only when its program is a plain, unquoted word,
+/// so a probe whose path needs quoting (the macOS app's helper) is named by
+/// the core's space-free link to it (`probe_alias`). A quoted argument is
+/// matched as written, so the socket keeps its own path.
 #[derive(Clone, Debug)]
 pub struct SandboxRules {
     /// The probe executable the reply hints name.
@@ -447,6 +452,9 @@ pub struct CodexStopHookSettings {
     sandbox: Option<SandboxRules>,
     /// The core's own data folder, which keeps [`CONFIG_CREATED`].
     state_dir: Option<PathBuf>,
+    /// The space-free link the rules name when the probe's path needs
+    /// quoting.
+    alias: Option<std::sync::Arc<crate::relay::probe_alias::ProbeAlias>>,
     /// Whether the start-up refresh (or a change) has run, so a hook not
     /// yet trusted again is still reported as on until it has.
     checked: AtomicBool,
@@ -474,6 +482,7 @@ impl CodexStopHookSettings {
             }),
             sandbox: None,
             state_dir: None,
+            alias: None,
             checked: AtomicBool::new(false),
         }
     }
@@ -481,6 +490,15 @@ impl CodexStopHookSettings {
     /// Also writes [`SandboxRules`] while the hook is on.
     pub fn with_sandbox_rules(mut self, rules: SandboxRules) -> Self {
         self.sandbox = Some(rules);
+        self
+    }
+
+    /// Names the probe in the rules by `alias` when its path needs quoting.
+    pub fn with_probe_alias(
+        mut self,
+        alias: std::sync::Arc<crate::relay::probe_alias::ProbeAlias>,
+    ) -> Self {
+        self.alias = Some(alias);
         self
     }
 
@@ -557,6 +575,13 @@ impl CodexStopHookSettings {
     fn write_rules(&self) -> Result<(), String> {
         let Some(rules) = &self.sandbox else {
             return Ok(());
+        };
+        let rules = match &self.alias {
+            Some(alias) => SandboxRules {
+                probe: alias.acquire(crate::relay::probe_alias::User::Codex),
+                socket: rules.socket.clone(),
+            },
+            None => rules.clone(),
         };
         let text = rules.text();
         // Agent Relay's own file, else the first free name: a file of the
@@ -830,6 +855,7 @@ impl CodexStopHookSettings {
             })?;
         }
         self.remove_rules()?;
+        self.release_alias();
         self.tidy_config();
         Ok(())
     }
@@ -879,10 +905,22 @@ impl CodexStopHookSettings {
         self.write(&value, false)
     }
 
+    /// The rules no longer need the probe's link.
+    fn release_alias(&self) {
+        if let Some(alias) = &self.alias {
+            alias.release(crate::relay::probe_alias::User::Codex);
+        }
+    }
+
     /// At core start: an installed hook is brought up to date (a moved or
-    /// updated app runs a different executable) and trusted again.
+    /// updated app runs a different executable) and trusted again. With the
+    /// hook off, a link left for its rules goes.
     pub fn refresh(&self) {
-        let ready = self.applies() && self.hook_enabled() && self.install().is_ok();
+        let enabled = self.applies() && self.hook_enabled();
+        if !enabled {
+            self.release_alias();
+        }
+        let ready = enabled && self.install().is_ok();
         self.inbox.set_ready(ready);
         self.checked.store(true, Ordering::SeqCst);
     }
@@ -1299,6 +1337,67 @@ mod tests {
         assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
         assert!(!codex.join("hooks.json").exists());
         assert!(!codex.join("hooks.json.relay-desktop-backup").exists());
+    }
+
+    // Codex 0.163 matches its rules only against an unquoted program, so
+    // the macOS app's helper (a path with spaces) asked for every read and
+    // reply: the rules and hints name the core's link to it instead, the
+    // socket stays quoted, and turning the hook off takes the link out.
+    #[test]
+    #[cfg(unix)]
+    fn a_probe_path_with_a_space_is_named_by_its_link() {
+        use crate::relay::probe_alias::{ProbeAlias, DIR};
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(&codex).unwrap();
+        let before = tree(&codex);
+        let real = PathBuf::from("/Apps/Agent Relay.app/probe");
+        let alias = Arc::new(ProbeAlias::new(
+            real.clone(),
+            home.path(),
+            &home.path().join("app-data"),
+            false,
+        ));
+        let settings = full_settings(home.path()).with_probe_alias(alias.clone());
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        let link = home.path().join(DIR).join("agent-relay-probe");
+        assert_eq!(std::fs::read_link(&link).unwrap(), real);
+        let named = link.display().to_string();
+        let rules = std::fs::read_to_string(codex.join("rules/agent-relay.rules")).unwrap();
+        assert_eq!(rules.matches("prefix_rule(").count(), 2);
+        let socket = "/Users/me/Library/Application Support/x/run/relay.sock";
+        assert!(rules.contains(&format!(
+            "pattern = [\"{named}\", \"relay\", \"socket-request\", \"--socket\", \"{socket}\"]"
+        )));
+        assert!(rules.contains(&format!(
+            "pattern = [\"{named}\", \"relay\", \"read\", \"--socket\", \"{socket}\"]"
+        )));
+        assert!(!rules.contains("Agent Relay.app"));
+        // The hints start with the link as one plain word, as the rules'
+        // program; the socket is a quoted argument, which Codex matches.
+        let reply = crate::relay::outbound::probe_command_for(
+            &link,
+            Path::new(socket),
+            "POST",
+            "/send?to=alice&reply_to=m1",
+            Some("your reply"),
+        )
+        .unwrap();
+        assert!(reply.starts_with(&format!(
+            "{named} relay socket-request --socket '{socket}' "
+        )));
+        let read =
+            crate::relay::message_pointer::socket_reader(Some(&link), Path::new(socket)).unwrap();
+        assert_eq!(read, format!("{named} relay read --socket '{socket}'"));
+        // A core start brings it back after the link went missing.
+        std::fs::remove_file(&link).unwrap();
+        settings.refresh();
+        assert_eq!(std::fs::read_link(&link).unwrap(), real);
+
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        assert!(std::fs::symlink_metadata(&link).is_err());
+        assert!(!home.path().join(DIR).exists());
+        assert_eq!(tree(&codex), before);
     }
 
     #[test]

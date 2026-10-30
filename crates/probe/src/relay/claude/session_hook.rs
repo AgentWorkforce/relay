@@ -355,6 +355,9 @@ pub struct ClaudeSessionHookSettings {
     /// The permission rules that come with the hook, and the core's data
     /// folder, which records the rules Agent Relay added.
     permissions: Option<(PermissionRules, PathBuf)>,
+    /// The space-free link the rules name when the probe's path needs
+    /// quoting (`probe_alias`), as the reply hints do.
+    alias: Option<std::sync::Arc<crate::relay::probe_alias::ProbeAlias>>,
     lock: Mutex<()>,
 }
 
@@ -364,6 +367,7 @@ impl ClaudeSessionHookSettings {
             claude: ClaudeSettings::new(claude),
             command,
             permissions: None,
+            alias: None,
             lock: Mutex::new(()),
         }
     }
@@ -375,12 +379,46 @@ impl ClaudeSessionHookSettings {
         self
     }
 
-    /// The permission rules wanted with the hook; none without them.
+    /// Names the probe in the rules by `alias` when its path needs quoting.
+    pub fn with_probe_alias(
+        mut self,
+        alias: std::sync::Arc<crate::relay::probe_alias::ProbeAlias>,
+    ) -> Self {
+        self.alias = Some(alias);
+        self
+    }
+
+    /// The permission rules wanted with the hook; none without them. They
+    /// name the probe as the hints do now: its link while that is kept.
     fn rules(&self) -> Vec<String> {
         self.permissions
             .as_ref()
-            .map(|(rules, _)| rules.rules())
+            .map(|(rules, _)| match &self.alias {
+                Some(alias) => PermissionRules {
+                    probe: alias.probe(),
+                    socket: rules.socket.clone(),
+                }
+                .rules(),
+                None => rules.rules(),
+            })
             .unwrap_or_default()
+    }
+
+    /// Turns the hook on or off, keeping the probe's link while its rules
+    /// are in a file and letting it go once they are not.
+    fn edit_with_alias(&self, enable: bool) -> Result<(), String> {
+        use crate::relay::probe_alias::User;
+        let Some(alias) = self.alias.as_ref().filter(|_| self.permissions.is_some()) else {
+            return self.edit(enable);
+        };
+        if enable {
+            alias.acquire(User::Claude);
+        }
+        let outcome = self.edit(enable);
+        if !self.hook_enabled() {
+            alias.release(User::Claude);
+        }
+        outcome
     }
 
     /// The rules Agent Relay added, by file.
@@ -816,9 +854,12 @@ impl ClaudeSessionHookSettings {
     pub fn refresh(&self) {
         let _guard = self.lock();
         if self.shared_has_hook() {
-            let _ = self.edit(true);
+            let _ = self.edit_with_alias(true);
         } else if self.hook_enabled() {
-            let _ = self.edit(false);
+            let _ = self.edit_with_alias(false);
+        } else if let Some(alias) = &self.alias {
+            // Off: a link left for its rules goes.
+            alias.release(crate::relay::probe_alias::User::Claude);
         }
     }
 }
@@ -841,7 +882,7 @@ impl SettingsExtension for ClaudeSessionHookSettings {
             return Some(Err(format!("{SETTING} must be true or false.")));
         };
         let _guard = self.lock();
-        Some(self.edit(enabled))
+        Some(self.edit_with_alias(enabled))
     }
 }
 

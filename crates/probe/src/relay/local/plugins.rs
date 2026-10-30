@@ -142,6 +142,15 @@ pub fn plugins_with_options(
     // With the hook, Codex rules that let the probe's own client reach this
     // core's session socket from Codex's sandbox (`stop_hook::SandboxRules`).
     let probe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-probe"));
+    // Codex matches its rules only against an unquoted program, so while
+    // either hook's rules are in place a probe whose path needs quoting is
+    // named by a space-free link to it, in the rules and the hints alike.
+    let probe_alias = crate::relay::probe_alias::ProbeAlias::system(
+        probe.clone(),
+        &config.home,
+        &config.app_data_dir,
+        development,
+    );
     let stop_hook_settings = Arc::new(
         codex::stop_hook::CodexStopHookSettings::new(
             local.codex.home.clone(),
@@ -153,7 +162,8 @@ pub fn plugins_with_options(
             probe: probe.clone(),
             socket: relay_send_socket.clone(),
         })
-        .with_state_dir(config.app_data_dir.clone()),
+        .with_state_dir(config.app_data_dir.clone())
+        .with_probe_alias(probe_alias.clone()),
     );
     {
         let stop_hook_settings = stop_hook_settings.clone();
@@ -177,7 +187,8 @@ pub fn plugins_with_options(
                 socket: relay_send_socket.clone(),
             },
             config.app_data_dir.clone(),
-        ),
+        )
+        .with_probe_alias(probe_alias),
     );
     {
         let session_hook_settings = session_hook_settings.clone();
