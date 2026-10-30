@@ -257,20 +257,22 @@ export function tidyOpenCodePlugin(state: OpenCodeState): void {
  * core's off marker (`pi-extension.off`), which would otherwise keep the
  * desktop app from installing the extension and keep Pi sessions off, and
  * the extensions folder when init created it and nothing else is in it.
- * Only where there was neither an extension file nor a marker before init:
- * a marker that was there is the person's choice (or the desktop app's),
- * and a marker the core did not write is not touched. Run once the core has
+ * Nothing where there was an extension file before init. A marker that was
+ * there (`off`) is the person's choice (or the desktop app's) and is kept,
+ * though an extensions folder init created still goes once empty; a marker
+ * the core did not write is not touched. Run once the core has
  * turned the extension off.
  * @param state - The state {@link piState} recorded before init
  */
 export function tidyPiExtension(state: PiState): void {
-  if (state.extension || state.off) return;
-  if (exists(state.file)) return;
-  try {
-    if (fs.readFileSync(state.marker, 'utf8').startsWith(PI_OFF_TEXT))
-      fs.rmSync(state.marker, { force: true });
-  } catch {
-    // No marker.
+  if (state.extension || exists(state.file)) return;
+  if (!state.off) {
+    try {
+      if (fs.readFileSync(state.marker, 'utf8').startsWith(PI_OFF_TEXT))
+        fs.rmSync(state.marker, { force: true });
+    } catch {
+      // No marker.
+    }
   }
   if (!state.dir) removeEmptyDir(path.dirname(state.file));
 }

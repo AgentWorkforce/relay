@@ -1387,7 +1387,8 @@ async function turnOffInjection(deps: InitCommandDependencies, keys: string[]): 
       if (done.includes('direct_delivery')) restoreClaudeInbound(recordedClaudeFiles(current, ctx));
       return tidyLeftovers({
         ...current,
-        ...(piOptedOut && done.includes('pi_extension') ? { pi: undefined } : {}),
+        // Kept as if it had been there before init; an extensions folder init created still goes.
+        ...(piOptedOut && current.pi ? { pi: { ...current.pi, off: true } } : {}),
         turnedOn: current.turnedOn.filter((key) => !done.includes(key)),
         claudeInbound: done.includes('direct_delivery') ? {} : current.claudeInbound,
       });

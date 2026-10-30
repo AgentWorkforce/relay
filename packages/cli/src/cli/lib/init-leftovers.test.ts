@@ -276,9 +276,13 @@ describe('tidyPiExtension', () => {
     fs.mkdirSync(extensions, { recursive: true });
     const marker = path.join(root, '.agentworkforce', 'desktop', 'pi-extension.off');
     coreOff(marker);
+    fs.rmdirSync(extensions);
     const offBefore = piState(agent, root);
+    fs.mkdirSync(extensions);
     tidyPiExtension(offBefore);
     expect(fs.existsSync(marker)).toBe(true);
+    expect(fs.existsSync(extensions)).toBe(false);
+    fs.mkdirSync(extensions);
 
     fs.rmSync(marker);
     const file = path.join(extensions, 'agent-relay.js');

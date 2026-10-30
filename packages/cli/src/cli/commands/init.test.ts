@@ -1335,6 +1335,7 @@ describe('relay init message injection', () => {
     fs.writeFileSync(marker, "Agent Relay's Pi extension was turned off (pi_extension).\n");
     await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
     expect(fs.existsSync(marker)).toBe(true);
+    expect(fs.readdirSync(agent)).toEqual([]);
     expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
   });
 
@@ -1350,6 +1351,7 @@ describe('relay init message injection', () => {
     expect(fs.existsSync(marker)).toBe(false);
     await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
     expect(fs.existsSync(marker)).toBe(true);
+    expect(fs.readdirSync(agent)).toEqual([]);
   });
 
   // Review on #2021: a tool rolled back in the same run is tidied too.
