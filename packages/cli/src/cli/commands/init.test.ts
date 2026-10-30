@@ -893,6 +893,8 @@ function fakeCore(
     claudeFiles?: string[];
     /** The OpenCode plugin file `opencode_plugin` writes, and whose off marker it leaves. */
     openCodePlugin?: string;
+    /** Pi's agent folder, where `pi_extension` writes the extension; off leaves the core's marker. */
+    piAgentDir?: string;
   } = {}
 ) {
   const settings: Record<string, unknown> = {
@@ -948,6 +950,21 @@ function fakeCore(
         "Agent Relay's OpenCode plugin was turned off in Agent Relay's settings.\n"
       );
   };
+  /** As `PiSetup::set_extension`: on writes the extension, off removes it and leaves the marker. */
+  const writePiExtension = (key: string, value: unknown) => {
+    if (key !== 'pi_extension' || !options.piAgentDir) return;
+    const file = path.join(options.piAgentDir, 'extensions', 'agent-relay.js');
+    const marker = path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off');
+    if (value === true) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, '// AGENT_RELAY_PI_EXTENSION=2\n');
+      fs.rmSync(marker, { force: true });
+      return;
+    }
+    fs.rmSync(file, { force: true });
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, "Agent Relay's Pi extension was turned off (pi_extension).\n");
+  };
   const client: CoreClient = {
     async call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
       calls.push([method, params]);
@@ -967,6 +984,7 @@ function fakeCore(
             } else {
               settings[key] = value;
               writePlugin(key, value);
+              writePiExtension(key, value);
               if (key === 'direct_delivery') {
                 userChoseInbound = false;
                 if (value === false) writeInbound('hold', 'accept');
@@ -1205,6 +1223,13 @@ describe('relay init message injection', () => {
     expect(core.settings.opencode_auto_activate).toBe(false);
     expect(JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'))).toEqual({
       turnedOn: ['codex_stop_hook', 'auto_activate', 'pi_extension', 'pi_auto_activate'],
+      pi: {
+        file: path.join(toolHome, '.pi', 'agent', 'extensions', 'agent-relay.js'),
+        marker: path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off'),
+        extension: false,
+        off: false,
+        dir: false,
+      },
     });
 
     const toMcp = setup(core.deps);
@@ -1270,6 +1295,80 @@ describe('relay init message injection', () => {
     expect(fs.readdirSync(claude)).toEqual(['history.jsonl']);
     expect(fs.readdirSync(opencode)).toEqual([]);
     expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  // The relay init end-to-end Pi run on 2026-10-30: --uninstall left
+  // ~/.agentworkforce/desktop/pi-extension.off, which keeps the desktop app
+  // from installing the extension (Pi sessions off), and an empty extensions folder.
+  it("leaves Pi's folder and the core's Pi opt-out as it found them on --uninstall", async () => {
+    installedProbe();
+    const agent = path.join(toolHome, '.pi', 'agent');
+    fs.mkdirSync(agent, { recursive: true });
+    fs.writeFileSync(path.join(agent, 'auth.json'), '{}');
+    const marker = path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off');
+    const core = fakeCore({ piAgentDir: agent });
+    await setup(core.deps).run('--tools', 'pi');
+    expect(fs.existsSync(path.join(agent, 'extensions', 'agent-relay.js'))).toBe(true);
+
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(core.settings).toMatchObject({
+      pi_extension: false,
+      pi_auto_activate: false,
+      auto_activate: false,
+    });
+    expect(fs.readdirSync(agent)).toEqual(['auth.json']);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  // Review on #2022: turning Pi off in the desktop app after init is the person's choice.
+  it('keeps a Pi opt-out marker the person left after init on --uninstall', async () => {
+    installedProbe();
+    const agent = path.join(toolHome, '.pi', 'agent');
+    fs.mkdirSync(agent, { recursive: true });
+    const marker = path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off');
+    const core = fakeCore({ piAgentDir: agent });
+    await setup(core.deps).run('--tools', 'pi');
+    // As the desktop app's Pi switch: the extension goes and the marker stays.
+    fs.rmSync(path.join(agent, 'extensions', 'agent-relay.js'));
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, 'off by me\n');
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(fs.readFileSync(marker, 'utf8')).toBe('off by me\n');
+    expect(fs.readdirSync(agent)).toEqual([]);
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  it("keeps a Pi opt-out marker that links to the person's own file on --uninstall", async () => {
+    installedProbe();
+    const agent = path.join(toolHome, '.pi', 'agent');
+    fs.mkdirSync(agent, { recursive: true });
+    const marker = path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off');
+    const core = fakeCore({ piAgentDir: agent });
+    await setup(core.deps).run('--tools', 'pi');
+    fs.rmSync(path.join(agent, 'extensions', 'agent-relay.js'));
+    const mine = path.join(toolHome, 'pi-off.txt');
+    fs.writeFileSync(mine, 'off by me\n');
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.symlinkSync(mine, marker);
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(fs.lstatSync(marker).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(mine, 'utf8')).toBe('off by me\n');
+  });
+
+  it('keeps a Pi opt-out marker that was there before init', async () => {
+    installedProbe();
+    const agent = path.join(toolHome, '.pi', 'agent');
+    fs.mkdirSync(agent, { recursive: true });
+    const marker = path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off');
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, "Agent Relay's Pi extension was turned off (pi_extension).\n");
+    const core = fakeCore({ piAgentDir: agent });
+    await setup(core.deps).run('--tools', 'pi');
+    expect(fs.existsSync(marker)).toBe(false);
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(fs.existsSync(marker)).toBe(true);
+    expect(fs.readdirSync(agent)).toEqual([]);
   });
 
   // Review on #2021: a tool rolled back in the same run is tidied too.

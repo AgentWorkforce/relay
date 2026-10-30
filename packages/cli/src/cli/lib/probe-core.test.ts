@@ -394,6 +394,13 @@ describe('records', () => {
           off: false,
           dir: false,
         },
+        pi: {
+          file: '/h/.pi/agent/extensions/agent-relay.js',
+          marker: '/h/.agentworkforce/desktop/pi-extension.off',
+          extension: false,
+          off: false,
+          dir: true,
+        },
       })
     );
     expect(readDeliveryRecord(file)).toEqual({
@@ -401,8 +408,37 @@ describe('records', () => {
       claudeInbound: {},
       claudeFiles: { '/h/.claude/settings.json': { existed: false, backup: false, dir: true } },
       openCode: { file: '/h/.config/opencode/plugins/agent-relay.js', plugin: false, off: false, dir: false },
+      pi: {
+        file: '/h/.pi/agent/extensions/agent-relay.js',
+        marker: '/h/.agentworkforce/desktop/pi-extension.off',
+        extension: false,
+        off: false,
+        dir: true,
+      },
     });
     fs.writeFileSync(file, JSON.stringify({ turnedOn: [], openCode: { file: 'relative', plugin: false } }));
+    expect(readDeliveryRecord(file)).toEqual({ turnedOn: [], claudeInbound: {} });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        turnedOn: [],
+        pi: { file: '/h/x.js', marker: 'relative', extension: false, off: false, dir: false },
+      })
+    );
+    expect(readDeliveryRecord(file)).toEqual({ turnedOn: [], claudeInbound: {} });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        turnedOn: [],
+        pi: {
+          file: '/h/.pi/agent/extensions/agent-relay.js',
+          marker: '/h/important.txt',
+          extension: false,
+          off: false,
+          dir: false,
+        },
+      })
+    );
     expect(readDeliveryRecord(file)).toEqual({ turnedOn: [], claudeInbound: {} });
   });
 });

@@ -9,8 +9,11 @@ import {
   claudeFileStates,
   openCodeConfigDir,
   openCodeState,
+  piAgentDir,
+  piState,
   tidyClaudeSettings,
   tidyOpenCodePlugin,
+  tidyPiExtension,
 } from './init-leftovers.js';
 
 let root: string;
@@ -222,5 +225,89 @@ describe('tidyOpenCodePlugin', () => {
     fs.writeFileSync(marker(state.file), 'my note\n');
     tidyOpenCodePlugin(state);
     expect(fs.readFileSync(marker(state.file), 'utf8')).toBe('my note\n');
+  });
+});
+
+describe('tidyPiExtension', () => {
+  const coreOff = (marker: string) => {
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(
+      marker,
+      "Agent Relay's Pi extension was turned off (pi_extension). Delete this file, or turn " +
+        'Pi sessions on in Agent Relay, to allow it again.\n'
+    );
+  };
+
+  it('reads the Pi agent folder from an absolute PI_CODING_AGENT_DIR, else ~/.pi/agent, as the core does', () => {
+    expect(piAgentDir({ PI_CODING_AGENT_DIR: '/x/pi' }, '/home/me')).toBe('/x/pi');
+    expect(piAgentDir({ PI_CODING_AGENT_DIR: 'relative' }, '/home/me')).toBe('/home/me/.pi/agent');
+    expect(piAgentDir({}, '/home/me')).toBe('/home/me/.pi/agent');
+  });
+
+  // The relay init end-to-end Pi run on 2026-10-30: --uninstall left
+  // ~/.agentworkforce/desktop/pi-extension.off and an empty extensions folder.
+  it('removes the off marker an init-installed extension left, and an extensions folder init created', () => {
+    const agent = path.join(root, '.pi', 'agent');
+    fs.mkdirSync(agent, { recursive: true });
+    fs.writeFileSync(path.join(agent, 'auth.json'), '{}');
+    const before = tree(agent);
+    const state = piState(agent, root);
+    expect(state).toEqual({
+      file: path.join(agent, 'extensions', 'agent-relay.js'),
+      marker: path.join(root, '.agentworkforce', 'desktop', 'pi-extension.off'),
+      extension: false,
+      off: false,
+      dir: false,
+    });
+
+    fs.mkdirSync(path.dirname(state.file));
+    fs.writeFileSync(state.file, '// AGENT_RELAY_PI_EXTENSION=2\n');
+    fs.rmSync(state.file);
+    coreOff(state.marker);
+
+    tidyPiExtension(state);
+    expect(tree(agent)).toEqual(before);
+    expect(fs.existsSync(state.marker)).toBe(false);
+  });
+
+  it("keeps a marker that was there before init, the person's own extension and their extensions", () => {
+    const agent = path.join(root, '.pi', 'agent');
+    const extensions = path.join(agent, 'extensions');
+    fs.mkdirSync(extensions, { recursive: true });
+    const marker = path.join(root, '.agentworkforce', 'desktop', 'pi-extension.off');
+    coreOff(marker);
+    fs.rmdirSync(extensions);
+    const offBefore = piState(agent, root);
+    fs.mkdirSync(extensions);
+    tidyPiExtension(offBefore);
+    expect(fs.existsSync(marker)).toBe(true);
+    expect(fs.existsSync(extensions)).toBe(false);
+    fs.mkdirSync(extensions);
+
+    fs.rmSync(marker);
+    const file = path.join(extensions, 'agent-relay.js');
+    fs.writeFileSync(file, '// mine\n');
+    const theirs = piState(agent, root);
+    coreOff(marker);
+    tidyPiExtension(theirs);
+    expect(fs.existsSync(marker)).toBe(true);
+
+    fs.rmSync(file);
+    fs.rmSync(marker);
+    fs.writeFileSync(path.join(extensions, 'other.ts'), '//\n');
+    const fresh = piState(agent, root);
+    coreOff(marker);
+    tidyPiExtension(fresh);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(fs.readdirSync(extensions)).toEqual(['other.ts']);
+  });
+
+  it('leaves a file at the marker name that the core did not write', () => {
+    const agent = path.join(root, '.pi', 'agent');
+    const state = piState(agent, root);
+    fs.mkdirSync(path.dirname(state.marker), { recursive: true });
+    fs.writeFileSync(state.marker, 'my note\n');
+    tidyPiExtension(state);
+    expect(fs.readFileSync(state.marker, 'utf8')).toBe('my note\n');
   });
 });
