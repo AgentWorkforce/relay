@@ -2555,6 +2555,93 @@ async fn a_starting_codex_session_is_told_who_it_is_and_its_local_route() {
     h.stop().await;
 }
 
+// Review on #2029: a Codex session starts before activation has put it on
+// the relay. The hook runs activation then, says the session is joining
+// while its registration is held, and names it once it is registered; the
+// folder Codex names in the hook's input is what activation checks when
+// the directory does not know the thread yet.
+#[tokio::test]
+async fn a_codex_session_starting_before_activation_is_put_on_the_relay() {
+    const NEW: &str = "01a0c221-6806-7210-af25-97e104b15050";
+    const IN_NEW: i32 = 4150;
+    let h = Harness::start().await;
+    h.call(
+        IN_CLAUDE,
+        "POST",
+        "/setup/auto-activate",
+        json!({"enabled": true}),
+    )
+    .await
+    .unwrap();
+    let release = h.fake.hold("POST /v1/agents");
+    // Discovery lists the new thread; the caller's own lookup does not know
+    // its folder yet.
+    h.sessions
+        .0
+        .lock()
+        .unwrap()
+        .push(session(SessionKind::Codex, NEW, "/Users/me/Projects/new"));
+    let mut unknown = session(SessionKind::Codex, NEW, "/x");
+    unknown.directory = None;
+    h.sessions.call_from(IN_NEW, unknown);
+    h.sessions
+        .8
+        .lock()
+        .unwrap()
+        .insert(Target::new(SessionKind::Codex, NEW));
+    let start = json!({"session_id": NEW, "hook_event_name": "SessionStart"});
+
+    // Without a folder, activation would not admit it: nothing is said.
+    assert_eq!(
+        h.call(IN_NEW, "POST", "/codex/stop-hook", start.clone())
+            .await
+            .unwrap(),
+        json!({})
+    );
+    // With Codex's cwd it is admitted; registration is held, so after the
+    // wait the session is told it is joining, with the route.
+    let with_cwd = json!({"session_id": NEW, "hook_event_name": "SessionStart",
+                          "cwd": "/Users/me/Projects/new"});
+    let joining = h
+        .call(IN_NEW, "POST", "/codex/stop-hook", with_cwd.clone())
+        .await
+        .unwrap();
+    let text = joining["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        text.starts_with("This session is joining Agent Relay on this computer;"),
+        "{text}"
+    );
+    assert!(text.contains("--method GET --path /whoami"), "{text}");
+    assert!(text.contains("--method GET --path /agents;"), "{text}");
+    assert!(text.contains("never through any other Agent Relay connector or app"));
+
+    // Registered, the next start names it.
+    release.send(true).unwrap();
+    let mut registered = false;
+    for _ in 0..100 {
+        if h.call(IN_NEW, "GET", "/whoami", Value::Null).await.is_ok() {
+            registered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(registered, "the new session is put on the relay");
+    let named = h
+        .call(IN_NEW, "POST", "/codex/stop-hook", with_cwd)
+        .await
+        .unwrap();
+    let text = named["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        text.starts_with("This session is on Agent Relay as @codex-"),
+        "{text}"
+    );
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn a_session_sends_as_itself_by_name_or_address() {
     let h = Harness::start().await;
