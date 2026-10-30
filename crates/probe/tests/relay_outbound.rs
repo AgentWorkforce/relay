@@ -2511,6 +2511,30 @@ async fn a_starting_codex_session_is_told_who_it_is_and_its_local_route() {
     assert!(text.contains("never through any other Agent Relay connector or app"));
     assert!(text.contains("Agent Relay in ChatGPT"));
 
+    // Review on #2029: a session that renamed itself is told its one
+    // current name, the one `GET /whoami` reports and it sends as.
+    h.call(IN_CODEX, "POST", "/register", json!({"name": "reviewer"}))
+        .await
+        .unwrap();
+    let whoami = h
+        .call(IN_CODEX, "GET", "/whoami", Value::Null)
+        .await
+        .unwrap();
+    let renamed = h
+        .call(IN_CODEX, "POST", "/codex/stop-hook", start.clone())
+        .await
+        .unwrap();
+    let text = renamed["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    let address = whoami["address"].as_str().unwrap();
+    assert!(
+        text.starts_with(&format!(
+            "This session is on Agent Relay as @reviewer ({address})."
+        )),
+        "{text}"
+    );
+
     // Only the Codex holding the thread is answered.
     let (status, refused) = code(
         h.call(OUTSIDE, "POST", "/codex/stop-hook", start.clone())

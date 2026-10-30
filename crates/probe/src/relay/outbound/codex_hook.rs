@@ -160,11 +160,16 @@ impl Outbound {
         let Some(commands) = self.codex_socket_commands() else {
             return Ok(json!({}));
         };
+        // Its one current name, as `GET /whoami` and its sends use: the
+        // alias once the session renamed itself.
         let registered = || {
             self.core.store.read(|store| {
-                store
-                    .registration_for(&session.target)
-                    .map(|r| (r.name.clone(), r.direct_address(&self.core.machine_prefix)))
+                store.registration_for(&session.target).map(|r| {
+                    (
+                        r.display_name().to_string(),
+                        r.current_address(&self.core.machine_prefix),
+                    )
+                })
             })
         };
         let mut identity = registered();
