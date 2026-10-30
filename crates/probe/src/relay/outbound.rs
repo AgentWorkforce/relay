@@ -322,7 +322,17 @@ pub(crate) fn probe_socket_command_with_body(
 }
 
 fn probe_command(socket: &Path, method: &str, path: &str, body: Option<&str>) -> Option<String> {
-    let executable = fetch::probe_executable()?;
+    probe_command_for(&fetch::probe_executable()?, socket, method, path, body)
+}
+
+/// [`probe_command`] through `executable`.
+pub(crate) fn probe_command_for(
+    executable: &Path,
+    socket: &Path,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> Option<String> {
     let mut parts = vec![
         executable.to_str()?,
         "relay",

@@ -56,8 +56,7 @@ static APP_DATA_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 /// data directory (Agent Relay Dev's ends `.dev`).
 pub fn configure(app_data_dir: &Path, socket: &Path) {
     let _ = APP_DATA_DIR.set(app_data_dir.to_path_buf());
-    let executable = crate::relay::outbound::fetch::probe_executable();
-    let _ = READER.set(socket_reader(executable.as_deref(), socket));
+    let _ = SOCKET.set(socket.to_path_buf());
 }
 
 /// `relay read --socket <socket>` through `executable`: the read bound to
@@ -69,9 +68,12 @@ pub fn socket_reader(executable: Option<&Path>, socket: &Path) -> Option<String>
     Some(format!("{executable} relay read --socket {socket}"))
 }
 
-/// The reader `configure` set.
-pub fn configured_reader() -> Option<&'static str> {
-    READER.get()?.as_deref()
+/// The reader for the socket `configure` set, through the probe the reply
+/// hints name now (`outbound::fetch::probe_executable`): the core's
+/// space-free link while Codex's or Claude Code's rules use it.
+pub fn configured_reader() -> Option<String> {
+    let executable = crate::relay::outbound::fetch::probe_executable();
+    socket_reader(executable.as_deref(), SOCKET.get()?)
 }
 
 /// The full texts of messages handed to terminal sessions as pointers.
@@ -271,8 +273,8 @@ pub fn reader(executable: Option<&Path>, development: bool) -> Option<String> {
     })
 }
 
-/// The reader set when the core's plugins are built.
-static READER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+/// The session socket set when the core's plugins are built.
+static SOCKET: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// Whether the session can run a pointer's read command when it gets the
 /// pointer. A Codex handoff can wait in the queue until the terminal

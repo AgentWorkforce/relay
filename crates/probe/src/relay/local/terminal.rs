@@ -36,7 +36,10 @@ impl LocalInjector {
                 message_id,
                 text,
                 target.kind,
-                reachable.then(message_pointer::configured_reader).flatten(),
+                reachable
+                    .then(message_pointer::configured_reader)
+                    .flatten()
+                    .as_deref(),
                 crate::relay::state::now_ms(),
             )
         };
