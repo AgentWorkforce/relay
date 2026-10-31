@@ -1222,7 +1222,9 @@ interface CoreAgent {
   spawn?: unknown;
 }
 
-const sessionKey = (target: CoreAgent['target']): string => `${target.kind}:${target.id}`;
+function sessionKey(target: CoreAgent['target']): string {
+  return `${target.kind}:${target.id}`;
+}
 
 /**
  * Whether `agent` is the one the local server holds in the workspace `from`;
