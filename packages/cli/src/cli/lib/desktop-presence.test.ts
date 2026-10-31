@@ -39,6 +39,23 @@ describe('desktopAppInstalled', () => {
     expect(desktopAppInstalled('linux', home, {})).toBe(true);
   });
 
+  it('finds a stopped per-user Linux tarball by its install tree', () => {
+    expect(desktopAppInstalled('linux', home, {})).toBe(false);
+    fs.mkdirSync(path.join(home, '.local', 'lib', 'agent-relay', '2026.10.66'), { recursive: true });
+    expect(desktopAppInstalled('linux', home, {})).toBe(true);
+  });
+
+  it('honours the install prefix and config folder the Linux installer does', () => {
+    const prefix = path.join(home, 'custom-prefix');
+    fs.mkdirSync(prefix);
+    expect(desktopAppInstalled('linux', home, { AGENT_RELAY_PREFIX: prefix })).toBe(true);
+
+    const config = path.join(home, 'custom-config');
+    fs.mkdirSync(path.join(config, 'systemd', 'user'), { recursive: true });
+    fs.writeFileSync(path.join(config, 'systemd', 'user', 'agent-relay.service'), '');
+    expect(desktopAppInstalled('linux', home, { XDG_CONFIG_HOME: config })).toBe(true);
+  });
+
   it('finds the per-user install on Windows', () => {
     fs.mkdirSync(path.join(home, 'Programs', 'AgentRelay'), { recursive: true });
     expect(desktopAppInstalled('win32', home, { LOCALAPPDATA: home })).toBe(true);

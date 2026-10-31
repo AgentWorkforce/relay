@@ -20,7 +20,14 @@ function desktopInstallMarkers(platform: NodeJS.Platform, home: string, env: Nod
       return [
         '/usr/share/applications/agent-relay.desktop',
         '/usr/lib/systemd/user/agent-relay.service',
-        path.join(home, '.config', 'systemd', 'user', 'agent-relay.service'),
+        // The per-user tarball: its launcher and unit sit inside this tree.
+        env.AGENT_RELAY_PREFIX?.trim() || path.join(home, '.local', 'lib', 'agent-relay'),
+        path.join(
+          env.XDG_CONFIG_HOME?.trim() || path.join(home, '.config'),
+          'systemd',
+          'user',
+          'agent-relay.service'
+        ),
       ];
     case 'win32': {
       const local = env.LOCALAPPDATA?.trim();
