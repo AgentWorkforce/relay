@@ -458,7 +458,9 @@ pub fn codex_preamble(identity: Option<(&str, &str)>, commands: &CodexSocketComm
             argument(address)
         ),
         None => format!(
-            "This session is joining Agent Relay on this computer; {} names it once it has joined.",
+            "This session is joining Agent Relay on this computer; {} names it once it has joined. \
+             Until then a send is refused as not on the relay: wait a few seconds and run the same \
+             command again, never another way.",
             commands.whoami
         ),
     };
@@ -518,6 +520,9 @@ mod tests {
         assert!(!text.contains("curl"), "{text}");
         let joining = codex_preamble(None, &commands);
         assert!(joining.contains(&commands.whoami));
+        // A send before the session is registered is refused; it retries
+        // the same way rather than reaching for another connector.
+        assert!(joining.contains("run the same command again, never another way"));
         assert!(!joining.contains("socket-request"));
         // The send shape takes a reply or an address the same way, still
         // inside the `relay send` rule.
