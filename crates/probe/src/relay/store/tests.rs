@@ -2340,19 +2340,36 @@ fn complete_archived_classification_survives_recent_list_trimming_and_store_merg
     let mut ours = Store::default();
     for n in 0..75 {
         let name = format!("archived-{n}");
-        ours.registrations.push(registration(&name, target(&format!("00000000-0000-4000-8000-{n:012}"))));
+        ours.registrations.push(registration(
+            &name,
+            target(&format!("00000000-0000-4000-8000-{n:012}")),
+        ));
         assert!(ours.mark_archived(&name, PREFIX, "2026-10-10T12:00:00Z"));
     }
-    assert_eq!(ours.archived_sessions.as_ref().unwrap().len(), ARCHIVED_SESSIONS_KEPT);
+    assert_eq!(
+        ours.archived_sessions.as_ref().unwrap().len(),
+        ARCHIVED_SESSIONS_KEPT
+    );
     assert_eq!(ours.complete_archived_keys().len(), 75);
-    assert!(ours.complete_archived_keys().contains("codex:00000000-0000-4000-8000-000000000000"));
+    assert!(ours
+        .complete_archived_keys()
+        .contains("codex:00000000-0000-4000-8000-000000000000"));
     let decoded = decode(&String::from_utf8(ours.encode()).unwrap());
-    assert_eq!(decoded.complete_archived_keys(), ours.complete_archived_keys());
+    assert_eq!(
+        decoded.complete_archived_keys(),
+        ours.complete_archived_keys()
+    );
     let merged = Store::merged(&Store::default(), &decoded, &Store::default());
-    assert_eq!(merged.complete_archived_keys(), ours.complete_archived_keys());
+    assert_eq!(
+        merged.complete_archived_keys(),
+        ours.complete_archived_keys()
+    );
     let shared = ours.complete_archived_keys();
     let mut unrelated = decoded.clone();
     unrelated.registrations[0].title = "Unrelated metadata update".into();
     let merged = Store::merged(&ours, &ours, &unrelated);
-    assert!(std::sync::Arc::ptr_eq(&shared, &merged.complete_archived_keys()), "Unchanged archive contents must retain their immutable snapshot across normal saves");
+    assert!(
+        std::sync::Arc::ptr_eq(&shared, &merged.complete_archived_keys()),
+        "Unchanged archive contents must retain their immutable snapshot across normal saves"
+    );
 }

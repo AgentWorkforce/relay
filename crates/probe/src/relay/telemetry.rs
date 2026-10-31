@@ -567,7 +567,9 @@ impl Telemetry {
         for path in [&self.identity, &self.shared.identified] {
             if let Err(error) = std::fs::remove_file(path) {
                 if error.kind() != std::io::ErrorKind::NotFound {
-                    crate::relay::diagnostics::write(format_args!("relay: could not remove a telemetry id: {error}"));
+                    crate::relay::diagnostics::write(format_args!(
+                        "relay: could not remove a telemetry id: {error}"
+                    ));
                 }
             }
         }
@@ -734,7 +736,9 @@ impl Telemetry {
             .unwrap_or_else(|| {
                 let fresh = new_uuid();
                 if let Err(error) = write_file(&self.identity, format!("{fresh}\n").as_bytes()) {
-                    crate::relay::diagnostics::write(format_args!("relay: could not save the telemetry id: {error}"));
+                    crate::relay::diagnostics::write(format_args!(
+                        "relay: could not save the telemetry id: {error}"
+                    ));
                 }
                 fresh
             });
@@ -817,7 +821,9 @@ fn drain(shared: &Shared, sender: &dyn TelemetrySender) {
                     if let Err(error) =
                         write_file(&shared.identified, format!("{user}\n").as_bytes())
                     {
-                        crate::relay::diagnostics::write(format_args!("relay: could not save the telemetry merge: {error}"));
+                        crate::relay::diagnostics::write(format_args!(
+                            "relay: could not save the telemetry merge: {error}"
+                        ));
                     }
                     state.identified = Some(user);
                 }

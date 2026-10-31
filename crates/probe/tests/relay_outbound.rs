@@ -5786,21 +5786,50 @@ async fn native_continuation_is_on_once_claimed_and_only_the_person_turns_it_bac
     h.register(IN_CODEX, json!({"name": "codex-api"})).await;
     // Until the computer is claimed the route reads as off, and an agent
     // asking for it is turning it on: the person's to do, in Settings.
-    let (status, error) = code(h.call(IN_CODEX, "PATCH", "/settings", json!({"mobile_native_continuation": true})).await);
+    let (status, error) = code(
+        h.call(
+            IN_CODEX,
+            "PATCH",
+            "/settings",
+            json!({"mobile_native_continuation": true}),
+        )
+        .await,
+    );
     assert_eq!((status, error.as_str()), (403, "person_only_setting"));
     assert_eq!(h.core.settings()["mobile_native_continuation"], false);
-    h.core.hub().update(|status| status.spawn = Some(SpawnStatus {
-        state: SpawnState::Live,
-        claim: Some(SpawnClaim { state: SpawnClaimState::Claimed, note: None }),
-        ..SpawnStatus::default()
-    }));
+    h.core.hub().update(|status| {
+        status.spawn = Some(SpawnStatus {
+            state: SpawnState::Live,
+            claim: Some(SpawnClaim {
+                state: SpawnClaimState::Claimed,
+                note: None,
+            }),
+            ..SpawnStatus::default()
+        })
+    });
     // Once claimed it is on by default: asking for what already holds
     // changes nothing and is no widening.
     assert_eq!(h.core.settings()["mobile_native_continuation"], true);
-    let same = h.call(IN_CODEX, "PATCH", "/settings", json!({"mobile_native_continuation": true})).await.unwrap();
+    let same = h
+        .call(
+            IN_CODEX,
+            "PATCH",
+            "/settings",
+            json!({"mobile_native_continuation": true}),
+        )
+        .await
+        .unwrap();
     assert_eq!(same["changed"], json!([]));
     // An agent may turn it off…
-    let off = h.call(IN_CODEX, "PATCH", "/settings", json!({"mobile_native_continuation": false})).await.unwrap();
+    let off = h
+        .call(
+            IN_CODEX,
+            "PATCH",
+            "/settings",
+            json!({"mobile_native_continuation": false}),
+        )
+        .await
+        .unwrap();
     assert_eq!(h.core.settings()["mobile_native_continuation"], false);
     assert_eq!(off["changed"].as_array().unwrap().len(), 1);
     assert_eq!(off["changed"][0]["key"], "mobile_native_continuation");
@@ -5819,7 +5848,9 @@ async fn native_continuation_is_on_once_claimed_and_only_the_person_turns_it_bac
         assert_eq!(values["agent_changes"].as_array().unwrap().len(), 1);
     }
     // Settings in the person's app keeps its existing core path.
-    h.core.set_settings(&serde_json::from_value(json!({"mobile_native_continuation": true})).unwrap()).unwrap();
+    h.core
+        .set_settings(&serde_json::from_value(json!({"mobile_native_continuation": true})).unwrap())
+        .unwrap();
     assert_eq!(h.core.settings()["mobile_native_continuation"], true);
     h.stop().await;
 }
@@ -5907,15 +5938,25 @@ async fn a_session_can_keep_messaging_one_peer_until_its_rate_limit() {
     }
     assert_eq!(
         code(
-            h.call(IN_CODEX, "POST", "/send", json!({"to": "alice", "text": "more"}))
-                .await
+            h.call(
+                IN_CODEX,
+                "POST",
+                "/send",
+                json!({"to": "alice", "text": "more"})
+            )
+            .await
         ),
         (429, "rate_limited".into())
     );
     // The next minute the pair carries on; nothing holds it for longer.
     h.clock.advance(Duration::from_secs(61));
-    h.call(IN_CODEX, "POST", "/send", json!({"to": "alice", "text": "after"}))
-        .await
-        .unwrap();
+    h.call(
+        IN_CODEX,
+        "POST",
+        "/send",
+        json!({"to": "alice", "text": "after"}),
+    )
+    .await
+    .unwrap();
     h.stop().await;
 }

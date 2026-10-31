@@ -15,6 +15,7 @@ const DAYTONA_PROVIDER_SANDBOX_ID_PATTERN =
  * not a caller-controlled SDK override.
  */
 export const CANONICAL_RELAYCAST_ORIGIN = 'https://cast.agentrelay.com';
+export const ARMADILLO_RELAYCAST_ORIGIN = 'https://armadillo.agentrelay.com';
 export const AGENT37_RELAYCAST_ORIGIN = 'https://agent37-cast.agentrelay.com';
 export const DEV_CLOUD_API_URL = 'https://dev.agentrelay.com/cloud';
 export const DEV_RELAYCAST_ORIGIN = 'https://dev-cast.agentrelay.com';
@@ -315,8 +316,10 @@ function isExactDevCloudApiUrl(apiUrl: string | undefined): boolean {
   return apiUrl === DEV_CLOUD_API_URL;
 }
 
-function canonicalRelaycastOrigin(apiUrl: string | undefined): string {
-  return isExactDevCloudApiUrl(apiUrl) ? DEV_RELAYCAST_ORIGIN : CANONICAL_RELAYCAST_ORIGIN;
+function canonicalRelaycastOrigins(apiUrl: string | undefined): string[] {
+  return isExactDevCloudApiUrl(apiUrl)
+    ? [DEV_RELAYCAST_ORIGIN]
+    : [CANONICAL_RELAYCAST_ORIGIN, ARMADILLO_RELAYCAST_ORIGIN];
 }
 
 function normalizeRelaycastOrigin(
@@ -357,15 +360,16 @@ export function normalizeRelaycastTarget(value: unknown, apiUrl?: string): Cloud
   if (route !== 'canonical' && route !== 'agent37-isolated') {
     throw new Error('Cloud fleet sandbox response has an unknown Relaycast route.');
   }
-  const expectedCanonicalOrigin = canonicalRelaycastOrigin(apiUrl);
+  const expectedCanonicalOrigins = canonicalRelaycastOrigins(apiUrl);
   const trustedOrigins = new Set([
     CANONICAL_RELAYCAST_ORIGIN,
+    ARMADILLO_RELAYCAST_ORIGIN,
     AGENT37_RELAYCAST_ORIGIN,
     ...(isExactDevCloudApiUrl(apiUrl) ? [DEV_RELAYCAST_ORIGIN] : []),
   ]);
   const baseUrl = normalizeRelaycastOrigin(value.baseUrl, 'relaycastTarget.baseUrl', trustedOrigins);
-  const expectedOrigin = route === 'canonical' ? expectedCanonicalOrigin : AGENT37_RELAYCAST_ORIGIN;
-  if (baseUrl !== expectedOrigin) {
+  const expectedOrigins = route === 'canonical' ? expectedCanonicalOrigins : [AGENT37_RELAYCAST_ORIGIN];
+  if (!expectedOrigins.includes(baseUrl)) {
     throw new Error('Cloud fleet sandbox response mapped Relaycast route to the wrong origin.');
   }
   const workspaceId = readString(value, 'workspaceId');
@@ -373,7 +377,7 @@ export function normalizeRelaycastTarget(value: unknown, apiUrl?: string): Cloud
     throw new Error('Cloud fleet sandbox response is missing relaycastTarget.workspaceId.');
   }
   const relaycastApiKey = readString(value, 'relaycastApiKey');
-  if (!relaycastApiKey || !/^rk_live_[A-Za-z0-9_-]+$/.test(relaycastApiKey)) {
+  if (!relaycastApiKey || !/^(rk_live_|ar_ws_)[A-Za-z0-9_-]+$/.test(relaycastApiKey)) {
     throw new Error('Cloud fleet sandbox response has an invalid Relaycast API key.');
   }
   return { route, baseUrl, workspaceId, relaycastApiKey };
@@ -411,7 +415,7 @@ function assertProviderRelaycastTarget(
     return;
   }
   if (providerId !== undefined && target) {
-    if (target.route !== 'canonical' || target.baseUrl !== canonicalRelaycastOrigin(apiUrl)) {
+    if (target.route !== 'canonical' || !canonicalRelaycastOrigins(apiUrl).includes(target.baseUrl)) {
       throw new Error(
         `Cloud fleet sandbox response mapped ${providerId} to a non-canonical Relaycast target.`
       );

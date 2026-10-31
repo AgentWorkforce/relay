@@ -15,11 +15,11 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 #[cfg(any(target_os = "macos", test))]
-mod signature_cache;
-#[cfg(any(target_os = "macos", test))]
 mod macos_args;
 #[cfg(all(target_os = "macos", test))]
 mod macos_args_bench;
+#[cfg(any(target_os = "macos", test))]
+mod signature_cache;
 
 /// How far up a process tree a caller is followed.
 pub const MAX_ANCESTRY: usize = 64;

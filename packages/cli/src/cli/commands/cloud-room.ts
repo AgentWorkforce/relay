@@ -193,7 +193,7 @@ function normalizeRoomSession(payload: unknown): RoomSession {
   );
   if (
     typeof response.agentToken !== 'string' ||
-    !response.agentToken.trim().startsWith('at_live_') ||
+    !/^(at_live_|ar_ag_)/.test(response.agentToken.trim()) ||
     response.observerToken !== undefined
   ) {
     throw new Error('Cloud room returned an invalid participant session response.');

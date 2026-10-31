@@ -68,7 +68,9 @@ impl Core {
         {
             return Ok(());
         }
-        let changed = journal::edit(&self.config.app_data_dir, |queue| Ok(queue.cancel_teammates()))?;
+        let changed = journal::edit(&self.config.app_data_dir, |queue| {
+            Ok(queue.cancel_teammates())
+        })?;
         if changed {
             let registrations = self.store.read(|store| store.registrations.clone());
             for registration in registrations.iter().filter(|r| eligible(r)) {

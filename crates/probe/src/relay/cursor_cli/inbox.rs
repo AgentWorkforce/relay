@@ -167,7 +167,11 @@ fn renew(staged: &Path) {
 
 /// When `staged` was staged, from its lease; `None` without one.
 fn staged_at(staged: &Path) -> Option<u128> {
-    std::fs::read_to_string(lease(staged)).ok()?.trim().parse().ok()
+    std::fs::read_to_string(lease(staged))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// A claim whose hook did not tombstone it: still in hand while the hook

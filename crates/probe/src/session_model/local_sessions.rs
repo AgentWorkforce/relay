@@ -437,9 +437,10 @@ mod tests {
     }
     #[test]
     fn column_sorting_matches_shared_contract_in_both_directions() {
-        let fixture: serde_json::Value =
-            serde_json::from_str(include_str!("../../tests/fixtures/shared/session-sort-cases.json"))
-                .unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/shared/session-sort-cases.json"
+        ))
+        .unwrap();
         let input = fixture["rows"].as_array().unwrap();
         let uploads: Vec<UploadSession> = input
             .iter()

@@ -4,9 +4,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { bindOrigin } from '../lib/relaycast-origin-binding.js';
+import { bindOrigin, boundOrigin } from '../lib/relaycast-origin-binding.js';
 
 vi.mock('@agent-relay/cloud', () => ({
+  ARMADILLO_RELAYCAST_ORIGIN: 'https://armadillo.agentrelay.com',
+  CANONICAL_RELAYCAST_ORIGIN: 'https://cast.agentrelay.com',
   readWorkspaceStore: vi.fn(() => ({ workspaces: {} })),
   resolveActiveWorkspace: vi.fn(),
   setWorkspaceKey: vi.fn(),
@@ -287,6 +289,44 @@ describe('registerWorkspaceCommands', () => {
       const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
       expect(output).toContain("relay init --url https://relay.corp.test:8443 --key <key> --name '=corp'");
       expect(output).not.toContain('cast.agentrelay.com');
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('workspace create defaults to armadillo and binds the new key there', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-create-home-'));
+    vi.stubEnv('AGENT_RELAY_HOME', home);
+    vi.stubEnv('RELAY_BASE_URL', '');
+    try {
+      const { program, deps } = createHarness();
+      vi.mocked(deps.createWorkspace).mockResolvedValueOnce({ workspaceKey: 'rk_live_fresh' } as never);
+
+      await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'fresh']);
+
+      expect(deps.createWorkspace).toHaveBeenCalledWith('fresh', 'https://armadillo.agentrelay.com');
+      expect(boundOrigin('rk_live_fresh')).toBe('https://armadillo.agentrelay.com');
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('workspace join names armadillo for a key bound there, and nothing for an unbound one', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-join-home-'));
+    vi.stubEnv('AGENT_RELAY_HOME', home);
+    vi.stubEnv('RELAY_BASE_URL', '');
+    try {
+      bindOrigin('rk_live_armadillo', 'https://armadillo.agentrelay.com');
+      const { program, deps } = createHarness();
+
+      await program.parseAsync(['node', 'agent-relay', 'workspace', 'join', 'one', 'rk_live_armadillo']);
+      await program.parseAsync(['node', 'agent-relay', 'workspace', 'join', 'two', 'rk_live_before']);
+
+      const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+      expect(output).toContain('relay init --url https://armadillo.agentrelay.com --key <key> --name one');
+      expect(output).toContain('relay init --key <key> --name two');
     } finally {
       vi.unstubAllEnvs();
       fs.rmSync(home, { recursive: true, force: true });

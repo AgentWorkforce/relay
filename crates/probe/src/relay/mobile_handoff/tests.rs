@@ -1185,7 +1185,8 @@ async fn teammate_direct_messages_start_user_turns_unless_turned_off() {
         })
     });
     assert!(
-        core.store.read(|store| store.mobile_claude_handoff.is_none()),
+        core.store
+            .read(|store| store.mobile_claude_handoff.is_none()),
         "nothing was turned on: both routes are on by default"
     );
     assert!(core.mobile_handoff_enabled(&registration));
@@ -1208,7 +1209,10 @@ async fn teammate_direct_messages_start_user_turns_unless_turned_off() {
         .session_text(&registration, (&delivery, None), false, false)
         .await;
     assert_eq!(source, InputSource::Peer);
-    assert!(text.starts_with("[via Agent Relay — from @teammate"), "{text}");
+    assert!(
+        text.starts_with("[via Agent Relay — from @teammate"),
+        "{text}"
+    );
     assert_eq!(
         bridge
             .handle(4100, uid, &request("poll", json!({"version":"2.1.310"})))
@@ -1242,11 +1246,10 @@ async fn teammate_direct_messages_start_user_turns_unless_turned_off() {
         "a teammate's answer is not sent to the owner's phone"
     );
     // Retrying the same delivery finds its receipt, never a second turn.
-    assert!(
-        core.previous_mobile_delivery(&registration, &delivery, true)
-            .await
-            .is_some()
-    );
+    assert!(core
+        .previous_mobile_delivery(&registration, &delivery, true)
+        .await
+        .is_some());
 
     // A channel post or @mention stays a peer message.
     let mut mention = delivery.clone();
@@ -1258,7 +1261,10 @@ async fn teammate_direct_messages_start_user_turns_unless_turned_off() {
         .session_text(&registration, (&mention, None), false, false)
         .await;
     assert_eq!(source, InputSource::Peer);
-    assert!(text.starts_with("[via Agent Relay — from @teammate"), "{text}");
+    assert!(
+        text.starts_with("[via Agent Relay — from @teammate"),
+        "{text}"
+    );
 
     // A second teammate message queued while the first is still being
     // submitted, then the setting turned off: the queued one is cancelled
@@ -1275,12 +1281,8 @@ async fn teammate_direct_messages_start_user_turns_unless_turned_off() {
             .await,
         InjectOutcome::Waiting(_)
     ));
-    core.set_store_settings(
-        json!({"teammate_native_input": false})
-            .as_object()
-            .unwrap(),
-    )
-    .unwrap();
+    core.set_store_settings(json!({"teammate_native_input": false}).as_object().unwrap())
+        .unwrap();
     assert!(matches!(
         core.previous_mobile_delivery(&registration, &queued, true)
             .await,
@@ -1288,11 +1290,10 @@ async fn teammate_direct_messages_start_user_turns_unless_turned_off() {
     ));
     // The message the plugin already holds a lease on is not pulled back:
     // it settles through its acknowledgement.
-    assert!(
-        core.previous_mobile_delivery(&registration, &delivery, true)
-            .await
-            .is_some_and(|outcome| matches!(outcome, InjectOutcome::Waiting(_)))
-    );
+    assert!(core
+        .previous_mobile_delivery(&registration, &delivery, true)
+        .await
+        .is_some_and(|outcome| matches!(outcome, InjectOutcome::Waiting(_))));
     let mut later = delivery.clone();
     later.id = "teammate-delivery-3".into();
     later.message_id = "teammate-message-3".into();
@@ -1300,5 +1301,8 @@ async fn teammate_direct_messages_start_user_turns_unless_turned_off() {
         .session_text(&registration, (&later, None), false, false)
         .await;
     assert_eq!(source, InputSource::Peer);
-    assert!(text.starts_with("[via Agent Relay — from @teammate"), "{text}");
+    assert!(
+        text.starts_with("[via Agent Relay — from @teammate"),
+        "{text}"
+    );
 }

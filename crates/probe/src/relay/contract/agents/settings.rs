@@ -266,7 +266,11 @@ pub struct ClaudeConfigDirChange {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SettingsChange {
-    #[serde(default, deserialize_with = "given", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "given",
+        skip_serializing_if = "Option::is_none"
+    )]
     #[schemars(with = "bool")]
     pub mobile_native_continuation: Option<bool>,
     #[serde(

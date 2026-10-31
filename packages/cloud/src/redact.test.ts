@@ -27,6 +27,12 @@ describe('redactCredentialValues', () => {
     ).toBe('denied for at_live_…cdef with session cld_at_…cdef and join rjt_live_…cdef');
   });
 
+  it('masks armadillo credentials wherever they are embedded', () => {
+    expect(
+      redactCredentialValues('GET /v1/x?key=ar_ws_0123456789_abcdef denied for ar_ag_0123456789_abcdef')
+    ).toBe('GET /v1/x?key=ar_ws_…cdef denied for ar_ag_…cdef');
+  });
+
   it('masks a short-bodied credential entirely instead of leaking most of it', () => {
     expect(redactCredentialValues('bad key rk_live_abcd rejected')).toBe('bad key rk_live_… rejected');
     expect(redactCredentialValues('bad key rk_live_abcde rejected')).toBe('bad key rk_live_… rejected');

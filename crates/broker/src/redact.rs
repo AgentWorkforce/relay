@@ -34,4 +34,11 @@ mod tests {
         assert!(!redacted.contains("abc"));
         assert!(!redacted.contains("xyz"));
     }
+
+    #[test]
+    fn redacts_armadillo_credentials_in_sensitive_fields() {
+        let redacted = redact("api_key: ar_ws_secret token=ar_ag_secret");
+        assert!(!redacted.contains("ar_ws_"));
+        assert!(!redacted.contains("ar_ag_"));
+    }
 }

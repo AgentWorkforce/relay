@@ -1089,7 +1089,7 @@ fn startup_membership_waiter_id(
 
 fn normalize_workspace_key(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
-    if trimmed.starts_with("rk_") {
+    if trimmed.starts_with("rk_") || trimmed.starts_with("ar_ws_") {
         Some(trimmed.to_string())
     } else {
         None
@@ -1190,6 +1190,9 @@ fn auth_http_status(err: &anyhow::Error) -> Option<StatusCode> {
         })
 }
 
+/// Where a credential with no recorded server goes. `relay init --hosted`
+/// creates workspaces on armadillo and binds their keys to it, so this stays
+/// on cast: an unbound key predates that default and must not move with it.
 pub(crate) const DEFAULT_RELAYCAST_BASE_URL: &str = "https://cast.agentrelay.com";
 const RELAYCAST_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 

@@ -47,10 +47,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-mod directory_trait;
-mod registered;
 mod codex_router;
+mod directory_trait;
 mod native_continuation;
+mod registered;
 mod session_directory;
 use session_directory::fleet_key;
 mod routes;
@@ -1153,7 +1153,6 @@ impl LocalInjector {
         }
     }
 
-
     /// Launches agent CLIs with the supplied `environment` hook.
     pub fn with_agent_environment(mut self, environment: Option<claude::AgentEnvironment>) -> Self {
         self.claude = claude::SystemRunner { environment };
@@ -1643,21 +1642,35 @@ impl LocalInjector {
 }
 
 impl Injector for LocalInjector {
-    fn codex_mobile_control(&self, registration: &crate::relay::store::Registration, message: &str)
-        -> Option<Box<dyn crate::relay::codex_mobile::provider::Control>> {
-        (registration.target.kind == SessionKind::Codex).then(|| self.codex.mobile_control(&self.config.codex, &registration.target.id, message)).flatten()
+    fn codex_mobile_control(
+        &self,
+        registration: &crate::relay::store::Registration,
+        message: &str,
+    ) -> Option<Box<dyn crate::relay::codex_mobile::provider::Control>> {
+        (registration.target.kind == SessionKind::Codex)
+            .then(|| {
+                self.codex
+                    .mobile_control(&self.config.codex, &registration.target.id, message)
+            })
+            .flatten()
     }
     fn native_continuation(&self, registration: &crate::relay::store::Registration) -> bool {
         self.can_continue_native(registration)
     }
 
-    fn native_continuation_reserved(&self, registration: &crate::relay::store::Registration, route: &crate::relay::inject::DeliveryRoute<'_>) -> bool {
+    fn native_continuation_reserved(
+        &self,
+        registration: &crate::relay::store::Registration,
+        route: &crate::relay::inject::DeliveryRoute<'_>,
+    ) -> bool {
         self.has_native_continuation_choice(registration, route)
     }
 
     fn inject_native(
-        &self, registration: &crate::relay::store::Registration,
-        route: &crate::relay::inject::DeliveryRoute<'_>, text: &str,
+        &self,
+        registration: &crate::relay::store::Registration,
+        route: &crate::relay::inject::DeliveryRoute<'_>,
+        text: &str,
         admit: &(dyn Fn() -> bool + Send + Sync),
     ) -> InjectOutcome {
         self.deliver_native_continuation(registration, route, text, admit)

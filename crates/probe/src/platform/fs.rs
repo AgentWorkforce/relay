@@ -240,7 +240,10 @@ mod tests {
 
     #[test]
     fn other_errors_are_not_a_held_lock() {
-        assert!(!lock_held(&io::Error::new(io::ErrorKind::PermissionDenied, "refused")));
+        assert!(!lock_held(&io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "refused"
+        )));
         assert!(!lock_held(&io::Error::from_raw_os_error(2)));
     }
 }

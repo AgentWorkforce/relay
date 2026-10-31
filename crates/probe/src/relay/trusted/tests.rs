@@ -239,7 +239,10 @@ async fn members_are_not_read_where_no_agent_applies() {
 #[test]
 fn senders_match_by_address_or_name() {
     let trusted = vec!["ada-lovelace".to_string(), "Bot@Node-9".to_string()];
-    assert!(matches(&trusted, &dm("Ada-Lovelace", "ada-lovelace@sf-mini")));
+    assert!(matches(
+        &trusted,
+        &dm("Ada-Lovelace", "ada-lovelace@sf-mini")
+    ));
     assert!(matches(&trusted, &dm("someone", "bot@node-9")));
     // An address entry never matches a name, and strangers stay out.
     assert!(!matches(&trusted, &dm("bot", "bot@node-1")));

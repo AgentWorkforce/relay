@@ -176,7 +176,11 @@ fn is_invite(word: &str) -> bool {
     let lower = word.to_ascii_lowercase();
     let word = lower.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
     // A key anywhere in the word, as in `RELAY_API_KEY=rk_live_…`.
-    if word.starts_with("agentrelay://") || word.contains("rk_live_") || word.contains("rk_test_") {
+    if word.starts_with("agentrelay://")
+        || ["rk_live_", "rk_test_", "ar_ws_", "ar_ag_"]
+            .iter()
+            .any(|prefix| word.contains(prefix))
+    {
         return true;
     }
     // An assignment of a secret: `API_TOKEN=…`, `password:…`.
@@ -501,6 +505,10 @@ mod tests {
             )
             .as_deref(),
             Some("Join now · open then use")
+        );
+        assert_eq!(
+            without_invites("use ar_ws_secret or RELAY_AGENT_TOKEN=ar_ag_secret then run"),
+            "use or then run"
         );
         assert_eq!(
             without_invites("Set RELAY_API_KEY=rk_live_secret and api_token:abc then run"),

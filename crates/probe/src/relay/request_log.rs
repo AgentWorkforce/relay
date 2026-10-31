@@ -104,7 +104,7 @@ fn scrub_text(value: &str, secret: &str) -> String {
         .scan(false, |bearer, word| {
             let lower = word.to_ascii_lowercase();
             let hide = *bearer
-                || ["rk_", "at_", "sk_", "eyj"]
+                || ["rk_", "at_", "ar_", "sk_", "eyj"]
                     .iter()
                     .any(|prefix| lower.trim_start_matches(['\"', '\'']).starts_with(prefix));
             *bearer = lower.trim() == "bearer";
@@ -326,6 +326,13 @@ pub async fn observe<T: Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_service_echo_of_an_armadillo_credential_is_redacted() {
+        let text = scrub_text("refused ar_ws_secret for ar_ag_secret", "");
+        assert!(!text.contains("ar_ws_secret"), "{text}");
+        assert!(!text.contains("ar_ag_secret"), "{text}");
+    }
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     #[test]
     fn removes_secrets_and_bounds_bodies() {

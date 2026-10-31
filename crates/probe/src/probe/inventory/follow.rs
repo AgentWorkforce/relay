@@ -357,7 +357,8 @@ impl<'a> InventoryLoop<'a> {
             eprintln!("{diagnostic}");
         }
         let clean = self.rounds.is_empty();
-        let boundary = clean || (!self.partial_pass_finished && self.rounds.healthy_pass_exhausted());
+        let boundary =
+            clean || (!self.partial_pass_finished && self.rounds.healthy_pass_exhausted());
         if boundary {
             self.partial_pass_finished = !clean;
             let interval = if self.watch.as_ref().is_some_and(Watch::complete) {

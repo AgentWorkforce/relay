@@ -37,7 +37,10 @@ pub(super) fn remember_processes(sessions: &[TerminalSession]) {
         if seen.len() >= PROCESSES_KEPT && !seen.contains_key(&session.session_id) {
             seen.clear();
         }
-        seen.insert(session.session_id.clone(), (session.pid, start.clone(), now));
+        seen.insert(
+            session.session_id.clone(),
+            (session.pid, start.clone(), now),
+        );
     }
 }
 

@@ -57,14 +57,27 @@ fn outcome(state: &State) -> Option<InjectOutcome> {
 }
 
 impl CodexRouter {
-    pub(crate) fn mobile_control(&self, config: &CodexConfig, thread: &str, message: &str) -> Option<Box<dyn crate::relay::codex_mobile::provider::Control>> {
-        let path=receipt_path(&self.routes.native_receipts()?, thread, message);
-        let owner=journal::edit(&path, |store| {
+    pub(crate) fn mobile_control(
+        &self,
+        config: &CodexConfig,
+        thread: &str,
+        message: &str,
+    ) -> Option<Box<dyn crate::relay::codex_mobile::provider::Control>> {
+        let path = receipt_path(&self.routes.native_receipts()?, thread, message);
+        let owner = journal::edit(&path, |store| {
             store.validate_scope(&thread.to_ascii_lowercase(), message)?;
-            Ok(store.entry(&thread.to_ascii_lowercase(), message)
-                .filter(|entry| entry.state == State::Started).and_then(|entry|entry.owner.clone()))
-        }).ok()??;
-        let window=crate::relay::codex_mobile::provider::Window::open(config.clone(), thread, message, &owner)?;
+            Ok(store
+                .entry(&thread.to_ascii_lowercase(), message)
+                .filter(|entry| entry.state == State::Started)
+                .and_then(|entry| entry.owner.clone()))
+        })
+        .ok()??;
+        let window = crate::relay::codex_mobile::provider::Window::open(
+            config.clone(),
+            thread,
+            message,
+            &owner,
+        )?;
         Some(Box::new(window))
     }
     /// A loaded app-server can outlive its final UI subscriber. Only the

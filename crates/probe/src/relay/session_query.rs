@@ -1,10 +1,10 @@
 //! Core-owned catalog projection. History owns its schema: seed and incremental
 //! repairs use only the SDK. SQLite indexes belong solely to this disposable
 //! projection. Clients receive one bounded page, never an increasing prefix.
-use crate::session_model::{LocalSessionQuery, LocalSessionRow};
 use crate::relay::contract::account::{SessionQueryPage, SessionQueryParams, UploadSession};
 use crate::relay::contract::agents::LocalSession;
 use crate::relay::protocol::{ErrorKind, RpcError};
+use crate::session_model::{LocalSessionQuery, LocalSessionRow};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -215,8 +215,8 @@ fn verification_pending(
     row: &LocalSessionRow,
     status: Option<&crate::session_model::StatusView>,
 ) -> bool {
-    use crate::session_model::SessionUploadState;
     use crate::relay::contract::account::UploadShareStatus;
+    use crate::session_model::SessionUploadState;
     let Some(upload) = row
         .upload
         .as_ref()

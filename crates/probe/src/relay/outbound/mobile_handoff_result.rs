@@ -80,7 +80,10 @@ impl Outbound {
         }
         // Owner verification includes a remote identity lookup. An unavailable
         // lookup is not evidence that this answer belongs to a different owner.
-        let binding = self.core.mobile_handoff_binding(&registration).await
+        let binding = self
+            .core
+            .mobile_handoff_binding(&registration)
+            .await
             .ok_or_else(owner_unavailable)?;
         if !self
             .core

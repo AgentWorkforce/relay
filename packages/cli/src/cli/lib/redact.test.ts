@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+
 import { maskSecret, redactSecrets } from './redact.js';
 
 describe('redactSecrets', () => {
@@ -70,6 +73,25 @@ describe('redactSecrets', () => {
 });
 
 describe('maskSecret', () => {
+  it('keeps the prefix of an armadillo credential and hides its body', () => {
+    expect(maskSecret('ar_ws_0123456789abcdef')).toBe('ar_ws_…cdef');
+    expect(maskSecret('ar_ag_0123456789abcdef')).toBe('ar_ag_…cdef');
+  });
+
+  it('redacts the shell redact() in scripts/try-relay-init.sh for armadillo credentials', () => {
+    const script = fs.readFileSync(
+      new URL('../../../../../scripts/try-relay-init.sh', import.meta.url),
+      'utf8'
+    );
+    const redact = script.split('\n').find((line) => line.startsWith('redact() '));
+    const output = execFileSync(
+      'bash',
+      ['-c', `${redact}\nprintf 'key ar_ws_abc123 token ar_ag_def456' | redact`],
+      { encoding: 'utf8' }
+    );
+    expect(output).toBe('key ar_<redacted> token ar_<redacted>');
+  });
+
   it('keeps a known prefix and the last four characters', () => {
     expect(maskSecret('rk_live_0123456789abcdef')).toBe('rk_live_…cdef');
     expect(maskSecret('rjt_live_0123456789abcdef')).toBe('rjt_live_…cdef');

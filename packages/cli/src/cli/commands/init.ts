@@ -10,7 +10,10 @@ import {
   assertOriginBindingsWritable,
   boundOrigin,
   configuredOrigin,
+  DEFAULT_HOSTED_ORIGIN,
   guardCredentialOrigin,
+  isJoinableHostedOrigin,
+  UNBOUND_CREDENTIAL_ORIGIN,
 } from '../lib/relaycast-origin-binding.js';
 import {
   TOOL_IDS,
@@ -108,7 +111,6 @@ import {
 export const LOCAL_ENGINE_VERSION = '11.1.0';
 export const LOCAL_ENGINE_PACKAGE = `@relaycast/engine@${LOCAL_ENGINE_VERSION}`;
 const DEFAULT_LOCAL_PORT = 8787;
-const HOSTED_ORIGIN = 'https://cast.agentrelay.com';
 const START_TIMEOUT_MS = 120_000;
 
 /** Injectable effects for `relay init`, replaced in tests. */
@@ -574,8 +576,8 @@ function teammatePackage(version: string | undefined): string {
  * server names it), starts the Agent Relay core and turns on message
  * injection for their agent tools. `relay workspace join` only saves it.
  */
-function joinCommand(key: string, version: string | undefined): string {
-  return `npx -y ${teammatePackage(version)} init --key ${shellQuote(key)}`;
+function joinCommand(key: string, origin: string, version: string | undefined): string {
+  return `npx -y ${teammatePackage(version)} init --url ${shellWord(origin)} --key ${shellQuote(key)}`;
 }
 
 /**
@@ -770,11 +772,13 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
   if (choice.mode === 'own') {
     const { key } = choice;
     if (!key) throw new Error('Pass --key with --url for your own server.');
-    // `--key` alone joins the hosted service. A key already bound to a
-    // self-hosted server is never sent there: only an explicit --url moves it.
-    const url = choice.url ?? HOSTED_ORIGIN;
+    // `--key` alone follows the key's server. A key with none recorded and no
+    // armadillo format predates that default, so it goes where unbound keys
+    // go: only an explicit --url sends it anywhere else. A key bound to a
+    // self-hosted server is never sent to the hosted service.
     const bound = choice.url ? undefined : boundOrigin(key);
-    if (bound && new URL(bound).origin !== HOSTED_ORIGIN) {
+    const url = choice.url ?? bound ?? UNBOUND_CREDENTIAL_ORIGIN;
+    if (bound && !isJoinableHostedOrigin(new URL(bound).origin)) {
       throw new Error(
         `This workspace key belongs to ${new URL(bound).origin}, so relay init will not send it to the hosted ` +
           `service. To use it there, run: relay init --url ${shellWord(new URL(bound).origin)} --key <key>`
@@ -785,7 +789,7 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     const workspace = await verifyWorkspace(deps, origin, key);
     const workspaceId = workspace.id;
     guardCredentialOrigin(key, url);
-    const hosted = origin === HOSTED_ORIGIN;
+    const hosted = isJoinableHostedOrigin(origin);
     // Named as the person says, else as the server names the workspace.
     const name =
       choice.name ??
@@ -825,21 +829,23 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     const name = choice.name ?? defaultHostedName(deps.toolContext().projectRoot);
     const activation = await sharedActivation(deps);
     refuseActiveName(name, undefined, activation);
-    const relay = await deps.createWorkspace(name, HOSTED_ORIGIN);
+    assertOriginBindingsWritable(DEFAULT_HOSTED_ORIGIN);
+    const relay = await deps.createWorkspace(name, DEFAULT_HOSTED_ORIGIN);
     if (!relay.workspaceKey) throw new Error('The hosted service did not return a workspace key.');
+    guardCredentialOrigin(relay.workspaceKey, DEFAULT_HOSTED_ORIGIN);
     const { lines, ...saved } = saveWorkspace(name, relay.workspaceKey, activation);
     return moveRunningCore(deps, {
       ...saved,
-      workspaceId: await workspaceIdOf(deps, HOSTED_ORIGIN, relay.workspaceKey),
+      workspaceId: await workspaceIdOf(deps, DEFAULT_HOSTED_ORIGIN, relay.workspaceKey),
       mode: 'hosted',
-      origin: HOSTED_ORIGIN,
+      origin: DEFAULT_HOSTED_ORIGIN,
       headline: `Created hosted workspace "${name}".`,
       details: [
         ...(choice.name ? [] : [`Named after you and this folder; pass --name to choose another.`]),
         ...lines,
         'On another machine, run this in the project to join it and connect its agent tools ' +
           '(treat this key like a password):',
-        `  ${joinCommand(relay.workspaceKey, deps.cliVersion)}`,
+        `  ${joinCommand(relay.workspaceKey, DEFAULT_HOSTED_ORIGIN, deps.cliVersion)}`,
       ],
     });
   }

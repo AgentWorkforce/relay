@@ -13,9 +13,10 @@ pub(in crate::live) fn remote(
         while !stopping(&cancelled) {
             let started = Instant::now();
             let before = store.head_revision().ok();
-            let result = super::super::super::remote_sources::sweep(store.db_path(), &store, || {
-                stopping(&cancelled)
-            });
+            let result =
+                super::super::super::remote_sources::sweep(store.db_path(), &store, || {
+                    stopping(&cancelled)
+                });
             super::super::super::remote_sources::report_sweep(store.db_path(), started, &result);
             if result.is_ok() && store.head_revision().ok() != before {
                 shared.signal();
@@ -36,4 +37,3 @@ impl Drop for Remote {
         }
     }
 }
-

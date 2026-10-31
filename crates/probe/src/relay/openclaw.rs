@@ -139,14 +139,18 @@ impl OpenClawConfig {
     /// The local history root paired with this configured gateway. A custom
     /// config or profile cannot be silently treated as the default history.
     pub(crate) fn title_history_root(&self, home: &Path) -> Option<(PathBuf, bool)> {
-        if ["OPENCLAW_HOME", "OPENCLAW_PROFILE"].iter().any(|key| {
-            self.env.get(*key).is_some_and(|v| !v.trim().is_empty())
-        }) {
+        if ["OPENCLAW_HOME", "OPENCLAW_PROFILE"]
+            .iter()
+            .any(|key| self.env.get(*key).is_some_and(|v| !v.trim().is_empty()))
+        {
             return None;
         }
-        let explicit = self.env.get("OPENCLAW_STATE_DIR")
+        let explicit = self
+            .env
+            .get("OPENCLAW_STATE_DIR")
             .filter(|v| !v.trim().is_empty());
-        let state = explicit.map(|v| expand_tilde(v.trim(), home))
+        let state = explicit
+            .map(|v| expand_tilde(v.trim(), home))
             .unwrap_or_else(|| home.join(".openclaw"));
         if !state.is_absolute() || self.config_path != state.join("openclaw.json") {
             return None;

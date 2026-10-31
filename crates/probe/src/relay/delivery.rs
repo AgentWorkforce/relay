@@ -1164,7 +1164,9 @@ impl Core {
         if manual {
             self.authorize_dm_reply(registration, delivery);
         }
-        let outcome = self.deliver_session_text(registration, delivery, text, source).await;
+        let outcome = self
+            .deliver_session_text(registration, delivery, text, source)
+            .await;
         let prefix = self.machine_prefix.clone();
         match outcome {
             InjectOutcome::Delivered => {

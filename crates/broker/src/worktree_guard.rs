@@ -24,9 +24,9 @@ use std::{
 };
 
 /// Prefixes of Relay credentials: workspace keys (`rk_`), agent tokens
-/// (`at_`) and node tokens (`nt_`), live and test.
-pub const CREDENTIAL_PREFIXES: [&str; 6] = [
-    "rk_live_", "rk_test_", "at_live_", "at_test_", "nt_live_", "nt_test_",
+/// (`at_`) and node tokens (`nt_`), live and test, and armadillo's (`ar_`).
+pub const CREDENTIAL_PREFIXES: [&str; 8] = [
+    "rk_live_", "rk_test_", "at_live_", "at_test_", "nt_live_", "nt_test_", "ar_ws_", "ar_ag_",
 ];
 
 fn is_token_char(byte: u8) -> bool {
@@ -319,6 +319,8 @@ mod tests {
             "nt_live_Z",
             "nt_test_0",
             "[{\"api_key\":\"rk_live_ws1\"}]",
+            "ar_ws_abc",
+            "RELAY_AGENT_TOKEN=ar_ag_x9",
         ] {
             assert!(find_credential_prefix(value).is_some(), "{value}");
         }

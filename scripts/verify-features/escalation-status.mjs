@@ -25,7 +25,7 @@ const VALID_STATES = new Set(['delivered', 'failed', 'disabled', 'not_applicable
 export function redactAlertText(value) {
   return String(value)
     .replace(
-      /\b(?:rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_)[A-Za-z0-9_%-]+(?:\.[A-Za-z0-9_%-]+)*/g,
+      /\b(?:rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|ar_ws_|ar_ag_|cld_at_|rth_at_|ocl_node_enr_|br_)[A-Za-z0-9_%-]+(?:\.[A-Za-z0-9_%-]+)*/g,
       '[REDACTED_RELAY_CREDENTIAL]'
     )
     .replace(/\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}/g, '[REDACTED_GITHUB_CREDENTIAL]')

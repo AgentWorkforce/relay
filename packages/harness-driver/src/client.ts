@@ -219,7 +219,7 @@ function maskWorkspaceKey(key: string | null | undefined): string {
   if (!key) {
     return 'unknown';
   }
-  const prefix = key.match(/^(rk_live_|at_live_|nt_live_|ot_live_|br_)/)?.[1] ?? '';
+  const prefix = key.match(/^(rk_live_|at_live_|nt_live_|ot_live_|ar_ws_|ar_ag_|br_)/)?.[1] ?? '';
   const body = key.slice(prefix.length);
   return body.length <= 8 ? `${prefix}…` : `${prefix}…${body.slice(-4)}`;
 }

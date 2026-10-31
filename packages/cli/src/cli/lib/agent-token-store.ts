@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { withFileLock, writeFileAtomically } from './locked-json-file.js';
+import { UNBOUND_CREDENTIAL_ORIGIN } from './relaycast-origin-binding.js';
 
 /**
  * Agent tokens the CLI registered, saved by name so `--as <name>` works in
@@ -12,8 +13,6 @@ import { withFileLock, writeFileAtomically } from './locked-json-file.js';
  * minted with, so a name in one workspace never resolves to another's token.
  */
 export const AGENT_TOKENS_FILE = 'agent-tokens.json';
-
-const HOSTED_DEFAULT_ORIGIN = 'https://cast.agentrelay.com';
 
 interface AgentTokenFile {
   version: 1;
@@ -34,7 +33,7 @@ export function agentTokensPath(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 function entryKey(workspaceKey: string, baseUrl: string | undefined, name: string): string {
-  const origin = baseUrl ? new URL(baseUrl).origin : HOSTED_DEFAULT_ORIGIN;
+  const origin = baseUrl ? new URL(baseUrl).origin : UNBOUND_CREDENTIAL_ORIGIN;
   // One-way and opaque: the key is high-entropy, so this only hides it.
   const workspace = pbkdf2Sync(
     workspaceKey.trim(),

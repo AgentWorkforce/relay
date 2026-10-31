@@ -1,11 +1,11 @@
 //! Isolated native-UI acceptance host. No installed service, live provider,
 //! credentials, or history is read. Control is test-process stdin, not RPC.
+#[path = "claude_provider.rs"]
+mod claude_provider;
 #[path = "../../tests/support/fake_relaycast.rs"]
 mod fake_relaycast;
 #[path = "history.rs"]
 mod history;
-#[path = "claude_provider.rs"]
-mod claude_provider;
 
 use agent_relay_probe::relay::{
     claude,
@@ -157,7 +157,10 @@ mod codex_provider_tests {
         );
         assert_eq!(read_timeout, Some(Duration::from_secs(2)));
         assert_eq!(write_timeout, Some(Duration::from_secs(2)));
-        assert!(pending, "Receiver must wait for a complete frame: {result:?}");
+        assert!(
+            pending,
+            "Receiver must wait for a complete frame: {result:?}"
+        );
         assert!(
             observed_before_newline.is_empty(),
             "Partial frames cannot produce receipts"
@@ -175,7 +178,11 @@ mod codex_provider_tests {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(records.len(), 1, "Exactly one complete frame must be consumed");
+        assert_eq!(
+            records.len(),
+            1,
+            "Exactly one complete frame must be consumed"
+        );
         assert_eq!(records[0]["stage"], "transport_accepted");
         assert_eq!(
             records[0]["value"],

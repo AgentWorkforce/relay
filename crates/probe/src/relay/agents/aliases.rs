@@ -321,7 +321,9 @@ impl Core {
             metadata.insert("session_scope".into(), json!("agent"));
         }
         // What the agent is doing goes on its shown name, only when due.
-        let activity = (name == current).then(|| self.activity_metadata(name)).flatten();
+        let activity = (name == current)
+            .then(|| self.activity_metadata(name))
+            .flatten();
         if let Some((_, value)) = &activity {
             metadata.insert("activity".into(), value.clone());
         }

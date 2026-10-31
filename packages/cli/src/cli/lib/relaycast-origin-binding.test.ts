@@ -11,7 +11,15 @@ import { Command } from 'commander';
 
 import { registerWorkspaceCommands } from '../commands/workspace.js';
 import { writeProjectWorkspaceKey } from './project-workspace-key.js';
-import { bindOrigin, boundOrigin, originBindingsPath, unbindOrigin } from './relaycast-origin-binding.js';
+import {
+  bindOrigin,
+  boundOrigin,
+  DEFAULT_HOSTED_ORIGIN,
+  guardCredentialOrigin,
+  originBindingsPath,
+  unbindOrigin,
+  UNBOUND_CREDENTIAL_ORIGIN,
+} from './relaycast-origin-binding.js';
 import { createAgentRelay, resolveBaseUrl, resolveWorkspaceTransport } from './sdk-client.js';
 
 const SELF_HOSTED_KEY = 'rk_live_selfhosted_origin_binding';
@@ -94,6 +102,68 @@ describe('Relaycast credential origin binding', () => {
     expect(resolveWorkspaceTransport({ workspaceKey: SELF_HOSTED_KEY, env: envWith() }).baseUrl).toBe(
       undefined
     );
+  });
+
+  it('keeps a key with no recorded server on cast after the hosted default moved to armadillo', () => {
+    expect(DEFAULT_HOSTED_ORIGIN).toBe('https://armadillo.agentrelay.com');
+    expect(UNBOUND_CREDENTIAL_ORIGIN).toBe('https://cast.agentrelay.com');
+    const key = 'rk_live_saved_before_armadillo';
+    // `undefined` means the SDK's own default, which is cast.
+    expect(resolveWorkspaceTransport({ workspaceKey: key, env: envWith() }).baseUrl).toBeUndefined();
+    expect(boundOrigin(key, envWith())).toBeUndefined();
+    expect(fs.existsSync(originBindingsPath(envWith()))).toBe(false);
+  });
+
+  it('binds an armadillo key, keeps it there, and lets an explicit URL move it', () => {
+    const key = 'rk_live_armadillo';
+    expect(guardCredentialOrigin(key, DEFAULT_HOSTED_ORIGIN, envWith())).toBe(DEFAULT_HOSTED_ORIGIN);
+    expect(boundOrigin(key, envWith())).toBe(DEFAULT_HOSTED_ORIGIN);
+    expect(resolveWorkspaceTransport({ workspaceKey: key, env: envWith() }).baseUrl).toBe(
+      DEFAULT_HOSTED_ORIGIN
+    );
+    expect(guardCredentialOrigin(key, UNBOUND_CREDENTIAL_ORIGIN, envWith())).toBe(UNBOUND_CREDENTIAL_ORIGIN);
+    expect(boundOrigin(key, envWith())).toBeUndefined();
+  });
+
+  it('sends a credential armadillo issued to armadillo with no record of it on this machine', () => {
+    for (const credential of ['ar_ws_unknown', 'ar_ag_unknown']) {
+      expect(boundOrigin(credential, envWith())).toBe(DEFAULT_HOSTED_ORIGIN);
+      expect(guardCredentialOrigin(credential, undefined, envWith())).toBe(DEFAULT_HOSTED_ORIGIN);
+    }
+    expect(boundOrigin('rk_live_unknown', envWith())).toBeUndefined();
+    // A saved binding and an explicit URL both still win.
+    bindOrigin('ar_ws_selfhosted', 'https://relay.corp.test', envWith());
+    expect(boundOrigin('ar_ws_selfhosted', envWith())).toBe('https://relay.corp.test');
+    expect(guardCredentialOrigin('ar_ws_unknown', 'https://relay.corp.test', envWith())).toBe(
+      'https://relay.corp.test'
+    );
+  });
+
+  it('never binds a hosted gateway other than armadillo', () => {
+    expect(() => bindOrigin('rk_live_x', 'https://cast.agentrelay.com', envWith())).toThrow(/never bound/);
+    expect(() => bindOrigin('rk_live_x', 'https://dev-cast.agentrelay.com', envWith())).toThrow(
+      /never bound/
+    );
+  });
+
+  it('refuses a persisted cast route for a key bound to armadillo', () => {
+    bindOrigin(SELF_HOSTED_KEY, DEFAULT_HOSTED_ORIGIN, envWith());
+    writeProjectWorkspaceKey(path.join(project, '.agentworkforce/relay'), SELF_HOSTED_KEY, {
+      workspaceId: 'rw_route',
+      relaycastRoute: 'canonical',
+      relaycastBaseUrl: 'https://cast.agentrelay.com',
+    });
+    expect(() => resolveWorkspaceTransport({ env: envWith() })).toThrow(/belongs to/);
+  });
+
+  it('trusts a persisted canonical route on armadillo', () => {
+    writeProjectWorkspaceKey(path.join(project, '.agentworkforce/relay'), SELF_HOSTED_KEY, {
+      workspaceId: 'rw_route',
+      relaycastRoute: 'canonical',
+      relaycastBaseUrl: DEFAULT_HOSTED_ORIGIN,
+    });
+    expect(resolveWorkspaceTransport({ env: envWith() }).baseUrl).toBe(DEFAULT_HOSTED_ORIGIN);
+    expect(boundOrigin(SELF_HOSTED_KEY, envWith())).toBe(DEFAULT_HOSTED_ORIGIN);
   });
 
   it.each([

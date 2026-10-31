@@ -1,15 +1,16 @@
 //! The `agent-relay` CLI's Relaycast origin bindings
 //! (`$AGENT_RELAY_HOME/relaycast-origins.json`), read and never written.
 //!
-//! The CLI records which self-hosted server each credential belongs to, keyed
-//! by a one-way fingerprint of the credential, so that a self-hosted key is
-//! never sent to the hosted gateway. Hosted servers (`*.agentrelay.com`) are
-//! the default and are never bound. A file that cannot be read or parsed fails
-//! closed: ignoring it would unbind every credential and send it to the
-//! hosted default. This mirrors `packages/cli/src/cli/lib/relaycast-origin-binding.ts`
+//! The CLI records which server each credential belongs to, keyed by a one-way
+//! fingerprint of the credential, so that a key is never sent to another
+//! server. Self-hosted servers and the default hosted server (armadillo) are
+//! recorded; the other hosted gateways (`*.agentrelay.com`) are never bound. A
+//! file that cannot be read or parsed fails closed: ignoring it would unbind
+//! every credential and send it to the unbound default. This mirrors `packages/cli/src/cli/lib/relaycast-origin-binding.ts`
 //! and the broker's `crates/broker/src/transport.rs`; all three are checked
 //! against `packages/contracts/fixtures/relaycast-origin-binding.json`.
 
+use super::ARMADILLO_ORIGIN;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -24,18 +25,24 @@ const FINGERPRINT_ITERATIONS: NonZeroU32 = match NonZeroU32::new(10_000) {
 };
 const HOSTED_DOMAIN: &str = "agentrelay.com";
 
-/// The validated bindings: credential fingerprint → self-hosted base URL.
+/// The validated bindings: credential fingerprint → base URL.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OriginBindings {
     origins: HashMap<String, String>,
 }
 
 impl OriginBindings {
-    /// The self-hosted server `credential` is bound to, if any.
+    /// The server `credential` belongs to: its binding, else armadillo for a
+    /// credential armadillo issued, whose format says so.
     pub fn bound(&self, credential: &str) -> Option<&str> {
         self.origins
             .get(&credential_fingerprint(credential))
             .map(String::as_str)
+            .or_else(|| {
+                let credential = credential.trim();
+                (credential.starts_with("ar_ws_") || credential.starts_with("ar_ag_"))
+                    .then_some(ARMADILLO_ORIGIN)
+            })
     }
 }
 
@@ -83,7 +90,7 @@ pub fn read_bindings(path: &Path) -> Result<OriginBindings, String> {
         let base_url = value
             .as_str()
             .and_then(|value| configured_base_url(value).ok().flatten())
-            .filter(|base_url| !is_hosted(base_url))
+            .filter(|base_url| is_bindable(base_url))
             .ok_or_else(|| invalid(&format!("bad server for \"{fingerprint}\"")))?;
         validated.insert(fingerprint.clone(), base_url);
     }
@@ -152,8 +159,13 @@ pub fn origin_of(base_url: &str) -> Option<String> {
     origin.is_tuple().then(|| origin.ascii_serialization())
 }
 
-/// Agent Relay's own gateways (`https://*.agentrelay.com`): the default,
-/// never bound.
+/// Whether the CLI records this server against a credential: every hosted
+/// gateway but the one new workspaces are created on stays unbound.
+fn is_bindable(base_url: &str) -> bool {
+    !is_hosted(base_url) || origin_of(base_url).as_deref() == Some(ARMADILLO_ORIGIN)
+}
+
+/// Agent Relay's own gateways (`https://*.agentrelay.com`).
 pub fn is_hosted(base_url: &str) -> bool {
     url::Url::parse(base_url).is_ok_and(|url| {
         let host = url.host_str().unwrap_or_default();
@@ -216,6 +228,31 @@ mod tests {
             Some(vector.normalized_base_url.as_str())
         );
         assert_eq!(bindings.bound("rk_live_some_other_key"), None);
+    }
+
+    #[test]
+    fn armadillo_is_bound_and_the_other_hosted_gateways_still_are_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let fingerprint = credential_fingerprint("rk_live_armadillo");
+        let path = write(
+            dir.path(),
+            &format!(r#"{{"version":1,"origins":{{"{fingerprint}":"{ARMADILLO_ORIGIN}"}}}}"#),
+        );
+        let bindings = read_bindings(&path).unwrap();
+        assert_eq!(bindings.bound("rk_live_armadillo"), Some(ARMADILLO_ORIGIN));
+        assert_eq!(bindings.bound("rk_live_old_key"), None);
+        assert_eq!(bindings.bound("ar_ws_never_seen"), Some(ARMADILLO_ORIGIN));
+        assert_eq!(bindings.bound("ar_ag_never_seen"), Some(ARMADILLO_ORIGIN));
+        for gateway in [
+            "https://cast.agentrelay.com",
+            "https://agent37-cast.agentrelay.com",
+        ] {
+            let path = write(
+                dir.path(),
+                &format!(r#"{{"version":1,"origins":{{"{fingerprint}":"{gateway}"}}}}"#),
+            );
+            assert!(read_bindings(&path).is_err(), "{gateway} was bound");
+        }
     }
 
     #[test]

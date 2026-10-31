@@ -508,11 +508,19 @@ async fn an_unanswered_register_says_relaycast_did_not_answer_and_that_a_retry_i
         .unwrap();
     let error = result["error"].as_str().unwrap();
     assert!(
-        error.starts_with("spawn_failed: Relaycast did not answer the request to register the agent"),
+        error.starts_with(
+            "spawn_failed: Relaycast did not answer the request to register the agent"
+        ),
         "{error}"
     );
-    assert!(error.contains("retrying the spawn with the same name is safe"), "{error}");
-    assert!(!error.contains("did not register the agent in time"), "{error}");
+    assert!(
+        error.contains("retrying the spawn with the same name is safe"),
+        "{error}"
+    );
+    assert!(
+        !error.contains("did not register the agent in time"),
+        "{error}"
+    );
 }
 
 #[tokio::test]
@@ -531,7 +539,10 @@ async fn a_register_completing_after_its_spawn_failed_leaves_the_name_to_a_retry
         .await
         .expect("the spawn gives up")
         .unwrap();
-    assert!(failed["error"].as_str().unwrap().starts_with("spawn_failed: "));
+    assert!(failed["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("spawn_failed: "));
     // Then Relaycast registers it and answers.
     *holding.lock().unwrap() = Some(agent_w1("agent_w1", "inv_w1"));
     link.answer(&registered_as(&register, "agent_w1"));
@@ -582,7 +593,10 @@ async fn an_agent_still_being_taken_off_the_node_is_not_taken_over() {
         .await
         .expect("the spawn gives up")
         .unwrap();
-    assert!(failed["error"].as_str().unwrap().starts_with("spawn_failed: "));
+    assert!(failed["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("spawn_failed: "));
     *holding.lock().unwrap() = Some(agent_w1("agent_w1", "inv_w1"));
     link.answer(&registered_as(&register, "agent_w1"));
     let deregister = next_frame(&mut sent).await;
@@ -597,7 +611,10 @@ async fn an_agent_still_being_taken_off_the_node_is_not_taken_over() {
     link.answer(&name_taken(&frame));
     let result = spawning.await.unwrap();
     assert!(
-        result["error"].as_str().unwrap().starts_with("spawn_agent_name_in_use"),
+        result["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("spawn_agent_name_in_use"),
         "{result}"
     );
     assert!(sent.try_recv().is_err(), "no takeover");
@@ -634,10 +651,15 @@ async fn a_takeover_refused_after_the_lookup_still_takes_the_agent_off_the_node(
     assert_eq!(next_frame(&mut sent).await["type"], "agent.register");
     let frame = frame_within(&mut sent, 60).await;
     assert_eq!(frame["type"], "agent.recover");
-    link.answer(&json!({"v": 1, "id": frame["id"], "type": "error", "ok": false,
-        "code": "agent_recovery_not_authorized", "message": "not this node's"}));
+    link.answer(
+        &json!({"v": 1, "id": frame["id"], "type": "error", "ok": false,
+        "code": "agent_recovery_not_authorized", "message": "not this node's"}),
+    );
     let result = spawning.await.unwrap();
-    assert!(result["error"].as_str().unwrap().starts_with("spawn_failed: "));
+    assert!(result["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("spawn_failed: "));
     // The agent Relaycast registered for the spawn is not left behind.
     let frame = next_frame(&mut sent).await;
     assert_eq!(frame["type"], "agent.deregister");
@@ -685,7 +707,10 @@ async fn an_unanswered_takeover_of_an_earlier_spawns_agent_still_takes_it_off_th
         .await
         .expect("the spawn gives up")
         .unwrap();
-    assert!(failed["error"].as_str().unwrap().starts_with("spawn_failed: "));
+    assert!(failed["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("spawn_failed: "));
     *holding.lock().unwrap() = Some(agent_w1("agent_w1", "inv_w1"));
     link.answer(&registered_as(&register, "agent_w1"));
     let frame = next_frame(&mut sent).await;
@@ -706,7 +731,10 @@ async fn an_unanswered_takeover_of_an_earlier_spawns_agent_still_takes_it_off_th
         .await
         .expect("the retry gives up")
         .unwrap();
-    assert!(failed["error"].as_str().unwrap().starts_with("spawn_failed: "));
+    assert!(failed["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("spawn_failed: "));
     // Relaycast may never apply it: the agent is taken off by its id.
     let frame = next_frame(&mut sent).await;
     assert_eq!(frame["type"], "agent.deregister");

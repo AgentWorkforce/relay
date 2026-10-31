@@ -191,15 +191,28 @@ pub fn loaded_threads(stream: &mut dyn ProxyStream, timeout: Duration) -> BTreeS
 
 /// Change provider metadata for a stored or loaded thread without resuming it
 /// or starting a turn. A timeout is ambiguous and is never retried here.
-pub fn set_thread_name(stream: &mut dyn ProxyStream, thread_id: &str, title: &str, timeout: Duration) -> Result<(), String> {
+pub fn set_thread_name(
+    stream: &mut dyn ProxyStream,
+    thread_id: &str,
+    title: &str,
+    timeout: Duration,
+) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     let mut client = Client::open(stream, deadline)
         .map_err(|_| "Could not connect to Codex. Open Codex and try again.".to_string())?;
-    client.send(&json!({"method":"thread/name/set", "id":31,
-        "params":{"threadId":thread_id,"name":title}}), deadline)
-        .map_err(|_| "Codex did not confirm the title update. Refresh the session before retrying.".to_string())?;
-    let response = client.response(31, deadline)
-        .map_err(|_| "Codex did not confirm the title update. Refresh the session before retrying.".to_string())?;
+    client
+        .send(
+            &json!({"method":"thread/name/set", "id":31,
+        "params":{"threadId":thread_id,"name":title}}),
+            deadline,
+        )
+        .map_err(|_| {
+            "Codex did not confirm the title update. Refresh the session before retrying."
+                .to_string()
+        })?;
+    let response = client.response(31, deadline).map_err(|_| {
+        "Codex did not confirm the title update. Refresh the session before retrying.".to_string()
+    })?;
     if response.get("error").is_some_and(|error| !error.is_null()) {
         return Err("Codex refused the title update. Check that the thread still exists and your Codex version supports renaming.".into());
     }
@@ -590,19 +603,36 @@ pub(crate) mod tests {
 
     #[test]
     fn title_update_is_metadata_only_and_requires_provider_acknowledgment() {
-        for response in [json!({"id":31,"result":{}}), json!({"id":31,"error":{"code":-32601,"message":"secret provider error"}}), json!({"id":31,"result":null})] {
+        for response in [
+            json!({"id":31,"result":{}}),
+            json!({"id":31,"error":{"code":-32601,"message":"secret provider error"}}),
+            json!({"id":31,"result":null}),
+        ] {
             let success = response["result"].is_object();
             let mut server = FakeAppServer::new(move |request| {
                 (request["method"] == "thread/name/set").then(|| server_frame(&response))
             });
-            let outcome = set_thread_name(&mut server, "thread-identity", "Fix \"login\"", Duration::from_secs(1));
+            let outcome = set_thread_name(
+                &mut server,
+                "thread-identity",
+                "Fix \"login\"",
+                Duration::from_secs(1),
+            );
             assert_eq!(outcome.is_ok(), success);
-            if let Err(error) = outcome { assert!(!error.contains("secret")); }
+            if let Err(error) = outcome {
+                assert!(!error.contains("secret"));
+            }
             let seen = server.seen.lock().unwrap();
             let methods: Vec<_> = seen.iter().filter_map(|v| v["method"].as_str()).collect();
             assert_eq!(methods, ["initialize", "initialized", "thread/name/set"]);
-            let rename = seen.iter().find(|v| v["method"] == "thread/name/set").unwrap();
-            assert_eq!(rename["params"], json!({"threadId":"thread-identity","name":"Fix \"login\""}));
+            let rename = seen
+                .iter()
+                .find(|v| v["method"] == "thread/name/set")
+                .unwrap();
+            assert_eq!(
+                rename["params"],
+                json!({"threadId":"thread-identity","name":"Fix \"login\""})
+            );
         }
     }
 

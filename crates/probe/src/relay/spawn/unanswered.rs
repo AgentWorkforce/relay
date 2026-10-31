@@ -112,7 +112,10 @@ impl Core {
         if error.starts_with("spawn_agent_name_in_use") {
             match self.left_holding(link, &in_flight.intent).await {
                 Ok(Some((agent_id, invocation))) => {
-                    match self.recover_left(link, in_flight, &agent_id, &invocation).await {
+                    match self
+                        .recover_left(link, in_flight, &agent_id, &invocation)
+                        .await
+                    {
                         Ok(agent) => return Ok(agent),
                         // Refused: the name stays taken. This invocation's
                         // own agent is still taken off the node later.
@@ -167,7 +170,10 @@ impl Core {
                     Ok(Ok(Some(agent_id))) => {
                         link.forget_request(&id);
                         let invocation = intent.invocation_id.clone();
-                        match self.recover_left(link, in_flight, &agent_id, &invocation).await {
+                        match self
+                            .recover_left(link, in_flight, &agent_id, &invocation)
+                            .await
+                        {
                             Ok(agent) => Ok(agent),
                             Err(Failed::Unknown(how, error)) => Err(Failed::Unknown(how, error)),
                             // Not taken over: the agent Relaycast registered
@@ -405,7 +411,11 @@ impl Core {
     pub(super) fn claim_deregister(&self, agent_id: &str, invocation: &str) -> bool {
         let ledger = self.ledger();
         let mut state = ledger.lock();
-        if state.adopted.get(agent_id).is_some_and(|by| by != invocation) {
+        if state
+            .adopted
+            .get(agent_id)
+            .is_some_and(|by| by != invocation)
+        {
             return false;
         }
         state.claim_deregistering(agent_id);

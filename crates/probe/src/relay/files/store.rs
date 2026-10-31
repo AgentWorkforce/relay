@@ -104,14 +104,12 @@ fn kept(root: &Path) -> Vec<Kept> {
         .into_iter()
         .flat_map(|folder| {
             let sender = std::fs::read_to_string(folder.join(SENDER_FILE)).ok();
-            files_in(&folder)
-                .into_iter()
-                .map(move |(path, meta)| Kept {
-                    path,
-                    bytes: meta.len(),
-                    saved_ms: saved_ms(&meta),
-                    sender: sender.clone(),
-                })
+            files_in(&folder).into_iter().map(move |(path, meta)| Kept {
+                path,
+                bytes: meta.len(),
+                saved_ms: saved_ms(&meta),
+                sender: sender.clone(),
+            })
         })
         .collect()
 }
@@ -296,7 +294,10 @@ mod tests {
         let new = Path::new("new/shot.png");
         let full = vec![kept_file("a/attachment", 480, old, None)];
         let error = admit(&full, new, Some(&alice), 25 * MB, now).unwrap_err();
-        assert!(error.contains("at most 500 MB of received files"), "{error}");
+        assert!(
+            error.contains("at most 500 MB of received files"),
+            "{error}"
+        );
         // A file saved again replaces its old copy, but not another copy
         // under the same id.
         assert!(admit(&full, Path::new("a/attachment"), Some(&alice), 25 * MB, now).is_ok());
@@ -307,13 +308,19 @@ mod tests {
             kept_file("b/y", 90, old, Some("bob")),
         ];
         let error = admit(&hers, new, Some(&alice), 20 * MB, now).unwrap_err();
-        assert!(error.contains("at most 100 MB of files from @alice"), "{error}");
+        assert!(
+            error.contains("at most 100 MB of files from @alice"),
+            "{error}"
+        );
         assert!(admit(&hers, new, Some(&sender("carol")), 20 * MB, now).is_ok());
         assert!(admit(&hers, new, None, 20 * MB, now).is_ok());
 
         let recent = vec![kept_file("a/x", 40, now - 1000, Some("alice"))];
         let error = admit(&recent, new, Some(&alice), 20 * MB, now).unwrap_err();
-        assert!(error.contains("50 MB of files an hour from @alice"), "{error}");
+        assert!(
+            error.contains("50 MB of files an hour from @alice"),
+            "{error}"
+        );
         assert!(admit(&recent, new, Some(&alice), 20 * MB, now + HOUR_MS).is_ok());
         // Each copy keeps its own time: an old one does not count this hour.
         let copies = vec![

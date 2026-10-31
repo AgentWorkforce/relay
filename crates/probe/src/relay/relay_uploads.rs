@@ -108,7 +108,10 @@ impl RelayUploads {
         };
         let Some(install) = uploader.install() else {
             // Signed out or detached: nothing is shared any more.
-            self.shared.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            self.shared
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
             return;
         };
         // A newer build's claim suppresses inclusion only while its process
@@ -300,7 +303,10 @@ mod tests {
             keys(&["claude:b"])
         );
         // Under `all`, a session someone stopped uploading stays private.
-        assert_eq!(shared(&registered, &listed("all", sessions)), keys(&["claude:b"]));
+        assert_eq!(
+            shared(&registered, &listed("all", sessions)),
+            keys(&["claude:b"])
+        );
         assert_eq!(shared(&registered, &listed("all", json!([]))), registered);
     }
 

@@ -177,15 +177,56 @@ describe('relay init', () => {
   it('creates a hosted workspace and prints the one command another machine runs to join', async () => {
     const { run, logs, createWorkspace } = setup({ cliVersion: '15.0.0-next.6' });
     await run('--hosted', '--name', 'team');
-    expect(createWorkspace).toHaveBeenCalledWith('team', 'https://cast.agentrelay.com');
+    expect(createWorkspace).toHaveBeenCalledWith('team', 'https://armadillo.agentrelay.com');
     const output = logs.join('\n');
     // The teammate's command is init itself, through npx so Relay need not
     // be installed there: it joins and sets up injection in one step.
     expect(output).toContain('treat this key like a password');
-    expect(output).toContain("  npx -y agent-relay@next init --key 'rk_live_team_remote'");
+    expect(output).toContain(
+      "  npx -y agent-relay@next init --url https://armadillo.agentrelay.com --key 'rk_live_team_remote'"
+    );
     expect(output).not.toContain('relay workspace join');
     expect(output).not.toContain('--name');
-    expect(boundOrigin('rk_live_team_remote')).toBeUndefined();
+    // Bound, because a key with no recorded server goes to cast.
+    expect(boundOrigin('rk_live_team_remote')).toBe('https://armadillo.agentrelay.com');
+    expect(resolveWorkspaceTransport({ workspaceKey: 'rk_live_team_remote' }).baseUrl).toBe(
+      'https://armadillo.agentrelay.com'
+    );
+  });
+
+  it('does not create a hosted workspace whose key could not be bound', async () => {
+    const binding = path.join(process.env.AGENT_RELAY_HOME!, 'relaycast-origins.json');
+    fs.mkdirSync(path.dirname(binding), { recursive: true });
+    fs.writeFileSync(binding, 'not json');
+    const { run, errors, createWorkspace } = setup();
+    await expect(run('--hosted', '--name', 'team')).rejects.toEqual(new ExitSignal(1));
+    expect(errors.join('\n')).toContain('not a valid Relaycast origin file');
+    expect(createWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('joins and rejoins an armadillo workspace through its printed command', async () => {
+    const fetch = vi.fn(async () => jsonResponse(200, { ok: true, data: { id: 'ws_a', name: 'team' } }));
+    const { run, logs } = setup({ fetch: fetch as never });
+    await run('--url', 'https://armadillo.agentrelay.com', '--key', 'rk_live_armadillo');
+    expect(logs.join('\n')).toContain('Joined hosted workspace "team" (https://armadillo.agentrelay.com).');
+    expect(boundOrigin('rk_live_armadillo')).toBe('https://armadillo.agentrelay.com');
+    fetch.mockClear();
+    // The key is known now, so --key alone goes back to its own server.
+    await run('--key', 'rk_live_armadillo');
+    const hosts = fetch.mock.calls.map((call: unknown[]) => new URL(String(call[0])).origin);
+    expect(hosts.length).toBeGreaterThan(0);
+    expect(new Set(hosts)).toEqual(new Set(['https://armadillo.agentrelay.com']));
+  });
+
+  it.each([
+    ['rk_live_saved_before', 'https://cast.agentrelay.com'],
+    ['ar_ws_issued_by_armadillo', 'https://armadillo.agentrelay.com'],
+  ])('sends %s with --key alone only to %s', async (key, origin) => {
+    const fetch = vi.fn(async () => jsonResponse(401));
+    const { run } = setup({ fetch: fetch as never });
+    await expect(run('--key', key)).rejects.toEqual(new ExitSignal(1));
+    const hosts = fetch.mock.calls.map((call: unknown[]) => new URL(String(call[0])).origin);
+    expect(new Set(hosts)).toEqual(new Set([origin]));
   });
 
   it.each([
@@ -195,7 +236,9 @@ describe('relay init', () => {
   ])('names the npx package for CLI version %s', async (cliVersion, spec) => {
     const { run, logs } = setup({ cliVersion });
     await run('--hosted', '--name', 'team');
-    expect(logs.join('\n')).toContain(`npx -y ${spec} init --key 'rk_live_team_remote'`);
+    expect(logs.join('\n')).toContain(
+      `npx -y ${spec} init --url https://armadillo.agentrelay.com --key 'rk_live_team_remote'`
+    );
   });
 
   it('names a hosted workspace after the person and the folder, without asking', async () => {
@@ -217,13 +260,13 @@ describe('relay init', () => {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '');
     const name = [user, folder].filter(Boolean).join('-').slice(0, 40);
-    expect(createWorkspace).toHaveBeenCalledWith(name, 'https://cast.agentrelay.com');
+    expect(createWorkspace).toHaveBeenCalledWith(name, 'https://armadillo.agentrelay.com');
     const output = logs.join('\n');
     expect(output).toContain(`Created hosted workspace "${name}".`);
     expect(output).toContain('pass --name to choose another');
     // A second one here gets a name of its own instead of replacing it.
     await run('--hosted');
-    expect(createWorkspace).toHaveBeenLastCalledWith(`${name}-2`, 'https://cast.agentrelay.com');
+    expect(createWorkspace).toHaveBeenLastCalledWith(`${name}-2`, 'https://armadillo.agentrelay.com');
   });
 
   it('joins a hosted workspace with --key alone, named as the server names it', async () => {
@@ -351,6 +394,13 @@ describe('relay init and the machine-wide active workspace', () => {
     expect(store.active).toBe('local');
     expect(projectKey()).toBe(store.workspaces.local?.key);
     expect(logs.join('\n')).not.toContain('stays active');
+  });
+
+  it('treats an active armadillo workspace as a real one, not the private local server', async () => {
+    writeWorkspaceStore({ active: 'team', workspaces: { team: { key: 'ar_ws_team' } } });
+    const { run } = setup();
+    await run('--tools', 'none');
+    expect(readWorkspaceStore().active).toBe('team');
   });
 
   it('keeps a different active workspace, binds this project to the new one, and says so', async () => {
@@ -1259,6 +1309,7 @@ describe('relay init joining a team after solo relay init', () => {
 
     expect(readWorkspaceStore().active).toBe('team');
     expect(readWorkspaceStore().workspaces.local).toBeDefined();
+    expect(boundOrigin('rk_live_team_remote')).toBe('https://armadillo.agentrelay.com');
     const output = logs.join('\n');
     expect(logs).toContain('Switched this machine to workspace "team"');
     expect(output).toContain('Moved running sessions to "team": codex-api.');
