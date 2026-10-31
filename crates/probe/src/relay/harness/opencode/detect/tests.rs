@@ -139,3 +139,27 @@ fn the_version_probe_keeps_opencodes_folders_out_of_the_home() {
     );
     assert!(!config.exists(), "the scratch folder is removed afterwards");
 }
+
+// A `node` mise provides still finds its install while OpenCode's XDG folders
+// are redirected; a mise folder the person set is left to them.
+#[test]
+fn the_version_probe_keeps_mises_own_folders() {
+    let env = |key: &str| match key {
+        "HOME" => Some("/home/me".to_string()),
+        "XDG_DATA_HOME" => Some("/data".to_string()),
+        "MISE_CACHE_DIR" => Some("/mine/cache".to_string()),
+        _ => None,
+    };
+    assert_eq!(
+        kept_tool_dirs(&env),
+        vec![
+            ("MISE_CONFIG_DIR", PathBuf::from("/home/me/.config/mise")),
+            ("MISE_DATA_DIR", PathBuf::from("/data/mise")),
+            (
+                "MISE_STATE_DIR",
+                PathBuf::from("/home/me/.local/state/mise")
+            ),
+        ]
+    );
+    assert!(kept_tool_dirs(&|_| None).is_empty());
+}

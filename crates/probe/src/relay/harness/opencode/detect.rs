@@ -112,6 +112,37 @@ const SCRATCH_XDG: [(&str, &str); 4] = [
     ("XDG_STATE_HOME", "state"),
 ];
 
+/// mise's own folders, which it finds through the XDG variables: an npm
+/// `opencode` starts with `#!/usr/bin/env node`, and a `node` mise provides
+/// must still find its configured install under the redirected XDG folders.
+/// Each one not set already is pinned to where mise would look without the
+/// redirect.
+const MISE_DIRS: [(&str, &str, &str); 4] = [
+    ("MISE_CONFIG_DIR", "XDG_CONFIG_HOME", ".config"),
+    ("MISE_DATA_DIR", "XDG_DATA_HOME", ".local/share"),
+    ("MISE_CACHE_DIR", "XDG_CACHE_HOME", ".cache"),
+    ("MISE_STATE_DIR", "XDG_STATE_HOME", ".local/state"),
+];
+
+/// [`MISE_DIRS`] as they are before the version probe redirects XDG.
+fn kept_tool_dirs(env: &dyn Fn(&str) -> Option<String>) -> Vec<(&'static str, PathBuf)> {
+    let set = |key: &str| env(key).filter(|value| !value.trim().is_empty());
+    let Some(home) = set("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    MISE_DIRS
+        .iter()
+        .filter(|(mise, _, _)| set(mise).is_none())
+        .map(|(mise, xdg, default)| {
+            let base = set(xdg)
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .unwrap_or_else(|| home.join(default));
+            (*mise, base.join("mise"))
+        })
+        .collect()
+}
+
 /// `executable --version`, when it answers in time and succeeds.
 ///
 /// OpenCode creates its config, data, cache and state folders whenever it
@@ -126,10 +157,11 @@ pub fn system_version(executable: &Path) -> Option<String> {
         .prefix("agent-relay-opencode-version-")
         .tempdir()
         .ok()?;
-    let env: Vec<(&str, PathBuf)> = SCRATCH_XDG
+    let mut env: Vec<(&str, PathBuf)> = SCRATCH_XDG
         .iter()
         .map(|(key, dir)| (*key, scratch.path().join(dir)))
         .collect();
+    env.extend(kept_tool_dirs(&|key| std::env::var(key).ok()));
     match SystemRunner.run_with_env(executable, &["--version".into()], VERSION_TIMEOUT, &env) {
         RunOutcome::Exited {
             code: 0, stdout, ..

@@ -80,9 +80,10 @@ impl PiConfig {
     /// off.
     pub fn sync_auto_join(&self, auto_join: bool) {
         let marker = self.auto_join_marker();
-        // Turned off (`pi_extension`), a loaded extension's session is
-        // refused, so its banner must not promise otherwise.
-        if !auto_join || self.turned_off() {
+        // Turned off (`pi_extension`, or Pi sessions off altogether with
+        // `AGENT_RELAY_ENABLE_PI=0`), a loaded extension's session is not
+        // joined, so its banner must not promise otherwise.
+        if !auto_join || !self.enabled || self.turned_off() {
             let _ = fs::remove_file(&marker);
             return;
         }
@@ -969,9 +970,19 @@ mod tests {
         assert!(!marker.exists());
         // Pi sessions turned off: the banner never says they join.
         config.sync_auto_join(true);
+        assert!(marker.is_file());
         fs::write(config.off_marker(), "off").unwrap();
         config.sync_auto_join(true);
         assert!(!marker.exists());
+        fs::remove_file(config.off_marker()).unwrap();
+        config.sync_auto_join(true);
+        assert!(marker.is_file());
+        let disabled = PiConfig {
+            enabled: false,
+            ..config.clone()
+        };
+        disabled.sync_auto_join(true);
+        assert!(!marker.exists(), "AGENT_RELAY_ENABLE_PI=0 clears it");
     }
 
     fn advertise_native(config: &PiConfig, version: u32) -> PathBuf {
