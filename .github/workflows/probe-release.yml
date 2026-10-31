@@ -28,11 +28,6 @@ on:
         required: false
         type: boolean
         default: true
-      self_hosted_macos:
-        description: 'Build darwin-arm64 on the self-hosted relay-release Mac (main only)'
-        required: false
-        type: boolean
-        default: false
   pull_request:
     paths:
       - '.github/workflows/probe-release.yml'
@@ -116,9 +111,9 @@ jobs:
             ext: ''
             smoke: true
           # GitHub's macOS pool queued this build for 16 minutes on 2026-10-31.
-          # The self-hosted Mac is opt-in and only ever takes a dispatch on main.
+          # The Linux builds stay on 22.04 for the glibc floor.
           - suffix: darwin-arm64
-            os: ${{ inputs.self_hosted_macos && github.ref == 'refs/heads/main' && fromJSON('["self-hosted","macOS","ARM64","relay-release"]') || 'macos-latest' }}
+            os: ${{ vars.CI_MACOS_RUNNER || 'macos-latest' }}
             target: aarch64-apple-darwin
             ext: ''
             smoke: true

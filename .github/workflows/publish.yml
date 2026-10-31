@@ -85,13 +85,17 @@ jobs:
     # crates/broker/src/util/version.rs — released binaries report this
     # version through health/session/telemetry payloads.
     needs: build
+    # This job can run on a third-party runner (CI_*_RUNNER), so it gets no OIDC
+    # token, which npm provenance needs, and read-only repo access.
+    permissions:
+      contents: read
     runs-on: ${{ matrix.os }}
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: ${{ vars.CI_MACOS_RUNNER || 'macos-latest' }}
             target: aarch64-apple-darwin
             broker_pkg: broker-darwin-arm64
             binary_name: agent-relay-broker-darwin-arm64
@@ -101,12 +105,12 @@ jobs:
             broker_pkg: broker-darwin-x64
             binary_name: agent-relay-broker-darwin-x64
             binary_file: agent-relay-broker
-          - os: ubuntu-latest
+          - os: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
             target: x86_64-unknown-linux-musl
             broker_pkg: broker-linux-x64
             binary_name: agent-relay-broker-linux-x64
             binary_file: agent-relay-broker
-          - os: ubuntu-latest
+          - os: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
             target: aarch64-unknown-linux-musl
             broker_pkg: broker-linux-arm64
             binary_name: agent-relay-broker-linux-arm64
@@ -120,6 +124,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -207,28 +213,34 @@ jobs:
   build-standalone:
     name: Build standalone (${{ matrix.target }})
     needs: build # Wait for version bump
+    # This job can run on a third-party runner (CI_*_RUNNER), so it gets no OIDC
+    # token, which npm provenance needs, and read-only repo access.
+    permissions:
+      contents: read
     runs-on: ${{ matrix.os }}
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: ${{ vars.CI_MACOS_RUNNER || 'macos-latest' }}
             target: bun-darwin-arm64
             binary_name: agent-relay-darwin-arm64
           - os: macos-latest
             target: bun-darwin-x64
             binary_name: agent-relay-darwin-x64
-          - os: ubuntu-latest
+          - os: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
             target: bun-linux-x64
             binary_name: agent-relay-linux-x64
-          - os: ubuntu-latest
+          - os: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
             target: bun-linux-arm64
             binary_name: agent-relay-linux-arm64
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -337,6 +349,10 @@ jobs:
   # Build all packages once, version them, and upload
   build:
     name: Build & Version
+    # This job can run on a third-party runner (CI_LINUX_RUNNER), so it gets no
+    # OIDC token, which npm provenance needs, and read-only repo access.
+    permissions:
+      contents: read
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     outputs:
       new_version: ${{ steps.bump.outputs.new_version }}
