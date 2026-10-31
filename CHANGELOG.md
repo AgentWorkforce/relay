@@ -5,7 +5,13 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Major]
+## [Unreleased - Patch]
+
+### Fixed
+
+- T3 Code chats running Claude now join Relay by themselves. The core took them for automation, so they never appeared in `relay agent list`.
+
+## [15.0.0] - 2026-10-31
 
 ### Added
 
@@ -37,7 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- T3 Code chats running Claude now join Relay by themselves. The core took them for automation, so they never appeared in `relay agent list`.
+- `relay init` run through `npx` prints follow-up commands that work there, because `relay` is not on PATH after `npx`.
 - Grok CLI sessions now join Relay after `relay init`. The core refused every open Grok session with "A signed-in owner is required for managed sessions." because release builds never attach a Cloud install; a Grok session now belongs to the signed-in account, or to this computer's OS user when nobody is signed in.
 - Broker: `spawn:<harness>` capabilities now declare `metadata.configured.node_kind: "broker"`, so Cloud keeps placing spawns on unclaimed CLI brokers instead of refusing them until `agent-relay node claim`. An already-declared kind (e.g. `desktop`) is preserved.
 - `relay init` downloads the standalone Relaycast server (`relaycast-engine`) for your platform into the install directory's `bin` when it is missing, verifying its SHA-256, so the local server now starts from an npm install on any Node.js version and with npm install scripts disabled. It falls back to the `@relaycast/engine` npm package only if the download fails.

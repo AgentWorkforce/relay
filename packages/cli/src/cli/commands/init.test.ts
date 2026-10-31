@@ -174,6 +174,37 @@ describe('relay init', () => {
     expect(errors.join('\n')).toContain('Pass --key with --url');
   });
 
+  it.each([
+    '/home/a/.npm/_npx/abc/node_modules/.bin/agent-relay',
+    '/home/a/project/node_modules/.bin/agent-relay',
+  ])('prints commands that work after npx ran %s, where relay is not on PATH', async (script) => {
+    const argv = process.argv[1];
+    process.argv[1] = script;
+    try {
+      const { run, logs } = setup({ cliVersion: '15.0.0' });
+      await run('--name', 'solo');
+      const output = logs.join('\n');
+      expect(output).toContain('npx -y agent-relay@15.0.0 message dm send bob "hello" --as alice');
+      expect(output).toContain('npx -y agent-relay@15.0.0 init --hosted');
+      expect(output).not.toMatch(/(^|\s)relay (agent|message) /m);
+      expect(output).not.toContain('run: relay ');
+    } finally {
+      process.argv[1] = argv;
+    }
+  });
+
+  it('keeps relay in printed commands for a global install', async () => {
+    const argv = process.argv[1];
+    process.argv[1] = '/usr/local/bin/relay';
+    try {
+      const { run, logs } = setup({ cliVersion: '15.0.0' });
+      await run('--name', 'solo');
+      expect(logs.join('\n')).toContain('run: relay init --hosted');
+    } finally {
+      process.argv[1] = argv;
+    }
+  });
+
   it('creates a hosted workspace and prints the one command another machine runs to join', async () => {
     const { run, logs, createWorkspace } = setup({ cliVersion: '15.0.0-next.6' });
     await run('--hosted', '--name', 'team');
