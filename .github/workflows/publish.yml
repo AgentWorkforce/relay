@@ -558,7 +558,7 @@ jobs:
       matrix:
         include:
           - platform: darwin-arm64
-            os: macos-14
+            os: macos-15
             broker_pkg: broker-darwin-arm64
             binary_name: agent-relay-broker-darwin-arm64
             binary_file: agent-relay-broker
