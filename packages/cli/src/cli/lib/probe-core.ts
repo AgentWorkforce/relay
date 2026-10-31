@@ -25,7 +25,7 @@ import type { ClaudeFileState, OpenCodeState, PiState } from './init-leftovers.j
 import type { EnginePlatform } from './relaycast-engine-install.js';
 
 /** The core `relay init` installs. Pinned so every machine runs the same core. */
-export const PROBE_VERSION = '15.0.3';
+export const PROBE_VERSION = '15.0.4';
 /** Release tags of the core; distinct from the CLI's `v*` tags. */
 export const PROBE_TAG_PREFIX = 'probe-v';
 const RELEASE_BASE = 'https://github.com/AgentWorkforce/relay/releases/download';
@@ -352,7 +352,8 @@ export const PROBE_DELIVERY: Record<ToolId, { settings: CoreSetting[]; route: st
   },
   codex: {
     settings: [setting('codex_stop_hook')],
-    route: "PostToolUse and Stop hooks in ~/.codex/hooks.json, and Codex's own queue between turns",
+    route:
+      "PostToolUse, Stop and SessionStart hooks in ~/.codex/hooks.json, and Codex's own queue between turns",
   },
   opencode: {
     // `auto_activate` alone never puts an open OpenCode session on the relay;

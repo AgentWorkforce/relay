@@ -142,6 +142,7 @@ pub mod relay_uploads;
 pub mod request_log;
 pub mod sdk_gaps;
 pub mod server;
+pub mod session_cli;
 pub mod session_titles;
 pub mod sessions;
 pub mod settings_cli;

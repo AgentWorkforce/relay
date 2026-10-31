@@ -349,14 +349,14 @@ route and no MCP server, so a session has exactly one Relay identity: the one
 the core registers. Init turns on `auto_activate` (sessions join on their
 own, named `<tool>-<project>-<task>`) and, per tool, through `settings.set`:
 
-| Tool        | Core setting(s)                                  | What the core writes                                                                                                              |
-| ----------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| Claude Code | `direct_delivery_default`, `claude_session_hook` | `crossSessionInbound: "accept"` (only when unset), a SessionStart hook and `permissions.allow` rules in `~/.claude/settings.json` |
-| Codex       | `codex_stop_hook`                                | PostToolUse and Stop hooks in `~/.codex/hooks.json`, trusted through Codex's app-server, and `~/.codex/rules/agent-relay.rules`   |
-| OpenCode    | `opencode_plugin`, `opencode_auto_activate`      | the Agent Relay plugin under `~/.config/opencode/plugins`                                                                         |
-| Grok CLI    | `grok_leader`                                    | `[cli] use_leader` in `~/.grok/config.toml`                                                                                       |
-| Devin       | `devin_direct_delivery`                          | lifecycle hooks in `~/.config/devin/config.json`                                                                                  |
-| Pi          | `pi_extension`, `pi_auto_activate`               | the Agent Relay extension in `~/.pi/agent/extensions` (a desktop core installs it at start)                                       |
+| Tool        | Core setting(s)                                  | What the core writes                                                                                                                          |
+| ----------- | ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Code | `direct_delivery_default`, `claude_session_hook` | `crossSessionInbound: "accept"` (only when unset), a SessionStart hook and `permissions.allow` rules in `~/.claude/settings.json`             |
+| Codex       | `codex_stop_hook`                                | PostToolUse, Stop and SessionStart hooks in `~/.codex/hooks.json`, trusted through Codex's app-server, and `~/.codex/rules/agent-relay.rules` |
+| OpenCode    | `opencode_plugin`, `opencode_auto_activate`      | the Agent Relay plugin under `~/.config/opencode/plugins`                                                                                     |
+| Grok CLI    | `grok_leader`                                    | `[cli] use_leader` in `~/.grok/config.toml`                                                                                                   |
+| Devin       | `devin_direct_delivery`                          | lifecycle hooks in `~/.config/devin/config.json`                                                                                              |
+| Pi          | `pi_extension`, `pi_auto_activate`               | the Agent Relay extension in `~/.pi/agent/extensions` (a desktop core installs it at start)                                                   |
 
 `auto_activate` alone never puts an open Pi or OpenCode session on the relay
 (the desktop installs both routes by default, so its Auto-activate switch
@@ -424,6 +424,33 @@ with the body as `--body` (no `printf |` pipe, since every part of a command
 must match a rule), and every reply hint ends with a `[route: …]` line telling
 the agent to answer only that way, never through another Agent Relay
 connector or app, and to say so if it fails.
+
+**Fixed routes for Codex's rules.** A Codex prefix rule constrains only a
+command's leading words, so the `relay socket-request --socket <socket>`
+rule let anything after the socket through: a relayed (untrusted) message
+could steer Codex into `--method PATCH --path /settings` or
+`--method POST --path /register`, which ran with no prompt. The rules now
+allow only the probe's self-limiting session commands, each with `--socket`
+naming this core's session socket: `relay send` (`POST /send`, with `--to`,
+`--address` or `--channel`, `--reply-to` and `--thread`), `relay agents`
+(`GET /agents`), `relay whoami` (`GET /whoami`), `relay read`
+(`GET /messages`), `relay fetch-attachment` (`POST /attachments/fetch`),
+`relay connect-send` (`POST /connect/send`) and `relay subscribe-channel`
+(`POST`, or with `--remove` `DELETE`, `/channels/subscribe`).
+Each fixes its own method and route, checks every other argument (one name
+or `agent@machine` address with no whitespace or URL characters, plain ids)
+and percent-encodes it into the query, and clap refuses a repeated
+`--socket`. Every hint a session is handed names these commands, and the
+Claude rules allow the same ones. That includes the Claude SessionStart
+preamble and joining text, which named curl and so asked in manual mode: the
+core's `GET /setup/status` answer now carries `probe` (the space-free link
+when it is in use), and the hook writes its commands through it. `relay socket-request` stays for people
+and debugging, with no rule, so it asks. A test enumerates every route the
+session socket serves (read from the router's source) and checks that no
+argument list after any allowed prefix reaches one other than that rule's
+own; another runs `codex execpolicy check` when Codex is installed. A core
+that finds an older Agent Relay rules file (any name) rewrites or removes
+it, so an upgrade leaves no `socket-request` rule behind.
 
 Turning `codex_stop_hook` off puts `~/.codex` back: the hook's keys are listed
 through Codex's app-server while the hook is still in `hooks.json`, the hook
