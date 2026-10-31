@@ -1394,23 +1394,25 @@ function installSkill(
   ctx: ToolContext
 ): string | undefined {
   if (injected.length === 0) return undefined;
-  let line: string;
+  const result = installRelaySkill(
+    injected,
+    ctx,
+    readDeliveryRecord(deliveryRecordPath()).relaySkill,
+    deps.runSkillsCli
+  );
   try {
-    const result = installRelaySkill(
-      injected,
-      ctx,
-      readDeliveryRecord(deliveryRecordPath()).relaySkill,
-      deps.runSkillsCli
-    );
-    line = result.line;
     updateDeliveryRecord(({ relaySkill: _previous, ...rest }) =>
       result.record ? { ...rest, relaySkill: result.record } : rest
     );
   } catch (error) {
-    // The skill is optional: nothing about it may fail init.
-    return `! Agent skill        could not be installed or recorded (${(error as Error).message})`;
+    // The skill is optional, but what --uninstall would not know about is not left behind.
+    uninstallRelaySkill(result.undo, ctx);
+    return (
+      `! Agent skill        not installed: ${deliveryRecordPath()} could not be saved ` +
+      `(${(error as Error).message}), so this run's copies were taken out again`
+    );
   }
-  return line;
+  return result.line;
 }
 
 /**

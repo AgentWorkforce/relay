@@ -1834,7 +1834,9 @@ function fakeSkillsCli(status = 0, lockFile?: string) {
   };
   const lock = lockFile ?? path.join(toolHome, '.agents', '.skill-lock.json');
   const state = { status };
-  const run = vi.fn<RunSkillsCli>((args) => {
+  const lockIn = (env: NodeJS.ProcessEnv) =>
+    env.XDG_STATE_HOME ? path.join(env.XDG_STATE_HOME, 'skills', '.skill-lock.json') : lock;
+  const run = vi.fn<RunSkillsCli>((args, options) => {
     if (state.status !== 0) return { status: state.status, output: 'fatal: unable to access github.com' };
     args.forEach((arg, i) => {
       if (args[i - 1] !== '--agent') return;
@@ -1842,12 +1844,15 @@ function fakeSkillsCli(status = 0, lockFile?: string) {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'SKILL.md'), '---\nname: messaging-agents-on-the-relay\n---\n');
     });
-    const current = fs.existsSync(lock)
-      ? JSON.parse(fs.readFileSync(lock, 'utf8'))
-      : { version: 3, skills: {} };
+    let current = { version: 3, skills: {} as Record<string, unknown> };
+    try {
+      current = JSON.parse(fs.readFileSync(lockIn(options.env), 'utf8'));
+    } catch {
+      // No lock file yet.
+    }
     current.skills[RELAY_SKILL_NAME] = { source: 'AgentWorkforce/skills', ref: RELAY_SKILL_REF };
-    fs.mkdirSync(path.dirname(lock), { recursive: true });
-    fs.writeFileSync(lock, JSON.stringify(current));
+    fs.mkdirSync(path.dirname(lockIn(options.env)), { recursive: true });
+    fs.writeFileSync(lockIn(options.env), JSON.stringify(current));
     return { status: 0, output: 'Done!' };
   });
   return { run, lock, dirs, fail: (next: number) => (state.status = next) };
@@ -1911,7 +1916,7 @@ describe('relay init messaging skill', () => {
         { path: path.join(skills.dirs['claude-code']!, RELAY_SKILL_NAME), ref: RELAY_SKILL_REF },
         { path: path.join(skills.dirs.codex!, RELAY_SKILL_NAME), ref: RELAY_SKILL_REF },
       ],
-      lock: { file: skills.lock, created: true, original: null, ref: RELAY_SKILL_REF },
+      locks: [{ file: skills.lock, created: true, original: null, ref: RELAY_SKILL_REF }],
     });
 
     // A re-run with the same pin changes nothing and fetches nothing.
@@ -1998,6 +2003,73 @@ describe('relay init messaging skill', () => {
     await setup({ ...core.deps, toolContext: () => withDir }).run('--uninstall');
     expect(fs.existsSync(copy)).toBe(false);
     expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  it('tracks each lock file it wrote when the state folder differs between runs', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    const under = (name: string) => {
+      const state = path.join(toolHome, name);
+      return {
+        lock: path.join(state, 'skills', '.skill-lock.json'),
+        ctx: { projectRoot: project, home: toolHome, env: { PATH: '', XDG_STATE_HOME: state } },
+      };
+    };
+    const a = under('state-a');
+    const b = under('state-b');
+    await setup({ ...core.deps, runSkillsCli: skills.run, toolContext: () => a.ctx }).run('--tools', 'codex');
+    await setup({ ...core.deps, toolContext: () => b.ctx }).run('--uninstall');
+    expect(fs.existsSync(a.lock)).toBe(true);
+
+    await setup({ ...core.deps, runSkillsCli: skills.run, toolContext: () => b.ctx }).run('--tools', 'codex');
+    await setup({ ...core.deps, toolContext: () => b.ctx }).run('--uninstall');
+    expect(fs.existsSync(b.lock)).toBe(false);
+    expect(fs.existsSync(a.lock)).toBe(true);
+
+    await setup({ ...core.deps, toolContext: () => a.ctx }).run('--uninstall');
+    expect(fs.existsSync(a.lock)).toBe(false);
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  it("takes this run's copies back out when the record cannot be saved", async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    const settings = path.join(home, 'local', 'core-settings.json');
+    // A folder where the record goes: the next save fails.
+    const blocked: RunSkillsCli = (args, options) => {
+      const result = skills.run(args, options);
+      fs.rmSync(settings, { force: true });
+      fs.mkdirSync(settings);
+      return result;
+    };
+    const { run, logs } = setup({ ...core.deps, runSkillsCli: blocked });
+    await expect(run('--tools', 'codex')).resolves.toBeDefined();
+    expect(logs.join('\n')).toContain("so this run's copies were taken out again");
+    expect(fs.existsSync(path.join(toolHome, '.agents'))).toBe(false);
+  });
+
+  it('removes the other copies and keeps recording one it could not remove', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'claude,codex');
+    const stuck = path.join(skills.dirs['claude-code']!, RELAY_SKILL_NAME);
+    const other = path.join(skills.dirs.codex!, RELAY_SKILL_NAME);
+    const rmSync = fs.rmSync;
+    const spy = vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+      if (target === stuck) throw new Error('EACCES');
+      rmSync(target, options);
+    });
+    const { run, logs } = setup(core.deps);
+    await expect(run('--uninstall')).resolves.toBeDefined();
+    spy.mockRestore();
+    expect(fs.existsSync(stuck)).toBe(true);
+    expect(fs.existsSync(other)).toBe(false);
+    expect(logs.join('\n')).toContain(`Could not remove ${stuck}`);
+    await setup(core.deps).run('--uninstall');
+    expect(fs.existsSync(stuck)).toBe(false);
   });
 
   it('keeps a copy with a file added after init on --uninstall', async () => {
