@@ -27,8 +27,14 @@ pub fn is_t3_app(executable: &Path) -> bool {
     let path = executable.to_string_lossy();
     (path.starts_with("/Applications/")
         || (path.starts_with("/Users/") && path.contains("/Applications/")))
-        && (path.ends_with("/T3 Code (Alpha).app/Contents/MacOS/T3 Code (Alpha)")
-            || path.ends_with("/T3 Code.app/Contents/MacOS/T3 Code"))
+        && [
+            "/T3 Code.app/Contents/MacOS/T3 Code",
+            "/T3 Code (Alpha).app/Contents/MacOS/T3 Code (Alpha)",
+            "/T3 Code (Beta).app/Contents/MacOS/T3 Code (Beta)",
+            "/T3 Code (Nightly).app/Contents/MacOS/T3 Code (Nightly)",
+        ]
+        .iter()
+        .any(|bundle| path.ends_with(bundle))
 }
 
 /// Whether `directory` is a folder the app made for a chat with no project
@@ -174,6 +180,8 @@ mod tests {
         for app in [
             "/Applications/T3 Code (Alpha).app/Contents/MacOS/T3 Code (Alpha)",
             "/Applications/T3 Code.app/Contents/MacOS/T3 Code",
+            "/Applications/T3 Code (Beta).app/Contents/MacOS/T3 Code (Beta)",
+            "/Applications/T3 Code (Nightly).app/Contents/MacOS/T3 Code (Nightly)",
             "/Users/me/Applications/T3 Code (Alpha).app/Contents/MacOS/T3 Code (Alpha)",
         ] {
             assert!(is_t3_app(Path::new(app)), "{app}");
