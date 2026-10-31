@@ -577,7 +577,10 @@ function teammatePackage(version: string | undefined): string {
  * injection for their agent tools. `relay workspace join` only saves it.
  */
 function joinCommand(key: string, origin: string, version: string | undefined): string {
-  return `npx -y ${teammatePackage(version)} init --url ${shellWord(origin)} --key ${shellQuote(key)}`;
+  // A workspace key says which server it belongs to on the default service.
+  const url =
+    origin === DEFAULT_HOSTED_ORIGIN && key.startsWith('ar_ws_') ? '' : ` --url ${shellWord(origin)}`;
+  return `npx -y ${teammatePackage(version)} init${url} --key ${shellQuote(key)}`;
 }
 
 /**
@@ -1082,6 +1085,32 @@ async function connectTo(
 }
 
 /**
+ * Stop the core an earlier `relay init` started when it is older than this
+ * CLI's, so the caller starts the current one. The new binary is fetched
+ * first: if that fails, the running core stays.
+ * @returns Whether the core was stopped
+ */
+async function retireOutdatedCore(
+  deps: InitCommandDependencies,
+  running: NonNullable<Awaited<ReturnType<typeof connectTo>>>
+): Promise<boolean> {
+  const { pid, version } = running.status.daemon;
+  if (version === PROBE_VERSION || process.env[PROBE_PATH_ENV]?.trim()) return false;
+  const probe = await installProbe(deps);
+  // A failed download leaves the old binary in place and usable.
+  if ('reason' in probe || deps.probeVersion(probe.binary) !== PROBE_VERSION) {
+    deps.log(`Keeping the Agent Relay core ${version}; ${PROBE_VERSION} could not be fetched.`);
+    return false;
+  }
+  deps.log(`Updating the Agent Relay core from ${version} to ${PROBE_VERSION}…`);
+  await running.client.call('daemon.shutdown').catch(() => undefined);
+  running.client.close();
+  for (let i = 0; i < 40 && deps.isAlive(pid); i += 1) await deps.sleep(250);
+  if (deps.isAlive(pid)) deps.stop(pid);
+  return true;
+}
+
+/**
  * Attach to the core running on this machine, or start one. One core runs
  * per machine: the desktop app's, a service's, or the one an earlier
  * `relay init` started; a second is never started beside it.
@@ -1096,7 +1125,10 @@ async function ensureCore(deps: InitCommandDependencies): Promise<CoreSession | 
     return { reason: (error as Error).message };
   }
   if (running) {
-    return { ...running, origin: state?.pid === running.status.daemon.pid ? 'reused' : 'attached' };
+    const reused = state?.pid === running.status.daemon.pid;
+    if (!reused || !(await retireOutdatedCore(deps, running))) {
+      return { ...running, origin: reused ? 'reused' : 'attached' };
+    }
   }
   const probe = await installProbe(deps);
   if ('reason' in probe) return probe;
