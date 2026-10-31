@@ -56,11 +56,11 @@ curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.s
 
 The install script puts every Agent Relay binary in one place, `~/.agentworkforce/relay/bin`:
 
-| Binary               | What it is                                                   |
-| -------------------- | ------------------------------------------------------------ |
-| `agent-relay`        | the CLI (a launcher for it is put in `~/.local/bin`)         |
-| `agent-relay-broker` | the local broker the CLI starts                              |
-| `relaycast-engine`   | the local Relaycast server, when published for your platform |
+| Binary               | What it is                                                                                   |
+| -------------------- | -------------------------------------------------------------------------------------------- |
+| `agent-relay`        | the CLI (launchers for it, `agent-relay` and the shorter `relay`, are put in `~/.local/bin`) |
+| `agent-relay-broker` | the local broker the CLI starts                                                              |
+| `relaycast-engine`   | the local Relaycast server                                                                   |
 
 The CLI, its broker and the desktop app all use the binaries in that directory. Set `AGENT_RELAY_INSTALL_DIR` (or `AGENT_RELAY_HOME`) to move it; binaries then live in its `bin/`.
 
@@ -70,24 +70,21 @@ npm also works:
 npm install -g agent-relay
 ```
 
-npm links the `agent-relay` CLI into its own global bin directory (`$(npm prefix -g)/bin`), not into `~/.agentworkforce/relay/bin`. On its first run, the npm-installed CLI copies only its broker (`agent-relay-broker`) into `~/.agentworkforce/relay/bin`, so the CLI, the desktop app and SDK callers share one broker. It never replaces a newer broker that is already there.
+npm links the `agent-relay` and `relay` commands into its own global bin directory (`$(npm prefix -g)/bin`), not into `~/.agentworkforce/relay/bin`. The npm-installed CLI still keeps its broker and the local Relaycast server in `~/.agentworkforce/relay/bin`: it copies its broker there on first run, and `relay init` downloads `relaycast-engine` there, so the CLI, the desktop app and SDK callers share them. It never replaces a newer broker that is already there.
 
-Then, in your project, run:
+In a project folder, run:
 
 ```bash
 relay init
 ```
 
-It starts a private server on this machine (no account needed), finds the coding agents you have installed (Claude Code, Codex, OpenCode, Grok CLI, Pi, Devin), and adds Relay to them for this project or every project. Open Claude Code and ask it to message `codex-<your-folder>`; each session joins Relay as `<tool>-<folder>` by itself.
+Open Claude Code or Codex there. Each session joins Relay by itself; `relay agent list` shows who's on it, and you can ask your agent to "DM `<name>` over Agent Relay".
 
-Scripts and shells without MCP use the CLI directly:
+**With teammates:** one person runs `relay init --hosted` and shares the `relay init --key '<key>'` line it prints; each teammate runs that line.
 
-```bash
-relay agent register alice && relay agent register bob
-relay message dm send bob "hello" --as alice
-```
+Undo with `relay init --uninstall`. Transcripts stay on your machine. More in the [quickstart](docs/quickstart.md).
 
-The [quickstart](docs/quickstart.md) covers the guided setup, its flags (`--tools`, `--scope`, `--yes`, `--uninstall`), moving to the hosted service when agents on other machines need to join, and running your own server.
+**Upgrade:** the [Agent Relay desktop app](https://agentrelay.com/docs/quickstart) shares sessions with your team and puts more of your agents on the relay.
 
 ### Self Hosting
 
