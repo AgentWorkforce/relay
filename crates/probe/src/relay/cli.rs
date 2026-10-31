@@ -79,9 +79,12 @@ pub fn call(
     request(2, method, params)
 }
 
-/// A small socket client for session-scoped macOS Codex commands.
-/// Apple's /usr/bin/curl does not expose CODEX_THREAD_ID to KERN_PROCARGS2;
-/// this executable does, so the core can identify its calling thread.
+/// A small socket client for session-scoped requests, for people and
+/// debugging. Apple's /usr/bin/curl does not expose CODEX_THREAD_ID to
+/// KERN_PROCARGS2; this executable does, so the core can identify its
+/// calling thread. No sandbox or permission rule allows it: it can reach
+/// setting and registration routes, so the hints a session is handed name
+/// the self-limiting commands in `session_cli` instead.
 fn socket_request_allowed(method: &str, path: &str) -> bool {
     if path.bytes().any(|byte| byte <= b' ' || byte == 0x7f) {
         return false;
@@ -93,6 +96,7 @@ fn socket_request_allowed(method: &str, path: &str) -> bool {
                 || path.starts_with("/attachments/fetch?file_id=")
                 || path == "/connect/send"
                 || path.starts_with("/connect/send?")
+                || path.starts_with("/channels/subscribe?channel=")
                 || matches!(
                     path,
                     "/register" | "/connect/leave" | "/integrations/subscribe"
@@ -106,10 +110,13 @@ fn socket_request_allowed(method: &str, path: &str) -> bool {
                 )
         }
         "PATCH" => path == "/settings",
-        "DELETE" => matches!(
-            path,
-            "/register" | "/integrations/subscribe" | "/connect/join"
-        ),
+        "DELETE" => {
+            path.starts_with("/channels/subscribe?channel=")
+                || matches!(
+                    path,
+                    "/register" | "/integrations/subscribe" | "/connect/join"
+                )
+        }
         _ => false,
     }
 }
@@ -138,9 +145,9 @@ pub fn socket_request(socket: &Path, method: &str, path: &str, body: Option<&str
 }
 
 /// `relay read <ref>`: prints a relayed message this session was handed as a
-/// pointer, then its note (`message_pointer::read_note`). Like
-/// `socket-request`, the session is told from this process, so it reads only
-/// its own messages.
+/// pointer, then its note (`message_pointer::read_note`). Like the other
+/// session commands (`session_cli`), the session is told from this process,
+/// so it reads only its own messages.
 pub fn read_message(socket: Option<&Path>, development: bool, message_ref: &str) -> Result<()> {
     let socket = match socket {
         Some(socket) => socket.to_path_buf(),
@@ -154,14 +161,12 @@ pub fn read_message(socket: Option<&Path>, development: bool, message_ref: &str)
 
 /// The text of message `message_ref` kept for the calling session.
 fn read_text(socket: &Path, message_ref: &str) -> Result<String> {
-    if message_ref.len() != 12 || !message_ref.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(SafeError(
-            "Name the message by the 12-character ref on its first line.".into(),
-        )
-        .into());
+    let request = crate::relay::session_cli::SessionCommand::Read {
+        message_ref: message_ref.to_string(),
     }
-    let path = format!("/messages?ref={message_ref}");
-    let (status, body) = socket_response(socket, "GET", &path, b"", SOCKET_TIMEOUT)?;
+    .request()?;
+    let (status, body) =
+        socket_response(socket, request.method, &request.path, b"", SOCKET_TIMEOUT)?;
     let answer: Value = serde_json::from_slice(&body).unwrap_or_default();
     match answer["data"]["text"].as_str() {
         Some(text) if (200..300).contains(&status) => Ok(text.to_string()),
@@ -361,8 +366,16 @@ pub fn claude_session_hook(socket: Option<&Path>, development: bool) -> Result<(
     let interactive = crate::relay::claude::session_hook::has_person(&table, parent);
     let output = match session_hook_socket(socket, development).filter(|_| claude.is_some()) {
         Some(socket) => {
-            let registered = session_registered(&socket);
-            crate::relay::claude::session_hook::hook_output(registered, &socket, interactive)
+            let (registered, probe) = session_registered(&socket);
+            // The core names its rules' probe; an older one does not, and
+            // this probe is the one it runs.
+            let probe = probe.or_else(crate::relay::outbound::fetch::probe_executable);
+            crate::relay::claude::session_hook::hook_output(
+                registered,
+                &socket,
+                interactive,
+                probe.as_deref(),
+            )
         }
         None => json!({}),
     };
@@ -466,9 +479,24 @@ fn session_hook_socket(socket: Option<&Path>, development: bool) -> Option<std::
 }
 
 /// `session.registered`, asking once more when Claude has not written its
-/// session file yet. `None` when the status cannot be read: the hook then
-/// stays quiet rather than registering the session.
-fn session_registered(socket: &Path) -> Option<crate::relay::claude::session_hook::StatusRead> {
+/// session file yet, and the probe the core's rules name. `None` when the
+/// status cannot be read: the hook then stays quiet rather than registering
+/// the session.
+fn session_registered(
+    socket: &Path,
+) -> (
+    Option<crate::relay::claude::session_hook::StatusRead>,
+    Option<std::path::PathBuf>,
+) {
+    let mut probe = None;
+    let status = session_status(socket, &mut probe);
+    (status, probe)
+}
+
+fn session_status(
+    socket: &Path,
+    probe: &mut Option<std::path::PathBuf>,
+) -> Option<crate::relay::claude::session_hook::StatusRead> {
     let mut attempts = 0;
     loop {
         attempts += 1;
@@ -484,6 +512,7 @@ fn session_registered(socket: &Path) -> Option<crate::relay::claude::session_hoo
             )],
         )
         .ok()?;
+        *probe = crate::relay::claude::session_hook::read_probe(&body);
         match crate::relay::claude::session_hook::read_status(status, &body) {
             registered @ (crate::relay::claude::session_hook::StatusRead::Registered { .. }
             | crate::relay::claude::session_hook::StatusRead::Joining
@@ -782,6 +811,8 @@ mod tests {
             ("GET", "/messages?ref=0123456789ab"),
             ("GET", "/settings"),
             ("PATCH", "/settings"),
+            ("POST", "/channels/subscribe?channel=swarm"),
+            ("DELETE", "/channels/subscribe?channel=swarm"),
         ] {
             assert!(socket_request_allowed(method, path), "{method} {path}");
         }
@@ -800,6 +831,8 @@ mod tests {
             ("PATCH", "/settings?extra=1"),
             ("PATCH", "/register"),
             ("PUT", "/settings"),
+            ("POST", "/channels/subscribe"),
+            ("GET", "/channels/subscribe?channel=swarm"),
         ] {
             assert!(!socket_request_allowed(method, path), "{method} {path}");
         }
