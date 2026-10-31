@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use super::TerminalSession;
+use super::{Registry, TerminalSession};
 use crate::relay::process::{ProcessTable, MAX_ANCESTRY};
 
 /// The `entrypoint` the app records for its chats.
@@ -46,9 +46,9 @@ pub fn is_scratch_workspace(directory: &str) -> bool {
 pub fn is_app_chat(
     table: &dyn ProcessTable,
     session: &TerminalSession,
-    sessions: &[TerminalSession],
+    registry: &Registry,
 ) -> bool {
-    session.entrypoint.as_deref() == Some(ENTRYPOINT) && hosted_by(table, session, sessions, is_app)
+    session.entrypoint.as_deref() == Some(ENTRYPOINT) && hosted_by(table, session, registry, is_app)
 }
 
 /// Whether a live registry entry is a chat a person runs in T3 Code, which
@@ -57,17 +57,18 @@ pub fn is_app_chat(
 pub fn is_t3_chat(
     table: &dyn ProcessTable,
     session: &TerminalSession,
-    sessions: &[TerminalSession],
+    registry: &Registry,
 ) -> bool {
-    hosted_by(table, session, sessions, is_t3_app)
+    hosted_by(table, session, registry, is_t3_app)
 }
 
 /// Whether an interactive registry entry was started by this user's `host`
-/// executable, with no other Claude Code session between them.
+/// executable, with no other Claude Code session between them, not even one
+/// whose registry file cannot be read.
 fn hosted_by(
     table: &dyn ProcessTable,
     session: &TerminalSession,
-    sessions: &[TerminalSession],
+    registry: &Registry,
     host: fn(&Path) -> bool,
 ) -> bool {
     if session.kind.as_deref() != Some("interactive") {
@@ -85,7 +86,9 @@ fn hosted_by(
             if table.executable(current).is_some_and(|exe| host(&exe)) {
                 return true;
             }
-            if sessions.iter().any(|other| other.pid == current) {
+            if registry.sessions.iter().any(|other| other.pid == current)
+                || registry.unreadable.iter().any(|file| file.pid == current)
+            {
                 return false;
             }
         }
@@ -120,17 +123,18 @@ pub fn is_paseo_chat(
 pub fn is_app_hosted_chat(
     table: &dyn ProcessTable,
     session: &TerminalSession,
-    sessions: &[TerminalSession],
+    registry: &Registry,
 ) -> bool {
-    is_paseo_chat(table, session, sessions)
-        || is_t3_chat(table, session, sessions)
-        || is_app_chat(table, session, sessions)
+    is_paseo_chat(table, session, &registry.sessions)
+        || is_t3_chat(table, session, registry)
+        || is_app_chat(table, session, registry)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::relay::process::{FakeProcess, FakeProcesses};
+    use crate::relay::sessions::UnreadableSessionFile;
 
     #[test]
     fn only_the_claude_app_bundle_is_the_app() {
@@ -195,6 +199,13 @@ mod tests {
         }
     }
 
+    fn registry(sessions: &[&TerminalSession]) -> Registry {
+        Registry {
+            sessions: sessions.iter().map(|&session| session.clone()).collect(),
+            unreadable: Vec::new(),
+        }
+    }
+
     #[test]
     fn a_t3_code_chat_is_a_persons_chat_but_what_it_starts_is_not() {
         let table = FakeProcesses::default();
@@ -205,22 +216,25 @@ mod tests {
         table.insert(14, process(13, Some("/usr/local/bin/claude")));
 
         let chat = session(12, Some("interactive"));
-        assert!(is_t3_chat(&table, &chat, std::slice::from_ref(&chat)));
-        assert!(is_app_hosted_chat(
-            &table,
-            &chat,
-            std::slice::from_ref(&chat)
-        ));
+        assert!(is_t3_chat(&table, &chat, &registry(&[&chat])));
+        assert!(is_app_hosted_chat(&table, &chat, &registry(&[&chat])));
 
         let nested = session(14, Some("interactive"));
-        assert!(!is_t3_chat(
-            &table,
-            &nested,
-            &[chat.clone(), nested.clone()]
-        ));
+        assert!(!is_t3_chat(&table, &nested, &registry(&[&chat, &nested])));
+
+        // The parent chat's record cannot be read: its pid still stops the walk.
+        let unreadable = Registry {
+            sessions: vec![nested.clone()],
+            unreadable: vec![UnreadableSessionFile {
+                path: "/sessions/12.json".into(),
+                pid: 12,
+                error: "expected value".into(),
+            }],
+        };
+        assert!(!is_t3_chat(&table, &nested, &unreadable));
 
         let run = session(12, Some("sdk"));
-        assert!(!is_t3_chat(&table, &run, std::slice::from_ref(&run)));
+        assert!(!is_t3_chat(&table, &run, &registry(&[&run])));
     }
 
     #[test]
@@ -229,7 +243,7 @@ mod tests {
         table.insert(20, process(1, Some("/usr/local/bin/node")));
         table.insert(21, process(20, Some("/usr/local/bin/claude")));
         let run = session(21, Some("interactive"));
-        assert!(!is_t3_chat(&table, &run, std::slice::from_ref(&run)));
+        assert!(!is_t3_chat(&table, &run, &registry(&[&run])));
     }
 
     #[test]
