@@ -993,6 +993,13 @@ describe('engineAssetName', () => {
   });
 });
 
+interface FakeAgent {
+  name: string;
+  target: { kind: string; id: string };
+  webhook?: { id: string; url: string };
+  integrations?: unknown[];
+}
+
 /**
  * An in-memory Agent Relay core: its settings, its workspace, and whether it
  * runs. `owner` is who started it: relay init (through `startCore`) or
@@ -1014,6 +1021,10 @@ function fakeCore(
     openCodePlugin?: string;
     /** Pi's agent folder, where `pi_extension` writes the extension; off leaves the core's marker. */
     piAgentDir?: string;
+    /** Agents on the relay, as `agents.list` names them. */
+    agents?: FakeAgent[];
+    /** Serve the store's active workspace on `workspace.refresh`, as the real core does. */
+    followStore?: boolean;
   } = {}
 ) {
   const settings: Record<string, unknown> = {
@@ -1034,6 +1045,7 @@ function fakeCore(
   let up = options.running ?? false;
   let pid = up ? 777 : 0;
   const calls: Array<[string, unknown]> = [];
+  let agents = [...(options.agents ?? [])];
   const workspace = {
     state: 'found',
     base_url: options.baseUrl ?? 'http://127.0.0.1:8787',
@@ -1112,7 +1124,24 @@ function fakeCore(
           }
           return { ...settings } as T;
         case 'workspace.refresh':
+          if (options.followStore) {
+            const store = readWorkspaceStore();
+            const key = store.active ? store.workspaces[store.active]?.key : undefined;
+            workspace.workspace_name = store.active ?? '';
+            workspace.base_url = (key && boundOrigin(key)) ?? 'https://cast.agentrelay.com';
+            workspace.workspace_id = `id-${store.active}`;
+          }
           return workspace as T;
+        case 'agents.list':
+          return { agents } as T;
+        case 'agents.unregister':
+          agents = agents.filter((agent) => agent.name !== params.name);
+          return {} as T;
+        case 'agents.register': {
+          const added = { name: String(params.name), target: params.target as FakeAgent['target'] };
+          agents = [...agents, added];
+          return { name: added.name } as T;
+        }
         case 'daemon.shutdown':
           up = false;
           return { stopping: true } as T;
@@ -1125,6 +1154,7 @@ function fakeCore(
   return {
     settings,
     calls,
+    agents: () => agents,
     isUp: () => up,
     sets: () => calls.filter(([method]) => method === 'settings.set').map(([, params]) => params),
     deps: {
@@ -1147,6 +1177,209 @@ function installedProbe(): string {
   fs.writeFileSync(binary, '#!/bin/sh\necho agent-relay-probe\n', { mode: 0o755 });
   return binary;
 }
+
+describe('relay init joining a team after solo relay init', () => {
+  const SESSION: FakeAgent = { name: 'codex-api', target: { kind: 'codex', id: 'thread-1' } };
+  const moves = (calls: Array<[string, unknown]>) =>
+    calls.filter(([method]) => method === 'agents.unregister' || method === 'agents.register');
+
+  /** The servers: `local` holds `onLocal`; every workspace's id is the core's for its name. */
+  function servers(onLocal: string[] = [SESSION.name]) {
+    let localUp = false;
+    return {
+      startEngine: vi.fn(() => {
+        localUp = true;
+        return 4242;
+      }),
+      isAlive: vi.fn(() => localUp),
+      fetch: vi.fn(async (input: string | URL | Request) => {
+        const url = new URL(String(input));
+        const local = url.hostname === '127.0.0.1';
+        if (url.pathname === '/health') return localUp ? jsonResponse(200, { ok: true }) : jsonResponse(503);
+        if (url.pathname === '/v1/workspace') {
+          const name = local ? 'local' : 'team';
+          return jsonResponse(200, { ok: true, data: { id: `id-${name}`, name } });
+        }
+        const agent = /^\/v1\/agents\/(.+)$/.exec(url.pathname)?.[1];
+        if (agent && onLocal.includes(agent)) return jsonResponse(200, { ok: true, data: { name: agent } });
+        return jsonResponse(404);
+      }) as never,
+    };
+  }
+
+  /** Solo `relay init` with a running session on `local`. */
+  async function solo(agents: FakeAgent[] = [SESSION], onLocal?: string[]) {
+    installedProbe();
+    const core = fakeCore({ agents, followStore: true });
+    const net = servers(onLocal);
+    await setup({ ...core.deps, ...net }).run('--tools', 'codex');
+    expect(readWorkspaceStore().active).toBe('local');
+    return { core, net };
+  }
+
+  it('solo then --hosted: the machine, the core and running sessions move to the team', async () => {
+    const { core, net } = await solo();
+    const { run, logs } = setup({ ...core.deps, ...net });
+    await run('--hosted', '--name', 'team', '--tools', 'codex');
+
+    expect(readWorkspaceStore().active).toBe('team');
+    expect(readWorkspaceStore().workspaces.local).toBeDefined();
+    const output = logs.join('\n');
+    expect(logs).toContain('Switched this machine to workspace "team"');
+    expect(output).toContain('Moved running sessions to "team": codex-api.');
+    expect(output).not.toContain('stays active');
+    expect(output).not.toContain('agents here join that workspace');
+    expect(core.calls.map(([method]) => method)).toContain('workspace.refresh');
+    expect(moves(core.calls)).toEqual([
+      ['agents.unregister', { name: 'codex-api' }],
+      ['agents.register', { target: SESSION.target, name: 'codex-api' }],
+    ]);
+    expect(core.deps.startCore).toHaveBeenCalledTimes(1);
+    expect(core.isUp()).toBe(true);
+  });
+
+  it('solo then --key: the same, for a teammate joining', async () => {
+    const { core, net } = await solo();
+    const { run, logs } = setup({ ...core.deps, ...net });
+    await run('--key', 'rk_live_team', '--tools', 'codex');
+
+    expect(readWorkspaceStore().active).toBe('team');
+    expect(readProjectWorkspaceKey(getProjectPaths().dataDir)).toBe('rk_live_team');
+    expect(logs).toContain('Switched this machine to workspace "team"');
+    expect(logs.join('\n')).toContain('Moved running sessions to "team": codex-api.');
+    expect(logs.join('\n')).not.toContain('rk_live_');
+    expect(moves(core.calls)).toHaveLength(2);
+  });
+
+  it('solo then --url/--key: the same, for your own server', async () => {
+    const { core, net } = await solo();
+    const { run, logs } = setup({ ...core.deps, ...net });
+    await run('--url', 'https://relay.corp.test', '--key', 'rk_live_team', '--tools', 'codex');
+    expect(readWorkspaceStore().active).toBe('team');
+    expect(logs).toContain('Switched this machine to workspace "team"');
+  });
+
+  it('a real active workspace stays, and nothing in the core moves', async () => {
+    writeWorkspaceStore({ active: 'ghsub-live', workspaces: { 'ghsub-live': { key: 'rk_live_fleet' } } });
+    installedProbe();
+    const core = fakeCore({ agents: [SESSION] });
+    const { run, logs } = setup(core.deps);
+    await run('--hosted', '--name', 'team', '--tools', 'codex');
+
+    expect(readWorkspaceStore().active).toBe('ghsub-live');
+    expect(logs.join('\n')).toContain('"ghsub-live" stays active machine-wide');
+    expect(logs.join('\n')).toContain('relay workspace switch team');
+    expect(logs.join('\n')).not.toContain('Switched this machine');
+    expect(moves(core.calls)).toEqual([]);
+  });
+
+  it('a workspace named local on another server is a real one', async () => {
+    writeWorkspaceStore({ active: 'local', workspaces: { local: { key: 'rk_live_mine' } } });
+    const { run, logs } = setup();
+    await run('--hosted', '--name', 'team', '--tools', 'none');
+    expect(readWorkspaceStore().active).toBe('local');
+    expect(logs.join('\n')).toContain('"local" stays active machine-wide');
+  });
+
+  it('a desktop core is left alone, and so is the active workspace it follows', async () => {
+    const core = fakeCore({ running: true, agents: [SESSION], followStore: true });
+    const net = servers();
+    await setup({ ...core.deps, ...net }).run('--tools', 'none');
+    core.calls.length = 0;
+    const { run, logs } = setup({ ...core.deps, ...net });
+    await run('--hosted', '--name', 'team', '--tools', 'codex');
+
+    expect(readWorkspaceStore().active).toBe('local');
+    expect(readProjectWorkspaceKey(getProjectPaths().dataDir)).toBe('rk_live_team_remote');
+    const output = logs.join('\n');
+    expect(output).toContain('"local" stays active machine-wide');
+    expect(output).toContain('core running here');
+    expect(output).toContain('relay workspace switch team');
+    expect(output).not.toContain('Switched this machine');
+    expect(moves(core.calls)).toEqual([]);
+    expect(core.calls.some(([method]) => method === 'daemon.shutdown')).toBe(false);
+  });
+
+  it('a desktop core is left alone on a machine with no active workspace too', async () => {
+    const core = fakeCore({
+      running: true,
+      workspaceName: 'desktop',
+      baseUrl: 'https://cast.agentrelay.com',
+    });
+    const { run, logs } = setup(core.deps);
+    await run('--hosted', '--name', 'team', '--tools', 'none');
+    expect(readWorkspaceStore().active).toBeUndefined();
+    expect(logs.join('\n')).toContain('relay workspace switch team');
+  });
+
+  it('only moves sessions on the local workspace, and names the ones it cannot move', async () => {
+    const hook: FakeAgent = {
+      name: 'hooked',
+      target: { kind: 'codex', id: 'thread-2' },
+      webhook: { id: 'w', url: 'https://example.test' },
+    };
+    const elsewhere: FakeAgent = { name: 'desktop-agent', target: { kind: 'codex', id: 'thread-3' } };
+    const { core, net } = await solo([SESSION, hook, elsewhere], [SESSION.name, hook.name]);
+    const { run, logs } = setup({ ...core.deps, ...net });
+    await run('--hosted', '--name', 'team', '--tools', 'codex');
+
+    expect(moves(core.calls)).toHaveLength(2);
+    const output = logs.join('\n');
+    expect(output).toContain('Moved running sessions to "team": codex-api.');
+    expect(output).toContain('These sessions could not be moved from "local": hooked.');
+    expect(output).toContain('Start a new agent session to join "team".');
+    expect(output).not.toContain('desktop-agent');
+  });
+
+  it('a stopped core started again by this run still moves the sessions', async () => {
+    const { core, net } = await solo();
+    await setup({ ...core.deps, ...net, isAlive: vi.fn(() => false) }).run('--stop');
+    const { run, logs } = setup({ ...core.deps, ...net });
+    await run('--hosted', '--name', 'team', '--tools', 'codex');
+
+    expect(core.deps.startCore).toHaveBeenCalledTimes(2);
+    expect(logs).toContain('Switched this machine to workspace "team"');
+    expect(logs.join('\n')).toContain('Moved running sessions to "team": codex-api.');
+  });
+
+  it('says what to do when the core stays on another workspace', async () => {
+    installedProbe();
+    const core = fakeCore({ agents: [SESSION], followStore: true });
+    const net = servers();
+    await setup({ ...core.deps, ...net }).run('--tools', 'codex');
+    // The core's own environment names a workspace: a refresh changes nothing.
+    const { connectCore } = core.deps;
+    const pinned = vi.fn(async (socket: string) => {
+      const client = await connectCore(socket);
+      if (!client) return undefined;
+      return {
+        ...client,
+        call: async <T>(method: string, params?: Record<string, unknown>) =>
+          (method === 'workspace.refresh'
+            ? {
+                state: 'found',
+                base_url: 'http://127.0.0.1:8787',
+                workspace_name: 'local',
+                verification: 'verified',
+              }
+            : await client.call<T>(method, params)) as T,
+      };
+    });
+    const { run, logs } = setup({ ...core.deps, ...net, connectCore: pinned });
+    await run('--hosted', '--name', 'team', '--tools', 'codex');
+    expect(logs.join('\n')).toContain('not "team": agents here join that workspace');
+    expect(moves(core.calls)).toEqual([]);
+  });
+
+  it('--uninstall after a switch turns off injection and keeps the workspace', async () => {
+    const { core, net } = await solo();
+    await setup({ ...core.deps, ...net }).run('--hosted', '--name', 'team', '--tools', 'codex');
+    await setup({ ...core.deps, ...net }).run('--uninstall');
+    expect(core.settings.codex_stop_hook).toBe(false);
+    expect(core.settings.auto_activate).toBe(false);
+    expect(readWorkspaceStore().active).toBe('team');
+  });
+});
 
 describe('relay init message injection', () => {
   it('starts the core, turns on delivery for the chosen tools, and reuses it on re-run', async () => {

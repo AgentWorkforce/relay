@@ -11,6 +11,7 @@ import {
   setWorkspaceKey,
   switchWorkspace,
   validateWorkspaceName,
+  writeWorkspaceStore,
 } from './workspace-store.js';
 
 export interface WorkspaceSessionOptions {
@@ -34,9 +35,10 @@ export interface PersistWorkspaceSessionOptions extends WorkspaceSessionOptions 
    * `always` (the default) selects it, as `relay workspace switch/join/create` do.
    * `if-none` selects it only when no other saved workspace is active, so a
    * project-scoped setup such as `relay init` never moves the whole machine off
-   * a workspace something else already relies on.
+   * a workspace something else already relies on. `never` leaves the active
+   * workspace as it is, even when none is set.
    */
-  activate?: 'always' | 'if-none';
+  activate?: 'always' | 'if-none' | 'never';
 }
 
 export interface PinProjectWorkspaceSessionOptions extends WorkspaceSessionOptions {
@@ -64,7 +66,7 @@ export interface PersistWorkspaceSessionResult {
   clearedEnrolledNodeId?: string;
   /**
    * The machine-global active workspace left in place because `activate` was
-   * `if-none` and a different saved workspace was already active.
+   * `if-none` or `never` and a different saved workspace was already active.
    */
   keptActiveWorkspace?: string;
   /**
@@ -118,9 +120,9 @@ export function persistWorkspaceSession(
   // a bare key, which only ever pins a project, is refused.
   if (isRelayHomeDir(projectDataDir, options.env ?? process.env)) {
     if (!name) throw new RelayHomeProjectError(projectDataDir);
-    const otherActive = options.activate === 'if-none' ? otherActiveWorkspace(name, options.env) : undefined;
-    setWorkspaceKey(name, workspaceKey, options.env);
-    if (!otherActive) switchWorkspace(name, options.env);
+    const otherActive = keepsOtherActive(options) ? otherActiveWorkspace(name, options.env) : undefined;
+    saveNamedWorkspace(name, workspaceKey, options);
+    if (!otherActive && options.activate !== 'never') switchWorkspace(name, options.env);
     return { projectPinSkipped: true, ...(otherActive ? { keptActiveWorkspace: otherActive } : {}) };
   }
   const existing = readProjectWorkspaceSession(projectDataDir, undefined, options.env);
@@ -162,11 +164,11 @@ export function persistWorkspaceSession(
 
   let keptActiveWorkspace: string | undefined;
   if (name) {
-    const otherActive = options.activate === 'if-none' ? otherActiveWorkspace(name, options.env) : undefined;
-    setWorkspaceKey(name, workspaceKey, options.env);
+    const otherActive = keepsOtherActive(options) ? otherActiveWorkspace(name, options.env) : undefined;
+    saveNamedWorkspace(name, workspaceKey, options);
     if (otherActive) {
       keptActiveWorkspace = otherActive;
-    } else {
+    } else if (options.activate !== 'never') {
       switchWorkspace(name, options.env);
     }
   }
@@ -177,6 +179,21 @@ export function persistWorkspaceSession(
       : {}),
     ...(keptActiveWorkspace ? { keptActiveWorkspace } : {}),
   };
+}
+
+/** Save a named workspace; `setWorkspaceKey` also activates the first one, which `never` rules out. */
+function saveNamedWorkspace(name: string, key: string, options: PersistWorkspaceSessionOptions): void {
+  if (options.activate !== 'never') {
+    setWorkspaceKey(name, key, options.env);
+    return;
+  }
+  const store = readWorkspaceStore(options.env);
+  writeWorkspaceStore({ ...store, workspaces: { ...store.workspaces, [name]: { key } } }, options.env);
+}
+
+/** Whether another active workspace outranks this selection. */
+function keepsOtherActive(options: PersistWorkspaceSessionOptions): boolean {
+  return options.activate === 'if-none' || options.activate === 'never';
 }
 
 /**
