@@ -656,7 +656,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
 
   cloudCommand
     .command('login')
-    .description('Authenticate with Agent Relay Cloud (alias of `relay login`)')
+    .description('Authenticate with Agent Relay Cloud')
     .option('--api-url <url>', 'Cloud API base URL')
     .option('--force', 'Force re-authentication even if already logged in')
     .option(
