@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `relay mcp` without `RELAY_AGENT_NAME` now registers each session as `<tool>-<project folder>` (for example `claude-myproject`, from the MCP client's name), adding a short suffix when another live session holds that name and taking the name back after a restart, instead of registering every session as `orchestrator`.
 - The probe daemon now picks its workspace the way the CLI does: a workspace-key environment variable, then the project's pinned key (`AGENT_RELAY_PROJECT`), then the active workspace in `workspaces.json`, each sent only to the server `relaycast-origins.json` binds it to. Your Cloud sign-in is used only when the CLI selects none, so local and self-hosted `relay init` workspaces work without signing in. If the CLI's workspace files are malformed, the probe reports why and uses no workspace instead of falling back to the Cloud one.
 
+### Fixed
+
+- PTY tasks and deliveries are checked against conservative recipient wire limits, including their message envelopes, before launch or queue handoff. Fleet deliveries rejected before custody remain available for redelivery.
+
 ### Removed
 
 - Python workflows, the `agent-relay.py` node provider, and the `agent-relay-sdk` package. Local workflows are YAML, TypeScript, JavaScript, or shell. Cloud and worker workflows are YAML or TypeScript. Node definitions are TypeScript or JavaScript. SDKs are TypeScript and Swift.
