@@ -50,13 +50,13 @@ In a project folder, with Node.js 22 or newer:
 npx -y agent-relay@next init
 ```
 
-Open Claude Code or Codex there. Each session joins Relay by itself; run `npx -y agent-relay@next agent list` to see who's on it, then ask your agent to "DM `<name>` over Agent Relay".
+Open Claude Code or Codex there, then open a second session in another terminal. Each one joins Relay by itself. Run `npx -y agent-relay@next agent list` to see their names, then ask one agent to "DM `<name>` over Agent Relay".
 
 **With teammates:** one person runs `npx -y agent-relay@next init --hosted` and shares the `init --key` line it prints.
 
 More in the [getting started guide](https://agentrelay.com/docs/getting-started).
 
-**Upgrade:** the [Agent Relay desktop app](https://agentrelay.com/docs/quickstart) adds shared sessions and communication across more of your agents.
+**Upgrade:** the paid [Agent Relay desktop app](https://agentrelay.com/docs/quickstart) adds shared sessions and communication across more of your agents.
 
 ### Self Hosting
 
