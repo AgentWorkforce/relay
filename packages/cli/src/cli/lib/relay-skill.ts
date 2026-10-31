@@ -21,7 +21,7 @@ import { findToolTarget, type ToolContext, type ToolId } from './agent-tools-mcp
 /** The skill's name in AgentWorkforce/skills. */
 export const RELAY_SKILL_NAME = 'messaging-agents-on-the-relay';
 /** The skills repo commit init installs the skill from. */
-export const RELAY_SKILL_REF = 'd00c225fb3605406ef37ee87b42abcec4ceb9698';
+export const RELAY_SKILL_REF = 'ac9fb90d0dd1a1c2fd03c8ba309efd4c62ad4a78';
 /** The pinned source, as `skills add` takes it (`<repo>#<ref>`). */
 export const RELAY_SKILL_SOURCE = `https://github.com/AgentWorkforce/skills#${RELAY_SKILL_REF}`;
 /** The `skills` CLI version init runs through npx. */
