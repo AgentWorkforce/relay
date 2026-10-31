@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Grok CLI sessions now join Relay after `relay init`. The core refused every open Grok session with "A signed-in owner is required for managed sessions." because release builds never attach a Cloud install; a Grok session now belongs to the signed-in account, or to this computer's OS user when nobody is signed in.
 - Broker: `spawn:<harness>` capabilities now declare `metadata.configured.node_kind: "broker"`, so Cloud keeps placing spawns on unclaimed CLI brokers instead of refusing them until `agent-relay node claim`. An already-declared kind (e.g. `desktop`) is preserved.
 - `relay init` downloads the standalone Relaycast server (`relaycast-engine`) for your platform into the install directory's `bin` when it is missing, verifying its SHA-256, so the local server now starts from an npm install on any Node.js version and with npm install scripts disabled. It falls back to the `@relaycast/engine` npm package only if the download fails.
 - After `relay init` sets up Pi or OpenCode, new Pi and OpenCode sessions now join Relay on their own and receive injected messages, like Codex and Claude Code. New core settings `pi_auto_activate` and `opencode_auto_activate` (off by default; `relay init` turns on the one for each tool you choose and `--uninstall` turns it off again) gate this, so turning on `auto_activate` alone still leaves Pi and OpenCode sessions joining only when added.
