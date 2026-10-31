@@ -10950,6 +10950,12 @@ mod tests {
     }
 
     #[test]
+    fn relaycast_secret_redaction_covers_armadillo_credentials() {
+        let redacted = redact_relaycast_secrets("key ar_ws_secret token ar_ag_secret");
+        assert!(!redacted.contains("secret"), "{redacted}");
+    }
+
+    #[test]
     fn sanitize_node_id_keeps_safe_chars_and_replaces_separators() {
         // The canonical id is already filename-safe.
         assert_eq!(

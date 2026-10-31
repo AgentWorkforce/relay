@@ -507,6 +507,10 @@ mod tests {
             Some("Join now · open then use")
         );
         assert_eq!(
+            without_invites("use ar_ws_secret or RELAY_AGENT_TOKEN=ar_ag_secret then run"),
+            "use or then run"
+        );
+        assert_eq!(
             without_invites("Set RELAY_API_KEY=rk_live_secret and api_token:abc then run"),
             "Set and then run"
         );

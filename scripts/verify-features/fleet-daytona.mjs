@@ -58,7 +58,7 @@ const SECRET_OPTION_NAMES = new Set(['--api-key', '--join-ticket', '--token', '-
 // package resolution. The live-credential prefix set must stay aligned with
 // the canonical SECRET_PREFIX in packages/cli/src/cli/lib/redact.ts.
 const LIVE_CREDENTIAL_PREFIX_SOURCE =
-  '(?:rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|cld_at_|rth_at_|ocl_node_enr_|br_)[A-Za-z0-9._~+/=-]{8,}';
+  '(?:rk_live_|rjt_live_|at_live_|nt_live_|ot_live_|ar_ws_|ar_ag_|cld_at_|rth_at_|ocl_node_enr_|br_)[A-Za-z0-9._~+/=-]{8,}';
 // GitHub token prefixes use an underscore separator (ghp_..., gho_...,
 // github_pat_...), not a hyphen.
 const GITHUB_TOKEN_SOURCE = '(?:gh[opurs]_|github_pat_)[A-Za-z0-9_]{8,}';

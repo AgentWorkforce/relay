@@ -74,7 +74,7 @@ ENV_FILE="$E/env.sh"
 red() { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
-redact() { sed -E 's/(sk-ant-|rk_|at_|nt_|phc_)[A-Za-z0-9_-]+/\1<redacted>/g'; }
+redact() { sed -E 's/(sk-ant-|rk_|at_|ar_|nt_|phc_)[A-Za-z0-9_-]+/\1<redacted>/g'; }
 
 # The throwaway environment, for this script's own commands.
 use_env() {

@@ -319,6 +319,8 @@ mod tests {
             "nt_live_Z",
             "nt_test_0",
             "[{\"api_key\":\"rk_live_ws1\"}]",
+            "ar_ws_abc",
+            "RELAY_AGENT_TOKEN=ar_ag_x9",
         ] {
             assert!(find_credential_prefix(value).is_some(), "{value}");
         }

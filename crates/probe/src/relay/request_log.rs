@@ -326,6 +326,13 @@ pub async fn observe<T: Serialize>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_service_echo_of_an_armadillo_credential_is_redacted() {
+        let text = scrub_text("refused ar_ws_secret for ar_ag_secret", "");
+        assert!(!text.contains("ar_ws_secret"), "{text}");
+        assert!(!text.contains("ar_ag_secret"), "{text}");
+    }
     static TEST_LOCK: Mutex<()> = Mutex::new(());
     #[test]
     fn removes_secrets_and_bounds_bodies() {

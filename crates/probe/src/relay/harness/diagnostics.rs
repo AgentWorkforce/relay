@@ -209,6 +209,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn armadillo_credentials_never_reach_a_diagnostic() {
+        let message = redact_with(
+            "spawn failed for ar_ws_secret and ar_ag_secret",
+            [].into_iter(),
+        );
+        assert!(!message.contains("ar_ws_secret"), "{message}");
+        assert!(!message.contains("ar_ag_secret"), "{message}");
+    }
+
+    #[test]
     fn a_long_diagnostic_keeps_every_part_through_a_second_redact() {
         let home = tempfile::tempdir().unwrap();
         let log = home.path().join("launch.log");
