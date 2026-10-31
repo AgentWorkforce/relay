@@ -579,7 +579,10 @@ let cliVersion: string | undefined;
  * on PATH after `npx agent-relay`, so npx is repeated.
  */
 function relayCommand(args: string): string {
-  const launcher = isEphemeralPath(process.argv[1] ?? '') ? `npx -y ${teammatePackage(cliVersion)}` : 'relay';
+  const script = (process.argv[1] ?? '').replace(/\\/g, '/');
+  // A project's own install is on PATH only while npx runs it.
+  const viaNpx = isEphemeralPath(script) || /\/node_modules\/\.bin\/(agent-relay|relay)$/.test(script);
+  const launcher = viaNpx ? `npx -y ${teammatePackage(cliVersion)}` : 'relay';
   return `${launcher} ${args}`;
 }
 
