@@ -89,9 +89,7 @@ fn the_hook_brings_the_rules_for_this_probes_read_and_reply() {
     );
     assert_eq!(
         all[1],
-        format!(
-            "Bash({PROBE} relay socket-request --socket '{SOCKET}' --method POST --path '/send?*)"
-        )
+        format!("Bash({PROBE} relay send --socket '{SOCKET}' *)")
     );
     // Recorded as Agent Relay's, by file.
     let added = permissions::Added::load(&root.path().join("app-data"));
@@ -291,16 +289,17 @@ fn a_probe_path_with_a_space_is_named_by_its_link() {
     // link, is what the rules allow.
     let socket = Path::new(SOCKET);
     let read = crate::relay::message_pointer::socket_reader(Some(&link), socket).unwrap();
-    let reply = crate::relay::outbound::probe_command_for(
-        &link,
-        socket,
-        "POST",
-        "/send?to=alice&reply_to=m1",
-        Some("thanks"),
-    )
+    use crate::relay::session_cli::{Recipient, SessionCommand};
+    let reply = SessionCommand::Send {
+        recipient: Recipient::To("alice".into()),
+        reply_to: Some("m1".into()),
+        thread: None,
+    }
+    .command_line(&link, socket, Some("thanks"))
     .unwrap();
-    let agents =
-        crate::relay::outbound::probe_command_for(&link, socket, "GET", "/agents", None).unwrap();
+    let agents = SessionCommand::Agents
+        .command_line(&link, socket, None)
+        .unwrap();
     for command in [format!("{read} 0123456789ab"), reply, agents] {
         assert!(command.starts_with(&format!("{named} relay ")), "{command}");
         assert!(all.iter().any(|rule| covers(rule, &command)), "{command}");
@@ -310,4 +309,45 @@ fn a_probe_path_with_a_space_is_named_by_its_link() {
     assert!(std::fs::symlink_metadata(&link).is_err());
     assert!(!root.path().join(DIR).exists());
     assert_eq!(tree(&claude), before);
+}
+
+// An earlier core added `relay socket-request` rules, which a relayed
+// message could steer to other routes: the upgrade replaces them, and a
+// rule of the person's stays.
+#[test]
+fn an_older_cores_socket_request_rules_are_replaced_on_upgrade() {
+    let root = tempfile::tempdir().unwrap();
+    let path = login(root.path());
+    let request = format!("{PROBE} relay socket-request --socket '{SOCKET}'");
+    let older = vec![
+        format!("Bash({PROBE} relay read --socket '{SOCKET}' *)"),
+        format!("Bash({request} --method POST --path '/send?*)"),
+        format!("Bash({request} --method POST --path '/connect/send?*)"),
+        format!("Bash({request} --method POST --path '/attachments/fetch?file_id=*)"),
+        format!("Bash({request} --method GET --path /agents)"),
+    ];
+    let mut file = older.clone();
+    file.push("Bash(git status)".into());
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json!({"permissions": {"allow": file}})).unwrap(),
+    )
+    .unwrap();
+    let mut added = permissions::Added::default();
+    added.set(&path, older);
+    added.save(&root.path().join("app-data")).unwrap();
+
+    let settings = settings(root.path());
+    assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+    let all = allow(&path);
+    assert!(
+        all.iter().all(|rule| !rule.contains("socket-request")),
+        "{all:?}"
+    );
+    assert!(all.contains(&"Bash(git status)".to_string()));
+    for rule in rules().rules() {
+        assert!(all.contains(&rule), "{rule}");
+    }
+    assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+    assert_eq!(allow(&path), vec!["Bash(git status)".to_string()]);
 }

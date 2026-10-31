@@ -19,8 +19,9 @@
 use crate::relay::daemon::Core;
 use crate::relay::delivery::policy::MessageRef;
 use crate::relay::harness::HarnessId;
-use crate::relay::outbound::{probe_socket_command, query_encode, shell_quote};
+use crate::relay::outbound::{probe_session_command, query_encode, shell_quote};
 use crate::relay::sdk_gaps;
+use crate::relay::session_cli::{Recipient, SessionCommand};
 use crate::relay::state::Level;
 use crate::relay::store::{
     Destination, Payload, Registration, Reply, SessionKind, SpawnRequester, Store,
@@ -101,9 +102,27 @@ impl ReportBack {
             .requester
             .as_deref()
             .map_or_else(|| "<name>".to_string(), query_encode);
-        let send = self.command(socket, "POST", &format!("/send?to={recipient}"))?;
-        let agents = self.command(socket, "GET", "/agents")?;
-        let report = format!("[report: printf '%s' 'your report' | {send}]");
+        let (report, agents) = if self.probe.is_some() {
+            // The probe's self-limiting commands (`session_cli`), which
+            // Codex's sandbox rules allow; one command, with no pipe.
+            let name = self.requester.clone().unwrap_or_else(|| "<name>".into());
+            let send = SessionCommand::Send {
+                recipient: Recipient::To(name),
+                reply_to: None,
+                thread: None,
+            };
+            (
+                probe_session_command(socket, &send, Some("your report"))?,
+                probe_session_command(socket, &SessionCommand::Agents, None)?,
+            )
+        } else {
+            let send = self.command(socket, "POST", &format!("/send?to={recipient}"))?;
+            (
+                format!("printf '%s' 'your report' | {send}"),
+                self.command(socket, "GET", "/agents")?,
+            )
+        };
+        let report = format!("[report: {report}]");
         let agents = format!("[agents: {agents}]");
         let ask = match &self.requester {
             Some(requester) => {
@@ -125,10 +144,8 @@ impl ReportBack {
         Some(format!("{report}\n{agents}\n{ask}"))
     }
 
+    /// The curl form of one socket request.
     fn command(&self, socket: &Path, method: &str, path: &str) -> Option<String> {
-        if self.probe.is_some() {
-            return probe_socket_command(socket, method, path);
-        }
         let socket = socket.to_str()?;
         let url = format!("http://relay{path}");
         let mut parts = vec!["curl", "-s", "--unix-socket", socket, &url];

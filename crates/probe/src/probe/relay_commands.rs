@@ -3,6 +3,7 @@ use crate::{output, user_error};
 use agent_relay_probe::relay;
 use anyhow::Result;
 use clap::Subcommand;
+use relay::session_cli::{Recipient, SessionCommand};
 use std::path::PathBuf;
 
 #[derive(Subcommand)]
@@ -93,7 +94,89 @@ pub enum RelayCommands {
         #[arg(long)]
         socket: Option<PathBuf>,
     },
-    /// Make a session-scoped request to the local relay socket.
+    /// Send a message as the calling session: `POST /send` to one agent
+    /// (`--to`), address (`--address`) or channel (`--channel`), optionally
+    /// replying beneath a message (`--reply-to`) or in a channel post's
+    /// thread (`--thread`). It makes no other request.
+    #[command(group(
+        clap::ArgGroup::new("recipient")
+            .required(true)
+            .args(["to", "address", "channel"])
+    ))]
+    Send {
+        /// The session socket, as the hint names it.
+        #[arg(long)]
+        socket: PathBuf,
+        /// An agent's name.
+        #[arg(long)]
+        to: Option<String>,
+        /// An exact agent@machine address.
+        #[arg(long)]
+        address: Option<String>,
+        /// A channel to post in.
+        #[arg(long)]
+        channel: Option<String>,
+        /// The id of the message this answers.
+        #[arg(long, conflicts_with = "channel")]
+        reply_to: Option<String>,
+        /// The channel thread this answers in.
+        #[arg(long, requires = "channel")]
+        thread: Option<String>,
+        /// The message; read from standard input when omitted. It may start
+        /// with a hyphen (`- first item`).
+        #[arg(long, allow_hyphen_values = true)]
+        body: Option<String>,
+    },
+    /// List the agents the calling session can message (`GET /agents`).
+    Agents {
+        /// The session socket, as the hint names it.
+        #[arg(long)]
+        socket: PathBuf,
+    },
+    /// Print the calling session's own name and address on the relay
+    /// (`GET /whoami`).
+    Whoami {
+        /// The session socket, as the hint names it.
+        #[arg(long)]
+        socket: PathBuf,
+    },
+    /// Fetch an attachment the calling session was sent but did not get in
+    /// time (`POST /attachments/fetch`).
+    FetchAttachment {
+        #[arg(value_name = "FILE_ID")]
+        file_id: String,
+        /// The session socket, as the hint names it.
+        #[arg(long)]
+        socket: PathBuf,
+    },
+    /// Send to the Relay Connect room the calling session joined
+    /// (`POST /connect/send`): to one participant (`--to`), or everyone.
+    ConnectSend {
+        /// The session socket, as the hint names it.
+        #[arg(long)]
+        socket: PathBuf,
+        /// One participant's name; everyone when omitted.
+        #[arg(long)]
+        to: Option<String>,
+        /// The message; read from standard input when omitted.
+        #[arg(long, allow_hyphen_values = true)]
+        body: Option<String>,
+    },
+    /// Join one channel as the calling session, so its posts are delivered
+    /// (`POST /channels/subscribe`), or leave it with `--remove`.
+    SubscribeChannel {
+        #[arg(value_name = "CHANNEL")]
+        channel: String,
+        /// Leave the channel instead.
+        #[arg(long)]
+        remove: bool,
+        /// The session socket, as the hint names it.
+        #[arg(long)]
+        socket: PathBuf,
+    },
+    /// Make any documented session-scoped request to the local relay
+    /// socket, for people and debugging. No sandbox or permission rule
+    /// allows it; sessions are handed the commands above.
     SocketRequest {
         #[arg(long)]
         socket: PathBuf,
@@ -101,9 +184,8 @@ pub enum RelayCommands {
         method: String,
         #[arg(long)]
         path: String,
-        /// The request body; read from standard input when omitted. One
-        /// command, with no pipe, is what Codex's sandbox rules allow. A
-        /// reply may start with a hyphen (`- first item`).
+        /// The request body; read from standard input when omitted. It may
+        /// start with a hyphen (`- first item`).
         #[arg(long, allow_hyphen_values = true)]
         body: Option<String>,
     },
@@ -176,8 +258,97 @@ pub enum RelayCommands {
     },
 }
 
+/// The self-limiting session command `command` is, with the socket it
+/// names and its `--body`: what `run` sends for `relay send`, `agents`,
+/// `whoami`, `read --socket`, `fetch-attachment`, `connect-send` and
+/// `subscribe-channel`. `None` for every
+/// other command.
+pub fn session_command(
+    command: &RelayCommands,
+) -> Option<(&std::path::Path, SessionCommand, Option<&str>)> {
+    Some(match command {
+        RelayCommands::Send {
+            socket,
+            to,
+            address,
+            channel,
+            reply_to,
+            thread,
+            body,
+        } => {
+            let recipient = match (to, address, channel) {
+                (Some(to), None, None) => Recipient::To(to.clone()),
+                (None, Some(address), None) => Recipient::Address(address.clone()),
+                (None, None, Some(channel)) => Recipient::Channel(channel.clone()),
+                _ => return None,
+            };
+            (
+                socket.as_path(),
+                SessionCommand::Send {
+                    recipient,
+                    reply_to: reply_to.clone(),
+                    thread: thread.clone(),
+                },
+                body.as_deref(),
+            )
+        }
+        RelayCommands::Agents { socket } => (socket.as_path(), SessionCommand::Agents, None),
+        RelayCommands::Whoami { socket } => (socket.as_path(), SessionCommand::Whoami, None),
+        RelayCommands::SubscribeChannel {
+            socket,
+            channel,
+            remove,
+        } => (
+            socket.as_path(),
+            SessionCommand::SubscribeChannel {
+                channel: channel.clone(),
+                remove: *remove,
+            },
+            None,
+        ),
+        RelayCommands::FetchAttachment { socket, file_id } => (
+            socket.as_path(),
+            SessionCommand::FetchAttachment {
+                file_id: file_id.clone(),
+            },
+            None,
+        ),
+        RelayCommands::ConnectSend { socket, to, body } => (
+            socket.as_path(),
+            SessionCommand::ConnectSend { to: to.clone() },
+            body.as_deref(),
+        ),
+        RelayCommands::Read {
+            socket: Some(socket),
+            message_ref,
+            ..
+        } => (
+            socket.as_path(),
+            SessionCommand::Read {
+                message_ref: message_ref.clone(),
+            },
+            None,
+        ),
+        _ => return None,
+    })
+}
+
 pub fn run(command: RelayCommands) -> Result<()> {
+    // `relay read` prints the message and its note itself.
+    if !matches!(command, RelayCommands::Read { .. }) {
+        if let Some((socket, session, body)) = session_command(&command) {
+            return relay::session_cli::run(socket, &session, body);
+        }
+    }
     match command {
+        RelayCommands::Send { .. }
+        | RelayCommands::Agents { .. }
+        | RelayCommands::Whoami { .. }
+        | RelayCommands::SubscribeChannel { .. }
+        | RelayCommands::FetchAttachment { .. }
+        | RelayCommands::ConnectSend { .. } => Err(user_error(
+            "Name exactly one of --to, --address or --channel.",
+        )),
         RelayCommands::Serve {
             socket,
             app_data_dir,

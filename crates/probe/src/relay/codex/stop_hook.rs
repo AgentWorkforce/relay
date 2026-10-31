@@ -393,14 +393,22 @@ const RULES_NAMES: usize = 9;
 ///
 /// Codex's default sandbox (`workspace-write` or `read-only`, network off)
 /// denies every Unix socket connect on macOS, so the probe's own socket
-/// client (`relay socket-request`, `relay read`) failed there, and Codex
-/// asked to run it outside the sandbox or reached for another Agent Relay
-/// connector. Codex runs a command outside its sandbox without asking when
-/// every part of it matches an `allow` prefix rule (`exec_policy` in Codex,
-/// verified with Codex 0.163), so the rules allow exactly this probe's two
-/// session-socket commands, each only with `--socket` naming this core's
-/// own session socket (`relay read --socket` refuses `--dev`). Nothing else
-/// is widened: no network, no other program, no other socket.
+/// client failed there, and Codex asked to run it outside the sandbox or
+/// reached for another Agent Relay connector. Codex runs a command outside
+/// its sandbox without asking when every part of it matches an `allow`
+/// prefix rule (`exec_policy` in Codex, verified with Codex 0.163).
+///
+/// A prefix rule constrains only a command's leading words: whatever follows
+/// them is allowed too. So the rules name only the probe's self-limiting
+/// session commands (`session_cli::ALLOWED_SUBCOMMANDS`: `relay send`,
+/// `agents`, `whoami`, `read`, `fetch-attachment`, `connect-send` and
+/// `subscribe-channel`), each only with
+/// `--socket` naming this core's own session socket. Each of those fixes its
+/// own method and route and checks every other argument, so nothing after
+/// the prefix reaches another route; `relay socket-request`, which takes any
+/// method and path (`PATCH /settings`, `/register`), has no rule and still
+/// asks. Nothing else is widened: no network, no other program, no other
+/// socket.
 ///
 /// Codex matches a command only when its program is a plain, unquoted word,
 /// so a probe whose path needs quoting (the macOS app's helper) is named by
@@ -415,26 +423,57 @@ pub struct SandboxRules {
 }
 
 impl SandboxRules {
+    /// Each rule's pattern: the probe, `relay`, the subcommand, `--socket`
+    /// and the socket.
+    pub fn patterns(&self) -> Vec<Vec<String>> {
+        let probe = self.probe.to_string_lossy().into_owned();
+        let socket = self.socket.to_string_lossy().into_owned();
+        crate::relay::session_cli::ALLOWED_SUBCOMMANDS
+            .iter()
+            .map(|subcommand| {
+                vec![
+                    probe.clone(),
+                    "relay".to_string(),
+                    subcommand.to_string(),
+                    "--socket".to_string(),
+                    socket.clone(),
+                ]
+            })
+            .collect()
+    }
+
     /// The rules file's text (Starlark; a JSON string is a Starlark string).
-    fn text(&self) -> String {
-        let quoted = |path: &Path| Value::from(path.to_string_lossy().into_owned()).to_string();
-        let probe = quoted(&self.probe);
-        let socket = quoted(&self.socket);
-        format!(
+    pub fn text(&self) -> String {
+        let mut text = format!(
             "{RULES_HEADER}\n\
              # Lets Agent Relay's own client reach this computer's Agent Relay session socket\n\
-             # from Codex's sandbox, so a session can read and answer relayed messages.\n\
-             prefix_rule(\n    \
-             pattern = [{probe}, \"relay\", \"socket-request\", \"--socket\", {socket}],\n    \
-             decision = \"allow\",\n    \
-             justification = \"Agent Relay's session socket, which sends only as this session\",\n\
-             )\n\
-             prefix_rule(\n    \
-             pattern = [{probe}, \"relay\", \"read\", \"--socket\", {socket}],\n    \
-             decision = \"allow\",\n    \
-             justification = \"Reads a message Agent Relay relayed to this session\",\n\
-             )\n"
-        )
+             # from Codex's sandbox, so a session can read and answer relayed messages. Each\n\
+             # command fixes its own route; no other session route is allowed.\n"
+        );
+        for pattern in self.patterns() {
+            let justification = match pattern[2].as_str() {
+                "send" => "Sends a message as this session through Agent Relay",
+                "agents" => "Lists the agents this session can message",
+                "whoami" => "Shows this session's own name on Agent Relay",
+                "read" => "Reads a message Agent Relay relayed to this session",
+                "fetch-attachment" => "Fetches an attachment sent to this session",
+                "subscribe-channel" => "Joins or leaves one channel as this session",
+                _ => "Answers in the Relay Connect room this session joined",
+            };
+            let words = pattern
+                .iter()
+                .map(|word| Value::from(word.as_str()).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            text.push_str(&format!(
+                "prefix_rule(\n    \
+                 pattern = [{words}],\n    \
+                 decision = \"allow\",\n    \
+                 justification = \"{justification}\",\n\
+                 )\n"
+            ));
+        }
+        text
     }
 }
 
@@ -586,8 +625,11 @@ impl CodexStopHookSettings {
         let text = rules.text();
         // Agent Relay's own file, else the first free name: a file of the
         // person's is never rewritten, and never leaves the hook on without
-        // the rules that let its replies out of the sandbox.
-        let mut ours = None;
+        // the rules that let its replies out of the sandbox. Every other
+        // file of Agent Relay's (an older build's rules, which may allow
+        // more) goes.
+        let mut ours = Vec::new();
+        let mut current = None;
         let mut free = None;
         for path in self.rules_files() {
             match std::fs::symlink_metadata(&path) {
@@ -603,24 +645,41 @@ impl CodexStopHookSettings {
                 _ => continue,
             }
             match std::fs::read_to_string(&path) {
-                Ok(current) if current == text => return Ok(()),
-                Ok(current) if current.starts_with(RULES_HEADER) => {
-                    ours.get_or_insert(path);
+                Ok(written) if written == text && current.is_none() => current = Some(path),
+                Ok(written) if written.starts_with(RULES_HEADER) => ours.push(path),
+                _ => {}
+            }
+        }
+        let path = match current {
+            Some(path) => path,
+            None => {
+                let path = match ours.first() {
+                    Some(_) => ours.remove(0),
+                    None => free.ok_or_else(|| {
+                        "~/.codex/rules has no free name for Agent Relay's sandbox rules."
+                            .to_string()
+                    })?,
+                };
+                crate::relay::claude_settings::write_keeping_file(
+                    &path,
+                    None,
+                    text.as_bytes(),
+                    BACKUP_SUFFIX,
+                    0o644,
+                )
+                .map_err(|_| "~/.codex/rules cannot be written.".to_string())?;
+                path
+            }
+        };
+        for stale in ours.into_iter().filter(|stale| *stale != path) {
+            match std::fs::remove_file(&stale) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err("~/.codex/rules has an older Agent Relay rules file that cannot be removed.".into());
                 }
                 _ => {}
             }
         }
-        let path = ours.or(free).ok_or_else(|| {
-            "~/.codex/rules has no free name for Agent Relay's sandbox rules.".to_string()
-        })?;
-        crate::relay::claude_settings::write_keeping_file(
-            &path,
-            None,
-            text.as_bytes(),
-            BACKUP_SUFFIX,
-            0o644,
-        )
-        .map_err(|_| "~/.codex/rules cannot be written.".to_string())
+        Ok(())
     }
 
     /// Removes Agent Relay's rules file, and the `rules` folder when that
@@ -1364,28 +1423,28 @@ mod tests {
         assert_eq!(std::fs::read_link(&link).unwrap(), real);
         let named = link.display().to_string();
         let rules = std::fs::read_to_string(codex.join("rules/agent-relay.rules")).unwrap();
-        assert_eq!(rules.matches("prefix_rule(").count(), 2);
+        assert_eq!(
+            rules.matches("prefix_rule(").count(),
+            crate::relay::session_cli::ALLOWED_SUBCOMMANDS.len()
+        );
         let socket = "/Users/me/Library/Application Support/x/run/relay.sock";
-        assert!(rules.contains(&format!(
-            "pattern = [\"{named}\", \"relay\", \"socket-request\", \"--socket\", \"{socket}\"]"
-        )));
-        assert!(rules.contains(&format!(
-            "pattern = [\"{named}\", \"relay\", \"read\", \"--socket\", \"{socket}\"]"
-        )));
+        for subcommand in crate::relay::session_cli::ALLOWED_SUBCOMMANDS {
+            assert!(rules.contains(&format!(
+                "pattern = [\"{named}\", \"relay\", \"{subcommand}\", \"--socket\", \"{socket}\"]"
+            )));
+        }
+        assert!(!rules.contains("socket-request"));
         assert!(!rules.contains("Agent Relay.app"));
         // The hints start with the link as one plain word, as the rules'
         // program; the socket is a quoted argument, which Codex matches.
-        let reply = crate::relay::outbound::probe_command_for(
-            &link,
-            Path::new(socket),
-            "POST",
-            "/send?to=alice&reply_to=m1",
-            Some("your reply"),
-        )
+        let reply = crate::relay::session_cli::SessionCommand::Send {
+            recipient: crate::relay::session_cli::Recipient::To("alice".into()),
+            reply_to: Some("m1".into()),
+            thread: None,
+        }
+        .command_line(&link, Path::new(socket), Some("your reply"))
         .unwrap();
-        assert!(reply.starts_with(&format!(
-            "{named} relay socket-request --socket '{socket}' "
-        )));
+        assert!(reply.starts_with(&format!("{named} relay send --socket '{socket}' ")));
         let read =
             crate::relay::message_pointer::socket_reader(Some(&link), Path::new(socket)).unwrap();
         assert_eq!(read, format!("{named} relay read --socket '{socket}'"));
@@ -1407,12 +1466,180 @@ mod tests {
             socket: PathBuf::from("/s/relay.sock"),
         }
         .text();
-        assert_eq!(rules.matches("prefix_rule(").count(), 2);
-        assert!(rules.contains(
-            "pattern = [\"/Apps/Agent Relay.app/probe\", \"relay\", \"socket-request\", \"--socket\", \"/s/relay.sock\"]"
-        ));
-        assert!(rules.contains("pattern = [\"/Apps/Agent Relay.app/probe\", \"relay\", \"read\", \"--socket\", \"/s/relay.sock\"]"));
-        assert_eq!(rules.matches("decision = \"allow\"").count(), 2);
+        let count = crate::relay::session_cli::ALLOWED_SUBCOMMANDS.len();
+        assert_eq!(rules.matches("prefix_rule(").count(), count);
+        for subcommand in crate::relay::session_cli::ALLOWED_SUBCOMMANDS {
+            assert!(rules.contains(&format!(
+                "pattern = [\"/Apps/Agent Relay.app/probe\", \"relay\", \"{subcommand}\", \"--socket\", \"/s/relay.sock\"]"
+            )), "{subcommand}");
+        }
+        // `socket-request` takes any method and path; a prefix rule could
+        // not keep a relayed message from steering it to `PATCH /settings`.
+        assert!(!rules.contains("socket-request"));
+        assert_eq!(rules.matches("decision = \"allow\"").count(), count);
+    }
+
+    /// The commands a relayed message could steer Codex into, and whether
+    /// Codex's own policy engine runs each without a prompt.
+    fn hostile_and_intended(probe: &str, socket: &str) -> Vec<(Vec<String>, bool)> {
+        let on = |words: &[&str]| -> Vec<String> {
+            [probe, "relay"]
+                .iter()
+                .chain(words.iter())
+                .map(|word| word.replace("SOCK", socket))
+                .collect()
+        };
+        let mut cases = vec![
+            (
+                on(&["send", "--socket", "SOCK", "--to", "alice", "--body", "hi"]),
+                true,
+            ),
+            (on(&["agents", "--socket", "SOCK"]), true),
+            (on(&["whoami", "--socket", "SOCK"]), true),
+            (
+                on(&["subscribe-channel", "--socket", "SOCK", "swarm", "--remove"]),
+                true,
+            ),
+            (on(&["read", "--socket", "SOCK", "0123456789ab"]), true),
+            (
+                on(&["fetch-attachment", "--socket", "SOCK", "file_1"]),
+                true,
+            ),
+            (
+                on(&[
+                    "connect-send",
+                    "--socket",
+                    "SOCK",
+                    "--to",
+                    "host",
+                    "--body",
+                    "hi",
+                ]),
+                true,
+            ),
+            (
+                on(&[
+                    "send",
+                    "--socket",
+                    "/tmp/other.sock",
+                    "--to",
+                    "a",
+                    "--body",
+                    "x",
+                ]),
+                false,
+            ),
+            (
+                on(&["settings", "--socket", "SOCK", "auto_join_general=true"]),
+                false,
+            ),
+            (on(&["subscribe", "--socket", "SOCK", "acme/api#1"]), false),
+        ];
+        for (method, route) in crate::relay::outbound::SESSION_ROUTES {
+            cases.push((
+                on(&[
+                    "socket-request",
+                    "--socket",
+                    "SOCK",
+                    "--method",
+                    method,
+                    "--path",
+                    route,
+                    "--body",
+                    "{}",
+                ]),
+                false,
+            ));
+        }
+        cases
+    }
+
+    // The same check with Codex's own policy engine, when Codex is
+    // installed (`codex execpolicy check`, verified with Codex 0.163): the
+    // rules allow the self-limiting commands and nothing that reaches a
+    // setting or registration route.
+    #[test]
+    fn codex_itself_allows_only_the_self_limiting_commands() {
+        let Ok(codex) = which_codex() else {
+            eprintln!("codex is not installed; skipped");
+            return;
+        };
+        let home = tempfile::tempdir().unwrap();
+        let probe = "/tmp/arc/bin/agent-relay-probe";
+        let socket = "/Users/me/Library/Application Support/x/run/relay.sock";
+        let file = home.path().join("agent-relay.rules");
+        std::fs::write(
+            &file,
+            SandboxRules {
+                probe: probe.into(),
+                socket: socket.into(),
+            }
+            .text(),
+        )
+        .unwrap();
+        for (command, allowed) in hostile_and_intended(probe, socket) {
+            let output = std::process::Command::new(&codex)
+                .env("CODEX_HOME", home.path())
+                .args(["execpolicy", "check", "--rules"])
+                .arg(&file)
+                .args(&command)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{command:?}");
+            let verdict: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(
+                verdict["decision"] == "allow",
+                allowed,
+                "{command:?}: {verdict}"
+            );
+        }
+    }
+
+    fn which_codex() -> Result<PathBuf, ()> {
+        let path = std::env::var_os("PATH").ok_or(())?;
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("codex"))
+            .find(|candidate| candidate.is_file())
+            .ok_or(())
+    }
+
+    // An older core's rules (`relay socket-request`, which reached every
+    // session route) are replaced on upgrade, also under a second name,
+    // and turning the hook off still leaves `~/.codex` as it was.
+    #[test]
+    fn an_older_cores_rules_are_replaced_on_upgrade() {
+        let home = tempfile::tempdir().unwrap();
+        let codex = home.path().join(".codex");
+        std::fs::create_dir_all(codex.join("rules")).unwrap();
+        std::fs::write(codex.join("auth.json"), "{}").unwrap();
+        std::fs::write(
+            codex.join("rules/default.rules"),
+            "prefix_rule(pattern = [\"git\", \"status\"])\n",
+        )
+        .unwrap();
+        let before = tree(&codex);
+        let older = format!(
+            "{RULES_HEADER}\nprefix_rule(\n    pattern = [\"/Apps/Agent Relay.app/probe\", \"relay\", \"socket-request\", \"--socket\", \"/s\"],\n    decision = \"allow\",\n)\n"
+        );
+        std::fs::write(codex.join("rules/agent-relay.rules"), &older).unwrap();
+        std::fs::write(codex.join("rules/agent-relay-2.rules"), &older).unwrap();
+        let settings = full_settings(home.path());
+        assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
+        let rules = std::fs::read_to_string(codex.join("rules/agent-relay.rules")).unwrap();
+        assert!(!rules.contains("socket-request"), "{rules}");
+        assert!(rules.contains("\"relay\", \"send\""));
+        assert!(!codex.join("rules/agent-relay-2.rules").exists());
+        // Already current: a refresh leaves it, and finds no stale copy.
+        std::fs::write(codex.join("rules/agent-relay-3.rules"), &older).unwrap();
+        settings.refresh();
+        assert!(!codex.join("rules/agent-relay-3.rules").exists());
+        assert_eq!(
+            std::fs::read_to_string(codex.join("rules/agent-relay.rules")).unwrap(),
+            rules
+        );
+
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        assert_eq!(tree(&codex), before);
     }
 
     // Review on #2019: a file of the person's under the name must not leave
