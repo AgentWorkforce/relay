@@ -53,13 +53,29 @@ pub fn is_app_chat(
 
 /// Whether a live registry entry is a chat a person runs in T3 Code, which
 /// records its chats as `sdk-ts` like any SDK run, so only the process tree
-/// tells them apart. A Claude session a chat starts stays automation.
+/// tells them apart. A Claude session a chat starts stays automation, and so
+/// does `claude -p` in T3 Code's terminal, which can also record `interactive`.
 pub fn is_t3_chat(
     table: &dyn ProcessTable,
     session: &TerminalSession,
     registry: &Registry,
 ) -> bool {
-    hosted_by(table, session, registry, is_t3_app)
+    is_structured_chat_process(table, session.pid) && hosted_by(table, session, registry, is_t3_app)
+}
+
+/// Whether `pid` runs the way an app drives a chat: a `stream-json` pipe with
+/// no terminal and no `-p`/`--print`.
+fn is_structured_chat_process(table: &dyn ProcessTable, pid: i32) -> bool {
+    let arguments = table.arguments(pid);
+    let printing = arguments
+        .iter()
+        .any(|arg| arg == "-p" || arg == "--print" || arg.starts_with("--print="));
+    let structured = arguments.iter().enumerate().any(|(index, argument)| {
+        argument == "--input-format=stream-json"
+            || (argument == "--input-format"
+                && arguments.get(index + 1).map(String::as_str) == Some("stream-json"))
+    });
+    structured && !printing && !table.has_terminal(pid)
 }
 
 /// Whether an interactive registry entry was started by this user's `host`
@@ -182,6 +198,19 @@ mod tests {
         }
     }
 
+    fn chat_process(parent: i32) -> FakeProcess {
+        FakeProcess {
+            arguments: vec![
+                "claude".into(),
+                "--output-format".into(),
+                "stream-json".into(),
+                "--input-format".into(),
+                "stream-json".into(),
+            ],
+            ..process(parent, Some("/usr/local/bin/claude"))
+        }
+    }
+
     fn session(pid: i32, kind: Option<&str>) -> TerminalSession {
         TerminalSession {
             session_id: "7f2a4cab-5d9e-4e3a-9b8c-3c4d5e6f7a01".into(),
@@ -211,9 +240,9 @@ mod tests {
         let table = FakeProcesses::default();
         table.insert(10, process(1, Some(T3)));
         table.insert(11, process(10, Some(T3)));
-        table.insert(12, process(11, Some("/usr/local/bin/claude")));
+        table.insert(12, chat_process(11));
         table.insert(13, process(12, Some("/bin/zsh")));
-        table.insert(14, process(13, Some("/usr/local/bin/claude")));
+        table.insert(14, chat_process(13));
 
         let chat = session(12, Some("interactive"));
         assert!(is_t3_chat(&table, &chat, &registry(&[&chat])));
@@ -238,10 +267,52 @@ mod tests {
     }
 
     #[test]
+    fn claude_print_in_t3_codes_terminal_stays_automation() {
+        let table = FakeProcesses::default();
+        table.insert(30, process(1, Some(T3)));
+        table.insert(31, process(30, Some("/bin/zsh")));
+        table.insert(
+            32,
+            FakeProcess {
+                arguments: vec!["claude".into(), "-p".into(), "hello".into()],
+                has_terminal: true,
+                ..process(31, Some("/usr/local/bin/claude"))
+            },
+        );
+        let run = session(32, Some("interactive"));
+        assert!(!is_t3_chat(&table, &run, &registry(&[&run])));
+
+        // A structured pipe in that terminal is a script, not the app's chat.
+        table.insert(
+            33,
+            FakeProcess {
+                has_terminal: true,
+                ..chat_process(31)
+            },
+        );
+        let piped = session(33, Some("interactive"));
+        assert!(!is_t3_chat(&table, &piped, &registry(&[&piped])));
+
+        table.insert(
+            34,
+            FakeProcess {
+                arguments: vec![
+                    "claude".into(),
+                    "-p".into(),
+                    "--input-format=stream-json".into(),
+                ],
+                ..process(30, Some("/usr/local/bin/claude"))
+            },
+        );
+        let printing = session(34, Some("interactive"));
+        assert!(!is_t3_chat(&table, &printing, &registry(&[&printing])));
+    }
+
+    #[test]
     fn a_sdk_run_outside_t3_code_stays_automation() {
         let table = FakeProcesses::default();
         table.insert(20, process(1, Some("/usr/local/bin/node")));
-        table.insert(21, process(20, Some("/usr/local/bin/claude")));
+        table.insert(21, chat_process(20));
         let run = session(21, Some("interactive"));
         assert!(!is_t3_chat(&table, &run, &registry(&[&run])));
     }
