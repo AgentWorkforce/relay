@@ -360,7 +360,8 @@ export async function resolveWorkspaceByKey(
   options: ResolveActiveWorkspaceOptions = {}
 ): Promise<ActiveWorkspaceDescriptor> {
   const key = workspaceKey.trim();
-  if (!/^(rk_live_|ar_ws_)[A-Za-z0-9_-]{1,512}$/.test(key)) throw new Error('A valid workspace key is required.');
+  if (!/^(rk_live_|ar_ws_)[A-Za-z0-9_-]{1,512}$/.test(key))
+    throw new Error('A valid workspace key is required.');
   const env = options.env ?? process.env;
   const apiUrl = options.apiUrl || defaultApiUrl(env);
   assertWorkspaceResolverTransport(apiUrl);

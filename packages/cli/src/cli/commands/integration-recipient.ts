@@ -27,10 +27,7 @@ async function verifyRecipientIsolation(input: RecipientLaunchInput): Promise<vo
   // One resolution, so the key sent is exactly the one whose server was checked.
   const transport = resolveWorkspaceTransport(input.options);
   const membership = await fetch(
-    new URL(
-      `/v1/agents/${encodeURIComponent(input.name)}`,
-      transport.baseUrl ?? UNBOUND_CREDENTIAL_ORIGIN
-    ),
+    new URL(`/v1/agents/${encodeURIComponent(input.name)}`, transport.baseUrl ?? UNBOUND_CREDENTIAL_ORIGIN),
     {
       headers: { authorization: `Bearer ${transport.workspaceKey}` },
       signal: AbortSignal.timeout(15_000),
