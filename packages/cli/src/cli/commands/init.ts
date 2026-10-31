@@ -1297,9 +1297,11 @@ async function moveCoreToWorkspace(
   try {
     const note = await coreWorkspaceNote(deps, client, setup);
     if (note) return [note];
-    // Moving removes the old registration, so the new server must answer first.
+    // Moving removes the old registration, so the core must be on the new
+    // workspace and its server must answer first. A refresh that failed leaves
+    // no note, so this reads what the core serves itself.
     const { workspace } = await client.call<CoreStatus>('status.get');
-    if (workspace.verification !== 'verified') {
+    if (workspace.verification !== 'verified' || sameWorkspace(workspace, setup) !== true) {
       return [`The Agent Relay core has not verified "${setup.workspace}" yet. ${newSession}`];
     }
     const { agents } = await client.call<{ agents: CoreAgent[] }>('agents.list');
@@ -1435,9 +1437,11 @@ async function setupInjection(
           'again once the core answers, or relay init --uninstall.'
       );
     }
-    const workspaceNote = await coreWorkspaceNote(deps, session.client, setup);
+    const note = await coreWorkspaceNote(deps, session.client, setup);
     // A core this run started kept the registrations of the one before it.
     const moved = session.origin === 'started' ? await moveCoreToWorkspace(deps, session.client, setup) : [];
+    // Moving reports the same note when the core stayed on another workspace.
+    const workspaceNote = note && (moved.includes(note) || setup.details.includes(note)) ? undefined : note;
     return { core: describeCore(session), results, workspaceNote, moved };
   } catch (error) {
     if (error instanceof InjectionStuckError) throw error;

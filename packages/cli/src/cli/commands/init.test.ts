@@ -1473,8 +1473,28 @@ describe('relay init joining a team after solo relay init', () => {
     });
     const { run, logs } = setup({ ...core.deps, ...net, connectCore: pinned });
     await run('--hosted', '--name', 'team', '--tools', 'codex');
-    expect(logs.join('\n')).toContain('not "team": agents here join that workspace');
+    expect(logs.join('\n').match(/agents here join that workspace/g)).toHaveLength(1);
     expect(moves(core.calls)).toEqual([]);
+  });
+
+  it('moves nothing when the core cannot say it serves the new workspace', async () => {
+    const { core, net } = await solo();
+    const { connectCore } = core.deps;
+    const failing = vi.fn(async (socket: string) => {
+      const client = await connectCore(socket);
+      if (!client) return undefined;
+      return {
+        ...client,
+        call: async <T>(method: string, params?: Record<string, unknown>) => {
+          if (method === 'workspace.refresh') throw new Error('busy');
+          return client.call<T>(method, params);
+        },
+      };
+    });
+    const { run, logs } = setup({ ...core.deps, ...net, connectCore: failing });
+    await run('--hosted', '--name', 'team', '--tools', 'codex');
+    expect(moves(core.calls)).toEqual([]);
+    expect(logs.join('\n')).toContain('Start a new agent session to join "team".');
   });
 
   it('--uninstall after a switch turns off injection and keeps the workspace', async () => {
