@@ -646,6 +646,21 @@ async function sharedActivation(deps: InitCommandDependencies): Promise<Activati
 }
 
 /**
+ * Refuse a save that would swap the key under the active workspace's name when
+ * this run must not move the machine: everything following the active
+ * workspace would land on the new one.
+ */
+function refuseActiveName(name: string, key: string | undefined, activation: Activation): void {
+  if (activation.activate === 'always') return;
+  const { active, workspaces } = readWorkspaceStore();
+  if (active !== name || !workspaces[name] || workspaces[name]?.key === key) return;
+  throw new Error(
+    `Workspace "${name}" is active on this machine and relay init will not replace it. ` +
+      'Pass --name with another name.'
+  );
+}
+
+/**
  * Save the workspace and bind it to this project. It becomes the machine-wide
  * active workspace as `activation` says; by default only when no other one is:
  * a machine already serving a workspace (a fleet node, other projects) must not
@@ -676,7 +691,7 @@ function saveWorkspace(
     };
   }
   if (!keptActiveWorkspace) {
-    const from = activation.from?.name === name ? undefined : activation.from;
+    const from = activation.from?.key === workspaceKey ? undefined : activation.from;
     return {
       workspace: name,
       ...(from ? { switchedFrom: from } : {}),
@@ -769,7 +784,9 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
           (hosted ? defaultHostedName(deps.toolContext().projectRoot) : new URL(origin).hostname),
         key
       );
-    const { lines, ...saved } = saveWorkspace(name, key, await sharedActivation(deps));
+    const activation = await sharedActivation(deps);
+    refuseActiveName(name, key, activation);
+    const { lines, ...saved } = saveWorkspace(name, key, activation);
     // A teammate joining a hosted workspace by key: the hosted service, not
     // a server of their own. It stays an `own` setup: init did not create
     // the workspace, so its name never stands in for a workspace id when
@@ -796,9 +813,11 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
 
   if (choice.mode === 'hosted') {
     const name = choice.name ?? defaultHostedName(deps.toolContext().projectRoot);
+    const activation = await sharedActivation(deps);
+    refuseActiveName(name, undefined, activation);
     const relay = await deps.createWorkspace(name, HOSTED_ORIGIN);
     if (!relay.workspaceKey) throw new Error('The hosted service did not return a workspace key.');
-    const { lines, ...saved } = saveWorkspace(name, relay.workspaceKey, await sharedActivation(deps));
+    const { lines, ...saved } = saveWorkspace(name, relay.workspaceKey, activation);
     return moveRunningCore(deps, {
       ...saved,
       workspaceId: await workspaceIdOf(deps, HOSTED_ORIGIN, relay.workspaceKey),
@@ -1194,48 +1213,77 @@ async function coreWorkspaceNote(
 /** The part of the core's `agents.list` that moving sessions reads. */
 interface CoreAgent {
   name: string;
-  target: Record<string, unknown>;
+  alias?: string;
+  address: string;
+  target: { kind: string; id: string };
+  reply_with_final_answer?: boolean | null;
   webhook?: unknown;
   integrations?: unknown[];
   spawn?: unknown;
 }
 
-/** Whether the local server lists `agent` in the workspace `from`; undefined when it cannot be told. */
+const sessionKey = (target: CoreAgent['target']): string => `${target.kind}:${target.id}`;
+
+/**
+ * Whether `agent` is the one the local server holds in the workspace `from`;
+ * undefined when it cannot be told. The core lists every saved registration
+ * with no workspace, and another workspace can use the same name, so the agent
+ * id in its address decides.
+ */
 async function onLocalWorkspace(
   deps: InitCommandDependencies,
   from: LocalWorkspace,
-  agent: string
+  agent: CoreAgent
 ): Promise<boolean | undefined> {
   try {
-    const response = await deps.fetch(new URL(`/v1/agents/${encodeURIComponent(agent)}`, from.origin), {
+    const response = await deps.fetch(new URL(`/v1/agents/${encodeURIComponent(agent.name)}`, from.origin), {
       headers: { authorization: `Bearer ${from.key}` },
       signal: AbortSignal.timeout(5_000),
     });
-    if (response.ok) return true;
-    return response.status === 404 ? false : undefined;
+    if (response.status === 404) return false;
+    if (!response.ok) return undefined;
+    const body = (await response.json()) as { data?: { id?: unknown } } | null;
+    const id = body?.data?.id;
+    return typeof id === 'string' && id ? agent.address.endsWith(`-${id}`) : undefined;
   } catch {
     return undefined;
   }
+}
+
+/** State a new registration would not carry over, so the agent stays where it is. */
+function keepsLocalState(agent: CoreAgent): boolean {
+  return (
+    Boolean(agent.alias || agent.webhook || agent.integrations?.length || agent.spawn) ||
+    (agent.reply_with_final_answer ?? null) !== null
+  );
 }
 
 /**
  * Take one session off the local workspace and put it on the one the core
  * serves now, under the same name when that is free there. A session keeps
  * its registration in the workspace it joined (the core's store holds that
- * workspace's key), so neither a refresh nor a core restart moves it.
+ * workspace's key), so neither a refresh nor a core restart moves it. The core
+ * allows one registration per session, so the old one has to go first.
+ * @param onLost - Called when the session left the old workspace but did not join the new one
+ * @returns The name it has now
  */
-async function moveSession(client: CoreClient, agent: CoreAgent): Promise<void> {
+async function moveSession(client: CoreClient, agent: CoreAgent, onLost: () => void): Promise<string> {
   await client.call('agents.unregister', { name: agent.name });
-  await client
-    .call('agents.register', { target: agent.target, name: agent.name })
-    .catch(() => client.call('agents.register', { target: agent.target }));
+  try {
+    const { name } = await client
+      .call<{ name: string }>('agents.register', { target: agent.target, name: agent.name })
+      .catch(() => client.call<{ name: string }>('agents.register', { target: agent.target }));
+    return name;
+  } catch (error) {
+    onLost();
+    throw error;
+  }
 }
 
 /**
  * After a switch, have the core serve the new workspace now and bring the
- * sessions on the local workspace along. Sessions registered elsewhere (a
- * desktop's workspace in the same store) are not this switch's to move; agents
- * with webhooks, integrations or a spawner keep state a re-registration drops.
+ * running sessions on the local workspace along. Sessions registered elsewhere
+ * are not this switch's to move, and one that ended could not register again.
  * @returns What happened, and what to do about what did not, for the person to read.
  */
 async function moveCoreToWorkspace(
@@ -1249,27 +1297,39 @@ async function moveCoreToWorkspace(
   try {
     const note = await coreWorkspaceNote(deps, client, setup);
     if (note) return [note];
+    // Moving removes the old registration, so the new server must answer first.
+    const { workspace } = await client.call<CoreStatus>('status.get');
+    if (workspace.verification !== 'verified') {
+      return [`The Agent Relay core has not verified "${setup.workspace}" yet. ${newSession}`];
+    }
     const { agents } = await client.call<{ agents: CoreAgent[] }>('agents.list');
+    const { sessions } = await client.call<{ sessions: { target: CoreAgent['target']; live?: boolean }[] }>(
+      'sessions.list'
+    );
+    const live = new Set(sessions.filter((row) => row.live).map((row) => sessionKey(row.target)));
     const moved: string[] = [];
-    const stuck: string[] = [];
+    const stayed: string[] = [];
+    const lost: string[] = [];
     for (const agent of agents) {
-      const local = await onLocalWorkspace(deps, from, agent.name);
+      const local = await onLocalWorkspace(deps, from, agent);
       if (local === false) continue;
-      if (local === undefined || agent.webhook || agent.integrations?.length || agent.spawn) {
-        stuck.push(agent.name);
+      if (local === undefined || keepsLocalState(agent) || !live.has(sessionKey(agent.target))) {
+        stayed.push(agent.name);
         continue;
       }
       try {
-        await moveSession(client, agent);
-        moved.push(agent.name);
+        moved.push(await moveSession(client, agent, () => lost.push(agent.name)));
       } catch {
-        stuck.push(agent.name);
+        if (!lost.includes(agent.name)) stayed.push(agent.name);
       }
     }
     return [
       ...(moved.length > 0 ? [`Moved running sessions to "${setup.workspace}": ${moved.join(', ')}.`] : []),
-      ...(stuck.length > 0
-        ? [`These sessions could not be moved from "${from.name}": ${stuck.join(', ')}. ${newSession}`]
+      ...(stayed.length > 0
+        ? [`These sessions stay on "${from.name}": ${stayed.join(', ')}. ${newSession}`]
+        : []),
+      ...(lost.length > 0
+        ? [`These sessions could not join "${setup.workspace}": ${lost.join(', ')}. ${newSession}`]
         : []),
     ];
   } catch (error) {

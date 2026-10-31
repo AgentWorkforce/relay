@@ -995,7 +995,10 @@ describe('engineAssetName', () => {
 
 interface FakeAgent {
   name: string;
+  alias?: string;
+  address?: string;
   target: { kind: string; id: string };
+  reply_with_final_answer?: boolean | null;
   webhook?: { id: string; url: string };
   integrations?: unknown[];
 }
@@ -1025,6 +1028,10 @@ function fakeCore(
     agents?: FakeAgent[];
     /** Serve the store's active workspace on `workspace.refresh`, as the real core does. */
     followStore?: boolean;
+    /** Names whose sessions have ended. */
+    ended?: string[];
+    /** Names `agents.register` refuses. */
+    refuseRegister?: string[];
   } = {}
 ) {
   const settings: Record<string, unknown> = {
@@ -1134,11 +1141,23 @@ function fakeCore(
           return workspace as T;
         case 'agents.list':
           return { agents } as T;
+        case 'sessions.list':
+          return {
+            sessions: agents.map((agent) => ({
+              target: agent.target,
+              live: !options.ended?.includes(agent.name),
+            })),
+          } as T;
         case 'agents.unregister':
           agents = agents.filter((agent) => agent.name !== params.name);
           return {} as T;
         case 'agents.register': {
-          const added = { name: String(params.name), target: params.target as FakeAgent['target'] };
+          if (options.refuseRegister?.includes(String(params.name))) throw new Error('taken');
+          // Without a name the core suggests one.
+          const added = {
+            name: String(params.name ?? 'codex-suggested'),
+            target: params.target as FakeAgent['target'],
+          };
           agents = [...agents, added];
           return { name: added.name } as T;
         }
@@ -1179,12 +1198,16 @@ function installedProbe(): string {
 }
 
 describe('relay init joining a team after solo relay init', () => {
-  const SESSION: FakeAgent = { name: 'codex-api', target: { kind: 'codex', id: 'thread-1' } };
+  const SESSION: FakeAgent = {
+    name: 'codex-api',
+    address: 'codex-api@mac-a1',
+    target: { kind: 'codex', id: 'thread-1' },
+  };
   const moves = (calls: Array<[string, unknown]>) =>
     calls.filter(([method]) => method === 'agents.unregister' || method === 'agents.register');
 
   /** The servers: `local` holds `onLocal`; every workspace's id is the core's for its name. */
-  function servers(onLocal: string[] = [SESSION.name]) {
+  function servers(onLocal: string[] = [SESSION.name], teamName = 'team') {
     let localUp = false;
     return {
       startEngine: vi.fn(() => {
@@ -1197,11 +1220,13 @@ describe('relay init joining a team after solo relay init', () => {
         const local = url.hostname === '127.0.0.1';
         if (url.pathname === '/health') return localUp ? jsonResponse(200, { ok: true }) : jsonResponse(503);
         if (url.pathname === '/v1/workspace') {
-          const name = local ? 'local' : 'team';
+          const name = local ? 'local' : teamName;
           return jsonResponse(200, { ok: true, data: { id: `id-${name}`, name } });
         }
         const agent = /^\/v1\/agents\/(.+)$/.exec(url.pathname)?.[1];
-        if (agent && onLocal.includes(agent)) return jsonResponse(200, { ok: true, data: { name: agent } });
+        if (agent && onLocal.includes(agent)) {
+          return jsonResponse(200, { ok: true, data: { id: 'a1', name: agent } });
+        }
         return jsonResponse(404);
       }) as never,
     };
@@ -1315,20 +1340,101 @@ describe('relay init joining a team after solo relay init', () => {
   it('only moves sessions on the local workspace, and names the ones it cannot move', async () => {
     const hook: FakeAgent = {
       name: 'hooked',
+      address: 'hooked@mac-a1',
       target: { kind: 'codex', id: 'thread-2' },
       webhook: { id: 'w', url: 'https://example.test' },
     };
-    const elsewhere: FakeAgent = { name: 'desktop-agent', target: { kind: 'codex', id: 'thread-3' } };
-    const { core, net } = await solo([SESSION, hook, elsewhere], [SESSION.name, hook.name]);
+    const elsewhere: FakeAgent = {
+      name: 'desktop-agent',
+      address: 'desktop-agent@mac-a9',
+      target: { kind: 'codex', id: 'thread-3' },
+    };
+    // The same name in another workspace is another agent: its id differs.
+    const sameName: FakeAgent = {
+      name: 'same-name',
+      address: 'same-name@mac-z7',
+      target: { kind: 'codex', id: 'thread-4' },
+    };
+    const { core, net } = await solo(
+      [SESSION, hook, elsewhere, sameName],
+      [SESSION.name, hook.name, sameName.name]
+    );
     const { run, logs } = setup({ ...core.deps, ...net });
     await run('--hosted', '--name', 'team', '--tools', 'codex');
 
     expect(moves(core.calls)).toHaveLength(2);
     const output = logs.join('\n');
     expect(output).toContain('Moved running sessions to "team": codex-api.');
-    expect(output).toContain('These sessions could not be moved from "local": hooked.');
+    expect(output).toContain('These sessions stay on "local": hooked.');
     expect(output).toContain('Start a new agent session to join "team".');
     expect(output).not.toContain('desktop-agent');
+    expect(output).not.toContain('same-name');
+  });
+
+  it('never removes an agent that could not register again or would lose its alias or reply setting', async () => {
+    const agents: FakeAgent[] = [
+      { name: 'ended', address: 'ended@mac-a1', target: { kind: 'codex', id: 't1' } },
+      { name: 'renamed', alias: 'nick', address: 'nick@mac-a1', target: { kind: 'codex', id: 't2' } },
+      {
+        name: 'answers',
+        reply_with_final_answer: true,
+        address: 'answers@mac-a1',
+        target: { kind: 'codex', id: 't3' },
+      },
+    ];
+    installedProbe();
+    const core = fakeCore({ agents, followStore: true, ended: ['ended'] });
+    const net = servers(agents.map((agent) => agent.name));
+    await setup({ ...core.deps, ...net }).run('--tools', 'codex');
+    const { run, logs } = setup({ ...core.deps, ...net });
+    await run('--hosted', '--name', 'team', '--tools', 'codex');
+
+    expect(moves(core.calls)).toEqual([]);
+    expect(logs.join('\n')).toContain('These sessions stay on "local": ended, renamed, answers.');
+  });
+
+  it('prints the name a moved session got when its own is taken on the team', async () => {
+    installedProbe();
+    const core = fakeCore({ agents: [SESSION], followStore: true, refuseRegister: ['codex-api'] });
+    const net = servers();
+    await setup({ ...core.deps, ...net }).run('--tools', 'codex');
+    const { run, logs } = setup({ ...core.deps, ...net });
+    await run('--hosted', '--name', 'team', '--tools', 'codex');
+    expect(logs.join('\n')).toContain('Moved running sessions to "team": codex-suggested.');
+  });
+
+  it('names a session that left local but could not join the team', async () => {
+    installedProbe();
+    const core = fakeCore({
+      agents: [SESSION],
+      followStore: true,
+      refuseRegister: ['codex-api', 'undefined'],
+    });
+    const net = servers();
+    await setup({ ...core.deps, ...net }).run('--tools', 'codex');
+    const { run, logs } = setup({ ...core.deps, ...net });
+    await run('--hosted', '--name', 'team', '--tools', 'codex');
+    expect(logs.join('\n')).toContain('These sessions could not join "team": codex-api.');
+  });
+
+  it('a team saved under the name local still moves the sessions off the old key', async () => {
+    installedProbe();
+    const core = fakeCore({ agents: [SESSION], followStore: true });
+    const net = servers([SESSION.name], 'local');
+    await setup({ ...core.deps, ...net }).run('--tools', 'codex');
+    const { run, logs } = setup({ ...core.deps, ...net });
+    await run('--hosted', '--name', 'local', '--tools', 'codex');
+    expect(readWorkspaceStore().workspaces.local?.key).toBe('rk_live_local_remote');
+    expect(logs.join('\n')).toContain('Moved running sessions to "local": codex-api.');
+  });
+
+  it('refuses to swap the key under an active name it may not move', async () => {
+    writeWorkspaceStore({ active: 'fleet', workspaces: { fleet: { key: 'rk_live_fleet' } } });
+    const { run, errors, createWorkspace } = setup();
+    await expect(run('--hosted', '--name', 'fleet', '--tools', 'none')).rejects.toThrow('exit:1');
+    expect(errors.join('\n')).toContain('Workspace "fleet" is active on this machine');
+    expect(createWorkspace).not.toHaveBeenCalled();
+    expect(readWorkspaceStore().workspaces.fleet?.key).toBe('rk_live_fleet');
   });
 
   it('a stopped core started again by this run still moves the sessions', async () => {

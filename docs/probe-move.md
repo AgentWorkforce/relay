@@ -558,9 +558,10 @@ too, so it stays as it is and init warns. The core picks a switch up live on
 `workspace.refresh`; a restart adds nothing. A session already on the relay
 stays in the workspace it registered with (the store keeps that workspace's
 key), so init also runs `agents.unregister` and `agents.register` for each
-agent the local server lists, under the same name. An agent with a webhook,
-integrations or a spawner is left in place and named, since a new registration
-drops that state.
+running agent whose id the local server confirms, under the same name. An agent
+with an alias, a reply setting, a webhook, integrations or a spawner is left in
+place and named, since a new registration drops that state, and so is one whose
+session ended, which could not register again.
 
 **Service.** `relay init` starts the core as a detached background process
 and installs no service; when it is not running, `relay init` starts it
