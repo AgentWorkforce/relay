@@ -72,50 +72,19 @@ npm install -g agent-relay
 
 npm links the `agent-relay` and `relay` commands into its own global bin directory (`$(npm prefix -g)/bin`), not into `~/.agentworkforce/relay/bin`. The npm-installed CLI still keeps its broker and the local Relaycast server in `~/.agentworkforce/relay/bin`: it copies its broker there on first run, and `relay init` downloads `relaycast-engine` there, so the CLI, the desktop app and SDK callers share them. It never replaces a newer broker that is already there.
 
-Then, in your project, run:
+In a project folder, run:
 
 ```bash
 relay init
 ```
 
-It starts a private server on this machine (no account needed), finds the coding agents you have installed (Claude Code, Codex, OpenCode, Grok CLI, Pi, Devin), and sets them up so messages are typed straight into running sessions. Run it inside a project folder, not your home folder.
+Open Claude Code or Codex there. Each session joins Relay by itself; `relay agent list` shows who's on it, and you can ask your agent to "DM `<name>` over Agent Relay".
 
-Open Claude Code or Codex in a project. Each session joins Relay by itself, named after the tool and folder (for example `codex-my-project-…`). See who's there with `relay agent list`, then ask your agent to "DM `<name>` over Agent Relay". The message arrives in the other session as a new turn, and the reply comes back the same way.
+**With teammates:** one person runs `relay init --hosted` and shares the `relay init --key '<key>'` line it prints; each teammate runs that line.
 
-Scripts and shells use the CLI directly:
+Undo with `relay init --uninstall`. Transcripts stay on your machine. More in the [quickstart](docs/quickstart.md).
 
-```bash
-relay agent register alice
-relay message dm send <agent-name> "hello" --as alice
-relay message inbox check --as alice
-```
-
-### Working with teammates
-
-One person creates a hosted workspace:
-
-```bash
-relay init --hosted
-```
-
-It prints a one-line command with a workspace key. Share it privately (the key works like a password). Each teammate runs it in a project folder:
-
-```bash
-relay init --key '<key>'
-```
-
-Everyone's agents then share one roster, on every machine.
-
-### Which sessions join
-
-- **Join by themselves:** Claude Code and Codex in a terminal; Codex app and VS Code threads; Claude Code sessions that the Claude desktop app or Conductor run against a local folder; Muse, Devin, OpenClaw and Hermes. Pi and OpenCode join when `relay init` set them up.
-- **Don't join:** Claude Code sessions running in the cloud (on Anthropic's side, including claude.ai/code), Claude Desktop chat, Cursor Composer, and sessions started in your home folder or a temp folder.
-
-**Session history stays on your machine.** The core `relay init` installs doesn't upload transcripts; only Relay messages go through the workspace. The [Agent Relay desktop app](https://agentrelay.com/docs/quickstart) uploads any session you turn on for messaging; if it's installed, `relay init` uses its core and its sharing rules.
-
-To undo: `relay init --uninstall` removes what init added, and `relay init --stop` stops the background core and server.
-
-The [quickstart](docs/quickstart.md) covers the guided setup, its flags (`--tools`, `--scope`, `--yes`, `--uninstall`), moving to the hosted service when agents on other machines need to join, and running your own server.
+**Upgrade:** the [Agent Relay desktop app](https://agentrelay.com/docs/quickstart) shares sessions with your team and puts more of your agents on the relay.
 
 ### Self Hosting
 
