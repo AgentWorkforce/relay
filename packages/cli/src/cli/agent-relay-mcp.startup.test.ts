@@ -540,6 +540,14 @@ describe('agent-relay-mcp startup helpers', () => {
     expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledTimes(2);
   });
 
+  it('refuses a workspace key that belongs to another server than this MCP session', async () => {
+    const { mod, mocks } = await loadAgentRelayMcpModule();
+    mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });
+    await expect(
+      mocks.serverInstances[0].tools.get('set_workspace_key')!.handler({ workspace_key: 'ar_ws_elsewhere' })
+    ).rejects.toThrow(/belongs to https:\/\/armadillo\.agentrelay\.com/);
+  });
+
   it('reuses a completed add_agent result only for an explicit idempotency key', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
     mod.createAgentRelayMcpServer({ agentToken: 'at_live_fleet', agentName: 'orchestrator' });

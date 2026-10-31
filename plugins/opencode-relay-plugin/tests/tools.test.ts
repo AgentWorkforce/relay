@@ -75,6 +75,20 @@ describe('OpenCode relay core tools', () => {
     });
   });
 
+  it.each([
+    ['ar_ws_test_fake_workspace_key', 'https://armadillo.agentrelay.com'],
+    ['rk_live_test_fake_workspace_key', 'https://cast.agentrelay.com'],
+  ])('connects %s to %s', async (workspace, baseUrl) => {
+    const state = new RelayState();
+    const factory = createMockRelayCastFactory(server);
+    const createRelayCast = vi.fn(factory);
+
+    await createRelayConnectTool(state, { createRelayCast }).handler({ workspace, name: 'Lead' });
+
+    expect(createRelayCast).toHaveBeenCalledWith(expect.objectContaining({ baseUrl }));
+    expect(state.apiBaseUrl).toBe(baseUrl);
+  });
+
   it('rejects an invalid workspace key before registering', async () => {
     const state = new RelayState();
 

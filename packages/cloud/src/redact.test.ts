@@ -29,9 +29,7 @@ describe('redactCredentialValues', () => {
 
   it('masks armadillo credentials wherever they are embedded', () => {
     expect(
-      redactCredentialValues(
-        'GET /v1/x?key=ar_ws_0123456789_abcdef denied for ar_ag_0123456789_abcdef'
-      )
+      redactCredentialValues('GET /v1/x?key=ar_ws_0123456789_abcdef denied for ar_ag_0123456789_abcdef')
     ).toBe('GET /v1/x?key=ar_ws_…cdef denied for ar_ag_…cdef');
   });
 

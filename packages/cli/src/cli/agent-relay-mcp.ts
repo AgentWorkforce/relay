@@ -36,7 +36,11 @@ import {
 import { z } from 'zod';
 import { declaredWorkforceMetadata } from './lib/registration-metadata.js';
 import { isBundledBunEntrypointPath } from './lib/agent-relay-mcp-command.js';
-import { guardCredentialOrigin, UNBOUND_CREDENTIAL_ORIGIN } from './lib/relaycast-origin-binding.js';
+import {
+  boundOrigin,
+  guardCredentialOrigin,
+  UNBOUND_CREDENTIAL_ORIGIN,
+} from './lib/relaycast-origin-binding.js';
 import { isAgentAlreadyExists, takeOverAgent } from './lib/agent-takeover.js';
 import { pickAvailableName, sessionBaseName } from './lib/mcp-session-name.js';
 import {
@@ -1150,6 +1154,16 @@ function registerAgentRelayTools(
       }
       if (!key.startsWith('rk_live_') && !key.startsWith('ar_ws_')) {
         throw new Error('Workspace key must start with "rk_live_" or "ar_ws_"');
+      }
+      // This server's clients keep the URL it started with, so a key that
+      // belongs elsewhere is refused rather than sent to the wrong server.
+      const keyOrigin = boundOrigin(key);
+      const sessionOrigin = new URL(baseUrl ?? UNBOUND_CREDENTIAL_ORIGIN).origin;
+      if (keyOrigin && new URL(keyOrigin).origin !== sessionOrigin) {
+        throw new Error(
+          `This workspace key belongs to ${new URL(keyOrigin).origin}, but this MCP server is connected to ` +
+            `${sessionOrigin}. Restart it with RELAY_BASE_URL=${new URL(keyOrigin).origin}.`
+        );
       }
 
       const session = getSession();

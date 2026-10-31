@@ -11,7 +11,7 @@ import {
   type RelayCastOptions,
 } from '@relaycast/sdk';
 
-import type { RelayMessage, RelayState } from './index.js';
+import { ARMADILLO_RELAYCAST_API_BASE_URL, type RelayMessage, type RelayState } from './index.js';
 
 export interface ToolSchemaProperty {
   type: string;
@@ -400,6 +400,8 @@ export function createRelayConnectTool(
         throw new Error('Invalid workspace key. Get one at relaycast.dev');
       }
 
+      // An `ar_ws_` key belongs to armadillo; any other stays on the state's server.
+      if (workspace.startsWith('ar_ws_')) state.apiBaseUrl = ARMADILLO_RELAYCAST_API_BASE_URL;
       const relay = createRelayCast({ apiKey: workspace, baseUrl: state.apiBaseUrl });
 
       let token: string | undefined;
