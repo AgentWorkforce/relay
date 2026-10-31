@@ -73,7 +73,7 @@ import {
   type DeliveryRecord,
   type DeliveryResult,
 } from '../lib/probe-core.js';
-import { shellQuote } from '../lib/agent-registration.js';
+import { shellQuote, shellWord } from '../lib/agent-registration.js';
 import {
   claudeFileStates,
   openCodeConfigDir,
@@ -95,7 +95,7 @@ import {
 } from '../lib/relay-skill.js';
 import { persistWorkspaceSession } from '../lib/workspace-session.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
-import { getProjectPaths } from '@agent-relay/config';
+import { assertProjectRoot, getProjectPaths, isHomeProjectRoot } from '@agent-relay/config';
 import {
   PROBE_PATH_ENV,
   getCanonicalProbePath,
@@ -437,7 +437,7 @@ async function verifyWorkspace(
   deps: InitCommandDependencies,
   origin: string,
   key: string
-): Promise<string | undefined> {
+): Promise<WorkspaceInfo> {
   let response: Response;
   try {
     response = await deps.fetch(new URL('/v1/workspace', origin), {
@@ -457,17 +457,28 @@ async function verifyWorkspace(
     throw new WorkspaceKeyRejectedError(`${origin} rejected the workspace key.`);
   }
   if (!response.ok) throw new Error(`${origin} answered ${response.status} when checking the workspace.`);
-  return workspaceIdIn(response);
+  return workspaceInfoIn(response);
 }
 
-/** The `id` of a `GET /v1/workspace` answer (`{ok, data: {id}}`), read leniently. */
-async function workspaceIdIn(response: Response): Promise<string | undefined> {
+/** What `GET /v1/workspace` says about a key's workspace, when it says. */
+interface WorkspaceInfo {
+  id?: string;
+  name?: string;
+}
+
+/** The `id` and `name` of a `GET /v1/workspace` answer (`{ok, data: {id, name}}`), read leniently. */
+async function workspaceInfoIn(response: Response): Promise<WorkspaceInfo> {
+  const text = (value: unknown): string | undefined =>
+    typeof value === 'string' && value.trim() ? value.trim() : undefined;
   try {
-    const body = (await response.json()) as { data?: { id?: unknown }; id?: unknown } | null;
-    const id = body?.data?.id ?? body?.id;
-    return typeof id === 'string' && id.trim() ? id.trim() : undefined;
+    const body = (await response.json()) as {
+      data?: { id?: unknown; name?: unknown };
+      id?: unknown;
+      name?: unknown;
+    } | null;
+    return { id: text(body?.data?.id ?? body?.id), name: text(body?.data?.name ?? body?.name) };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -477,7 +488,10 @@ async function workspaceIdOf(
   origin: string,
   key: string
 ): Promise<string | undefined> {
-  return verifyWorkspace(deps, origin, key).catch(() => undefined);
+  return verifyWorkspace(deps, origin, key).then(
+    (workspace) => workspace.id,
+    () => undefined
+  );
 }
 
 function parsePort(value: string): number {
@@ -526,14 +540,45 @@ interface ServerSetup {
   keptActive?: string;
 }
 
-/** A word as the shell reads it: quoted unless it is plainly safe to paste. */
-function shellWord(value: string): string {
-  return /^[A-Za-z0-9._@%+=:,/-]+$/.test(value) ? value : shellQuote(value);
-}
-
 /** The command that makes `name` the machine-wide active workspace. */
 function switchCommand(name: string): string {
   return `relay workspace switch ${shellWord(name)}`;
+}
+
+/**
+ * The npm package spec a teammate's `npx` runs: the `next` dist-tag for a
+ * `-next` prerelease (or a build that is not a published version), else
+ * this exact version.
+ */
+function teammatePackage(version: string | undefined): string {
+  const published = version?.trim();
+  if (!published || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(published) || published.includes('-next')) {
+    return 'agent-relay@next';
+  }
+  return `agent-relay@${published}`;
+}
+
+/**
+ * The one command a teammate runs in their project to join a hosted
+ * workspace, Relay installed or not: it saves the workspace (named as the
+ * server names it), starts the Agent Relay core and turns on message
+ * injection for their agent tools. `relay workspace join` only saves it.
+ */
+function joinCommand(key: string, version: string | undefined): string {
+  return `npx -y ${teammatePackage(version)} init --key ${shellQuote(key)}`;
+}
+
+/**
+ * A free name for a workspace joined by key: `name`, unless a saved
+ * workspace under it holds another key, then `name-2` and on.
+ */
+function freeWorkspaceName(name: string, key: string): string {
+  const saved = readWorkspaceStore().workspaces;
+  const free = (candidate: string) => !saved[candidate] || saved[candidate]?.key === key;
+  if (free(name)) return name;
+  for (let n = 2; ; n += 1) {
+    if (free(`${name}-${n}`)) return `${name}-${n}`;
+  }
 }
 
 /**
@@ -575,20 +620,83 @@ function globalScopeNote(setup: ServerSetup, scope: InstallScope, installed: Too
   );
 }
 
+/** A workspace name part: lowercase letters, digits and single dashes. */
+function nameSlug(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/**
+ * The name `relay init --hosted` gives a new workspace without `--name`:
+ * the person and the project folder (`alice-api`), with a numeric suffix
+ * when a saved workspace already has that name, so a second hosted
+ * workspace never replaces the first in the store.
+ */
+function defaultHostedName(projectRoot: string): string {
+  let user = '';
+  try {
+    user = os.userInfo().username;
+  } catch {
+    // No passwd entry (some containers): the folder alone.
+  }
+  const base =
+    [nameSlug(user), nameSlug(path.basename(projectRoot))].filter(Boolean).join('-').slice(0, 40) || 'relay';
+  const taken = new Set(Object.keys(readWorkspaceStore().workspaces));
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n += 1) {
+    if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
+  }
+}
+
 /**
  * Connect to (or start) the server and save its workspace for this project.
  * This is the original `relay init`; the agent-tool setup comes after it.
  */
 async function setupServer(deps: InitCommandDependencies, choice: ServerChoice): Promise<ServerSetup> {
   if (choice.mode === 'own') {
-    const { url, key } = choice;
-    if (!url || !key) throw new Error('Pass --url and --key together for your own server.');
+    const { key } = choice;
+    if (!key) throw new Error('Pass --key with --url for your own server.');
+    // `--key` alone joins the hosted service. A key already bound to a
+    // self-hosted server is never sent there: only an explicit --url moves it.
+    const url = choice.url ?? HOSTED_ORIGIN;
+    const bound = choice.url ? undefined : boundOrigin(key);
+    if (bound && new URL(bound).origin !== HOSTED_ORIGIN) {
+      throw new Error(
+        `This workspace key belongs to ${new URL(bound).origin}, so relay init will not send it to the hosted ` +
+          `service. To use it there, run: relay init --url ${shellWord(new URL(bound).origin)} --key <key>`
+      );
+    }
     const origin = configuredOrigin(url, '--url');
     if (!origin) throw new Error('--url is empty.');
-    const workspaceId = await verifyWorkspace(deps, origin, key);
+    const workspace = await verifyWorkspace(deps, origin, key);
+    const workspaceId = workspace.id;
     guardCredentialOrigin(key, url);
-    const name = choice.name ?? new URL(origin).hostname;
+    const hosted = origin === HOSTED_ORIGIN;
+    // Named as the person says, else as the server names the workspace.
+    const name =
+      choice.name ??
+      freeWorkspaceName(
+        workspace.name ??
+          (hosted ? defaultHostedName(deps.toolContext().projectRoot) : new URL(origin).hostname),
+        key
+      );
     const { lines, ...saved } = saveWorkspace(name, key);
+    // A teammate joining a hosted workspace by key: the hosted service, not
+    // a server of their own. It stays an `own` setup: init did not create
+    // the workspace, so its name never stands in for a workspace id when
+    // checking which workspace the core serves (`sameWorkspace`).
+    if (hosted) {
+      return {
+        ...saved,
+        workspaceId,
+        mode: 'own',
+        origin,
+        headline: `Joined hosted workspace "${name}" (${origin}).`,
+        details: ['Your key is only ever sent to the hosted service.', ...lines],
+      };
+    }
     return {
       ...saved,
       workspaceId,
@@ -600,7 +708,7 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
   }
 
   if (choice.mode === 'hosted') {
-    const name = choice.name ?? `relay-${os.hostname().split('.')[0]}`;
+    const name = choice.name ?? defaultHostedName(deps.toolContext().projectRoot);
     const relay = await deps.createWorkspace(name, HOSTED_ORIGIN);
     if (!relay.workspaceKey) throw new Error('The hosted service did not return a workspace key.');
     const { lines, ...saved } = saveWorkspace(name, relay.workspaceKey);
@@ -611,9 +719,11 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
       origin: HOSTED_ORIGIN,
       headline: `Created hosted workspace "${name}".`,
       details: [
+        ...(choice.name ? [] : [`Named after you and this folder; pass --name to choose another.`]),
         ...lines,
-        'On another machine, join it with (treat this key like a password):',
-        `  relay workspace join ${name} ${relay.workspaceKey}`,
+        'On another machine, run this in the project to join it and connect its agent tools ' +
+          '(treat this key like a password):',
+        `  ${joinCommand(relay.workspaceKey, deps.cliVersion)}`,
       ],
     };
   }
@@ -628,11 +738,14 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     // Only a key the server refuses is replaced. A timeout or server
     // error is reported instead, so a hiccup never swaps the workspace
     // (and its agents and messages) for a new one.
-    workspaceId = await verifyWorkspace(deps, origin, workspaceKey).catch((error: unknown) => {
-      if (!(error instanceof WorkspaceKeyRejectedError)) throw error;
-      workspaceKey = undefined;
-      return undefined;
-    });
+    workspaceId = await verifyWorkspace(deps, origin, workspaceKey).then(
+      (workspace) => workspace.id,
+      (error: unknown) => {
+        if (!(error instanceof WorkspaceKeyRejectedError)) throw error;
+        workspaceKey = undefined;
+        return undefined;
+      }
+    );
   }
   if (!workspaceKey) {
     assertOriginBindingsWritable(origin);
@@ -788,6 +901,15 @@ interface CoreSession {
   status: CoreStatus;
   origin: CoreOrigin;
   logFile?: string;
+}
+
+/**
+ * The core's command line as a person can paste it: the binary relay init
+ * runs, by path, since its bin folder is not on PATH (and a core relay init
+ * starts keeps no copy in ~/.local/bin).
+ */
+function probeCommand(): string {
+  return shellWord(process.env[PROBE_PATH_ENV]?.trim() || getCanonicalProbePath());
 }
 
 /** The core binary: `AGENT_RELAY_PROBE_PATH`, else the pinned release in the canonical bin slot. */
@@ -962,7 +1084,7 @@ async function coreWorkspaceNote(
   if (same === undefined) {
     return (
       `Could not confirm that the Agent Relay core serves "${setup.workspace}" (${setup.origin} names no ` +
-      `workspace id it can compare). See which one it serves with: agent-relay-probe relay call status.get`
+      `workspace id it can compare). See which one it serves with: ${probeCommand()} relay call status.get`
     );
   }
   const served = workspace.workspace_name ? `workspace "${workspace.workspace_name}"` : 'another workspace';
@@ -1123,7 +1245,7 @@ async function undoUnrecorded(
     throw new InjectionStuckError(
       `Could not save ${deliveryRecordPath()} (${cause.message}), and these settings relay init turned on ` +
         `could not be turned off again: ${failures.join('; ')}. Turn them off with ` +
-        'agent-relay-probe relay call settings.set --params \'{"<setting>":false}\', then run relay init again.',
+        `${probeCommand()} relay call settings.set --params '{"<setting>":false}', then run relay init again.`,
       { cause }
     );
   }
@@ -1413,7 +1535,9 @@ function installSkill(
           ...left.copies.map((copy) => copy.path),
           ...left.locks.map((lock) => lock.file),
         ].join(', ')}`
-      : "so this run's copies were taken out again";
+      : result.undo?.copies.length
+        ? "so this run's copies were taken out again"
+        : 'and this run added no copies to take out';
     return (
       `! Agent skill        not installed: ${deliveryRecordPath()} could not be saved ` +
       `(${(error as Error).message}), ${outcome}`
@@ -1534,15 +1658,17 @@ interface InitOptions {
   tools?: ToolId[];
   scope?: InstallScope;
   delivery?: Delivery;
+  /** Accepted for older commands; asking nothing is already the default. */
   yes?: boolean;
+  interactive?: boolean;
   uninstall?: boolean;
 }
 
 function serverChoiceFromFlags(o: InitOptions): ServerChoice | undefined {
-  if (Boolean(o.url) !== Boolean(o.key))
-    throw new Error('Pass --url and --key together for your own server.');
+  if (o.url && !o.key) throw new Error('Pass --key with --url for your own server.');
   if (o.url && o.hosted) throw new Error('Choose either --hosted or --url/--key.');
-  if (o.url) return { mode: 'own', url: o.url, key: o.key, name: o.name, port: o.port };
+  // A key joins its workspace: on --url's server, else on the hosted service.
+  if (o.key) return { mode: 'own', url: o.url, key: o.key, name: o.name, port: o.port };
   if (o.hosted) return { mode: 'hosted', name: o.name, port: o.port };
   return undefined;
 }
@@ -1559,9 +1685,46 @@ async function stopLocalServer(deps: InitCommandDependencies): Promise<void> {
   await stopCore(deps);
 }
 
+/**
+ * Remove `~/.local/bin/agent-relay-probe` when it is a byte-for-byte copy of
+ * the core relay init installs. The desktop app's core keeps that copy up to
+ * date for terminal use, and cores up to 15.0.3 did so even when relay init
+ * started them; a copy of any other build (the desktop's own) is left alone,
+ * and the desktop puts its copy back when it next starts.
+ * @returns The removed copy's path, when there was one to remove.
+ */
+function removeProbeCopy(ctx: ToolContext): string | undefined {
+  const copy = path.join(
+    ctx.home,
+    '.local',
+    'bin',
+    process.platform === 'win32' ? 'agent-relay-probe.exe' : 'agent-relay-probe'
+  );
+  // Best effort: an unreadable ~/.local/bin never fails the uninstall.
+  try {
+    // lstat, so a symlink there (someone's own install) is never followed.
+    if (!fs.lstatSync(copy, { throwIfNoEntry: false })?.isFile()) return undefined;
+    const ours = readIfFile(getCanonicalProbePath());
+    const theirs = ours ? readIfFile(copy) : undefined;
+    if (!ours || !theirs || !ours.equals(theirs)) return undefined;
+    fs.rmSync(copy);
+    return copy;
+  } catch {
+    return undefined;
+  }
+}
+
 async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise<void> {
   const ctx = deps.toolContext();
-  const scopes: InstallScope[] = o.scope ? [o.scope] : ['project', 'global'];
+  // Outside a project (in ~, or a folder whose nearest Relay folder is a relay
+  // home) there is no project scope: its paths would be the user's own global
+  // configs (~/.grok/config.toml), which only the global scope may touch.
+  const noProject = isHomeProjectRoot(ctx.projectRoot);
+  if (noProject && o.scope === 'project') {
+    deps.log('Not inside a project, so there is no project scope to remove Relay from.');
+    return;
+  }
+  const scopes: InstallScope[] = o.scope ? [o.scope] : noProject ? ['global'] : ['project', 'global'];
   const tools = o.tools ?? [...TOOL_IDS];
   const results = scopes.flatMap((scope) =>
     tools.map((id) => uninstallTool(findToolTarget(id)!, { ctx, scope }))
@@ -1582,6 +1745,9 @@ async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise
         '--scope project or --tools to turn it off.'
     );
   }
+  const removedCopy = o.scope !== 'project' && o.tools === undefined ? removeProbeCopy(ctx) : undefined;
+  if (removedCopy)
+    deps.log(`✓ Agent Relay core     removed the copy a core relay init started left at ${removedCopy}`);
   // The skill is installed per user, like injection, and removed with it.
   const skillRecord = readDeliveryRecord(deliveryRecordPath()).relaySkill;
   const skill =
@@ -1593,7 +1759,7 @@ async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise
       skill.remaining ? { ...rest, relaySkill: skill.remaining } : rest
     );
   }
-  if (shown.length === 0 && turnedOff.length === 0 && !injectionKept && !skillRecord) {
+  if (shown.length === 0 && turnedOff.length === 0 && !injectionKept && !removedCopy && !skillRecord) {
     deps.log('relay init had not added Relay to any agent tool here; nothing to remove.');
     return;
   }
@@ -1678,7 +1844,7 @@ async function runPlain(deps: InitCommandDependencies, o: InitOptions): Promise<
 
   const ctx = deps.toolContext();
   const tools = o.tools ?? detectTools(ctx).map((tool) => tool.id);
-  const scope = o.scope ?? 'project';
+  const scope = o.scope ?? 'global';
   const plan = await planDelivery(deps, tools, o.delivery ?? 'inject', setup, ctx);
   if (plan.injection) {
     deps.log('');
@@ -1720,6 +1886,29 @@ async function runPlain(deps: InitCommandDependencies, o: InitOptions): Promise<
   if (plan.injected.length > 0) for (const line of injectionNextStep(plan.injected)) deps.log(`  ${line}`);
   for (const line of installed.length > 0 ? nextStep(installed, scope, ctx) : []) deps.log(`  ${line}`);
   for (const line of CLI_FALLBACK) deps.log(`  ${line}`);
+  deps.log('');
+  for (const line of choicesSummary(o, setup, tools, scope)) deps.log(line);
+}
+
+/**
+ * What a `relay init` that asked nothing chose, each with the flag that
+ * changes it, so the defaults are never a surprise.
+ */
+function choicesSummary(o: InitOptions, setup: ServerSetup, tools: ToolId[], scope: InstallScope): string[] {
+  const where =
+    setup.mode === 'local'
+      ? 'this machine (--hosted for agents on other machines, or --url and --key for your own server)'
+      : setup.mode === 'hosted' && !o.url
+        ? `hosted workspace "${setup.workspace}"${o.name ? '' : ' (--name to name it)'}`
+        : `workspace "${setup.workspace}" on ${setup.origin}`;
+  const toolList = tools.length > 0 ? tools.join(', ') : 'none';
+  return [
+    'Chosen without asking:',
+    `  Server:  ${where}`,
+    `  Tools:   ${toolList}${o.tools ? '' : ' (the ones installed here; --tools to choose)'}`,
+    `  Scope:   ${scope}${o.scope ? '' : ' (--scope project for this project only)'}`,
+    'To choose each step yourself, run: relay init --interactive',
+  ];
 }
 
 /**
@@ -1867,10 +2056,9 @@ async function runGuided(deps: InitCommandDependencies, o: InitOptions): Promise
         ];
   p.note(summary.join('\n'), 'Installation Summary');
   if (delivery === 'mcp' && launch.warning) p.warn(launch.warning);
-  if (!o.yes) {
-    const proceed = await p.confirm({ message: 'Proceed with installation?', initialValue: true });
-    if (proceed === CANCELLED || !proceed) return cancelled();
-  }
+  // `--interactive` asks to the end; `--yes` changes nothing here either.
+  const proceed = await p.confirm({ message: 'Proceed with installation?', initialValue: true });
+  if (proceed === CANCELLED || !proceed) return cancelled();
 
   const injecting = p.spinner();
   if (delivery === 'inject') injecting.start('Setting up message injection');
@@ -1928,8 +2116,10 @@ function parseDelivery(value: string): Delivery {
  * machine by default, the hosted service, or your own server), then connect
  * your agent tools. By default the Agent Relay core injects messages into
  * their running sessions; `--delivery mcp` (or a machine the core cannot run
- * on) uses the Relay MCP server instead. In a terminal it asks; with `--yes`
- * or without a TTY it uses flags and defaults.
+ * on) uses the Relay MCP server instead. It asks nothing: flags, then
+ * defaults (this machine, every installed tool, global scope), and a summary
+ * of what it chose. `--interactive` asks each step in a terminal; `--yes` is
+ * accepted and changes nothing.
  *
  * @param program - The commander program to add the command to.
  * @param overrides - Dependencies to replace, typically in tests.
@@ -1942,14 +2132,15 @@ export function registerInitCommand(
   program
     .command('init')
     .description(
-      'Set up Relay and connect your agent tools: a private server on this machine (default), the hosted ' +
-        'service (--hosted), or your own server (--url and --key); then the Agent Relay core injects messages ' +
-        'into running Claude Code, Codex, OpenCode, Grok, Pi and Devin sessions'
+      'Set up Relay and connect your agent tools without asking: a private server on this machine (default), ' +
+        'the hosted service (--hosted), or your own server (--url and --key), every installed agent tool, and ' +
+        'the Agent Relay core injecting messages into running Claude Code, Codex, OpenCode, Grok, Pi and Devin ' +
+        'sessions. --interactive asks each step instead'
     )
     .option('--hosted', 'Use the hosted service so agents on other machines can join')
-    .option('--url <url>', 'Your own Relaycast server')
-    .option('--key <key>', 'Workspace key for your own server')
-    .option('--name <name>', 'Workspace name to save this as')
+    .option('--url <url>', 'Your own Relaycast server (with --key)')
+    .option('--key <key>', 'Join the workspace this key belongs to: hosted, or on --url')
+    .option('--name <name>', 'Workspace name to save this as (default: the one its server names)')
     .option('--port <port>', 'Port for the local server', parsePort, DEFAULT_LOCAL_PORT)
     .option(
       '--tools <tools>',
@@ -1964,10 +2155,14 @@ export function registerInitCommand(
     )
     .option(
       '--scope <scope>',
-      'Where the Relay MCP server goes: project or global (injection is always per user)',
+      'Where the Relay MCP server goes: global (default) or project (injection is always per user)',
       parseScope
     )
-    .option('-y, --yes', 'Do not ask; use flags and defaults')
+    .option(
+      '-i, --interactive',
+      'Ask where agents talk, which agent tools to connect and where the MCP server goes'
+    )
+    .option('-y, --yes', 'Accepted for older scripts: relay init asks nothing unless --interactive')
     .option(
       '--uninstall',
       'Remove the Relay MCP entries relay init added (both scopes unless --scope) and turn off the injection it turned on'
@@ -1977,7 +2172,20 @@ export function registerInitCommand(
       await runSdk(deps, async () => {
         if (o.stop) return stopLocalServer(deps);
         if (o.uninstall) return uninstall(deps, o);
-        if (!o.yes && deps.isInteractive()) return runGuided(deps, o);
+        // Before anything starts or is written: the workspace pin, and the
+        // project-scoped MCP files (.mcp.json, opencode.json, .devin/...), go in
+        // the project root. In ~ (or a root walked up to ~) they would land in
+        // the person's home and its relay home.
+        assertProjectRoot(projectRoot());
+        assertProjectRoot(deps.toolContext().projectRoot);
+        if (o.interactive) {
+          if (!deps.isInteractive()) {
+            throw new Error(
+              'relay init --interactive needs a terminal; run relay init without it to use the defaults.'
+            );
+          }
+          return runGuided(deps, o);
+        }
         return runPlain(deps, o);
       });
     });

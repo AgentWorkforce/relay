@@ -16,12 +16,18 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { TOOL_IDS, findToolTarget, type ToolContext, type ToolId } from './agent-tools-mcp.js';
+import {
+  TOOL_IDS,
+  findToolTarget,
+  writeKeepingMode,
+  type ToolContext,
+  type ToolId,
+} from './agent-tools-mcp.js';
 
 /** The skill's name in AgentWorkforce/skills. */
 export const RELAY_SKILL_NAME = 'messaging-agents-on-the-relay';
 /** The skills repo commit init installs the skill from. */
-export const RELAY_SKILL_REF = '7615fcf3d37ee9e83d9f07a9894993e611bfd944';
+export const RELAY_SKILL_REF = '410a9de7241f9e7305a562954e674997056cc701';
 /** The pinned source, as `skills add` takes it (`<repo>#<ref>`). */
 export const RELAY_SKILL_SOURCE = `https://github.com/AgentWorkforce/skills#${RELAY_SKILL_REF}`;
 /** The `skills` CLI version init runs through npx. */
@@ -482,7 +488,9 @@ export function uninstallRelaySkill(
 }
 
 /**
- * Put the lock entry back as init found it, while it still names the ref init wrote.
+ * Put the lock entry back as init found it, while it still names the ref init
+ * wrote. The file is replaced in one step, keeping its mode, and a link to it
+ * stays a link.
  * @returns false when the lock file could not be changed
  */
 function restoreLock(record: SkillLockRecord): boolean {
@@ -492,22 +500,10 @@ function restoreLock(record: SkillLockRecord): boolean {
   else delete lock.skills[RELAY_SKILL_NAME];
   try {
     if (record.created && Object.keys(lock.skills).length === 0) fs.rmSync(record.file, { force: true });
-    else writeAtomically(record.file, JSON.stringify(lock, null, 2));
+    else writeKeepingMode(fs.realpathSync(record.file), JSON.stringify(lock, null, 2));
     return true;
   } catch {
     return false;
-  }
-}
-
-/** Replace `file` in one step, keeping its mode: the lock is shared with the person's own `skills` runs. */
-function writeAtomically(file: string, text: string): void {
-  const temporary = `${file}.${process.pid}.tmp`;
-  try {
-    fs.writeFileSync(temporary, text, { mode: fs.statSync(file).mode & 0o777 });
-    fs.renameSync(temporary, file);
-  } catch (error) {
-    fs.rmSync(temporary, { force: true });
-    throw error;
   }
 }
 

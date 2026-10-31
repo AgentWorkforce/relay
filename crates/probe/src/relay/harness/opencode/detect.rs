@@ -7,7 +7,7 @@
 //! A failed or unreadable version probe expires, so a cold-start timeout
 //! does not hide an otherwise supported install until the core restarts.
 
-use crate::relay::codex::runner::{CodexRunner, RunOutcome, SystemRunner};
+use crate::relay::codex::runner::{RunOutcome, SystemRunner};
 use crate::relay::existing_session::platform::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -103,9 +103,66 @@ pub fn supported(output: Option<&str>) -> Result<(), String> {
     }
 }
 
+/// The folders OpenCode creates on start (`xdg-basedir`), redirected for
+/// the version probe.
+const SCRATCH_XDG: [(&str, &str); 4] = [
+    ("XDG_CONFIG_HOME", "config"),
+    ("XDG_DATA_HOME", "data"),
+    ("XDG_CACHE_HOME", "cache"),
+    ("XDG_STATE_HOME", "state"),
+];
+
+/// mise's own folders, which it finds through the XDG variables: an npm
+/// `opencode` starts with `#!/usr/bin/env node`, and a `node` mise provides
+/// must still find its configured install under the redirected XDG folders.
+/// Each one not set already is pinned to where mise would look without the
+/// redirect.
+const MISE_DIRS: [(&str, &str, &str); 4] = [
+    ("MISE_CONFIG_DIR", "XDG_CONFIG_HOME", ".config"),
+    ("MISE_DATA_DIR", "XDG_DATA_HOME", ".local/share"),
+    ("MISE_CACHE_DIR", "XDG_CACHE_HOME", ".cache"),
+    ("MISE_STATE_DIR", "XDG_STATE_HOME", ".local/state"),
+];
+
+/// [`MISE_DIRS`] as they are before the version probe redirects XDG.
+fn kept_tool_dirs(env: &dyn Fn(&str) -> Option<String>) -> Vec<(&'static str, PathBuf)> {
+    let set = |key: &str| env(key).filter(|value| !value.trim().is_empty());
+    let Some(home) = set("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    MISE_DIRS
+        .iter()
+        .filter(|(mise, _, _)| set(mise).is_none())
+        .map(|(mise, xdg, default)| {
+            let base = set(xdg)
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .unwrap_or_else(|| home.join(default));
+            (*mise, base.join("mise"))
+        })
+        .collect()
+}
+
 /// `executable --version`, when it answers in time and succeeds.
+///
+/// OpenCode creates its config, data, cache and state folders whenever it
+/// starts, `--version` included, so it is asked with those pointed at a
+/// throwaway folder: detecting OpenCode never leaves an empty
+/// `~/.config/opencode` (and the rest) for someone who has not set it up.
 pub fn system_version(executable: &Path) -> Option<String> {
-    match SystemRunner.run(executable, &["--version".into()], VERSION_TIMEOUT) {
+    // Never asked without a scratch folder: that would create the folders
+    // this avoids. A failure is retried after `VERSION_RETRY`, like any
+    // unreadable version.
+    let scratch = tempfile::Builder::new()
+        .prefix("agent-relay-opencode-version-")
+        .tempdir()
+        .ok()?;
+    let mut env: Vec<(&str, PathBuf)> = SCRATCH_XDG
+        .iter()
+        .map(|(key, dir)| (*key, scratch.path().join(dir)))
+        .collect();
+    env.extend(kept_tool_dirs(&|key| std::env::var(key).ok()));
+    match SystemRunner.run_with_env(executable, &["--version".into()], VERSION_TIMEOUT, &env) {
         RunOutcome::Exited {
             code: 0, stdout, ..
         } => Some(stdout.trim().to_string()),

@@ -21,6 +21,7 @@ import {
   RELAY_SKILL_REF,
   SKILLS_CLI_PACKAGE,
   defaultRunSkillsCli,
+  type RelaySkillRecord,
   type RunSkillsCli,
 } from '../lib/relay-skill.js';
 import { getProjectPaths } from '@agent-relay/config';
@@ -167,18 +168,104 @@ describe('relay init', () => {
     expect(boundOrigin('rk_live_bad')).toBeUndefined();
   });
 
-  it('requires --url and --key together', async () => {
+  it('requires --key with --url', async () => {
     const { run, errors } = setup();
     await expect(run('--url', 'https://relay.corp.test')).rejects.toEqual(new ExitSignal(1));
-    expect(errors.join('\n')).toContain('--url and --key together');
+    expect(errors.join('\n')).toContain('Pass --key with --url');
   });
 
   it('creates a hosted workspace and prints the one command another machine runs to join', async () => {
-    const { run, logs, createWorkspace } = setup();
+    const { run, logs, createWorkspace } = setup({ cliVersion: '15.0.0-next.6' });
     await run('--hosted', '--name', 'team');
     expect(createWorkspace).toHaveBeenCalledWith('team', 'https://cast.agentrelay.com');
-    expect(logs.join('\n')).toContain('relay workspace join team rk_live_team_remote');
+    const output = logs.join('\n');
+    // The teammate's command is init itself, through npx so Relay need not
+    // be installed there: it joins and sets up injection in one step.
+    expect(output).toContain('treat this key like a password');
+    expect(output).toContain("  npx -y agent-relay@next init --key 'rk_live_team_remote'");
+    expect(output).not.toContain('relay workspace join');
+    expect(output).not.toContain('--name');
     expect(boundOrigin('rk_live_team_remote')).toBeUndefined();
+  });
+
+  it.each([
+    ['15.0.0-next.6', 'agent-relay@next'],
+    ['15.1.0', 'agent-relay@15.1.0'],
+    [undefined, 'agent-relay@next'],
+  ])('names the npx package for CLI version %s', async (cliVersion, spec) => {
+    const { run, logs } = setup({ cliVersion });
+    await run('--hosted', '--name', 'team');
+    expect(logs.join('\n')).toContain(`npx -y ${spec} init --key 'rk_live_team_remote'`);
+  });
+
+  it('names a hosted workspace after the person and the folder, without asking', async () => {
+    const { run, logs, createWorkspace } = setup();
+    await run('--hosted');
+    let username = '';
+    try {
+      username = os.userInfo().username;
+    } catch {
+      // No passwd entry: init names it after the folder alone.
+    }
+    const user = username
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    const folder = path
+      .basename(project)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+    const name = [user, folder].filter(Boolean).join('-').slice(0, 40);
+    expect(createWorkspace).toHaveBeenCalledWith(name, 'https://cast.agentrelay.com');
+    const output = logs.join('\n');
+    expect(output).toContain(`Created hosted workspace "${name}".`);
+    expect(output).toContain('pass --name to choose another');
+    // A second one here gets a name of its own instead of replacing it.
+    await run('--hosted');
+    expect(createWorkspace).toHaveBeenLastCalledWith(`${name}-2`, 'https://cast.agentrelay.com');
+  });
+
+  it('joins a hosted workspace with --key alone, named as the server names it', async () => {
+    const { run, logs, createWorkspace, deps } = setup({
+      fetch: vi.fn(async (input: string | URL | Request) => {
+        const url = new URL(String(input));
+        if (url.pathname === '/v1/workspace') {
+          return jsonResponse(200, { ok: true, data: { id: 'ws_team', name: 'team' } });
+        }
+        return jsonResponse(404);
+      }) as never,
+    });
+    await run('--key', 'rk_live_team_remote');
+    expect(createWorkspace).not.toHaveBeenCalled();
+    expect(vi.mocked(deps.fetch!).mock.calls[0]?.[0]?.toString()).toBe(
+      'https://cast.agentrelay.com/v1/workspace'
+    );
+    expect(readWorkspaceStore().workspaces.team?.key).toBe('rk_live_team_remote');
+    const output = logs.join('\n');
+    expect(output).toContain('Joined hosted workspace "team" (https://cast.agentrelay.com).');
+    expect(output).toContain('only ever sent to the hosted service');
+    expect(output).not.toContain('your server');
+    // A teammate does not get told to invite others with a create-only hint.
+    expect(output).not.toContain('On another machine');
+  });
+
+  it('keeps an explicit --name, and the --url form, when joining the hosted service', async () => {
+    const { run, logs } = setup();
+    await run('--url', 'https://cast.agentrelay.com', '--key', 'rk_live_team_remote', '--name', 'mine');
+    expect(readWorkspaceStore().workspaces.mine?.key).toBe('rk_live_team_remote');
+    expect(logs.join('\n')).toContain('Joined hosted workspace "mine" (https://cast.agentrelay.com).');
+  });
+
+  it('never sends a key bound to a self-hosted server to the hosted service', async () => {
+    const first = setup();
+    await first.run('--url', 'https://relay.corp.test:8443', '--key', 'rk_live_corp', '--name', 'corp');
+    const fetch = vi.fn(async () => jsonResponse(200, { ok: true, data: {} }));
+    const { run, errors } = setup({ fetch: fetch as never });
+    await expect(run('--key', 'rk_live_corp')).rejects.toEqual(new ExitSignal(1));
+    expect(errors.join('\n')).toContain('belongs to https://relay.corp.test:8443');
+    expect(fetch).not.toHaveBeenCalled();
+    expect(boundOrigin('rk_live_corp')).toBe('https://relay.corp.test:8443');
   });
 
   it('keeps the saved local workspace when checking it fails for a reason other than a rejected key', async () => {
@@ -364,7 +451,7 @@ describe('relay init and the machine-wide active workspace', () => {
     writeWorkspaceStore(HOSTED);
     const script = scriptedPrompter(['local', []]);
     const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
-    await run();
+    await run('--interactive');
     expect(readWorkspaceStore().active).toBe('ghsub-live');
     expect(projectKey()).toBe('rk_live_local_local');
     expect(script.shown.join('\n')).toMatch(keptLine);
@@ -443,11 +530,42 @@ function scriptedPrompter(answers: unknown[]) {
 const mcpJson = () => JSON.parse(fs.readFileSync(path.join(project, '.mcp.json'), 'utf8'));
 
 describe('relay init agent tools (non-interactive)', () => {
-  it('connects the detected tools at project scope by default', async () => {
+  // The default asks nothing, even in a terminal: this machine, every
+  // installed tool, global scope, then what it chose and how to change it.
+  it('asks nothing by default, even in a terminal, and says what it chose', async () => {
+    fs.mkdirSync(path.join(toolHome, '.claude'));
+    const prompter = vi.fn();
+    const { run, logs } = setup({
+      isInteractive: () => true,
+      prompter: prompter as never,
+      resolveLaunch: (_ctx: unknown, scope: string) => ({
+        command: '/opt/relay/bin/agent-relay',
+        args: ['mcp'],
+        reason: scope,
+      }),
+    } as never);
+    await run();
+    expect(prompter).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
+    const output = logs.join('\n');
+    expect(output).toContain('Chosen without asking:');
+    expect(output).toMatch(/Server:\s+this machine \(--hosted for agents on other machines/);
+    expect(output).toMatch(/Tools:\s+claude \(the ones installed here; --tools to choose\)/);
+    expect(output).toMatch(/Scope:\s+global \(--scope project for this project only\)/);
+    expect(output).toContain('relay init --interactive');
+  });
+
+  it('asks only with --interactive, and only in a terminal', async () => {
+    const { run, errors } = setup();
+    await expect(run('--interactive')).rejects.toEqual(new ExitSignal(1));
+    expect(errors.join('\n')).toContain('--interactive needs a terminal');
+  });
+
+  it('connects the detected tools at --scope project', async () => {
     fs.mkdirSync(path.join(toolHome, '.claude'));
     fs.mkdirSync(path.join(toolHome, '.codex'));
     const { run, logs } = setup();
-    await run();
+    await run('--scope', 'project');
     expect(mcpJson().mcpServers['agent-relay']).toMatchObject({
       command: '/opt/relay/bin/agent-relay',
       args: ['mcp'],
@@ -500,11 +618,11 @@ describe('relay init agent tools (non-interactive)', () => {
   it('replaces an entry it wrote with an npx cache path on re-run', async () => {
     const npxCache = '/home/me/.npm/_npx/88f578dfe12e5edc/node_modules/.bin/agent-relay';
     const first = setup({ resolveLaunch: () => ({ command: npxCache, args: ['mcp'], reason: 'old' }) });
-    await first.run('--tools', 'claude,codex');
+    await first.run('--tools', 'claude,codex', '--scope', 'project');
     const { run, logs } = setup({
       resolveLaunch: () => ({ command: 'agent-relay', args: ['mcp'], reason: 'portable' }),
     });
-    await run('--tools', 'claude,codex');
+    await run('--tools', 'claude,codex', '--scope', 'project');
     expect(logs.join('\n')).toMatch(/Claude Code\s+updated/);
     expect(mcpJson().mcpServers['agent-relay'].command).toBe('agent-relay');
     const codex = fs.readFileSync(path.join(project, '.codex', 'config.toml'), 'utf8');
@@ -522,7 +640,7 @@ describe('relay init agent tools (non-interactive)', () => {
       return; // git is not installed here.
     }
     const { run } = setup();
-    await run('--tools', 'claude');
+    await run('--tools', 'claude', '--scope', 'project');
     expect(fs.existsSync(path.join(project, '.agentworkforce', 'relay', 'workspace-key.json'))).toBe(true);
     expect(fs.readFileSync(path.join(project, '.git', 'info', 'exclude'), 'utf8')).toContain(
       '/.agentworkforce/relay/'
@@ -566,10 +684,10 @@ describe('relay init agent tools (non-interactive)', () => {
 
   it('re-running updates its entry instead of duplicating it', async () => {
     const first = setup();
-    await first.run('--tools', 'claude');
+    await first.run('--tools', 'claude', '--scope', 'project');
     const before = fs.readFileSync(path.join(project, '.mcp.json'), 'utf8');
     const { run, logs } = setup();
-    await run('--tools', 'claude');
+    await run('--tools', 'claude', '--scope', 'project');
     expect(fs.readFileSync(path.join(project, '.mcp.json'), 'utf8')).toBe(before);
     expect(logs.join('\n')).toContain('already set up');
   });
@@ -587,7 +705,7 @@ describe('relay init agent tools (non-interactive)', () => {
   it('never prompts with --yes, even in a terminal', async () => {
     const prompter = vi.fn();
     const { run } = setup({ isInteractive: () => true, prompter: prompter as never });
-    await run('--yes', '--tools', 'claude');
+    await run('--yes', '--tools', 'claude', '--scope', 'project');
     expect(prompter).not.toHaveBeenCalled();
     expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
   });
@@ -651,7 +769,7 @@ describe('relay init guided flow', () => {
       true,
     ]);
     const { run, createWorkspace } = setup({ isInteractive: () => true, prompter: () => script.prompter });
-    await run('--delivery', 'mcp');
+    await run('--interactive', '--delivery', 'mcp');
 
     expect(script.asked).toEqual([
       'Where should your agents talk?',
@@ -684,7 +802,7 @@ describe('relay init guided flow', () => {
   it('leaves Codex trust alone when the person declines, and says what is left to do', async () => {
     const script = scriptedPrompter([true, false]);
     const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
-    await run('--hosted', '--tools', 'codex', '--scope', 'project');
+    await run('--interactive', '--hosted', '--tools', 'codex', '--scope', 'project');
     expect(script.asked).toHaveLength(2);
     expect(fs.existsSync(path.join(toolHome, '.codex', 'config.toml'))).toBe(false);
     expect(script.shown.join('\n')).toContain('not trusted yet');
@@ -693,14 +811,14 @@ describe('relay init guided flow', () => {
   it('does not ask about Codex trust at global scope', async () => {
     const script = scriptedPrompter([true]);
     const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
-    await run('--hosted', '--tools', 'codex', '--scope', 'global');
+    await run('--interactive', '--hosted', '--tools', 'codex', '--scope', 'global');
     expect(script.asked).toEqual(['Proceed with installation?']);
   });
 
   it('only asks what the flags did not answer', async () => {
     const script = scriptedPrompter([true]);
     const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
-    await run('--hosted', '--tools', 'grok', '--scope', 'global');
+    await run('--interactive', '--hosted', '--tools', 'grok', '--scope', 'global');
     expect(script.asked).toEqual(['Proceed with installation?']);
     expect(fs.readFileSync(path.join(toolHome, '.grok', 'config.toml'), 'utf8')).toContain('enabled = true');
   });
@@ -708,7 +826,7 @@ describe('relay init guided flow', () => {
   it('stops without installing when the person cancels', async () => {
     const script = scriptedPrompter(['local', ['claude'], 'project', CANCELLED]);
     const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
-    await run('--delivery', 'mcp');
+    await run('--interactive', '--delivery', 'mcp');
     expect(script.shown.join('\n')).toContain('cancel Setup cancelled');
     expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
   });
@@ -716,7 +834,7 @@ describe('relay init guided flow', () => {
   it('shows the CLI fallback when no agent is chosen', async () => {
     const script = scriptedPrompter(['local', []]);
     const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
-    await run();
+    await run('--interactive');
     expect(script.shown.join('\n')).toContain('relay agent register alice');
     expect(script.asked).not.toContain('Installation scope');
   });
@@ -896,6 +1014,8 @@ function fakeCore(
     settings?: Record<string, unknown>;
     workspaceName?: string;
     workspaceId?: string;
+    /** The Relaycast server the core's workspace is on. */
+    baseUrl?: string;
     /** Settings the core refuses to turn on. */
     refuse?: string[];
     /** Claude settings files the core's direct delivery writes, as `set_direct_delivery` does. */
@@ -926,7 +1046,7 @@ function fakeCore(
   const calls: Array<[string, unknown]> = [];
   const workspace = {
     state: 'found',
-    base_url: 'http://127.0.0.1:8787',
+    base_url: options.baseUrl ?? 'http://127.0.0.1:8787',
     workspace_name: options.workspaceName ?? 'local',
     workspace_id: options.workspaceId ?? 'ws_1',
     verification: 'verified',
@@ -1061,7 +1181,7 @@ describe('relay init message injection', () => {
     const output = logs.join('\n');
     expect(output).toContain(`Started the Agent Relay core (agent-relay-probe ${PROBE_VERSION}, pid 5151)`);
     expect(output).toMatch(/Claude Code\s+injected through Claude Code's session inbox/);
-    expect(output).toMatch(/Codex\s+injected through PostToolUse and Stop hooks/);
+    expect(output).toMatch(/Codex\s+injected through PostToolUse, Stop and SessionStart hooks/);
     expect(output).toContain('apply in every project on this machine');
     // One identity per session: no MCP server is added for injected tools.
     expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
@@ -1113,12 +1233,12 @@ describe('relay init message injection', () => {
 
   it('removes the MCP entry an earlier relay init added, so each session has one identity', async () => {
     const mcp = setup();
-    await mcp.run('--tools', 'claude', '--delivery', 'mcp');
+    await mcp.run('--tools', 'claude', '--delivery', 'mcp', '--scope', 'project');
     expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
 
     installedProbe();
     const { run, logs } = setup(fakeCore().deps);
-    await run('--tools', 'claude');
+    await run('--tools', 'claude', '--scope', 'project');
     expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
     expect(logs.join('\n')).toMatch(/Claude Code\s+removed the earlier Relay MCP entry from \.mcp\.json/);
   });
@@ -1212,7 +1332,7 @@ describe('relay init message injection', () => {
         };
       }),
     });
-    await expect(run('--tools', 'claude,grok')).resolves.toBeDefined();
+    await expect(run('--tools', 'claude,grok', '--scope', 'project')).resolves.toBeDefined();
     const output = logs.join('\n');
     expect(output).toMatch(/Grok CLI\s+not injected: Grok is not installed\./);
     expect(fs.readFileSync(path.join(project, '.grok', 'config.toml'), 'utf8')).toContain('agent-relay');
@@ -1449,7 +1569,7 @@ describe('relay init message injection', () => {
     // A directory where the record goes: writing it fails.
     fs.mkdirSync(path.join(home, 'local', 'core-settings.json'), { recursive: true });
     const { run, logs } = setup(core.deps);
-    await run('--tools', 'codex');
+    await run('--tools', 'codex', '--scope', 'project');
     expect(core.settings).toMatchObject({ codex_stop_hook: false, auto_activate: false });
     expect(logs.join('\n')).toContain(
       'Message injection is not available (the Agent Relay core could not be set up'
@@ -1490,7 +1610,7 @@ describe('relay init message injection', () => {
     fs.mkdirSync(path.dirname(claudeSettings), { recursive: true });
     fs.writeFileSync(claudeSettings, JSON.stringify({ theme: 'dark' }));
     const { run, logs } = setup(core.deps);
-    await run('--tools', 'claude');
+    await run('--tools', 'claude', '--scope', 'project');
     expect(core.settings).toMatchObject({
       direct_delivery: false,
       claude_session_hook: false,
@@ -1505,7 +1625,7 @@ describe('relay init message injection', () => {
   it('turns off what it injected before adding the MCP server for --delivery mcp', async () => {
     installedProbe();
     const core = fakeCore({ running: true });
-    await setup(core.deps).run('--tools', 'claude,codex');
+    await setup(core.deps).run('--tools', 'claude,codex', '--scope', 'project');
     expect(core.settings).toMatchObject({
       auto_activate: true,
       claude_session_hook: true,
@@ -1513,7 +1633,7 @@ describe('relay init message injection', () => {
     });
 
     const toMcp = setup(core.deps);
-    await toMcp.run('--tools', 'claude', '--delivery', 'mcp');
+    await toMcp.run('--tools', 'claude', '--delivery', 'mcp', '--scope', 'project');
     // Claude leaves injection; Codex keeps it, and so automatic activation stays.
     expect(core.settings).toMatchObject({
       auto_activate: true,
@@ -1529,7 +1649,7 @@ describe('relay init message injection', () => {
       turnedOn: ['codex_stop_hook', 'auto_activate'],
     });
 
-    await setup(core.deps).run('--tools', 'codex', '--delivery', 'mcp');
+    await setup(core.deps).run('--tools', 'codex', '--delivery', 'mcp', '--scope', 'project');
     expect(core.settings).toMatchObject({ auto_activate: false, codex_stop_hook: false });
     expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
   });
@@ -1611,6 +1731,34 @@ describe('relay init message injection', () => {
       'codex'
     );
     expect(unknown.logs.join('\n')).toContain('Could not confirm that the Agent Relay core serves "c"');
+  });
+
+  // Review on #2028: a joined hosted workspace's name is the person's, so a
+  // core serving another hosted workspace of the same name is not taken
+  // for it when neither side names a workspace id.
+  it('does not confirm a joined hosted workspace by its name alone', async () => {
+    installedProbe();
+    const core = fakeCore({
+      running: true,
+      baseUrl: 'https://cast.agentrelay.com',
+      workspaceName: 'team',
+      workspaceId: '',
+    });
+    core.settings.auto_activate = true;
+    const { run, logs } = setup(core.deps);
+    await run(
+      '--url',
+      'https://cast.agentrelay.com',
+      '--key',
+      'rk_live_other_team',
+      '--name',
+      'team',
+      '--tools',
+      'codex'
+    );
+    const output = logs.join('\n');
+    expect(output).toContain('Joined hosted workspace "team"');
+    expect(output).toContain('Could not confirm that the Agent Relay core serves "team"');
   });
 
   it('restores crossSessionInbound on every Claude login the core changed', async () => {
@@ -1741,7 +1889,7 @@ describe('relay init message injection', () => {
         throw new Error('spawn EACCES');
       }),
     });
-    await run('--tools', 'claude');
+    await run('--tools', 'claude', '--scope', 'project');
     expect(logs.join('\n')).toContain('the Agent Relay core could not be started (spawn EACCES)');
     expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
   });
@@ -1749,12 +1897,12 @@ describe('relay init message injection', () => {
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
     'says so when an earlier MCP entry could not be removed',
     async () => {
-      await setup().run('--tools', 'claude', '--delivery', 'mcp');
+      await setup().run('--tools', 'claude', '--delivery', 'mcp', '--scope', 'project');
       installedProbe();
       fs.chmodSync(project, 0o555);
       try {
         const { run, logs } = setup(fakeCore().deps);
-        await run('--tools', 'claude');
+        await run('--tools', 'claude', '--scope', 'project');
         expect(logs.join('\n')).toMatch(
           /Claude Code\s+could not remove the earlier Relay MCP entry from \.mcp\.json[^]*second identity/
         );
@@ -1766,7 +1914,7 @@ describe('relay init message injection', () => {
 
   it('falls back to the MCP server when the core cannot be had', async () => {
     const { run, logs } = setup();
-    await run('--tools', 'claude');
+    await run('--tools', 'claude', '--scope', 'project');
     expect(logs.join('\n')).toContain('Message injection is not available (offline)');
     expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
   });
@@ -1808,7 +1956,7 @@ describe('relay init message injection', () => {
     const core = fakeCore();
     const script = scriptedPrompter([['claude'], true]);
     const { run } = setup({ ...core.deps, isInteractive: () => true, prompter: () => script.prompter });
-    await run('--hosted');
+    await run('--interactive', '--hosted');
     expect(script.asked).toEqual(['Which agents should get Relay?', 'Proceed with installation?']);
     const shown = script.shown.join('\n');
     expect(shown).toContain("Claude Code        Claude Code's session inbox");
@@ -1859,7 +2007,7 @@ function fakeSkillsCli(status = 0, lockFile?: string) {
 }
 
 /** Rewrite the recorded skill install, as an older init or a forged file would have left it. */
-function editSkillRecord(change: (record: Record<string, any>) => void): void {
+function editSkillRecord(change: (record: RelaySkillRecord) => void): void {
   const file = path.join(home, 'local', 'core-settings.json');
   const settings = JSON.parse(fs.readFileSync(file, 'utf8'));
   change(settings.relaySkill);
@@ -1933,6 +2081,23 @@ describe('relay init messaging skill', () => {
       []
     );
     expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  it('installs without asking anything, even in a terminal, and prints one line', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    const script = scriptedPrompter([]);
+    const { run, logs } = setup({
+      ...core.deps,
+      runSkillsCli: skills.run,
+      isInteractive: () => true,
+      prompter: () => script.prompter,
+    });
+    await run('--tools', 'codex');
+    expect(script.asked).toEqual([]);
+    expect(skills.run).toHaveBeenCalledTimes(1);
+    expect(logs.filter((line) => line.includes('Agent skill'))).toHaveLength(1);
   });
 
   it('leaves a copy that was there before init, and installs only where there is none', async () => {
@@ -2088,6 +2253,55 @@ describe('relay init messaging skill', () => {
     expect(fs.readdirSync(path.dirname(lock))).toEqual(['.skill-lock.json']);
   });
 
+  it('says no copies were added when the install failed and the record cannot be saved', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const settings = path.join(home, 'local', 'core-settings.json');
+    const blocked: RunSkillsCli = () => {
+      fs.rmSync(settings, { force: true });
+      fs.mkdirSync(settings);
+      return { status: 1, output: 'offline' };
+    };
+    const { run, logs } = setup({ ...core.deps, runSkillsCli: blocked });
+    await run('--tools', 'codex');
+    expect(logs.join('\n')).toContain('and this run added no copies to take out');
+    expect(logs.join('\n')).not.toContain("this run's copies were taken out again");
+  });
+
+  it('keeps a link to the lock file a link, and restores the entry in its target', async () => {
+    installedProbe();
+    const target = path.join(toolHome, 'dotfiles', 'skill-lock.json');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, JSON.stringify({ version: 3, skills: { other: { ref: 'x' } } }));
+    const lock = path.join(toolHome, '.agents', '.skill-lock.json');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.symlinkSync(target, lock);
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
+    await setup(core.deps).run('--uninstall');
+    expect(fs.lstatSync(lock).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(fs.readFileSync(target, 'utf8')).skills).toEqual({ other: { ref: 'x' } });
+  });
+
+  it('keeps the lock file mode under a restrictive umask', async () => {
+    installedProbe();
+    const lock = path.join(toolHome, '.agents', '.skill-lock.json');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, JSON.stringify({ version: 3, skills: { other: { ref: 'x' } } }));
+    fs.chmodSync(lock, 0o640);
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
+    const previous = process.umask(0o077);
+    try {
+      await setup(core.deps).run('--uninstall');
+    } finally {
+      process.umask(previous);
+    }
+    expect(fs.statSync(lock).mode & 0o777).toBe(0o640);
+  });
+
   it('removes the other copies and keeps recording one it could not remove', async () => {
     installedProbe();
     const core = fakeCore();
@@ -2175,7 +2389,7 @@ describe('relay init messaging skill', () => {
     const unrelated = path.join(toolHome, 'work', RELAY_SKILL_NAME);
     fs.cpSync(path.join(skills.dirs.codex!, RELAY_SKILL_NAME), unrelated, { recursive: true });
     editSkillRecord((record) => {
-      record.copies.push({ ...record.copies[0], path: unrelated });
+      record.copies.push({ ...record.copies[0]!, path: unrelated });
       record.createdDirs.push(path.join(toolHome, 'work'));
     });
     await setup(core.deps).run('--uninstall');
@@ -2240,5 +2454,204 @@ describe('relay init messaging skill', () => {
     await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
     await setup(core.deps).run('--uninstall', '--scope', 'project');
     expect(fs.existsSync(path.join(skills.dirs.codex!, RELAY_SKILL_NAME, 'SKILL.md'))).toBe(true);
+  });
+});
+
+describe('relay init outside a project', () => {
+  /** A user home whose .agentworkforce/relay is the relay home, as `~` is. */
+  function homeFolder(): { userHome: string; relayHome: string } {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-init-userhome-'));
+    const relayHome = path.join(userHome, '.agentworkforce', 'relay');
+    fs.mkdirSync(relayHome, { recursive: true });
+    fs.writeFileSync(path.join(relayHome, 'cloud-auth.json'), '{"secret":"kept"}');
+    vi.stubEnv('AGENT_RELAY_HOME', relayHome);
+    vi.stubEnv('AGENT_RELAY_PROJECT', userHome);
+    return { userHome, relayHome };
+  }
+
+  it('refuses to run in the home folder and writes no pin into the relay home', async () => {
+    const { userHome, relayHome } = homeFolder();
+    try {
+      const { run, errors, deps } = setup();
+      await expect(run('--tools', 'claude')).rejects.toEqual(new ExitSignal(1));
+      expect(errors.join('\n')).toMatch(/Relay home.*inside a project folder/s);
+      expect(fs.readdirSync(relayHome)).toEqual(['cloud-auth.json']);
+      expect(deps.startEngine).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses --hosted and --key in the home folder too, before reaching any server', async () => {
+    const { userHome, relayHome } = homeFolder();
+    try {
+      for (const args of [
+        ['--hosted'],
+        ['--key', 'rk_live_joined'],
+        ['--url', 'https://relay.corp.test', '--key', 'rk_live_x'],
+      ]) {
+        const { run, errors, createWorkspace, deps } = setup();
+        await expect(run(...args)).rejects.toEqual(new ExitSignal(1));
+        expect(errors.join('\n')).toContain('inside a project folder');
+        expect(createWorkspace).not.toHaveBeenCalled();
+        expect(deps.fetch).not.toHaveBeenCalled();
+      }
+      expect(fs.readdirSync(relayHome)).toEqual(['cloud-auth.json']);
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true });
+    }
+  });
+
+  it('also refuses through a symlink to the home folder', async () => {
+    const { userHome, relayHome } = homeFolder();
+    const link = `${userHome}-link`;
+    fs.symlinkSync(userHome, link);
+    vi.stubEnv('AGENT_RELAY_PROJECT', link);
+    try {
+      const { run, errors } = setup();
+      await expect(run('--tools', 'none')).rejects.toEqual(new ExitSignal(1));
+      expect(errors.join('\n')).toContain('Relay home');
+      expect(fs.readdirSync(relayHome)).toEqual(['cloud-auth.json']);
+    } finally {
+      fs.rmSync(link, { force: true });
+      fs.rmSync(userHome, { recursive: true, force: true });
+    }
+  });
+
+  it('--uninstall in the home folder looks at no project-scope config, only global ones', async () => {
+    const { userHome } = homeFolder();
+    try {
+      // In ~, Grok's project config would be the person's own ~/.grok/config.toml.
+      const grok = path.join(userHome, '.grok', 'config.toml');
+      fs.mkdirSync(path.dirname(grok), { recursive: true });
+      fs.writeFileSync(grok, '[mcp_servers.agent-relay]\ncommand = "mine"\n');
+      const inHome = { toolContext: () => ({ projectRoot: userHome, home: toolHome, env: { PATH: '' } }) };
+      const { run, logs } = setup(inHome);
+      await run('--uninstall');
+      expect(logs.join('\n')).not.toContain(grok);
+      expect(fs.readFileSync(grok, 'utf8')).toContain('"mine"');
+      const scoped = setup(inHome);
+      await scoped.run('--uninstall', '--scope', 'project');
+      expect(scoped.logs.join('\n')).toContain('Not inside a project');
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('relay init --uninstall and the command-line copy of the core', () => {
+  const copyPath = () => path.join(toolHome, '.local', 'bin', 'agent-relay-probe');
+  const corePath = () => path.join(home, 'bin', 'agent-relay-probe');
+  function place(file: string, bytes: string): void {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, bytes, { mode: 0o755 });
+  }
+
+  it('removes ~/.local/bin/agent-relay-probe when it is a copy of the core relay init installed', async () => {
+    place(corePath(), 'core 15.0.3');
+    place(copyPath(), 'core 15.0.3');
+    const { run, logs } = setup();
+    await run('--uninstall');
+    expect(fs.existsSync(copyPath())).toBe(false);
+    expect(fs.existsSync(corePath())).toBe(true);
+    expect(logs.join('\n')).toContain(`removed the copy a core relay init started left at ${copyPath()}`);
+  });
+
+  it("leaves any other build there (the desktop app's), a link, and a partial uninstall alone", async () => {
+    place(corePath(), 'core 15.0.3');
+    place(copyPath(), 'desktop core 16.0.0');
+    await setup().run('--uninstall');
+    expect(fs.readFileSync(copyPath(), 'utf8')).toBe('desktop core 16.0.0');
+
+    fs.rmSync(copyPath());
+    fs.symlinkSync(corePath(), copyPath());
+    await setup().run('--uninstall');
+    expect(fs.lstatSync(copyPath()).isSymbolicLink()).toBe(true);
+
+    fs.rmSync(copyPath());
+    place(copyPath(), 'core 15.0.3');
+    await setup().run('--uninstall', '--scope', 'project');
+    await setup().run('--uninstall', '--tools', 'claude');
+    expect(fs.existsSync(copyPath())).toBe(true);
+  });
+});
+
+describe('relay init in an empty folder under the home folder', () => {
+  let userHome: string;
+  let folder: string;
+  let cwd: string;
+  const projectFilesInHome = () =>
+    [
+      '.mcp.json',
+      'opencode.json',
+      path.join('.devin', 'mcp_config.json'),
+      path.join('.agentworkforce', 'relay', 'workspace-key.json'),
+    ].filter((file) => fs.existsSync(path.join(userHome, file)));
+
+  beforeEach(() => {
+    cwd = process.cwd();
+    userHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'relay-init-walkup-')));
+    folder = path.join(userHome, 'scratch', 'empty');
+    fs.mkdirSync(folder, { recursive: true });
+    fs.mkdirSync(path.join(userHome, '.agentworkforce', 'relay'), { recursive: true });
+    vi.stubEnv('HOME', userHome);
+    vi.stubEnv('AGENT_RELAY_HOME', path.join(userHome, '.agentworkforce', 'relay'));
+    vi.stubEnv('AGENT_RELAY_PROJECT', '');
+    process.chdir(folder);
+  });
+
+  afterEach(() => {
+    process.chdir(cwd);
+    fs.rmSync(userHome, { recursive: true, force: true });
+  });
+
+  /** Init with project-scoped MCP files, resolving the project as the CLI does. */
+  const runHere = () =>
+    setup({
+      toolContext: () => ({ projectRoot: getProjectPaths().projectRoot, home: userHome, env: { PATH: '' } }),
+    });
+
+  it('sets up the empty folder itself, not ~, when a relay home is present', async () => {
+    const { run } = runHere();
+    await run('--tools', 'claude,opencode,devin', '--delivery', 'mcp', '--scope', 'project');
+    expect(getProjectPaths().projectRoot).toBe(folder);
+    expect(readProjectWorkspaceKey(path.join(folder, '.agentworkforce', 'relay'))).toBeDefined();
+    expect(fs.existsSync(path.join(folder, 'opencode.json'))).toBe(true);
+    expect(projectFilesInHome()).toEqual([]);
+  });
+
+  it('refuses when walking up reaches ~ (a dotfiles ~/.git), writing nothing there', async () => {
+    fs.mkdirSync(path.join(userHome, '.git'));
+    expect(getProjectPaths().projectRoot).toBe(userHome);
+    const { run, errors, deps } = runHere();
+    await expect(
+      run('--tools', 'claude,opencode,devin', '--delivery', 'mcp', '--scope', 'project')
+    ).rejects.toEqual(new ExitSignal(1));
+    expect(errors.join('\n')).toMatch(/home folder.*inside a project folder/s);
+    expect(deps.startEngine).not.toHaveBeenCalled();
+    expect(projectFilesInHome()).toEqual([]);
+  });
+
+  it('installs no skill when it refuses the home folder', async () => {
+    fs.mkdirSync(path.join(userHome, '.git'));
+    const skills = vi.fn<RunSkillsCli>(() => ({ status: 0, output: '' }));
+    const { run } = setup({
+      runSkillsCli: skills,
+      toolContext: () => ({ projectRoot: getProjectPaths().projectRoot, home: userHome, env: { PATH: '' } }),
+    });
+    await expect(run('--tools', 'codex')).rejects.toEqual(new ExitSignal(1));
+    expect(skills).not.toHaveBeenCalled();
+  });
+
+  it('refuses ~ even when the relay home lives elsewhere', async () => {
+    vi.stubEnv('AGENT_RELAY_HOME', path.join(os.tmpdir(), 'relay-init-elsewhere'));
+    fs.rmSync(path.join(userHome, '.agentworkforce'), { recursive: true });
+    process.chdir(userHome);
+    const { run, errors } = runHere();
+    await expect(run('--tools', 'opencode', '--delivery', 'mcp', '--scope', 'project')).rejects.toEqual(
+      new ExitSignal(1)
+    );
+    expect(errors.join('\n')).toContain('home folder');
+    expect(fs.existsSync(path.join(userHome, 'opencode.json'))).toBe(false);
   });
 });

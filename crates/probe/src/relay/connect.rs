@@ -13,9 +13,7 @@ use crate::relay::daemon::Core;
 use crate::relay::delivery::policy::{self, Decision, MessageRef};
 use crate::relay::delivery::{preview, DeliveryActivity, DeliveryOutcome, DeliverySettlement};
 use crate::relay::inject::InjectOutcome;
-use crate::relay::outbound::{
-    probe_client, probe_socket_command_with_body, query_encode, shell_quote, OutboundError,
-};
+use crate::relay::outbound::{probe_client, query_encode, shell_quote, OutboundError};
 use crate::relay::outbox::{create_private_dir, write_atomic};
 use crate::relay::peer::current_uid;
 use crate::relay::process::SystemProcesses;
@@ -1966,8 +1964,14 @@ fn connect_reply_line(
     // client (`outbound::prefers_probe_client`); curl only when it is unknown.
     let required = cfg!(windows) || (kind == SessionKind::Codex && probe_client(needs_probe));
     if required || crate::relay::outbound::prefers_probe_client(kind) {
-        let command =
-            probe_socket_command_with_body(Path::new(socket), "POST", &request_path, "your reply");
+        let reply = crate::relay::session_cli::SessionCommand::ConnectSend {
+            to: Some(sender.to_string()),
+        };
+        let command = crate::relay::outbound::probe_session_command(
+            Path::new(socket),
+            &reply,
+            Some("your reply"),
+        );
         if command.is_some() || required {
             return Some(format!("[reply: {}]", command?));
         }
@@ -2091,11 +2095,27 @@ mod tests {
             full,
             format!("{hint}\n{}", crate::relay::hosted_mcp::ROUTE_LINE)
         );
+        // A sender name the probe would refuse is never written into its
+        // command: the hint falls back to the encoded curl form.
+        assert!(!hint.contains(" relay connect-send "), "{hint}");
         // Claude Code is handed the probe's one-command reply everywhere: its
         // permission rules from Agent Relay allow exactly that.
-        assert!(hint.contains(" relay socket-request "));
-        assert!(hint.ends_with(" --body 'your reply']"), "{hint}");
-        assert!(!hint.contains("curl"));
+        let claude = connect_reply_line(
+            Path::new("/tmp/Relay Socket's/run.sock"),
+            "host",
+            SessionKind::ClaudeTerminal,
+            false,
+        )
+        .unwrap();
+        assert!(
+            claude.contains(
+                " relay connect-send --socket '/tmp/Relay Socket'\\''s/run.sock' --to host "
+            ),
+            "{claude}"
+        );
+        assert!(claude.ends_with(" --body 'your reply']"), "{claude}");
+        assert!(!claude.contains("curl"));
+        assert!(!claude.contains("socket-request"));
         let codex = connect_reply_line(
             Path::new("/tmp/run.sock"),
             "host",
@@ -2105,7 +2125,7 @@ mod tests {
         .unwrap();
         if cfg!(windows) {
             // A named pipe is reached through the probe, never curl.
-            assert!(codex.contains(" relay socket-request "));
+            assert!(codex.contains(" relay connect-send "));
             assert!(!codex.contains("curl"));
         } else {
             assert!(codex.ends_with("--data-binary @-]"), "{codex}");
@@ -2117,7 +2137,7 @@ mod tests {
     fn mac_codex_reply_uses_probe_and_the_exact_socket() {
         let hint = connect_reply_line(
             Path::new("/tmp/Relay Socket's/run.sock"),
-            "host's name",
+            "host.o_k",
             SessionKind::Codex,
             true,
         )
@@ -2127,10 +2147,21 @@ mod tests {
         assert!(hint.starts_with("[reply: "));
         assert!(!hint.contains(" | "));
         assert!(hint.ends_with(" --body 'your reply']"));
-        assert!(hint.contains("relay socket-request --socket"));
-        assert!(hint.contains("'/tmp/Relay Socket'\\''s/run.sock'"));
-        assert!(hint.contains("to=host%27s%20name"));
+        assert!(hint.contains(
+            " relay connect-send --socket '/tmp/Relay Socket'\\''s/run.sock' --to host.o_k "
+        ));
+        assert!(!hint.contains("socket-request"));
         assert!(!hint.contains("curl"));
+        // A name that could break the hint gets no probe command at all.
+        assert_eq!(
+            connect_reply_line(
+                Path::new("/tmp/run.sock"),
+                "host's name",
+                SessionKind::Codex,
+                true
+            ),
+            None
+        );
         let direct_cli = connect_reply_hint(
             Path::new("/tmp/relay.sock"),
             "host",

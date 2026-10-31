@@ -197,6 +197,10 @@ pub trait SessionDirectory: Send + Sync + 'static {
     /// Those of `targets` their own provider records as archived: a
     /// definite yes from the provider, never inferred from a session being
     /// absent, so an ended or unreadable session is not archived. May block.
+    /// Told on every reconcile pass whether open Pi sessions join the relay
+    /// by themselves, so the Pi extension's banner can say so. May block.
+    fn pi_auto_join(&self, _auto_join: bool) {}
+
     fn archived(&self, _targets: &[Target]) -> HashSet<Target> {
         HashSet::new()
     }

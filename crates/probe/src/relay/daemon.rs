@@ -698,6 +698,9 @@ pub fn serve(options: ServeOptions) -> Result<()> {
             &config,
             options.site_url.as_deref(),
             options.headless,
+            // The command-line copy in ~/.local/bin is the desktop's; a
+            // core relay init manages leaves it alone.
+            !options.cli_managed,
         );
         let (core, signals) = Core::with_plugins(config, plugins);
         core.integration_defaults.store(
