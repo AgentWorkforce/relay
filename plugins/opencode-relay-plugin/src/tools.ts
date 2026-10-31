@@ -400,9 +400,10 @@ export function createRelayConnectTool(
         throw new Error('Invalid workspace key. Get one at relaycast.dev');
       }
 
-      // An `ar_ws_` key belongs to armadillo; any other stays on the state's server.
-      if (workspace.startsWith('ar_ws_')) state.apiBaseUrl = ARMADILLO_RELAYCAST_API_BASE_URL;
-      const relay = createRelayCast({ apiKey: workspace, baseUrl: state.apiBaseUrl });
+      // Chosen per call: an `ar_ws_` key belongs to armadillo, and a later key
+      // must not inherit its server.
+      const baseUrl = workspace.startsWith('ar_ws_') ? ARMADILLO_RELAYCAST_API_BASE_URL : state.apiBaseUrl;
+      const relay = createRelayCast({ apiKey: workspace, baseUrl });
 
       let token: string | undefined;
       try {

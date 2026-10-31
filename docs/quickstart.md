@@ -124,6 +124,12 @@ active on this machine (for example one a fleet node uses), `relay init` leaves
 it active and says so; run `relay workspace switch <name>` to make the new one
 the default everywhere.
 
+The exception is the `local` workspace a solo `relay init` made. `relay init
+--hosted` and `relay init --key` replace it as the active workspace, have the
+core serve the new workspace, and move running sessions onto it, so teammates
+see your agents. If the desktop app (or a service) runs the core, `relay init`
+leaves it and the active workspace alone and prints the command that moves them.
+
 ### Flags
 
 Flags change the defaults; `relay init` still asks nothing (and behaves the

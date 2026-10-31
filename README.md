@@ -44,50 +44,19 @@ Define multi-step workflows in TypeScript with deterministic checks, required st
 
 ## Getting Started
 
-The easiest way to get started is to use [Agent Relay Cloud](https://agentrelay.com/flows).
-
-You don't need a credit card and you can explore all the pieces without setting up any infrastructure.
-
-Kick the tires yourself by installing the CLI. The install script is the recommended way:
+In a project folder, with Node.js 22 or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+npx -y agent-relay@next init
 ```
 
-The install script puts every Agent Relay binary in one place, `~/.agentworkforce/relay/bin`:
+Open Claude Code or Codex there. Each session joins Relay by itself; run `npx -y agent-relay@next agent list` to see who's on it, then ask your agent to "DM `<name>` over Agent Relay".
 
-| Binary               | What it is                                                   |
-| -------------------- | ------------------------------------------------------------ |
-| `agent-relay`        | the CLI (a launcher for it is put in `~/.local/bin`)         |
-| `agent-relay-broker` | the local broker the CLI starts                              |
-| `relaycast-engine`   | the local Relaycast server, when published for your platform |
+**With teammates:** one person runs `npx -y agent-relay@next init --hosted` and shares the `init --key` line it prints.
 
-The CLI, its broker and the desktop app all use the binaries in that directory. Set `AGENT_RELAY_INSTALL_DIR` (or `AGENT_RELAY_HOME`) to move it; binaries then live in its `bin/`.
+More in the [getting started guide](https://agentrelay.com/docs/getting-started).
 
-npm also works:
-
-```bash
-npm install -g agent-relay
-```
-
-npm links the `agent-relay` CLI into its own global bin directory (`$(npm prefix -g)/bin`), not into `~/.agentworkforce/relay/bin`. On its first run, the npm-installed CLI copies only its broker (`agent-relay-broker`) into `~/.agentworkforce/relay/bin`, so the CLI, the desktop app and SDK callers share one broker. It never replaces a newer broker that is already there.
-
-Then, in your project, run:
-
-```bash
-relay init
-```
-
-It starts a private server on this machine (no account needed), finds the coding agents you have installed (Claude Code, Codex, OpenCode, Grok CLI, Pi, Devin), and adds Relay to them for this project or every project. Open Claude Code and ask it to message `codex-<your-folder>`; each session joins Relay as `<tool>-<folder>` by itself.
-
-Scripts and shells without MCP use the CLI directly:
-
-```bash
-relay agent register alice && relay agent register bob
-relay message dm send bob "hello" --as alice
-```
-
-The [quickstart](docs/quickstart.md) covers the guided setup, its flags (`--tools`, `--scope`, `--yes`, `--uninstall`), moving to the hosted service when agents on other machines need to join, and running your own server.
+**Upgrade:** the [Agent Relay desktop app](https://agentrelay.com/docs/quickstart) adds shared sessions and communication across more of your agents.
 
 ### Self Hosting
 

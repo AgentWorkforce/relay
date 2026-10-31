@@ -562,7 +562,7 @@ impl Core {
                 "This Grok session's working directory is unknown, so it cannot be bound.",
             )
         })?;
-        let authority = self.registration_authority().await?;
+        let authority = self.open_grok_authority().await?;
         let request = crate::relay::existing_session::enablement::OpenLeaderRequest {
             session_id: session.target.id.clone(),
             directory: std::path::PathBuf::from(directory),
@@ -614,7 +614,11 @@ impl Core {
     /// proves the current Relaycast workspace, signed-in owner and OS uid.
     /// This is deliberately independent of a caller-provided session row.
     async fn verify_managed_registration_authority(&self, target: &Target) -> Result<(), RpcError> {
-        let expected = self.registration_authority().await?;
+        let expected = if target.kind == SessionKind::GrokOpen {
+            self.open_grok_authority().await?
+        } else {
+            self.registration_authority().await?
+        };
         let directory = self.plugins.sessions.clone();
         let wanted = target.clone();
         let actual = tokio::task::spawn_blocking(move || directory.managed_authority(&wanted))

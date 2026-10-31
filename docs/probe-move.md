@@ -233,8 +233,8 @@ from two sources, read-only (the probe never writes the CLI's files):
    PBKDF2-HMAC-SHA256, salt `agent-relay:relaycast-origin-binding`, 10,000
    iterations, 16 bytes hex, via the `ring` already linked; tested against
    `packages/contracts/fixtures/relaycast-origin-binding.json`, the vector the
-   CLI and the broker use), else `https://cast.agentrelay.com`, where a key
-   with no binding belongs. A bound key
+   CLI and the broker use), else armadillo for an `ar_ws_…` key, else
+   `https://cast.agentrelay.com`. A bound key
    goes only to its server; `http://127.0.0.1:8787` and other self-hosted
    http(s) base URLs (ports and path prefixes included) are accepted as the
    CLI accepts them. A malformed bindings file, an unreadable `workspaces.json`
@@ -551,6 +551,18 @@ decides when both sides know it (one server can host many workspaces), and a
 self-hosted setup whose id cannot be compared says so (for example a desktop signed in to
 another workspace, or a machine-wide active workspace this project does not
 use), with the `relay workspace switch` command that aligns them.
+
+`relay init --hosted`, `--key` and `--url` make the new workspace active when
+the active one is the `local` workspace of init's own server, or none, unless
+a core init did not start is running: that core follows the active workspace
+too, so it stays as it is and init warns. The core picks a switch up live on
+`workspace.refresh`; a restart adds nothing. A session already on the relay
+stays in the workspace it registered with (the store keeps that workspace's
+key), so init also runs `agents.unregister` and `agents.register` for each
+running agent whose id the local server confirms, under the same name. An agent
+with an alias, a reply setting, a webhook, integrations or a spawner is left in
+place and named, since a new registration drops that state, and so is one whose
+session ended, which could not register again.
 
 **Service.** `relay init` starts the core as a detached background process
 and installs no service; when it is not running, `relay init` starts it

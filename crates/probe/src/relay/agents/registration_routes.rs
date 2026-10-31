@@ -1,6 +1,75 @@
 use super::*;
+use crate::relay::cloud_session::{self, AgentOwner, CloudAccount, CloudError};
+
+/// Who owns the binding of an already-open Grok session: the attached
+/// install's person, else the signed-in account's. With nobody signed in the
+/// session is this computer's OS user's, the same local proof a Claude or
+/// Codex session joins on, and the leader proof pins that uid. `None` for an
+/// account this process has not learned the person of: its session must not
+/// be minted for anyone else, so Cloud is asked instead. A build without
+/// session history never attaches an install, so it reaches the account and
+/// signed-out cases every time.
+fn open_grok_owner(
+    owner: Option<AgentOwner>,
+    account: Option<CloudAccount>,
+    uid: u32,
+) -> Option<String> {
+    if let Some(owner) = owner {
+        return Some(owner.user_id);
+    }
+    match account {
+        Some(account) => account.user_id,
+        None => Some(format!("local-user:{uid}")),
+    }
+}
 
 impl Core {
+    /// The workspace and owner an already-open Grok session is bound to and
+    /// checked against. Unlike a probe-managed launch, it needs no sign-in.
+    pub(crate) async fn open_grok_authority(&self) -> Result<ManagedAuthority, RpcError> {
+        self.refresh_workspace().await;
+        let workspace_id = self.verified_workspace_id().ok_or_else(|| {
+            RpcError::new(
+                ErrorKind::NotSignedIn,
+                "A verified Agent Relay workspace is required to bind a Grok session.",
+            )
+        })?;
+        let owner_uid = crate::relay::peer::current_uid();
+        let known = open_grok_owner(self.agent_owner(), self.plugins.cloud.account(), owner_uid);
+        let owner_id = match known {
+            Some(owner) => Some(owner),
+            None => self.saved_sign_in_person().await,
+        }
+        .ok_or_else(|| {
+            RpcError::new(
+                ErrorKind::NotSignedIn,
+                "Agent Relay could not confirm who is signed in. Check your connection, or sign in again.",
+            )
+        })?;
+        Ok(ManagedAuthority {
+            workspace_id,
+            owner_id,
+            owner_uid,
+        })
+    }
+
+    /// Whose the kept Cloud session is, which Cloud alone can say: the person
+    /// is held only in memory, so a core restarted with a saved sign-in does
+    /// not know it, and without an install nothing tells it. A refused
+    /// credential is renewed once.
+    async fn saved_sign_in_person(&self) -> Option<String> {
+        let mut refused = None;
+        for _ in 0..2 {
+            let (site, bearer) = self.plugins.cloud.credential(refused.take()).await?;
+            match cloud_session::whoami(&site, &bearer).await {
+                Ok(identity) => return Some(identity.user_id),
+                Err(CloudError::Rejected) => refused = Some(bearer),
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
     pub(super) async fn registration_route_binding(
         &self,
         session: &DiscoveredSession,
@@ -43,3 +112,7 @@ impl Core {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "registration_routes_tests.rs"]
+mod tests;

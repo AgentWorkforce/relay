@@ -116,7 +116,7 @@ async fn existing_register(
             "Only Grok supports already-open session registration.",
         ));
     }
-    let authority = binding_authority(core).await?;
+    let authority = core.open_grok_authority().await?;
     let request = OpenLeaderRequest {
         session_id: params.session_id,
         directory: PathBuf::from(params.directory),
