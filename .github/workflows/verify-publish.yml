@@ -489,7 +489,7 @@ jobs:
           echo "### Native Tests" >> $GITHUB_STEP_SUMMARY
           echo "| Node Version | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Node 22 and 24 | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| ${{ inputs.hotfix && 'Node 22.14.0 (hotfix: Node 24 skipped)' || 'Node 22 and 24' }} | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### macOS Tests (broker binary)" >> $GITHUB_STEP_SUMMARY
           echo "| Architecture | Status |" >> $GITHUB_STEP_SUMMARY
