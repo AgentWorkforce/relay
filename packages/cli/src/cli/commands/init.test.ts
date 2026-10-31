@@ -1822,7 +1822,7 @@ describe('relay init message injection', () => {
  * global skills folder (Codex, OpenCode and Pi share ~/.agents/skills) and
  * the skill's entry in its lock file.
  */
-function fakeSkillsCli(status = 0) {
+function fakeSkillsCli(status = 0, lockFile?: string) {
   const dirs: Record<string, string> = {
     'claude-code': path.join(toolHome, '.claude', 'skills'),
     codex: path.join(toolHome, '.agents', 'skills'),
@@ -1831,7 +1831,7 @@ function fakeSkillsCli(status = 0) {
     grok: path.join(toolHome, '.grok', 'skills'),
     devin: path.join(toolHome, '.config', 'devin', 'skills'),
   };
-  const lock = path.join(toolHome, '.agents', '.skill-lock.json');
+  const lock = lockFile ?? path.join(toolHome, '.agents', '.skill-lock.json');
   const run = vi.fn<RunSkillsCli>((args) => {
     if (status !== 0) return { status, output: 'fatal: unable to access github.com' };
     args.forEach((arg, i) => {
@@ -1844,6 +1844,7 @@ function fakeSkillsCli(status = 0) {
       ? JSON.parse(fs.readFileSync(lock, 'utf8'))
       : { version: 3, skills: {} };
     current.skills[RELAY_SKILL_NAME] = { source: 'AgentWorkforce/skills', ref: RELAY_SKILL_REF };
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
     fs.writeFileSync(lock, JSON.stringify(current));
     return { status: 0, output: 'Done!' };
   });
@@ -1944,6 +1945,23 @@ describe('relay init messaging skill', () => {
     expect(fs.existsSync(path.join(toolHome, '.agents', 'skills'))).toBe(false);
     // The lock file was the person's: only init's entry leaves it.
     expect(JSON.parse(fs.readFileSync(lock, 'utf8')).skills).toEqual({ 'other-skill': { ref: 'x' } });
+  });
+
+  it("removes every folder its install created, even where a folder above holds the person's files", async () => {
+    installedProbe();
+    const state = path.join(toolHome, 'xdg', 'state');
+    const core = fakeCore();
+    const skills = fakeSkillsCli(0, path.join(state, 'skills', '.skill-lock.json'));
+    const ctx = { projectRoot: project, home: toolHome, env: { PATH: '', XDG_STATE_HOME: state } };
+    await setup({ ...core.deps, runSkillsCli: skills.run, toolContext: () => ctx }).run('--tools', 'codex');
+    expect(fs.existsSync(skills.lock)).toBe(true);
+    // Another tool fills the folder init created above the lock's.
+    fs.mkdirSync(path.join(toolHome, 'xdg', 'cache'), { recursive: true });
+    fs.writeFileSync(path.join(toolHome, 'xdg', 'cache', 'keep'), 'theirs');
+    await setup({ ...core.deps, toolContext: () => ctx }).run('--uninstall');
+    expect(fs.existsSync(state)).toBe(false);
+    expect(fs.existsSync(path.join(toolHome, '.agents'))).toBe(false);
+    expect(fs.readFileSync(path.join(toolHome, 'xdg', 'cache', 'keep'), 'utf8')).toBe('theirs');
   });
 
   it('keeps a copy changed after init on --uninstall', async () => {

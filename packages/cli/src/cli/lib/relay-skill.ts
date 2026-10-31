@@ -49,7 +49,7 @@ export interface InstalledSkillCopy {
 export interface RelaySkillRecord {
   ref: string;
   copies: InstalledSkillCopy[];
-  /** Folders init's install created (the highest missing one per path), removed again once empty. */
+  /** Folders init's install created, removed again once empty. */
   createdDirs: string[];
   /** The `skills` CLI's lock file, when init added the skill's entry to it. */
   lock?: { file: string; created: boolean };
@@ -138,27 +138,23 @@ function exists(file: string): boolean {
   return fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined;
 }
 
-/** The highest missing folder on the way to `file`, below `home`; undefined when its folder exists. */
-function highestMissing(file: string, home: string): string | undefined {
-  let missing: string | undefined;
-  for (let dir = path.dirname(file); dir !== path.dirname(dir) && dir !== home; dir = path.dirname(dir)) {
-    if (exists(dir)) break;
-    missing = dir;
+/** Every missing folder on the way to `file`, deepest first; empty when its folder exists. */
+function missingDirs(file: string): string[] {
+  const missing: string[] = [];
+  for (let dir = path.dirname(file); dir !== path.dirname(dir) && !exists(dir); dir = path.dirname(dir)) {
+    missing.push(dir);
   }
   return missing;
 }
 
-/** Removes `dir` when it holds nothing but empty folders. */
-function removeIfEmpty(dir: string): void {
-  const empty = (current: string): boolean => {
-    const stat = fs.lstatSync(current, { throwIfNoEntry: false });
-    if (!stat?.isDirectory()) return false;
-    return fs.readdirSync(current).every((entry) => empty(path.join(current, entry)));
-  };
-  try {
-    if (empty(dir)) fs.rmSync(dir, { recursive: true });
-  } catch {
-    // Best effort: a folder that cannot be read is left.
+/** Removes the folders init created, deepest first, each only while it is empty. */
+function removeEmptyDirs(dirs: string[]): void {
+  for (const dir of [...dirs].sort((a, b) => b.length - a.length)) {
+    try {
+      fs.rmdirSync(dir);
+    } catch {
+      // Not empty, already gone, or unreadable: left as it is.
+    }
   }
 }
 
@@ -234,13 +230,7 @@ export function installRelaySkill(
   const lock = lockFile(ctx);
   const lockExisted = exists(lock);
   const lockHadEntry = Boolean(readLock(lock).skills?.[RELAY_SKILL_NAME]);
-  const createdDirs = [...install, lock]
-    .map((file) =>
-      install.includes(file)
-        ? highestMissing(path.join(file, 'SKILL.md'), ctx.home)
-        : highestMissing(file, ctx.home)
-    )
-    .filter((dir): dir is string => Boolean(dir));
+  const createdDirs = [...install.map((dir) => path.join(dir, 'SKILL.md')), lock].flatMap(missingDirs);
   const agents = install.flatMap((dir) => byPath.get(dir)!.flatMap((id) => ['--agent', SKILLS_AGENT[id]]));
   let result: ReturnType<RunSkillsCli>;
   try {
@@ -317,7 +307,7 @@ export function uninstallRelaySkill(recorded: RelaySkillRecord | undefined): str
       else fs.writeFileSync(recorded.lock.file, `${JSON.stringify(lock, null, 2)}`);
     }
   }
-  for (const dir of recorded.createdDirs) removeIfEmpty(dir);
+  removeEmptyDirs(recorded.createdDirs);
   const kept = changed.length > 0 ? `; kept ${changed.join(', ')}, changed since` : '';
   return `✓ Agent skill        removed the ${RELAY_SKILL_NAME} skill relay init installed${removed.length > 0 ? ` (${removed.join(', ')})` : ''}${kept}`;
 }
