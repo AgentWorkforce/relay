@@ -113,7 +113,7 @@ jobs:
           # GitHub's macOS pool queued this build for 16 minutes on 2026-10-31.
           # The Linux builds stay on 22.04 for the glibc floor.
           - suffix: darwin-arm64
-            os: ${{ vars.CI_MACOS_RUNNER || 'macos-latest' }}
+            os: ${{ github.event_name == 'workflow_dispatch' && vars.CI_MACOS_RUNNER || 'macos-latest' }}
             target: aarch64-apple-darwin
             ext: ''
             smoke: true
