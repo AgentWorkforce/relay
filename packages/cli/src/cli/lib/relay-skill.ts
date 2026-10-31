@@ -28,7 +28,7 @@ import {
 /** The skill's name in AgentWorkforce/skills. */
 export const RELAY_SKILL_NAME = 'messaging-agents-on-the-relay';
 /** The skills repo commit init installs the skill from. */
-export const RELAY_SKILL_REF = '410a9de7241f9e7305a562954e674997056cc701';
+export const RELAY_SKILL_REF = '88fdbefc92f6ca405b4d5243ef30d4e7b7b2203d';
 /** The pinned source, as `skills add` takes it (`<repo>#<ref>`). */
 export const RELAY_SKILL_SOURCE = `https://github.com/AgentWorkforce/skills#${RELAY_SKILL_REF}`;
 /** The `skills` CLI version init runs through npx. */
