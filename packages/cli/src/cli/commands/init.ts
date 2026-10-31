@@ -41,6 +41,7 @@ import {
   type ToolResult,
   type ToolTarget,
 } from '../lib/agent-tools-mcp.js';
+import { desktopAppInstalled } from '../lib/desktop-presence.js';
 import { CANCELLED, clackPrompter, type InitPrompter } from '../lib/init-prompts.js';
 import { sessionBaseName } from '../lib/mcp-session-name.js';
 import { runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
@@ -123,6 +124,8 @@ export interface InitCommandDependencies extends SdkCommandDeps {
   sleep: (ms: number) => Promise<void>;
   /** Whether to ask questions: stdin and stdout are a terminal. */
   isInteractive: () => boolean;
+  /** Whether the Agent Relay desktop app is installed, running or not. */
+  desktopInstalled: () => boolean;
   prompter: () => InitPrompter;
   /** Project root, home and environment the agent-tool configs resolve against. */
   toolContext: () => ToolContext;
@@ -314,6 +317,7 @@ export function withInitDefaults(overrides: Partial<InitCommandDependencies> = {
     stop: defaultStop,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     isInteractive: () => Boolean(process.stdin.isTTY && process.stdout.isTTY),
+    desktopInstalled: () => desktopAppInstalled(),
     prompter: clackPrompter,
     toolContext: () => defaultToolContext(projectRoot()),
     runTool: defaultRunTool,
@@ -577,9 +581,10 @@ function teammatePackage(version: string | undefined): string {
  * injection for their agent tools. `relay workspace join` only saves it.
  */
 function joinCommand(key: string, origin: string, version: string | undefined): string {
-  // A workspace key says which server it belongs to on the default service.
-  const url =
-    origin === DEFAULT_HOSTED_ORIGIN && key.startsWith('ar_ws_') ? '' : ` --url ${shellWord(origin)}`;
+  // Each hosted service's key finds its server without a flag: armadillo's by
+  // its format, any other because unbound keys go to cast.
+  const keyServer = key.startsWith('ar_ws_') ? DEFAULT_HOSTED_ORIGIN : UNBOUND_CREDENTIAL_ORIGIN;
+  const url = origin === keyServer ? '' : ` --url ${shellWord(origin)}`;
   return `npx -y ${teammatePackage(version)} init${url} --key ${shellQuote(key)}`;
 }
 
@@ -632,6 +637,18 @@ async function runningCores(
   }
   running.client.close();
   return { foreign: true };
+}
+
+/**
+ * Whether the desktop app is on this machine: installed, or a core init did
+ * not start is running. A service's core counts, since nothing here can tell
+ * them apart. Its core serves cast only, so hosted work stays there.
+ */
+async function desktopOnMachine(deps: InitCommandDependencies): Promise<boolean> {
+  if (deps.desktopInstalled()) return true;
+  const { foreign, own } = await runningCores(deps);
+  own?.client.close();
+  return foreign;
 }
 
 /** How a saved workspace affects the machine-wide active one. */
@@ -789,6 +806,13 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     }
     const origin = configuredOrigin(url, '--url');
     if (!origin) throw new Error('--url is empty.');
+    if (origin === DEFAULT_HOSTED_ORIGIN && (await desktopOnMachine(deps))) {
+      throw new Error(
+        `This key is for ${new URL(origin).hostname}, but the Agent Relay desktop app on this machine only ` +
+          `works with ${new URL(UNBOUND_CREDENTIAL_ORIGIN).hostname}, so your agents could not join. ` +
+          `Run relay init --hosted here and share the line it prints with your team, or uninstall the desktop app.`
+      );
+    }
     const workspace = await verifyWorkspace(deps, origin, key);
     const workspaceId = workspace.id;
     guardCredentialOrigin(key, url);
@@ -832,23 +856,28 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     const name = choice.name ?? defaultHostedName(deps.toolContext().projectRoot);
     const activation = await sharedActivation(deps);
     refuseActiveName(name, undefined, activation);
-    assertOriginBindingsWritable(DEFAULT_HOSTED_ORIGIN);
-    const relay = await deps.createWorkspace(name, DEFAULT_HOSTED_ORIGIN);
+    const desktop = await desktopOnMachine(deps);
+    const origin = desktop ? UNBOUND_CREDENTIAL_ORIGIN : DEFAULT_HOSTED_ORIGIN;
+    assertOriginBindingsWritable(origin);
+    const relay = await deps.createWorkspace(name, origin);
     if (!relay.workspaceKey) throw new Error('The hosted service did not return a workspace key.');
-    guardCredentialOrigin(relay.workspaceKey, DEFAULT_HOSTED_ORIGIN);
+    guardCredentialOrigin(relay.workspaceKey, origin);
     const { lines, ...saved } = saveWorkspace(name, relay.workspaceKey, activation);
     return moveRunningCore(deps, {
       ...saved,
-      workspaceId: await workspaceIdOf(deps, DEFAULT_HOSTED_ORIGIN, relay.workspaceKey),
+      workspaceId: await workspaceIdOf(deps, origin, relay.workspaceKey),
       mode: 'hosted',
-      origin: DEFAULT_HOSTED_ORIGIN,
+      origin,
       headline: `Created hosted workspace "${name}".`,
       details: [
+        ...(desktop
+          ? [`On ${new URL(origin).hostname}, the only server the desktop app here works with.`]
+          : []),
         ...(choice.name ? [] : [`Named after you and this folder; pass --name to choose another.`]),
         ...lines,
         'On another machine, run this in the project to join it and connect its agent tools ' +
           '(treat this key like a password):',
-        `  ${joinCommand(relay.workspaceKey, DEFAULT_HOSTED_ORIGIN, deps.cliVersion)}`,
+        `  ${joinCommand(relay.workspaceKey, origin, deps.cliVersion)}`,
       ],
     });
   }

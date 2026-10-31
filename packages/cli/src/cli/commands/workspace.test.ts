@@ -57,6 +57,7 @@ function createHarness() {
     createAgentRelay: vi.fn() as never,
     createWorkspaceRelay: vi.fn() as never,
     createWorkspace: vi.fn() as never,
+    desktopPresent: vi.fn(async () => false),
     log: vi.fn(() => undefined),
     error: vi.fn(() => undefined),
     exit,
@@ -175,6 +176,33 @@ describe('registerWorkspaceCommands', () => {
       name: 'session-two',
       workspaceKey: 'rk_live_…_two',
     });
+  });
+
+  it('workspace create uses cast with the desktop app here, armadillo without it', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(deps.createWorkspace).mockResolvedValue({ workspaceKey: 'rk_live_cast' } as never);
+
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'plain']);
+    expect(deps.createWorkspace).toHaveBeenLastCalledWith('plain', 'https://armadillo.agentrelay.com');
+    expect(deps.error).not.toHaveBeenCalledWith(expect.stringContaining('desktop app'));
+
+    vi.mocked(deps.desktopPresent!).mockResolvedValue(true);
+    await program.parseAsync(['node', 'agent-relay', 'workspace', 'create', 'with-desktop']);
+    expect(deps.createWorkspace).toHaveBeenLastCalledWith('with-desktop', 'https://cast.agentrelay.com');
+    expect(deps.error).toHaveBeenCalledWith(
+      'Creating on cast.agentrelay.com, the only server the desktop app here works with.'
+    );
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'workspace',
+      'create',
+      'own',
+      '--base-url',
+      'https://relay.example.com',
+    ]);
+    expect(deps.createWorkspace).toHaveBeenLastCalledWith('own', 'https://relay.example.com');
   });
 
   it('workspace create records and visibly warns about the previous active workspace on stderr', async () => {

@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- With the desktop app on the machine, `relay init --hosted` and `relay workspace create` use `https://cast.agentrelay.com`, the only server its core serves, and `relay init --key` refuses an armadillo key instead of saving a workspace agents could not join.
 - Grok CLI sessions now join Relay after `relay init`. The core refused every open Grok session with "A signed-in owner is required for managed sessions." because release builds never attach a Cloud install; a Grok session now belongs to the signed-in account, or to this computer's OS user when nobody is signed in.
 - Broker: `spawn:<harness>` capabilities now declare `metadata.configured.node_kind: "broker"`, so Cloud keeps placing spawns on unclaimed CLI brokers instead of refusing them until `agent-relay node claim`. An already-declared kind (e.g. `desktop`) is preserved.
 - `relay init` downloads the standalone Relaycast server (`relaycast-engine`) for your platform into the install directory's `bin` when it is missing, verifying its SHA-256, so the local server now starts from an npm install on any Node.js version and with npm install scripts disabled. It falls back to the `@relaycast/engine` npm package only if the download fails.
