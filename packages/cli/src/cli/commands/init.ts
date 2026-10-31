@@ -1394,18 +1394,21 @@ function installSkill(
   ctx: ToolContext
 ): string | undefined {
   if (injected.length === 0) return undefined;
-  const { line, record } = installRelaySkill(
-    injected,
-    ctx,
-    readDeliveryRecord(deliveryRecordPath()).relaySkill,
-    deps.runSkillsCli
-  );
+  let line: string;
   try {
+    const result = installRelaySkill(
+      injected,
+      ctx,
+      readDeliveryRecord(deliveryRecordPath()).relaySkill,
+      deps.runSkillsCli
+    );
+    line = result.line;
     updateDeliveryRecord(({ relaySkill: _previous, ...rest }) =>
-      record ? { ...rest, relaySkill: record } : rest
+      result.record ? { ...rest, relaySkill: result.record } : rest
     );
   } catch (error) {
-    return `${line} (not recorded for --uninstall: ${(error as Error).message})`;
+    // The skill is optional: nothing about it may fail init.
+    return `! Agent skill        could not be installed or recorded (${(error as Error).message})`;
   }
   return line;
 }
@@ -1573,7 +1576,7 @@ async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise
   // The skill is installed per user, like injection, and removed with it.
   const skillRecord = readDeliveryRecord(deliveryRecordPath()).relaySkill;
   const skillLine =
-    o.scope !== 'project' && o.tools === undefined ? uninstallRelaySkill(skillRecord) : undefined;
+    o.scope !== 'project' && o.tools === undefined ? uninstallRelaySkill(skillRecord, ctx) : undefined;
   if (skillLine) {
     deps.log(skillLine);
     updateDeliveryRecord(({ relaySkill: _removed, ...rest }) => rest);

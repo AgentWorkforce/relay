@@ -20,6 +20,7 @@ import {
   RELAY_SKILL_NAME,
   RELAY_SKILL_REF,
   SKILLS_CLI_PACKAGE,
+  defaultRunSkillsCli,
   type RunSkillsCli,
 } from '../lib/relay-skill.js';
 import { getProjectPaths } from '@agent-relay/config';
@@ -1832,8 +1833,9 @@ function fakeSkillsCli(status = 0, lockFile?: string) {
     devin: path.join(toolHome, '.config', 'devin', 'skills'),
   };
   const lock = lockFile ?? path.join(toolHome, '.agents', '.skill-lock.json');
+  const state = { status };
   const run = vi.fn<RunSkillsCli>((args) => {
-    if (status !== 0) return { status, output: 'fatal: unable to access github.com' };
+    if (state.status !== 0) return { status: state.status, output: 'fatal: unable to access github.com' };
     args.forEach((arg, i) => {
       if (args[i - 1] !== '--agent') return;
       const dir = path.join(dirs[arg]!, RELAY_SKILL_NAME);
@@ -1848,7 +1850,15 @@ function fakeSkillsCli(status = 0, lockFile?: string) {
     fs.writeFileSync(lock, JSON.stringify(current));
     return { status: 0, output: 'Done!' };
   });
-  return { run, lock, dirs };
+  return { run, lock, dirs, fail: (next: number) => (state.status = next) };
+}
+
+/** Rewrite the recorded skill install, as an older init or a forged file would have left it. */
+function editSkillRecord(change: (record: Record<string, any>) => void): void {
+  const file = path.join(home, 'local', 'core-settings.json');
+  const settings = JSON.parse(fs.readFileSync(file, 'utf8'));
+  change(settings.relaySkill);
+  fs.writeFileSync(file, JSON.stringify(settings));
 }
 
 /** Every file and folder under the tools' home, relative to it. */
@@ -1897,12 +1907,11 @@ describe('relay init messaging skill', () => {
     );
     const record = JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'));
     expect(record.relaySkill).toMatchObject({
-      ref: RELAY_SKILL_REF,
       copies: [
-        { path: path.join(skills.dirs['claude-code']!, RELAY_SKILL_NAME) },
-        { path: path.join(skills.dirs.codex!, RELAY_SKILL_NAME) },
+        { path: path.join(skills.dirs['claude-code']!, RELAY_SKILL_NAME), ref: RELAY_SKILL_REF },
+        { path: path.join(skills.dirs.codex!, RELAY_SKILL_NAME), ref: RELAY_SKILL_REF },
       ],
-      lock: { file: skills.lock, created: true },
+      lock: { file: skills.lock, created: true, original: null, ref: RELAY_SKILL_REF },
     });
 
     // A re-run with the same pin changes nothing and fetches nothing.
@@ -1962,6 +1971,95 @@ describe('relay init messaging skill', () => {
     expect(fs.existsSync(state)).toBe(false);
     expect(fs.existsSync(path.join(toolHome, '.agents'))).toBe(false);
     expect(fs.readFileSync(path.join(toolHome, 'xdg', 'cache', 'keep'), 'utf8')).toBe('theirs');
+  });
+
+  it('keeps a copy with a file added after init on --uninstall', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
+    const notes = path.join(skills.dirs.codex!, RELAY_SKILL_NAME, 'notes.md');
+    fs.writeFileSync(notes, 'mine\n');
+    await setup(core.deps).run('--uninstall');
+    expect(fs.readFileSync(notes, 'utf8')).toBe('mine\n');
+  });
+
+  it('retries a refresh that failed, and refreshes each copy by its own ref', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'claude,codex');
+    // An older pin installed both copies.
+    editSkillRecord((record) => {
+      for (const copy of record.copies) copy.ref = 'old';
+    });
+
+    skills.fail(1);
+    const offline = setup({ ...core.deps, runSkillsCli: skills.run });
+    await offline.run('--tools', 'claude,codex');
+    expect(offline.logs.join('\n')).toContain(
+      'could not install messaging-agents-on-the-relay for Claude Code, Codex'
+    );
+    skills.fail(0);
+    // Only Codex is set up this time: Claude's copy keeps its own old ref.
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
+    const refs = () =>
+      JSON.parse(
+        fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8')
+      ).relaySkill.copies.map((copy: { ref: string }) => copy.ref);
+    expect(refs()).toEqual(['old', RELAY_SKILL_REF]);
+    skills.run.mockClear();
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'claude,codex');
+    const args = skills.run.mock.calls[0]![0];
+    expect(args.filter((_, i) => args[i - 1] === '--agent')).toEqual(['claude-code']);
+    expect(refs()).toEqual([RELAY_SKILL_REF, RELAY_SKILL_REF]);
+  });
+
+  it("puts back the person's own lock entry that the install replaced", async () => {
+    installedProbe();
+    const lock = path.join(toolHome, '.agents', '.skill-lock.json');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    const own = { source: 'AgentWorkforce/skills', ref: 'their-ref' };
+    fs.writeFileSync(lock, JSON.stringify({ version: 3, skills: { [RELAY_SKILL_NAME]: own } }));
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
+    expect(JSON.parse(fs.readFileSync(lock, 'utf8')).skills[RELAY_SKILL_NAME].ref).toBe(RELAY_SKILL_REF);
+    await setup(core.deps).run('--uninstall');
+    expect(JSON.parse(fs.readFileSync(lock, 'utf8')).skills[RELAY_SKILL_NAME]).toEqual(own);
+  });
+
+  it('never removes a folder outside the skills folders, whatever the record says', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
+    // A forged record names an unrelated folder with the same contents.
+    const unrelated = path.join(toolHome, 'work', RELAY_SKILL_NAME);
+    fs.cpSync(path.join(skills.dirs.codex!, RELAY_SKILL_NAME), unrelated, { recursive: true });
+    editSkillRecord((record) => {
+      record.copies.push({ ...record.copies[0], path: unrelated });
+      record.createdDirs.push(path.join(toolHome, 'work'));
+    });
+    await setup(core.deps).run('--uninstall');
+    expect(fs.existsSync(path.join(unrelated, 'SKILL.md'))).toBe(true);
+  });
+
+  it('finishes init with a warning when the skills state folder cannot be read', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    const blocked = path.join(toolHome, 'state-is-a-file');
+    fs.writeFileSync(blocked, '');
+    const ctx = { projectRoot: project, home: toolHome, env: { PATH: '', XDG_STATE_HOME: blocked } };
+    const { run, logs } = setup({ ...core.deps, runSkillsCli: skills.run, toolContext: () => ctx });
+    await expect(run('--tools', 'codex')).resolves.toBeDefined();
+    expect(logs.join('\n')).toMatch(/! Agent skill +could not install/);
+  });
+
+  it('refuses to hand the skills CLI an argument with shell characters', () => {
+    const result = defaultRunSkillsCli(['add', 'x & calc'], { env: {}, cwd: toolHome });
+    expect(result).toEqual({ status: null, output: 'refused an argument with shell characters: x & calc' });
   });
 
   it('keeps a copy changed after init on --uninstall', async () => {

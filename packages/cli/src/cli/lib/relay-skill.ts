@@ -7,7 +7,7 @@
  * Both the skill and the CLI are pinned, so a change to the skills repo
  * cannot change what init installs. Init records each copy it put in place
  * in its record (`core-settings.json`), and `relay init --uninstall` removes
- * exactly those, and only while they are unchanged. A copy that was already
+ * exactly those, and only while every file in them is unchanged. A copy that was already
  * there before init, or that the person changed, is never touched.
  */
 
@@ -16,12 +16,12 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { findToolTarget, type ToolContext, type ToolId } from './agent-tools-mcp.js';
+import { TOOL_IDS, findToolTarget, type ToolContext, type ToolId } from './agent-tools-mcp.js';
 
 /** The skill's name in AgentWorkforce/skills. */
 export const RELAY_SKILL_NAME = 'messaging-agents-on-the-relay';
 /** The skills repo commit init installs the skill from. */
-export const RELAY_SKILL_REF = 'ac9fb90d0dd1a1c2fd03c8ba309efd4c62ad4a78';
+export const RELAY_SKILL_REF = '46f8581307f79e8183c0dd2a5fd9847d68d46ee3';
 /** The pinned source, as `skills add` takes it (`<repo>#<ref>`). */
 export const RELAY_SKILL_SOURCE = `https://github.com/AgentWorkforce/skills#${RELAY_SKILL_REF}`;
 /** The `skills` CLI version init runs through npx. */
@@ -41,18 +41,30 @@ const SKILLS_AGENT: Record<ToolId, string> = {
 export interface InstalledSkillCopy {
   /** The skill's folder. */
   path: string;
-  /** sha256 of its SKILL.md as installed: --uninstall removes it only while it matches. */
-  sha256: string;
+  /** The skills repo commit this copy was installed from. */
+  ref: string;
+  /** sha256 over every file in the folder as installed: --uninstall removes it only while it matches. */
+  treeSha256: string;
+}
+
+/** The skill's entry in the `skills` CLI's lock file, as init found and left it. */
+export interface SkillLockRecord {
+  file: string;
+  /** Init created the lock file. */
+  created: boolean;
+  /** The entry before init first wrote it, or null when there was none: what --uninstall puts back. */
+  original: unknown;
+  /** The ref init last wrote there: --uninstall touches the entry only while it still names it. */
+  ref: string;
 }
 
 /** What init installed of the skill, kept in `core-settings.json` for `--uninstall`. */
 export interface RelaySkillRecord {
-  ref: string;
   copies: InstalledSkillCopy[];
   /** Folders init's install created, removed again once empty. */
   createdDirs: string[];
-  /** The `skills` CLI's lock file, when init added the skill's entry to it. */
-  lock?: { file: string; created: boolean };
+  /** The `skills` CLI's lock entry, when init wrote it. */
+  lock?: SkillLockRecord;
 }
 
 /** Runs the `skills` CLI with `args`; replaced in tests. */
@@ -61,12 +73,24 @@ export type RunSkillsCli = (
   options: { env: NodeJS.ProcessEnv; cwd: string }
 ) => { status: number | null; output: string };
 
+/** The only characters an argument to the `skills` CLI may hold: no shell syntax on any platform. */
+const PLAIN_ARGUMENT = /^[A-Za-z0-9@:/._#=+-]+$/;
+
 /**
  * The real `npx skills@<pinned> …`: no prompts, no telemetry, its output
  * kept for a failure's reason. Windows starts npx (a .cmd) only through a
- * shell; every argument is a fixed word or a path init computed.
+ * shell, so every argument must be a plain word (`PLAIN_ARGUMENT`); any
+ * other is refused before anything runs.
+ * @param args - The `skills` CLI's arguments
+ * @param options - Its environment and working folder
+ * @returns Its exit status and combined output
  */
 export const defaultRunSkillsCli: RunSkillsCli = (args, { env, cwd }) => {
+  const words = ['-y', SKILLS_CLI_PACKAGE, ...args];
+  const unsafe = words.find((word) => !PLAIN_ARGUMENT.test(word));
+  if (unsafe !== undefined) {
+    return { status: null, output: `refused an argument with shell characters: ${unsafe}` };
+  }
   const options = {
     cwd,
     env,
@@ -76,11 +100,8 @@ export const defaultRunSkillsCli: RunSkillsCli = (args, { env, cwd }) => {
   };
   const result =
     process.platform === 'win32'
-      ? spawnSync(`npx -y ${SKILLS_CLI_PACKAGE} ${args.map((arg) => `"${arg}"`).join(' ')}`, {
-          ...options,
-          shell: true,
-        })
-      : spawnSync('npx', ['-y', SKILLS_CLI_PACKAGE, ...args], options);
+      ? spawnSync(`npx ${words.join(' ')}`, { ...options, shell: true })
+      : spawnSync('npx', words, options);
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}${result.error ? result.error.message : ''}`;
   return { status: result.status, output };
 };
@@ -90,6 +111,9 @@ export const defaultRunSkillsCli: RunSkillsCli = (args, { env, cwd }) => {
  * Claude Code `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills`); Codex,
  * OpenCode and Pi the shared `~/.agents/skills`; Grok `~/.grok/skills`;
  * Devin `$XDG_CONFIG_HOME/devin/skills`.
+ * @param id - The tool
+ * @param ctx - Home and environment the tool resolves against
+ * @returns The tool's global skills folder
  */
 export function skillsDirFor(id: ToolId, ctx: ToolContext): string {
   const env = ctx.env;
@@ -107,6 +131,11 @@ export function skillsDirFor(id: ToolId, ctx: ToolContext): string {
   }
 }
 
+/** The skill's own folder for `id`. */
+function skillDir(id: ToolId, ctx: ToolContext): string {
+  return path.join(skillsDirFor(id, ctx), RELAY_SKILL_NAME);
+}
+
 /** The `skills` CLI's lock file (`$XDG_STATE_HOME/skills/.skill-lock.json`, else `~/.agents/.skill-lock.json`). */
 function lockFile(ctx: ToolContext): string {
   const state = ctx.env.XDG_STATE_HOME?.trim();
@@ -115,7 +144,9 @@ function lockFile(ctx: ToolContext): string {
     : path.join(ctx.home, '.agents', '.skill-lock.json');
 }
 
-function readLock(file: string): { skills?: Record<string, { ref?: string }> } & Record<string, unknown> {
+type SkillLock = { skills?: Record<string, { ref?: string } | undefined> } & Record<string, unknown>;
+
+function readLock(file: string): SkillLock {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
     return parsed && typeof parsed === 'object' ? parsed : {};
@@ -124,11 +155,33 @@ function readLock(file: string): { skills?: Record<string, { ref?: string }> } &
   }
 }
 
-function skillHash(dir: string): string | undefined {
+/**
+ * sha256 over every entry under `dir` (its relative path, then a file's
+ * contents or a link's target), or undefined when `dir` is not a real
+ * folder or cannot be read. Any added, removed or changed file changes it.
+ */
+function treeHash(dir: string): string | undefined {
+  const hash = createHash('sha256');
+  const walk = (current: string, relative: string): void => {
+    const entries = fs.readdirSync(current, { withFileTypes: true });
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      const name = path.posix.join(relative, entry.name);
+      if (entry.isDirectory()) {
+        hash.update(`d\0${name}\0`);
+        walk(full, name);
+      } else if (entry.isSymbolicLink()) {
+        hash.update(`l\0${name}\0${fs.readlinkSync(full)}\0`);
+      } else {
+        hash.update(`f\0${name}\0`).update(fs.readFileSync(full)).update('\0');
+      }
+    }
+  };
   try {
-    return createHash('sha256')
-      .update(fs.readFileSync(path.join(dir, 'SKILL.md')))
-      .digest('hex');
+    if (!fs.lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) return undefined;
+    walk(dir, '');
+    return hash.digest('hex');
   } catch {
     return undefined;
   }
@@ -158,29 +211,32 @@ function removeEmptyDirs(dirs: string[]): void {
   }
 }
 
-/** The recorded install, or undefined when the value is not one. */
+/**
+ * Read the recorded install.
+ * @param value - The `relaySkill` value of `core-settings.json`
+ * @returns The record, or undefined when the value is not one
+ */
 export function relaySkillRecordOf(value: unknown): RelaySkillRecord | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const record = value as Record<string, unknown>;
   const copies = Array.isArray(record.copies)
     ? record.copies.filter(
         (copy): copy is InstalledSkillCopy =>
-          typeof copy?.path === 'string' && typeof copy?.sha256 === 'string'
+          typeof copy?.path === 'string' &&
+          typeof copy?.ref === 'string' &&
+          typeof copy?.treeSha256 === 'string'
       )
     : [];
   const createdDirs = Array.isArray(record.createdDirs)
     ? record.createdDirs.filter((dir): dir is string => typeof dir === 'string')
     : [];
-  const lock = record.lock as RelaySkillRecord['lock'] | undefined;
+  const raw = record.lock as Partial<SkillLockRecord> | undefined;
+  const lock =
+    raw && typeof raw.file === 'string' && typeof raw.ref === 'string'
+      ? { file: raw.file, created: raw.created === true, original: raw.original ?? null, ref: raw.ref }
+      : undefined;
   if (copies.length === 0 && !lock) return undefined;
-  return {
-    ref: typeof record.ref === 'string' ? record.ref : '',
-    copies,
-    createdDirs,
-    ...(lock && typeof lock.file === 'string'
-      ? { lock: { file: lock.file, created: lock.created === true } }
-      : {}),
-  };
+  return { copies, createdDirs, ...(lock ? { lock } : {}) };
 }
 
 /** One line about the skill, and the record to keep. */
@@ -191,13 +247,15 @@ export interface SkillInstallResult {
 
 /**
  * Install the skill globally for `tools`, where it is not there yet. A copy
- * init installed earlier is refreshed when the pinned ref changed; any
- * other copy already there is the person's and is left as it is. Never
- * throws: a failure is the warning line, and what did land is recorded.
+ * init installed earlier is refreshed when it is from another pinned ref
+ * and unchanged; any other copy already there is the person's and is left
+ * as it is. Never throws: a failure is the warning line, and only what did
+ * land is recorded as current, so a failed refresh is tried again next time.
  * @param tools - The tools whose sessions the core injects into
  * @param ctx - Home and environment the tools resolve against
  * @param recorded - What an earlier init installed
  * @param run - Runs the `skills` CLI
+ * @returns The line to print and the record to keep
  */
 export function installRelaySkill(
   tools: ToolId[],
@@ -205,33 +263,73 @@ export function installRelaySkill(
   recorded: RelaySkillRecord | undefined,
   run: RunSkillsCli
 ): SkillInstallResult {
-  const ours = new Map((recorded?.copies ?? []).map((copy) => [copy.path, copy.sha256]));
-  const byPath = new Map<string, ToolId[]>();
-  for (const id of tools) {
-    const dir = path.join(skillsDirFor(id, ctx), RELAY_SKILL_NAME);
-    byPath.set(dir, [...(byPath.get(dir) ?? []), id]);
+  try {
+    return install(tools, ctx, recorded, run);
+  } catch (error) {
+    return { line: failureLine(tools.map(toolLabel).join(', '), (error as Error).message), record: recorded };
   }
-  const install: string[] = [];
+}
+
+/** The folders to install into (absent, or init's own unchanged copy from another ref) and those left as they are. */
+function plan(
+  dirs: string[],
+  recorded: RelaySkillRecord | undefined
+): { before: Map<string, string | undefined>; kept: string[] } {
+  const ours = new Map((recorded?.copies ?? []).map((copy) => [copy.path, copy]));
+  const before = new Map<string, string | undefined>();
   const kept: string[] = [];
-  for (const dir of byPath.keys()) {
-    const mine = ours.has(dir) && skillHash(dir) === ours.get(dir);
-    if (!exists(dir) || (mine && recorded?.ref !== RELAY_SKILL_REF)) install.push(dir);
-    else if (!mine) kept.push(dir);
+  for (const dir of dirs) {
+    const copy = ours.get(dir);
+    if (!exists(dir)) {
+      before.set(dir, undefined);
+      continue;
+    }
+    const now = treeHash(dir);
+    if (!copy || now !== copy.treeSha256) kept.push(dir);
+    else if (copy.ref !== RELAY_SKILL_REF) before.set(dir, now);
   }
+  return { before, kept };
+}
+
+/** The lock entry to record after a run: kept from an earlier run, or the one this run wrote. */
+function lockAfter(
+  recorded: SkillLockRecord | undefined,
+  file: string,
+  existed: boolean,
+  entryBefore: unknown
+): SkillLockRecord | undefined {
+  const entryAfter = readLock(file).skills?.[RELAY_SKILL_NAME];
+  const wrote =
+    entryAfter?.ref === RELAY_SKILL_REF &&
+    (entryBefore as { ref?: string } | undefined)?.ref !== RELAY_SKILL_REF;
+  if (recorded) return wrote ? { ...recorded, ref: RELAY_SKILL_REF } : recorded;
+  return wrote ? { file, created: !existed, original: entryBefore ?? null, ref: RELAY_SKILL_REF } : undefined;
+}
+
+function install(
+  tools: ToolId[],
+  ctx: ToolContext,
+  recorded: RelaySkillRecord | undefined,
+  run: RunSkillsCli
+): SkillInstallResult {
+  const byPath = new Map<string, ToolId[]>();
+  for (const id of tools) byPath.set(skillDir(id, ctx), [...(byPath.get(skillDir(id, ctx)) ?? []), id]);
+  const { before, kept } = plan([...byPath.keys()], recorded);
+  const targets = [...before.keys()];
   const label = (dirs: string[]) => dirs.map((dir) => byPath.get(dir)!.map(toolLabel).join(', ')).join(', ');
-  const keptNote = kept.length > 0 ? `; already there for ${label(kept)}, left as is` : '';
-  if (install.length === 0) {
+  if (targets.length === 0) {
+    const state = kept.length > 0 ? 'already there' : 'installed';
     return {
-      line: `✓ Agent skill        ${RELAY_SKILL_NAME} ${kept.length > 0 ? 'already there' : 'installed'} for ${label([...byPath.keys()])}`,
+      line: `✓ Agent skill        ${RELAY_SKILL_NAME} ${state} for ${label([...byPath.keys()])}`,
       record: recorded,
     };
   }
 
   const lock = lockFile(ctx);
   const lockExisted = exists(lock);
-  const lockHadEntry = Boolean(readLock(lock).skills?.[RELAY_SKILL_NAME]);
-  const createdDirs = [...install.map((dir) => path.join(dir, 'SKILL.md')), lock].flatMap(missingDirs);
-  const agents = install.flatMap((dir) => byPath.get(dir)!.flatMap((id) => ['--agent', SKILLS_AGENT[id]]));
+  const entryBefore = readLock(lock).skills?.[RELAY_SKILL_NAME];
+  const createdDirs = [...targets.map((dir) => path.join(dir, 'SKILL.md')), lock].flatMap(missingDirs);
+  const agents = targets.flatMap((dir) => byPath.get(dir)!.flatMap((id) => ['--agent', SKILLS_AGENT[id]]));
   let result: ReturnType<RunSkillsCli>;
   try {
     result = run(
@@ -243,73 +341,96 @@ export function installRelaySkill(
     result = { status: null, output: (error as Error).message };
   }
 
-  const landed = install.filter((dir) => skillHash(dir) !== undefined);
+  // A copy is current only if this run put it there: new, or written by a
+  // run that succeeded. An old copy a failed refresh left keeps its old ref.
+  const after = new Map(targets.map((dir) => [dir, treeHash(dir)]));
+  const landed = targets.filter((dir) => {
+    const hash = after.get(dir);
+    return (
+      hash !== undefined && (before.get(dir) === undefined || result.status === 0 || hash !== before.get(dir))
+    );
+  });
   const copies = [
     ...(recorded?.copies ?? []).filter((copy) => !landed.includes(copy.path)),
-    ...landed.map((dir) => ({ path: dir, sha256: skillHash(dir)! })),
+    ...landed.map((dir) => ({ path: dir, ref: RELAY_SKILL_REF, treeSha256: after.get(dir)! })),
   ];
-  const lockAdded = !lockHadEntry && Boolean(readLock(lock).skills?.[RELAY_SKILL_NAME]);
+  const lockRecord = lockAfter(recorded?.lock, lock, lockExisted, entryBefore);
   const record: RelaySkillRecord | undefined =
-    copies.length > 0 || recorded?.lock || lockAdded
+    copies.length > 0 || lockRecord
       ? {
-          ref: landed.length > 0 ? RELAY_SKILL_REF : (recorded?.ref ?? RELAY_SKILL_REF),
           copies,
           createdDirs: [...new Set([...(recorded?.createdDirs ?? []), ...createdDirs.filter(exists)])],
-          ...(recorded?.lock
-            ? { lock: recorded.lock }
-            : lockAdded
-              ? { lock: { file: lock, created: !lockExisted } }
-              : {}),
+          ...(lockRecord ? { lock: lockRecord } : {}),
         }
       : undefined;
-  const missed = install.filter((dir) => !landed.includes(dir));
-  if (missed.length === 0) {
-    return {
-      line: `✓ Agent skill        installed ${RELAY_SKILL_NAME} for ${label(landed)}${keptNote}`,
-      record,
-    };
+  const missed = targets.filter((dir) => !landed.includes(dir));
+  if (missed.length > 0) {
+    const reason =
+      result.status === 0 ? 'it did not land' : lastLine(result.output) || `exit ${result.status}`;
+    return { line: failureLine(label(missed), reason), record };
   }
-  const reason = result.status === 0 ? 'it did not land' : lastLine(result.output) || `exit ${result.status}`;
+  const keptNote = kept.length > 0 ? `; already there for ${label(kept)}, left as is` : '';
   return {
-    line:
-      `! Agent skill        could not install ${RELAY_SKILL_NAME} for ${label(missed)} (${reason}). ` +
-      `Messaging still works; to add it: npx ${SKILLS_CLI_PACKAGE} add ${RELAY_SKILL_SOURCE} --skill ${RELAY_SKILL_NAME} --global`,
+    line: `✓ Agent skill        installed ${RELAY_SKILL_NAME} for ${label(landed)}${keptNote}`,
     record,
   };
 }
 
+function failureLine(tools: string, reason: string): string {
+  return (
+    `! Agent skill        could not install ${RELAY_SKILL_NAME} for ${tools} (${reason}). ` +
+    `Messaging still works; to add it: npx ${SKILLS_CLI_PACKAGE} add ${RELAY_SKILL_SOURCE} --skill ${RELAY_SKILL_NAME} --global`
+  );
+}
+
 /**
- * Remove what init installed: each recorded copy still as installed, the
- * lock entry it added, and the folders it created once they are empty.
+ * Remove what init installed: each recorded copy whose every file is as
+ * installed, the lock entry it wrote (putting back the one it replaced),
+ * and the folders it created once they are empty. Only the skill's own
+ * folder in a tool's skills folder and the `skills` CLI's lock file are
+ * ever touched, whatever the record says.
+ * @param recorded - What init installed
+ * @param ctx - Home and environment the tools resolve against
  * @returns The line to print, or undefined when nothing was recorded
  */
-export function uninstallRelaySkill(recorded: RelaySkillRecord | undefined): string | undefined {
+export function uninstallRelaySkill(
+  recorded: RelaySkillRecord | undefined,
+  ctx: ToolContext
+): string | undefined {
   if (!recorded) return undefined;
+  const allowed = new Set(TOOL_IDS.map((id) => skillDir(id, ctx)));
+  const lock = lockFile(ctx);
   const removed: string[] = [];
   const changed: string[] = [];
   for (const copy of recorded.copies) {
-    const hash = skillHash(copy.path);
+    if (!allowed.has(copy.path)) continue;
+    const hash = treeHash(copy.path);
     if (hash === undefined) continue;
-    if (hash !== copy.sha256) {
+    if (hash !== copy.treeSha256) {
       changed.push(copy.path);
       continue;
     }
     fs.rmSync(copy.path, { recursive: true, force: true });
     removed.push(copy.path);
   }
-  if (recorded.lock) {
-    const lock = readLock(recorded.lock.file);
-    const entry = lock.skills?.[RELAY_SKILL_NAME];
-    if (entry && entry.ref === recorded.ref && lock.skills) {
-      delete lock.skills[RELAY_SKILL_NAME];
-      if (recorded.lock.created && Object.keys(lock.skills).length === 0)
-        fs.rmSync(recorded.lock.file, { force: true });
-      else fs.writeFileSync(recorded.lock.file, `${JSON.stringify(lock, null, 2)}`);
-    }
-  }
-  removeEmptyDirs(recorded.createdDirs);
+  if (recorded.lock?.file === lock) restoreLock(recorded.lock);
+  const roots = [...allowed, lock];
+  removeEmptyDirs(
+    recorded.createdDirs.filter((dir) => roots.some((root) => root.startsWith(dir + path.sep)))
+  );
   const kept = changed.length > 0 ? `; kept ${changed.join(', ')}, changed since` : '';
-  return `✓ Agent skill        removed the ${RELAY_SKILL_NAME} skill relay init installed${removed.length > 0 ? ` (${removed.join(', ')})` : ''}${kept}`;
+  const list = removed.length > 0 ? ` (${removed.join(', ')})` : '';
+  return `✓ Agent skill        removed the ${RELAY_SKILL_NAME} skill relay init installed${list}${kept}`;
+}
+
+/** Put the lock entry back as init found it, while it still names the ref init wrote. */
+function restoreLock(record: SkillLockRecord): void {
+  const lock = readLock(record.file);
+  if (!lock.skills || lock.skills[RELAY_SKILL_NAME]?.ref !== record.ref) return;
+  if (record.original) lock.skills[RELAY_SKILL_NAME] = record.original as { ref?: string };
+  else delete lock.skills[RELAY_SKILL_NAME];
+  if (record.created && Object.keys(lock.skills).length === 0) fs.rmSync(record.file, { force: true });
+  else fs.writeFileSync(record.file, JSON.stringify(lock, null, 2));
 }
 
 function toolLabel(id: ToolId): string {
