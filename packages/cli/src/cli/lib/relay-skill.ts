@@ -468,9 +468,11 @@ function settleBackups(
       failed.push(dir);
     }
   }
-  for (const backup of backups.values()) {
-    fs.rmSync(path.dirname(backup), { recursive: true, force: true });
-    break;
+  const [first] = backups.values();
+  try {
+    if (first) fs.rmSync(path.dirname(first), { recursive: true, force: true });
+  } catch {
+    // Best effort: a leftover temporary folder changes nothing about the install.
   }
   return { restored, failed };
 }

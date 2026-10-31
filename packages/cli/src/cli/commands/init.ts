@@ -1528,7 +1528,6 @@ function installSkill(
       const next = applySkillChange(relaySkill, result.change);
       return next ? { ...rest, relaySkill: next } : rest;
     });
-    result.settle?.(true);
   } catch (error) {
     // The skill is optional, but what --uninstall would not know about is not left behind.
     const { restored, failed } = result.settle?.(false) ?? { restored: [], failed: [] };
@@ -1549,6 +1548,7 @@ function installSkill(
       `(${(error as Error).message}), ${outcome}`
     );
   }
+  result.settle?.(true);
   return result.line;
 }
 

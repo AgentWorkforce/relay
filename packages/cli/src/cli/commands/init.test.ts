@@ -2387,6 +2387,31 @@ describe('relay init messaging skill', () => {
     expect(fs.existsSync(skills.lock)).toBe(false);
   });
 
+  it('keeps a saved refresh when its backup cannot be deleted', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    skills.write('old\n');
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
+    editSkillRecord((record) => {
+      record.copies[0]!.ref = 'old';
+    });
+    skills.write('new\n');
+    const rmSync = fs.rmSync;
+    const spy = vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+      if (String(target).includes('relay-skill-')) throw new Error('EBUSY');
+      rmSync(target, options);
+    });
+    const { run, logs } = setup({ ...core.deps, runSkillsCli: skills.run });
+    await expect(run('--tools', 'codex')).resolves.toBeDefined();
+    spy.mockRestore();
+    const copy = path.join(skills.dirs.codex!, RELAY_SKILL_NAME, 'SKILL.md');
+    expect(fs.readFileSync(copy, 'utf8')).toBe('new\n');
+    expect(logs.join('\n')).toContain(`installed ${RELAY_SKILL_NAME} for Codex`);
+    const saved = JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'));
+    expect(saved.relaySkill.copies[0].ref).toBe(RELAY_SKILL_REF);
+  });
+
   it('removes the other copies and keeps recording one it could not remove', async () => {
     installedProbe();
     const core = fakeCore();
