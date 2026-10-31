@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/broker-win32-x64",
-  "version": "14.0.0",
+  "version": "15.0.1",
   "engines": {
     "node": ">=22.0.0"
   },

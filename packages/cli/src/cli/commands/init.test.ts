@@ -92,6 +92,7 @@ function setup(overrides: Partial<InitCommandDependencies> = {}) {
       return jsonResponse(404);
     }) as never,
     isInteractive: () => false,
+    desktopInstalled: () => false,
     // No tool CLI on PATH and a private home: configs are written as files, here.
     toolContext: () => ({ projectRoot: project, home: toolHome, env: { PATH: '' } }),
     runTool: vi.fn(() => ({ status: 1, output: 'not used' })),
@@ -172,6 +173,37 @@ describe('relay init', () => {
     const { run, errors } = setup();
     await expect(run('--url', 'https://relay.corp.test')).rejects.toEqual(new ExitSignal(1));
     expect(errors.join('\n')).toContain('Pass --key with --url');
+  });
+
+  it.each([
+    '/home/a/.npm/_npx/abc/node_modules/.bin/agent-relay',
+    '/home/a/project/node_modules/.bin/agent-relay',
+  ])('prints commands that work after npx ran %s, where relay is not on PATH', async (script) => {
+    const argv = process.argv[1];
+    process.argv[1] = script;
+    try {
+      const { run, logs } = setup({ cliVersion: '15.0.0' });
+      await run('--name', 'solo');
+      const output = logs.join('\n');
+      expect(output).toContain('npx -y agent-relay@15.0.0 message dm send bob "hello" --as alice');
+      expect(output).toContain('npx -y agent-relay@15.0.0 init --hosted');
+      expect(output).not.toMatch(/(^|\s)relay (agent|message) /m);
+      expect(output).not.toContain('run: relay ');
+    } finally {
+      process.argv[1] = argv;
+    }
+  });
+
+  it('keeps relay in printed commands for a global install', async () => {
+    const argv = process.argv[1];
+    process.argv[1] = '/usr/local/bin/relay';
+    try {
+      const { run, logs } = setup({ cliVersion: '15.0.0' });
+      await run('--name', 'solo');
+      expect(logs.join('\n')).toContain('run: relay init --hosted');
+    } finally {
+      process.argv[1] = argv;
+    }
   });
 
   it('creates a hosted workspace and prints the one command another machine runs to join', async () => {
@@ -1634,6 +1666,70 @@ describe('relay init message injection', () => {
     expect(core.calls.map(([method]) => method)).toContain('daemon.shutdown');
     expect(core.deps.startCore).toHaveBeenCalledTimes(2);
     expect(logs.join('\n')).toContain(`Updating the Agent Relay core from 15.0.5 to ${PROBE_VERSION}`);
+  });
+
+  describe('with the desktop app on the machine', () => {
+    const CAST = 'https://cast.agentrelay.com';
+    const castWorkspace = vi.fn(async () => ({ workspaceKey: 'rk_live_cast_team', name: 'team' }));
+
+    it('creates on cast when the app is installed, with a join line needing no server', async () => {
+      const { run, logs } = setup({
+        cliVersion: '15.0.0-next.6',
+        desktopInstalled: () => true,
+        createWorkspace: castWorkspace as never,
+      });
+      await run('--hosted', '--name', 'team');
+      expect(castWorkspace).toHaveBeenCalledWith('team', CAST);
+      const output = logs.join('\n');
+      expect(output).toContain('On cast.agentrelay.com, the only server the desktop app here works with.');
+      expect(output).toContain("  npx -y agent-relay@next init --key 'rk_live_cast_team'");
+      expect(output).not.toContain('armadillo');
+      // Unbound, so a teammate's bare --key reaches cast on any machine.
+      expect(boundOrigin('rk_live_cast_team')).toBeUndefined();
+      expect(resolveWorkspaceTransport({ workspaceKey: 'rk_live_cast_team' }).baseUrl).toBeUndefined();
+    });
+
+    it('creates on cast beside a running core it did not start, and keeps the switch note', async () => {
+      const core = fakeCore({ running: true });
+      const { run, logs } = setup({ ...core.deps, createWorkspace: castWorkspace as never });
+      await run('--hosted', '--name', 'team', '--tools', 'codex');
+      expect(castWorkspace).toHaveBeenCalledWith('team', CAST);
+      const output = logs.join('\n');
+      expect(output).toContain('the desktop app');
+      expect(output).toContain('left alone. To make "team" the default everywhere, run:');
+      expect(readWorkspaceStore().active).not.toBe('team');
+    });
+
+    it('refuses an armadillo key before changing anything', async () => {
+      const { run, deps, errors } = setup({ desktopInstalled: () => true });
+      await expect(run('--key', 'ar_ws_issued_by_armadillo')).rejects.toThrow('exit:1');
+      expect(errors.join('\n')).toContain(
+        'This key is for armadillo.agentrelay.com, but the Agent Relay desktop app on this machine only works with cast.agentrelay.com'
+      );
+      expect(deps.fetch).not.toHaveBeenCalled();
+      expect(Object.keys(readWorkspaceStore().workspaces)).toEqual([]);
+    });
+
+    it('refuses --url armadillo but keeps a self-hosted server and a cast key working', async () => {
+      const first = setup({ desktopInstalled: () => true });
+      await expect(
+        first.run('--url', 'https://armadillo.agentrelay.com', '--key', 'rk_live_armadillo')
+      ).rejects.toThrow('exit:1');
+      expect(first.errors.join('\n')).toContain('This key is for armadillo.agentrelay.com');
+
+      const own = setup({ desktopInstalled: () => true });
+      await own.run('--url', 'https://relay.example.com', '--key', 'rk_live_own', '--name', 'own');
+      expect(own.logs.join('\n')).toContain('Connected to your server at https://relay.example.com');
+
+      const cast = setup({ desktopInstalled: () => true });
+      await cast.run('--key', 'rk_live_cast', '--name', 'cast-team');
+      expect(cast.logs.join('\n')).toContain(`Joined hosted workspace "cast-team" (${CAST}).`);
+
+      // A teammate with no desktop app reaches cast by the same bare --key.
+      const teammate = setup();
+      await teammate.run('--key', 'rk_live_cast', '--name', 'cast-team');
+      expect(teammate.logs.join('\n')).toContain(`Joined hosted workspace "cast-team" (${CAST}).`);
+    });
   });
 
   it('prints a join line with no server for an armadillo workspace key', async () => {

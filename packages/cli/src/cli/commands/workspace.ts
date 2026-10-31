@@ -4,6 +4,7 @@ import { resolveActiveWorkspace } from '@agent-relay/cloud';
 
 import { shellWord } from '../lib/agent-registration.js';
 import { maskSecret } from '../lib/redact.js';
+import { desktopPresent } from '../lib/desktop-presence.js';
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import { readWorkspaceStore, setWorkspaceKey } from '../lib/workspace-store.js';
 import {
@@ -22,7 +23,10 @@ import {
   type PersistWorkspaceSessionResult,
 } from '../lib/workspace-session.js';
 
-export type WorkspaceCommandDependencies = SdkCommandDeps;
+export interface WorkspaceCommandDependencies extends SdkCommandDeps {
+  /** Whether the desktop app, whose core serves cast only, is on this machine. */
+  desktopPresent?: () => Promise<boolean>;
+}
 
 /**
  * Say so when moving workspaces drops this project's enrolled fleet node.
@@ -138,8 +142,15 @@ export function registerWorkspaceCommands(
     .action(async (name: string, o: Record<string, unknown>) => {
       await runSdk(deps, async () => {
         const workspaceName = validateWorkspaceSessionName(name);
+        const explicitBaseUrl = (o.baseUrl as string | undefined) ?? process.env.RELAY_BASE_URL?.trim();
+        const desktop = !explicitBaseUrl && (await (overrides.desktopPresent ?? desktopPresent)());
         const requestedBaseUrl =
-          (o.baseUrl as string | undefined) ?? (process.env.RELAY_BASE_URL?.trim() || DEFAULT_HOSTED_ORIGIN);
+          explicitBaseUrl || (desktop ? UNBOUND_CREDENTIAL_ORIGIN : DEFAULT_HOSTED_ORIGIN);
+        if (desktop) {
+          deps.error(
+            `Creating on ${new URL(requestedBaseUrl).hostname}, the only server the desktop app here works with.`
+          );
+        }
         const baseUrl = configuredBaseUrl(
           requestedBaseUrl,
           'The Relaycast base URL (--base-url or RELAY_BASE_URL)'

@@ -32,6 +32,7 @@ import {
   resolveMcpLaunch,
   trustCodexProject,
   uninstallTool,
+  isEphemeralPath,
   writeKeepingMode,
   type InstallScope,
   type McpLaunch,
@@ -41,6 +42,7 @@ import {
   type ToolResult,
   type ToolTarget,
 } from '../lib/agent-tools-mcp.js';
+import { desktopAppInstalled } from '../lib/desktop-presence.js';
 import { CANCELLED, clackPrompter, type InitPrompter } from '../lib/init-prompts.js';
 import { sessionBaseName } from '../lib/mcp-session-name.js';
 import { runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
@@ -123,6 +125,8 @@ export interface InitCommandDependencies extends SdkCommandDeps {
   sleep: (ms: number) => Promise<void>;
   /** Whether to ask questions: stdin and stdout are a terminal. */
   isInteractive: () => boolean;
+  /** Whether the Agent Relay desktop app is installed, running or not. */
+  desktopInstalled: () => boolean;
   prompter: () => InitPrompter;
   /** Project root, home and environment the agent-tool configs resolve against. */
   toolContext: () => ToolContext;
@@ -314,6 +318,7 @@ export function withInitDefaults(overrides: Partial<InitCommandDependencies> = {
     stop: defaultStop,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     isInteractive: () => Boolean(process.stdin.isTTY && process.stdout.isTTY),
+    desktopInstalled: () => desktopAppInstalled(),
     prompter: clackPrompter,
     toolContext: () => defaultToolContext(projectRoot()),
     runTool: defaultRunTool,
@@ -554,7 +559,7 @@ interface LocalWorkspace {
 
 /** The command that makes `name` the machine-wide active workspace. */
 function switchCommand(name: string): string {
-  return `relay workspace switch ${shellWord(name)}`;
+  return relayCommand(`workspace switch ${shellWord(name)}`);
 }
 
 /**
@@ -570,6 +575,21 @@ function teammatePackage(version: string | undefined): string {
   return `agent-relay@${published}`;
 }
 
+/** The running CLI's version, for the commands it prints. */
+let cliVersion: string | undefined;
+
+/**
+ * A Relay command as the person who ran this CLI can paste it: `relay` is not
+ * on PATH after `npx agent-relay`, so npx is repeated.
+ */
+function relayCommand(args: string): string {
+  const script = (process.argv[1] ?? '').replace(/\\/g, '/');
+  // A project's own install is on PATH only while npx runs it.
+  const viaNpx = isEphemeralPath(script) || /\/node_modules\/\.bin\/(agent-relay|relay)$/.test(script);
+  const launcher = viaNpx ? `npx -y ${teammatePackage(cliVersion)}` : 'relay';
+  return `${launcher} ${args}`;
+}
+
 /**
  * The one command a teammate runs in their project to join a hosted
  * workspace, Relay installed or not: it saves the workspace (named as the
@@ -577,9 +597,10 @@ function teammatePackage(version: string | undefined): string {
  * injection for their agent tools. `relay workspace join` only saves it.
  */
 function joinCommand(key: string, origin: string, version: string | undefined): string {
-  // A workspace key says which server it belongs to on the default service.
-  const url =
-    origin === DEFAULT_HOSTED_ORIGIN && key.startsWith('ar_ws_') ? '' : ` --url ${shellWord(origin)}`;
+  // Each hosted service's key finds its server without a flag: armadillo's by
+  // its format, any other because unbound keys go to cast.
+  const keyServer = key.startsWith('ar_ws_') ? DEFAULT_HOSTED_ORIGIN : UNBOUND_CREDENTIAL_ORIGIN;
+  const url = origin === keyServer ? '' : ` --url ${shellWord(origin)}`;
   return `npx -y ${teammatePackage(version)} init${url} --key ${shellQuote(key)}`;
 }
 
@@ -632,6 +653,18 @@ async function runningCores(
   }
   running.client.close();
   return { foreign: true };
+}
+
+/**
+ * Whether the desktop app is on this machine: installed, or a core init did
+ * not start is running. A service's core counts, since nothing here can tell
+ * them apart. Its core serves cast only, so hosted work stays there.
+ */
+async function desktopOnMachine(deps: InitCommandDependencies): Promise<boolean> {
+  if (deps.desktopInstalled()) return true;
+  const { foreign, own } = await runningCores(deps);
+  own?.client.close();
+  return foreign;
 }
 
 /** How a saved workspace affects the machine-wide active one. */
@@ -784,11 +817,19 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     if (bound && !isJoinableHostedOrigin(new URL(bound).origin)) {
       throw new Error(
         `This workspace key belongs to ${new URL(bound).origin}, so relay init will not send it to the hosted ` +
-          `service. To use it there, run: relay init --url ${shellWord(new URL(bound).origin)} --key <key>`
+          `service. To use it there, run: ${relayCommand(`init --url ${shellWord(new URL(bound).origin)} --key <key>`)}`
       );
     }
     const origin = configuredOrigin(url, '--url');
     if (!origin) throw new Error('--url is empty.');
+    if (origin === DEFAULT_HOSTED_ORIGIN && (await desktopOnMachine(deps))) {
+      throw new Error(
+        `This key is for ${new URL(origin).hostname}, but the Agent Relay desktop app on this machine only ` +
+          `works with ${new URL(UNBOUND_CREDENTIAL_ORIGIN).hostname}, so your agents could not join. ` +
+          `Run ${relayCommand('init --hosted')} here and share the line it prints with your team, or uninstall ` +
+          `the desktop app.`
+      );
+    }
     const workspace = await verifyWorkspace(deps, origin, key);
     const workspaceId = workspace.id;
     guardCredentialOrigin(key, url);
@@ -832,23 +873,28 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     const name = choice.name ?? defaultHostedName(deps.toolContext().projectRoot);
     const activation = await sharedActivation(deps);
     refuseActiveName(name, undefined, activation);
-    assertOriginBindingsWritable(DEFAULT_HOSTED_ORIGIN);
-    const relay = await deps.createWorkspace(name, DEFAULT_HOSTED_ORIGIN);
+    const desktop = await desktopOnMachine(deps);
+    const origin = desktop ? UNBOUND_CREDENTIAL_ORIGIN : DEFAULT_HOSTED_ORIGIN;
+    assertOriginBindingsWritable(origin);
+    const relay = await deps.createWorkspace(name, origin);
     if (!relay.workspaceKey) throw new Error('The hosted service did not return a workspace key.');
-    guardCredentialOrigin(relay.workspaceKey, DEFAULT_HOSTED_ORIGIN);
+    guardCredentialOrigin(relay.workspaceKey, origin);
     const { lines, ...saved } = saveWorkspace(name, relay.workspaceKey, activation);
     return moveRunningCore(deps, {
       ...saved,
-      workspaceId: await workspaceIdOf(deps, DEFAULT_HOSTED_ORIGIN, relay.workspaceKey),
+      workspaceId: await workspaceIdOf(deps, origin, relay.workspaceKey),
       mode: 'hosted',
-      origin: DEFAULT_HOSTED_ORIGIN,
+      origin,
       headline: `Created hosted workspace "${name}".`,
       details: [
+        ...(desktop
+          ? [`On ${new URL(origin).hostname}, the only server the desktop app here works with.`]
+          : []),
         ...(choice.name ? [] : [`Named after you and this folder; pass --name to choose another.`]),
         ...lines,
         'On another machine, run this in the project to join it and connect its agent tools ' +
           '(treat this key like a password):',
-        `  ${joinCommand(relay.workspaceKey, DEFAULT_HOSTED_ORIGIN, deps.cliVersion)}`,
+        `  ${joinCommand(relay.workspaceKey, origin, deps.cliVersion)}`,
       ],
     });
   }
@@ -887,7 +933,7 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     mode: 'local',
     origin,
     headline: `Relay is running on this machine (${origin}), workspace "${name}". No account needed.`,
-    details: [...lines, 'To work with agents on other machines later, run: relay init --hosted'],
+    details: [...lines, `To work with agents on other machines later, run: ${relayCommand('init --hosted')}`],
   };
 }
 
@@ -950,11 +996,11 @@ function agentNameFor(id: ToolId, ctx: ToolContext): string {
   return sessionBaseName({ hint: id, cwd: ctx.projectRoot });
 }
 
-const CLI_FALLBACK = [
+const cliFallback = (): string[] => [
   'Scripts and shells without MCP can use the CLI instead:',
-  '  relay agent register alice',
-  '  relay message dm send bob "hello" --as alice',
-  '  relay message inbox check --as bob',
+  `  ${relayCommand('agent register alice')}`,
+  `  ${relayCommand('message dm send bob "hello" --as alice')}`,
+  `  ${relayCommand('message inbox check --as bob')}`,
 ];
 
 /** The one thing to do next. */
@@ -978,7 +1024,7 @@ function nextStep(installed: ToolId[], scope: InstallScope, ctx: ToolContext): s
       `It joins as ${agentNameFor(first.id, ctx)}. Open a second session or tool to give it someone to talk to.`,
     ];
   }
-  return ['No agent tool was set up. Run relay init again to choose some.'];
+  return [`No agent tool was set up. Run ${relayCommand('init')} again to choose some.`];
 }
 
 function notesFor(installed: ToolId[], scope: InstallScope, ctx: ToolContext): string[] {
@@ -1484,8 +1530,8 @@ async function setupInjection(
       throw new InjectionStuckError(
         stuck.map((result) => `${findToolTarget(result.id)!.label}: ${result.message}`).join('\n') +
           '\nThese settings relay init turned on could not be turned off after the tool failed, so no ' +
-          'Relay MCP server was added for it (two routes would split its messages). Run relay init ' +
-          'again once the core answers, or relay init --uninstall.'
+          `Relay MCP server was added for it (two routes would split its messages). Run ${relayCommand('init')} ` +
+          `again once the core answers, or ${relayCommand('init --uninstall')}.`
       );
     }
     const note = await coreWorkspaceNote(deps, session.client, setup);
@@ -1559,7 +1605,7 @@ async function undoUnrecorded(
     throw new InjectionStuckError(
       `Could not save ${deliveryRecordPath()} (${cause.message}), and these settings relay init turned on ` +
         `could not be turned off again: ${failures.join('; ')}. Turn them off with ` +
-        `${probeCommand()} relay call settings.set --params '{"<setting>":false}', then run relay init again.`,
+        `${probeCommand()} relay call settings.set --params '{"<setting>":false}', then run ${relayCommand('init')} again.`,
       { cause }
     );
   }
@@ -1576,9 +1622,10 @@ function describeDelivery(result: DeliveryResult): string {
   return result.status === 'held' ? `${line}\n    ${result.message}` : line;
 }
 
-const INJECTION_SCOPE_NOTE =
+const injectionScopeNote = (): string =>
   'These are settings of your user account, so they apply in every project on this machine. ' +
-  'relay init --uninstall turns off what it turned on; relay init --stop stops a core it started.';
+  `${relayCommand('init --uninstall')} turns off what it turned on; ` +
+  `${relayCommand('init --stop')} stops a core it started.`;
 
 /**
  * Remove the MCP entry an earlier `relay init` added for tools whose messages
@@ -1612,7 +1659,7 @@ function injectionNextStep(injected: ToolId[]): string[] {
   const tools = labels.length > 1 ? `${labels.slice(0, -1).join(', ')} or ${labels.at(-1)}` : labels[0];
   return [
     `Open ${tools} in any project. Each session joins Relay on its own, and messages to it are`,
-    'typed into the running session: no inbox to check. See who is on Relay with: relay agent list',
+    `typed into the running session: no inbox to check. See who is on Relay with: ${relayCommand('agent list')}`,
   ];
 }
 
@@ -2060,7 +2107,7 @@ async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise
     deps.log(`✓ Message injection    turned off what relay init turned on (${turnedOff.join(', ')})`);
   } else if (injectionKept) {
     deps.log(
-      '! Message injection is a per-user setting and was left on. Run relay init --uninstall without ' +
+      `! Message injection is a per-user setting and was left on. Run ${relayCommand('init --uninstall')} without ` +
         '--scope project or --tools to turn it off.'
     );
   }
@@ -2149,7 +2196,7 @@ function injectionLines(plan: DeliveryPlan, ctx: ToolContext): string[] {
     ...plan.removedMcp.map((result) => describeSupersededMcp(result, ctx)),
     ...(plan.injection.workspaceNote ? [`! ${plan.injection.workspaceNote}`] : []),
     ...plan.injection.moved,
-    INJECTION_SCOPE_NOTE,
+    injectionScopeNote(),
   ];
 }
 
@@ -2205,7 +2252,7 @@ async function runPlain(deps: InitCommandDependencies, o: InitOptions): Promise<
   deps.log('Next:');
   if (plan.injected.length > 0) for (const line of injectionNextStep(plan.injected)) deps.log(`  ${line}`);
   for (const line of installed.length > 0 ? nextStep(installed, scope, ctx) : []) deps.log(`  ${line}`);
-  for (const line of CLI_FALLBACK) deps.log(`  ${line}`);
+  for (const line of cliFallback()) deps.log(`  ${line}`);
   deps.log('');
   for (const line of choicesSummary(o, setup, tools, scope)) deps.log(line);
 }
@@ -2227,7 +2274,7 @@ function choicesSummary(o: InitOptions, setup: ServerSetup, tools: ToolId[], sco
     `  Server:  ${where}`,
     `  Tools:   ${toolList}${o.tools ? '' : ' (the ones installed here; --tools to choose)'}`,
     `  Scope:   ${scope}${o.scope ? '' : ' (--scope project for this project only)'}`,
-    'To choose each step yourself, run: relay init --interactive',
+    `To choose each step yourself, run: ${relayCommand('init --interactive')}`,
   ];
 }
 
@@ -2328,8 +2375,8 @@ async function runGuided(deps: InitCommandDependencies, o: InitOptions): Promise
     tools = picked;
   }
   if (tools.length === 0) {
-    p.note(CLI_FALLBACK.join('\n'), 'No agents selected');
-    p.outro('Relay is ready. Run relay init again any time to add agents.');
+    p.note(cliFallback().join('\n'), 'No agents selected');
+    p.outro(`Relay is ready. Run ${relayCommand('init')} again any time to add agents.`);
     return;
   }
 
@@ -2359,7 +2406,7 @@ async function runGuided(deps: InitCommandDependencies, o: InitOptions): Promise
           '',
           'Messages are injected into running sessions by the Agent Relay core, which relay init',
           'starts in the background (or reuses, when the desktop app already runs one).',
-          INJECTION_SCOPE_NOTE,
+          injectionScopeNote(),
         ]
       : [
           ...tools.map((id) => {
@@ -2419,7 +2466,7 @@ async function runGuided(deps: InitCommandDependencies, o: InitOptions): Promise
     ...(plan.injected.length > 0 ? injectionNextStep(plan.injected) : []),
     ...(installed.length > 0 ? nextStep(installed, mcpScope, ctx) : []),
   ];
-  p.note([...next, '', ...CLI_FALLBACK].join('\n'), 'Next');
+  p.note([...next, '', ...cliFallback()].join('\n'), 'Next');
   const ready = plan.injected.length > 0 || installed.length > 0;
   p.outro(ready ? 'Relay is ready.' : 'Relay is running, but no agent tool was set up.');
   if (results.some((result) => result.status === 'failed'))
@@ -2449,6 +2496,7 @@ export function registerInitCommand(
   overrides: Partial<InitCommandDependencies> = {}
 ): void {
   const deps = withInitDefaults(overrides);
+  cliVersion = deps.cliVersion;
   program
     .command('init')
     .description(
@@ -2501,7 +2549,7 @@ export function registerInitCommand(
         if (o.interactive) {
           if (!deps.isInteractive()) {
             throw new Error(
-              'relay init --interactive needs a terminal; run relay init without it to use the defaults.'
+              `relay init --interactive needs a terminal; run ${relayCommand('init')} without it to use the defaults.`
             );
           }
           return runGuided(deps, o);
