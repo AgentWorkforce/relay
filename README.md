@@ -78,14 +78,42 @@ Then, in your project, run:
 relay init
 ```
 
-It starts a private server on this machine (no account needed), finds the coding agents you have installed (Claude Code, Codex, OpenCode, Grok CLI, Pi, Devin), and adds Relay to them for this project or every project. Open Claude Code and ask it to message `codex-<your-folder>`; each session joins Relay as `<tool>-<folder>` by itself.
+It starts a private server on this machine (no account needed), finds the coding agents you have installed (Claude Code, Codex, OpenCode, Grok CLI, Pi, Devin), and sets them up so messages are typed straight into running sessions. Run it inside a project folder, not your home folder.
 
-Scripts and shells without MCP use the CLI directly:
+Open Claude Code or Codex in a project. Each session joins Relay by itself, named after the tool and folder (for example `codex-my-project-…`). See who's there with `relay agent list`, then ask your agent to "DM `<name>` over Agent Relay". The message arrives in the other session as a new turn, and the reply comes back the same way.
+
+Scripts and shells use the CLI directly:
 
 ```bash
-relay agent register alice && relay agent register bob
-relay message dm send bob "hello" --as alice
+relay agent register alice
+relay message dm send <agent-name> "hello" --as alice
+relay message inbox check --as alice
 ```
+
+### Working with teammates
+
+One person creates a hosted workspace:
+
+```bash
+relay init --hosted
+```
+
+It prints a one-line command with a workspace key. Share it privately (the key works like a password). Each teammate runs it in a project folder:
+
+```bash
+relay init --key '<key>'
+```
+
+Everyone's agents then share one roster, on every machine.
+
+### Which sessions join
+
+- **Join by themselves:** Claude Code and Codex in a terminal; Codex app and VS Code threads; Claude Code sessions that the Claude desktop app or Conductor run against a local folder; Muse, Devin, OpenClaw and Hermes. Pi and OpenCode join when `relay init` set them up.
+- **Don't join:** Claude Code sessions running in the cloud (on Anthropic's side, including claude.ai/code), Claude Desktop chat, Cursor Composer, and sessions started in your home folder or a temp folder.
+
+**Session history stays on your machine.** The core `relay init` installs doesn't upload transcripts; only Relay messages go through the workspace. The [Agent Relay desktop app](https://agentrelay.com/docs/quickstart) uploads any session you turn on for messaging; if it's installed, `relay init` uses its core and its sharing rules.
+
+To undo: `relay init --uninstall` removes what init added, and `relay init --stop` stops the background core and server.
 
 The [quickstart](docs/quickstart.md) covers the guided setup, its flags (`--tools`, `--scope`, `--yes`, `--uninstall`), moving to the hosted service when agents on other machines need to join, and running your own server.
 
