@@ -539,6 +539,15 @@ interface ServerSetup {
   workspaceId?: string;
   /** Another workspace left active machine-wide, when there was one. */
   keptActive?: string;
+  /** The local workspace this run replaced as the machine-wide active one. */
+  switchedFrom?: LocalWorkspace;
+}
+
+/** A workspace on the private server `relay init` runs on this machine. */
+interface LocalWorkspace {
+  name: string;
+  key: string;
+  origin: string;
 }
 
 /** The command that makes `name` the machine-wide active workspace. */
@@ -583,20 +592,122 @@ function freeWorkspaceName(name: string, key: string): string {
 }
 
 /**
+ * The active workspace, when it is the one solo `relay init` made for its
+ * private server on this machine: on the server init runs, or saved under
+ * init's default name on a loopback origin once that server has stopped.
+ */
+function activeLocalWorkspace(): LocalWorkspace | undefined {
+  const { active, workspaces } = readWorkspaceStore();
+  const key = active ? workspaces[active]?.key : undefined;
+  if (!active || !key) return undefined;
+  const origin = boundOrigin(key);
+  if (!origin) return undefined;
+  const onInitServer = sameOrigin(readState()?.origin, origin);
+  const loopback = new URL(origin).hostname === '127.0.0.1';
+  return onInitServer || (active === 'local' && loopback) ? { name: active, key, origin } : undefined;
+}
+
+/**
+ * The running core, when relay init started it. A core with no record, or
+ * another pid, is the desktop app's or a service's; one that answers but
+ * cannot be read is treated the same way, so it is never moved.
+ */
+async function runningCores(
+  deps: InitCommandDependencies
+): Promise<{ foreign: boolean; own?: { client: CoreClient; status: CoreStatus } }> {
+  let running: Awaited<ReturnType<typeof connectTo>>;
+  try {
+    running = await connectTo(deps, deps.coreSocket());
+  } catch {
+    return { foreign: true };
+  }
+  if (!running) return { foreign: false };
+  if (readCoreState(coreStatePath())?.pid === running.status.daemon.pid) {
+    return { foreign: false, own: running };
+  }
+  running.client.close();
+  return { foreign: true };
+}
+
+/** How a saved workspace affects the machine-wide active one. */
+interface Activation {
+  activate: 'if-none' | 'always' | 'never';
+  /** The local workspace being replaced. */
+  from?: LocalWorkspace;
+  /** A core relay init did not start is running; it follows the active workspace too. */
+  foreignCore?: boolean;
+}
+
+/**
+ * Whether joining a shared workspace moves this machine to it. A solo
+ * `relay init` leaves its throwaway `local` workspace active, and the core
+ * serves the active workspace, so a person who then joins a team must leave it
+ * or their agents stay invisible to teammates. Any other saved workspace stays
+ * (something else relies on it), and so does everything while a core relay init
+ * did not start is running: a desktop core follows the active workspace as well.
+ */
+async function sharedActivation(deps: InitCommandDependencies): Promise<Activation> {
+  const { active, workspaces } = readWorkspaceStore();
+  const from = activeLocalWorkspace();
+  if (active && workspaces[active] && !from) return { activate: 'if-none' };
+  const { foreign, own } = await runningCores(deps);
+  own?.client.close();
+  return foreign ? { activate: 'never', foreignCore: true } : { activate: 'always', from };
+}
+
+/**
+ * Refuse a save that would swap the key under the active workspace's name when
+ * this run must not move the machine: everything following the active
+ * workspace would land on the new one.
+ */
+function refuseActiveName(name: string, key: string | undefined, activation: Activation): void {
+  if (activation.activate === 'always') return;
+  const { active, workspaces } = readWorkspaceStore();
+  if (active !== name || !workspaces[name] || workspaces[name]?.key === key) return;
+  throw new Error(
+    `Workspace "${name}" is active on this machine and relay init will not replace it. ` +
+      'Pass --name with another name.'
+  );
+}
+
+/**
  * Save the workspace and bind it to this project. It becomes the machine-wide
- * active workspace only when no other one is: a machine already serving a
- * workspace (a fleet node, other projects) must not be moved by setting up one
- * project.
- * @returns The other workspace left active, and the line explaining it.
+ * active workspace as `activation` says; by default only when no other one is:
+ * a machine already serving a workspace (a fleet node, other projects) must not
+ * be moved by setting up one project.
+ * @returns The other workspace left active, and the lines explaining what happened.
  */
 function saveWorkspace(
   name: string,
-  workspaceKey: string
-): Pick<ServerSetup, 'workspace' | 'keptActive'> & {
+  workspaceKey: string,
+  activation: Activation = { activate: 'if-none' }
+): Pick<ServerSetup, 'workspace' | 'keptActive' | 'switchedFrom'> & {
   lines: string[];
 } {
-  const { keptActiveWorkspace } = persistWorkspaceSession({ name, workspaceKey, activate: 'if-none' });
-  if (!keptActiveWorkspace) return { workspace: name, lines: [] };
+  const { keptActiveWorkspace } = persistWorkspaceSession({
+    name,
+    workspaceKey,
+    activate: activation.activate,
+  });
+  if (activation.foreignCore) {
+    const kept = keptActiveWorkspace ? `"${keptActiveWorkspace}" stays active machine-wide and ` : '';
+    return {
+      workspace: name,
+      ...(keptActiveWorkspace ? { keptActive: keptActiveWorkspace } : {}),
+      lines: [
+        `This project now uses workspace "${name}"; ${kept}the Agent Relay core running here (the desktop ` +
+          `app's or a service's) was left alone. To make "${name}" the default everywhere, run: ${switchCommand(name)}`,
+      ],
+    };
+  }
+  if (!keptActiveWorkspace) {
+    const from = activation.from?.key === workspaceKey ? undefined : activation.from;
+    return {
+      workspace: name,
+      ...(from ? { switchedFrom: from } : {}),
+      lines: activation.activate === 'always' ? [`Switched this machine to workspace "${name}"`] : [],
+    };
+  }
   return {
     workspace: name,
     keptActive: keptActiveWorkspace,
@@ -683,37 +794,41 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
           (hosted ? defaultHostedName(deps.toolContext().projectRoot) : new URL(origin).hostname),
         key
       );
-    const { lines, ...saved } = saveWorkspace(name, key);
+    const activation = await sharedActivation(deps);
+    refuseActiveName(name, key, activation);
+    const { lines, ...saved } = saveWorkspace(name, key, activation);
     // A teammate joining a hosted workspace by key: the hosted service, not
     // a server of their own. It stays an `own` setup: init did not create
     // the workspace, so its name never stands in for a workspace id when
     // checking which workspace the core serves (`sameWorkspace`).
     if (hosted) {
-      return {
+      return moveRunningCore(deps, {
         ...saved,
         workspaceId,
         mode: 'own',
         origin,
         headline: `Joined hosted workspace "${name}" (${origin}).`,
         details: ['Your key is only ever sent to the hosted service.', ...lines],
-      };
+      });
     }
-    return {
+    return moveRunningCore(deps, {
       ...saved,
       workspaceId,
       mode: 'own',
       origin,
       headline: `Connected to your server at ${origin} as workspace "${name}".`,
       details: ['Your key is only ever sent to this server.', ...lines],
-    };
+    });
   }
 
   if (choice.mode === 'hosted') {
     const name = choice.name ?? defaultHostedName(deps.toolContext().projectRoot);
+    const activation = await sharedActivation(deps);
+    refuseActiveName(name, undefined, activation);
     const relay = await deps.createWorkspace(name, HOSTED_ORIGIN);
     if (!relay.workspaceKey) throw new Error('The hosted service did not return a workspace key.');
-    const { lines, ...saved } = saveWorkspace(name, relay.workspaceKey);
-    return {
+    const { lines, ...saved } = saveWorkspace(name, relay.workspaceKey, activation);
+    return moveRunningCore(deps, {
       ...saved,
       workspaceId: await workspaceIdOf(deps, HOSTED_ORIGIN, relay.workspaceKey),
       mode: 'hosted',
@@ -726,7 +841,7 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
           '(treat this key like a password):',
         `  ${joinCommand(relay.workspaceKey, deps.cliVersion)}`,
       ],
-    };
+    });
   }
 
   const origin = await ensureLocalServer(deps, choice.port);
@@ -1052,6 +1167,20 @@ function sameWorkspace(workspace: CoreStatus['workspace'], setup: ServerSetup): 
   return !workspace.workspace_name || workspace.workspace_name === setup.workspace;
 }
 
+/** Have the core look for its workspace now, instead of at its next 30-second pass. */
+async function refreshCoreWorkspace(
+  deps: InitCommandDependencies,
+  client: CoreClient
+): Promise<CoreStatus['workspace']> {
+  let workspace = await client.call<CoreStatus['workspace']>('workspace.refresh');
+  // Verifying a newly found key is quick but asynchronous.
+  for (let i = 0; i < 20 && workspace.state === 'found' && workspace.verification === 'pending'; i += 1) {
+    await deps.sleep(500);
+    workspace = (await client.call<CoreStatus>('status.get')).workspace;
+  }
+  return workspace;
+}
+
 /**
  * The core serves one workspace per machine (the machine-wide active one,
  * unless its environment names another). Say so when that is not this
@@ -1065,12 +1194,7 @@ async function coreWorkspaceNote(
 ): Promise<string | undefined> {
   let workspace: CoreStatus['workspace'];
   try {
-    workspace = await client.call<CoreStatus['workspace']>('workspace.refresh');
-    // Verifying a newly found key is quick but asynchronous.
-    for (let i = 0; i < 20 && workspace.state === 'found' && workspace.verification === 'pending'; i += 1) {
-      await deps.sleep(500);
-      workspace = (await client.call<CoreStatus>('status.get')).workspace;
-    }
+    workspace = await refreshCoreWorkspace(deps, client);
   } catch {
     return undefined;
   }
@@ -1096,10 +1220,157 @@ async function coreWorkspaceNote(
   );
 }
 
+/** The part of the core's `agents.list` that moving sessions reads. */
+interface CoreAgent {
+  name: string;
+  alias?: string;
+  address: string;
+  target: { kind: string; id: string };
+  reply_with_final_answer?: boolean | null;
+  webhook?: unknown;
+  integrations?: unknown[];
+  spawn?: unknown;
+}
+
+function sessionKey(target: CoreAgent['target']): string {
+  return `${target.kind}:${target.id}`;
+}
+
+/**
+ * Whether `agent` is the one the local server holds in the workspace `from`;
+ * undefined when it cannot be told. The core lists every saved registration
+ * with no workspace, and another workspace can use the same name, so the agent
+ * id in its address decides.
+ */
+async function onLocalWorkspace(
+  deps: InitCommandDependencies,
+  from: LocalWorkspace,
+  agent: CoreAgent
+): Promise<boolean | undefined> {
+  try {
+    const response = await deps.fetch(new URL(`/v1/agents/${encodeURIComponent(agent.name)}`, from.origin), {
+      headers: { authorization: `Bearer ${from.key}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (response.status === 404) return false;
+    if (!response.ok) return undefined;
+    const body = (await response.json()) as { data?: { id?: unknown } } | null;
+    const id = body?.data?.id;
+    return typeof id === 'string' && id ? agent.address.endsWith(`-${id}`) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** State a new registration would not carry over, so the agent stays where it is. */
+function keepsLocalState(agent: CoreAgent): boolean {
+  return (
+    Boolean(agent.alias || agent.webhook || agent.integrations?.length || agent.spawn) ||
+    (agent.reply_with_final_answer ?? null) !== null
+  );
+}
+
+/**
+ * Take one session off the local workspace and put it on the one the core
+ * serves now, under the same name when that is free there. A session keeps
+ * its registration in the workspace it joined (the core's store holds that
+ * workspace's key), so neither a refresh nor a core restart moves it. The core
+ * allows one registration per session, so the old one has to go first.
+ * @param onLost - Called when the session left the old workspace but did not join the new one
+ * @returns The name it has now
+ */
+async function moveSession(client: CoreClient, agent: CoreAgent, onLost: () => void): Promise<string> {
+  await client.call('agents.unregister', { name: agent.name });
+  try {
+    const { name } = await client
+      .call<{ name: string }>('agents.register', { target: agent.target, name: agent.name })
+      .catch(() => client.call<{ name: string }>('agents.register', { target: agent.target }));
+    return name;
+  } catch (error) {
+    onLost();
+    throw error;
+  }
+}
+
+/**
+ * After a switch, have the core serve the new workspace now and bring the
+ * running sessions on the local workspace along. Sessions registered elsewhere
+ * are not this switch's to move, and one that ended could not register again.
+ * @returns What happened, and what to do about what did not, for the person to read.
+ */
+async function moveCoreToWorkspace(
+  deps: InitCommandDependencies,
+  client: CoreClient,
+  setup: ServerSetup
+): Promise<string[]> {
+  const from = setup.switchedFrom;
+  if (!from) return [];
+  const newSession = `Start a new agent session to join "${setup.workspace}".`;
+  try {
+    const note = await coreWorkspaceNote(deps, client, setup);
+    if (note) return [note];
+    // Moving removes the old registration, so the core must be on the new
+    // workspace and its server must answer first. A refresh that failed leaves
+    // no note, so this reads what the core serves itself.
+    const { workspace } = await client.call<CoreStatus>('status.get');
+    if (workspace.verification !== 'verified' || sameWorkspace(workspace, setup) !== true) {
+      return [`The Agent Relay core has not verified "${setup.workspace}" yet. ${newSession}`];
+    }
+    const { agents } = await client.call<{ agents: CoreAgent[] }>('agents.list');
+    const { sessions } = await client.call<{ sessions: { target: CoreAgent['target']; live?: boolean }[] }>(
+      'sessions.list'
+    );
+    const live = new Set(sessions.filter((row) => row.live).map((row) => sessionKey(row.target)));
+    const moved: string[] = [];
+    const stayed: string[] = [];
+    const lost: string[] = [];
+    for (const agent of agents) {
+      const local = await onLocalWorkspace(deps, from, agent);
+      if (local === false) continue;
+      if (local === undefined || keepsLocalState(agent) || !live.has(sessionKey(agent.target))) {
+        stayed.push(agent.name);
+        continue;
+      }
+      try {
+        moved.push(await moveSession(client, agent, () => lost.push(agent.name)));
+      } catch {
+        if (!lost.includes(agent.name)) stayed.push(agent.name);
+      }
+    }
+    return [
+      ...(moved.length > 0 ? [`Moved running sessions to "${setup.workspace}": ${moved.join(', ')}.`] : []),
+      ...(stayed.length > 0
+        ? [`These sessions stay on "${from.name}": ${stayed.join(', ')}. ${newSession}`]
+        : []),
+      ...(lost.length > 0
+        ? [`These sessions could not join "${setup.workspace}": ${lost.join(', ')}. ${newSession}`]
+        : []),
+    ];
+  } catch (error) {
+    return [
+      `The Agent Relay core could not move running sessions (${(error as Error).message}). ${newSession}`,
+    ];
+  }
+}
+
+/** Bring the core relay init started along after a switch; nothing to do when none runs. */
+async function moveRunningCore(deps: InitCommandDependencies, setup: ServerSetup): Promise<ServerSetup> {
+  if (!setup.switchedFrom) return setup;
+  const { own } = await runningCores(deps);
+  if (!own) return setup;
+  try {
+    return { ...setup, details: [...setup.details, ...(await moveCoreToWorkspace(deps, own.client, setup))] };
+  } finally {
+    own.client.close();
+  }
+}
+
 interface InjectionSetup {
   core: string;
   results: DeliveryResult[];
   workspaceNote?: string;
+  /** What moving sessions to a workspace switched to meanwhile did, for a core this run started. */
+  moved: string[];
 }
 
 /**
@@ -1179,8 +1450,12 @@ async function setupInjection(
           'again once the core answers, or relay init --uninstall.'
       );
     }
-    const workspaceNote = await coreWorkspaceNote(deps, session.client, setup);
-    return { core: describeCore(session), results, workspaceNote };
+    const note = await coreWorkspaceNote(deps, session.client, setup);
+    // A core this run started kept the registrations of the one before it.
+    const moved = session.origin === 'started' ? await moveCoreToWorkspace(deps, session.client, setup) : [];
+    // Moving reports the same note when the core stayed on another workspace.
+    const workspaceNote = note && (moved.includes(note) || setup.details.includes(note)) ? undefined : note;
+    return { core: describeCore(session), results, workspaceNote, moved };
   } catch (error) {
     if (error instanceof InjectionStuckError) throw error;
     return { reason: `the Agent Relay core could not be set up (${(error as Error).message})` };
@@ -1835,6 +2110,7 @@ function injectionLines(plan: DeliveryPlan, ctx: ToolContext): string[] {
     ...plan.injection.results.map(describeDelivery),
     ...plan.removedMcp.map((result) => describeSupersededMcp(result, ctx)),
     ...(plan.injection.workspaceNote ? [`! ${plan.injection.workspaceNote}`] : []),
+    ...plan.injection.moved,
     INJECTION_SCOPE_NOTE,
   ];
 }
