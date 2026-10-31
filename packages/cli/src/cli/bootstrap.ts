@@ -419,7 +419,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerStatusCommand(program);
   registerSetupCommands(program);
   registerCloudCommands(program);
-  registerInitCommand(program);
+  registerInitCommand(program, { cliVersion: VERSION });
   registerWorkspaceCommands(program);
   registerObserverCommands(program);
   registerAgentCommands(program);

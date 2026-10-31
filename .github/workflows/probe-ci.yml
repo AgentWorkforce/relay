@@ -1,0 +1,192 @@
+name: Probe CI
+
+# The relay core ("probe", crates/probe): its own Cargo workspace and lockfile,
+# so it builds and tests independently of the broker workspace at the root.
+
+on:
+  pull_request:
+    paths:
+      - 'crates/probe/**'
+      - '.github/workflows/probe-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/probe/**'
+      - '.github/workflows/probe-ci.yml'
+  workflow_dispatch:
+
+# A new push to a PR replaces its earlier runs; every other run (main pushes,
+# manual runs) gets its own per-SHA group so it is never cancelled or dropped.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Git fetches the relayhistory git dependencies.
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+  RUST_BACKTRACE: '1'
+  AGENT_RELAY_TELEMETRY_DISABLED: 1
+
+defaults:
+  run:
+    working-directory: crates/probe
+
+jobs:
+  public-source:
+    name: Public source check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check nothing internal is in the public source
+        run: bash scripts/check-open-source.sh
+
+  contract:
+    name: Bridge contract drift
+    runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: crates/probe
+          cache-bin: false
+      # The Swift contract types the desktop apps consume are generated from
+      # the Rust registry; a stale checked-in contract/CoreContract.swift
+      # fails here.
+      - name: Regenerate the contract
+        run: scripts/generate-contract.sh
+      - name: Fail on drift
+        run: git diff --exit-code -- contract/CoreContract.swift
+
+  linux:
+    name: Linux x64 build + test
+    # GitHub-hosted: the suite spawns many processes and starved the smaller
+    # self-hosted runner until it dropped off.
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: crates/probe
+          cache-bin: false
+      - name: Build
+        run: cargo build --locked
+      # Tests read and write under HOME; give them an empty one so a runner's
+      # own agent configuration (or a Cloud sign-in) never leaks in.
+      - name: Test
+        run: |
+          # Keep the toolchain where it was installed before hiding HOME.
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+          export HOME="$RUNNER_TEMP/probe-home"
+          mkdir -p "$HOME"
+          cargo test --locked -- --test-threads=4
+
+  core-only:
+    name: Linux x64 core without history build + test
+    # The build relay ships: the messaging runtime alone, with no
+    # `ai-hist`/relayhistory dependency (see docs/probe-move.md).
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: crates/probe
+          key: core-only
+          cache-bin: false
+      - name: No relayhistory in the dependency tree
+        run: |
+          tree="$(cargo tree --locked --no-default-features --features production-binaries -e normal,build)"
+          if grep -qE '(^|[^a-z-])(ai-hist|history-provider-sources) v' <<<"$tree"; then
+            echo "::error::The core without the history feature depends on relayhistory."
+            exit 1
+          fi
+      - name: Build
+        run: cargo build --locked --no-default-features --features production-binaries
+      - name: Contract matches the history build
+        run: |
+          cargo run --quiet --locked --no-default-features --features production-binaries \
+            --bin relay-contract-codegen -- --out "$RUNNER_TEMP/CoreContract.swift"
+          diff -u contract/CoreContract.swift "$RUNNER_TEMP/CoreContract.swift"
+      - name: Test
+        run: |
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+          export HOME="$RUNNER_TEMP/probe-home"
+          mkdir -p "$HOME"
+          cargo test --locked --no-default-features --features production-binaries -- --test-threads=4
+
+  macos:
+    name: macOS arm64 build + test
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: crates/probe
+          cache-bin: false
+      - name: Build
+        run: cargo build --locked
+      # The core relay ships, without session history (see core-only).
+      - name: Build without history
+        run: cargo build --locked --no-default-features --features production-binaries
+      - name: Test
+        run: |
+          # Keep the toolchain where it was installed before hiding HOME.
+          export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+          export HOME="$RUNNER_TEMP/probe-home"
+          mkdir -p "$HOME"
+          cargo test --locked -- --test-threads=4
+
+  windows:
+    name: Windows x64 build
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Allow long paths
+        shell: pwsh
+        working-directory: .
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.longpaths true
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: crates/probe
+          cache-bin: false
+      - name: Build
+        shell: bash
+        env:
+          # A short cargo home for sources: RelayHistory's fixtures hold paths
+          # close to Windows' 260-character limit.
+          CARGO_HOME: C:\ch
+        run: cargo build --locked
+      # The core relay ships, without session history (see core-only).
+      - name: Build without history
+        shell: bash
+        env:
+          CARGO_HOME: C:\ch
+        run: cargo build --locked --no-default-features --features production-binaries

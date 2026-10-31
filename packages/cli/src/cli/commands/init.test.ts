@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,9 +9,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { CANCELLED, type InitPrompter } from '../lib/init-prompts.js';
 import { boundOrigin } from '../lib/relaycast-origin-binding.js';
-import { readWorkspaceStore } from '../lib/workspace-store.js';
+import { resolveWorkspaceTransport, type SdkClientOptions } from '../lib/sdk-client.js';
+import { readWorkspaceStore, writeWorkspaceStore } from '../lib/workspace-store.js';
+import { readProjectWorkspaceKey } from '../lib/project-workspace-key.js';
+import { registerAgentCommands } from './agent.js';
 import { DownloadHttpError, engineAssetName } from '../lib/relaycast-engine-install.js';
 import { LOCAL_ENGINE_VERSION, registerInitCommand, type InitCommandDependencies } from './init.js';
+import { PROBE_VERSION, type CoreClient } from '../lib/probe-core.js';
+import { getProjectPaths } from '@agent-relay/config';
 
 let home: string;
 let project: string;
@@ -32,6 +38,9 @@ beforeEach(() => {
   vi.stubEnv('AGENT_RELAY_PROJECT', project);
   vi.stubEnv('RELAY_BASE_URL', '');
   vi.stubEnv('RELAY_WORKSPACE_KEY', '');
+  vi.stubEnv('AGENT_RELAY_PROBE_PATH', '');
+  // Never reach a real Agent Relay core on the machine running the tests.
+  vi.stubEnv('AGENT_RELAY_CORE_SOCKET', path.join(home, 'no-core.sock'));
 });
 
 afterEach(() => {
@@ -83,12 +92,23 @@ function setup(overrides: Partial<InitCommandDependencies> = {}) {
       args: ['mcp'],
       reason: 'the test launcher',
     }),
+    warmLaunch: vi.fn(),
     // Offline by default: no test reaches GitHub, and the npm path is the fallback.
     downloadEngine: vi.fn(async () => {
       throw new Error('offline');
     }),
     engineVersion: vi.fn(() => undefined),
     enginePlatform: () => ({ platform: 'linux', arch: 'x64', musl: false }),
+    // No core runs and none can be downloaded unless a test says so: the MCP route.
+    coreSocket: () => path.join(home, 'no-core.sock'),
+    connectCore: vi.fn(async () => undefined),
+    startCore: vi.fn(() => {
+      throw new Error('no core in this test');
+    }),
+    downloadProbe: vi.fn(async () => {
+      throw new Error('offline');
+    }),
+    probeVersion: vi.fn(() => undefined),
     ...overrides,
   };
   const program = new Command().exitOverride();
@@ -222,6 +242,158 @@ describe('relay init', () => {
   });
 });
 
+describe('relay init and the machine-wide active workspace', () => {
+  const HOSTED = { active: 'ghsub-live', workspaces: { 'ghsub-live': { key: 'rk_live_fleet' } } };
+  const projectKey = () => readProjectWorkspaceKey(getProjectPaths().dataDir);
+  const keptLine =
+    /This project now uses workspace "local"; "ghsub-live" stays active machine-wide\. To make "local" the default everywhere, run: relay workspace switch local/;
+
+  it('makes the new workspace active on a machine with none', async () => {
+    const { run, logs } = setup();
+    await run('--tools', 'none');
+    const store = readWorkspaceStore();
+    expect(store.active).toBe('local');
+    expect(projectKey()).toBe(store.workspaces.local?.key);
+    expect(logs.join('\n')).not.toContain('stays active');
+  });
+
+  it('keeps a different active workspace, binds this project to the new one, and says so', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run, logs } = setup();
+    await run('--tools', 'none');
+    const store = readWorkspaceStore();
+    expect(store.active).toBe('ghsub-live');
+    expect(store.workspaces['ghsub-live']?.key).toBe('rk_live_fleet');
+    expect(store.workspaces.local?.key).toBe('rk_live_local_local');
+    expect(projectKey()).toBe('rk_live_local_local');
+    expect(logs.join('\n')).toMatch(keptLine);
+  });
+
+  it('stays the same on re-run', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run, logs, createWorkspace } = setup();
+    await run('--tools', 'none');
+    const before = readWorkspaceStore();
+    logs.length = 0;
+    await run('--tools', 'none');
+    expect(createWorkspace).toHaveBeenCalledTimes(1);
+    expect(readWorkspaceStore()).toEqual(before);
+    expect(projectKey()).toBe('rk_live_local_local');
+    expect(logs.join('\n')).toMatch(keptLine);
+  });
+
+  it('re-selecting the active workspace keeps it active without a note', async () => {
+    const { run, logs } = setup();
+    await run('--tools', 'none');
+    await run('--tools', 'none');
+    expect(readWorkspaceStore().active).toBe('local');
+    expect(logs.join('\n')).not.toContain('stays active');
+  });
+
+  it('keeps it for --hosted', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run, logs } = setup();
+    await run('--hosted', '--name', 'team', '--tools', 'none');
+    expect(readWorkspaceStore().active).toBe('ghsub-live');
+    expect(readWorkspaceStore().workspaces.team?.key).toBe('rk_live_team_remote');
+    expect(projectKey()).toBe('rk_live_team_remote');
+    expect(logs.join('\n')).toContain('"ghsub-live" stays active machine-wide');
+    expect(logs.join('\n')).toContain('relay workspace switch team');
+  });
+
+  it('keeps it for --url/--key', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run, logs } = setup();
+    await run(
+      '--url',
+      'https://relay.corp.test',
+      '--key',
+      'rk_live_corp',
+      '--name',
+      'corp',
+      '--tools',
+      'none'
+    );
+    expect(readWorkspaceStore().active).toBe('ghsub-live');
+    expect(projectKey()).toBe('rk_live_corp');
+    expect(logs.join('\n')).toContain('relay workspace switch corp');
+  });
+
+  it('quotes a workspace name the shell would split in the switch command', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run, logs } = setup();
+    await run('--hosted', '--name', "my team's", '--tools', 'none');
+    expect(readWorkspaceStore().workspaces["my team's"]?.key).toBeDefined();
+    expect(logs.join('\n')).toContain(`run: relay workspace switch 'my team'\\''s'`);
+  });
+
+  it('says which workspace globally set up agent tools use outside this project', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run, logs } = setup();
+    await run('--tools', 'claude', '--scope', 'global');
+    expect(logs.join('\n')).toContain(
+      'In projects without their own workspace, globally set up agent tools use the active workspace "ghsub-live". ' +
+        'To make "local" the machine-wide fallback, run: relay workspace switch local'
+    );
+  });
+
+  it('adds no global-scope note at project scope or when the new workspace is active', async () => {
+    const fresh = setup();
+    await fresh.run('--tools', 'claude', '--scope', 'global');
+    expect(fresh.logs.join('\n')).not.toContain('globally set up agent tools');
+
+    writeWorkspaceStore({
+      ...HOSTED,
+      workspaces: { ...HOSTED.workspaces, ...readWorkspaceStore().workspaces },
+    });
+    const project = setup();
+    await project.run('--tools', 'claude', '--scope', 'project');
+    expect(project.logs.join('\n')).not.toContain('globally set up agent tools');
+  });
+
+  it('keeps it in the guided flow', async () => {
+    writeWorkspaceStore(HOSTED);
+    const script = scriptedPrompter(['local', []]);
+    const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
+    await run();
+    expect(readWorkspaceStore().active).toBe('ghsub-live');
+    expect(projectKey()).toBe('rk_live_local_local');
+    expect(script.shown.join('\n')).toMatch(keptLine);
+  });
+
+  it('then `relay agent register` in this project uses the new local workspace', async () => {
+    writeWorkspaceStore(HOSTED);
+    const { run } = setup();
+    await run('--tools', 'none');
+
+    const transports: ReturnType<typeof resolveWorkspaceTransport>[] = [];
+    const register = vi.fn(async ({ name }: { name: string }) => ({
+      id: 'a_1',
+      name,
+      token: 'at_live_alice',
+    }));
+    const program = new Command().exitOverride();
+    registerAgentCommands(program, {
+      createWorkspaceRelay: ((options: SdkClientOptions) => {
+        transports.push(resolveWorkspaceTransport(options));
+        return { workspace: { register } };
+      }) as never,
+      log: () => undefined,
+      error: () => undefined,
+      exit: ((code: number) => {
+        throw new ExitSignal(code);
+      }) as never,
+    });
+    await program.parseAsync(['agent', 'register', 'alice'], { from: 'user' });
+
+    expect(register).toHaveBeenCalledTimes(1);
+    expect(transports).toEqual([
+      { workspaceKey: 'rk_live_local_local', baseUrl: 'http://127.0.0.1:8787', source: 'project' },
+    ]);
+    expect(readWorkspaceStore().active).toBe('ghsub-live');
+  });
+});
+
 /** A prompter that answers from a script and records what was shown. */
 function scriptedPrompter(answers: unknown[]) {
   const shown: string[] = [];
@@ -279,7 +451,81 @@ describe('relay init agent tools (non-interactive)', () => {
     const folder = path.basename(project).toLowerCase();
     expect(output).toContain(`"Send a message to codex-${folder} saying hello"`);
     expect(output).toContain('relay message dm send bob "hello" --as alice');
-    expect(output).toContain('trust this project');
+    // Codex reads the project file only once the project itself is trusted;
+    // --yes never trusts it on the person's behalf.
+    expect(output).toContain('Codex reads .codex/config.toml only in projects it trusts');
+    expect(output).toContain(
+      `[projects.${JSON.stringify(fs.realpathSync(project))}]\n    trust_level = "trusted"`
+    );
+    expect(fs.existsSync(path.join(toolHome, '.codex', 'config.toml'))).toBe(false);
+  });
+
+  it('says nothing about Codex trust when Codex already trusts the project', async () => {
+    fs.mkdirSync(path.join(toolHome, '.codex'));
+    fs.writeFileSync(
+      path.join(toolHome, '.codex', 'config.toml'),
+      `[projects.${JSON.stringify(fs.realpathSync(project))}]\ntrust_level = "trusted"\n`
+    );
+    const { run, logs } = setup();
+    await run('--tools', 'codex');
+    expect(logs.join('\n')).not.toContain('only in projects it trusts');
+  });
+
+  it('resolves the launch for the chosen scope and warms an npx launch before writing it', async () => {
+    const resolveLaunch = vi.fn((_ctx: unknown, scope: string) => ({
+      command: 'npx',
+      args: ['-y', `agent-relay@15.0.0`, 'mcp'],
+      reason: scope,
+    }));
+    const warmLaunch = vi.fn();
+    const { run } = setup({ resolveLaunch, warmLaunch });
+    await run('--tools', 'claude', '--scope', 'project');
+    expect(resolveLaunch).toHaveBeenCalledWith(expect.anything(), 'project');
+    expect(warmLaunch).toHaveBeenCalledWith(expect.objectContaining({ command: 'npx' }));
+    expect(mcpJson().mcpServers['agent-relay']).toMatchObject({
+      command: 'npx',
+      args: ['-y', 'agent-relay@15.0.0', 'mcp'],
+    });
+  });
+
+  it('replaces an entry it wrote with an npx cache path on re-run', async () => {
+    const npxCache = '/home/me/.npm/_npx/88f578dfe12e5edc/node_modules/.bin/agent-relay';
+    const first = setup({ resolveLaunch: () => ({ command: npxCache, args: ['mcp'], reason: 'old' }) });
+    await first.run('--tools', 'claude,codex');
+    const { run, logs } = setup({
+      resolveLaunch: () => ({ command: 'agent-relay', args: ['mcp'], reason: 'portable' }),
+    });
+    await run('--tools', 'claude,codex');
+    expect(logs.join('\n')).toMatch(/Claude Code\s+updated/);
+    expect(mcpJson().mcpServers['agent-relay'].command).toBe('agent-relay');
+    const codex = fs.readFileSync(path.join(project, '.codex', 'config.toml'), 'utf8');
+    expect(codex).toContain('command = "agent-relay"');
+    expect(codex).not.toContain('_npx');
+  });
+
+  it('keeps the workspace key out of git status in a git project', async () => {
+    // A git hook or shell may point git elsewhere; aim it at the test project only.
+    const gitEnv = { ...process.env };
+    for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete gitEnv[key];
+    try {
+      execFileSync('git', ['init', '-q', project], { env: gitEnv });
+    } catch {
+      return; // git is not installed here.
+    }
+    const { run } = setup();
+    await run('--tools', 'claude');
+    expect(fs.existsSync(path.join(project, '.agentworkforce', 'relay', 'workspace-key.json'))).toBe(true);
+    expect(fs.readFileSync(path.join(project, '.git', 'info', 'exclude'), 'utf8')).toContain(
+      '/.agentworkforce/relay/'
+    );
+    const status = execFileSync('git', ['-C', project, 'status', '--porcelain', '--untracked-files=all'], {
+      env: gitEnv,
+      encoding: 'utf8',
+    });
+    expect(status).not.toContain('.agentworkforce');
+    expect(status).toContain('.mcp.json');
+    // The project's own .gitignore is never touched.
+    expect(fs.existsSync(path.join(project, '.gitignore'))).toBe(false);
   });
 
   it('says so when no tool is installed, and still prints the CLI fallback', async () => {
@@ -393,9 +639,10 @@ describe('relay init guided flow', () => {
       ['claude', 'codex'],
       'project',
       true,
+      true,
     ]);
     const { run, createWorkspace } = setup({ isInteractive: () => true, prompter: () => script.prompter });
-    await run();
+    await run('--delivery', 'mcp');
 
     expect(script.asked).toEqual([
       'Where should your agents talk?',
@@ -404,7 +651,15 @@ describe('relay init guided flow', () => {
       'Which agents should get Relay?',
       'Installation scope',
       'Proceed with installation?',
+      expect.stringMatching(
+        /^Codex reads \.codex\/config\.toml only in projects it trusts\. Trust .* in Codex now\?/
+      ),
     ]);
+    // Codex now trusts exactly this project, so it loads .codex/config.toml.
+    expect(fs.readFileSync(path.join(toolHome, '.codex', 'config.toml'), 'utf8')).toBe(
+      `[projects.${JSON.stringify(fs.realpathSync(project))}]\ntrust_level = "trusted"\n`
+    );
+    expect(script.shown.join('\n')).not.toContain('not trusted yet');
     // Detected tools are pre-checked; every supported tool is offered.
     expect(script.shown).toContain('options Claude Code*,Codex,OpenCode,Grok CLI,Pi*,Devin (local CLI)');
     expect(createWorkspace).not.toHaveBeenCalled();
@@ -415,6 +670,22 @@ describe('relay init guided flow', () => {
     expect(shown).toContain('Runs: /opt/relay/bin/agent-relay mcp');
     expect(shown).toContain(`Send a message to codex-${path.basename(project).toLowerCase()} saying hello`);
     expect(shown).toContain('outro Relay is ready.');
+  });
+
+  it('leaves Codex trust alone when the person declines, and says what is left to do', async () => {
+    const script = scriptedPrompter([true, false]);
+    const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
+    await run('--hosted', '--tools', 'codex', '--scope', 'project');
+    expect(script.asked).toHaveLength(2);
+    expect(fs.existsSync(path.join(toolHome, '.codex', 'config.toml'))).toBe(false);
+    expect(script.shown.join('\n')).toContain('not trusted yet');
+  });
+
+  it('does not ask about Codex trust at global scope', async () => {
+    const script = scriptedPrompter([true]);
+    const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
+    await run('--hosted', '--tools', 'codex', '--scope', 'global');
+    expect(script.asked).toEqual(['Proceed with installation?']);
   });
 
   it('only asks what the flags did not answer', async () => {
@@ -428,7 +699,7 @@ describe('relay init guided flow', () => {
   it('stops without installing when the person cancels', async () => {
     const script = scriptedPrompter(['local', ['claude'], 'project', CANCELLED]);
     const { run } = setup({ isInteractive: () => true, prompter: () => script.prompter });
-    await run();
+    await run('--delivery', 'mcp');
     expect(script.shown.join('\n')).toContain('cancel Setup cancelled');
     expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
   });
@@ -602,5 +873,938 @@ describe('engineAssetName', () => {
     { platform: 'freebsd', arch: 'x64', musl: false },
   ] as const)('publishes nothing for %o', (target) => {
     expect(engineAssetName('11.1.0', target)).toBeUndefined();
+  });
+});
+
+/**
+ * An in-memory Agent Relay core: its settings, its workspace, and whether it
+ * runs. `owner` is who started it: relay init (through `startCore`) or
+ * someone else (the desktop app).
+ */
+function fakeCore(
+  options: {
+    running?: boolean;
+    settings?: Record<string, unknown>;
+    workspaceName?: string;
+    workspaceId?: string;
+    /** Settings the core refuses to turn on. */
+    refuse?: string[];
+    /** Claude settings files the core's direct delivery writes, as `set_direct_delivery` does. */
+    claudeFiles?: string[];
+    /** The OpenCode plugin file `opencode_plugin` writes, and whose off marker it leaves. */
+    openCodePlugin?: string;
+    /** Pi's agent folder, where `pi_extension` writes the extension; off leaves the core's marker. */
+    piAgentDir?: string;
+  } = {}
+) {
+  const settings: Record<string, unknown> = {
+    auto_activate: false,
+    direct_delivery: false,
+    claude_session_hook: false,
+    codex_stop_hook: false,
+    opencode_plugin: false,
+    opencode_auto_activate: false,
+    grok_leader: false,
+    devin_direct_delivery: false,
+    pi_extension: false,
+    pi_auto_activate: false,
+    ...options.settings,
+  };
+  /** The person's own crossSessionInbound, which the default never overrides. */
+  let userChoseInbound = 'direct_delivery' in (options.settings ?? {});
+  let up = options.running ?? false;
+  let pid = up ? 777 : 0;
+  const calls: Array<[string, unknown]> = [];
+  const workspace = {
+    state: 'found',
+    base_url: 'http://127.0.0.1:8787',
+    workspace_name: options.workspaceName ?? 'local',
+    workspace_id: options.workspaceId ?? 'ws_1',
+    verification: 'verified',
+  };
+  const writeInbound = (value: string, only: string | undefined) => {
+    for (const file of options.claudeFiles ?? []) {
+      let current: Record<string, unknown> = {};
+      try {
+        current = JSON.parse(fs.readFileSync(file, 'utf8'));
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err;
+      }
+      if (only !== undefined && current.crossSessionInbound !== only) continue;
+      if (value === 'accept' && current.crossSessionInbound !== undefined) continue;
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ ...current, crossSessionInbound: value }));
+    }
+  };
+  /** As `OpenCodeSettings::set_plugin`: on writes the plugin, off leaves the marker. */
+  const writePlugin = (key: string, value: unknown) => {
+    const plugin = key === 'opencode_plugin' ? options.openCodePlugin : undefined;
+    const on = value === true;
+    if (!plugin) return;
+    fs.mkdirSync(path.dirname(plugin), { recursive: true });
+    fs.rmSync(on ? `${plugin}.off` : plugin, { force: true });
+    if (on) fs.writeFileSync(plugin, '// AGENT_RELAY_OPENCODE_PLUGIN=7\n');
+    else
+      fs.writeFileSync(
+        `${plugin}.off`,
+        "Agent Relay's OpenCode plugin was turned off in Agent Relay's settings.\n"
+      );
+  };
+  /** As `PiSetup::set_extension`: on writes the extension, off removes it and leaves the marker. */
+  const writePiExtension = (key: string, value: unknown) => {
+    if (key !== 'pi_extension' || !options.piAgentDir) return;
+    const file = path.join(options.piAgentDir, 'extensions', 'agent-relay.js');
+    const marker = path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off');
+    if (value === true) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, '// AGENT_RELAY_PI_EXTENSION=2\n');
+      fs.rmSync(marker, { force: true });
+      return;
+    }
+    fs.rmSync(file, { force: true });
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, "Agent Relay's Pi extension was turned off (pi_extension).\n");
+  };
+  const client: CoreClient = {
+    async call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+      calls.push([method, params]);
+      switch (method) {
+        case 'status.get':
+          return { daemon: { pid, version: PROBE_VERSION, socket: '/core.sock' }, workspace } as T;
+        case 'settings.get':
+          return { ...settings } as T;
+        case 'settings.set':
+          for (const [key, value] of Object.entries(params)) {
+            if (value === true && options.refuse?.includes(key)) throw new Error(`${key} is not available.`);
+            if (key === 'direct_delivery_default') {
+              if (!userChoseInbound) {
+                settings.direct_delivery = true;
+                writeInbound('accept', undefined);
+              }
+            } else {
+              settings[key] = value;
+              writePlugin(key, value);
+              writePiExtension(key, value);
+              if (key === 'direct_delivery') {
+                userChoseInbound = false;
+                if (value === false) writeInbound('hold', 'accept');
+              }
+            }
+          }
+          return { ...settings } as T;
+        case 'workspace.refresh':
+          return workspace as T;
+        case 'daemon.shutdown':
+          up = false;
+          return { stopping: true } as T;
+        default:
+          throw new Error(`unexpected ${method}`);
+      }
+    },
+    close: () => undefined,
+  };
+  return {
+    settings,
+    calls,
+    isUp: () => up,
+    sets: () => calls.filter(([method]) => method === 'settings.set').map(([, params]) => params),
+    deps: {
+      connectCore: vi.fn(async () => (up ? client : undefined)),
+      startCore: vi.fn(() => {
+        up = true;
+        pid = 5151;
+        return pid;
+      }),
+      // Only the core's pid is alive; the fake local server's is separate.
+      probeVersion: vi.fn(() => PROBE_VERSION),
+    } satisfies Partial<InitCommandDependencies>,
+  };
+}
+
+/** A probe binary already in the bin slot, so no download is needed. */
+function installedProbe(): string {
+  const binary = path.join(home, 'bin', 'agent-relay-probe');
+  fs.mkdirSync(path.dirname(binary), { recursive: true });
+  fs.writeFileSync(binary, '#!/bin/sh\necho agent-relay-probe\n', { mode: 0o755 });
+  return binary;
+}
+
+describe('relay init message injection', () => {
+  it('starts the core, turns on delivery for the chosen tools, and reuses it on re-run', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const { run, logs, deps } = setup(core.deps);
+    await run('--tools', 'claude,codex');
+
+    expect(core.deps.startCore).toHaveBeenCalledTimes(1);
+    expect(core.deps.startCore).toHaveBeenCalledWith(
+      expect.objectContaining({
+        binary: path.join(home, 'bin', 'agent-relay-probe'),
+        socket: deps.coreSocket?.(),
+      })
+    );
+    expect(core.sets()).toEqual([
+      { direct_delivery_default: true },
+      { claude_session_hook: true },
+      { codex_stop_hook: true },
+      { auto_activate: true },
+    ]);
+    const output = logs.join('\n');
+    expect(output).toContain(`Started the Agent Relay core (agent-relay-probe ${PROBE_VERSION}, pid 5151)`);
+    expect(output).toMatch(/Claude Code\s+injected through Claude Code's session inbox/);
+    expect(output).toMatch(/Codex\s+injected through PostToolUse and Stop hooks/);
+    expect(output).toContain('apply in every project on this machine');
+    // One identity per session: no MCP server is added for injected tools.
+    expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
+    expect(fs.existsSync(path.join(project, '.codex', 'config.toml'))).toBe(false);
+    expect(output).not.toContain('only in projects it trusts');
+    expect(output).toContain('Each session joins Relay on its own');
+    expect(JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'))).toEqual({
+      turnedOn: ['direct_delivery', 'claude_session_hook', 'codex_stop_hook', 'auto_activate'],
+      // What --uninstall tidies back to: no Claude settings file or folder yet.
+      claudeFiles: {
+        [path.join(toolHome, '.claude', 'settings.json')]: { existed: false, backup: false, dir: false },
+      },
+    });
+
+    const again = setup(core.deps);
+    await again.run('--tools', 'claude,codex');
+    expect(core.deps.startCore).toHaveBeenCalledTimes(1);
+    expect(again.logs.join('\n')).toContain('The Agent Relay core relay init started earlier is running (');
+    expect(core.sets()).toHaveLength(4);
+  });
+
+  it('attaches to a core it did not start, such as the desktop app, and never starts a second one', async () => {
+    const core = fakeCore({ running: true, settings: { auto_activate: true, codex_stop_hook: true } });
+    const { run, logs } = setup(core.deps);
+    await run('--tools', 'codex');
+    expect(core.deps.startCore).not.toHaveBeenCalled();
+    expect(core.sets()).toEqual([]);
+    expect(logs.join('\n')).toContain('Using the Agent Relay core already running on this machine');
+    // Nothing was turned on, so nothing is recorded to turn off.
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+
+    const stop = setup(core.deps);
+    await stop.run('--stop');
+    expect(core.isUp()).toBe(true);
+  });
+
+  it('stops only the core it started', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const { run } = setup(core.deps);
+    await run('--tools', 'claude');
+    const stop = setup({ ...core.deps, isAlive: vi.fn(() => false) });
+    await stop.run('--stop');
+    expect(core.isUp()).toBe(false);
+    expect(core.calls.some(([method]) => method === 'daemon.shutdown')).toBe(true);
+    expect(stop.logs.join('\n')).toContain('Stopped the Agent Relay core relay init started');
+    expect(fs.existsSync(path.join(home, 'local', 'core.json'))).toBe(false);
+  });
+
+  it('removes the MCP entry an earlier relay init added, so each session has one identity', async () => {
+    const mcp = setup();
+    await mcp.run('--tools', 'claude', '--delivery', 'mcp');
+    expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
+
+    installedProbe();
+    const { run, logs } = setup(fakeCore().deps);
+    await run('--tools', 'claude');
+    expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
+    expect(logs.join('\n')).toMatch(/Claude Code\s+removed the earlier Relay MCP entry from \.mcp\.json/);
+  });
+
+  it("keeps the person's own crossSessionInbound and says messages are held", async () => {
+    installedProbe();
+    const core = fakeCore({ settings: { direct_delivery: false } });
+    const { run, logs } = setup(core.deps);
+    await run('--tools', 'claude');
+    expect(core.settings.direct_delivery).toBe(false);
+    expect(logs.join('\n')).toContain('messages are held for your approval unless it is "accept"');
+  });
+
+  it('turns off on --uninstall exactly what it turned on, and only for the user scope', async () => {
+    installedProbe();
+    const core = fakeCore({ running: true, settings: { auto_activate: true } });
+    await setup(core.deps).run('--tools', 'claude,devin');
+
+    const projectOnly = setup(core.deps);
+    await projectOnly.run('--uninstall', '--scope', 'project');
+    expect(core.settings.devin_direct_delivery).toBe(true);
+    expect(projectOnly.logs.join('\n')).toContain('Message injection is a per-user setting and was left on');
+
+    const { run, logs } = setup(core.deps);
+    await run('--uninstall');
+    expect(core.settings).toMatchObject({
+      auto_activate: true,
+      direct_delivery: false,
+      claude_session_hook: false,
+      devin_direct_delivery: false,
+    });
+    expect(logs.join('\n')).toContain(
+      'turned off what relay init turned on (direct_delivery, claude_session_hook, devin_direct_delivery)'
+    );
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  it('removes the crossSessionInbound it added rather than leaving the hold the core writes', async () => {
+    installedProbe();
+    const claudeSettings = path.join(toolHome, '.claude', 'settings.json');
+    fs.mkdirSync(path.dirname(claudeSettings), { recursive: true });
+    fs.writeFileSync(claudeSettings, JSON.stringify({ theme: 'dark' }));
+    const core = fakeCore({ running: true, settings: { auto_activate: true, claude_session_hook: true } });
+    await setup(core.deps).run('--tools', 'claude');
+    // What the core does on direct_delivery false: Claude Code's default, hold.
+    fs.writeFileSync(claudeSettings, JSON.stringify({ theme: 'dark', crossSessionInbound: 'hold' }));
+    await setup(core.deps).run('--uninstall');
+    expect(JSON.parse(fs.readFileSync(claudeSettings, 'utf8'))).toEqual({ theme: 'dark' });
+  });
+
+  it('starts a core just to turn injection off when none runs, and stops it again', async () => {
+    installedProbe();
+    const core = fakeCore();
+    await setup(core.deps).run('--tools', 'opencode');
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--stop');
+    expect(core.isUp()).toBe(false);
+
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(core.settings.opencode_plugin).toBe(false);
+    expect(core.isUp()).toBe(false);
+  });
+
+  it('warns when the core serves a different workspace than this project', async () => {
+    installedProbe();
+    const core = fakeCore({ running: true, workspaceName: 'ghsub-live' });
+    const { run, logs } = setup(core.deps);
+    await run('--tools', 'claude');
+    expect(logs.join('\n')).toContain(
+      'serves workspace "ghsub-live" (http://127.0.0.1:8787), not "local": agents here join that workspace'
+    );
+    expect(logs.join('\n')).toContain('relay workspace switch local');
+  });
+
+  it('uses the MCP server for a tool the core cannot deliver to', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const connect = core.deps.connectCore;
+    const { run, logs } = setup({
+      ...core.deps,
+      connectCore: vi.fn(async (socket: string) => {
+        const client = await connect(socket);
+        if (!client) return undefined;
+        return {
+          ...client,
+          call: async <T>(method: string, params?: Record<string, unknown>) => {
+            if (method === 'settings.set' && params && 'grok_leader' in params) {
+              throw new Error('Grok is not installed.');
+            }
+            return client.call<T>(method, params);
+          },
+        };
+      }),
+    });
+    await expect(run('--tools', 'claude,grok')).resolves.toBeDefined();
+    const output = logs.join('\n');
+    expect(output).toMatch(/Grok CLI\s+not injected: Grok is not installed\./);
+    expect(fs.readFileSync(path.join(project, '.grok', 'config.toml'), 'utf8')).toContain('agent-relay');
+    expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
+  });
+
+  it('installs the Pi extension only for Pi, records it, and removes it on --uninstall', async () => {
+    installedProbe();
+    const core = fakeCore();
+    await setup(core.deps).run('--tools', 'codex');
+    expect(core.settings.pi_extension).toBe(false);
+    expect(core.settings.pi_auto_activate).toBe(false);
+
+    await setup(core.deps).run('--tools', 'pi');
+    // Pi sessions join on their own only with Pi's own opt-in on top of auto_activate.
+    expect(core.settings).toMatchObject({ pi_extension: true, pi_auto_activate: true, auto_activate: true });
+    expect(core.settings.opencode_auto_activate).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'))).toEqual({
+      turnedOn: ['codex_stop_hook', 'auto_activate', 'pi_extension', 'pi_auto_activate'],
+      pi: {
+        file: path.join(toolHome, '.pi', 'agent', 'extensions', 'agent-relay.js'),
+        marker: path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off'),
+        extension: false,
+        off: false,
+        dir: false,
+      },
+    });
+
+    const toMcp = setup(core.deps);
+    await toMcp.run('--tools', 'pi', '--delivery', 'mcp');
+    expect(core.settings).toMatchObject({ pi_extension: false, pi_auto_activate: false });
+    expect(core.settings.codex_stop_hook).toBe(true);
+
+    await setup(core.deps).run('--tools', 'pi');
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(core.settings).toMatchObject({
+      pi_extension: false,
+      pi_auto_activate: false,
+      codex_stop_hook: false,
+      auto_activate: false,
+    });
+  });
+
+  it('lets OpenCode sessions join on their own and turns exactly that off on --uninstall', async () => {
+    installedProbe();
+    const core = fakeCore();
+    await setup(core.deps).run('--tools', 'opencode');
+    expect(core.sets()).toEqual([
+      { opencode_plugin: true },
+      { opencode_auto_activate: true },
+      { auto_activate: true },
+    ]);
+    expect(core.settings.pi_auto_activate).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'))).toEqual({
+      turnedOn: ['opencode_plugin', 'opencode_auto_activate', 'auto_activate'],
+      openCode: {
+        file: path.join(toolHome, '.config', 'opencode', 'plugins', 'agent-relay.js'),
+        plugin: false,
+        off: false,
+        dir: false,
+      },
+    });
+
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(core.settings).toMatchObject({
+      opencode_plugin: false,
+      opencode_auto_activate: false,
+      auto_activate: false,
+    });
+    expect(core.settings.pi_auto_activate).toBe(false);
+  });
+
+  // The relay init end-to-end run on 2026-10-29: --uninstall left `{}` in
+  // ~/.claude/settings.json and plugins/agent-relay.js.off behind.
+  it('leaves the Claude and OpenCode folders as it found them on --uninstall', async () => {
+    installedProbe();
+    const claude = path.join(toolHome, '.claude');
+    fs.mkdirSync(claude);
+    fs.writeFileSync(path.join(claude, 'history.jsonl'), 'x\n');
+    const opencode = path.join(toolHome, '.config', 'opencode');
+    fs.mkdirSync(opencode, { recursive: true });
+    const plugin = path.join(opencode, 'plugins', 'agent-relay.js');
+    const core = fakeCore({ claudeFiles: [path.join(claude, 'settings.json')], openCodePlugin: plugin });
+    await setup(core.deps).run('--tools', 'claude,opencode');
+    expect(fs.existsSync(path.join(claude, 'settings.json'))).toBe(true);
+    expect(fs.existsSync(plugin)).toBe(true);
+
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(fs.readdirSync(claude)).toEqual(['history.jsonl']);
+    expect(fs.readdirSync(opencode)).toEqual([]);
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  // The relay init end-to-end Pi run on 2026-10-30: --uninstall left
+  // ~/.agentworkforce/desktop/pi-extension.off, which keeps the desktop app
+  // from installing the extension (Pi sessions off), and an empty extensions folder.
+  it("leaves Pi's folder and the core's Pi opt-out as it found them on --uninstall", async () => {
+    installedProbe();
+    const agent = path.join(toolHome, '.pi', 'agent');
+    fs.mkdirSync(agent, { recursive: true });
+    fs.writeFileSync(path.join(agent, 'auth.json'), '{}');
+    const marker = path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off');
+    const core = fakeCore({ piAgentDir: agent });
+    await setup(core.deps).run('--tools', 'pi');
+    expect(fs.existsSync(path.join(agent, 'extensions', 'agent-relay.js'))).toBe(true);
+
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(core.settings).toMatchObject({
+      pi_extension: false,
+      pi_auto_activate: false,
+      auto_activate: false,
+    });
+    expect(fs.readdirSync(agent)).toEqual(['auth.json']);
+    expect(fs.existsSync(marker)).toBe(false);
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  // Review on #2022: turning Pi off in the desktop app after init is the person's choice.
+  it('keeps a Pi opt-out marker the person left after init on --uninstall', async () => {
+    installedProbe();
+    const agent = path.join(toolHome, '.pi', 'agent');
+    fs.mkdirSync(agent, { recursive: true });
+    const marker = path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off');
+    const core = fakeCore({ piAgentDir: agent });
+    await setup(core.deps).run('--tools', 'pi');
+    // As the desktop app's Pi switch: the extension goes and the marker stays.
+    fs.rmSync(path.join(agent, 'extensions', 'agent-relay.js'));
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, 'off by me\n');
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(fs.readFileSync(marker, 'utf8')).toBe('off by me\n');
+    expect(fs.readdirSync(agent)).toEqual([]);
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  it("keeps a Pi opt-out marker that links to the person's own file on --uninstall", async () => {
+    installedProbe();
+    const agent = path.join(toolHome, '.pi', 'agent');
+    fs.mkdirSync(agent, { recursive: true });
+    const marker = path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off');
+    const core = fakeCore({ piAgentDir: agent });
+    await setup(core.deps).run('--tools', 'pi');
+    fs.rmSync(path.join(agent, 'extensions', 'agent-relay.js'));
+    const mine = path.join(toolHome, 'pi-off.txt');
+    fs.writeFileSync(mine, 'off by me\n');
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.symlinkSync(mine, marker);
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(fs.lstatSync(marker).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(mine, 'utf8')).toBe('off by me\n');
+  });
+
+  it('keeps a Pi opt-out marker that was there before init', async () => {
+    installedProbe();
+    const agent = path.join(toolHome, '.pi', 'agent');
+    fs.mkdirSync(agent, { recursive: true });
+    const marker = path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off');
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, "Agent Relay's Pi extension was turned off (pi_extension).\n");
+    const core = fakeCore({ piAgentDir: agent });
+    await setup(core.deps).run('--tools', 'pi');
+    expect(fs.existsSync(marker)).toBe(false);
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(fs.existsSync(marker)).toBe(true);
+    expect(fs.readdirSync(agent)).toEqual([]);
+  });
+
+  // Review on #2021: a tool rolled back in the same run is tidied too.
+  it('removes the Claude settings file it created when Claude is rolled back to MCP', async () => {
+    installedProbe();
+    const claude = path.join(toolHome, '.claude');
+    fs.mkdirSync(claude);
+    const core = fakeCore({
+      claudeFiles: [path.join(claude, 'settings.json')],
+      refuse: ['claude_session_hook'],
+    });
+    await setup(core.deps).run('--tools', 'claude');
+    expect(core.settings).toMatchObject({ direct_delivery: false, claude_session_hook: false });
+    expect(fs.readdirSync(claude)).toEqual([]);
+  });
+
+  it('keeps a Claude settings file and an OpenCode marker that were there before init', async () => {
+    installedProbe();
+    const claude = path.join(toolHome, '.claude');
+    fs.mkdirSync(claude);
+    const file = path.join(claude, 'settings.json');
+    const mine = '{ "model": "opus",\n  "permissions": { "allow": ["Bash(npm test *)"] } }';
+    fs.writeFileSync(file, mine);
+    const plugins = path.join(toolHome, '.config', 'opencode', 'plugins');
+    fs.mkdirSync(plugins, { recursive: true });
+    fs.writeFileSync(
+      path.join(plugins, 'agent-relay.js.off'),
+      "Agent Relay's OpenCode plugin was turned off.\n"
+    );
+    const core = fakeCore({ claudeFiles: [file], openCodePlugin: path.join(plugins, 'agent-relay.js') });
+    await setup(core.deps).run('--tools', 'claude,opencode');
+    // The core's first edit copies the person's file beside it.
+    fs.writeFileSync(`${file}.relay-desktop-backup`, mine);
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(fs.readFileSync(file, 'utf8')).toBe(mine);
+    expect(fs.existsSync(`${file}.relay-desktop-backup`)).toBe(false);
+    expect(fs.existsSync(path.join(plugins, 'agent-relay.js.off'))).toBe(true);
+  });
+
+  it('leaves a Pi or OpenCode opt-in the person turned on themselves on --uninstall', async () => {
+    installedProbe();
+    const core = fakeCore({ running: true, settings: { opencode_auto_activate: true } });
+    await setup(core.deps).run('--tools', 'opencode');
+    expect(core.sets()).toEqual([{ opencode_plugin: true }, { auto_activate: true }]);
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--uninstall');
+    expect(core.settings).toMatchObject({
+      opencode_plugin: false,
+      opencode_auto_activate: true,
+      auto_activate: false,
+    });
+  });
+
+  it('gives Pi the MCP server, with no opt-in left on, when the core refuses Pi auto-activation', async () => {
+    installedProbe();
+    const core = fakeCore({ refuse: ['pi_auto_activate'] });
+    const { run, logs } = setup(core.deps);
+    await run('--tools', 'pi');
+    expect(core.settings).toMatchObject({
+      pi_extension: false,
+      pi_auto_activate: false,
+      auto_activate: false,
+    });
+    expect(logs.join('\n')).toMatch(/Pi\s+not injected: pi_auto_activate is not available\./);
+  });
+
+  it('turns off what it enabled when its record cannot be saved, then uses the MCP server', async () => {
+    installedProbe();
+    const core = fakeCore({ running: true });
+    // A directory where the record goes: writing it fails.
+    fs.mkdirSync(path.join(home, 'local', 'core-settings.json'), { recursive: true });
+    const { run, logs } = setup(core.deps);
+    await run('--tools', 'codex');
+    expect(core.settings).toMatchObject({ codex_stop_hook: false, auto_activate: false });
+    expect(logs.join('\n')).toContain(
+      'Message injection is not available (the Agent Relay core could not be set up'
+    );
+    expect(fs.readFileSync(path.join(project, '.codex', 'config.toml'), 'utf8')).toContain('agent-relay');
+  });
+
+  it('stops without adding MCP when an unrecorded setting cannot be turned off again', async () => {
+    installedProbe();
+    const core = fakeCore({ running: true });
+    fs.mkdirSync(path.join(home, 'local', 'core-settings.json'), { recursive: true });
+    const connect = core.deps.connectCore;
+    const { run, errors } = setup({
+      ...core.deps,
+      connectCore: vi.fn(async (socket: string) => {
+        const client = await connect(socket);
+        if (!client) return undefined;
+        return {
+          ...client,
+          call: async <T>(method: string, params?: Record<string, unknown>) => {
+            if (method === 'settings.set' && params && Object.values(params).includes(false)) {
+              throw new Error('the core is busy');
+            }
+            return client.call<T>(method, params);
+          },
+        };
+      }),
+    });
+    await expect(run('--tools', 'codex')).rejects.toEqual(new ExitSignal(1));
+    expect(errors.join('\n')).toContain('could not be turned off again: codex_stop_hook: the core is busy');
+    expect(fs.existsSync(path.join(project, '.codex', 'config.toml'))).toBe(false);
+  });
+
+  it('rolls back the settings of a tool whose delivery fails, so it has only the MCP route', async () => {
+    installedProbe();
+    const claudeSettings = path.join(toolHome, '.claude', 'settings.json');
+    const core = fakeCore({ refuse: ['claude_session_hook'], claudeFiles: [claudeSettings] });
+    fs.mkdirSync(path.dirname(claudeSettings), { recursive: true });
+    fs.writeFileSync(claudeSettings, JSON.stringify({ theme: 'dark' }));
+    const { run, logs } = setup(core.deps);
+    await run('--tools', 'claude');
+    expect(core.settings).toMatchObject({
+      direct_delivery: false,
+      claude_session_hook: false,
+      auto_activate: false,
+    });
+    expect(JSON.parse(fs.readFileSync(claudeSettings, 'utf8'))).toEqual({ theme: 'dark' });
+    expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
+    expect(logs.join('\n')).toMatch(/Claude Code\s+not injected: claude_session_hook is not available\./);
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  it('turns off what it injected before adding the MCP server for --delivery mcp', async () => {
+    installedProbe();
+    const core = fakeCore({ running: true });
+    await setup(core.deps).run('--tools', 'claude,codex');
+    expect(core.settings).toMatchObject({
+      auto_activate: true,
+      claude_session_hook: true,
+      codex_stop_hook: true,
+    });
+
+    const toMcp = setup(core.deps);
+    await toMcp.run('--tools', 'claude', '--delivery', 'mcp');
+    // Claude leaves injection; Codex keeps it, and so automatic activation stays.
+    expect(core.settings).toMatchObject({
+      auto_activate: true,
+      direct_delivery: false,
+      claude_session_hook: false,
+      codex_stop_hook: true,
+    });
+    expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
+    expect(toMcp.logs.join('\n')).toContain(
+      'turned off what relay init had turned on (direct_delivery, claude_session_hook)'
+    );
+    expect(JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'))).toEqual({
+      turnedOn: ['codex_stop_hook', 'auto_activate'],
+    });
+
+    await setup(core.deps).run('--tools', 'codex', '--delivery', 'mcp');
+    expect(core.settings).toMatchObject({ auto_activate: false, codex_stop_hook: false });
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  it('adds no MCP server for --delivery mcp when injection it turned on cannot be turned off', async () => {
+    installedProbe();
+    const core = fakeCore({ running: true });
+    await setup(core.deps).run('--tools', 'claude');
+    // The core has gone and one started for the change never answers.
+    const { run, errors } = setup({
+      ...core.deps,
+      connectCore: vi.fn(async () => undefined),
+      isAlive: vi.fn(() => false),
+    });
+    await expect(run('--tools', 'claude', '--delivery', 'mcp')).rejects.toEqual(new ExitSignal(1));
+    expect(errors.join('\n')).toContain('Could not reach the Agent Relay core to turn off message injection');
+    expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
+    expect(core.settings.claude_session_hook).toBe(true);
+  });
+
+  it('never signals the pid of a recorded core that no longer answers', async () => {
+    installedProbe();
+    const core = fakeCore();
+    await setup(core.deps).run('--tools', 'opencode');
+    // The core exits and its pid is reused by an unrelated process.
+    await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--stop');
+    expect(fs.existsSync(path.join(home, 'local', 'core.json'))).toBe(false);
+    fs.writeFileSync(
+      path.join(home, 'local', 'core.json'),
+      JSON.stringify({ pid: 5151, socket: path.join(home, 'no-core.sock'), binary: '/b' })
+    );
+    const stop = vi.fn();
+    const later = setup({ ...core.deps, isAlive: vi.fn(() => true), stop });
+    await later.run('--stop');
+    expect(stop).not.toHaveBeenCalledWith(5151);
+    expect(later.logs.join('\n')).toContain('The Agent Relay core relay init started is no longer running.');
+    expect(fs.existsSync(path.join(home, 'local', 'core.json'))).toBe(false);
+  });
+
+  it('warns when the core serves another workspace on the same self-hosted server', async () => {
+    installedProbe();
+    const core = fakeCore({ running: true, workspaceId: 'rw_core' });
+    core.settings.auto_activate = true;
+    const workspaceFetch = (id: string) =>
+      vi.fn(async (input: string | URL | Request) => {
+        const url = new URL(String(input));
+        if (url.pathname === '/v1/workspace') return jsonResponse(200, { ok: true, data: { id, name: 'x' } });
+        return jsonResponse(404);
+      }) as never;
+    // The core's workspace is on http://127.0.0.1:8787, as this server is.
+    const other = setup({ ...core.deps, fetch: workspaceFetch('rw_project') });
+    await other.run(
+      '--url',
+      'http://127.0.0.1:8787',
+      '--key',
+      'rk_live_b',
+      '--name',
+      'b',
+      '--tools',
+      'codex'
+    );
+    expect(other.logs.join('\n')).toContain('serves workspace "local" (http://127.0.0.1:8787), not "b"');
+
+    const same = setup({ ...core.deps, fetch: workspaceFetch('rw_core') });
+    await same.run('--url', 'http://127.0.0.1:8787', '--key', 'rk_live_a', '--name', 'a', '--tools', 'codex');
+    expect(same.logs.join('\n')).not.toContain('agents here join that workspace');
+    expect(same.logs.join('\n')).not.toContain('Could not confirm');
+    expect(same.logs.join('\n')).not.toContain('rk_live_');
+
+    const unknown = setup({ ...core.deps, fetch: workspaceFetch('') });
+    await unknown.run(
+      '--url',
+      'http://127.0.0.1:8787',
+      '--key',
+      'rk_live_c',
+      '--name',
+      'c',
+      '--tools',
+      'codex'
+    );
+    expect(unknown.logs.join('\n')).toContain('Could not confirm that the Agent Relay core serves "c"');
+  });
+
+  it('restores crossSessionInbound on every Claude login the core changed', async () => {
+    installedProbe();
+    const own = path.join(toolHome, '.claude', 'settings.json');
+    const work = path.join(toolHome, '.claude-work', 'settings.json');
+    const chosen = path.join(toolHome, '.claude-mine', 'settings.json');
+    for (const file of [own, work, chosen]) fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(path.join(toolHome, '.claude-work', '.claude.json'), '{}');
+    fs.writeFileSync(path.join(toolHome, '.claude-mine', '.claude.json'), '{}');
+    fs.writeFileSync(own, JSON.stringify({ theme: 'dark' }));
+    fs.writeFileSync(work, JSON.stringify({}));
+    fs.writeFileSync(chosen, JSON.stringify({ crossSessionInbound: 'accept' }));
+    const core = fakeCore({
+      running: true,
+      settings: { auto_activate: true, claude_session_hook: true },
+      claudeFiles: [own, work, chosen],
+    });
+    await setup(core.deps).run('--tools', 'claude');
+    expect(JSON.parse(fs.readFileSync(work, 'utf8'))).toEqual({ crossSessionInbound: 'accept' });
+
+    await setup(core.deps).run('--uninstall');
+    expect(JSON.parse(fs.readFileSync(own, 'utf8'))).toEqual({ theme: 'dark' });
+    expect(JSON.parse(fs.readFileSync(work, 'utf8'))).toEqual({});
+    // The person's own accept was theirs: the core turns it to hold, and init puts it back.
+    expect(JSON.parse(fs.readFileSync(chosen, 'utf8'))).toEqual({ crossSessionInbound: 'accept' });
+  });
+
+  /** This login unset, another with the person's own accept, both followed by the core. */
+  function twoClaudeLogins() {
+    const own = path.join(toolHome, '.claude', 'settings.json');
+    const work = path.join(toolHome, '.claude-work', 'settings.json');
+    for (const file of [own, work]) fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(path.join(toolHome, '.claude-work', '.claude.json'), '{}');
+    fs.writeFileSync(own, JSON.stringify({ theme: 'dark' }));
+    fs.writeFileSync(work, JSON.stringify({ crossSessionInbound: 'accept' }));
+    const read = (file: string) => JSON.parse(fs.readFileSync(file, 'utf8'));
+    return { own, work, read, files: [own, work] };
+  }
+
+  it("puts back each login's own crossSessionInbound when its record cannot be saved", async () => {
+    installedProbe();
+    const logins = twoClaudeLogins();
+    const core = fakeCore({
+      running: true,
+      settings: { auto_activate: true, claude_session_hook: true },
+      claudeFiles: logins.files,
+    });
+    fs.mkdirSync(path.join(home, 'local', 'core-settings.json'), { recursive: true });
+    await setup(core.deps).run('--tools', 'claude');
+    expect(core.settings.direct_delivery).toBe(false);
+    expect(logins.read(logins.own)).toEqual({ theme: 'dark' });
+    expect(logins.read(logins.work)).toEqual({ crossSessionInbound: 'accept' });
+  });
+
+  it("puts back each login's own crossSessionInbound on a switch to MCP", async () => {
+    installedProbe();
+    const logins = twoClaudeLogins();
+    const core = fakeCore({
+      running: true,
+      settings: { auto_activate: true, claude_session_hook: true },
+      claudeFiles: logins.files,
+    });
+    await setup(core.deps).run('--tools', 'claude');
+    expect(logins.read(logins.own)).toEqual({ theme: 'dark', crossSessionInbound: 'accept' });
+    await setup(core.deps).run('--tools', 'claude', '--delivery', 'mcp');
+    expect(core.settings.direct_delivery).toBe(false);
+    expect(logins.read(logins.own)).toEqual({ theme: 'dark' });
+    expect(logins.read(logins.work)).toEqual({ crossSessionInbound: 'accept' });
+  });
+
+  it("puts back each login's own crossSessionInbound when Claude's delivery is rolled back", async () => {
+    installedProbe();
+    const logins = twoClaudeLogins();
+    const core = fakeCore({
+      running: true,
+      settings: { auto_activate: true },
+      refuse: ['claude_session_hook'],
+      claudeFiles: logins.files,
+    });
+    await setup(core.deps).run('--tools', 'claude');
+    expect(core.settings.direct_delivery).toBe(false);
+    expect(logins.read(logins.own)).toEqual({ theme: 'dark' });
+    expect(logins.read(logins.work)).toEqual({ crossSessionInbound: 'accept' });
+  });
+
+  it('stops without adding MCP when a failed tool cannot be rolled back', async () => {
+    installedProbe();
+    const core = fakeCore({
+      running: true,
+      settings: { auto_activate: true },
+      refuse: ['claude_session_hook'],
+    });
+    const connect = core.deps.connectCore;
+    const { run, errors } = setup({
+      ...core.deps,
+      connectCore: vi.fn(async (socket: string) => {
+        const client = await connect(socket);
+        if (!client) return undefined;
+        return {
+          ...client,
+          call: async <T>(method: string, params?: Record<string, unknown>) => {
+            if (method === 'settings.set' && params && Object.values(params).includes(false)) {
+              throw new Error('the core is busy');
+            }
+            return client.call<T>(method, params);
+          },
+        };
+      }),
+    });
+    await expect(run('--tools', 'claude')).rejects.toEqual(new ExitSignal(1));
+    const shown = errors.join('\n');
+    expect(shown).toContain('direct_delivery stays on (the core is busy)');
+    expect(shown).toContain('no Relay MCP server was added');
+    expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
+    // Recorded, so --uninstall can still turn it off.
+    expect(
+      JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8')).turnedOn
+    ).toContain('direct_delivery');
+  });
+
+  it('falls back to the MCP server when the core cannot be started', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const { run, logs } = setup({
+      ...core.deps,
+      startCore: vi.fn(() => {
+        throw new Error('spawn EACCES');
+      }),
+    });
+    await run('--tools', 'claude');
+    expect(logs.join('\n')).toContain('the Agent Relay core could not be started (spawn EACCES)');
+    expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'says so when an earlier MCP entry could not be removed',
+    async () => {
+      await setup().run('--tools', 'claude', '--delivery', 'mcp');
+      installedProbe();
+      fs.chmodSync(project, 0o555);
+      try {
+        const { run, logs } = setup(fakeCore().deps);
+        await run('--tools', 'claude');
+        expect(logs.join('\n')).toMatch(
+          /Claude Code\s+could not remove the earlier Relay MCP entry from \.mcp\.json[^]*second identity/
+        );
+      } finally {
+        fs.chmodSync(project, 0o755);
+      }
+    }
+  );
+
+  it('falls back to the MCP server when the core cannot be had', async () => {
+    const { run, logs } = setup();
+    await run('--tools', 'claude');
+    expect(logs.join('\n')).toContain('Message injection is not available (offline)');
+    expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
+  });
+
+  it('downloads, verifies and installs the pinned core from its probe-v release', async () => {
+    const asset = `agent-relay-probe-${PROBE_VERSION}-linux-x64`;
+    const url = `https://github.com/AgentWorkforce/relay/releases/download/probe-v${PROBE_VERSION}/${asset}`;
+    const body = new TextEncoder().encode('#!/bin/sh\necho agent-relay-probe\n');
+    const digest = createHash('sha256').update(body).digest('hex');
+    const downloadProbe = vi.fn(async (requested: string) => {
+      if (requested === url) return body;
+      if (requested === `${url}.sha256`) return new TextEncoder().encode(`${digest}  ${asset}\n`);
+      throw new DownloadHttpError(requested, 404);
+    });
+    const core = fakeCore();
+    const probeVersion = vi.fn((binary: string) => (binary.endsWith('.tmp') ? PROBE_VERSION : undefined));
+    const { run, logs } = setup({ ...core.deps, downloadProbe, probeVersion });
+    await run('--tools', 'claude');
+    expect(downloadProbe).toHaveBeenCalledWith(url, expect.anything());
+    expect(fs.readFileSync(path.join(home, 'bin', 'agent-relay-probe'))).toEqual(Buffer.from(body));
+    expect(logs.join('\n')).toContain(`Installed agent-relay-probe v${PROBE_VERSION}`);
+    expect(core.deps.startCore).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a core whose checksum does not match, and uses the MCP server', async () => {
+    const downloadProbe = vi.fn(async (requested: string) =>
+      requested.endsWith('.sha256') ? new TextEncoder().encode(`${'0'.repeat(64)}  x\n`) : new Uint8Array([1])
+    );
+    const core = fakeCore();
+    const { run, logs } = setup({ ...core.deps, downloadProbe });
+    await run('--tools', 'claude');
+    expect(fs.existsSync(path.join(home, 'bin', 'agent-relay-probe'))).toBe(false);
+    expect(core.deps.startCore).not.toHaveBeenCalled();
+    expect(logs.join('\n')).toMatch(/Message injection is not available \(SHA-256 mismatch/);
+  });
+
+  it('guided: shows the injection routes, asks no scope, and proceeds', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const script = scriptedPrompter([['claude'], true]);
+    const { run } = setup({ ...core.deps, isInteractive: () => true, prompter: () => script.prompter });
+    await run('--hosted');
+    expect(script.asked).toEqual(['Which agents should get Relay?', 'Proceed with installation?']);
+    const shown = script.shown.join('\n');
+    expect(shown).toContain("Claude Code        Claude Code's session inbox");
+    expect(shown).toContain('note Message injection');
+    expect(shown).toContain('outro Relay is ready.');
+    expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
   });
 });

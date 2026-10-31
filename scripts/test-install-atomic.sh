@@ -539,6 +539,89 @@ cp -p "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
 run_main; rc=$?
 check "launcher + previous CLI: launcher byte-identical after rollback" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
 
+echo "== the short relay launcher is part of the same transaction =="
+# our_relay_launcher <path> <label>: a relay launcher written by an earlier install.sh run
+our_relay_launcher() {
+    printf '#!/usr/bin/env bash\n%s\n# %s\nexec "%s/bin/agent-relay" "$@"\n' "$LAUNCHER_MARKER" "$2" "$INSTALL_DIR" > "$1"; chmod +x "$1"
+}
+foreign_relay() { printf '#!/bin/sh\necho "some other relay tool"\n' > "$1"; chmod +x "$1"; }
+
+e2e_setup ok yes no
+run_main; rc=$?
+check "relay launcher: fresh install exits 0" test "$rc" -eq 0
+check "relay launcher: agent-relay launcher created" test -x "$BIN_DIR/agent-relay"
+check "relay launcher: relay launcher created" test -x "$BIN_DIR/relay"
+check "relay launcher: both launchers carry the marker" is_our_launcher "$BIN_DIR/relay"
+check "relay launcher: same body as agent-relay" cmp -s "$BIN_DIR/relay" "$BIN_DIR/agent-relay"
+check "relay launcher: relay runs the new CLI" test "$("$BIN_DIR/relay" --version)" = "9.9.9"
+check "relay launcher: agent-relay runs the new CLI" test "$("$BIN_DIR/agent-relay" --version)" = "9.9.9"
+check "relay launcher: usage lists both launchers" contains "$(cat "$WORK/main.out")" "$BIN_DIR/agent-relay, $BIN_DIR/relay"
+check "relay launcher: no backup/temp files left" test -z "$(find "$BIN_DIR" "$INSTALL_DIR" -name '.*.??????' -o -name '*.prev*' | head -1)"
+
+e2e_setup ok yes yes
+our_relay_launcher "$BIN_DIR/relay" "older install"
+run_main; rc=$?
+check "relay launcher: upgrade replaces our older relay launcher" test "$rc" -eq 0 -a -z "$(grep 'older install' "$BIN_DIR/relay")"
+check "relay launcher: upgraded relay is identical to agent-relay" cmp -s "$BIN_DIR/relay" "$BIN_DIR/agent-relay"
+
+e2e_setup crash no yes
+printf '#!/bin/bash\n# older launcher\nexec "%s/bin/agent-relay" "$@"\n' "$INSTALL_DIR" > "$BIN_DIR/agent-relay"; chmod +x "$BIN_DIR/agent-relay"
+cp -p "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+our_relay_launcher "$BIN_DIR/relay" "older install"
+cp -p "$BIN_DIR/relay" "$WORK/relay.orig"
+run_main; rc=$?
+check "relay rollback: exits non-zero" test "$rc" -ne 0
+check "relay rollback: agent-relay launcher byte-identical" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+check "relay rollback: relay launcher byte-identical" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
+check "relay rollback: no backup/temp files left" test -z "$(find "$BIN_DIR" "$INSTALL_DIR" -name '.*.??????' -o -name '*.prev*' | head -1)"
+
+e2e_setup crash no no
+run_main; rc=$?
+check "relay rollback, fresh install: both new launchers removed" test "$rc" -ne 0 -a ! -e "$BIN_DIR/agent-relay" -a ! -e "$BIN_DIR/relay"
+
+for outcome in ok crash; do
+    e2e_setup "$outcome" yes yes
+    foreign_relay "$BIN_DIR/relay"; cp -p "$BIN_DIR/relay" "$WORK/relay.orig"
+    run_main; rc=$?
+    check "foreign relay ($outcome broker): left byte-identical" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
+    check "foreign relay ($outcome broker): warned to use agent-relay" contains "$(cat "$LOG")" "was not installed by Agent Relay; leaving it alone. Use \`agent-relay\`"
+    check "foreign relay ($outcome broker): warned once" test "$(grep -c 'was not installed by Agent Relay' "$LOG")" = "1"
+done
+e2e_setup ok yes yes
+foreign_relay "$BIN_DIR/relay"
+run_main; rc=$?
+check "foreign relay: install exits 0 and agent-relay works" test "$rc" -eq 0 -a "$("$BIN_DIR/agent-relay" --version)" = "9.9.9"
+check "foreign relay: usage lists only agent-relay" contains "$(cat "$WORK/main.out")" "(launchers: $BIN_DIR/agent-relay)"
+
+e2e_setup ok yes yes
+mkdir -p "$WORK/npmprefix/lib/node_modules/agent-relay/dist/cli"
+ln -sf "$WORK/npmprefix/lib/node_modules/agent-relay/dist/cli/index.js" "$BIN_DIR/relay"
+run_main; rc=$?
+check "npm's own relay symlink: left alone" test "$rc" -eq 0 -a -L "$BIN_DIR/relay"
+check "npm's own relay symlink: no 'use agent-relay' warning" test -z "$(grep 'was not installed by Agent Relay' "$LOG")"
+
+e2e_setup ok yes yes
+our_relay_launcher "$BIN_DIR/relay" "older install"; cp -p "$BIN_DIR/relay" "$WORK/relay.orig"
+orig_mtf="$(declare -f make_temp_file)"
+eval "$(printf '%s\n' "$orig_mtf" | sed '1s/make_temp_file/real_make_temp_file/')"
+make_temp_file() { if [ "$2" = relay-launcher ]; then return 1; fi; real_make_temp_file "$@"; }
+run_main; rc=$?
+eval "$orig_mtf"
+check "relay backup failure: install still succeeds" test "$rc" -eq 0 -a "$("$BIN_DIR/agent-relay" --version)" = "9.9.9"
+check "relay backup failure: relay launcher left unchanged" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
+check "relay backup failure: reported" contains "$(cat "$LOG")" "Could not back up the existing $BIN_DIR/relay launcher"
+
+# a failed relay write (here: its temp path is a directory) never replaces the working launcher
+BIN_DIR="$(newdir)"
+our_relay_launcher "$BIN_DIR/relay" "working"; cp -p "$BIN_DIR/relay" "$WORK/relay.orig"
+mkdir "$BIN_DIR/relay.tmp.$$"
+: > "$LOG"
+( install_binary_launcher /x/agent-relay ) 2>/dev/null; rc=$?
+rmdir "$BIN_DIR/relay.tmp.$$"
+check "relay write failure: agent-relay launcher still written" test "$rc" -eq 0 -a -x "$BIN_DIR/agent-relay"
+check "relay write failure: existing relay launcher unchanged" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
+check "relay write failure: reported" contains "$(cat "$LOG")" "Could not write the $BIN_DIR/relay launcher"
+
 echo "== interrupted install cleans its temp files =="
 for sig in INT TERM; do
     reset_release
@@ -584,16 +667,18 @@ SHIMEOF
         AGENT_RELAY_VERSION=1.2.3 AGENT_RELAY_INSTALL_DIR="$INSTALL_DIR" AGENT_RELAY_BIN_DIR="$BIN_DIR" \
         AGENT_RELAY_TELEMETRY_DISABLED=1 AGENT_RELAY_SMOKE_SECONDS=2 bash install.sh ) > "$WORK/sig.out" 2>&1
 }
-sig_setup() { # previous CLI 1.0.0, old broker, an existing launcher
+sig_setup() { # previous CLI 1.0.0, old broker, existing agent-relay and relay launchers
     e2e_setup "${1:-ok}" no yes
     printf '#!/bin/bash\n# existing launcher\nexec "%s/bin/agent-relay" "$@"\n' "$INSTALL_DIR" > "$BIN_DIR/agent-relay"
     chmod +x "$BIN_DIR/agent-relay"; cp -p "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+    our_relay_launcher "$BIN_DIR/relay" "existing relay launcher"; cp -p "$BIN_DIR/relay" "$WORK/relay.orig"
 }
 sig_assert() { # sig_assert <label>
     check "$1: installer stopped" test "$rc" -ne 0
     check "$1: previous CLI restored" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "1.0.0"
     check "$1: old broker untouched" test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$OLD_BROKER_HASH"
     check "$1: launcher byte-identical" cmp -s "$BIN_DIR/agent-relay" "$WORK/launcher.orig"
+    check "$1: relay launcher byte-identical" cmp -s "$BIN_DIR/relay" "$WORK/relay.orig"
     check "$1: no .prev/temp files left" test -z "$(find "$INSTALL_DIR" "$BIN_DIR" -type f \( -name '.*.??????' -o -name '*.prev*' \) | head -1)"
 }
 for sig in TERM INT HUP; do
@@ -650,6 +735,7 @@ sig_main_pid; rc=$?
 eval "$orig_acp"
 NEW_B="$(sha256_of "$FIX/asset/agent-relay-broker-$REAL_PLATFORM")"
 check "TERM after commit: CLI is the new one (not rolled back)" test "$("$INSTALL_DIR/bin/agent-relay" --version)" = "9.9.9"
+check "TERM after commit: relay launcher is the new one" cmp -s "$BIN_DIR/relay" "$BIN_DIR/agent-relay"
 check "TERM after commit: BOTH broker locations are the new broker" \
     test "$(sha256_of "$INSTALL_DIR/bin/agent-relay-broker")" = "$NEW_B" -a "$(sha256_of "$BIN_DIR/agent-relay-broker")" = "$NEW_B"
 
@@ -763,6 +849,12 @@ node_launcher_of() { # node_launcher_of <INSTALL_DIR>
     env -u AGENT_RELAY_INSTALL_DIR -u AGENT_RELAY_HOME AGENT_RELAY_INSTALL_DIR="$1" HOME="$HOME" AGENT_RELAY_INSTALL_SOURCE_ONLY=1 \
         bash -c '. "$1/install.sh"; BIN_DIR="$2"; install_node_launcher /x/source; cat "$2/agent-relay"' _ "$ROOT" "$(newdir)"
 }
+# shellcheck disable=SC2016
+node_relay_launcher() {
+    env -u AGENT_RELAY_INSTALL_DIR -u AGENT_RELAY_HOME HOME="$HOME" AGENT_RELAY_INSTALL_SOURCE_ONLY=1 \
+        bash -c '. "$1/install.sh"; BIN_DIR="$2"; install_node_launcher /x/source; cmp -s "$2/relay" "$2/agent-relay" && cat "$2/relay"' _ "$ROOT" "$(newdir)"
+}
+check "source launcher: relay launcher written with the same body" contains "$(node_relay_launcher)" 'cd "/x/source" && exec node dist/src/cli/index.js'
 check "default source launcher sets no install root" test -z "$(node_launcher_of "$HOME/.agentworkforce/relay" | grep AGENT_RELAY_INSTALL_DIR)"
 # shellcheck disable=SC2016
 check "relocated source launcher exports its install root" contains "$(node_launcher_of /opt/relay)" 'export AGENT_RELAY_INSTALL_DIR="${AGENT_RELAY_INSTALL_DIR:-/opt/relay}"'

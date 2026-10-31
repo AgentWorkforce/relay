@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,15 +15,21 @@ import {
 import {
   TOOL_IDS,
   TOOL_TARGETS,
+  codexProjectRoot,
+  codexProjectTrust,
+  codexUserConfigPath,
   defaultRunTool,
   defaultToolContext,
   detectTools,
   findOnPath,
   findToolTarget,
   installTool,
+  npxPackageSpec,
   parseToolsFlag,
   resolveMcpLaunch,
+  trustCodexProject,
   uninstallTool,
+  writeKeepingMode,
   type InstallScope,
   type McpLaunch,
   type RunTool,
@@ -37,16 +43,59 @@ import { sessionBaseName } from '../lib/mcp-session-name.js';
 import { runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import {
   currentEnginePlatform,
+  ensureReleaseBinary,
   ensureStandaloneEngine,
   fetchDownload,
   readEngineVersion,
   type DownloadFile,
   type EnginePlatform,
 } from '../lib/relaycast-engine-install.js';
+import {
+  AUTO_ACTIVATE,
+  CORE_START_TIMEOUT_MS,
+  PROBE_DELIVERY,
+  PROBE_VERSION,
+  connectCore,
+  coreSocketPath,
+  deliveryKeys,
+  disableDelivery,
+  enableDelivery,
+  probeAssetName,
+  probeAssetUrl,
+  readCoreState,
+  readDeliveryRecord,
+  readProbeVersion,
+  startCoreProcess,
+  writePrivateJson,
+  type CoreClient,
+  type CoreState,
+  type CoreStatus,
+  type DeliveryRecord,
+  type DeliveryResult,
+} from '../lib/probe-core.js';
+import { shellQuote } from '../lib/agent-registration.js';
+import {
+  claudeFileStates,
+  openCodeConfigDir,
+  openCodeState,
+  piAgentDir,
+  piState,
+  tidyClaudeSettings,
+  tidyOpenCodePlugin,
+  tidyPiExtension,
+  type ClaudeFileState,
+  type OpenCodeState,
+  type PiState,
+} from '../lib/init-leftovers.js';
 import { persistWorkspaceSession } from '../lib/workspace-session.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
 import { getProjectPaths } from '@agent-relay/config';
-import { getCanonicalRelaycastEnginePath } from '@agent-relay/harness-driver/install-paths';
+import {
+  PROBE_PATH_ENV,
+  getCanonicalProbePath,
+  getCanonicalRelaycastEnginePath,
+  isUsableBinary,
+} from '@agent-relay/harness-driver/install-paths';
 
 /** The Relaycast server `relay init` runs locally. Pinned so every machine runs the same server. */
 export const LOCAL_ENGINE_VERSION = '11.1.0';
@@ -70,14 +119,31 @@ export interface InitCommandDependencies extends SdkCommandDeps {
   toolContext: () => ToolContext;
   /** Runs an agent tool's own `mcp add`. */
   runTool: RunTool;
-  /** The command agent tools run for `relay mcp`. */
-  resolveLaunch: (ctx: ToolContext) => McpLaunch;
+  /** This CLI's version, pinned when agent tools start Relay through npx. */
+  cliVersion?: string;
+  /** The command agent tools run for `relay mcp`, for an install scope. */
+  resolveLaunch: (ctx: ToolContext, scope: InstallScope) => McpLaunch;
+  /**
+   * Fetch an `npx` launch's package into npm's cache now, so an agent tool's
+   * first start of the server does not hit its MCP startup timeout.
+   */
+  warmLaunch: (launch: McpLaunch) => void;
   /** Downloads one file of the standalone server release (binary or `.sha256`). */
   downloadEngine: DownloadFile;
   /** The version an installed `relaycast-engine` reports for `--version`. */
   engineVersion: (binary: string) => string | undefined;
   /** Platform, architecture and libc that pick the standalone server asset. */
   enginePlatform: () => EnginePlatform;
+  /** The Agent Relay core's bridge socket. */
+  coreSocket: () => string;
+  /** Connect to the core at a socket; undefined when none answers. */
+  connectCore: (socket: string) => Promise<CoreClient | undefined>;
+  /** Start the core detached; returns its pid. */
+  startCore: (input: { binary: string; socket: string; logFile: string }) => number;
+  /** Downloads one file of the core's release (binary or `.sha256`). */
+  downloadProbe: DownloadFile;
+  /** The version an installed `agent-relay-probe` reports for `--version`. */
+  probeVersion: (binary: string) => string | undefined;
 }
 
 interface LocalServerState {
@@ -193,6 +259,17 @@ function defaultStartEngine({ dataDir, port, logFile }: { dataDir: string; port:
   }
 }
 
+function defaultWarmLaunch(launch: McpLaunch): void {
+  const spec = npxPackageSpec(launch);
+  if (!spec) return;
+  // `--version` runs no Relay code beyond printing; failures are left for the
+  // agent tool to surface, since the entry itself is still right. Windows
+  // starts npx (a .cmd) only through a shell; the spec is a plain package name.
+  const options = { stdio: 'ignore' as const, timeout: 180_000, env: process.env };
+  if (process.platform === 'win32') spawnSync(`npx -y ${spec} --version`, { ...options, shell: true });
+  else spawnSync('npx', ['-y', spec, '--version'], options);
+}
+
 function defaultIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -229,10 +306,16 @@ export function withInitDefaults(overrides: Partial<InitCommandDependencies> = {
     prompter: clackPrompter,
     toolContext: () => defaultToolContext(projectRoot()),
     runTool: defaultRunTool,
-    resolveLaunch: (ctx) => resolveMcpLaunch({ ctx }),
+    resolveLaunch: (ctx, scope) => resolveMcpLaunch({ ctx, scope, version: overrides.cliVersion }),
+    warmLaunch: defaultWarmLaunch,
     downloadEngine: fetchDownload,
     engineVersion: readEngineVersion,
     enginePlatform: currentEnginePlatform,
+    coreSocket: () => coreSocketPath(process.env, os.homedir()),
+    connectCore: (socket) => connectCore(socket),
+    startCore: startCoreProcess,
+    downloadProbe: fetchDownload,
+    probeVersion: readProbeVersion,
     ...overrides,
   };
 }
@@ -337,7 +420,15 @@ async function ensureLocalServer(deps: InitCommandDependencies, port: number): P
 /** The server answered and refused the key, as opposed to being unreachable or failing. */
 class WorkspaceKeyRejectedError extends Error {}
 
-async function verifyWorkspace(deps: InitCommandDependencies, origin: string, key: string): Promise<void> {
+/**
+ * Check a workspace key against its server.
+ * @returns The workspace's Relaycast id, when the server names it
+ */
+async function verifyWorkspace(
+  deps: InitCommandDependencies,
+  origin: string,
+  key: string
+): Promise<string | undefined> {
   let response: Response;
   try {
     response = await deps.fetch(new URL('/v1/workspace', origin), {
@@ -357,6 +448,27 @@ async function verifyWorkspace(deps: InitCommandDependencies, origin: string, ke
     throw new WorkspaceKeyRejectedError(`${origin} rejected the workspace key.`);
   }
   if (!response.ok) throw new Error(`${origin} answered ${response.status} when checking the workspace.`);
+  return workspaceIdIn(response);
+}
+
+/** The `id` of a `GET /v1/workspace` answer (`{ok, data: {id}}`), read leniently. */
+async function workspaceIdIn(response: Response): Promise<string | undefined> {
+  try {
+    const body = (await response.json()) as { data?: { id?: unknown }; id?: unknown } | null;
+    const id = body?.data?.id ?? body?.id;
+    return typeof id === 'string' && id.trim() ? id.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The workspace id a key belongs to, when its server can say; never throws. */
+async function workspaceIdOf(
+  deps: InitCommandDependencies,
+  origin: string,
+  key: string
+): Promise<string | undefined> {
+  return verifyWorkspace(deps, origin, key).catch(() => undefined);
 }
 
 function parsePort(value: string): number {
@@ -393,6 +505,65 @@ interface ServerChoice {
 interface ServerSetup {
   headline: string;
   details: string[];
+  /** Where the workspace lives. */
+  mode: ServerMode;
+  /** The Relaycast server the workspace is on. */
+  origin: string;
+  /** The workspace saved for this project. */
+  workspace: string;
+  /** Its Relaycast workspace id (`GET /v1/workspace`), when the server named it. */
+  workspaceId?: string;
+  /** Another workspace left active machine-wide, when there was one. */
+  keptActive?: string;
+}
+
+/** A word as the shell reads it: quoted unless it is plainly safe to paste. */
+function shellWord(value: string): string {
+  return /^[A-Za-z0-9._@%+=:,/-]+$/.test(value) ? value : shellQuote(value);
+}
+
+/** The command that makes `name` the machine-wide active workspace. */
+function switchCommand(name: string): string {
+  return `relay workspace switch ${shellWord(name)}`;
+}
+
+/**
+ * Save the workspace and bind it to this project. It becomes the machine-wide
+ * active workspace only when no other one is: a machine already serving a
+ * workspace (a fleet node, other projects) must not be moved by setting up one
+ * project.
+ * @returns The other workspace left active, and the line explaining it.
+ */
+function saveWorkspace(
+  name: string,
+  workspaceKey: string
+): Pick<ServerSetup, 'workspace' | 'keptActive'> & {
+  lines: string[];
+} {
+  const { keptActiveWorkspace } = persistWorkspaceSession({ name, workspaceKey, activate: 'if-none' });
+  if (!keptActiveWorkspace) return { workspace: name, lines: [] };
+  return {
+    workspace: name,
+    keptActive: keptActiveWorkspace,
+    lines: [
+      `This project now uses workspace "${name}"; "${keptActiveWorkspace}" stays active machine-wide. ` +
+        `To make "${name}" the default everywhere, run: ${switchCommand(name)}`,
+    ],
+  };
+}
+
+/**
+ * Agent tools set up globally run in every project, and a project without its
+ * own workspace (and no flag or environment selection) uses the machine-wide
+ * active one. Say so when that is not the
+ * workspace just set up.
+ */
+function globalScopeNote(setup: ServerSetup, scope: InstallScope, installed: ToolId[]): string | undefined {
+  if (scope !== 'global' || installed.length === 0 || !setup.keptActive) return undefined;
+  return (
+    `In projects without their own workspace, globally set up agent tools use the active workspace "${setup.keptActive}". ` +
+    `To make "${setup.workspace}" the machine-wide fallback, run: ${switchCommand(setup.workspace)}`
+  );
 }
 
 /**
@@ -405,13 +576,17 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     if (!url || !key) throw new Error('Pass --url and --key together for your own server.');
     const origin = configuredOrigin(url, '--url');
     if (!origin) throw new Error('--url is empty.');
-    await verifyWorkspace(deps, origin, key);
+    const workspaceId = await verifyWorkspace(deps, origin, key);
     guardCredentialOrigin(key, url);
     const name = choice.name ?? new URL(origin).hostname;
-    persistWorkspaceSession({ name, workspaceKey: key });
+    const { lines, ...saved } = saveWorkspace(name, key);
     return {
+      ...saved,
+      workspaceId,
+      mode: 'own',
+      origin,
       headline: `Connected to your server at ${origin} as workspace "${name}".`,
-      details: ['Your key is only ever sent to this server.'],
+      details: ['Your key is only ever sent to this server.', ...lines],
     };
   }
 
@@ -419,10 +594,15 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     const name = choice.name ?? `relay-${os.hostname().split('.')[0]}`;
     const relay = await deps.createWorkspace(name, HOSTED_ORIGIN);
     if (!relay.workspaceKey) throw new Error('The hosted service did not return a workspace key.');
-    persistWorkspaceSession({ name, workspaceKey: relay.workspaceKey });
+    const { lines, ...saved } = saveWorkspace(name, relay.workspaceKey);
     return {
+      ...saved,
+      workspaceId: await workspaceIdOf(deps, HOSTED_ORIGIN, relay.workspaceKey),
+      mode: 'hosted',
+      origin: HOSTED_ORIGIN,
       headline: `Created hosted workspace "${name}".`,
       details: [
+        ...lines,
         'On another machine, join it with (treat this key like a password):',
         `  relay workspace join ${name} ${relay.workspaceKey}`,
       ],
@@ -434,13 +614,15 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
   // Re-running init keeps the same local workspace and its agents.
   const stored = readWorkspaceStore().workspaces[name]?.key;
   let workspaceKey = stored && boundOrigin(stored) === origin ? stored : undefined;
+  let workspaceId: string | undefined;
   if (workspaceKey) {
     // Only a key the server refuses is replaced. A timeout or server
     // error is reported instead, so a hiccup never swaps the workspace
     // (and its agents and messages) for a new one.
-    await verifyWorkspace(deps, origin, workspaceKey).catch((error: unknown) => {
+    workspaceId = await verifyWorkspace(deps, origin, workspaceKey).catch((error: unknown) => {
       if (!(error instanceof WorkspaceKeyRejectedError)) throw error;
       workspaceKey = undefined;
+      return undefined;
     });
   }
   if (!workspaceKey) {
@@ -449,11 +631,16 @@ async function setupServer(deps: InitCommandDependencies, choice: ServerChoice):
     if (!relay.workspaceKey) throw new Error('The local server did not return a workspace key.');
     workspaceKey = relay.workspaceKey;
     guardCredentialOrigin(workspaceKey, origin);
+    workspaceId = await workspaceIdOf(deps, origin, workspaceKey);
   }
-  persistWorkspaceSession({ name, workspaceKey });
+  const { lines, ...saved } = saveWorkspace(name, workspaceKey);
   return {
+    ...saved,
+    workspaceId,
+    mode: 'local',
+    origin,
     headline: `Relay is running on this machine (${origin}), workspace "${name}". No account needed.`,
-    details: ['To work with agents on other machines later, run: relay init --hosted'],
+    details: [...lines, 'To work with agents on other machines later, run: relay init --hosted'],
   };
 }
 
@@ -547,9 +734,9 @@ function nextStep(installed: ToolId[], scope: InstallScope, ctx: ToolContext): s
   return ['No agent tool was set up. Run relay init again to choose some.'];
 }
 
-function notesFor(installed: ToolId[], scope: InstallScope): string[] {
+function notesFor(installed: ToolId[], scope: InstallScope, ctx: ToolContext): string[] {
   return installed
-    .map((id) => findToolTarget(id)!.note?.(scope))
+    .map((id) => findToolTarget(id)!.note?.(scope, ctx))
     .filter((note): note is string => Boolean(note));
 }
 
@@ -570,6 +757,720 @@ function installAll(
 }
 
 // ---------------------------------------------------------------------------
+// Message injection: the Agent Relay core
+
+/** How messages reach an agent tool's sessions. */
+type Delivery = 'inject' | 'mcp';
+
+function coreStatePath(): string {
+  return path.join(localDir(), 'core.json');
+}
+
+/** The core settings relay init turned on, so `--uninstall` turns off exactly those. */
+function deliveryRecordPath(): string {
+  return path.join(localDir(), 'core-settings.json');
+}
+
+/** How init came to be talking to the core. */
+type CoreOrigin = 'started' | 'reused' | 'attached';
+
+interface CoreSession {
+  client: CoreClient;
+  status: CoreStatus;
+  origin: CoreOrigin;
+  logFile?: string;
+}
+
+/** The core binary: `AGENT_RELAY_PROBE_PATH`, else the pinned release in the canonical bin slot. */
+async function installProbe(deps: InitCommandDependencies): Promise<{ binary: string } | { reason: string }> {
+  const explicit = process.env[PROBE_PATH_ENV]?.trim();
+  if (explicit) {
+    return isUsableBinary(explicit)
+      ? { binary: explicit }
+      : { reason: `${PROBE_PATH_ENV} (${explicit}) is not an executable file` };
+  }
+  const target = getCanonicalProbePath();
+  const platform = deps.enginePlatform();
+  const asset = probeAssetName(PROBE_VERSION, platform);
+  const result = await ensureReleaseBinary({
+    version: PROBE_VERSION,
+    target,
+    asset,
+    url: asset ? probeAssetUrl(PROBE_VERSION, asset) : undefined,
+    unsupported: `no Agent Relay core is published for ${platform.platform}-${platform.arch}${
+      platform.musl ? ' (musl)' : ''
+    }`,
+    description: `the Agent Relay core (agent-relay-probe v${PROBE_VERSION}, ${asset})`,
+    download: deps.downloadProbe,
+    readVersion: deps.probeVersion,
+    progress: (line) => deps.log(line),
+  });
+  if (result.status === 'installed') deps.log(`Installed agent-relay-probe v${PROBE_VERSION} to ${target}.`);
+  if (result.status !== 'failed') return { binary: target };
+  if (isUsableBinary(target)) {
+    deps.log(`Could not update the Agent Relay core (${result.reason}); using the one at ${target}.`);
+    return { binary: target };
+  }
+  return { reason: result.reason };
+}
+
+async function connectTo(
+  deps: InitCommandDependencies,
+  socket: string
+): Promise<{ client: CoreClient; status: CoreStatus } | undefined> {
+  const client = await deps.connectCore(socket);
+  if (!client) return undefined;
+  try {
+    return { client, status: await client.call<CoreStatus>('status.get') };
+  } catch (error) {
+    client.close();
+    throw error;
+  }
+}
+
+/**
+ * Attach to the core running on this machine, or start one. One core runs
+ * per machine: the desktop app's, a service's, or the one an earlier
+ * `relay init` started; a second is never started beside it.
+ */
+async function ensureCore(deps: InitCommandDependencies): Promise<CoreSession | { reason: string }> {
+  const socket = deps.coreSocket();
+  const state = readCoreState(coreStatePath());
+  let running: Awaited<ReturnType<typeof connectTo>>;
+  try {
+    running = await connectTo(deps, socket);
+  } catch (error) {
+    return { reason: (error as Error).message };
+  }
+  if (running) {
+    return { ...running, origin: state?.pid === running.status.daemon.pid ? 'reused' : 'attached' };
+  }
+  const probe = await installProbe(deps);
+  if ('reason' in probe) return probe;
+  // The download can take a while; a desktop app may have started its core meanwhile.
+  const meanwhile = await connectTo(deps, socket).catch(() => undefined);
+  if (meanwhile) return { ...meanwhile, origin: 'attached' };
+
+  fs.mkdirSync(localDir(), { recursive: true, mode: 0o700 });
+  const logFile = path.join(localDir(), 'core.log');
+  deps.log('Starting the Agent Relay core…');
+  let pid: number;
+  try {
+    pid = deps.startCore({ binary: probe.binary, socket, logFile });
+  } catch (error) {
+    return { reason: `the Agent Relay core could not be started (${(error as Error).message})` };
+  }
+  const deadline = Date.now() + CORE_START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const up = await connectTo(deps, socket).catch(() => undefined);
+    if (up) {
+      // Another core may have taken the socket first; that one is then attached to.
+      const started = up.status.daemon.pid === pid;
+      if (started) {
+        const record: CoreState = { pid, socket, binary: probe.binary, version: up.status.daemon.version };
+        writePrivateJson(coreStatePath(), record);
+      }
+      return { ...up, origin: started ? 'started' : 'attached', logFile };
+    }
+    if (!deps.isAlive(pid)) break;
+    await deps.sleep(250);
+  }
+  deps.stop(pid);
+  const tail = logTail(logFile);
+  return {
+    reason: `the Agent Relay core did not start${tail ? `. Last lines of ${logFile}:\n${tail}` : ''}`,
+  };
+}
+
+function describeCore(session: CoreSession): string {
+  const { pid, version } = session.status.daemon;
+  switch (session.origin) {
+    case 'started':
+      return `Started the Agent Relay core (agent-relay-probe ${version}, pid ${pid}) in the background. Log: ${session.logFile}`;
+    case 'reused':
+      return `The Agent Relay core relay init started earlier is running (agent-relay-probe ${version}, pid ${pid}).`;
+    case 'attached':
+      return (
+        `Using the Agent Relay core already running on this machine (agent-relay-probe ${version}, pid ${pid}), ` +
+        `the desktop app's or a service's. relay init does not start a second one.`
+      );
+  }
+}
+
+function sameOrigin(a: string | null | undefined, b: string): boolean {
+  if (!a) return false;
+  try {
+    return new URL(a).origin === new URL(b).origin;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the core serves this project's workspace; undefined when it cannot
+ * be told. One server can host many workspaces, so the verified workspace
+ * ids decide whenever both are known; names stand in only for workspaces
+ * init named itself (a self-hosted one is saved under the person's name).
+ */
+function sameWorkspace(workspace: CoreStatus['workspace'], setup: ServerSetup): boolean | undefined {
+  if (!sameOrigin(workspace.base_url, setup.origin)) return false;
+  const coreId = workspace.verification === 'verified' ? workspace.workspace_id : undefined;
+  if (coreId && setup.workspaceId) return coreId === setup.workspaceId;
+  if (setup.mode === 'own') return undefined;
+  return !workspace.workspace_name || workspace.workspace_name === setup.workspace;
+}
+
+/**
+ * The core serves one workspace per machine (the machine-wide active one,
+ * unless its environment names another). Say so when that is not this
+ * project's, since its agents would then be injected from a different
+ * workspace than the one the CLI uses here.
+ */
+async function coreWorkspaceNote(
+  deps: InitCommandDependencies,
+  client: CoreClient,
+  setup: ServerSetup
+): Promise<string | undefined> {
+  let workspace: CoreStatus['workspace'];
+  try {
+    workspace = await client.call<CoreStatus['workspace']>('workspace.refresh');
+    // Verifying a newly found key is quick but asynchronous.
+    for (let i = 0; i < 20 && workspace.state === 'found' && workspace.verification === 'pending'; i += 1) {
+      await deps.sleep(500);
+      workspace = (await client.call<CoreStatus>('status.get')).workspace;
+    }
+  } catch {
+    return undefined;
+  }
+  if (workspace.state !== 'found') {
+    return `The Agent Relay core has not found workspace "${setup.workspace}" yet; it looks again every 30 seconds.`;
+  }
+  if (workspace.verification === 'rejected') {
+    return `The Agent Relay core's workspace key was refused by ${workspace.base_url ?? 'its server'}.`;
+  }
+  const same = sameWorkspace(workspace, setup);
+  if (same === true) return undefined;
+  if (same === undefined) {
+    return (
+      `Could not confirm that the Agent Relay core serves "${setup.workspace}" (${setup.origin} names no ` +
+      `workspace id it can compare). See which one it serves with: agent-relay-probe relay call status.get`
+    );
+  }
+  const served = workspace.workspace_name ? `workspace "${workspace.workspace_name}"` : 'another workspace';
+  return (
+    `The Agent Relay core on this machine serves ${served} (${workspace.base_url ?? 'unknown server'}), ` +
+    `not "${setup.workspace}": agents here join that workspace. The core follows the machine-wide active ` +
+    `workspace; to use "${setup.workspace}" everywhere, run: ${switchCommand(setup.workspace)}`
+  );
+}
+
+interface InjectionSetup {
+  core: string;
+  results: DeliveryResult[];
+  workspaceNote?: string;
+}
+
+/**
+ * Attach to or start the core, then turn on its delivery for `tools`. The
+ * settings are the person's own (under their home), so they apply to every
+ * project on this machine whatever the install scope.
+ */
+async function setupInjection(
+  deps: InitCommandDependencies,
+  tools: ToolId[],
+  setup: ServerSetup
+): Promise<InjectionSetup | { reason: string }> {
+  const session = await ensureCore(deps);
+  if ('reason' in session) return session;
+  try {
+    const record = readDeliveryRecord(deliveryRecordPath());
+    const ctx = deps.toolContext();
+    // Every Claude login's crossSessionInbound before anything changes: what
+    // turning direct delivery off again puts back, the person's own choices
+    // included, instead of the hold the core writes on each login.
+    const before = tools.includes('claude') ? claudeInboundValues(ctx) : {};
+    // The files the core is about to edit, as they are now: what --uninstall
+    // tidies back to (a settings.json, plugins or extensions folder, or off
+    // marker init created).
+    const files: Leftovers = {
+      claudeFiles: tools.includes('claude') ? claudeFileStates(claudeLoginSettings(ctx)) : undefined,
+      openCode: tools.includes('opencode') ? openCodeState(openCodeConfigDir(ctx.env, ctx.home)) : undefined,
+      pi: tools.includes('pi') ? piState(piAgentDir(ctx.env, ctx.home), ctx.home) : undefined,
+    };
+    const { results, turnedOn, turnedOff } = await enableDelivery(session.client, tools, record.turnedOn);
+    // Applied to the record as it is now, not as it was read: another
+    // relay init may have recorded its own changes meanwhile.
+    const save = () =>
+      updateDeliveryRecord((current) => {
+        // Older originals win: they were recorded before init first changed anything.
+        const originals = { ...before, ...current.claudeInbound };
+        if (turnedOff.includes('direct_delivery')) restoreClaudeInbound(originals);
+        // A setting this run turned on, kept or rolled back again (then in
+        // turnedOff): its files are tidied below once nothing edits them.
+        const touched = [...turnedOn, ...turnedOff];
+        const claudeOn = touched.some((key) => CLAUDE_FILE_KEYS.includes(key));
+        return tidyLeftovers({
+          turnedOn: [...new Set([...current.turnedOn, ...turnedOn])].filter(
+            (key) => !turnedOff.includes(key)
+          ),
+          claudeInbound: turnedOff.includes('direct_delivery')
+            ? {}
+            : turnedOn.includes('direct_delivery')
+              ? originals
+              : current.claudeInbound,
+          claudeFiles:
+            claudeOn && files.claudeFiles
+              ? { ...files.claudeFiles, ...current.claudeFiles }
+              : current.claudeFiles,
+          openCode: touched.includes('opencode_plugin')
+            ? (current.openCode ?? files.openCode)
+            : current.openCode,
+          pi: touched.includes('pi_extension') ? (current.pi ?? files.pi) : current.pi,
+        });
+      });
+    try {
+      save();
+    } catch (error) {
+      await undoUnrecorded(session.client, turnedOn, before, files, error as Error);
+      throw error;
+    }
+    // A failed tool whose settings could not be turned off is still on the
+    // core's route: it gets no MCP server, and setup stops (it is recorded,
+    // so --uninstall can still turn it off).
+    const stuck = results.filter((result) => result.stuck && result.stuck.length > 0);
+    if (stuck.length > 0) {
+      throw new InjectionStuckError(
+        stuck.map((result) => `${findToolTarget(result.id)!.label}: ${result.message}`).join('\n') +
+          '\nThese settings relay init turned on could not be turned off after the tool failed, so no ' +
+          'Relay MCP server was added for it (two routes would split its messages). Run relay init ' +
+          'again once the core answers, or relay init --uninstall.'
+      );
+    }
+    const workspaceNote = await coreWorkspaceNote(deps, session.client, setup);
+    return { core: describeCore(session), results, workspaceNote };
+  } catch (error) {
+    if (error instanceof InjectionStuckError) throw error;
+    return { reason: `the Agent Relay core could not be set up (${(error as Error).message})` };
+  } finally {
+    session.client.close();
+  }
+}
+
+/** The bytes of the regular file `file` is or links to; undefined when there is none. */
+function readIfFile(file: string): Buffer | undefined {
+  let fd: number | undefined;
+  try {
+    // One descriptor for the check and the read, so they see the same file.
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    return fs.fstatSync(fd).isFile() ? fs.readFileSync(fd) : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+/** Puts `bytes` back in `file`; a failure leaves the core's marker, which means the same. */
+function restoreBytes(file: string, bytes: Buffer): void {
+  try {
+    fs.writeFileSync(file, bytes);
+  } catch {
+    // The core's own marker stays: Pi is still off.
+  }
+}
+
+/** Settings init turned on that are neither recorded nor turned off: setup stops. */
+class InjectionStuckError extends Error {}
+
+/**
+ * The record of what this run turned on could not be saved: turn those
+ * settings off again, so the MCP fallback is the only route and nothing is
+ * left that `--uninstall` would not know about.
+ * @throws InjectionStuckError when any stays on; no MCP server is added then.
+ */
+async function undoUnrecorded(
+  client: CoreClient,
+  turnedOn: string[],
+  before: Record<string, string | null>,
+  files: Leftovers,
+  cause: Error
+): Promise<void> {
+  const failures = await disableDelivery(client, turnedOn);
+  const failed = (key: string) => failures.some((f) => f.startsWith(`${key}:`));
+  if (turnedOn.includes('direct_delivery') && !failed('direct_delivery')) {
+    restoreClaudeInbound(before);
+  }
+  if (turnedOn.some((key) => CLAUDE_FILE_KEYS.includes(key)) && !CLAUDE_FILE_KEYS.some(failed)) {
+    if (files.claudeFiles) tidyClaudeSettings(files.claudeFiles);
+  }
+  if (turnedOn.includes('opencode_plugin') && !failed('opencode_plugin') && files.openCode) {
+    tidyOpenCodePlugin(files.openCode);
+  }
+  if (turnedOn.includes('pi_extension') && !failed('pi_extension') && files.pi) {
+    tidyPiExtension(files.pi);
+  }
+  if (failures.length > 0) {
+    throw new InjectionStuckError(
+      `Could not save ${deliveryRecordPath()} (${cause.message}), and these settings relay init turned on ` +
+        `could not be turned off again: ${failures.join('; ')}. Turn them off with ` +
+        'agent-relay-probe relay call settings.set --params \'{"<setting>":false}\', then run relay init again.',
+      { cause }
+    );
+  }
+}
+
+const DELIVERY_MARK: Record<DeliveryResult['status'], string> = { on: '✓', held: '!', failed: '✗' };
+
+function describeDelivery(result: DeliveryResult): string {
+  const label = findToolTarget(result.id)!.label.padEnd(18);
+  if (result.status === 'failed') {
+    return `${DELIVERY_MARK.failed} ${label} not injected: ${result.message}\n    Using the Relay MCP server for it instead.`;
+  }
+  const line = `${DELIVERY_MARK[result.status]} ${label} injected through ${result.route}`;
+  return result.status === 'held' ? `${line}\n    ${result.message}` : line;
+}
+
+const INJECTION_SCOPE_NOTE =
+  'These are settings of your user account, so they apply in every project on this machine. ' +
+  'relay init --uninstall turns off what it turned on; relay init --stop stops a core it started.';
+
+/**
+ * Remove the MCP entry an earlier `relay init` added for tools whose messages
+ * are now injected, in both scopes: the session's identity is the core's, and
+ * a second one through MCP would split its messages. A removal that failed is
+ * returned too, so the person can finish it.
+ */
+function removeSupersededMcp(tools: ToolId[], ctx: ToolContext): ToolResult[] {
+  return tools.flatMap((id) =>
+    (['project', 'global'] as const)
+      .map((scope) => uninstallTool(findToolTarget(id)!, { ctx, scope }))
+      .filter((result) => result.status === 'removed' || result.status === 'failed')
+  );
+}
+
+function describeSupersededMcp(result: ToolResult, ctx: ToolContext): string {
+  const where = displayPath(result.path, ctx);
+  if (result.status === 'removed') {
+    return `✓ ${result.label.padEnd(18)} removed the earlier Relay MCP entry from ${where}: one identity per session`;
+  }
+  return (
+    `✗ ${result.label.padEnd(18)} could not remove the earlier Relay MCP entry from ${where}` +
+    `${result.message ? ` (${result.message})` : ''}.\n    Remove its agent-relay entry by hand: ` +
+    'until then its sessions also join through MCP, as a second identity.'
+  );
+}
+
+/** What is next when messages are injected. */
+function injectionNextStep(injected: ToolId[]): string[] {
+  const labels = injected.map((id) => findToolTarget(id)!.label);
+  const tools = labels.length > 1 ? `${labels.slice(0, -1).join(', ')} or ${labels.at(-1)}` : labels[0];
+  return [
+    `Open ${tools} in any project. Each session joins Relay on its own, and messages to it are`,
+    'typed into the running session: no inbox to check. See who is on Relay with: relay agent list',
+  ];
+}
+
+/** The Claude Code config folder the CLI's environment uses. */
+function claudeConfigDir(ctx: ToolContext): string {
+  const configured = ctx.env.CLAUDE_CONFIG_DIR;
+  return configured && path.isAbsolute(configured) ? configured : path.join(ctx.home, '.claude');
+}
+
+/**
+ * The settings files of every Claude login the core's direct delivery
+ * follows (`ClaudeSettings::login_settings` in crates/probe): this login,
+ * then the `.claude` and `.claude-<name>` folders beside it, the folders in
+ * `AGENT_RELAY_CLAUDE_CONFIG_DIRS`, and those the core recorded in
+ * `claude-config-dirs.json`, each counted only when it holds `.claude.json`.
+ */
+function claudeLoginSettings(ctx: ToolContext): string[] {
+  const own = claudeConfigDir(ctx);
+  const others = [...claudeSiblings(own), ...claudeEnvironmentDirs(ctx), ...claudeRecordedDirs()];
+  const seen = new Set<string>();
+  const files: string[] = [];
+  for (const folder of [own, ...others]) {
+    if (folder !== own && !fs.existsSync(path.join(folder, '.claude.json'))) continue;
+    const file = path.join(folder, 'settings.json');
+    const real = realOrResolved(file);
+    if (seen.has(real)) continue;
+    seen.add(real);
+    files.push(file);
+  }
+  return files;
+}
+
+function realOrResolved(file: string): string {
+  try {
+    return fs.realpathSync(file);
+  } catch {
+    return path.resolve(file);
+  }
+}
+
+/** The `.claude` and `.claude-<name>` folders beside `own`, as account switchers keep. */
+function claudeSiblings(own: string): string[] {
+  const parent = path.dirname(own);
+  try {
+    return fs
+      .readdirSync(parent)
+      .sort()
+      .filter((name) => name === '.claude' || name.startsWith('.claude-'))
+      .map((name) => path.join(parent, name));
+  } catch {
+    return [];
+  }
+}
+
+/** `AGENT_RELAY_CLAUDE_CONFIG_DIRS`, as the core reads it. */
+function claudeEnvironmentDirs(ctx: ToolContext): string[] {
+  return (ctx.env.AGENT_RELAY_CLAUDE_CONFIG_DIRS ?? '')
+    .split(path.delimiter)
+    .map((entry) => entry.trim().replace(/^~(?=$|[\\/])/, ctx.home))
+    .filter((folder) => folder && path.isAbsolute(folder));
+}
+
+/** The folders added in the desktop's Settings or seen running, from `claude-config-dirs.json`. */
+function claudeRecordedDirs(): string[] {
+  try {
+    const recorded = JSON.parse(
+      fs.readFileSync(path.join(relayHome(), 'claude-config-dirs.json'), 'utf8')
+    ) as { added?: unknown; running?: unknown } | null;
+    return [recorded?.added, recorded?.running]
+      .flatMap((list) => (Array.isArray(list) ? list : []))
+      .filter((folder): folder is string => typeof folder === 'string' && path.isAbsolute(folder));
+  } catch {
+    return [];
+  }
+}
+
+/** A Claude settings file's `crossSessionInbound`, `null` when unset, undefined when unreadable. */
+function claudeInbound(file: string): string | null | undefined {
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : undefined;
+  }
+  try {
+    const settings = JSON.parse(text) as unknown;
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return undefined;
+    const value = (settings as Record<string, unknown>).crossSessionInbound;
+    return value === undefined ? null : typeof value === 'string' ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Each readable Claude login's `crossSessionInbound` (null: absent), by settings file. */
+function claudeInboundValues(ctx: ToolContext): Record<string, string | null> {
+  const values: Record<string, string | null> = {};
+  for (const file of claudeLoginSettings(ctx)) {
+    // A login folder Claude Code has never made holds nothing to put back.
+    if (!fs.existsSync(path.dirname(file))) continue;
+    const value = claudeInbound(file);
+    if (value !== undefined) values[file] = value;
+  }
+  return values;
+}
+
+/**
+ * The core turns Claude Code's direct delivery off by writing
+ * `crossSessionInbound: "hold"` (Claude Code's own default) on every login
+ * where it was on, the person's own `accept` included. Run after that core
+ * call (the core writes it then, and not again until direct delivery is
+ * turned on), this puts back each login's value from before init: removed
+ * where it was absent, the person's own value where they had one. A login
+ * the person changed since (anything but `hold`) is left as it is.
+ * @param originals - Settings file to its value before init (null: absent)
+ */
+function restoreClaudeInbound(originals: Record<string, string | null>): void {
+  for (const [file, original] of Object.entries(originals)) {
+    if (original === 'hold') continue;
+    try {
+      const settings = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+      if (!settings || typeof settings !== 'object' || Array.isArray(settings)) continue;
+      if (settings.crossSessionInbound !== 'hold') continue;
+      if (original === null) delete settings.crossSessionInbound;
+      else settings.crossSessionInbound = original;
+      writeKeepingMode(file, `${JSON.stringify(settings, null, 2)}\n`);
+    } catch {
+      // Unreadable or not JSON: left as the core wrote it.
+    }
+  }
+}
+
+/** The Claude values to restore: the recorded ones, else (an older record) this login's unset. */
+function recordedClaudeFiles(record: DeliveryRecord, ctx: ToolContext): Record<string, string | null> {
+  return Object.keys(record.claudeInbound).length > 0
+    ? record.claudeInbound
+    : { [path.join(claudeConfigDir(ctx), 'settings.json')]: null };
+}
+
+/** The core settings that edit a Claude login's `settings.json`. */
+const CLAUDE_FILE_KEYS = ['direct_delivery', 'claude_session_hook'];
+
+/** The tool files init found before the core edited them (see `init-leftovers.ts`). */
+interface Leftovers {
+  claudeFiles?: Record<string, ClaudeFileState>;
+  openCode?: OpenCodeState;
+  pi?: PiState;
+}
+
+/**
+ * Once nothing init turned on edits a tool's files any more, tidies them
+ * back to how init found them (a Claude settings.json init created, the
+ * OpenCode plugin's and Pi extension's off markers) and drops their
+ * recorded state. Run after
+ * the core turned the settings off and the original crossSessionInbound is
+ * back.
+ * @returns The record without the states it used
+ */
+function tidyLeftovers(record: DeliveryRecord): DeliveryRecord {
+  let { claudeFiles, openCode, pi } = record;
+  if (claudeFiles && !record.turnedOn.some((key) => CLAUDE_FILE_KEYS.includes(key))) {
+    tidyClaudeSettings(claudeFiles);
+    claudeFiles = undefined;
+  }
+  if (openCode && !record.turnedOn.includes('opencode_plugin')) {
+    tidyOpenCodePlugin(openCode);
+    openCode = undefined;
+  }
+  if (pi && !record.turnedOn.includes('pi_extension')) {
+    tidyPiExtension(pi);
+    pi = undefined;
+  }
+  return {
+    turnedOn: record.turnedOn,
+    claudeInbound: record.claudeInbound,
+    ...(claudeFiles ? { claudeFiles } : {}),
+    ...(openCode ? { openCode } : {}),
+    ...(pi ? { pi } : {}),
+  };
+}
+
+/**
+ * Change the record of what init turned on, reading it just before the
+ * write so concurrent runs do not drop each other's changes.
+ */
+function updateDeliveryRecord(change: (current: DeliveryRecord) => DeliveryRecord): void {
+  writeDeliveryRecord(change(readDeliveryRecord(deliveryRecordPath())));
+}
+
+/** Save what init turned on; no record at all once nothing is. */
+function writeDeliveryRecord(record: DeliveryRecord): void {
+  if (record.turnedOn.length === 0) {
+    fs.rmSync(deliveryRecordPath(), { force: true });
+    return;
+  }
+  writePrivateJson(deliveryRecordPath(), {
+    turnedOn: record.turnedOn,
+    ...(Object.keys(record.claudeInbound).length > 0 ? { claudeInbound: record.claudeInbound } : {}),
+    ...(record.claudeFiles ? { claudeFiles: record.claudeFiles } : {}),
+    ...(record.openCode ? { openCode: record.openCode } : {}),
+    ...(record.pi ? { pi: record.pi } : {}),
+  });
+}
+
+/**
+ * The recorded settings to turn off when `tools` leave injection: theirs,
+ * and automatic activation once no tool init injects into is left.
+ */
+function recordedKeysFor(tools: ToolId[]): string[] {
+  const recorded = readDeliveryRecord(deliveryRecordPath()).turnedOn;
+  const leaving = new Set(tools.flatMap(deliveryKeys));
+  const keys = recorded.filter((key) => leaving.has(key));
+  const remaining = recorded.filter((key) => !leaving.has(key) && key !== AUTO_ACTIVATE.read);
+  if (keys.length > 0 && remaining.length === 0 && recorded.includes(AUTO_ACTIVATE.read)) {
+    keys.push(AUTO_ACTIVATE.read);
+  }
+  return keys;
+}
+
+/**
+ * Turn off recorded core settings, starting a core for it when none runs
+ * (and stopping that one again). Throws, keeping the record of what stayed
+ * on, when any could not be turned off.
+ * @returns The keys turned off
+ */
+async function turnOffInjection(deps: InitCommandDependencies, keys: string[]): Promise<string[]> {
+  if (keys.length === 0) return [];
+  const session = await ensureCore(deps);
+  if ('reason' in session) {
+    throw new Error(`Could not reach the Agent Relay core to turn off message injection: ${session.reason}`);
+  }
+  try {
+    // A Pi off marker already there was the person's own opt-out after init
+    // (the desktop app's switch), not this run's: it is kept, byte for byte,
+    // though turning pi_extension off rewrites it.
+    const pi = readDeliveryRecord(deliveryRecordPath()).pi;
+    const piOptedOut =
+      keys.includes('pi_extension') &&
+      pi !== undefined &&
+      fs.lstatSync(pi.marker, { throwIfNoEntry: false }) !== undefined;
+    const piMarker = piOptedOut && pi ? readIfFile(pi.marker) : undefined;
+    const failures = await disableDelivery(session.client, keys);
+    if (pi && piMarker) restoreBytes(pi.marker, piMarker);
+    const done = keys.filter((key) => !failures.some((failure) => failure.startsWith(`${key}:`)));
+    const ctx = deps.toolContext();
+    updateDeliveryRecord((current) => {
+      if (done.includes('direct_delivery')) restoreClaudeInbound(recordedClaudeFiles(current, ctx));
+      return tidyLeftovers({
+        ...current,
+        // Kept as if it had been there before init; an extensions folder init created still goes.
+        ...(piOptedOut && current.pi ? { pi: { ...current.pi, off: true } } : {}),
+        turnedOn: current.turnedOn.filter((key) => !done.includes(key)),
+        claudeInbound: done.includes('direct_delivery') ? {} : current.claudeInbound,
+      });
+    });
+    if (failures.length > 0) {
+      throw new Error(`Some injection settings could not be turned off: ${failures.join('; ')}`);
+    }
+    return done;
+  } finally {
+    session.client.close();
+    // A core started only to undo the settings is stopped again.
+    if (session.origin === 'started') await stopCore(deps, true);
+  }
+}
+
+/** Turn off everything relay init turned on in the core. */
+async function uninstallInjection(deps: InitCommandDependencies): Promise<string[]> {
+  return turnOffInjection(deps, readDeliveryRecord(deliveryRecordPath()).turnedOn);
+}
+
+/**
+ * Stop the core relay init started, never one it attached to.
+ * @param quiet - Say nothing (used after a core started only for `--uninstall`)
+ */
+async function stopCore(deps: InitCommandDependencies, quiet = false): Promise<void> {
+  const say = (line: string) => {
+    if (!quiet) deps.log(line);
+  };
+  const state = readCoreState(coreStatePath());
+  if (!state) return;
+  const running = await connectTo(deps, state.socket).catch(() => undefined);
+  if (running && running.status.daemon.pid !== state.pid) {
+    running.client.close();
+    say(
+      'The Agent Relay core running now was not started by relay init (the desktop app or a service); left running.'
+    );
+  } else if (running) {
+    await running.client.call('daemon.shutdown').catch(() => undefined);
+    running.client.close();
+    for (let i = 0; i < 40 && deps.isAlive(state.pid); i += 1) await deps.sleep(250);
+    if (deps.isAlive(state.pid)) deps.stop(state.pid);
+    say(
+      'Stopped the Agent Relay core relay init started. Messages are no longer injected until it runs again.'
+    );
+  } else {
+    // No core answers: the one init started has exited. Its pid may belong to
+    // another program by now, so it is never signalled; the record is dropped.
+    say('The Agent Relay core relay init started is no longer running.');
+  }
+  fs.rmSync(coreStatePath(), { force: true });
+}
+
+// ---------------------------------------------------------------------------
 // Command
 
 interface InitOptions {
@@ -581,6 +1482,7 @@ interface InitOptions {
   stop?: boolean;
   tools?: ToolId[];
   scope?: InstallScope;
+  delivery?: Delivery;
   yes?: boolean;
   uninstall?: boolean;
 }
@@ -594,7 +1496,7 @@ function serverChoiceFromFlags(o: InitOptions): ServerChoice | undefined {
   return undefined;
 }
 
-function stopLocalServer(deps: InitCommandDependencies): void {
+async function stopLocalServer(deps: InitCommandDependencies): Promise<void> {
   const state = readState();
   if (!state || !deps.isAlive(state.pid)) {
     deps.log('No local Relay server is running.');
@@ -603,9 +1505,10 @@ function stopLocalServer(deps: InitCommandDependencies): void {
     deps.log(`Stopped the local Relay server on ${state.origin}. Its data is kept in ${localDir()}.`);
   }
   fs.rmSync(statePath(), { force: true });
+  await stopCore(deps);
 }
 
-function uninstall(deps: InitCommandDependencies, o: InitOptions): void {
+async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise<void> {
   const ctx = deps.toolContext();
   const scopes: InstallScope[] = o.scope ? [o.scope] : ['project', 'global'];
   const tools = o.tools ?? [...TOOL_IDS];
@@ -613,13 +1516,93 @@ function uninstall(deps: InitCommandDependencies, o: InitOptions): void {
     tools.map((id) => uninstallTool(findToolTarget(id)!, { ctx, scope }))
   );
   const shown = results.filter((result) => result.status !== 'absent');
-  if (shown.length === 0) {
+  for (const result of shown) deps.log(describeResult(result, ctx));
+
+  // Injection settings are the user's own, not a project's: turned off with
+  // the global scope (or both), and only for all tools at once.
+  let turnedOff: string[] = [];
+  const injectionKept = readDeliveryRecord(deliveryRecordPath()).turnedOn.length > 0;
+  if (injectionKept && o.scope !== 'project' && o.tools === undefined) {
+    turnedOff = await uninstallInjection(deps);
+    deps.log(`✓ Message injection    turned off what relay init turned on (${turnedOff.join(', ')})`);
+  } else if (injectionKept) {
+    deps.log(
+      '! Message injection is a per-user setting and was left on. Run relay init --uninstall without ' +
+        '--scope project or --tools to turn it off.'
+    );
+  }
+  if (shown.length === 0 && turnedOff.length === 0 && !injectionKept) {
     deps.log('relay init had not added Relay to any agent tool here; nothing to remove.');
     return;
   }
-  for (const result of shown) deps.log(describeResult(result, ctx));
   if (results.some((result) => result.status === 'failed'))
     throw new Error('Some entries could not be removed.');
+}
+
+/** The tools that end up on the MCP server, and the injection results, for one run. */
+interface DeliveryPlan {
+  injection?: InjectionSetup;
+  /** Why injection is not used, when it was wanted. */
+  unavailable?: string;
+  injected: ToolId[];
+  mcp: ToolId[];
+  removedMcp: ToolResult[];
+  /** Core settings init had turned on for tools now on the MCP server, turned off again. */
+  turnedOff: string[];
+}
+
+/** Set up injection for `tools` when wanted; whatever it cannot serve goes to the MCP server. */
+async function planDelivery(
+  deps: InitCommandDependencies,
+  tools: ToolId[],
+  delivery: Delivery,
+  setup: ServerSetup,
+  ctx: ToolContext
+): Promise<DeliveryPlan> {
+  if (tools.length === 0) return { injected: [], mcp: tools, removedMcp: [], turnedOff: [] };
+  if (delivery === 'mcp') {
+    // One route per tool: what init injected into these tools is turned off
+    // before their MCP server is added, or the MCP server is not added.
+    const turnedOff = await turnOffInjection(deps, recordedKeysFor(tools));
+    return { injected: [], mcp: tools, removedMcp: [], turnedOff };
+  }
+  const injection = await setupInjection(deps, tools, setup);
+  if ('reason' in injection)
+    return { unavailable: injection.reason, injected: [], mcp: tools, removedMcp: [], turnedOff: [] };
+  const injected = injection.results.filter((r) => r.status !== 'failed').map((r) => r.id);
+  return {
+    injection,
+    injected,
+    mcp: injection.results.filter((r) => r.status === 'failed').map((r) => r.id),
+    removedMcp: removeSupersededMcp(injected, ctx),
+    turnedOff: [],
+  };
+}
+
+/** The line saying injection was turned off for a switch to the MCP server. */
+function turnedOffLine(keys: string[]): string {
+  return (
+    `✓ Message injection    turned off what relay init had turned on (${keys.join(', ')}): ` +
+    'these tools now use only the Relay MCP server, one identity per session'
+  );
+}
+
+function unavailableLine(reason: string): string {
+  return (
+    `Message injection is not available (${reason}). Using the Relay MCP server instead: ` +
+    'agents check its inbox themselves.'
+  );
+}
+
+function injectionLines(plan: DeliveryPlan, ctx: ToolContext): string[] {
+  if (!plan.injection) return [];
+  return [
+    plan.injection.core,
+    ...plan.injection.results.map(describeDelivery),
+    ...plan.removedMcp.map((result) => describeSupersededMcp(result, ctx)),
+    ...(plan.injection.workspaceNote ? [`! ${plan.injection.workspaceNote}`] : []),
+    INJECTION_SCOPE_NOTE,
+  ];
 }
 
 /** `relay init` without prompts: flags, then sensible defaults. */
@@ -634,27 +1617,69 @@ async function runPlain(deps: InitCommandDependencies, o: InitOptions): Promise<
   const ctx = deps.toolContext();
   const tools = o.tools ?? detectTools(ctx).map((tool) => tool.id);
   const scope = o.scope ?? 'project';
+  const plan = await planDelivery(deps, tools, o.delivery ?? 'inject', setup, ctx);
+  if (plan.injection) {
+    deps.log('');
+    deps.log('Injecting messages into your agent sessions:');
+    for (const line of injectionLines(plan, ctx)) deps.log(`  ${line}`);
+  } else if (plan.unavailable) {
+    deps.log('');
+    deps.log(unavailableLine(plan.unavailable));
+  }
+  if (plan.turnedOff.length > 0) {
+    deps.log('');
+    deps.log(turnedOffLine(plan.turnedOff));
+  }
+
   const installed: ToolId[] = [];
-  if (tools.length > 0) {
-    const launch = deps.resolveLaunch(ctx);
+  if (plan.mcp.length > 0) {
+    const launch = deps.resolveLaunch(ctx, scope);
+    deps.warmLaunch(launch);
     deps.log('');
     deps.log(
       `Adding the Relay MCP server (${[launch.command, ...launch.args].join(' ')}) to your agent tools:`
     );
-    for (const result of installAll(deps, { tools, scope }, ctx, launch)) {
+    for (const result of installAll(deps, { tools: plan.mcp, scope }, ctx, launch)) {
       deps.log(`  ${describeResult(result, ctx)}`);
       if (['installed', 'updated', 'unchanged'].includes(result.status)) installed.push(result.id);
     }
     if (launch.warning) deps.log(`  ! ${launch.warning}`);
-    for (const note of notesFor(installed, scope)) deps.log(`  ${note}`);
-  } else if (o.tools === undefined) {
+    for (const note of notesFor(installed, scope, ctx)) deps.log(`  ${note}`);
+    const scopeNote = globalScopeNote(setup, scope, installed);
+    if (scopeNote) deps.log(`  ! ${scopeNote}`);
+  } else if (tools.length === 0 && o.tools === undefined) {
     deps.log('');
     deps.log(`No agent tools found (looked for ${TOOL_IDS.join(', ')}). Pass --tools to choose some.`);
   }
   deps.log('');
   deps.log('Next:');
+  if (plan.injected.length > 0) for (const line of injectionNextStep(plan.injected)) deps.log(`  ${line}`);
   for (const line of installed.length > 0 ? nextStep(installed, scope, ctx) : []) deps.log(`  ${line}`);
   for (const line of CLI_FALLBACK) deps.log(`  ${line}`);
+}
+
+/**
+ * Codex reads a project's .codex/config.toml only once that project is
+ * trusted, which `codex exec` never asks about. Offer to record the trust
+ * Codex's own first-run prompt would, since it also relaxes Codex's approval
+ * defaults in the project. `--yes` never trusts on the person's behalf.
+ */
+async function offerCodexTrust(p: InitPrompter, ctx: ToolContext): Promise<void> {
+  if (codexProjectTrust(ctx) !== 'unset') return;
+  const root = codexProjectRoot(ctx);
+  const trust = await p.confirm({
+    message:
+      `Codex reads .codex/config.toml only in projects it trusts. Trust ${root} in Codex now? ` +
+      '(Codex asks the same on its first run here; trusted projects get its trusted approval defaults.)',
+    initialValue: true,
+  });
+  if (trust !== true) return;
+  try {
+    trustCodexProject(ctx);
+    p.info(`Codex now trusts ${root} (${displayPath(codexUserConfigPath(ctx), ctx)}).`);
+  } catch (error) {
+    p.warn((error as Error).message);
+  }
 }
 
 /** `relay init` in a terminal: ask what flags did not say. */
@@ -735,9 +1760,10 @@ async function runGuided(deps: InitCommandDependencies, o: InitOptions): Promise
     return;
   }
 
-  // d. Scope.
+  // d. Scope: where the MCP server goes. Injection is per user, so only the MCP route asks.
+  const delivery = o.delivery ?? 'inject';
   let scope = o.scope;
-  if (!scope) {
+  if (!scope && delivery === 'mcp') {
     const picked = await p.select<InstallScope>({
       message: 'Installation scope',
       initialValue: 'project',
@@ -749,47 +1775,96 @@ async function runGuided(deps: InitCommandDependencies, o: InitOptions): Promise
     if (picked === CANCELLED) return cancelled();
     scope = picked;
   }
+  const mcpScope = scope ?? 'project';
 
   // e. Install.
-  const launch = deps.resolveLaunch(ctx);
-  const summary = [
-    ...tools.map((id) => {
-      const target = findToolTarget(id)!;
-      return `${target.label.padEnd(18)} ${displayPath(target.configPath(scope, ctx), ctx)}  (${plannedMethod(
-        target,
-        scope,
-        ctx
-      )})`;
-    }),
-    '',
-    `Runs: ${[launch.command, ...launch.args].join(' ')}`,
-    `      ${launch.reason}`,
-  ];
+  const launch = deps.resolveLaunch(ctx, mcpScope);
+  const summary =
+    delivery === 'inject'
+      ? [
+          ...tools.map((id) => `${findToolTarget(id)!.label.padEnd(18)} ${PROBE_DELIVERY[id].route}`),
+          '',
+          'Messages are injected into running sessions by the Agent Relay core, which relay init',
+          'starts in the background (or reuses, when the desktop app already runs one).',
+          INJECTION_SCOPE_NOTE,
+        ]
+      : [
+          ...tools.map((id) => {
+            const target = findToolTarget(id)!;
+            return `${target.label.padEnd(18)} ${displayPath(target.configPath(mcpScope, ctx), ctx)}  (${plannedMethod(
+              target,
+              mcpScope,
+              ctx
+            )})`;
+          }),
+          '',
+          `Runs: ${[launch.command, ...launch.args].join(' ')}`,
+          `      ${launch.reason}`,
+        ];
   p.note(summary.join('\n'), 'Installation Summary');
-  if (launch.warning) p.warn(launch.warning);
+  if (delivery === 'mcp' && launch.warning) p.warn(launch.warning);
   if (!o.yes) {
     const proceed = await p.confirm({ message: 'Proceed with installation?', initialValue: true });
     if (proceed === CANCELLED || !proceed) return cancelled();
   }
-  const results = installAll(deps, { tools, scope }, ctx, launch);
+
+  const injecting = p.spinner();
+  if (delivery === 'inject') injecting.start('Setting up message injection');
+  const plan = await planDelivery(
+    { ...deps, log: (...args) => injecting.message(args.join(' ')) },
+    tools,
+    delivery,
+    setup,
+    ctx
+  );
+  if (plan.injection) {
+    injecting.stop('Message injection is set up.');
+    p.note(injectionLines(plan, ctx).join('\n'), 'Message injection');
+  } else if (plan.unavailable) {
+    injecting.stop('Message injection is not available.');
+    p.warn(unavailableLine(plan.unavailable));
+  }
+  if (plan.turnedOff.length > 0) p.info(turnedOffLine(plan.turnedOff));
+
+  let results: ToolResult[] = [];
+  if (plan.mcp.length > 0) {
+    if (delivery === 'inject' && launch.warning) p.warn(launch.warning);
+    deps.warmLaunch(launch);
+    results = installAll(deps, { tools: plan.mcp, scope: mcpScope }, ctx, launch);
+    p.note(results.map((result) => describeResult(result, ctx)).join('\n'), 'Relay MCP server');
+  }
   const installed = results
     .filter((result) => ['installed', 'updated', 'unchanged'].includes(result.status))
     .map((result) => result.id);
-  p.note(results.map((result) => describeResult(result, ctx)).join('\n'), 'Relay MCP server');
-  for (const note of notesFor(installed, scope)) p.info(note);
+  if (mcpScope === 'project' && installed.includes('codex')) await offerCodexTrust(p, ctx);
+  for (const note of notesFor(installed, mcpScope, ctx)) p.info(note);
+  const scopeNote = globalScopeNote(setup, mcpScope, installed);
+  if (scopeNote) p.warn(scopeNote);
 
   // f. Next step.
-  p.note([...nextStep(installed, scope, ctx), '', ...CLI_FALLBACK].join('\n'), 'Next');
-  p.outro(installed.length > 0 ? 'Relay is ready.' : 'Relay is running, but no agent tool was set up.');
+  const next = [
+    ...(plan.injected.length > 0 ? injectionNextStep(plan.injected) : []),
+    ...(installed.length > 0 ? nextStep(installed, mcpScope, ctx) : []),
+  ];
+  p.note([...next, '', ...CLI_FALLBACK].join('\n'), 'Next');
+  const ready = plan.injected.length > 0 || installed.length > 0;
+  p.outro(ready ? 'Relay is ready.' : 'Relay is running, but no agent tool was set up.');
   if (results.some((result) => result.status === 'failed'))
     throw new Error('Some agent tools could not be set up.');
 }
 
+function parseDelivery(value: string): Delivery {
+  if (value === 'inject' || value === 'mcp') return value;
+  throw new InvalidArgumentError('Expected inject or mcp.');
+}
+
 /**
  * Register `relay init`: set up where agents talk (a private server on this
- * machine by default, the hosted service, or your own server), then install
- * the Relay MCP server into your agent tools. In a terminal it asks; with
- * `--yes` or without a TTY it uses flags and defaults.
+ * machine by default, the hosted service, or your own server), then connect
+ * your agent tools. By default the Agent Relay core injects messages into
+ * their running sessions; `--delivery mcp` (or a machine the core cannot run
+ * on) uses the Relay MCP server instead. In a terminal it asks; with `--yes`
+ * or without a TTY it uses flags and defaults.
  *
  * @param program - The commander program to add the command to.
  * @param overrides - Dependencies to replace, typically in tests.
@@ -803,8 +1878,8 @@ export function registerInitCommand(
     .command('init')
     .description(
       'Set up Relay and connect your agent tools: a private server on this machine (default), the hosted ' +
-        'service (--hosted), or your own server (--url and --key), then the Relay MCP server in Claude Code, ' +
-        'Codex, OpenCode, Grok, Pi and Devin'
+        'service (--hosted), or your own server (--url and --key); then the Agent Relay core injects messages ' +
+        'into running Claude Code, Codex, OpenCode, Grok, Pi and Devin sessions'
     )
     .option('--hosted', 'Use the hosted service so agents on other machines can join')
     .option('--url <url>', 'Your own Relaycast server')
@@ -816,10 +1891,23 @@ export function registerInitCommand(
       `Agent tools to connect: ${TOOL_IDS.join(',')}, all, or none (default: the ones installed here)`,
       parseTools
     )
-    .option('--scope <scope>', 'Install for this project or every project: project or global', parseScope)
+    .option(
+      '--delivery <delivery>',
+      'inject (default): the Agent Relay core types messages into running sessions; mcp: the Relay MCP ' +
+        'server, whose inbox agents check',
+      parseDelivery
+    )
+    .option(
+      '--scope <scope>',
+      'Where the Relay MCP server goes: project or global (injection is always per user)',
+      parseScope
+    )
     .option('-y, --yes', 'Do not ask; use flags and defaults')
-    .option('--uninstall', 'Remove the Relay MCP entries relay init added (both scopes unless --scope)')
-    .option('--stop', 'Stop the local server started by relay init')
+    .option(
+      '--uninstall',
+      'Remove the Relay MCP entries relay init added (both scopes unless --scope) and turn off the injection it turned on'
+    )
+    .option('--stop', 'Stop the local server and the Agent Relay core started by relay init')
     .action(async (o: InitOptions) => {
       await runSdk(deps, async () => {
         if (o.stop) return stopLocalServer(deps);

@@ -1,0 +1,3 @@
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}
+{"type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","content":[{"text":"[via Agent Relay — ref 123456abcdef]\nQuestion"}]}}}
+{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","last_agent_message":"Codex answer"}}

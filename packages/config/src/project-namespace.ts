@@ -113,62 +113,111 @@ export function getProjectPaths(projectRoot?: string): ProjectPaths {
   };
 }
 
+/** The `.git` directory or `gitdir:` file nearest `dir`, walking up. */
+function findDotGit(dir: string): string | undefined {
+  let current = path.resolve(dir);
+  for (;;) {
+    const candidate = path.join(current, '.git');
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
 /**
- * Add .agentworkforce/relay/ to .git/info/exclude (local per-repo gitignore).
- *
- * This file is:
- * - Per-repository (not shared across clones)
- * - Not committed (local to each developer)
- * - Standard git feature with no permission issues
- * - No branch/merge complications
- *
- * Returns true if the exclude file was modified
+ * The `info/exclude` git reads for the work tree whose `.git` is `dotGit`.
+ * A linked worktree or submodule has a `.git` file pointing at its git
+ * directory; a worktree shares `info/exclude` with the main repository
+ * through `commondir`, as `git rev-parse --git-path info/exclude` reports.
  */
-function ensureGitExclude(projectRoot: string): { modified: boolean } {
-  // Find the .git directory (could be in projectRoot or a parent for worktrees)
-  const gitDir = path.join(projectRoot, '.git');
-  const excludePath = path.join(gitDir, 'info', 'exclude');
-
+function gitExcludePath(dotGit: string): string | undefined {
+  let gitDir = dotGit;
+  // Check and read through one descriptor, so the answer cannot change
+  // between them. Some platforms refuse to open a directory (EISDIR); others
+  // open it, and FreeBSD would even "read" it, hence fstat.
+  let pointerFile: string | undefined;
+  let fd: number | undefined;
   try {
-    // Check if this is a git repository
-    if (!fs.existsSync(gitDir)) {
-      return { modified: false };
+    fd = fs.openSync(dotGit, 'r');
+    if (!fs.fstatSync(fd).isDirectory()) pointerFile = fs.readFileSync(fd, 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EISDIR') return undefined;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+  if (pointerFile !== undefined) {
+    const match = /^gitdir:\s*(.+?)\s*$/m.exec(pointerFile);
+    if (!match) return undefined;
+    gitDir = path.resolve(path.dirname(dotGit), match[1]);
+    // A stale pointer (moved or pruned worktree) is not a repository to write into.
+    try {
+      if (!fs.statSync(gitDir).isDirectory()) return undefined;
+    } catch {
+      return undefined;
     }
+  }
+  let commonDir = gitDir;
+  try {
+    const pointer = fs.readFileSync(path.join(gitDir, 'commondir'), 'utf-8').trim();
+    if (pointer) commonDir = path.resolve(gitDir, pointer);
+  } catch {
+    // Not a linked worktree.
+  }
+  return path.join(commonDir, 'info', 'exclude');
+}
 
-    // Ensure .git/info directory exists
-    const infoDir = path.join(gitDir, 'info');
-    if (!fs.existsSync(infoDir)) {
-      fs.mkdirSync(infoDir, { recursive: true });
-    }
+/** Escape a work-tree-relative path into an anchored gitignore pattern. */
+function anchoredPattern(relative: string): string {
+  return `/${relative
+    .split(path.sep)
+    .join('/')
+    .replace(/[\\*?[\]!#]/g, '\\$&')}/`;
+}
 
+/**
+ * Keep the project's `.agentworkforce/relay/` directory (workspace key,
+ * sockets, local state) out of `git status` by adding it to the repository's
+ * `info/exclude`, the per-clone ignore file that is never committed. The
+ * project's own `.gitignore` is never modified.
+ *
+ * Linked worktrees and submodules are handled (the exclude file lives in the
+ * repository's common git directory). Outside a git work tree, or on any
+ * error, nothing is changed.
+ *
+ * @param dataDir - The project data directory, `<project>/.agentworkforce/relay`.
+ * @returns Whether the exclude file was changed.
+ */
+export function ensureGitExclude(dataDir: string): { modified: boolean } {
+  try {
+    const resolved = path.resolve(dataDir);
+    const dotGit = findDotGit(resolved);
+    if (!dotGit) return { modified: false };
+    const relative = path.relative(path.dirname(dotGit), resolved);
+    if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) return { modified: false };
+    const excludePath = gitExcludePath(dotGit);
+    if (!excludePath) return { modified: false };
+
+    const pattern = anchoredPattern(relative);
+    const bare = pattern.slice(1, -1);
     let content = '';
-    if (fs.existsSync(excludePath)) {
+    try {
       content = fs.readFileSync(excludePath, 'utf-8');
-      // Check if .agentworkforce/relay is already in exclude
-      const lines = content.split('\n');
-      const hasEntry = lines.some((line) => {
-        const trimmed = line.trim();
-        return (
-          trimmed === '.agentworkforce/relay' ||
-          trimmed === '.agentworkforce/relay/' ||
-          trimmed === '/.agentworkforce/relay' ||
-          trimmed === '/.agentworkforce/relay/'
-        );
-      });
-      if (hasEntry) {
-        return { modified: false }; // Already present
-      }
+    } catch {
+      // No exclude file yet.
     }
+    const present = content
+      .split('\n')
+      .map((line) => line.trim())
+      .some((line) => [bare, `${bare}/`, `/${bare}`, pattern].includes(line));
+    if (present) return { modified: false };
 
-    // Add .agentworkforce/relay/ to exclude
-    const newEntry = '.agentworkforce/relay/';
-    const newContent =
-      content.endsWith('\n') || content === '' ? `${content}${newEntry}\n` : `${content}\n${newEntry}\n`;
-
-    fs.writeFileSync(excludePath, newContent, 'utf-8');
+    fs.mkdirSync(path.dirname(excludePath), { recursive: true });
+    const separator = content === '' || content.endsWith('\n') ? '' : '\n';
+    fs.appendFileSync(excludePath, `${separator}${pattern}\n`, 'utf-8');
     return { modified: true };
   } catch {
-    // Silently ignore errors (not a git repo, no write permission, etc.)
+    // Not a git repository we can write to; never block the caller.
     return { modified: false };
   }
 }
@@ -186,7 +235,7 @@ export function ensureProjectDir(projectRoot?: string): ProjectPaths {
     fs.mkdirSync(paths.dataDir, { recursive: true });
 
     // Add to .git/info/exclude (local per-repo gitignore, not committed)
-    const excludeResult = ensureGitExclude(paths.projectRoot);
+    const excludeResult = ensureGitExclude(paths.dataDir);
     if (excludeResult.modified) {
       console.log('[agent-relay] Added .agentworkforce/relay/ to .git/info/exclude');
     }

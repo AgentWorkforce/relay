@@ -81,6 +81,7 @@ import {
   type CoreTeamsConfig,
   type SpawnedProcess,
 } from './core.js';
+import { INSTALLER_LAUNCHER_MARKER } from '../lib/core-maintenance.js';
 
 class ExitSignal extends Error {
   constructor(public readonly code: number) {
@@ -3152,6 +3153,40 @@ describe('registerCoreCommands', () => {
       expect(deps.log).toHaveBeenCalledWith(`[dry-run] Would remove directory: ${filePath}`);
     }
     expect(deps.execCommand).not.toHaveBeenCalled();
+  });
+
+  it('uninstall removes the installer-written relay launcher but keeps a foreign relay', async () => {
+    const home = os.homedir();
+    const relayPath = `${home}/.local/bin/relay`;
+    const agentRelayPath = `${home}/.local/bin/agent-relay`;
+    const launcher = `#!/usr/bin/env bash\n${INSTALLER_LAUNCHER_MARKER}\nexec /x/agent-relay "$@"\n`;
+
+    const ours = createHarness();
+    ours.deps.fs.writeFileSync(relayPath, launcher);
+    ours.deps.fs.writeFileSync(agentRelayPath, launcher);
+    const oursProgram = new Command();
+    registerCoreMaintenance(oursProgram, ours.deps);
+    expect(await runCommand(oursProgram, ['uninstall'])).toBeUndefined();
+    expect(ours.deps.fs.existsSync(relayPath)).toBe(false);
+    expect(ours.deps.fs.existsSync(agentRelayPath)).toBe(false);
+    expect(ours.deps.log).toHaveBeenCalledWith(`Removed ${relayPath}`);
+
+    const foreign = createHarness();
+    foreign.deps.fs.writeFileSync(relayPath, '#!/bin/sh\necho some other relay tool\n');
+    const foreignProgram = new Command();
+    registerCoreMaintenance(foreignProgram, foreign.deps);
+    expect(await runCommand(foreignProgram, ['uninstall'])).toBeUndefined();
+    expect(foreign.deps.fs.existsSync(relayPath)).toBe(true);
+    expect(foreign.deps.fs.unlinkSync).not.toHaveBeenCalledWith(relayPath);
+
+    // A user-created symlink to a marked launcher is not ours either.
+    const symlinked = createHarness();
+    symlinked.deps.fs.writeFileSync(relayPath, launcher);
+    symlinked.deps.fs.lstatSync = vi.fn(() => ({ isFile: () => false }));
+    const symlinkedProgram = new Command();
+    registerCoreMaintenance(symlinkedProgram, symlinked.deps);
+    expect(await runCommand(symlinkedProgram, ['uninstall'])).toBeUndefined();
+    expect(symlinked.deps.fs.existsSync(relayPath)).toBe(true);
   });
 
   it('up always logs the workspace key after broker starts', async () => {

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f6f7fb; --card: #ffffff; --text: #14161f; --muted: #5d6275; --border: #e3e6f0; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0d0e14; --card: #171922; --text: #eef0f7; --muted: #9aa0b4; --border: #262a38; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; background: var(--bg); color: var(--text); font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Ubuntu, Cantarell, sans-serif; }
+  main { width: 100%; max-width: 400px; padding: 40px 32px 32px; text-align: center; background: var(--card); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 12px 40px rgba(20, 22, 31, 0.08); }
+  svg { width: 56px; height: 46px; margin-bottom: 20px; }
+  h1 { margin: 0 0 8px; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+  p { margin: 0; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <svg viewBox="0 0 112 91" aria-hidden="true">
+    <path fill="#75B8E2" d="M71.3682 21.7098 54.042 39.036c-3.3853 3.3853-3.3852 8.8739 0 12.2592l17.3307 17.3307-18.5406 18.5406c-4.2316 4.2316-11.0924 4.2316-15.324 0L3.17369 52.8321c-4.23158-4.2316-4.23159-11.0924 0-15.324L37.5081 3.17369c4.2316-4.23159 11.0924-4.23158 15.324 0Z"/>
+    <path fill="#3F6A86" d="M75.5711 72.8243c3.3852 3.3853 8.8739 3.3853 12.2591 0l21.5288-21.5291c3.386-3.3853 3.386-8.8739 0-12.2592L87.8302 17.507c-3.3852-3.3852-8.8739-3.3852-12.2591 0l-4.2029 4.2028 17.3307 17.3307c3.3853 3.3853 3.3853 8.8739 0 12.2592L71.3727 68.6259Z"/>
+  </svg>
+  <h1>{{title}}</h1>
+  <p id="detail">{{detail}}</p>
+</main>
+{{script}}
+</body>
+</html>

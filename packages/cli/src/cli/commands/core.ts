@@ -78,6 +78,7 @@ export interface CoreFileSystem {
     options: { bigint: true }
   ) => Pick<fs.BigIntStats, 'dev' | 'ino' | 'ctimeNs' | 'mtimeNs'>;
   realpathSync?: (path: string) => string;
+  lstatSync?: (path: string) => Pick<fs.Stats, 'isFile'>;
   existsSync: (path: string) => boolean;
   readFileSync: (path: string, encoding: BufferEncoding) => string;
   writeFileSync: (path: string, data: string, encoding?: BufferEncoding) => void;
@@ -248,6 +249,7 @@ async function createDefaultRelay(
 export function withDefaults(overrides: Partial<CoreDependencies> = {}): CoreDependencies {
   const fileSystem: CoreFileSystem = overrides.fs ?? {
     realpathSync: fs.realpathSync,
+    lstatSync: (filePath) => fs.lstatSync(filePath),
     existsSync: fs.existsSync,
     statSync: (filePath, options) => fs.statSync(filePath, options),
     readFileSync: (filePath, encoding) => fs.readFileSync(filePath, encoding),

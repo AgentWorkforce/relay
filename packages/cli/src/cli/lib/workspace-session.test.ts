@@ -15,7 +15,12 @@ import {
   readProjectWorkspaceSession,
   writeProjectWorkspaceKey,
 } from './project-workspace-key.js';
-import { readWorkspaceStore, setWorkspaceKey, switchWorkspace } from './workspace-store.js';
+import {
+  readWorkspaceStore,
+  setWorkspaceKey,
+  switchWorkspace,
+  writeWorkspaceStore,
+} from './workspace-store.js';
 
 const tempRoots: string[] = [];
 
@@ -97,6 +102,91 @@ describe('workspace session persistence', () => {
     });
 
     expect(readWorkspaceStore(env)).toMatchObject({ active: 'session-two', previous: 'default' });
+  });
+
+  describe("activate: 'if-none'", () => {
+    it('makes the workspace active on a machine with none', () => {
+      const root = tempRoot();
+      const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
+      const env = isolatedEnv(root);
+
+      const result = persistWorkspaceSession({
+        workspaceKey: 'rk_live_local',
+        name: 'local',
+        activate: 'if-none',
+        projectDataDir,
+        env,
+      });
+
+      expect(result).toEqual({});
+      expect(readWorkspaceStore(env)).toEqual({
+        active: 'local',
+        workspaces: { local: { key: 'rk_live_local' } },
+      });
+    });
+
+    it('saves and pins the workspace but keeps a different active workspace', () => {
+      const root = tempRoot();
+      const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
+      const env = isolatedEnv(root);
+      setWorkspaceKey('ghsub-live', 'rk_live_hosted', env);
+
+      const result = persistWorkspaceSession({
+        workspaceKey: 'rk_live_local',
+        name: 'local',
+        activate: 'if-none',
+        projectDataDir,
+        env,
+      });
+
+      expect(result).toEqual({ keptActiveWorkspace: 'ghsub-live' });
+      expect(readWorkspaceStore(env)).toEqual({
+        active: 'ghsub-live',
+        workspaces: { 'ghsub-live': { key: 'rk_live_hosted' }, local: { key: 'rk_live_local' } },
+      });
+      expect(readProjectWorkspaceKey(projectDataDir)).toBe('rk_live_local');
+      expect(resolveWorkspaceSessionKey({ projectDataDir, env })).toBe('rk_live_local');
+    });
+
+    it('re-selects the workspace that is already active', () => {
+      const root = tempRoot();
+      const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
+      const env = isolatedEnv(root);
+      setWorkspaceKey('local', 'rk_live_old', env);
+      setWorkspaceKey('other', 'rk_live_other', env);
+
+      const result = persistWorkspaceSession({
+        workspaceKey: 'rk_live_local',
+        name: 'local',
+        activate: 'if-none',
+        projectDataDir,
+        env,
+      });
+
+      expect(result).toEqual({});
+      expect(readWorkspaceStore(env)).toMatchObject({
+        active: 'local',
+        workspaces: { local: { key: 'rk_live_local' } },
+      });
+    });
+
+    it('takes over an active name that has no saved workspace', () => {
+      const root = tempRoot();
+      const projectDataDir = path.join(root, 'project', '.agentworkforce', 'relay');
+      const env = isolatedEnv(root);
+      writeWorkspaceStore({ active: 'gone', workspaces: {} }, env);
+
+      const result = persistWorkspaceSession({
+        workspaceKey: 'rk_live_local',
+        name: 'local',
+        activate: 'if-none',
+        projectDataDir,
+        env,
+      });
+
+      expect(result).toEqual({});
+      expect(readWorkspaceStore(env).active).toBe('local');
+    });
   });
 
   it('pins an explicitly supplied key without changing the named global workspace', () => {

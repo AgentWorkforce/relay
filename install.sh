@@ -153,8 +153,11 @@ write_executable_file() {
 
     mkdir -p "$(dirname "$target")"
     safe_remove_path "$temp"
-    cat > "$temp"
-    chmod +x "$temp"
+    # Never move a partial or non-executable file over a working one (disk full).
+    if ! cat > "$temp" || ! chmod +x "$temp"; then
+        safe_remove_path "$temp"
+        return 1
+    fi
     mv -f "$temp" "$target"
 }
 
@@ -167,11 +170,59 @@ launcher_env_lines() {
     fi
 }
 
+# Every launcher this installer writes carries this line. It is how a later run
+# (and `agent-relay uninstall`) tells our `relay` launcher apart from an
+# unrelated `relay` executable that happens to live in $BIN_DIR.
+LAUNCHER_MARKER="# agent-relay launcher (written by the Agent Relay installer)"
+
+# 0 when <path> is a launcher written by this installer (a regular file, not a
+# symlink, carrying LAUNCHER_MARKER).
+is_our_launcher() {
+    [ -f "$1" ] && [ ! -L "$1" ] && grep -qF "$LAUNCHER_MARKER" "$1" 2>/dev/null
+}
+
+# The short `relay` command is a second launcher next to `agent-relay`. It is
+# skipped (never an install failure) when $BIN_DIR/relay is something else, or
+# when main() could not back up our existing one (RELAY_LAUNCHER_SKIP=1).
+RELAY_LAUNCHER_SKIP=0
+relay_launcher_allowed() {
+    local relay="$BIN_DIR/relay"
+    [ "$RELAY_LAUNCHER_SKIP" -eq 1 ] && return 1
+    if [ -e "$relay" ] || [ -L "$relay" ]; then
+        is_our_launcher "$relay" && return 0
+        # Remember the skip (so the warning is printed once and a rollback
+        # never removes the foreign file).
+        RELAY_LAUNCHER_SKIP=1
+        case "$(readlink "$relay" 2>/dev/null)" in
+            # npm's own `relay` bin for the agent-relay package already runs this CLI
+            */node_modules/agent-relay/*) info "$relay is the agent-relay npm package's own \`relay\` command; leaving it alone." ;;
+            *) warn "$relay already exists and was not installed by Agent Relay; leaving it alone. Use \`agent-relay\` instead of \`relay\`." ;;
+        esac
+        return 1
+    fi
+    return 0
+}
+
+# Write the launcher body on stdin to $BIN_DIR/agent-relay and, when allowed,
+# to $BIN_DIR/relay (same body: both run the same CLI).
+write_launchers() {
+    local body
+    body="$(cat)"
+    printf '%s\n' "$body" | write_executable_file "$BIN_DIR/agent-relay"
+    if relay_launcher_allowed; then
+        if ! printf '%s\n' "$body" | write_executable_file "$BIN_DIR/relay"; then
+            safe_remove_path "$BIN_DIR/relay.tmp.$$"
+            warn "Could not write the $BIN_DIR/relay launcher; use \`agent-relay\` instead of \`relay\`."
+        fi
+    fi
+}
+
 install_binary_launcher() {
     local target_binary="$1"
 
-    write_executable_file "$BIN_DIR/agent-relay" << WRAPPER
+    write_launchers << WRAPPER
 #!/usr/bin/env bash
+$LAUNCHER_MARKER
 $(launcher_env_lines)
 exec "$target_binary" "\$@"
 WRAPPER
@@ -180,8 +231,9 @@ WRAPPER
 install_node_launcher() {
     local target_dir="$1"
 
-    write_executable_file "$BIN_DIR/agent-relay" << WRAPPER
+    write_launchers << WRAPPER
 #!/usr/bin/env bash
+$LAUNCHER_MARKER
 $(launcher_env_lines)
 cd "$target_dir" && exec node dist/src/cli/index.js "\$@"
 WRAPPER
@@ -281,7 +333,7 @@ SMOKE_PID=""
 SMOKE_DIR=""
 KEEP_PREV=0
 DIGEST_VERIFIED=0   # set by verify_asset_digest when the last fetched asset matched its published digest
-# One transaction covers the standalone CLI, the launcher and both broker
+# One transaction covers the standalone CLI, the launchers and both broker
 # copies. TXN_STATE lists the armed components ("cli", "broker"); the install
 # commits with a SINGLE assignment (TXN_STATE=""), so an interrupt either rolls
 # every component back or finds nothing to roll back, never a mixture.
@@ -295,6 +347,8 @@ BROKER_PRE2=0
 CLI_PRE=0
 LAUNCHER_PRE=0
 LAUNCHER_BACKUP=""
+RELAY_LAUNCHER_PRE=0      # our $BIN_DIR/relay launcher existed before this run
+RELAY_LAUNCHER_BACKUP=""
 RELEASE_JSON=""
 RELEASE_JSON_STATE=""   # "", "ok" or "failed"
 
@@ -927,6 +981,15 @@ undo_cli() {
     elif [ "$LAUNCHER_PRE" -eq 0 ]; then
         rm -f "$launcher"
     fi
+    # The short `relay` launcher is rolled back the same way. One we skipped
+    # (a foreign `relay`, or a failed backup) was never touched.
+    local relay="$BIN_DIR/relay"
+    if [ -n "$RELAY_LAUNCHER_BACKUP" ] && [ -e "$RELAY_LAUNCHER_BACKUP" ]; then
+        mv -f "$RELAY_LAUNCHER_BACKUP" "$relay"
+        RELAY_LAUNCHER_BACKUP=""
+    elif [ "$RELAY_LAUNCHER_PRE" -eq 0 ] && [ "$RELAY_LAUNCHER_SKIP" -eq 0 ]; then
+        rm -f "$relay"
+    fi
 }
 
 # INT/TERM/HUP: undo whatever is armed, then clean up and exit. TXN_STATE is
@@ -1453,6 +1516,13 @@ verify_installation() {
         elif [[ ":$ORIGINAL_PATH:" != *":$BIN_DIR:"* ]]; then
             setup_path "$ORIGINAL_PATH"
         fi
+        if is_our_launcher "$BIN_DIR/relay"; then
+            local original_relay=""
+            original_relay=$(resolve_command_in_path relay "$ORIGINAL_PATH")
+            if [ -n "$original_relay" ] && [ "$original_relay" != "$BIN_DIR/relay" ]; then
+                warn "Another \`relay\` at $original_relay comes before $BIN_DIR/relay on your PATH; use \`agent-relay\`, or put $BIN_DIR first."
+            fi
+        fi
         return 0
     fi
 
@@ -1489,7 +1559,11 @@ print_usage() {
     echo "  # Stop the broker"
     echo "  agent-relay ${node_group}down"
     echo ""
-    echo -e "${BOLD}Binaries:${NC} $INSTALL_DIR/bin (launcher: $BIN_DIR/agent-relay)"
+    local launchers="$BIN_DIR/agent-relay"
+    if is_our_launcher "$BIN_DIR/relay"; then
+        launchers="$launchers, $BIN_DIR/relay"
+    fi
+    echo -e "${BOLD}Binaries:${NC} $INSTALL_DIR/bin (launchers: $launchers)"
     echo ""
     echo -e "${BOLD}Documentation:${NC} https://github.com/AgentWorkforce/relay"
     echo ""
@@ -1544,6 +1618,28 @@ main() {
             warn "Could not back up the existing $BIN_DIR/agent-relay launcher (disk full or permissions?); not replacing it, skipping the standalone install."
         fi
     fi
+    # Same for our short `relay` launcher. A foreign $BIN_DIR/relay is never
+    # backed up or replaced (relay_launcher_allowed warns and skips it), and a
+    # failed backup only skips `relay`: it is not worth failing the install over.
+    RELAY_LAUNCHER_BACKUP=""
+    RELAY_LAUNCHER_PRE=0
+    RELAY_LAUNCHER_SKIP=0
+    if is_our_launcher "$BIN_DIR/relay"; then
+        RELAY_LAUNCHER_PRE=1
+        if make_temp_file "$BIN_DIR" "relay-launcher"; then
+            if cp -pP "$BIN_DIR/relay" "$MADE_TEMP" 2>/dev/null; then
+                RELAY_LAUNCHER_BACKUP="$MADE_TEMP"
+            else
+                rm -f "$MADE_TEMP"
+            fi
+        fi
+        if [ -z "$RELAY_LAUNCHER_BACKUP" ]; then
+            RELAY_LAUNCHER_SKIP=1
+            warn "Could not back up the existing $BIN_DIR/relay launcher (disk full or permissions?); leaving it unchanged."
+        fi
+    else
+        relay_launcher_allowed || true   # warn now about a foreign `relay`
+    fi
     CLI_PRE=0
     if [ -e "$INSTALL_DIR/bin/agent-relay" ] || [ -L "$INSTALL_DIR/bin/agent-relay" ]; then CLI_PRE=1; fi
     # Arm the transaction BEFORE the CLI is touched; every undo step is idempotent.
@@ -1577,6 +1673,8 @@ main() {
         cleanup_broker_backups
         [ -n "$LAUNCHER_BACKUP" ] && rm -f "$LAUNCHER_BACKUP"
         LAUNCHER_BACKUP=""
+        [ -n "$RELAY_LAUNCHER_BACKUP" ] && rm -f "$RELAY_LAUNCHER_BACKUP"
+        RELAY_LAUNCHER_BACKUP=""
         # Install ACP bridge for Zed editor (requires Node.js)
         install_acp_bridge || true
         install_relaycast_engine
@@ -1587,6 +1685,8 @@ main() {
     TXN_STATE=""
     [ -n "$LAUNCHER_BACKUP" ] && rm -f "$LAUNCHER_BACKUP"
     LAUNCHER_BACKUP=""
+    [ -n "$RELAY_LAUNCHER_BACKUP" ] && rm -f "$RELAY_LAUNCHER_BACKUP"
+    RELAY_LAUNCHER_BACKUP=""
 
     refuse_fallback_if_standalone_only
 
