@@ -2050,6 +2050,44 @@ describe('relay init messaging skill', () => {
     expect(fs.existsSync(path.join(toolHome, '.agents'))).toBe(false);
   });
 
+  it('names what it could not take back out when the record cannot be saved', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    const settings = path.join(home, 'local', 'core-settings.json');
+    const copy = path.join(skills.dirs.codex!, RELAY_SKILL_NAME);
+    const rmSync = fs.rmSync;
+    const spy = vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+      if (target === copy) throw new Error('EACCES');
+      rmSync(target, options);
+    });
+    const blocked: RunSkillsCli = (args, options) => {
+      const result = skills.run(args, options);
+      rmSync(settings, { force: true });
+      fs.mkdirSync(settings);
+      return result;
+    };
+    const { run, logs } = setup({ ...core.deps, runSkillsCli: blocked });
+    await run('--tools', 'codex');
+    spy.mockRestore();
+    expect(logs.join('\n')).toContain(`could not be taken out again, so remove them by hand: ${copy}`);
+    expect(logs.join('\n')).not.toContain("this run's copies were taken out again");
+  });
+
+  it('replaces a shared lock file in one step, keeping its mode and leaving no temporary file', async () => {
+    installedProbe();
+    const lock = path.join(toolHome, '.agents', '.skill-lock.json');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, JSON.stringify({ version: 3, skills: { other: { ref: 'x' } } }), { mode: 0o640 });
+    fs.chmodSync(lock, 0o640);
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
+    await setup(core.deps).run('--uninstall');
+    expect(fs.statSync(lock).mode & 0o777).toBe(0o640);
+    expect(fs.readdirSync(path.dirname(lock))).toEqual(['.skill-lock.json']);
+  });
+
   it('removes the other copies and keeps recording one it could not remove', async () => {
     installedProbe();
     const core = fakeCore();

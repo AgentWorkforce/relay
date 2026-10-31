@@ -1406,10 +1406,17 @@ function installSkill(
     );
   } catch (error) {
     // The skill is optional, but what --uninstall would not know about is not left behind.
-    uninstallRelaySkill(result.undo, ctx);
+    const undone = uninstallRelaySkill(result.undo, ctx);
+    const left = undone?.remaining;
+    const outcome = left
+      ? `and these could not be taken out again, so remove them by hand: ${[
+          ...left.copies.map((copy) => copy.path),
+          ...left.locks.map((lock) => lock.file),
+        ].join(', ')}`
+      : "so this run's copies were taken out again";
     return (
       `! Agent skill        not installed: ${deliveryRecordPath()} could not be saved ` +
-      `(${(error as Error).message}), so this run's copies were taken out again`
+      `(${(error as Error).message}), ${outcome}`
     );
   }
   return result.line;

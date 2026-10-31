@@ -492,10 +492,22 @@ function restoreLock(record: SkillLockRecord): boolean {
   else delete lock.skills[RELAY_SKILL_NAME];
   try {
     if (record.created && Object.keys(lock.skills).length === 0) fs.rmSync(record.file, { force: true });
-    else fs.writeFileSync(record.file, JSON.stringify(lock, null, 2));
+    else writeAtomically(record.file, JSON.stringify(lock, null, 2));
     return true;
   } catch {
     return false;
+  }
+}
+
+/** Replace `file` in one step, keeping its mode: the lock is shared with the person's own `skills` runs. */
+function writeAtomically(file: string, text: string): void {
+  const temporary = `${file}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temporary, text, { mode: fs.statSync(file).mode & 0o777 });
+    fs.renameSync(temporary, file);
+  } catch (error) {
+    fs.rmSync(temporary, { force: true });
+    throw error;
   }
 }
 
