@@ -1163,12 +1163,13 @@ function fakeCore(
     fs.mkdirSync(path.dirname(marker), { recursive: true });
     fs.writeFileSync(marker, "Agent Relay's Pi extension was turned off (pi_extension).\n");
   };
+  let version = PROBE_VERSION;
   const client: CoreClient = {
     async call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
       calls.push([method, params]);
       switch (method) {
         case 'status.get':
-          return { daemon: { pid, version: PROBE_VERSION, socket: '/core.sock' }, workspace } as T;
+          return { daemon: { pid, version, socket: '/core.sock' }, workspace } as T;
         case 'settings.get':
           return { ...settings } as T;
         case 'settings.set':
@@ -1235,12 +1236,16 @@ function fakeCore(
     calls,
     agents: () => agents,
     isUp: () => up,
+    setVersion: (next: string) => {
+      version = next;
+    },
     sets: () => calls.filter(([method]) => method === 'settings.set').map(([, params]) => params),
     deps: {
       connectCore: vi.fn(async () => (up ? client : undefined)),
       startCore: vi.fn(() => {
         up = true;
         pid = 5151;
+        version = PROBE_VERSION;
         return pid;
       }),
       // Only the core's pid is alive; the fake local server's is separate.
@@ -1611,6 +1616,33 @@ describe('relay init message injection', () => {
     expect(core.deps.startCore).toHaveBeenCalledTimes(1);
     expect(again.logs.join('\n')).toContain('The Agent Relay core relay init started earlier is running (');
     expect(core.sets()).toHaveLength(4);
+  });
+
+  it('replaces an older core it started, and keeps it when the new one cannot be fetched', async () => {
+    installedProbe();
+    const core = fakeCore();
+    await setup(core.deps).run('--tools', 'codex');
+
+    core.setVersion('15.0.5');
+    const failed = setup({ ...core.deps, probeVersion: vi.fn(() => '15.0.5') });
+    await failed.run('--tools', 'codex');
+    expect(core.deps.startCore).toHaveBeenCalledTimes(1);
+    expect(failed.logs.join('\n')).toContain('Keeping the Agent Relay core 15.0.5');
+
+    const { run, logs } = setup(core.deps);
+    await run('--tools', 'codex');
+    expect(core.calls.map(([method]) => method)).toContain('daemon.shutdown');
+    expect(core.deps.startCore).toHaveBeenCalledTimes(2);
+    expect(logs.join('\n')).toContain(`Updating the Agent Relay core from 15.0.5 to ${PROBE_VERSION}`);
+  });
+
+  it('prints a join line with no server for an armadillo workspace key', async () => {
+    const { run, logs } = setup({
+      cliVersion: '15.0.0-next.6',
+      createWorkspace: vi.fn(async () => ({ workspaceKey: 'ar_ws_team', name: 'team' })),
+    });
+    await run('--hosted', '--name', 'team');
+    expect(logs.join('\n')).toContain("  npx -y agent-relay@next init --key 'ar_ws_team'");
   });
 
   it('attaches to a core it did not start, such as the desktop app, and never starts a second one', async () => {
