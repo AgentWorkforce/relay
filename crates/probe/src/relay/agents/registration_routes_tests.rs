@@ -8,8 +8,10 @@ use crate::relay::managed_sessions::ManagedAuthority;
 use crate::relay::paths::CorePaths;
 use crate::relay::sessions::{DiscoveredSession, SessionDirectory};
 use crate::relay::store::{SessionKind, Target};
+use crate::relay::workspace::Secret;
 use futures_util::future::BoxFuture;
 use serde_json::Value;
+use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -124,7 +126,7 @@ impl SessionDirectory for OpenGrok {
     }
 }
 
-/// A sign-in that has not said who the person is yet.
+/// A sign-in nothing can name the person of: no credential to ask with.
 struct UnknownPerson;
 
 impl CloudAccess for UnknownPerson {
@@ -226,5 +228,81 @@ async fn a_sign_in_that_has_no_person_yet_binds_nothing() {
     assert!(directory.bound.lock().unwrap().is_none());
     assert_eq!(fake.calls("POST", "/v1/agents").len(), 0);
     assert_eq!(failures.len(), 1, "{failures:?}");
-    assert!(failures[0].contains("sign-in is still loading"));
+    assert!(failures[0].contains("could not confirm who is signed in"));
+}
+
+/// A saved sign-in after a restart: the account has no person in memory and
+/// Cloud refuses the held bearer until it is renewed.
+struct SavedSignIn {
+    site: String,
+}
+
+impl SavedSignIn {
+    /// Cloud's `/auth/whoami`, on loopback.
+    fn start() -> Self {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let site = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") && stream.read_exact(&mut byte).is_ok() {
+                    head.push(byte[0]);
+                }
+                let head = String::from_utf8_lossy(&head);
+                let (status, body) = if !head.contains("/auth/whoami") {
+                    ("404 X", "{}")
+                } else if head.contains("Bearer renewed") {
+                    ("200 OK", r#"{"user":{"id":"user-saved"}}"#)
+                } else {
+                    ("401 X", "{}")
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        Self { site }
+    }
+}
+
+impl CloudAccess for SavedSignIn {
+    fn account(&self) -> Option<CloudAccount> {
+        Some(CloudAccount {
+            site_url: self.site.clone(),
+            ..account(None)
+        })
+    }
+
+    fn agent_owner(&self) -> Option<AgentOwner> {
+        None
+    }
+
+    fn request(
+        &self,
+        _: &'static str,
+        _: String,
+        _: Option<Value>,
+    ) -> BoxFuture<'_, Result<Value, CloudError>> {
+        Box::pin(async { Err(CloudError::SignedOut) })
+    }
+
+    fn credential(&self, refused: Option<Secret>) -> BoxFuture<'_, Option<(String, Secret)>> {
+        let bearer = if refused.is_some() { "renewed" } else { "held" };
+        let held = (self.site.clone(), Secret::new(bearer.to_string()));
+        Box::pin(async move { Some(held) })
+    }
+}
+
+#[tokio::test]
+async fn a_saved_sign_in_owns_its_session_after_a_restart() {
+    let (directory, failures, fake, _core, _temp) =
+        activate(Some(Arc::new(SavedSignIn::start()))).await;
+    assert!(failures.is_empty(), "{failures:?}");
+    let bound = directory.bound.lock().unwrap().clone().unwrap();
+    assert_eq!(bound.owner_id, "user-saved");
+    assert_eq!(fake.calls("POST", "/v1/agents").len(), 1);
 }
