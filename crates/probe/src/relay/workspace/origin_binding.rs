@@ -240,7 +240,7 @@ mod tests {
         );
         let bindings = read_bindings(&path).unwrap();
         assert_eq!(bindings.bound("rk_live_armadillo"), Some(ARMADILLO_ORIGIN));
-        assert_eq!(bindings.bound("rk_live_saved_before_armadillo"), None);
+        assert_eq!(bindings.bound("rk_live_old_key"), None);
         assert_eq!(bindings.bound("ar_ws_never_seen"), Some(ARMADILLO_ORIGIN));
         assert_eq!(bindings.bound("ar_ag_never_seen"), Some(ARMADILLO_ORIGIN));
         for gateway in [

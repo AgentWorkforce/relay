@@ -40,10 +40,10 @@ hits "Developer home path; use a neutral fixture such as /Users/me." \
 hits "GitHub, Anthropic, OpenAI, Slack, AWS or Stripe credential." \
   'gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|sk-proj-[A-Za-z0-9_-]{20,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|sk_live_[A-Za-z0-9]{16,}|BEGIN [A-Z ]*PRIVATE KEY'
 
-# Relaycast (rk_/at_/nt_) keys: fixtures are short, repeated or sequential
+# Relaycast (rk_/at_/nt_/ar_) keys: fixtures are short, repeated or sequential
 # (rk_live_aaaa…, rk_live_abcdefgh…). A long value with no such pattern
 # looks like a real key.
-key_hits="$(git grep -n -I -o -E '(rk|at|nt)_(live|test)_[A-Za-z0-9_-]{20,}' -- . ":!$SELF" \
+key_hits="$(git grep -n -I -o -E '((rk|at|nt)_(live|test)|ar_(ws|ag))_[A-Za-z0-9_-]{20,}' -- . ":!$SELF" \
   | python3 -c '
 import sys
 def patterned(value):
