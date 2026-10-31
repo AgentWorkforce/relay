@@ -113,6 +113,9 @@ pub struct FakeSessions(
     pub Mutex<HashSet<Target>>,
     /// Listed sessions that require manual activation.
     pub Mutex<HashSet<Target>>,
+    /// Sessions the per-session activation check (`auto_activates`) admits,
+    /// when they are live and in a known folder.
+    pub Mutex<HashSet<Target>>,
 );
 
 impl Default for FakeSessions {
@@ -127,6 +130,7 @@ impl FakeSessions {
             Mutex::new(sessions),
             Mutex::default(),
             Mutex::new(Ok(Vec::new())),
+            Mutex::default(),
             Mutex::default(),
             Mutex::default(),
             Mutex::default(),
@@ -196,6 +200,22 @@ impl SessionDirectory for FakeSessions {
             .get(&pid)
             .cloned()
             .ok_or(CallerMiss::NotASession)
+    }
+
+    /// Activation admits a session the test names (`.8`) once it is live
+    /// and its folder is known, as the real check needs.
+    fn auto_activates(&self, session: &DiscoveredSession) -> bool {
+        session.live
+            && session.directory.is_some()
+            && self.8.lock().unwrap().contains(&session.target)
+    }
+
+    /// A process inside a Codex session holds that session's thread.
+    fn holds_codex_thread(&self, pid: i32, thread: &str) -> bool {
+        self.1.lock().unwrap().get(&pid).is_some_and(|session| {
+            session.target.kind == agent_relay_probe::relay::store::SessionKind::Codex
+                && session.target.id.eq_ignore_ascii_case(thread)
+        })
     }
 
     fn unreadable_session_files(&self) -> Vec<UnreadableSessionFile> {

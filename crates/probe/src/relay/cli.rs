@@ -281,13 +281,19 @@ pub fn pointed_socket(home: &Path, development: bool) -> Result<std::path::PathB
 /// How long Agent Relay's Codex Stop hook waits for the core.
 const STOP_HOOK_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long it waits at SessionStart, where the core may first put the
+/// session on the relay (`outbound::codex_hook`); within the hook's own
+/// ten-second limit in `hooks.json`.
+const SESSION_START_TIMEOUT: Duration = Duration::from_secs(8);
+
 /// Agent Relay's Codex hook (`codex::stop_hook`), run after each tool call
-/// (PostToolUse) and as a turn ends (Stop): reads Codex's hook input, asks
-/// the core what this thread's running turn should be given, and prints
-/// Codex's hook output. Only the thread, turn, event and whether the turn
-/// already continued are sent, so a long tool output or last message cannot
-/// exceed the socket's body limit. Any failure prints `{}`, so Codex goes on
-/// as it would without the hook.
+/// (PostToolUse), as a turn ends (Stop) and as a session starts
+/// (SessionStart): reads Codex's hook input, asks the core what this
+/// thread's running turn should be given (at SessionStart, its Agent Relay
+/// preamble), and prints Codex's hook output. Only the thread, turn, event,
+/// working folder and whether the turn already continued are sent, so a
+/// long tool output or last message cannot exceed the socket's body limit.
+/// Any failure prints `{}`, so Codex goes on as it would without the hook.
 pub fn codex_stop_hook(socket: Option<&Path>, development: bool) -> Result<()> {
     let mut input = Vec::new();
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
@@ -298,18 +304,19 @@ pub fn codex_stop_hook(socket: Option<&Path>, development: bool) -> Result<()> {
             "turn_id": hook["turn_id"],
             "hook_event_name": hook["hook_event_name"],
             "stop_hook_active": hook["stop_hook_active"],
+            "cwd": hook["cwd"],
         }))?;
+        let timeout = if hook["hook_event_name"] == "SessionStart" {
+            SESSION_START_TIMEOUT
+        } else {
+            STOP_HOOK_TIMEOUT
+        };
         let socket = match socket {
             Some(socket) => socket.to_path_buf(),
             None => pointed_socket(&paths::home()?, development)?,
         };
-        let (status, response) = socket_response(
-            &socket,
-            "POST",
-            "/codex/stop-hook",
-            &body,
-            STOP_HOOK_TIMEOUT,
-        )?;
+        let (status, response) =
+            socket_response(&socket, "POST", "/codex/stop-hook", &body, timeout)?;
         anyhow::ensure!((200..300).contains(&status), "refused");
         let response: Value = serde_json::from_slice(&response)?;
         Ok(response["data"].clone())

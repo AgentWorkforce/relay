@@ -352,7 +352,8 @@ export const PROBE_DELIVERY: Record<ToolId, { settings: CoreSetting[]; route: st
   },
   codex: {
     settings: [setting('codex_stop_hook')],
-    route: "PostToolUse and Stop hooks in ~/.codex/hooks.json, and Codex's own queue between turns",
+    route:
+      "PostToolUse, Stop and SessionStart hooks in ~/.codex/hooks.json, and Codex's own queue between turns",
   },
   opencode: {
     // `auto_activate` alone never puts an open OpenCode session on the relay;

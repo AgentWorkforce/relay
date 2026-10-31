@@ -405,10 +405,165 @@ pub fn preamble(
     format!("{head} {body} {ROUTE_RULE} {NORM}")
 }
 
+/// The session socket commands a Codex session is given at start: the
+/// probe's self-limiting session commands (`session_cli`) on this core's
+/// socket, which Agent Relay's Codex sandbox rules let run without an
+/// approval prompt (`codex::stop_hook::SandboxRules`).
+pub struct CodexSocketCommands {
+    /// Lists the workspace's agents (`relay agents`).
+    pub agents: String,
+    /// Sends a DM to an agent by name (`relay send --to <name>`).
+    pub send: String,
+    /// Names this session (`relay whoami`).
+    pub whoami: String,
+}
+
+impl CodexSocketCommands {
+    /// The commands through `executable` on `socket`, each as a hint names
+    /// it (`SessionCommand::command_line`).
+    pub fn for_probe(executable: &Path, socket: &Path) -> Option<CodexSocketCommands> {
+        use crate::relay::session_cli::{Recipient, SessionCommand};
+        let send = SessionCommand::Send {
+            recipient: Recipient::To("<name>".into()),
+            reply_to: None,
+            thread: None,
+        };
+        Some(CodexSocketCommands {
+            agents: SessionCommand::Agents.command_line(executable, socket, None)?,
+            send: send.command_line(executable, socket, Some("your message"))?,
+            whoami: SessionCommand::Whoami.command_line(executable, socket, None)?,
+        })
+    }
+
+    /// Every command the preamble hands the session.
+    pub fn all(&self) -> [&str; 3] {
+        [&self.agents, &self.send, &self.whoami]
+    }
+}
+
+/// What a Codex session is told as it starts (Agent Relay's Codex
+/// SessionStart hook): who it is on the relay, the exact commands that
+/// list agents and send a DM through this computer's session socket, and
+/// never to send another way. Without it, a fresh Codex asked to message an
+/// agent knew no local route until a relayed message showed one, and
+/// reached for the account-level "Agent Relay in ChatGPT" connector, which
+/// sends as the person's Cloud account into another workspace.
+/// `identity` is the name and address, or `None` for a session that is
+/// being put on the relay and has no name yet.
+pub fn codex_preamble(identity: Option<(&str, &str)>, commands: &CodexSocketCommands) -> String {
+    let head = match identity {
+        Some((name, address)) => format!(
+            "This session is on Agent Relay as @{} ({}).",
+            argument(name),
+            argument(address)
+        ),
+        None => format!(
+            "This session is joining Agent Relay on this computer; {} names it once it has joined. \
+             Until then a send is refused as not on the relay: wait a few seconds and run the same \
+             command again, never another way.",
+            commands.whoami
+        ),
+    };
+    format!(
+        "{head} Reach other agents only through this computer's Agent Relay session socket, with \
+         these commands (Agent Relay's sandbox rules let them run without asking): list agents \
+         with {agents}; send a DM with {send} (the body is the message; --address <address> in \
+         place of --to <name> names an agent by its address, and --reply-to <message id> answers \
+         beneath a message). {ROUTE_RULE} {NORM}",
+        agents = commands.agents,
+        send = commands.send,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn codex_commands() -> CodexSocketCommands {
+        CodexSocketCommands::for_probe(Path::new("/p"), Path::new("/s")).unwrap()
+    }
+
+    // The coordinator's ask for #2029 after #2031: every command the Codex
+    // session-start context hands a session is one the Codex sandbox rules
+    // allow, so none of them asks for approval (or sends a fresh session to
+    // another Agent Relay connector).
+    #[test]
+    fn every_codex_start_command_is_allowed_by_the_codex_rules() {
+        let probe = Path::new("/Users/me/.agentworkforce/desktop/bin/agent-relay-probe");
+        let socket = Path::new("/Users/me/Library/Application Support/x/run/relay.sock");
+        let rules = crate::relay::codex::stop_hook::SandboxRules {
+            probe: probe.to_path_buf(),
+            socket: socket.to_path_buf(),
+        };
+        let patterns = rules.patterns();
+        let commands = CodexSocketCommands::for_probe(probe, socket).unwrap();
+        for command in commands.all() {
+            let words = shell_words(command);
+            assert!(
+                patterns.iter().any(|pattern| words.starts_with(pattern)),
+                "{command} matches no Codex rule"
+            );
+            // Codex matches a rule only when the program is a plain word.
+            assert!(
+                command.starts_with(&format!("{} relay ", probe.display())),
+                "{command}"
+            );
+        }
+        // And the preamble names these commands and no other way to run
+        // one: the list and send commands, and, while the session has no
+        // name yet, the one that names it.
+        let text = codex_preamble(Some(("codex-api", "codex-api@mac")), &commands);
+        assert!(text.contains(&commands.agents), "{text}");
+        assert!(text.contains(&commands.send), "{text}");
+        assert!(!text.contains("socket-request"), "{text}");
+        assert!(!text.contains("curl"), "{text}");
+        let joining = codex_preamble(None, &commands);
+        assert!(joining.contains(&commands.whoami));
+        // A send before the session is registered is refused; it retries
+        // the same way rather than reaching for another connector.
+        assert!(joining.contains("run the same command again, never another way"));
+        assert!(!joining.contains("socket-request"));
+        // The send shape takes a reply or an address the same way, still
+        // inside the `relay send` rule.
+        let reply = crate::relay::session_cli::SessionCommand::Send {
+            recipient: crate::relay::session_cli::Recipient::Address("bob@mac".into()),
+            reply_to: Some("42".into()),
+            thread: None,
+        }
+        .command_line(probe, socket, Some("ok"))
+        .unwrap();
+        assert!(
+            patterns.iter().any(|p| shell_words(&reply).starts_with(p)),
+            "{reply}"
+        );
+    }
+
+    // A fresh Codex asked to DM an agent used the "Agent Relay in ChatGPT"
+    // connector until a relayed message had shown it the local route.
+    #[test]
+    fn a_codex_session_is_told_who_it_is_and_its_local_route_as_it_starts() {
+        let commands = codex_commands();
+        let text = codex_preamble(Some(("codex-api", "codex-api@mac")), &commands);
+        assert!(text.starts_with("This session is on Agent Relay as @codex-api (codex-api@mac)."));
+        assert!(text.contains(&format!("list agents with {};", commands.agents)));
+        assert!(text.contains(&format!("send a DM with {} ", commands.send)));
+        assert!(text.contains(ROUTE_RULE), "{text}");
+        assert!(text.contains("Agent Relay in ChatGPT"));
+        assert!(text.ends_with(NORM));
+        assert!(
+            !text.contains("curl"),
+            "Codex's sandbox allows only the probe"
+        );
+        assert!(!text.contains("send_relay_message"));
+
+        let joining = codex_preamble(None, &commands);
+        assert!(joining.starts_with(&format!(
+            "This session is joining Agent Relay on this computer; {} names it",
+            commands.whoami
+        )));
+        assert!(joining.contains(ROUTE_RULE));
+    }
 
     const SOCKET_HINT: &str = "[reply: curl -s --unix-socket /s 'http://relay/send?address=a@m&reply_to=42' --data-binary 'your reply']\n[agents: curl -s --unix-socket /s http://relay/agents]";
 
