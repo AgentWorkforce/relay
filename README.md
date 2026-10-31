@@ -56,7 +56,7 @@ Open Claude Code or Codex there. Each session joins Relay by itself; run `npx -y
 
 More in the [getting started guide](https://agentrelay.com/docs/getting-started).
 
-**Upgrade:** the [Agent Relay desktop app](https://agentrelay.com/docs/quickstart) adds shared sessions and communication across more of your agents.
+**Upgrade:** the paid [Agent Relay desktop app](https://agentrelay.com/docs/quickstart) adds shared sessions and communication across more of your agents.
 
 ### Self Hosting
 
