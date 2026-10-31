@@ -6,7 +6,7 @@ use crate::platform::process::Group;
 use std::io::{self, ErrorKind, Read, Write};
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
@@ -260,6 +260,19 @@ impl CodexRunner for SystemRunner {
 }
 
 impl SystemRunner {
+    /// [`CodexRunner::run`] with `env` added to the inherited environment.
+    pub(crate) fn run_with_env(
+        &self,
+        executable: &Path,
+        arguments: &[String],
+        timeout: Duration,
+        env: &[(&str, PathBuf)],
+    ) -> RunOutcome {
+        let mut command = command(executable, arguments);
+        command.envs(env.iter().map(|(key, value)| (*key, value)));
+        self.run_command(command, timeout)
+    }
+
     fn run_command(&self, mut command: Command, timeout: Duration) -> RunOutcome {
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         let mut child = match command.spawn() {

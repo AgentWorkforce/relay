@@ -1505,7 +1505,13 @@ impl Core {
                 .collect()
         });
         let title_revision = self.roster_revision.load(std::sync::atomic::Ordering::SeqCst);
+        let pi_auto_join = self.workspace().is_some()
+            && auto_activation::activation_applies(
+                &self.store.read(auto_activation::ActivationSettings::of),
+                SessionKind::Pi,
+            );
         let discovered = tokio::task::spawn_blocking(move || {
+            sessions.pi_auto_join(pi_auto_join);
             let all = sessions.sessions();
             let live: HashSet<Target> = all
                 .iter()

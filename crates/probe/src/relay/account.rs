@@ -2189,11 +2189,18 @@ impl CloudAccess for Account {
 /// very binary, PostHog telemetry (production site only; a release build
 /// carries the project key), and the settings
 /// telemetry, contractor access and session history retention own.
+///
+/// `command_line_copy`: whether this core keeps `~/.local/bin/agent-relay-probe`
+/// up to date. The desktop app's core does, for people who prefer the
+/// terminal; a core `relay init` manages (`--cli-managed`) does not, since
+/// the CLI runs its own copy under the relay home and `relay init
+/// --uninstall` must leave nothing of its own behind.
 pub fn with_account(
     mut plugins: crate::relay::daemon::Plugins,
     config: &crate::relay::daemon::Config,
     site_url: Option<&str>,
     headless: bool,
+    command_line_copy: bool,
 ) -> crate::relay::daemon::Plugins {
     let executable = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-probe"));
     // The probe's own session renewal reads the Cloud session from this
@@ -2223,7 +2230,10 @@ pub fn with_account(
     }
     // Development builds (another site, or a probe named in the
     // environment) leave the command-line copy alone.
-    if account.site_url == DEFAULT_SITE_URL && !config.env.contains_key("RELAY_DESKTOP_PROBE") {
+    if command_line_copy
+        && account.site_url == DEFAULT_SITE_URL
+        && !config.env.contains_key("RELAY_DESKTOP_PROBE")
+    {
         account.command_line_copy = Some((
             executable,
             crate::relay::probe_copy::destination(&config.home),
@@ -2271,13 +2281,22 @@ mod tests {
         };
         // Both native apps use this factory, for local and deployed Cloud.
         for site in ["http://localhost:3100", DEFAULT_SITE_URL] {
-            let plugins = with_account(Plugins::default(), &config, Some(site), false);
+            let plugins = with_account(Plugins::default(), &config, Some(site), false, true);
             let account = plugins.account.expect("Cloud sign-in remains available");
             assert!(
                 account.incoming.is_none(),
                 "startup must not activate or restore the removed Cloud Room transport"
             );
         }
+        // The desktop's production core keeps the command-line copy current;
+        // a core relay init manages never writes one into ~/.local/bin.
+        let desktop = with_account(Plugins::default(), &config, None, false, true);
+        assert_eq!(
+            desktop.account.unwrap().command_line_copy.clone().map(|(_, to)| to),
+            Some(crate::relay::probe_copy::destination(dir.path()))
+        );
+        let cli_managed = with_account(Plugins::default(), &config, None, true, false);
+        assert!(cli_managed.account.unwrap().command_line_copy.is_none());
     }
 
     #[test]

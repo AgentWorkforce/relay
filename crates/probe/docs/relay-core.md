@@ -488,7 +488,8 @@ sharing changes and `reclaim` none (killing one would leave uploads stopped,
 or redo a migration). At start the daemon lists `installs` (bounded; nothing
 waits on it), releases decommissioned installs with `reclaim` in the
 background, keeps `~/.local/bin/agent-relay-probe` no older than itself
-(never a copy another developer signed), and every 60 s starts the attached
+(never a copy another developer signed; a `--cli-managed` core, which
+`relay init` starts, leaves it alone), and every 60 s starts the attached
 collector again when it stopped or runs an older build, and records when a
 running uploader starts or stops failing to deliver (`upload_health`).
 

@@ -2823,6 +2823,23 @@ async fn auto_activation_puts_new_live_sessions_on_the_relay() {
         .ok("settings.set", json!({"auto_activate": true}))
         .await;
     eventually("both registered", || h.fake.agent_names().len() == 2).await;
+    // The server sees a registration before the store records it.
+    eventually("both recorded", || {
+        let store = h.store();
+        let auto = store["registrations"]
+            .as_array()
+            .map_or(0, |registrations| {
+                registrations
+                    .iter()
+                    .filter(|registration| registration["autoActivated"] == true)
+                    .count()
+            });
+        auto == 2
+            && store["autoActivationEvents"]
+                .as_array()
+                .is_some_and(|events| events.len() == 2)
+    })
+    .await;
     let names = h.fake.agent_names();
     assert!(
         names.iter().any(|n| n.starts_with("codex-relay-desktop-")),

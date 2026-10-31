@@ -8,11 +8,15 @@
  */
 
 import crypto from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 
 /** Directory name within project root */
 const PROJECT_DATA_DIR = '.agentworkforce/relay';
+
+/** The machine-wide workspace store every relay home keeps. */
+const WORKSPACE_STORE_FILE = 'workspaces.json';
 
 /**
  * Generate a short hash of a path for namespacing
@@ -24,12 +28,162 @@ function hashPath(projectPath: string): string {
 }
 
 /**
+ * The CLI's own machine-wide data folder: `AGENT_RELAY_HOME`, default
+ * `~/.agentworkforce/relay`. It holds `workspaces.json`, `cloud-auth.json`,
+ * fleet-node files and binaries, so it is never a project's data folder.
+ * @param env - Environment to read `AGENT_RELAY_HOME` from
+ * @returns The relay home, resolved but not canonicalized
+ */
+export function relayHomeDir(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.AGENT_RELAY_HOME?.trim();
+  return path.resolve(configured || path.join(os.homedir(), PROJECT_DATA_DIR));
+}
+
+/**
+ * `target` with symlinks resolved as far as it exists: the nearest existing
+ * ancestor is canonicalized and the missing rest appended, so a folder that
+ * does not exist yet still compares equal to the one it will be created as.
+ */
+function canonicalPath(target: string): string {
+  const resolved = path.resolve(target);
+  const known = canonicalPaths.get(resolved);
+  if (known !== undefined) return known;
+  const canonical = canonicalize(resolved);
+  // Creating the missing folders later does not change where they resolve,
+  // so a result is kept: each probe of a missing folder can be slow on an
+  // automounted volume (macOS /home).
+  if (canonicalPaths.size > 256) canonicalPaths.clear();
+  canonicalPaths.set(resolved, canonical);
+  return canonical;
+}
+
+const canonicalPaths = new Map<string, string>();
+
+function canonicalize(resolved: string): string {
+  const missing: string[] = [];
+  let current = resolved;
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync.native(current), ...missing.reverse());
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return path.join(current, ...missing.reverse());
+      missing.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * Whether `dataDir` is a relay home rather than a project's data folder:
+ * - this process's relay home (`AGENT_RELAY_HOME`), or the default
+ *   `~/.agentworkforce/relay` even while `AGENT_RELAY_HOME` points elsewhere,
+ *   compared as canonical paths (symlinks resolved; the same file system
+ *   object when both exist, which also covers a case-insensitive volume);
+ * - any folder holding a machine-wide workspace store (`workspaces.json`),
+ *   which no project folder does, such as the real home's relay folder while
+ *   `HOME` itself points elsewhere.
+ * @param dataDir - A project's `.agentworkforce/relay` folder
+ * @param env - Environment to read `AGENT_RELAY_HOME` from
+ */
+export function isRelayHomeDir(dataDir: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (fs.existsSync(path.join(dataDir, WORKSPACE_STORE_FILE))) return true;
+  const defaultHome = path.join(os.homedir(), PROJECT_DATA_DIR);
+  return [relayHomeDir(env), defaultHome].some((home) => samePath(dataDir, home));
+}
+
+function samePath(a: string, b: string): boolean {
+  const left = statOrUndefined(a);
+  const right = statOrUndefined(b);
+  // Both exist: the same file system object (symlinks followed, any case).
+  if (left && right) return left.dev === right.dev && left.ino === right.ino;
+  // Only one exists: not the same folder.
+  if (left || right) return false;
+  // Neither exists yet: compare where they would be.
+  return path.resolve(a) === path.resolve(b) || canonicalPath(a) === canonicalPath(b);
+}
+
+function statOrUndefined(target: string): fs.Stats | undefined {
+  try {
+    return fs.statSync(target);
+  } catch {
+    return undefined;
+  }
+}
+
+const INSIDE_A_PROJECT =
+  'Run this inside a project folder (cd into the project first), or set AGENT_RELAY_PROJECT ' +
+  'to the project folder.';
+
+/** A project pin, or another project-scoped file, was about to be written outside any project. */
+export class RelayHomeProjectError extends Error {
+  /**
+   * @param dataDir - The Relay folder that would have held the pin
+   * @param projectRoot - The project root, when the home folder itself was taken for one
+   */
+  constructor(
+    public readonly dataDir: string,
+    public readonly projectRoot?: string
+  ) {
+    super(
+      projectRoot
+        ? `Refusing to set up ${projectRoot} as a project: it is your home folder (or holds the Relay ` +
+            `home), and project files written there would land among your own settings. ${INSIDE_A_PROJECT}`
+        : `Refusing to use ${dataDir} as this project's Relay folder: it is the Relay home ` +
+            '(AGENT_RELAY_HOME), where Relay keeps its machine-wide workspaces, sign-in and binaries. ' +
+            INSIDE_A_PROJECT
+    );
+    this.name = 'RelayHomeProjectError';
+  }
+}
+
+/**
+ * Refuse to treat the relay home as a project's data folder. Every writer of
+ * a project pin (`workspace-key.json`) calls this first.
+ * @param dataDir - The project's `.agentworkforce/relay` folder
+ * @param env - Environment to read `AGENT_RELAY_HOME` from
+ * @throws RelayHomeProjectError when `dataDir` is the relay home
+ */
+export function assertNotRelayHome(dataDir: string, env: NodeJS.ProcessEnv = process.env): void {
+  if (isRelayHomeDir(dataDir, env)) throw new RelayHomeProjectError(dataDir);
+}
+
+/**
+ * Whether `projectRoot` is no project at all: the home folder itself, or a
+ * folder whose `.agentworkforce/relay` is a relay home ({@link isRelayHomeDir}).
+ * A project root found by walking up from an unmarked folder under `~` (a
+ * dotfiles `~/.git`, a stray `~/package.json`) lands here too.
+ * @param projectRoot - A detected or configured project root
+ * @param env - Environment to read `AGENT_RELAY_HOME` from
+ */
+export function isHomeProjectRoot(projectRoot: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return samePath(projectRoot, os.homedir()) || isRelayHomeDir(path.join(projectRoot, PROJECT_DATA_DIR), env);
+}
+
+/**
+ * Refuse a project root that is the home folder (or holds the relay home),
+ * before any project-scoped file (the workspace pin, `.mcp.json`,
+ * `opencode.json`, `.devin/mcp_config.json`, ...) is written there.
+ * @param projectRoot - The project root about to receive project-scoped files
+ * @param env - Environment to read `AGENT_RELAY_HOME` from
+ * @throws RelayHomeProjectError when `projectRoot` is no project
+ */
+export function assertProjectRoot(projectRoot: string, env: NodeJS.ProcessEnv = process.env): void {
+  if (isHomeProjectRoot(projectRoot, env)) {
+    throw new RelayHomeProjectError(path.join(projectRoot, PROJECT_DATA_DIR), projectRoot);
+  }
+}
+
+/**
  * Get the project root by looking for common markers
  *
  * Priority:
  * 1. AGENT_RELAY_PROJECT environment variable (for worktrees/subprojects)
  * 2. An explicitly pinned nested project, or the enclosing Git checkout
  * 3. The nearest package marker when outside Git
+ *
+ * The relay home (`~/.agentworkforce/relay` by default) is never a marker: a
+ * folder under the home directory is not part of a "project" rooted at `~`.
  */
 export function findProjectRoot(startDir: string = process.cwd()): string {
   // Allow explicit override for worktrees and subprojects
@@ -40,12 +194,15 @@ export function findProjectRoot(startDir: string = process.cwd()): string {
   let current = path.resolve(startDir);
   const root = path.parse(current).root;
 
-  const markers = ['package.json', 'Cargo.toml', 'go.mod', 'pyproject.toml', '.agentworkforce/relay'];
+  const markers = ['package.json', 'Cargo.toml', 'go.mod', 'pyproject.toml', PROJECT_DATA_DIR];
   let nearestPackage: string | undefined;
   while (true) {
+    const dataDir = path.join(current, PROJECT_DATA_DIR);
+    const relayHomeHere = fs.existsSync(dataDir) && isRelayHomeDir(dataDir);
     // Existing subproject pins remain intentional namespaces. A package.json
     // alone must not split spawn, rebind, node up and attach across projects.
-    if (fs.existsSync(path.join(current, PROJECT_DATA_DIR, 'workspace-key.json'))) return current;
+    if (!relayHomeHere && fs.existsSync(path.join(current, PROJECT_DATA_DIR, 'workspace-key.json')))
+      return current;
     const gitMarkerPath = path.join(current, '.git');
     let marker: fs.Stats | undefined;
     try {
@@ -69,6 +226,7 @@ export function findProjectRoot(startDir: string = process.cwd()): string {
       throw new Error('Cannot resolve the repository workspace; check access to its Git project marker.');
     }
     for (const marker of markers) {
+      if (marker === PROJECT_DATA_DIR && relayHomeHere) continue;
       if (!nearestPackage && fs.existsSync(path.join(current, marker))) nearestPackage = current;
     }
     if (current === root) break;

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { ensureGitExclude, getProjectPaths } from '@agent-relay/config';
+import { assertNotRelayHome, ensureGitExclude, getProjectPaths, isRelayHomeDir } from '@agent-relay/config';
 
 import {
   readRelaycastCredential,
@@ -174,7 +174,9 @@ export function writeProjectWorkspaceKey(
   const key = trimOrUndefined(workspaceKey);
   if (!key) return;
   const { env, ...metadata } = options;
-  withProjectWorkspaceKeyLock(dataDir, () => writeProjectWorkspaceKeyUnlocked(dataDir, key, metadata, env));
+  withProjectWorkspaceKeyLock(dataDir, env, () =>
+    writeProjectWorkspaceKeyUnlocked(dataDir, key, metadata, env)
+  );
 }
 
 /**
@@ -262,7 +264,17 @@ function writeProjectWorkspaceKeyUnlocked(
   }
 }
 
-function withProjectWorkspaceKeyLock<T>(dataDir: string, callback: () => T): T {
+/**
+ * Run `callback` holding the project pin's lock. A project pin never goes in
+ * the relay home (`AGENT_RELAY_HOME`): a project resolved to `~` would
+ * otherwise write its pin among the machine-wide workspace and sign-in files.
+ */
+function withProjectWorkspaceKeyLock<T>(
+  dataDir: string,
+  env: NodeJS.ProcessEnv | undefined,
+  callback: () => T
+): T {
+  assertNotRelayHome(dataDir, env ?? process.env);
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const lockDir = `${projectWorkspaceKeyPath(dataDir)}${PROJECT_WORKSPACE_LOCK_SUFFIX}`;
   const ownerToken = randomUUID();
@@ -412,7 +424,10 @@ export function writeProjectWorkspaceTargetIfSelectionCurrent(
   const credentialEnv = selection.credentialHome
     ? { AGENT_RELAY_HOME: selection.credentialHome }
     : process.env;
-  return withProjectWorkspaceKeyLock(dataDir, () => {
+  // Best effort, like every caller treats it: a selection read from the relay
+  // home is not a project session to record a target in.
+  if (isRelayHomeDir(dataDir, credentialEnv)) return false;
+  return withProjectWorkspaceKeyLock(dataDir, credentialEnv, () => {
     const current = readProjectWorkspaceSession(dataDir, fs, credentialEnv);
     if (selection.projectSessionPresent === false && current) return false;
     if (
@@ -482,7 +497,7 @@ export function writeProjectWorkspaceKeyPreservingSession(
   if (!key) return;
 
   const { env: credentialEnv, ...metadata } = options;
-  withProjectWorkspaceKeyLock(dataDir, () => {
+  withProjectWorkspaceKeyLock(dataDir, credentialEnv, () => {
     const existing = readProjectWorkspaceSession(dataDir, fs, credentialEnv);
     const sameWorkspace = existing?.workspaceKey === key;
     const retained: ProjectWorkspaceSessionMetadata = sameWorkspace
@@ -551,8 +566,17 @@ export function resolveWorkspaceSelection(
   const env = options.env ?? process.env;
   const credentialHome = path.resolve(path.dirname(relaycastCredentialStorePath(env)));
   const credentialHomeSelection = { credentialHome };
-  const dataDir = options.projectDataDir ?? projectDataDir(options.projectRoot);
-  const project = dataDir ? readProjectWorkspaceSession(dataDir, options.fileSystem ?? fs, env) : undefined;
+  const candidateDataDir = options.projectDataDir ?? projectDataDir(options.projectRoot);
+  const pinned = candidateDataDir
+    ? readProjectWorkspaceSession(candidateDataDir, options.fileSystem ?? fs, env)
+    : undefined;
+  // A pin found in a relay home is not a project's: older versions wrote one
+  // there when run in ~. It is ignored, so the machine-wide store decides.
+  // Checked only when a pin was read, so resolving where none exists costs
+  // no path canonicalization (slow on automounted folders such as /home).
+  const inRelayHome = pinned !== undefined && isRelayHomeDir(candidateDataDir!, env);
+  const dataDir = inRelayHome ? undefined : candidateDataDir;
+  const project = inRelayHome ? undefined : pinned;
   const flag = trimOrUndefined(options.workspaceKey);
   if (flag) {
     return {
