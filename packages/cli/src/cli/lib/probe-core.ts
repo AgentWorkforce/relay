@@ -25,7 +25,7 @@ import type { ClaudeFileState, OpenCodeState, PiState } from './init-leftovers.j
 import type { EnginePlatform } from './relaycast-engine-install.js';
 
 /** The core `relay init` installs. Pinned so every machine runs the same core. */
-export const PROBE_VERSION = '15.0.4';
+export const PROBE_VERSION = '15.0.3';
 /** Release tags of the core; distinct from the CLI's `v*` tags. */
 export const PROBE_TAG_PREFIX = 'probe-v';
 const RELEASE_BASE = 'https://github.com/AgentWorkforce/relay/releases/download';
