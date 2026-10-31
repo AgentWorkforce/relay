@@ -22,19 +22,21 @@ pub fn is_app(executable: &Path) -> bool {
         && path.ends_with("/Claude.app/Contents/MacOS/Claude")
 }
 
-/// T3 Code's main executable, installed for all users or for this one.
+/// T3 Code's main executable on any release channel (`T3 Code` or
+/// `T3 Code (<Channel>)`), installed for all users or for this one.
 pub fn is_t3_app(executable: &Path) -> bool {
+    let Some(name) = executable.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let channel_build = name
+        .strip_prefix("T3 Code (")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .is_some_and(|channel| !channel.is_empty() && channel.chars().all(char::is_alphanumeric));
     let path = executable.to_string_lossy();
-    (path.starts_with("/Applications/")
-        || (path.starts_with("/Users/") && path.contains("/Applications/")))
-        && [
-            "/T3 Code.app/Contents/MacOS/T3 Code",
-            "/T3 Code (Alpha).app/Contents/MacOS/T3 Code (Alpha)",
-            "/T3 Code (Beta).app/Contents/MacOS/T3 Code (Beta)",
-            "/T3 Code (Nightly).app/Contents/MacOS/T3 Code (Nightly)",
-        ]
-        .iter()
-        .any(|bundle| path.ends_with(bundle))
+    (name == "T3 Code" || channel_build)
+        && (path.starts_with("/Applications/")
+            || (path.starts_with("/Users/") && path.contains("/Applications/")))
+        && path.ends_with(&format!("/{name}.app/Contents/MacOS/{name}"))
 }
 
 /// Whether `directory` is a folder the app made for a chat with no project
@@ -188,6 +190,9 @@ mod tests {
         }
         for other in [
             "/Applications/T3 Code (Alpha).app/Contents/Resources/resource-monitor/t3-resource-monitor",
+            "/Applications/T3 Code (Alpha).app/Contents/Frameworks/T3 Code (Alpha) Helper (Renderer).app/Contents/MacOS/T3 Code (Alpha) Helper (Renderer)",
+            "/Applications/T3 Code (Beta).app/Contents/MacOS/T3 Code",
+            "/Applications/T3 Code ().app/Contents/MacOS/T3 Code ()",
             "/tmp/T3 Code.app/Contents/MacOS/T3 Code",
             "/Applications/Claude.app/Contents/MacOS/Claude",
         ] {
