@@ -93,6 +93,15 @@ pub enum StatusRead {
     Unknown,
 }
 
+/// The probe the core's rules and hints name (`probe` in its
+/// `GET /setup/status` answer): the space-free link when it is in use.
+/// `None` from an older core, or for anything but an absolute path.
+pub fn read_probe(body: &[u8]) -> Option<std::path::PathBuf> {
+    let value = serde_json::from_slice::<Value>(body).ok()?;
+    let probe = std::path::PathBuf::from(value["data"]["probe"].as_str()?);
+    probe.is_absolute().then_some(probe)
+}
+
 /// `session.registered` from a session-socket response, or why it is not
 /// known. A failure is never treated as a reason to register.
 pub fn read_status(http_status: u16, body: &[u8]) -> StatusRead {
@@ -177,10 +186,16 @@ pub fn has_person(table: &dyn ProcessTable, start: i32) -> bool {
 /// An unregistered session is told how it could join only when a person
 /// is there to ask (`interactive`), and only when self-registration is on
 /// does that include the `POST /register` example. The text does not
-/// register anything.
-pub fn hook_output(status: Option<StatusRead>, socket: &Path, interactive: bool) -> Value {
+/// register anything. `probe` is the one Claude's permission rules name
+/// (the core reports it: [`read_probe`]), which the commands use.
+pub fn hook_output(
+    status: Option<StatusRead>,
+    socket: &Path,
+    interactive: bool,
+    probe: Option<&Path>,
+) -> Value {
     if let Some(StatusRead::OnRelay { name, address, mcp }) = &status {
-        let context = hosted_mcp::preamble(name, address, *mcp, socket);
+        let context = hosted_mcp::preamble(name, address, *mcp, socket, probe);
         return json!({
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
@@ -192,7 +207,7 @@ pub fn hook_output(status: Option<StatusRead>, socket: &Path, interactive: bool)
         return json!({});
     }
     let (person, agent) = match status {
-        Some(StatusRead::Joining) => (JOINING_FOR_PERSON.to_string(), joining(socket)),
+        Some(StatusRead::Joining) => (JOINING_FOR_PERSON.to_string(), joining(socket, probe)),
         Some(StatusRead::Registered {
             on_relay: false,
             self_registration: true,
@@ -223,41 +238,21 @@ pub const JOINING_FOR_PERSON: &str =
 
 /// What Claude reads when automatic activation will put the session on the
 /// relay: nothing to ask or register, and how to reach peers once it is on.
-pub fn joining(socket: &Path) -> String {
+pub fn joining(socket: &Path, probe: Option<&Path>) -> String {
     let shown = socket.display().to_string();
     let quoted = crate::relay::outbound::shell_quote(&shown);
     let body = "'{\"to\":\"<name>\",\"text\":\"…\"}'";
-    let (agents, whoami, send) = match crate::relay::outbound::probe_client(false)
-        .then(|| {
-            use crate::relay::session_cli::{Recipient, SessionCommand};
-            let send = SessionCommand::Send {
-                recipient: Recipient::To("<name>".into()),
-                reply_to: None,
-                thread: None,
-            };
-            Some((
-                crate::relay::outbound::probe_session_command(
-                    socket,
-                    &SessionCommand::Agents,
-                    None,
-                )?,
-                crate::relay::outbound::probe_session_command(
-                    socket,
-                    &SessionCommand::Whoami,
-                    None,
-                )?,
-                crate::relay::outbound::probe_session_command(socket, &send, Some("…"))?,
-            ))
-        })
-        .flatten()
-    {
-        Some(commands) => commands,
-        None => (
-            format!("curl -s --unix-socket {quoted} http://relay/agents"),
-            format!("curl -s --unix-socket {quoted} http://relay/whoami"),
-            format!("curl -s --unix-socket {quoted} http://relay/send --data-binary {body}"),
-        ),
-    };
+    // The probe's self-limiting commands, which Claude's permission rules
+    // allow (`hosted_mcp::SocketCommands`); curl only when it is unknown.
+    let (agents, whoami, send) =
+        match probe.and_then(|probe| hosted_mcp::SocketCommands::through(probe, socket)) {
+            Some(commands) => (commands.agents, commands.whoami, commands.send),
+            None => (
+                format!("curl -s --unix-socket {quoted} http://relay/agents"),
+                format!("curl -s --unix-socket {quoted} http://relay/whoami"),
+                format!("curl -s --unix-socket {quoted} http://relay/send --data-binary {body}"),
+            ),
+        };
     format!(
         "This Claude Code session joins Agent Relay by itself within a few seconds: automatic \
          activation is on. Do not register it and do not ask the person about it. Relayed \
@@ -1036,7 +1031,7 @@ mod tests {
         ));
 
         let socket = Path::new("/run/user/1000/agent-relay/relay.sock");
-        let out = hook_output(Some(StatusRead::Joining), socket, true);
+        let out = hook_output(Some(StatusRead::Joining), socket, true, None);
         let text = out["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap();
@@ -1048,7 +1043,7 @@ mod tests {
         assert!(text.contains("/agents"), "{text}");
         assert!(text.contains("/send"), "{text}");
         assert_eq!(
-            hook_output(Some(StatusRead::Joining), socket, false),
+            hook_output(Some(StatusRead::Joining), socket, false, None),
             json!({})
         );
     }
@@ -1056,7 +1051,7 @@ mod tests {
     #[test]
     fn nudge_has_claude_ask_the_person_before_registering() {
         let socket = Path::new("/run/user/1000/agent-relay/relay.sock");
-        let out = hook_output(Some(open(false)), socket, true);
+        let out = hook_output(Some(open(false)), socket, true, None);
         let text = out["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap();
@@ -1084,9 +1079,12 @@ mod tests {
         assert!(text.contains("does not register this session"), "{text}");
         assert!(!text.contains("auto_activate"), "{text}");
         assert!(out.get("decision").is_none());
-        assert_eq!(hook_output(Some(open(true)), socket, true), json!({}));
-        assert_eq!(hook_output(None, socket, true), json!({}));
-        assert_eq!(hook_output(Some(open(false)), socket, false), json!({}));
+        assert_eq!(hook_output(Some(open(true)), socket, true, None), json!({}));
+        assert_eq!(hook_output(None, socket, true, None), json!({}));
+        assert_eq!(
+            hook_output(Some(open(false)), socket, false, None),
+            json!({})
+        );
         assert!(text.contains("\"mcp\":\"agent-relay-sessions\""), "{text}");
         let blocked = hook_output(
             Some(StatusRead::Registered {
@@ -1095,6 +1093,7 @@ mod tests {
             }),
             socket,
             true,
+            None,
         );
         let blocked_agent = blocked["hookSpecificOutput"]["additionalContext"]
             .as_str()
@@ -1140,11 +1139,11 @@ mod tests {
             );
             // Nothing for the person to answer, so automated runs get it too.
             for interactive in [true, false] {
-                let out = hook_output(Some(status.clone()), socket, interactive);
+                let out = hook_output(Some(status.clone()), socket, interactive, None);
                 assert!(out.get("systemMessage").is_none());
                 assert_eq!(
                     out["hookSpecificOutput"]["additionalContext"],
-                    hosted_mcp::preamble("api", "api@mac-1", access, socket)
+                    hosted_mcp::preamble("api", "api@mac-1", access, socket, None)
                 );
             }
         }
@@ -1676,5 +1675,45 @@ mod tests {
         );
         assert_eq!(std::fs::read(&work).unwrap(), b"not json");
         assert_eq!(settings.get()[SETTING], false);
+    }
+}
+
+#[cfg(test)]
+mod probe_tests {
+    use super::*;
+
+    // The coordinator's skill e2e: the SessionStart text named curl, which
+    // Claude's rules do not allow. The core reports the probe its rules
+    // name, and the text's commands use it.
+    #[test]
+    fn the_start_text_names_the_probe_the_core_reports() {
+        let body = br#"{"ok":true,"data":{"probe":"/Users/me/.agentworkforce/desktop/bin/agent-relay-probe","session":{"registered":true,"name":"api","address":"api@mac-1","mcp":"socket_only"}}}"#;
+        let probe = read_probe(body).unwrap();
+        assert_eq!(
+            probe,
+            Path::new("/Users/me/.agentworkforce/desktop/bin/agent-relay-probe")
+        );
+        assert_eq!(read_probe(br#"{"data":{"probe":"relative/probe"}}"#), None);
+        assert_eq!(read_probe(br#"{"data":{}}"#), None);
+        let socket = Path::new("/Users/me/Library/Application Support/x/run/relay.sock");
+        let rules = PermissionRules {
+            probe: probe.clone(),
+            socket: socket.into(),
+        }
+        .rules();
+        for status in [read_status(200, body), StatusRead::Joining] {
+            let out = hook_output(Some(status), socket, true, Some(&probe));
+            let text = out["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap();
+            assert!(!text.contains("curl"), "{text}");
+            let agents = format!(
+                "{} relay agents --socket '{}'",
+                probe.display(),
+                socket.display()
+            );
+            assert!(text.contains(&agents), "{text}");
+            assert!(rules.iter().any(|rule| covers(rule, &agents)));
+        }
     }
 }

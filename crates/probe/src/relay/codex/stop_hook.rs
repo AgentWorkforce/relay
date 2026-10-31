@@ -401,8 +401,8 @@ const RULES_NAMES: usize = 9;
 /// A prefix rule constrains only a command's leading words: whatever follows
 /// them is allowed too. So the rules name only the probe's self-limiting
 /// session commands (`session_cli::ALLOWED_SUBCOMMANDS`: `relay send`,
-/// `agents`, `whoami`, `read`, `fetch-attachment` and `connect-send`), each
-/// only with
+/// `agents`, `whoami`, `read`, `fetch-attachment`, `connect-send` and
+/// `subscribe-channel`), each only with
 /// `--socket` naming this core's own session socket. Each of those fixes its
 /// own method and route and checks every other argument, so nothing after
 /// the prefix reaches another route; `relay socket-request`, which takes any
@@ -457,6 +457,7 @@ impl SandboxRules {
                 "whoami" => "Shows this session's own name on Agent Relay",
                 "read" => "Reads a message Agent Relay relayed to this session",
                 "fetch-attachment" => "Fetches an attachment sent to this session",
+                "subscribe-channel" => "Joins or leaves one channel as this session",
                 _ => "Answers in the Relay Connect room this session joined",
             };
             let words = pattern
@@ -1422,7 +1423,10 @@ mod tests {
         assert_eq!(std::fs::read_link(&link).unwrap(), real);
         let named = link.display().to_string();
         let rules = std::fs::read_to_string(codex.join("rules/agent-relay.rules")).unwrap();
-        assert_eq!(rules.matches("prefix_rule(").count(), 6);
+        assert_eq!(
+            rules.matches("prefix_rule(").count(),
+            crate::relay::session_cli::ALLOWED_SUBCOMMANDS.len()
+        );
         let socket = "/Users/me/Library/Application Support/x/run/relay.sock";
         for subcommand in crate::relay::session_cli::ALLOWED_SUBCOMMANDS {
             assert!(rules.contains(&format!(
@@ -1462,7 +1466,8 @@ mod tests {
             socket: PathBuf::from("/s/relay.sock"),
         }
         .text();
-        assert_eq!(rules.matches("prefix_rule(").count(), 6);
+        let count = crate::relay::session_cli::ALLOWED_SUBCOMMANDS.len();
+        assert_eq!(rules.matches("prefix_rule(").count(), count);
         for subcommand in crate::relay::session_cli::ALLOWED_SUBCOMMANDS {
             assert!(rules.contains(&format!(
                 "pattern = [\"/Apps/Agent Relay.app/probe\", \"relay\", \"{subcommand}\", \"--socket\", \"/s/relay.sock\"]"
@@ -1471,7 +1476,7 @@ mod tests {
         // `socket-request` takes any method and path; a prefix rule could
         // not keep a relayed message from steering it to `PATCH /settings`.
         assert!(!rules.contains("socket-request"));
-        assert_eq!(rules.matches("decision = \"allow\"").count(), 6);
+        assert_eq!(rules.matches("decision = \"allow\"").count(), count);
     }
 
     /// The commands a relayed message could steer Codex into, and whether
@@ -1491,6 +1496,10 @@ mod tests {
             ),
             (on(&["agents", "--socket", "SOCK"]), true),
             (on(&["whoami", "--socket", "SOCK"]), true),
+            (
+                on(&["subscribe-channel", "--socket", "SOCK", "swarm", "--remove"]),
+                true,
+            ),
             (on(&["read", "--socket", "SOCK", "0123456789ab"]), true),
             (
                 on(&["fetch-attachment", "--socket", "SOCK", "file_1"]),

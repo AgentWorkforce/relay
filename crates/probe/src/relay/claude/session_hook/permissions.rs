@@ -16,11 +16,13 @@
 //! Bash(<probe> relay fetch-attachment --socket <socket> *)
 //! Bash(<probe> relay agents --socket <socket>)
 //! Bash(<probe> relay whoami --socket <socket>)
+//! Bash(<probe> relay subscribe-channel --socket <socket> *)
 //! ```
 //!
 //! That is: read a message handed to this session, reply (a DM, a channel
 //! thread or a Relay Connect room), fetch an attachment it was sent, and
-//! list who it can message and who it is. These are the same self-limiting commands
+//! list who it can message and who it is, and join or leave a channel (the
+//! SessionStart preamble and a channel post's stop line). These are the same self-limiting commands
 //! Codex's sandbox rules allow (`session_cli`): each fixes its own method
 //! and route and checks every other argument, so nothing after the `*`
 //! reaches another route. Every other session route (`/register`,
@@ -87,6 +89,9 @@ impl PermissionRules {
             format!("Bash({})", command("agents")),
             // The session's own name (`session_hook::joining`).
             format!("Bash({})", command("whoami")),
+            // A channel's posts, or stopping them (`hosted_mcp::preamble`,
+            // `channels::channel_subscription_command`).
+            format!("Bash({} *)", command("subscribe-channel")),
         ]
     }
 }
@@ -300,6 +305,7 @@ mod tests {
                 format!("Bash({probe} relay fetch-attachment {on} *)"),
                 format!("Bash({probe} relay agents {on})"),
                 format!("Bash({probe} relay whoami {on})"),
+                format!("Bash({probe} relay subscribe-channel {on} *)"),
             ]
         );
         // The text before the read's `*` is exactly how the pointer's read
@@ -376,7 +382,10 @@ mod tests {
             probe: PathBuf::from("/Apps/Bob's Relay/probe"),
             socket: PathBuf::from("/s/relay.sock"),
         };
-        assert_eq!(rules.rules().len(), 6);
+        assert_eq!(
+            rules.rules().len(),
+            crate::relay::session_cli::ALLOWED_SUBCOMMANDS.len()
+        );
     }
 
     #[test]

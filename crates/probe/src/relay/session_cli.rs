@@ -1,6 +1,6 @@
 //! The probe's self-limiting session-socket commands: `relay send`,
-//! `relay agents`, `relay whoami`, `relay read`, `relay fetch-attachment`
-//! and `relay connect-send`.
+//! `relay agents`, `relay whoami`, `relay read`, `relay fetch-attachment`,
+//! `relay connect-send` and `relay subscribe-channel`.
 //!
 //! Codex's execpolicy rules match a command by its leading words only, so
 //! a rule for `relay socket-request --socket <sock>` let anything after the
@@ -50,6 +50,10 @@ pub enum SessionCommand {
     FetchAttachment { file_id: String },
     /// `relay connect-send [--to <name>]`: `POST /connect/send`.
     ConnectSend { to: Option<String> },
+    /// `relay subscribe-channel <channel> [--remove]`: `POST` (or, with
+    /// `remove`, `DELETE`) `/channels/subscribe`, joining or leaving one
+    /// channel as the calling session.
+    SubscribeChannel { channel: String, remove: bool },
 }
 
 /// The one request a [`SessionCommand`] makes.
@@ -69,13 +73,14 @@ impl SessionRequest {
 
 /// The subcommands Codex's sandbox rules allow (`SandboxRules`), each only
 /// on this core's own session socket.
-pub const ALLOWED_SUBCOMMANDS: [&str; 6] = [
+pub const ALLOWED_SUBCOMMANDS: [&str; 7] = [
     "send",
     "agents",
     "whoami",
     "read",
     "fetch-attachment",
     "connect-send",
+    "subscribe-channel",
 ];
 
 /// The longest name, address, channel or id accepted.
@@ -125,6 +130,7 @@ impl SessionCommand {
             SessionCommand::Read { .. } => "read",
             SessionCommand::FetchAttachment { .. } => "fetch-attachment",
             SessionCommand::ConnectSend { .. } => "connect-send",
+            SessionCommand::SubscribeChannel { .. } => "subscribe-channel",
         }
     }
 
@@ -231,6 +237,15 @@ impl SessionCommand {
                     "--to takes one participant name, with no spaces or URL characters.",
                 )),
             },
+            SessionCommand::SubscribeChannel { channel, remove } => {
+                if !valid_channel(channel) {
+                    return Err(refuse("Name one channel, with no spaces."));
+                }
+                Ok(SessionRequest {
+                    method: if *remove { "DELETE" } else { "POST" },
+                    path: format!("/channels/subscribe?channel={}", query_encode(channel)),
+                })
+            }
         }
     }
 
@@ -262,6 +277,13 @@ impl SessionCommand {
                 Some(name) => vec!["--to", name.as_str()],
                 None => Vec::new(),
             },
+            SessionCommand::SubscribeChannel { channel, remove } => {
+                let mut parts = vec![channel.as_str()];
+                if *remove {
+                    parts.push("--remove");
+                }
+                parts
+            }
         }
     }
 
@@ -398,6 +420,22 @@ mod tests {
                 SessionCommand::ConnectSend { to: None },
                 "POST",
                 "/connect/send",
+            ),
+            (
+                SessionCommand::SubscribeChannel {
+                    channel: "#swarm".into(),
+                    remove: false,
+                },
+                "POST",
+                "/channels/subscribe?channel=%23swarm",
+            ),
+            (
+                SessionCommand::SubscribeChannel {
+                    channel: "swarm".into(),
+                    remove: true,
+                },
+                "DELETE",
+                "/channels/subscribe?channel=swarm",
             ),
             (
                 SessionCommand::ConnectSend {

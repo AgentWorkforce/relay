@@ -1775,7 +1775,14 @@ impl Outbound {
     async fn observe_setup_status(&self, pid: i32, uid: u32) -> Result<Value, OutboundError> {
         let session = self.identify(pid, uid).await?;
         self.admit(&session.target.key())?;
-        Ok(self.setup.status(&session).await)
+        let mut status = self.setup.status(&session).await;
+        // The probe the rules and hints name (the space-free link when it is
+        // in use), so the SessionStart hook's commands match Claude's rules:
+        // the hook runs in a process of its own, which cannot tell.
+        if let (Some(fields), Some(probe)) = (status.as_object_mut(), fetch::probe_executable()) {
+            fields.insert("probe".into(), json!(probe.to_string_lossy()));
+        }
+        Ok(status)
     }
 
     async fn setup_route(
@@ -2469,10 +2476,15 @@ mod tests {
             let thread =
                 channels::channel_reply_command(socket, "swarm", "123", kind, false).unwrap();
             assert!(covered(&thread), "{thread}");
-            // Joining a channel is not a reply: it still asks.
-            let join =
-                channels::channel_subscription_command(socket, "swarm", true, kind, false).unwrap();
-            assert!(!covered(&join), "{join}");
+            // Joining or leaving a channel is one of the self-limiting
+            // commands too (`relay subscribe-channel`).
+            for join in [true, false] {
+                let command =
+                    channels::channel_subscription_command(socket, "swarm", join, kind, false)
+                        .unwrap();
+                assert!(command.contains(" relay subscribe-channel "), "{command}");
+                assert!(covered(&command), "{command}");
+            }
         }
     }
 

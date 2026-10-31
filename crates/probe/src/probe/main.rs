@@ -1238,19 +1238,31 @@ mod sandbox_rule_reach_tests {
     use clap::{CommandFactory, FromArgMatches};
     use std::path::Path;
 
-    /// The one route each subcommand a Codex rule allows is meant to reach,
+    /// The routes each subcommand a Codex rule allows is meant to reach,
     /// and the query keys it may carry.
-    fn intended(subcommand: &str) -> ((&'static str, &'static str), &'static [&'static str]) {
+    fn intended(
+        subcommand: &str,
+    ) -> (
+        &'static [(&'static str, &'static str)],
+        &'static [&'static str],
+    ) {
         match subcommand {
             "send" => (
-                ("POST", "/send"),
+                &[("POST", "/send")],
                 &["to", "address", "channel", "reply_to", "thread_id"],
             ),
-            "agents" => (("GET", "/agents"), &[]),
-            "whoami" => (("GET", "/whoami"), &[]),
-            "read" => (("GET", "/messages"), &["ref"]),
-            "fetch-attachment" => (("POST", "/attachments/fetch"), &["file_id"]),
-            "connect-send" => (("POST", "/connect/send"), &["to"]),
+            "agents" => (&[("GET", "/agents")], &[]),
+            "whoami" => (&[("GET", "/whoami")], &[]),
+            "read" => (&[("GET", "/messages")], &["ref"]),
+            "fetch-attachment" => (&[("POST", "/attachments/fetch")], &["file_id"]),
+            "connect-send" => (&[("POST", "/connect/send")], &["to"]),
+            "subscribe-channel" => (
+                &[
+                    ("POST", "/channels/subscribe"),
+                    ("DELETE", "/channels/subscribe"),
+                ],
+                &["channel"],
+            ),
             other => panic!("{other} has a Codex rule but no intended route"),
         }
     }
@@ -1290,6 +1302,7 @@ mod sandbox_rule_reach_tests {
         "settings",
         "--json",
         "--remove",
+        "swarm",
     ];
 
     /// What `argv` would send if it ran: `None` when the probe refuses it
@@ -1324,11 +1337,14 @@ mod sandbox_rule_reach_tests {
         let mut command = Cli::command();
         let mut reached = std::collections::BTreeSet::new();
         let patterns = rules.patterns();
-        assert_eq!(patterns.len(), 6);
+        assert_eq!(
+            patterns.len(),
+            agent_relay_probe::relay::session_cli::ALLOWED_SUBCOMMANDS.len()
+        );
         for pattern in &patterns {
             assert_eq!(pattern[1], "relay");
             assert_ne!(pattern[2], "socket-request");
-            let ((method, route), keys) = intended(&pattern[2]);
+            let (routes, keys) = intended(&pattern[2]);
             let mut suffixes: Vec<Vec<&str>> = vec![vec![]];
             for _ in 0..3 {
                 let longer: Vec<Vec<&str>> = suffixes
@@ -1373,7 +1389,10 @@ mod sandbox_rule_reach_tests {
                 ran += 1;
                 assert_eq!(socket, Path::new("/s/relay.sock"), "{argv:?}");
                 let sent_route = path.split('?').next().unwrap();
-                assert_eq!((sent_method, sent_route), (method, route), "{argv:?}");
+                assert!(
+                    routes.contains(&(sent_method, sent_route)),
+                    "{argv:?} reached {sent_method} {sent_route}"
+                );
                 if let Some((_, query)) = path.split_once('?') {
                     for pair in query.split('&') {
                         let key = pair.split('=').next().unwrap();
@@ -1384,11 +1403,11 @@ mod sandbox_rule_reach_tests {
             }
             assert!(ran > 0, "{} never ran", pattern[2]);
         }
-        // Each route either is one of the six or is never reached.
+        // Each route either is one a rule intends or is never reached.
         for (method, route) in SESSION_ROUTES {
             let allowed = patterns
                 .iter()
-                .any(|p| intended(&p[2]).0 == (*method, *route));
+                .any(|p| intended(&p[2]).0.contains(&(*method, *route)));
             assert_eq!(
                 reached.contains(&(*method, route.to_string())),
                 allowed,

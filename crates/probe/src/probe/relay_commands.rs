@@ -162,6 +162,18 @@ pub enum RelayCommands {
         #[arg(long, allow_hyphen_values = true)]
         body: Option<String>,
     },
+    /// Join one channel as the calling session, so its posts are delivered
+    /// (`POST /channels/subscribe`), or leave it with `--remove`.
+    SubscribeChannel {
+        #[arg(value_name = "CHANNEL")]
+        channel: String,
+        /// Leave the channel instead.
+        #[arg(long)]
+        remove: bool,
+        /// The session socket, as the hint names it.
+        #[arg(long)]
+        socket: PathBuf,
+    },
     /// Make any documented session-scoped request to the local relay
     /// socket, for people and debugging. No sandbox or permission rule
     /// allows it; sessions are handed the commands above.
@@ -248,7 +260,8 @@ pub enum RelayCommands {
 
 /// The self-limiting session command `command` is, with the socket it
 /// names and its `--body`: what `run` sends for `relay send`, `agents`,
-/// `whoami`, `read --socket`, `fetch-attachment` and `connect-send`. `None` for every
+/// `whoami`, `read --socket`, `fetch-attachment`, `connect-send` and
+/// `subscribe-channel`. `None` for every
 /// other command.
 pub fn session_command(
     command: &RelayCommands,
@@ -281,6 +294,18 @@ pub fn session_command(
         }
         RelayCommands::Agents { socket } => (socket.as_path(), SessionCommand::Agents, None),
         RelayCommands::Whoami { socket } => (socket.as_path(), SessionCommand::Whoami, None),
+        RelayCommands::SubscribeChannel {
+            socket,
+            channel,
+            remove,
+        } => (
+            socket.as_path(),
+            SessionCommand::SubscribeChannel {
+                channel: channel.clone(),
+                remove: *remove,
+            },
+            None,
+        ),
         RelayCommands::FetchAttachment { socket, file_id } => (
             socket.as_path(),
             SessionCommand::FetchAttachment {
@@ -319,6 +344,7 @@ pub fn run(command: RelayCommands) -> Result<()> {
         RelayCommands::Send { .. }
         | RelayCommands::Agents { .. }
         | RelayCommands::Whoami { .. }
+        | RelayCommands::SubscribeChannel { .. }
         | RelayCommands::FetchAttachment { .. }
         | RelayCommands::ConnectSend { .. } => Err(user_error(
             "Name exactly one of --to, --address or --channel.",

@@ -433,13 +433,18 @@ could steer Codex into `--method PATCH --path /settings` or
 allow only the probe's self-limiting session commands, each with `--socket`
 naming this core's session socket: `relay send` (`POST /send`, with `--to`,
 `--address` or `--channel`, `--reply-to` and `--thread`), `relay agents`
-(`GET /agents`), `relay whoami` (`GET /whoami`), `relay read` (`GET /messages`), `relay fetch-attachment`
-(`POST /attachments/fetch`) and `relay connect-send` (`POST /connect/send`).
+(`GET /agents`), `relay whoami` (`GET /whoami`), `relay read`
+(`GET /messages`), `relay fetch-attachment` (`POST /attachments/fetch`),
+`relay connect-send` (`POST /connect/send`) and `relay subscribe-channel`
+(`POST`, or with `--remove` `DELETE`, `/channels/subscribe`).
 Each fixes its own method and route, checks every other argument (one name
 or `agent@machine` address with no whitespace or URL characters, plain ids)
 and percent-encodes it into the query, and clap refuses a repeated
 `--socket`. Every hint a session is handed names these commands, and the
-Claude rules allow the same ones. `relay socket-request` stays for people
+Claude rules allow the same ones. That includes the Claude SessionStart
+preamble and joining text, which named curl and so asked in manual mode: the
+core's `GET /setup/status` answer now carries `probe` (the space-free link
+when it is in use), and the hook writes its commands through it. `relay socket-request` stays for people
 and debugging, with no rule, so it asks. A test enumerates every route the
 session socket serves (read from the router's source) and checks that no
 argument list after any allowed prefix reaches one other than that rule's

@@ -359,8 +359,16 @@ pub fn claude_session_hook(socket: Option<&Path>, development: bool) -> Result<(
     let interactive = crate::relay::claude::session_hook::has_person(&table, parent);
     let output = match session_hook_socket(socket, development).filter(|_| claude.is_some()) {
         Some(socket) => {
-            let registered = session_registered(&socket);
-            crate::relay::claude::session_hook::hook_output(registered, &socket, interactive)
+            let (registered, probe) = session_registered(&socket);
+            // The core names its rules' probe; an older one does not, and
+            // this probe is the one it runs.
+            let probe = probe.or_else(crate::relay::outbound::fetch::probe_executable);
+            crate::relay::claude::session_hook::hook_output(
+                registered,
+                &socket,
+                interactive,
+                probe.as_deref(),
+            )
         }
         None => json!({}),
     };
@@ -464,9 +472,24 @@ fn session_hook_socket(socket: Option<&Path>, development: bool) -> Option<std::
 }
 
 /// `session.registered`, asking once more when Claude has not written its
-/// session file yet. `None` when the status cannot be read: the hook then
-/// stays quiet rather than registering the session.
-fn session_registered(socket: &Path) -> Option<crate::relay::claude::session_hook::StatusRead> {
+/// session file yet, and the probe the core's rules name. `None` when the
+/// status cannot be read: the hook then stays quiet rather than registering
+/// the session.
+fn session_registered(
+    socket: &Path,
+) -> (
+    Option<crate::relay::claude::session_hook::StatusRead>,
+    Option<std::path::PathBuf>,
+) {
+    let mut probe = None;
+    let status = session_status(socket, &mut probe);
+    (status, probe)
+}
+
+fn session_status(
+    socket: &Path,
+    probe: &mut Option<std::path::PathBuf>,
+) -> Option<crate::relay::claude::session_hook::StatusRead> {
     let mut attempts = 0;
     loop {
         attempts += 1;
@@ -482,6 +505,7 @@ fn session_registered(socket: &Path) -> Option<crate::relay::claude::session_hoo
             )],
         )
         .ok()?;
+        *probe = crate::relay::claude::session_hook::read_probe(&body);
         match crate::relay::claude::session_hook::read_status(status, &body) {
             registered @ (crate::relay::claude::session_hook::StatusRead::Registered { .. }
             | crate::relay::claude::session_hook::StatusRead::Joining

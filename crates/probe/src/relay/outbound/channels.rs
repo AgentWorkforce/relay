@@ -404,7 +404,19 @@ pub fn channel_subscription_command(
 ) -> Option<String> {
     let method = if subscribe { "POST" } else { "DELETE" };
     let request_path = format!("/channels/subscribe?channel={}", query_encode(channel));
-    socket_command(socket, method, &request_path, None, kind, needs_probe, None)
+    let session = SessionCommand::SubscribeChannel {
+        channel: channel.to_string(),
+        remove: !subscribe,
+    };
+    socket_command(
+        socket,
+        method,
+        &request_path,
+        None,
+        kind,
+        needs_probe,
+        Some(&session),
+    )
 }
 
 #[cfg(test)]
