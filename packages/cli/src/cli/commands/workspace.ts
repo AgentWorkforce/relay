@@ -2,12 +2,14 @@ import type { Command } from 'commander';
 import { InvalidArgumentError } from 'commander';
 import { resolveActiveWorkspace } from '@agent-relay/cloud';
 
+import { shellWord } from '../lib/agent-registration.js';
 import { maskSecret } from '../lib/redact.js';
 import { printJson, runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
 import { readWorkspaceStore, setWorkspaceKey } from '../lib/workspace-store.js';
 import {
   assertOriginBindingsWritable,
   configuredBaseUrl,
+  boundOrigin,
   guardCredentialOrigin,
 } from '../lib/relaycast-origin-binding.js';
 import {
@@ -43,6 +45,24 @@ function bindKeyToConfiguredServer(key: string): void {
   if (process.env.RELAY_BASE_URL !== undefined) {
     guardCredentialOrigin(key, process.env.RELAY_BASE_URL);
   }
+}
+
+const HOSTED_ORIGIN = 'https://cast.agentrelay.com';
+
+/**
+ * The `--url` a joined key needs in `relay init`: the configured server,
+ * else the server the key is already bound to; none for the hosted service,
+ * which `--key` alone joins. A self-hosted key is never pointed at it.
+ */
+function joinServerFlag(key: string): string {
+  const configured = process.env.RELAY_BASE_URL?.trim() || boundOrigin(key);
+  if (!configured) return '';
+  try {
+    if (new URL(configured).origin === HOSTED_ORIGIN) return '';
+  } catch {
+    // Not a URL: shown as given, for the person to correct.
+  }
+  return `--url ${shellWord(configured)} `;
 }
 
 function parsePositiveInteger(value: string): number {
@@ -212,8 +232,15 @@ export function registerWorkspaceCommands(
     .action(async (name: string, key: string) => {
       await runSdk(deps, async () => {
         bindKeyToConfiguredServer(key);
+        // Read before anything changes, so a bindings file that cannot be
+        // read stops the join instead of interrupting it.
+        const serverFlag = joinServerFlag(key);
         const result = persistWorkspaceSession({ name, workspaceKey: key });
         deps.log(`Joined and switched to workspace "${name}".`);
+        deps.log(
+          'This only saves the workspace. To connect agent tools and have messages injected into their ' +
+            `sessions, run in the project: relay init ${serverFlag}--key <key> --name ${shellWord(name)}`
+        );
         reportClearedEnrollment(result, deps);
       });
     });

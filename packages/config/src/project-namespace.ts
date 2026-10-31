@@ -45,8 +45,23 @@ export function relayHomeDir(env: NodeJS.ProcessEnv = process.env): string {
  * does not exist yet still compares equal to the one it will be created as.
  */
 function canonicalPath(target: string): string {
+  const resolved = path.resolve(target);
+  const known = canonicalPaths.get(resolved);
+  if (known !== undefined) return known;
+  const canonical = canonicalize(resolved);
+  // Creating the missing folders later does not change where they resolve,
+  // so a result is kept: each probe of a missing folder can be slow on an
+  // automounted volume (macOS /home).
+  if (canonicalPaths.size > 256) canonicalPaths.clear();
+  canonicalPaths.set(resolved, canonical);
+  return canonical;
+}
+
+const canonicalPaths = new Map<string, string>();
+
+function canonicalize(resolved: string): string {
   const missing: string[] = [];
-  let current = path.resolve(target);
+  let current = resolved;
   for (;;) {
     try {
       return path.join(fs.realpathSync.native(current), ...missing.reverse());
@@ -78,14 +93,22 @@ export function isRelayHomeDir(dataDir: string, env: NodeJS.ProcessEnv = process
 }
 
 function samePath(a: string, b: string): boolean {
+  const left = statOrUndefined(a);
+  const right = statOrUndefined(b);
+  // Both exist: the same file system object (symlinks followed, any case).
+  if (left && right) return left.dev === right.dev && left.ino === right.ino;
+  // Only one exists: not the same folder.
+  if (left || right) return false;
+  // Neither exists yet: compare where they would be.
+  return path.resolve(a) === path.resolve(b) || canonicalPath(a) === canonicalPath(b);
+}
+
+function statOrUndefined(target: string): fs.Stats | undefined {
   try {
-    const left = fs.statSync(a);
-    const right = fs.statSync(b);
-    if (left.dev === right.dev && left.ino === right.ino) return true;
+    return fs.statSync(target);
   } catch {
-    // One of them does not exist yet: compare where they would be.
+    return undefined;
   }
-  return canonicalPath(a) === canonicalPath(b);
 }
 
 const INSIDE_A_PROJECT =
