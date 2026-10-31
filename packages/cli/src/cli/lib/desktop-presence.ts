@@ -11,6 +11,28 @@ import {
 } from './probe-core.js';
 import { originBindingsPath } from './relaycast-origin-binding.js';
 
+function subdirectories(dir: string): string[] {
+  try {
+    return fs
+      .readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(dir, entry.name));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The binaries of a per-user Linux install: a headless core under `current`,
+ * or the updater's `<version>/<tree>` copies of the app. The folder alone is
+ * no sign of one, since `@agent-relay/connect` leaves it behind on removal.
+ */
+function linuxTreeMarkers(root: string): string[] {
+  const app = path.join('usr', 'bin', 'agent-relay-desktop');
+  const trees = subdirectories(root).flatMap((version) => subdirectories(version));
+  return [path.join(root, 'current', 'agent-relay-probe'), ...trees.map((tree) => path.join(tree, app))];
+}
+
 /** What the desktop app or its headless service leaves on a machine, per platform. */
 function desktopInstallMarkers(platform: NodeJS.Platform, home: string, env: NodeJS.ProcessEnv): string[] {
   switch (platform) {
@@ -20,8 +42,9 @@ function desktopInstallMarkers(platform: NodeJS.Platform, home: string, env: Nod
       return [
         '/usr/share/applications/agent-relay.desktop',
         '/usr/lib/systemd/user/agent-relay.service',
-        // The per-user tarball: its launcher and unit sit inside this tree.
-        env.AGENT_RELAY_PREFIX?.trim() || path.join(home, '.local', 'lib', 'agent-relay'),
+        ...linuxTreeMarkers(
+          env.AGENT_RELAY_PREFIX?.trim() || path.join(home, '.local', 'lib', 'agent-relay')
+        ),
         path.join(
           env.XDG_CONFIG_HOME?.trim() || path.join(home, '.config'),
           'systemd',
@@ -44,15 +67,17 @@ function desktopInstallMarkers(platform: NodeJS.Platform, home: string, env: Nod
  *
  * @param platform - The platform to check for.
  * @param home - The person's home directory.
- * @param env - The environment, for Windows' local app data folder.
+ * @param env - The environment, for install locations it can move.
+ * @param exists - How to test a path; replaced in tests.
  * @returns True when an install marker exists.
  */
 export function desktopAppInstalled(
   platform: NodeJS.Platform = process.platform,
   home: string = os.homedir(),
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  exists: (file: string) => boolean = fs.existsSync
 ): boolean {
-  return desktopInstallMarkers(platform, home, env).some((marker) => fs.existsSync(marker));
+  return desktopInstallMarkers(platform, home, env).some((marker) => exists(marker));
 }
 
 /**

@@ -27,46 +27,59 @@ function clientOf(pid: number): CoreClient {
 }
 
 describe('desktopAppInstalled', () => {
+  // Only the temporary home counts, whatever this machine has installed.
+  const inHome = (file: string) => file.startsWith(home) && fs.existsSync(file);
+
   it('finds an app in the home Applications folder on macOS', () => {
     fs.mkdirSync(path.join(home, 'Applications', 'Agent Relay.app'), { recursive: true });
-    expect(desktopAppInstalled('darwin', home, {})).toBe(true);
+    expect(desktopAppInstalled('darwin', home, {}, inHome)).toBe(true);
   });
 
   it('finds the headless service on Linux', () => {
     const unit = path.join(home, '.config', 'systemd', 'user');
     fs.mkdirSync(unit, { recursive: true });
     fs.writeFileSync(path.join(unit, 'agent-relay.service'), '');
-    expect(desktopAppInstalled('linux', home, {})).toBe(true);
+    expect(desktopAppInstalled('linux', home, {}, inHome)).toBe(true);
   });
 
-  it('finds a stopped per-user Linux tarball by its install tree', () => {
-    expect(desktopAppInstalled('linux', home, {})).toBe(false);
-    fs.mkdirSync(path.join(home, '.local', 'lib', 'agent-relay', '2026.10.66'), { recursive: true });
-    expect(desktopAppInstalled('linux', home, {})).toBe(true);
+  it('finds a stopped per-user Linux install by its binaries, not a leftover folder', () => {
+    const root = path.join(home, '.local', 'lib', 'agent-relay');
+    fs.mkdirSync(path.join(root, 'current'), { recursive: true });
+    fs.mkdirSync(path.join(root, '2026.10.66', 'tree', 'usr', 'bin'), { recursive: true });
+    expect(desktopAppInstalled('linux', home, {}, inHome)).toBe(false);
+
+    const app = path.join(root, '2026.10.66', 'tree', 'usr', 'bin', 'agent-relay-desktop');
+    fs.writeFileSync(app, '');
+    expect(desktopAppInstalled('linux', home, {}, inHome)).toBe(true);
+
+    fs.rmSync(app);
+    fs.writeFileSync(path.join(root, 'current', 'agent-relay-probe'), '');
+    expect(desktopAppInstalled('linux', home, {}, inHome)).toBe(true);
   });
 
   it('honours the install prefix and config folder the Linux installer does', () => {
     const prefix = path.join(home, 'custom-prefix');
-    fs.mkdirSync(prefix);
-    expect(desktopAppInstalled('linux', home, { AGENT_RELAY_PREFIX: prefix })).toBe(true);
+    fs.mkdirSync(path.join(prefix, 'current'), { recursive: true });
+    fs.writeFileSync(path.join(prefix, 'current', 'agent-relay-probe'), '');
+    expect(desktopAppInstalled('linux', home, { AGENT_RELAY_PREFIX: prefix }, inHome)).toBe(true);
 
     const config = path.join(home, 'custom-config');
     fs.mkdirSync(path.join(config, 'systemd', 'user'), { recursive: true });
     fs.writeFileSync(path.join(config, 'systemd', 'user', 'agent-relay.service'), '');
-    expect(desktopAppInstalled('linux', home, { XDG_CONFIG_HOME: config })).toBe(true);
+    expect(desktopAppInstalled('linux', home, { XDG_CONFIG_HOME: config }, inHome)).toBe(true);
   });
 
   it('finds the per-user install on Windows', () => {
     fs.mkdirSync(path.join(home, 'Programs', 'AgentRelay'), { recursive: true });
-    expect(desktopAppInstalled('win32', home, { LOCALAPPDATA: home })).toBe(true);
+    expect(desktopAppInstalled('win32', home, { LOCALAPPDATA: home }, inHome)).toBe(true);
   });
 
   it('does not take the data directory a core creates for the app', () => {
     fs.mkdirSync(path.join(home, 'Library', 'Application Support', 'com.agentrelay.desktop'), {
       recursive: true,
     });
-    expect(desktopAppInstalled('win32', home, {})).toBe(false);
-    expect(desktopAppInstalled('freebsd', home, {})).toBe(false);
+    expect(desktopAppInstalled('win32', home, {}, inHome)).toBe(false);
+    expect(desktopAppInstalled('freebsd', home, {}, inHome)).toBe(false);
   });
 });
 
