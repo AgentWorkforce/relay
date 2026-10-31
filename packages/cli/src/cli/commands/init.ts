@@ -1575,11 +1575,14 @@ async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise
   }
   // The skill is installed per user, like injection, and removed with it.
   const skillRecord = readDeliveryRecord(deliveryRecordPath()).relaySkill;
-  const skillLine =
+  const skill =
     o.scope !== 'project' && o.tools === undefined ? uninstallRelaySkill(skillRecord, ctx) : undefined;
-  if (skillLine) {
-    deps.log(skillLine);
-    updateDeliveryRecord(({ relaySkill: _removed, ...rest }) => rest);
+  if (skill) {
+    deps.log(skill.line);
+    // Paths this environment could not reach stay recorded for a later --uninstall.
+    updateDeliveryRecord(({ relaySkill: _removed, ...rest }) =>
+      skill.remaining ? { ...rest, relaySkill: skill.remaining } : rest
+    );
   }
   if (shown.length === 0 && turnedOff.length === 0 && !injectionKept && !skillRecord) {
     deps.log('relay init had not added Relay to any agent tool here; nothing to remove.');

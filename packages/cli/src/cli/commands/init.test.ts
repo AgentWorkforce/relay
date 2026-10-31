@@ -1973,6 +1973,33 @@ describe('relay init messaging skill', () => {
     expect(fs.readFileSync(path.join(toolHome, 'xdg', 'cache', 'keep'), 'utf8')).toBe('theirs');
   });
 
+  it('keeps recording what an --uninstall in another environment could not reach', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    const claudeDir = path.join(toolHome, 'claude-config');
+    skills.dirs['claude-code'] = path.join(claudeDir, 'skills');
+    const withDir = { projectRoot: project, home: toolHome, env: { PATH: '', CLAUDE_CONFIG_DIR: claudeDir } };
+    await setup({ ...core.deps, runSkillsCli: skills.run, toolContext: () => withDir }).run(
+      '--tools',
+      'claude'
+    );
+    const copy = path.join(claudeDir, 'skills', RELAY_SKILL_NAME, 'SKILL.md');
+    expect(fs.existsSync(copy)).toBe(true);
+
+    // Without CLAUDE_CONFIG_DIR this environment cannot reach that copy.
+    const plain = setup(core.deps);
+    await plain.run('--uninstall');
+    expect(fs.existsSync(copy)).toBe(true);
+    expect(plain.logs.join('\n')).toContain('Run relay init --uninstall again with the CLAUDE_CONFIG_DIR');
+    const record = JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'));
+    expect(record.relaySkill.copies.map((c: { path: string }) => c.path)).toEqual([path.dirname(copy)]);
+
+    await setup({ ...core.deps, toolContext: () => withDir }).run('--uninstall');
+    expect(fs.existsSync(copy)).toBe(false);
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
   it('keeps a copy with a file added after init on --uninstall', async () => {
     installedProbe();
     const core = fakeCore();

@@ -383,25 +383,39 @@ function failureLine(tools: string, reason: string): string {
   );
 }
 
+/** What `--uninstall` did with the skill, and what is still recorded. */
+export interface SkillUninstallResult {
+  line: string;
+  /**
+   * The paths it could not reach in this environment (recorded under
+   * another `CLAUDE_CONFIG_DIR`, `GROK_HOME`, `XDG_CONFIG_HOME` or
+   * `XDG_STATE_HOME`), kept for a later `--uninstall`; undefined when none are left.
+   */
+  remaining: RelaySkillRecord | undefined;
+}
+
 /**
  * Remove what init installed: each recorded copy whose every file is as
  * installed, the lock entry it wrote (putting back the one it replaced),
  * and the folders it created once they are empty. Only the skill's own
- * folder in a tool's skills folder and the `skills` CLI's lock file are
- * ever touched, whatever the record says.
+ * folder in a tool's skills folder and the `skills` CLI's lock file, as this
+ * environment resolves them, are ever touched, whatever the record says.
+ * Recorded paths outside them stay recorded, and the line says how to
+ * remove them.
  * @param recorded - What init installed
  * @param ctx - Home and environment the tools resolve against
- * @returns The line to print, or undefined when nothing was recorded
+ * @returns The line to print and the record to keep, or undefined when nothing was recorded
  */
 export function uninstallRelaySkill(
   recorded: RelaySkillRecord | undefined,
   ctx: ToolContext
-): string | undefined {
+): SkillUninstallResult | undefined {
   if (!recorded) return undefined;
   const allowed = new Set(TOOL_IDS.map((id) => skillDir(id, ctx)));
   const lock = lockFile(ctx);
   const removed: string[] = [];
   const changed: string[] = [];
+  const elsewhere = recorded.copies.filter((copy) => !allowed.has(copy.path));
   for (const copy of recorded.copies) {
     if (!allowed.has(copy.path)) continue;
     const hash = treeHash(copy.path);
@@ -413,14 +427,31 @@ export function uninstallRelaySkill(
     fs.rmSync(copy.path, { recursive: true, force: true });
     removed.push(copy.path);
   }
-  if (recorded.lock?.file === lock) restoreLock(recorded.lock);
+  const lockElsewhere = recorded.lock && recorded.lock.file !== lock ? recorded.lock : undefined;
+  if (recorded.lock && !lockElsewhere) restoreLock(recorded.lock);
   const roots = [...allowed, lock];
-  removeEmptyDirs(
-    recorded.createdDirs.filter((dir) => roots.some((root) => root.startsWith(dir + path.sep)))
-  );
+  const reachable = (dir: string) => roots.some((root) => root.startsWith(dir + path.sep));
+  removeEmptyDirs(recorded.createdDirs.filter(reachable));
+  const remaining: RelaySkillRecord | undefined =
+    elsewhere.length > 0 || lockElsewhere
+      ? {
+          copies: elsewhere,
+          createdDirs: recorded.createdDirs.filter((dir) => !reachable(dir) || exists(dir)),
+          ...(lockElsewhere ? { lock: lockElsewhere } : {}),
+        }
+      : undefined;
   const kept = changed.length > 0 ? `; kept ${changed.join(', ')}, changed since` : '';
   const list = removed.length > 0 ? ` (${removed.join(', ')})` : '';
-  return `✓ Agent skill        removed the ${RELAY_SKILL_NAME} skill relay init installed${list}${kept}`;
+  const left = remaining
+    ? `. Not removed, because this environment resolves the tools' folders elsewhere: ` +
+      `${[...elsewhere.map((copy) => copy.path), ...(lockElsewhere ? [lockElsewhere.file] : [])].join(', ')}. ` +
+      'Run relay init --uninstall again with the CLAUDE_CONFIG_DIR, GROK_HOME, XDG_CONFIG_HOME and ' +
+      'XDG_STATE_HOME that relay init ran with to remove them'
+    : '';
+  return {
+    line: `${remaining ? '!' : '✓'} Agent skill        removed the ${RELAY_SKILL_NAME} skill relay init installed${list}${kept}${left}`,
+    remaining,
+  };
 }
 
 /** Put the lock entry back as init found it, while it still names the ref init wrote. */
