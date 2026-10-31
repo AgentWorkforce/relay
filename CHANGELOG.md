@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- With the desktop app on the machine, `relay init --hosted` and `relay workspace create` use `https://cast.agentrelay.com`, the only server its core serves, and `relay init --key` refuses an armadillo key instead of saving a workspace agents could not join.
 
 ## [15.0.0] - 2026-10-31
 
