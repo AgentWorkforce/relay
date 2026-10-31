@@ -87,6 +87,13 @@ import {
   type OpenCodeState,
   type PiState,
 } from '../lib/init-leftovers.js';
+import {
+  applySkillChange,
+  defaultRunSkillsCli,
+  installRelaySkill,
+  uninstallRelaySkill,
+  type RunSkillsCli,
+} from '../lib/relay-skill.js';
 import { persistWorkspaceSession } from '../lib/workspace-session.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
 import { assertProjectRoot, getProjectPaths, isHomeProjectRoot } from '@agent-relay/config';
@@ -144,6 +151,8 @@ export interface InitCommandDependencies extends SdkCommandDeps {
   downloadProbe: DownloadFile;
   /** The version an installed `agent-relay-probe` reports for `--version`. */
   probeVersion: (binary: string) => string | undefined;
+  /** Runs the pinned `skills` CLI that installs the Agent Relay messaging skill. */
+  runSkillsCli: RunSkillsCli;
 }
 
 interface LocalServerState {
@@ -316,6 +325,7 @@ export function withInitDefaults(overrides: Partial<InitCommandDependencies> = {
     startCore: startCoreProcess,
     downloadProbe: fetchDownload,
     probeVersion: readProbeVersion,
+    runSkillsCli: defaultRunSkillsCli,
     ...overrides,
   };
 }
@@ -1148,6 +1158,7 @@ async function setupInjection(
             ? (current.openCode ?? files.openCode)
             : current.openCode,
           pi: touched.includes('pi_extension') ? (current.pi ?? files.pi) : current.pi,
+          relaySkill: current.relaySkill,
         });
       });
     try {
@@ -1467,6 +1478,7 @@ function tidyLeftovers(record: DeliveryRecord): DeliveryRecord {
     ...(claudeFiles ? { claudeFiles } : {}),
     ...(openCode ? { openCode } : {}),
     ...(pi ? { pi } : {}),
+    ...(record.relaySkill ? { relaySkill: record.relaySkill } : {}),
   };
 }
 
@@ -1480,7 +1492,7 @@ function updateDeliveryRecord(change: (current: DeliveryRecord) => DeliveryRecor
 
 /** Save what init turned on; no record at all once nothing is. */
 function writeDeliveryRecord(record: DeliveryRecord): void {
-  if (record.turnedOn.length === 0) {
+  if (record.turnedOn.length === 0 && !record.relaySkill) {
     fs.rmSync(deliveryRecordPath(), { force: true });
     return;
   }
@@ -1490,7 +1502,54 @@ function writeDeliveryRecord(record: DeliveryRecord): void {
     ...(record.claudeFiles ? { claudeFiles: record.claudeFiles } : {}),
     ...(record.openCode ? { openCode: record.openCode } : {}),
     ...(record.pi ? { pi: record.pi } : {}),
+    ...(record.relaySkill ? { relaySkill: record.relaySkill } : {}),
   });
+}
+
+/**
+ * Install the Agent Relay messaging skill for the tools the core injects
+ * into, with no prompt, and record what landed. Never fails init.
+ * @returns The one line to print, or undefined when no tool is injected
+ */
+function installSkill(
+  deps: InitCommandDependencies,
+  injected: ToolId[],
+  ctx: ToolContext
+): string | undefined {
+  if (injected.length === 0) return undefined;
+  const result = installRelaySkill(
+    injected,
+    ctx,
+    readDeliveryRecord(deliveryRecordPath()).relaySkill,
+    deps.runSkillsCli
+  );
+  try {
+    updateDeliveryRecord(({ relaySkill, ...rest }) => {
+      const next = applySkillChange(relaySkill, result.change);
+      return next ? { ...rest, relaySkill: next } : rest;
+    });
+  } catch (error) {
+    // The skill is optional, but what --uninstall would not know about is not left behind.
+    const { restored, failed } = result.settle?.(false) ?? { restored: [], failed: [] };
+    const left = uninstallRelaySkill(result.undo, ctx)?.remaining;
+    const stuck = [
+      ...failed,
+      ...(left?.copies.map((copy) => copy.path) ?? []),
+      ...(left?.locks.map((lock) => lock.file) ?? []),
+    ];
+    const outcome =
+      stuck.length > 0
+        ? `and these could not be taken out again, so remove them by hand: ${stuck.join(', ')}`
+        : result.undo?.copies.length || restored.length > 0
+          ? "so this run's copies were taken out again"
+          : 'and this run added no copies to take out';
+    return (
+      `! Agent skill        not installed: ${deliveryRecordPath()} could not be saved ` +
+      `(${(error as Error).message}), ${outcome}`
+    );
+  }
+  result.settle?.(true);
+  return result.line;
 }
 
 /**
@@ -1695,7 +1754,18 @@ async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise
   const removedCopy = o.scope !== 'project' && o.tools === undefined ? removeProbeCopy(ctx) : undefined;
   if (removedCopy)
     deps.log(`✓ Agent Relay core     removed the copy a core relay init started left at ${removedCopy}`);
-  if (shown.length === 0 && turnedOff.length === 0 && !injectionKept && !removedCopy) {
+  // The skill is installed per user, like injection, and removed with it.
+  const skillRecord = readDeliveryRecord(deliveryRecordPath()).relaySkill;
+  const skill =
+    o.scope !== 'project' && o.tools === undefined ? uninstallRelaySkill(skillRecord, ctx) : undefined;
+  if (skill) {
+    deps.log(skill.line);
+    // Paths this environment could not reach stay recorded for a later --uninstall.
+    updateDeliveryRecord(({ relaySkill: _removed, ...rest }) =>
+      skill.remaining ? { ...rest, relaySkill: skill.remaining } : rest
+    );
+  }
+  if (shown.length === 0 && turnedOff.length === 0 && !injectionKept && !removedCopy && !skillRecord) {
     deps.log('relay init had not added Relay to any agent tool here; nothing to remove.');
     return;
   }
@@ -1786,6 +1856,8 @@ async function runPlain(deps: InitCommandDependencies, o: InitOptions): Promise<
     deps.log('');
     deps.log('Injecting messages into your agent sessions:');
     for (const line of injectionLines(plan, ctx)) deps.log(`  ${line}`);
+    const skillLine = installSkill(deps, plan.injected, ctx);
+    if (skillLine) deps.log(`  ${skillLine}`);
   } else if (plan.unavailable) {
     deps.log('');
     deps.log(unavailableLine(plan.unavailable));
@@ -2005,7 +2077,8 @@ async function runGuided(deps: InitCommandDependencies, o: InitOptions): Promise
   );
   if (plan.injection) {
     injecting.stop('Message injection is set up.');
-    p.note(injectionLines(plan, ctx).join('\n'), 'Message injection');
+    const skillLine = installSkill(deps, plan.injected, ctx);
+    p.note([...injectionLines(plan, ctx), ...(skillLine ? [skillLine] : [])].join('\n'), 'Message injection');
   } else if (plan.unavailable) {
     injecting.stop('Message injection is not available.');
     p.warn(unavailableLine(plan.unavailable));

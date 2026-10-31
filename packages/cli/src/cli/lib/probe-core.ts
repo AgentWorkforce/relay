@@ -23,6 +23,7 @@ import path from 'node:path';
 import type { ToolId } from './agent-tools-mcp.js';
 import type { ClaudeFileState, OpenCodeState, PiState } from './init-leftovers.js';
 import type { EnginePlatform } from './relaycast-engine-install.js';
+import { relaySkillRecordOf, type RelaySkillRecord } from './relay-skill.js';
 
 /** The core `relay init` installs. Pinned so every machine runs the same core. */
 export const PROBE_VERSION = '15.0.5';
@@ -590,6 +591,8 @@ export interface DeliveryRecord {
   openCode?: OpenCodeState;
   /** The Pi extension's place as init found it (`tidyPiExtension`). */
   pi?: PiState;
+  /** The agent skill init installed (`relay-skill.ts`), removed by `--uninstall`. */
+  relaySkill?: RelaySkillRecord;
 }
 
 const strings = (value: unknown): string[] =>
@@ -668,12 +671,14 @@ export function readDeliveryRecord(file: string): DeliveryRecord {
     const claudeFiles = claudeFileStatesOf(parsed?.claudeFiles);
     const openCode = openCodeStateOf(parsed?.openCode);
     const pi = piStateOf(parsed?.pi);
+    const relaySkill = relaySkillRecordOf(parsed?.relaySkill);
     return {
       turnedOn: strings(parsed?.turnedOn),
       claudeInbound: originals(parsed?.claudeInbound),
       ...(claudeFiles ? { claudeFiles } : {}),
       ...(openCode ? { openCode } : {}),
       ...(pi ? { pi } : {}),
+      ...(relaySkill ? { relaySkill } : {}),
     };
   } catch {
     return { turnedOn: [], claudeInbound: {} };
