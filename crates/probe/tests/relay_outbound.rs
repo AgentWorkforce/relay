@@ -2500,14 +2500,13 @@ async fn a_starting_codex_session_is_told_who_it_is_and_its_local_route() {
     // Codex sandbox rules allow, never curl.
     let socket = format!("--socket '{}'", h.relay_socket.display());
     for command in [
-        format!("relay socket-request {socket} --method GET --path /agents;"),
-        format!(
-            "relay socket-request {socket} --method POST --path '/send?to=<name>' --body 'your message'"
-        ),
+        format!("relay agents {socket};"),
+        format!("relay send {socket} --to '<name>' --body 'your message'"),
     ] {
         assert!(text.contains(&command), "{command} in {text}");
     }
     assert!(!text.contains("curl"), "{text}");
+    assert!(!text.contains("socket-request"), "{text}");
     assert!(text.contains("never through any other Agent Relay connector or app"));
     assert!(text.contains("Agent Relay in ChatGPT"));
 
@@ -2613,8 +2612,9 @@ async fn a_codex_session_starting_before_activation_is_put_on_the_relay() {
         text.starts_with("This session is joining Agent Relay on this computer;"),
         "{text}"
     );
-    assert!(text.contains("--method GET --path /whoami"), "{text}");
-    assert!(text.contains("--method GET --path /agents;"), "{text}");
+    assert!(text.contains(" relay whoami --socket "), "{text}");
+    assert!(text.contains(" relay agents --socket "), "{text}");
+    assert!(!text.contains("socket-request"), "{text}");
     assert!(text.contains("never through any other Agent Relay connector or app"));
 
     // Registered, the next start names it.

@@ -203,15 +203,9 @@ impl Outbound {
     /// space-free link to the probe while the core keeps one (`probe_alias`).
     fn codex_socket_commands(&self) -> Option<crate::relay::hosted_mcp::CodexSocketCommands> {
         let socket = self.core.plugins.relay_send.as_ref()?.serving.get()?;
-        Some(crate::relay::hosted_mcp::CodexSocketCommands {
-            agents: super::probe_socket_command(&socket, "GET", "/agents")?,
-            send: super::probe_socket_command_with_body(
-                &socket,
-                "POST",
-                "/send?to=<name>",
-                "your message",
-            )?,
-            whoami: super::probe_socket_command(&socket, "GET", "/whoami")?,
-        })
+        crate::relay::hosted_mcp::CodexSocketCommands::for_probe(
+            &super::fetch::probe_executable()?,
+            &socket,
+        )
     }
 }
