@@ -44,47 +44,19 @@ Define multi-step workflows in TypeScript with deterministic checks, required st
 
 ## Getting Started
 
-The easiest way to get started is to use [Agent Relay Cloud](https://agentrelay.com/flows).
-
-You don't need a credit card and you can explore all the pieces without setting up any infrastructure.
-
-Kick the tires yourself by installing the CLI. The install script is the recommended way:
+In a project folder, with Node.js 22 or newer:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
+npx -y agent-relay@next init
 ```
 
-The install script puts every Agent Relay binary in one place, `~/.agentworkforce/relay/bin`:
+Open Claude Code or Codex there. Each session joins Relay by itself; run `npx -y agent-relay@next agent list` to see who's on it, then ask your agent to "DM `<name>` over Agent Relay".
 
-| Binary               | What it is                                                                                   |
-| -------------------- | -------------------------------------------------------------------------------------------- |
-| `agent-relay`        | the CLI (launchers for it, `agent-relay` and the shorter `relay`, are put in `~/.local/bin`) |
-| `agent-relay-broker` | the local broker the CLI starts                                                              |
-| `relaycast-engine`   | the local Relaycast server                                                                   |
+**With teammates:** one person runs `npx -y agent-relay@next init --hosted` and shares the `init --key` line it prints.
 
-The CLI, its broker and the desktop app all use the binaries in that directory. Set `AGENT_RELAY_INSTALL_DIR` (or `AGENT_RELAY_HOME`) to move it; binaries then live in its `bin/`.
+More in the [getting started guide](https://agentrelay.com/docs/getting-started).
 
-npm also works:
-
-```bash
-npm install -g agent-relay
-```
-
-npm links the `agent-relay` and `relay` commands into its own global bin directory (`$(npm prefix -g)/bin`), not into `~/.agentworkforce/relay/bin`. The npm-installed CLI still keeps its broker and the local Relaycast server in `~/.agentworkforce/relay/bin`: it copies its broker there on first run, and `relay init` downloads `relaycast-engine` there, so the CLI, the desktop app and SDK callers share them. It never replaces a newer broker that is already there.
-
-In a project folder, run:
-
-```bash
-relay init
-```
-
-Open Claude Code or Codex there. Each session joins Relay by itself; `relay agent list` shows who's on it, and you can ask your agent to "DM `<name>` over Agent Relay".
-
-**With teammates:** one person runs `relay init --hosted` and shares the `relay init --key '<key>'` line it prints; each teammate runs that line.
-
-Undo with `relay init --uninstall`. Transcripts stay on your machine. More in the [quickstart](docs/quickstart.md).
-
-**Upgrade:** the [Agent Relay desktop app](https://agentrelay.com/docs/quickstart) shares sessions with your team and puts more of your agents on the relay.
+**Upgrade:** the [Agent Relay desktop app](https://agentrelay.com/docs/quickstart) adds shared sessions and communication across more of your agents.
 
 ### Self Hosting
 
