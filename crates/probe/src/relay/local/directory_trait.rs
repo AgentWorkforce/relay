@@ -349,7 +349,7 @@ impl LocalSessions {
     /// `auto_activates`, so the SessionStart hook never promises a join
     /// activation would not make.
     fn activation_check(&self) -> impl Fn(&DiscoveredSession) -> bool + '_ {
-        let claude_sessions = claude::registry(&self.config.claude, &*self.table).sessions;
+        let claude_registry = claude::registry(&self.config.claude, &*self.table);
         let grok_reachable = move |session_id: &str| self.grok_open_reachable(session_id);
         let automated = std::cell::OnceCell::new();
         let started_by_automation = move |session_id: &str| {
@@ -396,12 +396,12 @@ impl LocalSessions {
                                     &*self.table,
                                     self.config.uid,
                                     &terminal,
-                                    &claude_sessions,
+                                    &claude_registry.sessions,
                                 )
                                 || claude::is_app_hosted_chat(
                                     &*self.table,
                                     &terminal,
-                                    &claude_sessions,
+                                    &claude_registry,
                                 )
                         })
                 }

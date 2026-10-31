@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- T3 Code chats running Claude now join Relay by themselves. The core took them for automation, so they never appeared in `relay agent list`.
 
 ## [15.0.1] - 2026-10-31
 
