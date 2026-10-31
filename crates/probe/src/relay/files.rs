@@ -316,7 +316,14 @@ pub async fn save_delivery_attachments(
     timeout: Duration,
 ) {
     let sender = Sender::of(delivery);
-    save_attachments(source, root, sender.as_ref(), &mut delivery.attachments, timeout).await;
+    save_attachments(
+        source,
+        root,
+        sender.as_ref(),
+        &mut delivery.attachments,
+        timeout,
+    )
+    .await;
 }
 
 async fn save_one(
@@ -358,8 +365,8 @@ async fn save_remote(
     if let Some(size) = remote.size_bytes {
         let (root, at, sender) = (root.to_path_buf(), path.clone(), sender.cloned());
         tokio::task::spawn_blocking(move || store::would_take(&root, &at, sender.as_ref(), size))
-        .await
-        .unwrap_or(Ok(()))?;
+            .await
+            .unwrap_or(Ok(()))?;
     }
     let bytes = source
         .download(

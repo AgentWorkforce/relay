@@ -42,7 +42,11 @@ pub(super) const UNKNOWN_CONFLICT_EXCERPT: usize = 160;
 const SECRET_RUN: usize = 20;
 fn redacted(text: &str) -> String {
     fn flush(out: &mut String, run: &mut String) {
-        out.push_str(if run.len() >= SECRET_RUN { "[redacted]" } else { run });
+        out.push_str(if run.len() >= SECRET_RUN {
+            "[redacted]"
+        } else {
+            run
+        });
         run.clear();
     }
     let (mut out, mut run) = (String::new(), String::new());

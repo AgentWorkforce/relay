@@ -73,13 +73,14 @@ pub fn retry_requested(conn: &Connection, job_id: &str, now_ms: i64) -> Result<b
         .optional()?
         .context("delivery job not found")?;
     let receiver_directed = receiver_retry_after_ms == next_attempt_ms;
-    let wakes = !receiver_directed && match failure.as_deref() {
-        Some(code) if code == DeliveryFailure::Transient.code() => next_attempt_ms > now_ms,
-        Some(code) if code == DeliveryFailure::RateLimited.code() => {
-            next_attempt_ms > now_ms.saturating_add(TRANSIENT_BACKOFF_CEILING_MS)
-        }
-        _ => false,
-    };
+    let wakes = !receiver_directed
+        && match failure.as_deref() {
+            Some(code) if code == DeliveryFailure::Transient.code() => next_attempt_ms > now_ms,
+            Some(code) if code == DeliveryFailure::RateLimited.code() => {
+                next_attempt_ms > now_ms.saturating_add(TRANSIENT_BACKOFF_CEILING_MS)
+            }
+            _ => false,
+        };
     let waiting_out_backoff =
         state == "active" && wakes && lease_until_ms.is_none_or(|until| until <= now_ms);
     let retried = state == "blocked" || waiting_out_backoff;

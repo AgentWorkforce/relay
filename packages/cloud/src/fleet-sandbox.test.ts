@@ -272,6 +272,13 @@ describe('Cloud fleet sandbox client', () => {
 
   it('trusts the dev canonical Relaycast origin only for the exact dev Cloud API', () => {
     expect(normalizeRelaycastTarget(DEV_RELAYCAST_TARGET, DEV_CLOUD_API_URL)).toEqual(DEV_RELAYCAST_TARGET);
+    expect(
+      normalizeRelaycastTarget({
+        ...RELAYCAST_TARGET,
+        route: 'canonical',
+        baseUrl: 'https://armadillo.agentrelay.com',
+      }).baseUrl
+    ).toBe('https://armadillo.agentrelay.com');
 
     for (const apiUrl of [
       undefined,

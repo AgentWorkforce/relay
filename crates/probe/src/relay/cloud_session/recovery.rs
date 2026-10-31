@@ -71,7 +71,10 @@ pub async fn resolve_workspace_for_recovery(
 }
 
 fn valid_live_key(key: &str) -> bool {
-    key.strip_prefix("rk_live_").is_some_and(|suffix| {
+    let suffix = key
+        .strip_prefix("rk_live_")
+        .or_else(|| key.strip_prefix("ar_ws_"));
+    suffix.is_some_and(|suffix| {
         suffix.len() >= 16
             && suffix.len() <= 128
             && suffix

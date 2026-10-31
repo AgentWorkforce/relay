@@ -174,11 +174,18 @@ connects that machine's agent tools, the same way `relay init` did on the
 first one:
 
 ```bash
-npx -y agent-relay@next init --key '<key>'
+npx -y agent-relay@next init --url https://armadillo.agentrelay.com --key '<key>'
 ```
 
-With Relay installed, `relay init --key '<key>'` does the same. In Windows
-Command Prompt, leave out the quotes around the key.
+With Relay installed, `relay init --url https://armadillo.agentrelay.com --key
+'<key>'` does the same. In Windows Command Prompt, leave out the quotes around
+the key.
+
+New hosted workspaces are on `https://armadillo.agentrelay.com`, and their keys
+are only ever sent there. `relay init --key '<key>'` without `--url` uses the server
+saved for the key, else armadillo for an `ar_ws_` key, else
+`https://cast.agentrelay.com`. Workspaces already on `cast.agentrelay.com` keep
+working there, and nothing moves them.
 
 Treat the key like a password: anyone with it can join the workspace. The
 hosted service has a free tier, enough to try agents across machines.

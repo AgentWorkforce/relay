@@ -1,6 +1,6 @@
 //! Resolve the Relaycast destination before any credential can leave the broker.
 //!
-//! The TypeScript CLI records self-hosted credential routes in
+//! The TypeScript CLI records credential routes in
 //! `$AGENT_RELAY_HOME/relaycast-origins.json`. The broker is a separate process,
 //! so it must enforce the same fail-closed rule itself instead of relying on the
 //! parent process to keep `RELAY_BASE_URL` set forever.
@@ -15,6 +15,8 @@ use url::Url;
 
 const ORIGIN_BINDINGS_FILE: &str = "relaycast-origins.json";
 const HOSTED_DOMAIN: &str = "agentrelay.com";
+/// The one hosted gateway the CLI binds keys to: it creates new workspaces there.
+const ARMADILLO_ORIGIN: &str = "https://armadillo.agentrelay.com";
 const FINGERPRINT_SALT: &[u8] = b"agent-relay:relaycast-origin-binding";
 const FINGERPRINT_ITERATIONS: u32 = 10_000;
 
@@ -28,7 +30,7 @@ struct OriginBindings {
 ///
 /// An explicit non-blank `RELAYCAST_BASE_URL` wins over `RELAY_BASE_URL` and a
 /// persisted binding. With neither set, every configured workspace credential
-/// must either be unbound or resolve to the same saved self-hosted server.
+/// must either be unbound or resolve to the same saved server.
 /// Mixed or conflicting routes fail rather than exposing one credential to a
 /// server selected for another.
 pub(crate) fn resolve_relaycast_base_url() -> Result<Option<String>> {
@@ -135,12 +137,16 @@ fn resolve_bound_base_url(
     let mut resolved: Option<String> = None;
     let mut unbound = false;
     for credential in credentials {
-        match bindings.origins.get(&credential_fingerprint(credential)) {
+        let saved = bindings
+            .origins
+            .get(&credential_fingerprint(credential))
+            .map(String::as_str);
+        match saved.or_else(|| armadillo_issued(credential).then_some(ARMADILLO_ORIGIN)) {
             Some(base_url) => match resolved.as_deref() {
                 Some(previous) if previous != base_url => bail!(
                     "configured workspace credentials are bound to different Relaycast servers ({previous} and {base_url}); set RELAY_BASE_URL explicitly"
                 ),
-                None => resolved = Some(base_url.clone()),
+                None => resolved = Some(base_url.to_string()),
                 _ => {}
             },
             None => unbound = true,
@@ -152,6 +158,13 @@ fn resolve_bound_base_url(
         );
     }
     Ok(resolved)
+}
+
+/// Armadillo's credentials name their server: `ar_ws_…` keys and `ar_ag_…`
+/// agent tokens.
+fn armadillo_issued(credential: &str) -> bool {
+    let credential = credential.trim();
+    credential.starts_with("ar_ws_") || credential.starts_with("ar_ag_")
 }
 
 fn read_bindings(path: &std::path::Path) -> Result<OriginBindings> {
@@ -198,7 +211,7 @@ fn read_bindings(path: &std::path::Path) -> Result<OriginBindings> {
                     path.display()
                 )
             })?;
-        if normalized != *base_url || is_hosted_base_url(&normalized)? {
+        if normalized != *base_url || !is_bindable_base_url(&normalized)? {
             bail!(
                 "{} is not a valid Relaycast origin file (bad saved server); fix or remove it",
                 path.display()
@@ -251,11 +264,14 @@ fn host_for_url(host: &str) -> String {
     }
 }
 
-fn is_hosted_base_url(base_url: &str) -> Result<bool> {
+/// Whether the CLI records this server against a credential: every hosted
+/// gateway but the one new workspaces are created on stays unbound.
+fn is_bindable_base_url(base_url: &str) -> Result<bool> {
     let parsed = Url::parse(base_url)?;
     let host = parsed.host_str().unwrap_or_default();
-    Ok(parsed.scheme() == "https"
-        && (host == HOSTED_DOMAIN || host.ends_with(&format!(".{HOSTED_DOMAIN}"))))
+    let hosted = parsed.scheme() == "https"
+        && (host == HOSTED_DOMAIN || host.ends_with(&format!(".{HOSTED_DOMAIN}")));
+    Ok(!hosted || parsed.origin().ascii_serialization() == ARMADILLO_ORIGIN)
 }
 
 #[cfg(test)]
@@ -397,6 +413,43 @@ mod tests {
             hosted_trap.accept(),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
         ));
+    }
+
+    #[test]
+    fn armadillo_keys_stay_bound_and_never_mix_with_keys_saved_before_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(ORIGIN_BINDINGS_FILE);
+        let bound = "rk_live_armadillo";
+        fs::write(
+            &path,
+            format!(
+                "{{\"version\":1,\"origins\":{{\"{}\":\"{ARMADILLO_ORIGIN}\"}}}}",
+                credential_fingerprint(bound)
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_bound_base_url(&[bound.to_string()], &path)
+                .unwrap()
+                .as_deref(),
+            Some(ARMADILLO_ORIGIN)
+        );
+        assert_eq!(
+            resolve_bound_base_url(&["ar_ws_never_seen".to_string()], &path)
+                .unwrap()
+                .as_deref(),
+            Some(ARMADILLO_ORIGIN)
+        );
+        // No recorded server: the broker's cast default, never the binding above.
+        assert_eq!(
+            resolve_bound_base_url(&["rk_live_saved_before".to_string()], &path).unwrap(),
+            None
+        );
+        assert!(resolve_bound_base_url(
+            &[bound.to_string(), "rk_live_saved_before".to_string()],
+            &path
+        )
+        .is_err());
     }
 
     #[test]

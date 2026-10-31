@@ -124,8 +124,9 @@ impl Drop for DegradedState {
 }
 
 fn validate_audit_endpoint(base: Option<&str>) -> Result<()> {
-    let url = reqwest::Url::parse(base.unwrap_or("https://cast.agentrelay.com"))
-        .context("invalid local reconciliation endpoint")?;
+    let url =
+        reqwest::Url::parse(base.unwrap_or(crate::relaycast::auth::DEFAULT_RELAYCAST_BASE_URL))
+            .context("invalid local reconciliation endpoint")?;
     let loopback = url.host_str().is_some_and(|host| {
         host.trim_matches(['[', ']'])
             .parse::<std::net::IpAddr>()
@@ -161,7 +162,7 @@ impl DegradedState {
                 Sha256::digest(format!(
                     "{}\0{}",
                     base.as_deref()
-                        .unwrap_or("https://cast.agentrelay.com")
+                        .unwrap_or(crate::relaycast::auth::DEFAULT_RELAYCAST_BASE_URL)
                         .trim_end_matches('/'),
                     key
                 ))
@@ -288,7 +289,7 @@ async fn reconcile_record(
             "{}/v1/agents/{}/events",
             http.base_url
                 .as_deref()
-                .unwrap_or("https://cast.agentrelay.com")
+                .unwrap_or(crate::relaycast::auth::DEFAULT_RELAYCAST_BASE_URL)
                 .trim_end_matches('/'),
             urlencoding::encode(name)
         ))

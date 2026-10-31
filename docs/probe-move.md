@@ -233,7 +233,8 @@ from two sources, read-only (the probe never writes the CLI's files):
    PBKDF2-HMAC-SHA256, salt `agent-relay:relaycast-origin-binding`, 10,000
    iterations, 16 bytes hex, via the `ring` already linked; tested against
    `packages/contracts/fixtures/relaycast-origin-binding.json`, the vector the
-   CLI and the broker use), else `https://cast.agentrelay.com`. A bound key
+   CLI and the broker use), else `https://cast.agentrelay.com`, where a key
+   with no binding belongs. A bound key
    goes only to its server; `http://127.0.0.1:8787` and other self-hosted
    http(s) base URLs (ports and path prefixes included) are accepted as the
    CLI accepts them. A malformed bindings file, an unreadable `workspaces.json`

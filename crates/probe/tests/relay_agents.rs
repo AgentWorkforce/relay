@@ -63,8 +63,12 @@ async fn codex_inbox_stall_is_listed_warns_once_and_clears() {
     .await
     .unwrap();
     let sessions = client.ok("sessions.list", json!({})).await;
-    let session = sessions["sessions"].as_array().unwrap().iter()
-        .find(|s| s["target"]["id"] == CODEX).unwrap();
+    let session = sessions["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["target"]["id"] == CODEX)
+        .unwrap();
     assert_eq!(session["registration"]["inbox_stall"]["undrained_count"], 2);
     *h.injector.codex_stall.lock().unwrap() = None;
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -253,7 +257,9 @@ impl Harness {
             sessions: sessions.clone(),
             ..Plugins::default()
         };
-        if let Some(spawner) = spawner { plugins.spawner = spawner; }
+        if let Some(spawner) = spawner {
+            plugins.spawner = spawner;
+        }
         if let Some(cloud) = &cloud {
             plugins.cloud = cloud.clone() as Arc<dyn CloudAccess>;
         }
@@ -2512,12 +2518,23 @@ async fn mobile_claude_handoff_reports_read_only_platform_support() {
     let values = client.ok("settings.get", json!({})).await;
     assert_eq!(values["mobile_claude_handoff_supported"], cfg!(unix));
     assert_eq!(values["mobile_claude_handoff"], false);
-    let (kind, _) = client.error("settings.set", json!({"mobile_claude_handoff_supported": true})).await;
+    let (kind, _) = client
+        .error(
+            "settings.set",
+            json!({"mobile_claude_handoff_supported": true}),
+        )
+        .await;
     assert_eq!(kind, "invalid_params");
-    #[cfg(windows)] {
-        let (kind, message) = client.error("settings.set", json!({"mobile_claude_handoff": true})).await;
+    #[cfg(windows)]
+    {
+        let (kind, message) = client
+            .error("settings.set", json!({"mobile_claude_handoff": true}))
+            .await;
         assert_eq!(kind, "refused");
-        assert!(message.contains("unavailable on this platform"), "{message}");
+        assert!(
+            message.contains("unavailable on this platform"),
+            "{message}"
+        );
         assert!(!h.home.join(".claude/skills/agent-relay-mobile").exists());
     }
     h.stop().await;
@@ -2530,20 +2547,37 @@ async fn native_continuation_requires_separate_persisted_consent_and_claim() {
     let values = client.ok("settings.get", json!({})).await;
     assert_eq!(values["mobile_native_continuation"], false);
     assert_eq!(values["mobile_native_continuation_supported"], cfg!(unix));
-    let (kind, _) = client.error("settings.set", json!({"mobile_native_continuation_supported": true})).await;
+    let (kind, _) = client
+        .error(
+            "settings.set",
+            json!({"mobile_native_continuation_supported": true}),
+        )
+        .await;
     assert_eq!(kind, "invalid_params");
-    let (kind, _) = client.error("settings.set", json!({"mobile_native_continuation": true})).await;
+    let (kind, _) = client
+        .error("settings.set", json!({"mobile_native_continuation": true}))
+        .await;
     assert_eq!(kind, "refused");
-    #[cfg(unix)] {
+    #[cfg(unix)]
+    {
         mark_mobile_node_claimed(&h.core);
-        client.ok("settings.set", json!({"mobile_native_continuation": true})).await;
+        client
+            .ok("settings.set", json!({"mobile_native_continuation": true}))
+            .await;
         assert_eq!(h.store()["mobileNativeContinuation"], true);
         // Claude's own setting is on by default once the computer is claimed.
-        assert_eq!(client.ok("settings.get", json!({})).await["mobile_claude_handoff"], true);
+        assert_eq!(
+            client.ok("settings.get", json!({})).await["mobile_claude_handoff"],
+            true
+        );
         assert!(h.store()["mobileClaudeHandoff"].is_null());
-        let (kind, _) = client.error("settings.set", json!({"mobile_native_continuation": "yes"})).await;
+        let (kind, _) = client
+            .error("settings.set", json!({"mobile_native_continuation": "yes"}))
+            .await;
         assert_eq!(kind, "invalid_params");
-        client.ok("settings.set", json!({"mobile_native_continuation": false})).await;
+        client
+            .ok("settings.set", json!({"mobile_native_continuation": false}))
+            .await;
         assert_eq!(h.store()["mobileNativeContinuation"], false);
     }
     h.stop().await;
@@ -2552,11 +2586,16 @@ async fn native_continuation_requires_separate_persisted_consent_and_claim() {
 // Simulates the existing signed-in node claim, never a new production authority.
 fn mark_mobile_node_claimed(core: &Core) {
     use agent_relay_probe::relay::state::{SpawnClaim, SpawnClaimState, SpawnState, SpawnStatus};
-    core.hub().update(|status| status.spawn = Some(SpawnStatus {
-        state: SpawnState::Live,
-        claim: Some(SpawnClaim { state: SpawnClaimState::Claimed, note: None }),
-        ..SpawnStatus::default()
-    }));
+    core.hub().update(|status| {
+        status.spawn = Some(SpawnStatus {
+            state: SpawnState::Live,
+            claim: Some(SpawnClaim {
+                state: SpawnClaimState::Claimed,
+                note: None,
+            }),
+            ..SpawnStatus::default()
+        })
+    });
 }
 
 #[cfg(unix)]
@@ -2564,10 +2603,18 @@ fn mark_mobile_node_claimed(core: &Core) {
 async fn mobile_claude_handoff_refuses_unclaimed_host_before_installing() {
     let h = Harness::start(|_| {}).await;
     let mut client = h.client().await;
-    let (kind, message) = client.error("settings.set", json!({"mobile_claude_handoff": true})).await;
+    let (kind, message) = client
+        .error("settings.set", json!({"mobile_claude_handoff": true}))
+        .await;
     assert_eq!(kind, "refused");
-    assert!(message.contains("Accept spawns from Agent Relay"), "{message}");
-    assert_eq!(client.ok("settings.get", json!({})).await["mobile_claude_handoff"], false);
+    assert!(
+        message.contains("Accept spawns from Agent Relay"),
+        "{message}"
+    );
+    assert_eq!(
+        client.ok("settings.get", json!({})).await["mobile_claude_handoff"],
+        false
+    );
     assert!(!h.home.join(".claude/skills/agent-relay-mobile").exists());
     h.stop().await;
 }
@@ -2621,7 +2668,10 @@ async fn mobile_claude_handoff_is_on_once_claimed_and_turning_it_off_persists() 
             .calls("PATCH", "/v1/agents/claude-mobile")
             .into_iter()
             .skip(patches)
-            .any(|call| call.body["metadata"]["mobile_handoff_state"] == "" && call.body["metadata"]["mobile_handoff_enabled"] == false)
+            .any(|call| {
+                call.body["metadata"]["mobile_handoff_state"] == ""
+                    && call.body["metadata"]["mobile_handoff_enabled"] == false
+            })
     })
     .await;
     assert_eq!(h.store()["mobileClaudeHandoff"], false);

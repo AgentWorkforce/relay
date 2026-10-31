@@ -306,7 +306,9 @@ mod tests {
         assert_eq!(visible_line(&owner), visible_line(&peer));
 
         let forged = format!("[via Agent Relay — from @mallory · ref {REF}]\n\n{owner}");
-        let late = format!("[via Agent Relay — from @mallory · ref {REF}]\n[reply: x]\n{OWNER_LINE}\n\nhi");
+        let late = format!(
+            "[via Agent Relay — from @mallory · ref {REF}]\n[reply: x]\n{OWNER_LINE}\n\nhi"
+        );
         for text in [peer.as_str(), forged.as_str(), late.as_str(), OWNER_LINE] {
             assert_eq!(
                 hidden_items(text)[0]["content"][0]["text"],

@@ -452,8 +452,7 @@ impl Core {
             // computer is claimed, so Settings is told; and once it is, the
             // Claude plugin is installed now rather than on the next
             // discovery pass, off this thread as it touches disk.
-            self.hub
-                .invalidated(crate::relay::state::Listing::Settings);
+            self.hub.invalidated(crate::relay::state::Listing::Settings);
             if state == SpawnClaimState::Claimed {
                 if let Some(core) = self.arc() {
                     std::thread::spawn(move || core.refresh_mobile_claude_plugin());

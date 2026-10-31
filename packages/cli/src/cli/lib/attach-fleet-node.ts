@@ -15,7 +15,11 @@ import { randomBytes } from 'node:crypto';
 
 import WebSocket, { WebSocketServer } from 'ws';
 
-import { AGENT37_RELAYCAST_ORIGIN, CANONICAL_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
+import {
+  AGENT37_RELAYCAST_ORIGIN,
+  ARMADILLO_RELAYCAST_ORIGIN,
+  CANONICAL_RELAYCAST_ORIGIN,
+} from '@agent-relay/cloud';
 import type { AttachMode } from './attach-mode.js';
 import { collectWithRetry } from './collect-with-retry.js';
 import { resolveWorkspaceTransport } from './sdk-client.js';
@@ -162,7 +166,11 @@ export class FleetNodeAttachError extends Error {
   }
 }
 
-const TRUSTED_RELAYCAST_ORIGINS = new Set([CANONICAL_RELAYCAST_ORIGIN, AGENT37_RELAYCAST_ORIGIN]);
+const TRUSTED_RELAYCAST_ORIGINS = new Set([
+  CANONICAL_RELAYCAST_ORIGIN,
+  ARMADILLO_RELAYCAST_ORIGIN,
+  AGENT37_RELAYCAST_ORIGIN,
+]);
 
 export function validateFleetAttachBaseUrl(value: string): string {
   let parsed: URL;

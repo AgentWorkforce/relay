@@ -92,8 +92,14 @@ pub struct SystemLeaders;
 
 impl LeaderRuntime for SystemLeaders {
     fn start(&self, leader: &LeaderStart, scope: Option<(&Path, &str)>) -> Result<i32, String> {
-        crate::relay::detach::start(scope, leader.executable, &leader_arguments(leader.socket),
-            leader.log, leader.directory, leader.environment)
+        crate::relay::detach::start(
+            scope,
+            leader.executable,
+            &leader_arguments(leader.socket),
+            leader.log,
+            leader.directory,
+            leader.environment,
+        )
     }
 
     fn open(

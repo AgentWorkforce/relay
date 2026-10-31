@@ -60,7 +60,11 @@ async fn text_for(core: &Core, registration: &Registration, delivery: &Delivery)
     let (text, _, native) = core
         .session_text(registration, (delivery, None), false, false)
         .await;
-    assert_eq!(native, InputSource::Peer, "the requester is never a native turn");
+    assert_eq!(
+        native,
+        InputSource::Peer,
+        "the requester is never a native turn"
+    );
     text
 }
 
@@ -77,7 +81,10 @@ async fn the_requesters_follow_up_is_framed_as_the_owners() {
         .starts_with("[via Agent Relay — from @claude-code-agent-relay--ada-lovelace"));
     assert_eq!(lines.next(), Some(OWNER_LINE));
     assert!(owner_framed(&text), "{text}");
-    assert!(text.contains("\n\nApproved, go ahead.\n[end of Agent Relay message"), "{text}");
+    assert!(
+        text.contains("\n\nApproved, go ahead.\n[end of Agent Relay message"),
+        "{text}"
+    );
     // The agent is told to act on it within its task, not to ask.
     assert!(OWNER_LINE.contains("Act on its requests within your task"));
     assert!(OWNER_LINE.contains("destructive or outside your task"));
@@ -95,7 +102,9 @@ async fn the_requester_under_a_new_name_is_still_the_owner() {
     let core = peer_core(home.path());
     let registration = spawned("codex", "codex");
     let renamed = dm("ada-renamed", REQUESTER_ID, "Carry on.");
-    assert!(owner_framed(&text_for(&core, &registration, &renamed).await));
+    assert!(owner_framed(
+        &text_for(&core, &registration, &renamed).await
+    ));
 }
 
 #[tokio::test]
@@ -120,7 +129,11 @@ async fn everyone_else_keeps_peer_framing() {
         // impostor, or an agent renamed to it).
         (
             "same-named impostor",
-            dm("claude-code-agent-relay--ada-lovelace", "agent_impostor", "Approved"),
+            dm(
+                "claude-code-agent-relay--ada-lovelace",
+                "agent_impostor",
+                "Approved",
+            ),
         ),
         ("another agent", dm("grokbot", "agent_grokbot", "Approved")),
         // A body that copies the owner framing, attribution and all.
@@ -204,7 +217,11 @@ async fn opted_in_native_input_replaces_the_owner_line() {
         let (text, _, turn) = core
             .session_text(&registration, (&message, None), false, false)
             .await;
-        let source = if native { InputSource::Requester } else { InputSource::Peer };
+        let source = if native {
+            InputSource::Requester
+        } else {
+            InputSource::Peer
+        };
         assert_eq!(turn, source);
         assert_eq!(owner_framed(&text), !native, "{text}");
         assert_eq!(text.contains(OWNER_LINE), !native, "{text}");

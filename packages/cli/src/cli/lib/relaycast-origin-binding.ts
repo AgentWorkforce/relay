@@ -3,6 +3,8 @@ import { pbkdf2Sync } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 
+import { ARMADILLO_RELAYCAST_ORIGIN, CANONICAL_RELAYCAST_ORIGIN } from '@agent-relay/cloud';
+
 import { withFileLock, writeFileAtomically } from './locked-json-file.js';
 
 /**
@@ -13,15 +15,21 @@ import { withFileLock, writeFileAtomically } from './locked-json-file.js';
  *
  * The file stores a one-way fingerprint of each credential, never the
  * credential itself, mapped to the server's full base URL (origin plus any
- * path prefix). Only self-hosted servers are recorded: an unbound credential
- * with no configured URL keeps the SDK's hosted default, since nothing says it
- * belongs anywhere else.
+ * path prefix). Self-hosted servers and the default hosted server are recorded.
+ * An unbound credential with no configured URL keeps going to the older hosted
+ * gateway, which is the SDK's own default: every key that predates the current
+ * default is unbound, so that destination must not move with it.
  */
 export const ORIGIN_BINDINGS_FILE = 'relaycast-origins.json';
 
-const HOSTED_DEFAULT_ORIGIN = 'https://cast.agentrelay.com';
+/** Where new hosted workspaces are created. Their keys are bound to it. */
+export const DEFAULT_HOSTED_ORIGIN = ARMADILLO_RELAYCAST_ORIGIN;
+/** Where a credential with no recorded server goes. Never the new default: such keys predate it. */
+export const UNBOUND_CREDENTIAL_ORIGIN = CANONICAL_RELAYCAST_ORIGIN;
 const BASE_URL_LABEL = 'The Relaycast base URL (--base-url or RELAY_BASE_URL)';
 const FINGERPRINT_PATTERN = /^[0-9a-f]{32}$/;
+/** Armadillo's credentials name their server: `ar_ws_…` keys and `ar_ag_…` agent tokens. */
+const ARMADILLO_CREDENTIAL = /^ar_(ws|ag)_/;
 
 interface OriginBindings {
   version: 1;
@@ -35,6 +43,24 @@ function isHostedOrigin(origin: string): boolean {
     url.protocol === 'https:' &&
     (url.hostname === 'agentrelay.com' || url.hostname.endsWith('.agentrelay.com'))
   );
+}
+
+/**
+ * Whether a server is recorded against its credentials. Every hosted gateway
+ * but the default stays unbound, as it always has.
+ */
+function isBindableOrigin(origin: string): boolean {
+  return !isHostedOrigin(origin) || new URL(origin).origin === DEFAULT_HOSTED_ORIGIN;
+}
+
+/**
+ * Whether an origin is one of the two hosted services a key can be joined to.
+ *
+ * @param origin - A server origin.
+ * @returns True for the default hosted server and the one unbound keys use.
+ */
+export function isJoinableHostedOrigin(origin: string): boolean {
+  return origin === DEFAULT_HOSTED_ORIGIN || origin === UNBOUND_CREDENTIAL_ORIGIN;
 }
 
 /**
@@ -100,12 +126,12 @@ function readBindings(env: NodeJS.ProcessEnv): OriginBindings {
   return { version: 1, origins: validated };
 }
 
-/** A saved binding's server, if it is a valid self-hosted base URL. */
+/** A saved binding's server, if it is a valid base URL that can be bound. */
 function savedBaseUrl(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   try {
     const baseUrl = configuredBaseUrl(value, 'A saved server');
-    return baseUrl && !isHostedOrigin(baseUrl) ? baseUrl : undefined;
+    return baseUrl && isBindableOrigin(baseUrl) ? baseUrl : undefined;
   } catch {
     return undefined;
   }
@@ -124,18 +150,22 @@ function updateBindings(env: NodeJS.ProcessEnv, change: (bindings: OriginBinding
 }
 
 /**
- * The self-hosted server this credential was bound to, if any.
+ * The server this credential belongs to: its binding, else armadillo for a
+ * credential armadillo issued, whose format says so even on a machine that
+ * has never seen it.
  *
  * @param credential - Workspace key or agent token.
  * @param env - Environment used to locate the bindings file.
- * @returns The bound base URL, or `undefined` when the credential is unbound.
+ * @returns The base URL, or `undefined` when nothing says where it belongs.
  */
 export function boundOrigin(credential: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  return readBindings(env).origins[fingerprint(credential)];
+  const bound = readBindings(env).origins[fingerprint(credential)];
+  if (bound) return bound;
+  return ARMADILLO_CREDENTIAL.test(credential.trim()) ? DEFAULT_HOSTED_ORIGIN : undefined;
 }
 
 /**
- * Record that `credential` belongs to the self-hosted server at `baseUrl`.
+ * Record that `credential` belongs to the server at `baseUrl`.
  *
  * @param credential - Workspace key or agent token.
  * @param baseUrl - The server's base URL; validated and normalised before saving.
@@ -144,7 +174,7 @@ export function boundOrigin(credential: string, env: NodeJS.ProcessEnv = process
 export function bindOrigin(credential: string, baseUrl: string, env: NodeJS.ProcessEnv = process.env): void {
   const normalized = configuredBaseUrl(baseUrl, BASE_URL_LABEL);
   if (!normalized) throw new Error(`${BASE_URL_LABEL} is empty.`);
-  if (isHostedOrigin(normalized)) throw new Error('Hosted servers are the default and are never bound.');
+  if (!isBindableOrigin(normalized)) throw new Error('This hosted server is never bound.');
   const key = fingerprint(credential);
   updateBindings(env, (bindings) => {
     if (bindings.origins[key] === normalized) return false;
@@ -224,16 +254,16 @@ export function configuredBaseUrl(value: string | undefined, label: string): str
 /**
  * Pick the server a credential may be sent to, and remember it.
  *
- * - A configured URL is used. A self-hosted one becomes the credential's
- *   binding; a hosted one clears any binding, since hosted is the default.
- * - With nothing configured, a bound credential goes back to its own server
- *   instead of the hosted default.
- * - Otherwise `undefined`: the SDK's hosted default applies.
+ * - A configured URL is used. A self-hosted one or the default hosted server
+ *   becomes the credential's binding; any other hosted one clears the binding,
+ *   since unbound credentials go there.
+ * - With nothing configured, a bound credential goes back to its own server.
+ * - Otherwise `undefined`: the SDK's default, {@link UNBOUND_CREDENTIAL_ORIGIN}.
  *
  * @param credential - Workspace key or agent token about to be sent.
  * @param requestedBaseUrl - The URL the caller explicitly chose, if any.
  * @param env - Environment used to locate the bindings file.
- * @returns The base URL to use, or `undefined` for the hosted default.
+ * @returns The base URL to use, or `undefined` for the SDK's default.
  */
 export function guardCredentialOrigin(
   credential: string,
@@ -242,8 +272,8 @@ export function guardCredentialOrigin(
 ): string | undefined {
   const requested = configuredBaseUrl(requestedBaseUrl, BASE_URL_LABEL);
   if (requested) {
-    if (isHostedOrigin(requested)) unbindOrigin(credential, env);
-    else bindOrigin(credential, requested, env);
+    if (isBindableOrigin(requested)) bindOrigin(credential, requested, env);
+    else unbindOrigin(credential, env);
     return requestedBaseUrl?.trim();
   }
   return boundOrigin(credential, env);
@@ -254,7 +284,7 @@ export function guardCredentialOrigin(
  * persisted project route or the server of the workspace a saved token
  * belongs to. Only an explicit URL may move a binding, so a bound credential
  * whose destination disagrees is an error. An unbound credential headed to a
- * self-hosted server is bound to it, so it never falls back to hosted later.
+ * server that can be bound is bound to it, so it never falls back later.
  *
  * @param credential - Workspace key or agent token about to be sent.
  * @param baseUrl - The derived destination, or `undefined` for the hosted default.
@@ -266,9 +296,9 @@ export function acceptDerivedDestination(
   env: NodeJS.ProcessEnv = process.env
 ): void {
   const bound = boundOrigin(credential, env);
-  const destination = baseUrl ? new URL(baseUrl).origin : HOSTED_DEFAULT_ORIGIN;
+  const destination = baseUrl ? new URL(baseUrl).origin : UNBOUND_CREDENTIAL_ORIGIN;
   if (!bound) {
-    if (baseUrl && !isHostedOrigin(destination)) bindOrigin(credential, baseUrl, env);
+    if (baseUrl && isBindableOrigin(destination)) bindOrigin(credential, baseUrl, env);
     return;
   }
   if (new URL(bound).origin === destination) return;
@@ -281,7 +311,7 @@ export function acceptDerivedDestination(
 /**
  * Fail before a server-side workspace is created if its key could not be
  * bound afterwards: a key that cannot be bound must not be minted, because an
- * unbound key falls back to the hosted default.
+ * unbound key goes to {@link UNBOUND_CREDENTIAL_ORIGIN}.
  *
  * @param baseUrl - The server the workspace will be created on.
  * @param env - Environment used to locate the bindings file.
@@ -289,7 +319,7 @@ export function acceptDerivedDestination(
 export function assertOriginBindingsWritable(baseUrl: string, env: NodeJS.ProcessEnv = process.env): void {
   readBindings(env);
   const normalized = configuredBaseUrl(baseUrl, BASE_URL_LABEL);
-  if (!normalized || isHostedOrigin(normalized)) return;
+  if (!normalized || !isBindableOrigin(normalized)) return;
   const directory = path.dirname(originBindingsPath(env));
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   fs.accessSync(directory, fs.constants.W_OK);

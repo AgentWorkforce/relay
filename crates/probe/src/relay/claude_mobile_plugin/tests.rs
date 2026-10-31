@@ -190,7 +190,9 @@ async fn refresh_installs_by_default_once_claimed_and_leaves_a_disabled_plugin_a
             ..Default::default()
         })
     });
-    assert!(core.store.read(|store| store.mobile_claude_handoff.is_none()));
+    assert!(core
+        .store
+        .read(|store| store.mobile_claude_handoff.is_none()));
     core.refresh_mobile_claude_plugin();
     assert!(
         plugin.join("bridge.json").is_file(),

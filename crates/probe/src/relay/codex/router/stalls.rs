@@ -8,7 +8,10 @@ impl CodexRouter {
     /// Whether any relay message is waiting on this thread: cheap, and
     /// without reading the session.
     pub(crate) fn watching(&self, thread: &str) -> bool {
-        self.stalls.lock().unwrap_or_else(|p| p.into_inner()).contains_key(thread)
+        self.stalls
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_key(thread)
     }
 
     pub fn inbox_stall(&self, thread: &str) -> Option<InboxStall> {

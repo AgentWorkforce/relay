@@ -369,21 +369,13 @@ impl Core {
         let spawn = Change::read(changes).map_err(RpcError::invalid_params)?;
         let change = |key: &str| changes.get(key).and_then(Value::as_bool);
         let flags = crate::relay::store_settings::STORE_SETTINGS.map(change);
-        let [
-            allow,
-            auto,
-            show,
-            general,
-            mobile_handoff,
-            native_continuation,
-            teammate_input,
-            pi_auto,
-            opencode_auto,
-        ] = flags;
+        let [allow, auto, show, general, mobile_handoff, native_continuation, teammate_input, pi_auto, opencode_auto] =
+            flags;
         if native_continuation == Some(true) {
-            self.require_native_continuation_claim().map_err(|message| {
-                RpcError::new(crate::relay::protocol::ErrorKind::Refused, message)
-            })?;
+            self.require_native_continuation_claim()
+                .map_err(|message| {
+                    RpcError::new(crate::relay::protocol::ErrorKind::Refused, message)
+                })?;
         }
         // Turning Claude's route on installs its plugin first. A failed
         // install stores no choice for Claude, but the rest of the change
@@ -411,7 +403,8 @@ impl Core {
                     store.allow_self_registration = allow.or(store.allow_self_registration);
                     store.auto_activate = auto.or(store.auto_activate);
                     store.mobile_claude_handoff = mobile_handoff.or(store.mobile_claude_handoff);
-                    store.mobile_native_continuation = native_continuation.or(store.mobile_native_continuation);
+                    store.mobile_native_continuation =
+                        native_continuation.or(store.mobile_native_continuation);
                     store.show_relay_messages = show.or(store.show_relay_messages);
                     store.extras.auto_join_general = general.or(store.extras.auto_join_general);
                     store.extras.teammate_native_input =
@@ -472,17 +465,8 @@ impl Core {
             return Ok(());
         };
         let changed = |key: &str| changes.get(key).and_then(Value::as_bool).is_some();
-        let [
-            allow,
-            auto,
-            show,
-            general,
-            mobile_handoff,
-            native_continuation,
-            teammate_input,
-            pi_auto,
-            opencode_auto,
-        ] = crate::relay::store_settings::STORE_SETTINGS.map(changed);
+        let [allow, auto, show, general, mobile_handoff, native_continuation, teammate_input, pi_auto, opencode_auto] =
+            crate::relay::store_settings::STORE_SETTINGS.map(changed);
         let (handoff, continuation, spawning) = self
             .store
             .update(|store| {

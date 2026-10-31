@@ -146,12 +146,7 @@ pub(super) fn deregister_claimed(
 /// answer is still waited for, as long as the connection lasts, so a
 /// deregistration that lands late frees the agent for a takeover; one whose
 /// connection closed may still land, and stays out of reach of a takeover.
-pub(super) async fn take_off(
-    link: &NodeLink,
-    ledger: &Ledger,
-    agent_id: &str,
-    name: &str,
-) -> bool {
+pub(super) async fn take_off(link: &NodeLink, ledger: &Ledger, agent_id: &str, name: &str) -> bool {
     let id = format!("agent_deregister_{}", random_uuid());
     let frame = wire::agent_deregister(&id, agent_id, name);
     let reply = match link
@@ -300,7 +295,13 @@ impl Core {
                 };
                 intent = updated;
             }
-            deregister(link.clone(), self.ledger(), app_data_dir.clone(), agent_id, intent);
+            deregister(
+                link.clone(),
+                self.ledger(),
+                app_data_dir.clone(),
+                agent_id,
+                intent,
+            );
         }
     }
 

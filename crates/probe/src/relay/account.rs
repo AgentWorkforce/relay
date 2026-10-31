@@ -2252,8 +2252,16 @@ pub fn with_account(
     plugins.cloud = account.clone();
     plugins.settings.push(telemetry);
     let app_data = &config.app_data_dir;
-    plugins.settings.push(Arc::new(crate::relay::contractor_access::Setting::new(app_data)));
-    plugins.settings.push(crate::relay::history_retention::setting(app_data, &uploader));
+    plugins
+        .settings
+        .push(Arc::new(crate::relay::contractor_access::Setting::new(
+            app_data,
+        )));
+    plugins
+        .settings
+        .push(crate::relay::history_retention::setting(
+            app_data, &uploader,
+        ));
     plugins.account = Some(account);
     plugins
 }
@@ -2292,7 +2300,12 @@ mod tests {
         // a core relay init manages never writes one into ~/.local/bin.
         let desktop = with_account(Plugins::default(), &config, None, false, true);
         assert_eq!(
-            desktop.account.unwrap().command_line_copy.clone().map(|(_, to)| to),
+            desktop
+                .account
+                .unwrap()
+                .command_line_copy
+                .clone()
+                .map(|(_, to)| to),
             Some(crate::relay::probe_copy::destination(dir.path()))
         );
         let cli_managed = with_account(Plugins::default(), &config, None, true, false);

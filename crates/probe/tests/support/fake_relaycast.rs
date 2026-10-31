@@ -510,8 +510,13 @@ impl FakeRelaycast {
     /// Make a fixture a one-to-one DM, whose channel id is null in Relaycast.
     pub fn clear_delivery_channel(&self, id: &str) {
         let mut shared = self.shared.lock().unwrap();
-        let delivery = shared.world.deliveries.values_mut().flatten()
-            .find(|d| d.item["id"] == id).expect("delivery exists");
+        let delivery = shared
+            .world
+            .deliveries
+            .values_mut()
+            .flatten()
+            .find(|d| d.item["id"] == id)
+            .expect("delivery exists");
         delivery.item["channel_id"] = Value::Null;
         delivery.item["message"]["channel_id"] = Value::Null;
     }

@@ -214,7 +214,9 @@ impl Core {
     ) -> bool {
         self.owner_sent(registration, delivery).await.is_some()
             || self.mobile_owner_turn(registration, delivery).await
-            || self.native_continuation_owner_turn(registration, delivery).await
+            || self
+                .native_continuation_owner_turn(registration, delivery)
+                .await
     }
 
     /// Answers a pending request when `delivery` is the owner's
@@ -227,7 +229,9 @@ impl Core {
         registration: &Registration,
         delivery: &Delivery,
     ) -> OwnerReply {
-        if let Some(reply) = self.codex_mobile_reply(registration, delivery).await { return reply; }
+        if let Some(reply) = self.codex_mobile_reply(registration, delivery).await {
+            return reply;
+        }
         if let Some(reply) = self.mobile_permission_reply(registration, delivery).await {
             return reply;
         }

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
 import {
   AGENT37_RELAYCAST_ORIGIN,
+  ARMADILLO_RELAYCAST_ORIGIN,
   CANONICAL_RELAYCAST_ORIGIN,
   DEV_CLOUD_API_URL,
   DEV_RELAYCAST_ORIGIN,
@@ -258,17 +259,16 @@ function validatePersistedRelaycastBaseUrl(selection: WorkspaceSelection | undef
   } catch {
     throw new Error('The persisted Relaycast workspace route is invalid.');
   }
-  const expectedOrigin =
+  const expectedOrigins =
     route === 'canonical'
       ? relaycastCloudApiUrl === DEV_CLOUD_API_URL
-        ? DEV_RELAYCAST_ORIGIN
-        : CANONICAL_RELAYCAST_ORIGIN
+        ? [DEV_RELAYCAST_ORIGIN]
+        : [CANONICAL_RELAYCAST_ORIGIN, ARMADILLO_RELAYCAST_ORIGIN]
       : route === 'agent37-isolated'
-        ? AGENT37_RELAYCAST_ORIGIN
-        : undefined;
+        ? [AGENT37_RELAYCAST_ORIGIN]
+        : [];
   if (
-    !expectedOrigin ||
-    parsed.origin !== expectedOrigin ||
+    !expectedOrigins.includes(parsed.origin) ||
     parsed.protocol !== 'https:' ||
     parsed.username ||
     parsed.password ||

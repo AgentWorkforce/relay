@@ -840,7 +840,11 @@ pub struct Store {
     )]
     pub mobile_claude_handoff: Option<bool>,
     /// Separate opt-in: Claude-only consent never enables another provider.
-    #[serde(rename = "mobileNativeContinuation", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "mobileNativeContinuation",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub mobile_native_continuation: Option<bool>,
     /// Missing means false: relay messages are hidden from agent chats, the
     /// agent reading each one from its hidden history.
@@ -1001,7 +1005,11 @@ pub struct Store {
     )]
     pub archived_sessions: Option<Vec<ArchivedSession>>,
     /// Complete classification identities; the rich recent-agent list stays bounded.
-    #[serde(rename = "archivedSessionKeys", default, skip_serializing_if = "BTreeSet::is_empty")]
+    #[serde(
+        rename = "archivedSessionKeys",
+        default,
+        skip_serializing_if = "BTreeSet::is_empty"
+    )]
     pub archived_session_keys: std::sync::Arc<BTreeSet<String>>,
     #[serde(
         rename = "testSenders",

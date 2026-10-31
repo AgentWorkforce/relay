@@ -78,7 +78,10 @@ fn native_driver_recovery_never_overtakes_a_terminal_queue_or_unknown_progress()
         }
         router.wait_for_turn(THREAD, "a", "first", true);
         *clock.lock().unwrap() = Duration::from_secs(30);
-        assert_eq!(router.wait_for_turn(THREAD, "a", "first", true), InjectOutcome::Waiting(BUSY.into()));
+        assert_eq!(
+            router.wait_for_turn(THREAD, "a", "first", true),
+            InjectOutcome::Waiting(BUSY.into())
+        );
         assert!(fake.recoveries.lock().unwrap().is_empty(), "{guard}");
     }
 }

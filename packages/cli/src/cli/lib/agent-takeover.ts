@@ -1,6 +1,6 @@
 import os from 'node:os';
 
-const HOSTED_DEFAULT_ORIGIN = 'https://cast.agentrelay.com';
+import { UNBOUND_CREDENTIAL_ORIGIN } from './relaycast-origin-binding.js';
 
 /** A token issued by {@link takeOverAgent}. */
 export interface AgentTokenGrant {
@@ -25,7 +25,7 @@ async function call<T>(
   route: string,
   body?: unknown
 ): Promise<T> {
-  const response = await fetchFn(new URL(route, baseUrl ?? HOSTED_DEFAULT_ORIGIN), {
+  const response = await fetchFn(new URL(route, baseUrl ?? UNBOUND_CREDENTIAL_ORIGIN), {
     method,
     headers: {
       authorization: `Bearer ${workspaceKey}`,

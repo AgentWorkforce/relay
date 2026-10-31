@@ -36,7 +36,7 @@ import {
 import { z } from 'zod';
 import { declaredWorkforceMetadata } from './lib/registration-metadata.js';
 import { isBundledBunEntrypointPath } from './lib/agent-relay-mcp-command.js';
-import { guardCredentialOrigin } from './lib/relaycast-origin-binding.js';
+import { guardCredentialOrigin, UNBOUND_CREDENTIAL_ORIGIN } from './lib/relaycast-origin-binding.js';
 import { isAgentAlreadyExists, takeOverAgent } from './lib/agent-takeover.js';
 import { pickAvailableName, sessionBaseName } from './lib/mcp-session-name.js';
 import {
@@ -1132,7 +1132,7 @@ function registerAgentRelayTools(
         'Join this MCP session to an existing Agent Relay workspace using a shared workspace key. ' +
         'Returns a confirmation message stating whether the key was persisted for this project, and whether "register_agent" must be called to claim an identity in the newly joined workspace. The message also reports when joining dropped this project\'s enrolled Cloud fleet node, which happens when the key names a workspace that node does not belong to.',
       inputSchema: {
-        workspace_key: z.string().optional().describe('Workspace key starting with "rk_live_"'),
+        workspace_key: z.string().optional().describe('Workspace key starting with "rk_live_" or "ar_ws_"'),
         api_key: z.string().optional().describe('Deprecated alias for workspace_key'),
       },
       outputSchema: messageResult,
@@ -1148,8 +1148,8 @@ function registerAgentRelayTools(
       if (!key || typeof key !== 'string') {
         throw new Error('Workspace key is required.');
       }
-      if (!key.startsWith('rk_live_')) {
-        throw new Error('Workspace key must start with "rk_live_"');
+      if (!key.startsWith('rk_live_') && !key.startsWith('ar_ws_')) {
+        throw new Error('Workspace key must start with "rk_live_" or "ar_ws_"');
       }
 
       const session = getSession();
@@ -1921,7 +1921,6 @@ export function createAgentRelayMcpServer(options: AgentRelayMcpServerOptions): 
   return mcpServer;
 }
 
-const RELAYCAST_HOSTED_ORIGIN = 'https://cast.agentrelay.com';
 /** Under Relaycast's 60s presence TTL, with room for one missed beat. */
 const SESSION_HEARTBEAT_MS = 25_000;
 
@@ -1942,7 +1941,7 @@ async function liveAgentNames(
 ): Promise<Set<string>> {
   const live = new Set<string>();
   try {
-    const response = await fetchImpl(new URL('/v1/agents/presence', baseUrl ?? RELAYCAST_HOSTED_ORIGIN), {
+    const response = await fetchImpl(new URL('/v1/agents/presence', baseUrl ?? UNBOUND_CREDENTIAL_ORIGIN), {
       headers: { authorization: `Bearer ${workspaceKey}` },
       signal: AbortSignal.timeout(5_000),
     });
@@ -2035,7 +2034,7 @@ function installSessionAutoRegistration(
   const beat = (): void => {
     const token = ctx.getSession().agentToken;
     if (!token) return;
-    void fetchImpl(new URL('/v1/agents/heartbeat', ctx.baseUrl ?? RELAYCAST_HOSTED_ORIGIN), {
+    void fetchImpl(new URL('/v1/agents/heartbeat', ctx.baseUrl ?? UNBOUND_CREDENTIAL_ORIGIN), {
       method: 'POST',
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(5_000),
@@ -2081,7 +2080,7 @@ function installSessionAutoRegistration(
     const token = ctx.getSession().agentToken;
     if (!token) return;
     ctx.getSession().wsBridge?.stop();
-    await fetchImpl(new URL('/v1/agents/disconnect', ctx.baseUrl ?? RELAYCAST_HOSTED_ORIGIN), {
+    await fetchImpl(new URL('/v1/agents/disconnect', ctx.baseUrl ?? UNBOUND_CREDENTIAL_ORIGIN), {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: '{}',
@@ -2109,11 +2108,11 @@ function disconnectSessionOnExit(mcpServer: McpServer): void {
   for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.once(signal, shutdown);
 }
 
-/** Relaycast agent tokens are opaque `at_live_<hex>` literals. Anything else
+/** Relaycast agent tokens are opaque `at_live_<hex>` or `ar_ag_…` literals. Anything else
  * (for example a RelayAuth JWT carried in RELAY_AGENT_TOKEN by `relay on start`)
  * is not a valid Relaycast credential and must be replaced. */
 function isRelaycastAgentToken(token: string | undefined): token is string {
-  return typeof token === 'string' && token.startsWith('at_live_');
+  return typeof token === 'string' && (token.startsWith('at_live_') || token.startsWith('ar_ag_'));
 }
 
 export async function resolveStdioBootstrapOptions(

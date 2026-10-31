@@ -815,12 +815,14 @@ the first of two sources that names one:
    `$AGENT_RELAY_HOME/workspaces.json` (default `~/.agentworkforce/relay`).
    Its origin follows the CLI too: a project's persisted Relaycast route
    (only Agent Relay's own gateways), else `RELAY_BASE_URL`, else the key's
-   self-hosted binding in `relaycast-origins.json`
+   binding in `relaycast-origins.json`
    (`relay::workspace::origin_binding`: the PBKDF2-SHA256 fingerprint shared
-   with the CLI and the broker), else `https://cast.agentrelay.com`. A bound
+   with the CLI and the broker), else `https://cast.agentrelay.com`, because a
+   key with no binding predates `relay init --hosted` creating workspaces on
+   `https://armadillo.agentrelay.com`, whose keys are bound there. A bound
    key goes only to its bound server, so `relay init`'s local server
-   (`http://127.0.0.1:8787`) and self-hosted servers (any http(s) base URL,
-   path prefix included) work with no sign-in. A malformed bindings file, an
+   (`http://127.0.0.1:8787`), armadillo and self-hosted servers (any http(s)
+   base URL, path prefix included) work with no sign-in. A malformed bindings file, an
    unreadable `workspaces.json` or a malformed `RELAY_BASE_URL` fails closed:
    the daemon has no workspace and says why in its activity, rather than
    sending the key to the hosted default or falling back to the account's.
@@ -1092,7 +1094,9 @@ Cross-cutting SDK gaps: `RelayCast` and `AgentClient` cannot set the origin
 client/version (only `HttpClient` can; the gaps send `relay-desktop` and the
 desktop's version), and `HttpClient` follows redirects,
 where the desktop sends credentials only to the validated origin and refuses
-redirects. The canonical host is `https://cast.agentrelay.com`.
+redirects. The default host for a key with no bound server is
+`https://cast.agentrelay.com`; `relay init --hosted` binds its keys to
+`https://armadillo.agentrelay.com`.
 
 ## Push
 

@@ -23,13 +23,15 @@
 //! - otherwise a non-blank `RELAY_BASE_URL` is used (a malformed one is an
 //!   error, never a fallback);
 //! - otherwise the credential's binding in `relaycast-origins.json`;
-//! - otherwise the hosted default, `https://cast.agentrelay.com`.
+//! - otherwise `https://cast.agentrelay.com`, where unbound keys belong.
 //!
 //! Whenever a credential is about to be used the bindings file must parse:
 //! a malformed one fails closed.
 
 use super::origin_binding::{self, OriginBindings};
-use super::{is_workspace_key, Secret, Workspace, WorkspaceSource, DEFAULT_BASE_URL};
+use super::{
+    is_workspace_key, Secret, Workspace, WorkspaceSource, ARMADILLO_ORIGIN, DEFAULT_BASE_URL,
+};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -202,14 +204,14 @@ fn persisted_route_origin(project: Option<&ProjectSession>) -> Result<Option<Str
     let (Some(base_url), Some(route)) = (&project.relaycast_base_url, project.route) else {
         return Err("The persisted Relaycast workspace route is incomplete.".into());
     };
-    let expected = match route {
+    let expected: &[&str] = match route {
         Route::Canonical
             if project.relaycast_cloud_api_url.as_deref() == Some(DEV_CLOUD_API_URL) =>
         {
-            DEV_RELAYCAST_ORIGIN
+            &[DEV_RELAYCAST_ORIGIN]
         }
-        Route::Canonical => CANONICAL_RELAYCAST_ORIGIN,
-        Route::Agent37Isolated => AGENT37_RELAYCAST_ORIGIN,
+        Route::Canonical => &[CANONICAL_RELAYCAST_ORIGIN, ARMADILLO_ORIGIN],
+        Route::Agent37Isolated => &[AGENT37_RELAYCAST_ORIGIN],
     };
     let untrusted = || "The persisted Relaycast workspace route is not trusted.".to_string();
     let parsed = url::Url::parse(base_url)
@@ -221,7 +223,7 @@ fn persisted_route_origin(project: Option<&ProjectSession>) -> Result<Option<Str
         || parsed.query().is_some()
         || parsed.fragment().is_some()
         || !(parsed.path().is_empty() || parsed.path() == "/")
-        || parsed.origin().ascii_serialization() != expected
+        || !expected.contains(&parsed.origin().ascii_serialization().as_str())
     {
         return Err(untrusted());
     }
@@ -230,7 +232,7 @@ fn persisted_route_origin(project: Option<&ProjectSession>) -> Result<Option<Str
             "The persisted isolated Relaycast credential is unavailable or mismatched.".into(),
         );
     }
-    Ok(Some(expected.to_string()))
+    Ok(Some(parsed.origin().ascii_serialization()))
 }
 
 /// `acceptDerivedDestination`, without the write: a bound credential may go

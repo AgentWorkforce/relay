@@ -336,16 +336,27 @@ pub fn can_set_title(config: &PiConfig, table: &dyn ProcessTable, uid: u32, id: 
     binding(config, table, uid, id).is_some_and(|b| b.registry.title_editing)
 }
 
-pub fn set_title(config: &PiConfig, table: &dyn ProcessTable, uid: u32, id: &str, title: &str) -> Result<String, String> {
-    let bound = binding(config, table, uid, id).filter(|b| b.registry.title_editing)
+pub fn set_title(
+    config: &PiConfig,
+    table: &dyn ProcessTable,
+    uid: u32,
+    id: &str,
+    title: &str,
+) -> Result<String, String> {
+    let bound = binding(config, table, uid, id)
+        .filter(|b| b.registry.title_editing)
         .ok_or("Reload the Agent Relay extension in this Pi session to edit its title.")?;
     let request_id = crate::relay::store::random_hex(16);
     let path = bound.directory.join(format!("title-{request_id}.json"));
-    let expires = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| "The system clock is unavailable.")?.as_millis() as u64 + 4_000;
+    let expires = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "The system clock is unavailable.")?
+        .as_millis() as u64
+        + 4_000;
     let record = serde_json::json!({"version":1,"sessionId":id,"requestId":request_id,
         "title":title,"state":"pending","expiresAt":expires});
-    atomic_write(&path, record.to_string().as_bytes()).map_err(|_| "Could not send the title to Pi.")?;
+    atomic_write(&path, record.to_string().as_bytes())
+        .map_err(|_| "Could not send the title to Pi.")?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let result = loop {
         let Some(current) = binding(config, table, uid, id) else {
@@ -357,13 +368,23 @@ pub fn set_title(config: &PiConfig, table: &dyn ProcessTable, uid: u32, id: &str
         if let Some(reply) = read::<serde_json::Value>(&path, uid) {
             if reply["sessionId"] == id && reply["requestId"] == request_id {
                 if reply["state"] == "done" {
-                    break reply["title"].as_str().filter(|s| !s.trim().is_empty())
-                        .map(str::to_owned).ok_or_else(|| "Pi returned an empty title.".into());
+                    break reply["title"]
+                        .as_str()
+                        .filter(|s| !s.trim().is_empty())
+                        .map(str::to_owned)
+                        .ok_or_else(|| "Pi returned an empty title.".into());
                 }
-                if reply["state"] == "failed" { break Err("Pi could not save the title.".into()); }
+                if reply["state"] == "failed" {
+                    break Err("Pi could not save the title.".into());
+                }
             }
         }
-        if std::time::Instant::now() >= deadline { break Err("Pi did not confirm the title. Reload its Agent Relay extension and try again.".into()); }
+        if std::time::Instant::now() >= deadline {
+            break Err(
+                "Pi did not confirm the title. Reload its Agent Relay extension and try again."
+                    .into(),
+            );
+        }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
     let _ = fs::remove_file(path);
@@ -955,7 +976,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let config = PiConfig::from_env(&|_| None, temp.path());
         let marker = config.auto_join_marker();
-        assert_eq!(marker, temp.path().join(".agentworkforce/desktop/pi-auto-join"));
+        assert_eq!(
+            marker,
+            temp.path().join(".agentworkforce/desktop/pi-auto-join")
+        );
         config.sync_auto_join(true);
         assert!(!marker.exists(), "Pi has not run here");
         assert!(!temp.path().join(".agentworkforce").exists());

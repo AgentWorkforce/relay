@@ -1388,7 +1388,7 @@ impl RelaycastHttpClient {
                                 "{}{}",
                                 self.base_url
                                     .as_deref()
-                                    .unwrap_or("https://cast.agentrelay.com")
+                                    .unwrap_or(crate::relaycast::auth::DEFAULT_RELAYCAST_BASE_URL)
                                     .trim_end_matches('/'),
                                 path,
                             ))

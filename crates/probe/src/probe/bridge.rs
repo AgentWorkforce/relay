@@ -1928,18 +1928,38 @@ mod tests {
         let preview = preview_response(&previews);
         for (listing, rows) in [
             ("preview", preview["sessions"].as_array().unwrap().clone()),
-            ("catalog", catalog_session_rows(dir.path(), &config, 10).unwrap()),
+            (
+                "catalog",
+                catalog_session_rows(dir.path(), &config, 10).unwrap(),
+            ),
             ("upload", session_rows(dir.path(), &config, 10).unwrap()),
-            ("keyed upload", session_rows_selected_within(dir.path(), &config, 10,
-                delivery::SESSION_STATUS_BUDGET, Some(&bots.iter().map(|(id, ..)| SessionIdentity {
-                    source: "grok-bot".into(), session_id: (*id).into(),
-                }).collect::<Vec<_>>())).unwrap()),
+            (
+                "keyed upload",
+                session_rows_selected_within(
+                    dir.path(),
+                    &config,
+                    10,
+                    delivery::SESSION_STATUS_BUDGET,
+                    Some(
+                        &bots
+                            .iter()
+                            .map(|(id, ..)| SessionIdentity {
+                                source: "grok-bot".into(),
+                                session_id: (*id).into(),
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                )
+                .unwrap(),
+            ),
         ] {
             for (id, name, shape, color) in bots {
                 let row = rows
                     .iter()
                     .find(|row| row["source"] == "grok-bot" && row["session_id"] == id)
-                    .unwrap_or_else(|| panic!("missing Grok Bot fixture {id} from {listing} listing"));
+                    .unwrap_or_else(|| {
+                        panic!("missing Grok Bot fixture {id} from {listing} listing")
+                    });
                 assert_eq!(row["title"], name);
                 assert_eq!(row["avatar"]["shape"], shape);
                 assert_eq!(row["avatar"]["color"], color);

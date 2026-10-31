@@ -39,7 +39,10 @@ async fn an_ended_intent_does_not_reserve_a_slot_or_block_another_invocation() {
 #[tokio::test]
 async fn a_failed_launch_reports_structured_reason_and_cleans_up_on_ack() {
     let home = tempfile::tempdir().unwrap();
-    let spawner = Arc::new(FakeSpawner { fails_started: true, ..FakeSpawner::default() });
+    let spawner = Arc::new(FakeSpawner {
+        fails_started: true,
+        ..FakeSpawner::default()
+    });
     let core = core(home.path(), spawner.clone());
     let (mut link, mut sent) = NodeLink::detached(node());
     link.error_details = true;
@@ -112,7 +115,10 @@ async fn a_legacy_store_write_cannot_erase_a_known_spawn_origin() {
     let mut missing = base.clone();
     missing.registrations[0].missing_since = legacy.registrations[0].missing_since.clone();
     let merged = Store::merged(&base, &missing, &legacy);
-    assert_eq!(merged.registrations[0].missing_since, missing.registrations[0].missing_since);
+    assert_eq!(
+        merged.registrations[0].missing_since,
+        missing.registrations[0].missing_since
+    );
     core.store.update(|store| *store = merged).unwrap();
     assert!(core.spawned_inventory(&node()).is_empty());
     legacy.registrations[0].agent_id = "replacement".into();
@@ -161,17 +167,32 @@ async fn recovery_retains_and_sends_a_failure_before_forgetting_an_ended_intent(
     core.recover_spawns(&link).await;
     let frame = sent.recv().await.unwrap();
     assert_eq!(frame["type"], "action.result");
-    assert!(frame["error"].as_str().unwrap().contains("original harness reason is unavailable"));
+    assert!(frame["error"]
+        .as_str()
+        .unwrap()
+        .contains("original harness reason is unavailable"));
     let scope = super::completions::Scope::workspace(&core.workspace().unwrap());
-    assert!(scope.load(&core.config.app_data_dir, &intent.invocation_id).unwrap().unwrap().failed());
-    assert!(intents::load(&core.config.app_data_dir).iter().any(|kept| kept.invocation_id == intent.invocation_id),
-        "the intent remains until deregistration is acknowledged");
+    assert!(scope
+        .load(&core.config.app_data_dir, &intent.invocation_id)
+        .unwrap()
+        .unwrap()
+        .failed());
+    assert!(
+        intents::load(&core.config.app_data_dir)
+            .iter()
+            .any(|kept| kept.invocation_id == intent.invocation_id),
+        "the intent remains until deregistration is acknowledged"
+    );
 }
 
 #[tokio::test]
 async fn recovery_does_not_promote_a_failed_launch_that_cannot_be_stopped() {
     let home = tempfile::tempdir().unwrap();
-    let spawner = Arc::new(FakeSpawner { fails_started: true, unreleasable: true, ..FakeSpawner::default() });
+    let spawner = Arc::new(FakeSpawner {
+        fails_started: true,
+        unreleasable: true,
+        ..FakeSpawner::default()
+    });
     let first = core(home.path(), spawner.clone());
     let (link, sent) = NodeLink::detached(node());
     let frames = relaycast(link.clone(), sent);
@@ -193,7 +214,10 @@ async fn rotated_workspace_receipts_keep_the_original_failure_during_recovery() 
     use crate::relay::workspace::Secret;
     for ended in [true, false] {
         let home = tempfile::tempdir().unwrap();
-        let spawner = Arc::new(FakeSpawner { unreleasable: true, ..FakeSpawner::default() });
+        let spawner = Arc::new(FakeSpawner {
+            unreleasable: true,
+            ..FakeSpawner::default()
+        });
         let core = core(home.path(), spawner);
         let mut current = core.workspace().unwrap();
         current.workspace_id = Some("rw_1".into());
@@ -205,24 +229,37 @@ async fn rotated_workspace_receipts_keep_the_original_failure_during_recovery() 
         intent.ended = ended;
         let error = SpawnError::from("spawn_harness_unavailable: credentials rejected");
         super::completions::Scope::workspace(&original)
-            .save_failure(&core.config.app_data_dir, &request("w1"), error).unwrap();
+            .save_failure(&core.config.app_data_dir, &request("w1"), error)
+            .unwrap();
         let mut elsewhere = current.clone();
         elsewhere.workspace_id = Some("rw_2".into());
-        assert!(recover::adopt_receipted_intent(&core.config.app_data_dir, intent.clone(), &elsewhere).is_none());
-        let adopted = recover::adopt_receipted_intent(&core.config.app_data_dir, intent, &current).unwrap();
+        assert!(recover::adopt_receipted_intent(
+            &core.config.app_data_dir,
+            intent.clone(),
+            &elsewhere
+        )
+        .is_none());
+        let adopted =
+            recover::adopt_receipted_intent(&core.config.app_data_dir, intent, &current).unwrap();
         intents::put(&core.config.app_data_dir, &adopted).unwrap();
         let (link, mut sent) = NodeLink::detached(node());
         core.recover_spawns(&link).await;
         if ended {
             let frame = sent.recv().await.unwrap();
-            assert!(frame["error"].as_str().unwrap().contains("credentials rejected"));
+            assert!(frame["error"]
+                .as_str()
+                .unwrap()
+                .contains("credentials rejected"));
         } else {
             assert!(sent.try_recv().is_err());
             assert!(!intents::load(&core.config.app_data_dir)[0].ended);
         }
         assert!(core.store.read(|store| store.registrations.is_empty()));
         let replay = core.answer_spawn(link, request("w1")).await;
-        assert!(replay["error"].as_str().unwrap().contains("credentials rejected"));
+        assert!(replay["error"]
+            .as_str()
+            .unwrap()
+            .contains("credentials rejected"));
     }
 }
 
@@ -231,7 +268,10 @@ async fn recovery_keeps_a_rotated_intent_when_the_key_carries_no_workspace_id() 
     use crate::relay::state::Verification;
     use crate::relay::workspace::Secret;
     let home = tempfile::tempdir().unwrap();
-    let spawner = Arc::new(FakeSpawner { unreleasable: true, ..FakeSpawner::default() });
+    let spawner = Arc::new(FakeSpawner {
+        unreleasable: true,
+        ..FakeSpawner::default()
+    });
     let core = core(home.path(), spawner);
     // A key from the environment or the app store: no id on the workspace,
     // only on its verified status.
@@ -249,16 +289,26 @@ async fn recovery_keeps_a_rotated_intent_when_the_key_carries_no_workspace_id() 
     intent.workspace_key = original.key.clone();
     intent.ended = true;
     super::completions::Scope::workspace(&original)
-        .save_failure(&core.config.app_data_dir, &request("w1"),
-            SpawnError::from("spawn_harness_unavailable: credentials rejected")).unwrap();
+        .save_failure(
+            &core.config.app_data_dir,
+            &request("w1"),
+            SpawnError::from("spawn_harness_unavailable: credentials rejected"),
+        )
+        .unwrap();
     // Saved under the displaced key, as a real rotation leaves it.
     intents::put(&core.config.app_data_dir, &intent).unwrap();
     let (link, mut sent) = NodeLink::detached(node());
     core.recover_spawns(&link).await;
     let frame = sent.recv().await.unwrap();
-    assert!(frame["error"].as_str().unwrap().contains("credentials rejected"));
+    assert!(frame["error"]
+        .as_str()
+        .unwrap()
+        .contains("credentials rejected"));
     let replay = core.answer_spawn(link, request("w1")).await;
-    assert!(replay["error"].as_str().unwrap().contains("credentials rejected"));
+    assert!(replay["error"]
+        .as_str()
+        .unwrap()
+        .contains("credentials rejected"));
 }
 
 #[tokio::test]
@@ -274,7 +324,9 @@ async fn recovery_never_keeps_a_failed_launch_whose_receipt_was_not_saved() {
     intents::put(&core.config.app_data_dir, &intent).unwrap();
     let (link, _sent) = NodeLink::detached(node());
     core.recover_spawns(&link).await;
-    assert!(core.store.read(|store| store.registrations.is_empty()),
-        "a failed launch is not promoted to a successful agent");
+    assert!(
+        core.store.read(|store| store.registrations.is_empty()),
+        "a failed launch is not promoted to a successful agent"
+    );
     assert!(spawner.stopped.lock().unwrap().contains(&target));
 }

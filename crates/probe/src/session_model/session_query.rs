@@ -572,9 +572,10 @@ mod tests {
     }
     #[test]
     fn shared_search_contract() {
-        let cases: Vec<Value> =
-            serde_json::from_str(include_str!("../../tests/fixtures/shared/session-search-cases.json"))
-                .unwrap();
+        let cases: Vec<Value> = serde_json::from_str(include_str!(
+            "../../tests/fixtures/shared/session-search-cases.json"
+        ))
+        .unwrap();
         for case in cases {
             let text = case["query"].as_str().unwrap();
             let query = LocalSessionQuery::new(text);

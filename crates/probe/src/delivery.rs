@@ -3338,8 +3338,14 @@ mod tests {
             .unwrap()
             .unwrap();
         persisted(&conn, &claim, &clock);
-        record_failure(&conn, &claim.lease, DeliveryFailure::RateLimited, Some(601_000), &clock)
-            .unwrap();
+        record_failure(
+            &conn,
+            &claim.lease,
+            DeliveryFailure::RateLimited,
+            Some(601_000),
+            &clock,
+        )
+        .unwrap();
         assert_eq!(status(&conn, &job_id).unwrap().next_attempt_ms, 601_000);
         assert_eq!(
             conn.query_row(
@@ -3357,7 +3363,14 @@ mod tests {
             .unwrap()
             .unwrap();
         persisted(&conn, &claim, &clock);
-        record_failure(&conn, &claim.lease, DeliveryFailure::RateLimited, None, &clock).unwrap();
+        record_failure(
+            &conn,
+            &claim.lease,
+            DeliveryFailure::RateLimited,
+            None,
+            &clock,
+        )
+        .unwrap();
         assert!(status(&conn, &job_id).unwrap().next_attempt_ms > 601_000 + 60_000);
         assert_eq!(
             conn.query_row(

@@ -107,8 +107,8 @@ fn relay_hint(text: &str) -> bool {
         "[without those tools: ",
         "[owner: ",
     ]
-        .iter()
-        .any(|prefix| text.starts_with(prefix))
+    .iter()
+    .any(|prefix| text.starts_with(prefix))
 }
 
 /// Whether `executable` is Conductor's runtime.

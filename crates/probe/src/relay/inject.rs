@@ -83,8 +83,13 @@ impl<'a> DeliveryRoute<'a> {
 pub trait Injector: Send + Sync + 'static {
     /// A passive approval observer for an already accepted native mobile turn.
     /// The implementation must prove its original window and client-message/turn.
-    fn codex_mobile_control(&self, _registration: &Registration, _message: &str)
-        -> Option<Box<dyn crate::relay::codex_mobile::provider::Control>> { None }
+    fn codex_mobile_control(
+        &self,
+        _registration: &Registration,
+        _message: &str,
+    ) -> Option<Box<dyn crate::relay::codex_mobile::provider::Control>> {
+        None
+    }
     /// The current registered runtime can accept native user input and
     /// correlate its answer without peer framing. This does not promise
     /// remote approval support. Never resume a session to establish it.
@@ -94,7 +99,11 @@ pub trait Injector: Send + Sync + 'static {
 
     /// An earlier attempt selected native mode. This reads durable intent,
     /// independently of current provider availability; it never submits input.
-    fn native_continuation_reserved(&self, _registration: &Registration, _route: &DeliveryRoute<'_>) -> bool {
+    fn native_continuation_reserved(
+        &self,
+        _registration: &Registration,
+        _route: &DeliveryRoute<'_>,
+    ) -> bool {
         false
     }
 

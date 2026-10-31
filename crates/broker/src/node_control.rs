@@ -65,7 +65,6 @@ const D1_PRESSURE_RETRY_MAX_DELAY: Duration = Duration::from_secs(8);
 const CONTROL_D1_PRESSURE_MAX_RETRIES: u32 = 5;
 const CONTROL_D1_PRESSURE_RETRY_BUDGET: Duration = Duration::from_secs(25);
 const REGISTER_AGENT_PENDING_TTL: Duration = Duration::from_secs(300);
-const RELAYCAST_DEFAULT_BASE_URL: &str = "https://cast.agentrelay.com";
 const CREATE_NODE_RETRY_BACKOFFS_MS: [u64; 3] = [200, 400, 800];
 /// How many consecutive `/v1/node/ws` 401s to tolerate (each triggering a
 /// re-mint) before giving up and surfacing a hard error instead of looping.
@@ -637,7 +636,7 @@ fn normalized_relaycast_base_url(base_url: Option<&str>) -> String {
     base_url
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or(RELAYCAST_DEFAULT_BASE_URL)
+        .unwrap_or(crate::relaycast::auth::DEFAULT_RELAYCAST_BASE_URL)
         .to_string()
 }
 
@@ -647,8 +646,10 @@ fn redact_relaycast_secrets(input: &str) -> String {
 
     let mut redacted = input.to_string();
     let bearer_re = BEARER_SECRET_RE.get_or_init(|| {
-        regex::Regex::new(r#"(rk_live_|at_live_|nt_live_|br_|Bearer\s+)[A-Za-z0-9._-]+"#)
-            .expect("bearer secret redaction regex must compile")
+        regex::Regex::new(
+            r#"(rk_live_|at_live_|nt_live_|ar_ws_|ar_ag_|br_|Bearer\s+)[A-Za-z0-9._-]+"#,
+        )
+        .expect("bearer secret redaction regex must compile")
     });
     redacted = bearer_re
         .replace_all(&redacted, "${1}[REDACTED]")

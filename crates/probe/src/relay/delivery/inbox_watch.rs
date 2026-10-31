@@ -8,8 +8,8 @@ use super::{DeliverySettlement, DeliveryState};
 use crate::relay::claude::inbox::{self, InboxStall, Injection};
 use crate::relay::daemon::Core;
 use crate::relay::delivery::policy::Delivery;
-use crate::relay::people::MessageState;
 use crate::relay::delivery::policy::MessageRef;
+use crate::relay::people::MessageState;
 use crate::relay::state::{now_ms, Level, Listing};
 use crate::relay::store::{Registration, SessionKind};
 use serde_json::{json, Value};
@@ -26,7 +26,11 @@ impl Core {
     /// the person's approval (Claude Code's `crossSessionInbound`), which it
     /// says. A held message is remembered so its sender learns it too
     /// (`was_held`). It is still delivered: Claude Code has it.
-    pub(super) async fn record_handed_over(&self, registration: &Registration, delivery: &Delivery) {
+    pub(super) async fn record_handed_over(
+        &self,
+        registration: &Registration,
+        delivery: &Delivery,
+    ) {
         let (detail, settlement) = self.handed_over(registration, delivery).await;
         self.record_settled(
             registration,
@@ -60,9 +64,7 @@ impl Core {
         if state.held.len() >= HELD_KEPT {
             state.held.pop_front();
         }
-        state
-            .held
-            .push_back((owner, delivery.message_id.clone()));
+        state.held.push_back((owner, delivery.message_id.clone()));
         (Some(detail), DeliverySettlement::HeldForApproval)
     }
 
@@ -76,7 +78,11 @@ impl Core {
     ) -> Option<MessageState> {
         match state {
             Some(MessageState::PickedUp)
-                if self.inbox_state().held.iter().any(|(_, id)| id == message_id) =>
+                if self
+                    .inbox_state()
+                    .held
+                    .iter()
+                    .any(|(_, id)| id == message_id) =>
             {
                 Some(MessageState::HeldForApproval)
             }
@@ -220,7 +226,11 @@ impl Core {
         let targets: Vec<_> = self.store.read(|s| {
             s.registrations
                 .iter()
-                .filter(|r| r.target.kind == SessionKind::Codex && r.missing_since.is_none() && r.archived_at.is_none())
+                .filter(|r| {
+                    r.target.kind == SessionKind::Codex
+                        && r.missing_since.is_none()
+                        && r.archived_at.is_none()
+                })
                 .map(|r| (r.name.clone(), r.target.clone()))
                 .collect()
         });
@@ -333,7 +343,12 @@ fn shown_changed(
     let shown = |stalls: &HashMap<String, InboxStall>| {
         stalls
             .iter()
-            .map(|(name, s)| (name.clone(), (s.undrained_count, s.oldest_undrained_age_ms / 60_000)))
+            .map(|(name, s)| {
+                (
+                    name.clone(),
+                    (s.undrained_count, s.oldest_undrained_age_ms / 60_000),
+                )
+            })
             .collect::<HashMap<_, _>>()
     };
     shown(before) != shown(after)
@@ -371,13 +386,25 @@ mod tests {
 
     #[test]
     fn a_stall_refreshes_the_lists_only_when_what_they_show_changes() {
-        let stall = |count, ms| InboxStall { undrained_count: count, oldest_undrained_age_ms: ms };
+        let stall = |count, ms| InboxStall {
+            undrained_count: count,
+            oldest_undrained_age_ms: ms,
+        };
         let of = |s| HashMap::from([("worker".to_string(), s)]);
         // The same minute and count, three seconds later: no refresh.
-        assert!(!shown_changed(&of(stall(2, 600_000)), &of(stall(2, 603_000))));
+        assert!(!shown_changed(
+            &of(stall(2, 600_000)),
+            &of(stall(2, 603_000))
+        ));
         // A new minute, another count, a new or cleared stall: refresh.
-        assert!(shown_changed(&of(stall(2, 659_000)), &of(stall(2, 660_000))));
-        assert!(shown_changed(&of(stall(2, 600_000)), &of(stall(3, 600_000))));
+        assert!(shown_changed(
+            &of(stall(2, 659_000)),
+            &of(stall(2, 660_000))
+        ));
+        assert!(shown_changed(
+            &of(stall(2, 600_000)),
+            &of(stall(3, 600_000))
+        ));
         assert!(shown_changed(&HashMap::new(), &of(stall(1, 600_000))));
         assert!(shown_changed(&of(stall(1, 600_000)), &HashMap::new()));
     }

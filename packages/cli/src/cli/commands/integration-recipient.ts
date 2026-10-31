@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import { getProjectPaths } from '@agent-relay/config';
 import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
+import { UNBOUND_CREDENTIAL_ORIGIN } from '../lib/relaycast-origin-binding.js';
 import { resolveWorkspaceKey, resolveWorkspaceTransport, type SdkClientOptions } from '../lib/sdk-client.js';
 
 export interface RecipientLaunch {
@@ -28,7 +29,7 @@ async function verifyRecipientIsolation(input: RecipientLaunchInput): Promise<vo
   const membership = await fetch(
     new URL(
       `/v1/agents/${encodeURIComponent(input.name)}`,
-      transport.baseUrl ?? 'https://cast.agentrelay.com'
+      transport.baseUrl ?? UNBOUND_CREDENTIAL_ORIGIN
     ),
     {
       headers: { authorization: `Bearer ${transport.workspaceKey}` },
@@ -149,7 +150,7 @@ export async function resolveSubscriptionAgentChannel(
   const response = await fetch(
     new URL(
       `/v1/agents/${encodeURIComponent(name)}/subscription-channel`,
-      transport.baseUrl ?? 'https://cast.agentrelay.com'
+      transport.baseUrl ?? UNBOUND_CREDENTIAL_ORIGIN
     ),
     {
       method: 'POST',

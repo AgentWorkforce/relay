@@ -104,7 +104,7 @@ fn scrub_text(value: &str, secret: &str) -> String {
         .scan(false, |bearer, word| {
             let lower = word.to_ascii_lowercase();
             let hide = *bearer
-                || ["rk_", "at_", "sk_", "eyj"]
+                || ["rk_", "at_", "ar_", "sk_", "eyj"]
                     .iter()
                     .any(|prefix| lower.trim_start_matches(['\"', '\'']).starts_with(prefix));
             *bearer = lower.trim() == "bearer";

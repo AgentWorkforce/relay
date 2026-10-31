@@ -175,7 +175,9 @@ impl SessionDirectory for FakeSessions {
 
     fn set_title(&self, source: &str, id: &str, title: &str) -> Result<String, String> {
         let mut sessions = self.0.lock().unwrap();
-        let session = sessions.iter_mut().find(|s| s.target.kind.source() == source && s.target.id == id)
+        let session = sessions
+            .iter_mut()
+            .find(|s| s.target.kind.source() == source && s.target.id == id)
             .ok_or("session missing")?;
         session.title = title.to_owned();
         Ok(title.to_owned())

@@ -42,7 +42,8 @@ pub fn recover(
         return Ok(Recovery::Unavailable);
     };
     if let Some(text) = steer {
-        if let Some(recovered) = steer_turn(&mut client, thread, turn, text, message_id, deadline)? {
+        if let Some(recovered) = steer_turn(&mut client, thread, turn, text, message_id, deadline)?
+        {
             return Ok(recovered);
         }
     }

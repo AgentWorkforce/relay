@@ -27,7 +27,9 @@ use crate::relay::daemon::Core;
 use crate::relay::links::Endpoint;
 use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::state::{now_ms, Level};
-use crate::relay::{activity::publication::roster_rows, agents::is_listed, sdk_gaps, store::Target};
+use crate::relay::{
+    activity::publication::roster_rows, agents::is_listed, sdk_gaps, store::Target,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};

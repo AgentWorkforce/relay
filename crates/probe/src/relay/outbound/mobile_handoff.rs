@@ -67,7 +67,9 @@ impl Outbound {
         let runtime = self.mobile_runtime(&registration.target, pid).await?;
         // A poll from the session's own process is the evidence that it has
         // loaded the plugin; a teammate's message is routed here only then.
-        self.core.mobile_claude_plugins.note_poll(&registration.target);
+        self.core
+            .mobile_claude_plugins
+            .note_poll(&registration.target);
         // Idle native sessions never trigger Cloud owner lookups.
         if !self
             .core

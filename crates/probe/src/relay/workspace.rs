@@ -30,8 +30,12 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// Relaycast's canonical origin.
+/// Where a key with no recorded server goes, and the Cloud sign-in's fallback.
+/// New hosted workspaces live on [`ARMADILLO_ORIGIN`], but their keys are bound
+/// to it: an unbound key predates that default, so this must not move with it.
 pub const DEFAULT_BASE_URL: &str = "https://cast.agentrelay.com";
+/// The hosted gateway `relay init --hosted` creates workspaces on.
+pub const ARMADILLO_ORIGIN: &str = "https://armadillo.agentrelay.com";
 
 /// A credential that never prints: `Debug` shows only a prefix. It
 /// serializes as the bare value, which only the 0600 agent store writes.
@@ -146,9 +150,11 @@ pub fn relay_home(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> PathBuf 
     }
 }
 
-/// Workspace keys are `rk_live_…` (or `rk_test_…`).
+/// Workspace keys are `rk_live_…` (or `rk_test_…`), or armadillo's `ar_ws_…`.
 pub fn is_workspace_key(value: &str) -> bool {
-    value.starts_with("rk_") && value.len() >= 12 && !value.chars().any(char::is_whitespace)
+    (value.starts_with("rk_") || value.starts_with("ar_ws_"))
+        && value.len() >= 12
+        && !value.chars().any(char::is_whitespace)
 }
 
 /// `value` as a bare origin credentials may be sent to, or `None`: https

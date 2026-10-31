@@ -819,7 +819,8 @@ mod tests {
                 "message_id": "muse-msg-1", "ingress_provenance": "muse_peer"}}})
     }
 
-    const RELAYED: &str = "[via Agent Relay — from @ada to @muse-a · message 1 · ref 0123456789ab]\nWhat is 17+25?";
+    const RELAYED: &str =
+        "[via Agent Relay — from @ada to @muse-a · message 1 · ref 0123456789ab]\nWhat is 17+25?";
 
     #[test]
     fn the_answer_is_what_muse_sent_back_once_its_turn_ends() {

@@ -396,7 +396,7 @@ export function createRelayConnectTool(
       required: ['workspace', 'name'],
     },
     async handler({ workspace, name }) {
-      if (!workspace.startsWith('rk_live_')) {
+      if (!workspace.startsWith('rk_live_') && !workspace.startsWith('ar_ws_')) {
         throw new Error('Invalid workspace key. Get one at relaycast.dev');
       }
 

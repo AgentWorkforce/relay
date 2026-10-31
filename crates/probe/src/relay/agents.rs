@@ -306,7 +306,10 @@ impl Core {
         metadata.insert("injectable".into(), json!("true"));
         metadata.insert("session_kind".into(), json!(target.kind.as_str()));
         metadata.insert("session_id".into(), json!(target.id));
-        metadata.insert("session_title".into(), json!(aliases::published_title(title)));
+        metadata.insert(
+            "session_title".into(),
+            json!(aliases::published_title(title)),
+        );
         if matches!(target.kind, SessionKind::OpenClaw | SessionKind::Hermes) {
             metadata.insert("session_scope".into(), json!("agent"));
         }
@@ -360,12 +363,10 @@ impl Core {
         }
         let sessions = self.plugins.sessions.clone();
         let wanted = target.clone();
-        let session = tokio::task::spawn_blocking(move || {
-            sessions.find_session(&wanted)
-        })
-        .await
-        .ok()
-        .flatten();
+        let session = tokio::task::spawn_blocking(move || sessions.find_session(&wanted))
+            .await
+            .ok()
+            .flatten();
         let session = match session {
             Some(session) => session,
             None if is_managed(target.kind) => {
@@ -1504,7 +1505,9 @@ impl Core {
                 .map(|r| (r.name.clone(), r.target.clone()))
                 .collect()
         });
-        let title_revision = self.roster_revision.load(std::sync::atomic::Ordering::SeqCst);
+        let title_revision = self
+            .roster_revision
+            .load(std::sync::atomic::Ordering::SeqCst);
         let pi_auto_join = self.workspace().is_some()
             && auto_activation::activation_applies(
                 &self.store.read(auto_activation::ActivationSettings::of),
@@ -1555,7 +1558,11 @@ impl Core {
         found.retain(|target, _| !moved.contains(target));
         let marked_before = self.store.read(present_registration_names);
         let due = match self.reconcile_discovered_registrations(
-            &all, title_revision, &eligible, &live, now,
+            &all,
+            title_revision,
+            &eligible,
+            &live,
+            now,
         ) {
             Ok(due) => due,
             Err(error) => {
@@ -1917,7 +1924,10 @@ mod tests {
             ("Review", "claude-cloud-review"),
             ("Hermes", "claude-cloud-hermes"),
             ("Pi session", "claude-cloud-pi-session"),
-            ("Claude Code session diagnostics", "claude-cloud-claude-code"),
+            (
+                "Claude Code session diagnostics",
+                "claude-cloud-claude-code",
+            ),
             ("Plan plan support", "claude-cloud-plan-support"),
         ] {
             let mut task = session(THREAD, "/projects/cloud", SessionKind::ClaudeTerminal);
@@ -2619,7 +2629,9 @@ mod tests {
 
         store.auto_activation_events = None;
         store.registrations = (0..40)
-            .map(|i| automatic_registration(&format!("a-{i}"), &format!("s-{i}"), "2026-09-30T12:00:00Z"))
+            .map(|i| {
+                automatic_registration(&format!("a-{i}"), &format!("s-{i}"), "2026-09-30T12:00:00Z")
+            })
             .collect();
         let (allowance, _) = auto_activation_allowance(&mut store, now);
         assert_eq!(allowance, AUTO_ACTIVATE_MAX_PER_WINDOW, "never capped");

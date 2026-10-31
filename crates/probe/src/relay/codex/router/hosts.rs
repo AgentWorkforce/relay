@@ -69,7 +69,10 @@ impl SystemCodexRoutes {
         )
     }
 
-    pub(super) fn turn_progress(&self, thread: &str) -> Option<crate::relay::codex::stall::Progress> {
+    pub(super) fn turn_progress(
+        &self,
+        thread: &str,
+    ) -> Option<crate::relay::codex::stall::Progress> {
         let path = rollout::rollout_path(&self.config, thread)?;
         let summary = rollout::RolloutSummary::read(&path)?;
         let turn = summary.active_turn?;

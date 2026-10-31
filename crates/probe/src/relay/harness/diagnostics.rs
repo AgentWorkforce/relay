@@ -32,22 +32,37 @@ pub(crate) fn launch_failure(
     let argv = std::iter::once(executable.to_string_lossy().into_owned())
         .chain(arguments.iter().cloned())
         .map(|argument| {
-            let cleaned = if hide_value { "[redacted]".into() } else { redact(&argument) };
-            hide_value = argument.starts_with('-') && !argument.contains('=')
+            let cleaned = if hide_value {
+                "[redacted]".into()
+            } else {
+                redact(&argument)
+            };
+            hide_value = argument.starts_with('-')
+                && !argument.contains('=')
                 && sensitive(&argument.to_ascii_lowercase());
             cleaned
-        }).collect::<Vec<_>>();
+        })
+        .collect::<Vec<_>>();
     // Each part has its own budget, so the whole stays under `redact`'s cap
     // and a second `redact` (receipts, hosted status) keeps every part.
-    let tail = if tail.is_empty() { "empty".to_owned() } else { last_chars(&tail, TAIL_BUDGET) };
+    let tail = if tail.is_empty() {
+        "empty".to_owned()
+    } else {
+        last_chars(&tail, TAIL_BUDGET)
+    };
     let diagnostic = format!(
         "{}; argv={}; exit_status={}; stderr_tail={}",
         first_chars(&redact(reason), REASON_BUDGET),
-        first_chars(&redact(&serde_json::to_string(&argv).unwrap_or_default()), ARGV_BUDGET),
+        first_chars(
+            &redact(&serde_json::to_string(&argv).unwrap_or_default()),
+            ARGV_BUDGET
+        ),
         status.trim(),
         tail
     );
-    crate::relay::diagnostics::write(format_args!("Agent Relay harness launch failed: {diagnostic}"));
+    crate::relay::diagnostics::write(format_args!(
+        "Agent Relay harness launch failed: {diagnostic}"
+    ));
     diagnostic
 }
 
@@ -127,7 +142,7 @@ fn redact_with(message: &str, secrets: impl Iterator<Item = String>) -> String {
     let parts: Vec<_> = message.split_whitespace().collect();
     for (index, word) in parts.iter().copied().enumerate() {
         let lower = word.to_ascii_lowercase();
-        let credential = ["rk_", "at_", "sk_", "sk-", "xai-", "eyj"]
+        let credential = ["rk_", "at_", "ar_", "sk_", "sk-", "xai-", "eyj"]
             .iter()
             .any(|prefix| lower.contains(prefix));
         let assignment = word.split_once('=').or_else(|| word.split_once(':'));
@@ -200,7 +215,12 @@ mod tests {
         std::fs::write(&log, format!("{}\nthe last line\n", "noise ".repeat(2000))).unwrap();
         std::fs::write(log.with_extension("exit"), "3\n").unwrap();
         let arguments: Vec<String> = (0..200).map(|n| format!("--flag-{n}")).collect();
-        let diagnostic = launch_failure(&"reason ".repeat(300), std::path::Path::new("/bin/grok"), &arguments, &log);
+        let diagnostic = launch_failure(
+            &"reason ".repeat(300),
+            std::path::Path::new("/bin/grok"),
+            &arguments,
+            &log,
+        );
         // What receipts and hosted status keep.
         let kept = redact(&diagnostic);
         assert_eq!(kept, diagnostic);
@@ -217,7 +237,10 @@ mod tests {
         let noise: String = (0..400).map(|n| format!("line {n}\n")).collect();
         std::fs::write(&log, format!("{noise}fatal: credentials rejected\n")).unwrap();
         let diagnostic = launch_failure("failed", std::path::Path::new("grok"), &[], &log);
-        assert!(diagnostic.ends_with("fatal: credentials rejected"), "{diagnostic}");
+        assert!(
+            diagnostic.ends_with("fatal: credentials rejected"),
+            "{diagnostic}"
+        );
     }
 
     #[test]
@@ -229,7 +252,10 @@ mod tests {
         let started = std::time::Instant::now();
         let diagnostic = launch_failure("failed", std::path::Path::new("devin"), &[], &log);
         assert!(diagnostic.contains("exit_status=signal"), "{diagnostic}");
-        assert!(started.elapsed() < EXIT_WAIT, "a recorded status is read at once");
+        assert!(
+            started.elapsed() < EXIT_WAIT,
+            "a recorded status is read at once"
+        );
     }
 
     #[test]
@@ -263,8 +289,17 @@ mod tests {
         assert!(diagnostic.contains("exit_status=42"));
         assert!(diagnostic.contains("stderr_tail=credentials rejected [redacted]"));
         assert!(!diagnostic.contains("private-value"));
-        let diagnostic = launch_failure("failed", std::path::Path::new("grok"),
-            &["--password".into(), "opaque multi word credential".into(), "--key".into(), "unknown-value".into()], &log);
+        let diagnostic = launch_failure(
+            "failed",
+            std::path::Path::new("grok"),
+            &[
+                "--password".into(),
+                "opaque multi word credential".into(),
+                "--key".into(),
+                "unknown-value".into(),
+            ],
+            &log,
+        );
         assert!(!diagnostic.contains("opaque"));
         assert!(!diagnostic.contains("multi word"));
         assert!(!diagnostic.contains("unknown-value"));

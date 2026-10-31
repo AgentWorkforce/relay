@@ -23,13 +23,13 @@ mod install_sharing;
 mod inventory;
 #[cfg(feature = "history")]
 mod live;
+mod output;
 #[cfg(feature = "history")]
 mod priority;
 #[cfg(feature = "history")]
 mod progress;
 #[cfg(feature = "history")]
 mod reclaim;
-mod output;
 mod relay_commands;
 use relay_commands::RelayCommands;
 #[cfg(feature = "history")]

@@ -10,7 +10,9 @@ import {
   assertOriginBindingsWritable,
   configuredBaseUrl,
   boundOrigin,
+  DEFAULT_HOSTED_ORIGIN,
   guardCredentialOrigin,
+  UNBOUND_CREDENTIAL_ORIGIN,
 } from '../lib/relaycast-origin-binding.js';
 import {
   describeClearedEnrollment,
@@ -47,18 +49,16 @@ function bindKeyToConfiguredServer(key: string): void {
   }
 }
 
-const HOSTED_ORIGIN = 'https://cast.agentrelay.com';
-
 /**
  * The `--url` a joined key needs in `relay init`: the configured server,
- * else the server the key is already bound to; none for the hosted service,
- * which `--key` alone joins. A self-hosted key is never pointed at it.
+ * else the server the key is already bound to; none for an unbound key, which
+ * `--key` alone joins. A bound key is never pointed anywhere else.
  */
 function joinServerFlag(key: string): string {
   const configured = process.env.RELAY_BASE_URL?.trim() || boundOrigin(key);
   if (!configured) return '';
   try {
-    if (new URL(configured).origin === HOSTED_ORIGIN) return '';
+    if (new URL(configured).origin === UNBOUND_CREDENTIAL_ORIGIN) return '';
   } catch {
     // Not a URL: shown as given, for the person to correct.
   }
@@ -138,17 +138,18 @@ export function registerWorkspaceCommands(
     .action(async (name: string, o: Record<string, unknown>) => {
       await runSdk(deps, async () => {
         const workspaceName = validateWorkspaceSessionName(name);
-        const requestedBaseUrl = (o.baseUrl as string | undefined) ?? process.env.RELAY_BASE_URL;
+        const requestedBaseUrl =
+          (o.baseUrl as string | undefined) ?? (process.env.RELAY_BASE_URL?.trim() || DEFAULT_HOSTED_ORIGIN);
         const baseUrl = configuredBaseUrl(
           requestedBaseUrl,
           'The Relaycast base URL (--base-url or RELAY_BASE_URL)'
         );
         // Check the binding file before the server mints a key: a key that
-        // cannot be bound afterwards would be lost or fall back to hosted.
+        // cannot be bound afterwards would be lost or sent to the wrong server.
         if (baseUrl) assertOriginBindingsWritable(baseUrl);
         const relay = await deps.createWorkspace(workspaceName, requestedBaseUrl?.trim());
         if (relay.workspaceKey && baseUrl) {
-          // The self-hosted server that minted this key is the only one it may be sent to.
+          // The server that minted this key is the only one it may be sent to.
           guardCredentialOrigin(relay.workspaceKey, baseUrl);
         }
         const previousActive = readWorkspaceStore().active;

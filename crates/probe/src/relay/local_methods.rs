@@ -207,8 +207,12 @@ pub async fn sessions_list(core: &Arc<Core>) -> LocalSessions {
 }
 
 async fn cached_sessions_list(core: &Arc<Core>) -> LocalSessions {
-    let found = core.session_snapshot.lock()
-        .unwrap_or_else(|error| error.into_inner()).1.clone();
+    let found = core
+        .session_snapshot
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .1
+        .clone();
     let store = core.store.snapshot();
     let status = core.status();
     let machine_prefix = core.machine_prefix.clone();

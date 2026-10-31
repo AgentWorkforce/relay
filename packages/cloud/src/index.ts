@@ -91,6 +91,7 @@ export {
   type CloudFleetSandboxRelayfileAttachment,
   CloudFleetSandboxProvisionError,
   normalizeRelaycastTarget,
+  ARMADILLO_RELAYCAST_ORIGIN,
   CANONICAL_RELAYCAST_ORIGIN,
   AGENT37_RELAYCAST_ORIGIN,
   DEV_CLOUD_API_URL,

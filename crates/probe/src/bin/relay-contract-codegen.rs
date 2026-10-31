@@ -17,8 +17,9 @@ fn target() -> Result<PathBuf, String> {
     };
     let target = match first.to_str() {
         Some("--out") => PathBuf::from(args.next().ok_or("--out needs a file")?),
-        Some("--app-root") => PathBuf::from(args.next().ok_or("--app-root needs a directory")?)
-            .join(SWIFT_PATH),
+        Some("--app-root") => {
+            PathBuf::from(args.next().ok_or("--app-root needs a directory")?).join(SWIFT_PATH)
+        }
         Some(flag) if flag.starts_with('-') => return Err(format!("unknown option {flag}")),
         _ => PathBuf::from(first).join(SWIFT_PATH),
     };

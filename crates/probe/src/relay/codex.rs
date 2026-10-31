@@ -19,9 +19,9 @@
 
 pub mod app_server;
 pub mod compact;
+pub mod follower;
 pub mod hidden_order;
 pub mod ipc;
-pub mod follower;
 pub mod processes;
 pub mod queue;
 pub mod rollout;
