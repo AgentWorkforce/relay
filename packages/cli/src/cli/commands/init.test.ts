@@ -16,6 +16,12 @@ import { registerAgentCommands } from './agent.js';
 import { DownloadHttpError, engineAssetName } from '../lib/relaycast-engine-install.js';
 import { LOCAL_ENGINE_VERSION, registerInitCommand, type InitCommandDependencies } from './init.js';
 import { PROBE_VERSION, type CoreClient } from '../lib/probe-core.js';
+import {
+  RELAY_SKILL_NAME,
+  RELAY_SKILL_REF,
+  SKILLS_CLI_PACKAGE,
+  type RunSkillsCli,
+} from '../lib/relay-skill.js';
 import { getProjectPaths } from '@agent-relay/config';
 
 let home: string;
@@ -109,6 +115,8 @@ function setup(overrides: Partial<InitCommandDependencies> = {}) {
       throw new Error('offline');
     }),
     probeVersion: vi.fn(() => undefined),
+    // Offline: the messaging skill cannot be fetched unless a test says so.
+    runSkillsCli: vi.fn(() => ({ status: 1, output: 'offline' })),
     ...overrides,
   };
   const program = new Command().exitOverride();
@@ -1806,5 +1814,178 @@ describe('relay init message injection', () => {
     expect(shown).toContain('note Message injection');
     expect(shown).toContain('outro Relay is ready.');
     expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
+  });
+});
+
+/**
+ * The `skills` CLI as `add --global --copy` runs it: one copy per agent's
+ * global skills folder (Codex, OpenCode and Pi share ~/.agents/skills) and
+ * the skill's entry in its lock file.
+ */
+function fakeSkillsCli(status = 0) {
+  const dirs: Record<string, string> = {
+    'claude-code': path.join(toolHome, '.claude', 'skills'),
+    codex: path.join(toolHome, '.agents', 'skills'),
+    opencode: path.join(toolHome, '.agents', 'skills'),
+    pi: path.join(toolHome, '.agents', 'skills'),
+    grok: path.join(toolHome, '.grok', 'skills'),
+    devin: path.join(toolHome, '.config', 'devin', 'skills'),
+  };
+  const lock = path.join(toolHome, '.agents', '.skill-lock.json');
+  const run = vi.fn<RunSkillsCli>((args) => {
+    if (status !== 0) return { status, output: 'fatal: unable to access github.com' };
+    args.forEach((arg, i) => {
+      if (args[i - 1] !== '--agent') return;
+      const dir = path.join(dirs[arg]!, RELAY_SKILL_NAME);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'SKILL.md'), '---\nname: messaging-agents-on-the-relay\n---\n');
+    });
+    const current = fs.existsSync(lock)
+      ? JSON.parse(fs.readFileSync(lock, 'utf8'))
+      : { version: 3, skills: {} };
+    current.skills[RELAY_SKILL_NAME] = { source: 'AgentWorkforce/skills', ref: RELAY_SKILL_REF };
+    fs.writeFileSync(lock, JSON.stringify(current));
+    return { status: 0, output: 'Done!' };
+  });
+  return { run, lock, dirs };
+}
+
+/** Every file and folder under the tools' home, relative to it. */
+function toolHomeTree(): string[] {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      out.push(path.relative(toolHome, full));
+      if (entry.isDirectory()) walk(full);
+    }
+  };
+  walk(toolHome);
+  return out.sort();
+}
+
+describe('relay init messaging skill', () => {
+  it('installs the pinned skill globally for each injected tool, records it, and --uninstall removes exactly that', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    const { run, logs } = setup({ ...core.deps, runSkillsCli: skills.run });
+    await run('--tools', 'claude,codex');
+
+    expect(skills.run).toHaveBeenCalledTimes(1);
+    const [args, options] = skills.run.mock.calls[0]!;
+    // Pinned to a commit of AgentWorkforce/skills, never a moving branch.
+    expect(args).toEqual([
+      'add',
+      `https://github.com/AgentWorkforce/skills#${RELAY_SKILL_REF}`,
+      '--skill',
+      RELAY_SKILL_NAME,
+      '--global',
+      '--copy',
+      '--yes',
+      '--agent',
+      'claude-code',
+      '--agent',
+      'codex',
+    ]);
+    expect(RELAY_SKILL_REF).toMatch(/^[0-9a-f]{40}$/);
+    expect(SKILLS_CLI_PACKAGE).toMatch(/^skills@\d+\.\d+\.\d+$/);
+    expect(options.env).toMatchObject({ HOME: toolHome, DISABLE_TELEMETRY: '1', DO_NOT_TRACK: '1' });
+    expect(logs.join('\n')).toContain(
+      `✓ Agent skill        installed ${RELAY_SKILL_NAME} for Claude Code, Codex`
+    );
+    const record = JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'));
+    expect(record.relaySkill).toMatchObject({
+      ref: RELAY_SKILL_REF,
+      copies: [
+        { path: path.join(skills.dirs['claude-code']!, RELAY_SKILL_NAME) },
+        { path: path.join(skills.dirs.codex!, RELAY_SKILL_NAME) },
+      ],
+      lock: { file: skills.lock, created: true },
+    });
+
+    // A re-run with the same pin changes nothing and fetches nothing.
+    const again = setup({ ...core.deps, runSkillsCli: skills.run });
+    await again.run('--tools', 'claude,codex');
+    expect(skills.run).toHaveBeenCalledTimes(1);
+    expect(again.logs.join('\n')).toContain(`installed for Claude Code, Codex`);
+
+    const off = setup(core.deps);
+    await off.run('--uninstall');
+    expect(off.logs.join('\n')).toContain(`removed the ${RELAY_SKILL_NAME} skill relay init installed`);
+    // The skill, its lock entry and the folders made for them are gone; only the core's own files remain.
+    expect(toolHomeTree().filter((entry) => entry.includes('skills') || entry.startsWith('.agents'))).toEqual(
+      []
+    );
+    expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  it('leaves a copy that was there before init, and installs only where there is none', async () => {
+    installedProbe();
+    const own = path.join(toolHome, '.claude', 'skills', RELAY_SKILL_NAME, 'SKILL.md');
+    fs.mkdirSync(path.dirname(own), { recursive: true });
+    fs.writeFileSync(own, 'my own copy\n');
+    const lock = path.join(toolHome, '.agents', '.skill-lock.json');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, JSON.stringify({ version: 3, skills: { 'other-skill': { ref: 'x' } } }));
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    const { run, logs } = setup({ ...core.deps, runSkillsCli: skills.run });
+    await run('--tools', 'claude,codex');
+
+    const args = skills.run.mock.calls[0]![0];
+    expect(args.filter((_, i) => args[i - 1] === '--agent')).toEqual(['codex']);
+    expect(logs.join('\n')).toContain(
+      'installed messaging-agents-on-the-relay for Codex; already there for Claude Code, left as is'
+    );
+
+    await setup(core.deps).run('--uninstall');
+    expect(fs.readFileSync(own, 'utf8')).toBe('my own copy\n');
+    expect(fs.existsSync(path.join(toolHome, '.agents', 'skills'))).toBe(false);
+    // The lock file was the person's: only init's entry leaves it.
+    expect(JSON.parse(fs.readFileSync(lock, 'utf8')).skills).toEqual({ 'other-skill': { ref: 'x' } });
+  });
+
+  it('keeps a copy changed after init on --uninstall', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
+    const copy = path.join(skills.dirs.codex!, RELAY_SKILL_NAME, 'SKILL.md');
+    fs.writeFileSync(copy, 'edited\n');
+    const { run, logs } = setup(core.deps);
+    await run('--uninstall');
+    expect(fs.readFileSync(copy, 'utf8')).toBe('edited\n');
+    expect(logs.join('\n')).toContain('changed since');
+  });
+
+  it('warns and finishes init when the skill cannot be installed, recording nothing', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli(1);
+    const { run, logs } = setup({ ...core.deps, runSkillsCli: skills.run });
+    await expect(run('--tools', 'codex')).resolves.toBeDefined();
+    const output = logs.join('\n');
+    expect(output).toContain(
+      '! Agent skill        could not install messaging-agents-on-the-relay for Codex (fatal: unable to access github.com)'
+    );
+    expect(output).toContain('Each session joins Relay on its own');
+    const record = JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'));
+    expect(record.relaySkill).toBeUndefined();
+  });
+
+  it('installs nothing for tools on the Relay MCP server, which has its own tools', async () => {
+    const skills = fakeSkillsCli();
+    await setup({ runSkillsCli: skills.run }).run('--tools', 'claude');
+    expect(skills.run).not.toHaveBeenCalled();
+  });
+
+  it('keeps the skill on --uninstall --scope project, like injection', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
+    await setup(core.deps).run('--uninstall', '--scope', 'project');
+    expect(fs.existsSync(path.join(skills.dirs.codex!, RELAY_SKILL_NAME, 'SKILL.md'))).toBe(true);
   });
 });
