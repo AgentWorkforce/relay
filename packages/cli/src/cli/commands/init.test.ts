@@ -1981,7 +1981,7 @@ function fakeSkillsCli(status = 0, lockFile?: string) {
     devin: path.join(toolHome, '.config', 'devin', 'skills'),
   };
   const lock = lockFile ?? path.join(toolHome, '.agents', '.skill-lock.json');
-  const state = { status };
+  const state = { status, content: '---\nname: messaging-agents-on-the-relay\n---\n' };
   const lockIn = (env: NodeJS.ProcessEnv) =>
     env.XDG_STATE_HOME ? path.join(env.XDG_STATE_HOME, 'skills', '.skill-lock.json') : lock;
   const run = vi.fn<RunSkillsCli>((args, options) => {
@@ -1990,7 +1990,7 @@ function fakeSkillsCli(status = 0, lockFile?: string) {
       if (args[i - 1] !== '--agent') return;
       const dir = path.join(dirs[arg]!, RELAY_SKILL_NAME);
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, 'SKILL.md'), '---\nname: messaging-agents-on-the-relay\n---\n');
+      fs.writeFileSync(path.join(dir, 'SKILL.md'), state.content);
     });
     let current = { version: 3, skills: {} as Record<string, unknown> };
     try {
@@ -2003,7 +2003,13 @@ function fakeSkillsCli(status = 0, lockFile?: string) {
     fs.writeFileSync(lockIn(options.env), JSON.stringify(current));
     return { status: 0, output: 'Done!' };
   });
-  return { run, lock, dirs, fail: (next: number) => (state.status = next) };
+  return {
+    run,
+    lock,
+    dirs,
+    fail: (next: number) => (state.status = next),
+    write: (content: string) => (state.content = content),
+  };
 }
 
 /** Rewrite the recorded skill install, as an older init or a forged file would have left it. */
@@ -2300,6 +2306,85 @@ describe('relay init messaging skill', () => {
       process.umask(previous);
     }
     expect(fs.statSync(lock).mode & 0o777).toBe(0o640);
+  });
+
+  it('keeps the copies a parallel relay init recorded while it ran', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
+    const elsewhere = {
+      path: path.join(toolHome, '.grok', 'skills', RELAY_SKILL_NAME),
+      ref: 'r',
+      treeSha256: 't',
+    };
+    const parallel: RunSkillsCli = (args, options) => {
+      editSkillRecord((record) => record.copies.push(elsewhere));
+      return skills.run(args, options);
+    };
+    await setup({ ...core.deps, runSkillsCli: parallel }).run('--tools', 'claude');
+    const saved = JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'));
+    expect(saved.relaySkill.copies.map((copy: { path: string }) => copy.path)).toEqual([
+      path.join(skills.dirs.codex!, RELAY_SKILL_NAME),
+      elsewhere.path,
+      path.join(skills.dirs['claude-code']!, RELAY_SKILL_NAME),
+    ]);
+  });
+
+  it('puts a refreshed copy back when the record cannot be saved', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    skills.write('old\n');
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
+    editSkillRecord((record) => {
+      record.copies[0]!.ref = 'old';
+    });
+    skills.write('new\n');
+    const settings = path.join(home, 'local', 'core-settings.json');
+    const blocked: RunSkillsCli = (args, options) => {
+      const result = skills.run(args, options);
+      fs.rmSync(settings, { force: true });
+      fs.mkdirSync(settings);
+      return result;
+    };
+    const { run, logs } = setup({ ...core.deps, runSkillsCli: blocked });
+    await run('--tools', 'codex');
+    const copy = path.join(skills.dirs.codex!, RELAY_SKILL_NAME, 'SKILL.md');
+    expect(fs.readFileSync(copy, 'utf8')).toBe('old\n');
+    expect(logs.join('\n')).toContain("so this run's copies were taken out again");
+  });
+
+  it('keeps recording a copy or lock it could not read on --uninstall', async () => {
+    installedProbe();
+    const core = fakeCore();
+    const skills = fakeSkillsCli();
+    await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
+    const copy = path.join(skills.dirs.codex!, RELAY_SKILL_NAME);
+    const denied = Object.assign(new Error('EACCES'), { code: 'EACCES' });
+    const { readdirSync, readFileSync } = fs;
+    const dirs = vi.spyOn(fs, 'readdirSync').mockImplementation(((
+      target: fs.PathLike,
+      ...rest: unknown[]
+    ) => {
+      if (target === copy) throw denied;
+      return (readdirSync as (...args: unknown[]) => unknown)(target, ...rest);
+    }) as typeof fs.readdirSync);
+    const files = vi.spyOn(fs, 'readFileSync').mockImplementation(((
+      target: fs.PathOrFileDescriptor,
+      ...rest: unknown[]
+    ) => {
+      if (target === skills.lock) throw denied;
+      return (readFileSync as (...args: unknown[]) => unknown)(target, ...rest);
+    }) as typeof fs.readFileSync);
+    const { run, logs } = setup(core.deps);
+    await run('--uninstall');
+    dirs.mockRestore();
+    files.mockRestore();
+    expect(logs.join('\n')).toContain(`Could not remove ${copy}, ${skills.lock}`);
+    await setup(core.deps).run('--uninstall');
+    expect(fs.existsSync(copy)).toBe(false);
+    expect(fs.existsSync(skills.lock)).toBe(false);
   });
 
   it('removes the other copies and keeps recording one it could not remove', async () => {

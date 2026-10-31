@@ -14,6 +14,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import {
@@ -197,6 +198,17 @@ function exists(file: string): boolean {
   return fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined;
 }
 
+/** Whether `file` is gone, a real folder, something else, or cannot be told. */
+function pathState(file: string): 'missing' | 'folder' | 'other' | 'unreadable' {
+  try {
+    const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+    if (!stat) return 'missing';
+    return stat.isDirectory() ? 'folder' : 'other';
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOTDIR' ? 'missing' : 'unreadable';
+  }
+}
+
 /** Every missing folder on the way to `file`, deepest first; empty when its folder exists. */
 function missingDirs(file: string): string[] {
   const missing: string[] = [];
@@ -246,12 +258,48 @@ export function relaySkillRecordOf(value: unknown): RelaySkillRecord | undefined
   return { copies, createdDirs, locks };
 }
 
-/** One line about the skill, and the record to keep. */
+/** What one install changed, applied to the record as it is when saved (`applySkillChange`). */
+export interface SkillChange {
+  copies: InstalledSkillCopy[];
+  createdDirs: string[];
+  lock?: SkillLockRecord;
+}
+
+/** One line about the skill, and what the run changed. */
 export interface SkillInstallResult {
   line: string;
-  record: RelaySkillRecord | undefined;
-  /** Only what this run newly created: what to take back out if `record` cannot be saved. */
+  change?: SkillChange;
+  /** Only what this run newly created: what to take back out if the change cannot be saved. */
   undo?: RelaySkillRecord;
+  /**
+   * Called once the change is saved or not: drops the backups of refreshed
+   * copies, first putting them back when `saved` is false.
+   * @returns The folders put back, and those that could not be
+   */
+  settle?: (saved: boolean) => { restored: string[]; failed: string[] };
+}
+
+/**
+ * Apply one install's change to the record as it is now, so parallel runs
+ * keep each other's copies. Copies this run did not write stay as recorded.
+ * @param current - The record just before saving
+ * @param change - What this run changed
+ * @returns The record to save, or undefined when there is nothing to record
+ */
+export function applySkillChange(
+  current: RelaySkillRecord | undefined,
+  change: SkillChange | undefined
+): RelaySkillRecord | undefined {
+  if (!change) return current;
+  const written = new Set(change.copies.map((copy) => copy.path));
+  const copies = [...(current?.copies ?? []).filter((copy) => !written.has(copy.path)), ...change.copies];
+  const locks = mergeLocks(current?.locks ?? [], change.lock);
+  if (copies.length === 0 && locks.length === 0) return undefined;
+  return {
+    copies,
+    createdDirs: [...new Set([...(current?.createdDirs ?? []), ...change.createdDirs])],
+    locks,
+  };
 }
 
 /**
@@ -275,7 +323,7 @@ export function installRelaySkill(
   try {
     return install(tools, ctx, recorded, run);
   } catch (error) {
-    return { line: failureLine(tools.map(toolLabel).join(', '), (error as Error).message), record: recorded };
+    return { line: failureLine(tools.map(toolLabel).join(', '), (error as Error).message) };
   }
 }
 
@@ -334,7 +382,6 @@ function install(
     const state = kept.length > 0 ? 'already there' : 'installed';
     return {
       line: `✓ Agent skill        ${RELAY_SKILL_NAME} ${state} for ${label([...byPath.keys()])}`,
-      record: recorded,
     };
   }
 
@@ -343,6 +390,8 @@ function install(
   const entryBefore = readLock(lock).skills?.[RELAY_SKILL_NAME];
   const createdDirs = [...targets.map((dir) => path.join(dir, 'SKILL.md')), lock].flatMap(missingDirs);
   const agents = targets.flatMap((dir) => byPath.get(dir)!.flatMap((id) => ['--agent', SKILLS_AGENT[id]]));
+  // A copy is not changed unless it can be put back: a failure here is the warning line.
+  const backups = backupCopies(targets.filter((dir) => before.get(dir) !== undefined));
   let result: ReturnType<RunSkillsCli>;
   try {
     result = run(
@@ -363,34 +412,67 @@ function install(
       hash !== undefined && (before.get(dir) === undefined || result.status === 0 || hash !== before.get(dir))
     );
   });
-  const copies = [
-    ...(recorded?.copies ?? []).filter((copy) => !landed.includes(copy.path)),
-    ...landed.map((dir) => ({ path: dir, ref: RELAY_SKILL_REF, treeSha256: after.get(dir)! })),
-  ];
+  const copies = landed.map((dir) => ({ path: dir, ref: RELAY_SKILL_REF, treeSha256: after.get(dir)! }));
   const written = lockWritten(lock, lockExisted, entryBefore);
-  const locks = mergeLocks(recorded?.locks ?? [], written);
   const made = createdDirs.filter(exists);
-  const record: RelaySkillRecord | undefined =
-    copies.length > 0 || locks.length > 0
-      ? { copies, createdDirs: [...new Set([...(recorded?.createdDirs ?? []), ...made])], locks }
-      : undefined;
+  const change: SkillChange = { copies, createdDirs: made, ...(written ? { lock: written } : {}) };
   const undo: RelaySkillRecord = {
-    copies: copies.filter((copy) => landed.includes(copy.path) && before.get(copy.path) === undefined),
+    copies: copies.filter((copy) => before.get(copy.path) === undefined),
     createdDirs: made,
     locks: written ? [written] : [],
   };
+  const settle = (saved: boolean) => settleBackups(backups, saved ? [] : landed);
   const missed = targets.filter((dir) => !landed.includes(dir));
   if (missed.length > 0) {
     const reason =
       result.status === 0 ? 'it did not land' : lastLine(result.output) || `exit ${result.status}`;
-    return { line: failureLine(label(missed), reason), record, undo };
+    return { line: failureLine(label(missed), reason), change, undo, settle };
   }
   const keptNote = kept.length > 0 ? `; already there for ${label(kept)}, left as is` : '';
   return {
     line: `✓ Agent skill        installed ${RELAY_SKILL_NAME} for ${label(landed)}${keptNote}`,
-    record,
+    change,
     undo,
+    settle,
   };
+}
+
+/** Copies of `dirs`, by folder, in a private temporary folder; empty when there are none. */
+function backupCopies(dirs: string[]): Map<string, string> {
+  const backups = new Map<string, string>();
+  if (dirs.length === 0) return backups;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-skill-'));
+  dirs.forEach((dir, index) => {
+    const backup = path.join(root, String(index));
+    fs.cpSync(dir, backup, { recursive: true, verbatimSymlinks: true });
+    backups.set(dir, backup);
+  });
+  return backups;
+}
+
+/** Put back the `restore` folders that have a backup, then drop the backups. */
+function settleBackups(
+  backups: Map<string, string>,
+  restore: string[]
+): { restored: string[]; failed: string[] } {
+  const restored: string[] = [];
+  const failed: string[] = [];
+  for (const dir of restore) {
+    const backup = backups.get(dir);
+    if (!backup) continue;
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.cpSync(backup, dir, { recursive: true, verbatimSymlinks: true });
+      restored.push(dir);
+    } catch {
+      failed.push(dir);
+    }
+  }
+  for (const backup of backups.values()) {
+    fs.rmSync(path.dirname(backup), { recursive: true, force: true });
+    break;
+  }
+  return { restored, failed };
 }
 
 function failureLine(tools: string, reason: string): string {
@@ -437,8 +519,17 @@ export function uninstallRelaySkill(
   const elsewhere = recorded.copies.filter((copy) => !allowed.has(copy.path));
   for (const copy of recorded.copies) {
     if (!allowed.has(copy.path)) continue;
+    const state = pathState(copy.path);
+    if (state === 'missing') continue;
+    if (state === 'unreadable') {
+      failed.push(copy);
+      continue;
+    }
     const hash = treeHash(copy.path);
-    if (hash === undefined) continue;
+    if (state === 'folder' && hash === undefined) {
+      failed.push(copy);
+      continue;
+    }
     if (hash !== copy.treeSha256) {
       changed.push(copy.path);
       continue;
@@ -494,8 +585,14 @@ export function uninstallRelaySkill(
  * @returns false when the lock file could not be changed
  */
 function restoreLock(record: SkillLockRecord): boolean {
-  const lock = readLock(record.file);
-  if (!lock.skills || lock.skills[RELAY_SKILL_NAME]?.ref !== record.ref) return true;
+  let lock: SkillLock;
+  try {
+    lock = JSON.parse(fs.readFileSync(record.file, 'utf8')) as SkillLock;
+  } catch (error) {
+    // Gone is done; an unreadable or damaged file stays recorded for a later --uninstall.
+    return (error as NodeJS.ErrnoException).code === 'ENOENT';
+  }
+  if (!lock?.skills || lock.skills[RELAY_SKILL_NAME]?.ref !== record.ref) return true;
   if (record.original) lock.skills[RELAY_SKILL_NAME] = record.original as { ref?: string };
   else delete lock.skills[RELAY_SKILL_NAME];
   try {

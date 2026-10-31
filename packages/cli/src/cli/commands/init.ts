@@ -88,6 +88,7 @@ import {
   type PiState,
 } from '../lib/init-leftovers.js';
 import {
+  applySkillChange,
   defaultRunSkillsCli,
   installRelaySkill,
   uninstallRelaySkill,
@@ -1523,21 +1524,26 @@ function installSkill(
     deps.runSkillsCli
   );
   try {
-    updateDeliveryRecord(({ relaySkill: _previous, ...rest }) =>
-      result.record ? { ...rest, relaySkill: result.record } : rest
-    );
+    updateDeliveryRecord(({ relaySkill, ...rest }) => {
+      const next = applySkillChange(relaySkill, result.change);
+      return next ? { ...rest, relaySkill: next } : rest;
+    });
+    result.settle?.(true);
   } catch (error) {
     // The skill is optional, but what --uninstall would not know about is not left behind.
-    const undone = uninstallRelaySkill(result.undo, ctx);
-    const left = undone?.remaining;
-    const outcome = left
-      ? `and these could not be taken out again, so remove them by hand: ${[
-          ...left.copies.map((copy) => copy.path),
-          ...left.locks.map((lock) => lock.file),
-        ].join(', ')}`
-      : result.undo?.copies.length
-        ? "so this run's copies were taken out again"
-        : 'and this run added no copies to take out';
+    const { restored, failed } = result.settle?.(false) ?? { restored: [], failed: [] };
+    const left = uninstallRelaySkill(result.undo, ctx)?.remaining;
+    const stuck = [
+      ...failed,
+      ...(left?.copies.map((copy) => copy.path) ?? []),
+      ...(left?.locks.map((lock) => lock.file) ?? []),
+    ];
+    const outcome =
+      stuck.length > 0
+        ? `and these could not be taken out again, so remove them by hand: ${stuck.join(', ')}`
+        : result.undo?.copies.length || restored.length > 0
+          ? "so this run's copies were taken out again"
+          : 'and this run added no copies to take out';
     return (
       `! Agent skill        not installed: ${deliveryRecordPath()} could not be saved ` +
       `(${(error as Error).message}), ${outcome}`
