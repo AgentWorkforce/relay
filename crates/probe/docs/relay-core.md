@@ -818,7 +818,7 @@ the first of two sources that names one:
    binding in `relaycast-origins.json`
    (`relay::workspace::origin_binding`: the PBKDF2-SHA256 fingerprint shared
    with the CLI and the broker), else `https://armadillo.agentrelay.com` for an
-   armadillo-issued `ar_ws_…` key or `ar_ag_…` token, else
+   armadillo-issued `ar_ws_…` key, else
    `https://cast.agentrelay.com`, because any other key with no binding predates
    `relay init --hosted` creating workspaces on armadillo. A bound
    key goes only to its bound server, so `relay init`'s local server
