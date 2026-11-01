@@ -37,7 +37,8 @@ impl LocalSessions {
 
     /// Whether the nearest agent process of this user's above `pid` (itself
     /// included) is OpenCode, rather than a Claude Code session, a trusted
-    /// Codex, a Grok leader, Muse or Devin.
+    /// Codex, a Grok leader, Muse, Devin, `cursor-agent` or a Cursor editor
+    /// extension host.
     pub(super) fn opencode_is_nearest(&self, pid: i32, claude: &claude::Registry) -> bool {
         let table = &*self.table;
         let mut current = pid;

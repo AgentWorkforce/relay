@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `relay init` sets up Cursor: it adds the Relay MCP server, skill and hooks, so messages reach agents in the Cursor editor and Cursor CLI and wake an idle agent. `relay init --uninstall` removes what it added.
+- `relay init` sets up Cursor, so messages reach agents in the Cursor editor and Cursor CLI and wake an idle agent.
+- `relay init --uninstall` removes the Cursor setup it added.
 
 ## [15.0.2] - 2026-11-01
 

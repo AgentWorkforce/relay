@@ -142,7 +142,7 @@ relay init --hosted --tools all
 relay init --url https://relay.example.com:8443 --key <workspace-key> --tools none
 ```
 
-`--tools` takes `claude`, `codex`, `opencode`, `grok`, `pi`, `devin`, `all`, or
+`--tools` takes `claude`, `codex`, `opencode`, `grok`, `pi`, `devin`, `cursor`, `all`, or
 `none`. `--scope` is `project` or `global`.
 
 To remove what `relay init` added, and nothing else:

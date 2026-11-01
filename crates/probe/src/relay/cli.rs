@@ -491,7 +491,9 @@ pub fn cursor_hook(development: bool, wait: bool) -> Result<()> {
         );
     }
     if !answered {
-        stdout.write_all(b"{}\n")?;
+        let output = crate::relay::cursor_cli::no_answer(&payload);
+        stdout.write_all(output.to_string().as_bytes())?;
+        stdout.write_all(b"\n")?;
     }
     Ok(())
 }

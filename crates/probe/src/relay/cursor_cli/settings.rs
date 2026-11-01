@@ -4,7 +4,7 @@ use super::wait::{WAIT_FLAG, WAIT_TIMEOUT};
 use super::{CursorConfig, HOOK_EVENTS, HOOK_SUBCOMMAND, LABEL};
 use crate::relay::existing_session::platform;
 use serde_json::{json, Map, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The store key and `settings.get`/`settings.set` name.
 pub const SETTING: &str = "cursor_direct_delivery";
@@ -102,19 +102,26 @@ impl CursorSettings {
         self.waits().then(claim)
     }
 
-    /// The lock over this build's entries across processes: shared while a
-    /// waiting hook claims, exclusive while the file is edited.
-    fn file_lock(&self, exclusive: bool) -> Option<std::fs::File> {
+    /// The lock's path: one for every build, since they edit one file.
+    pub(super) fn lock_path(&self) -> PathBuf {
         let inbox = self.config.inbox();
-        std::fs::create_dir_all(&inbox).ok()?;
-        let _ = platform::set_mode(&inbox, 0o700);
+        inbox.parent().unwrap_or(&inbox).join(".hooks.lock")
+    }
+
+    /// The lock over `hooks.json` across processes: shared while a waiting
+    /// hook claims, exclusive while the file is edited.
+    fn file_lock(&self, exclusive: bool) -> Option<std::fs::File> {
+        let path = self.lock_path();
+        let dir = path.parent()?;
+        std::fs::create_dir_all(dir).ok()?;
+        let _ = platform::set_mode(dir, 0o700);
         use platform::OpenOptionsExt;
         let file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(false)
             .mode(0o600)
-            .open(inbox.join(".hooks.lock"))
+            .open(&path)
             .ok()?;
         let taken = if exclusive {
             fs2::FileExt::lock_exclusive(&file)
@@ -244,6 +251,13 @@ impl CursorSettings {
             .lock
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
+        if !enable
+            && self
+                .read_object()
+                .is_ok_and(|object| object.get("hooks").is_none())
+        {
+            return Ok(());
+        }
         let _claims = self.file_lock(true).ok_or(
             "Agent Relay could not lock its Cursor hooks, so ~/.cursor/hooks.json was left unchanged",
         )?;

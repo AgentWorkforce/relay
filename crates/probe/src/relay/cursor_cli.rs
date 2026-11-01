@@ -519,7 +519,8 @@ pub fn record_editor_hook(
 /// One run of Agent Relay's hook for `payload` in the process `pid`. It
 /// first notes a turn starting and retires a hook still waiting after
 /// another turn of the conversation (`wait::turn_seen`); a
-/// `beforeSubmitPrompt` does only that.
+/// `beforeSubmitPrompt` adds only recording an editor conversation, so its
+/// first tool call can register it (`editor_caller`), and hands nothing over.
 /// Then, only under the caller `hook_caller` proves, it hands the
 /// conversation's staged messages over through `write`, which says whether
 /// the answer was written in full: claims are tombstoned once it was and
@@ -541,6 +542,9 @@ pub fn run_hook(
         return false;
     };
     if payload["hook_event_name"] == "beforeSubmitPrompt" {
+        if let Some(HookCaller::Editor { host }) = hook_caller(config, table, pid, session) {
+            let _ = record_editor_hook(config, table, pid, host, payload);
+        }
         return false;
     }
     match hook_caller(config, table, pid, session) {
@@ -563,6 +567,16 @@ pub fn run_hook(
                 _ => answer_now(config, payload, write),
             }
         }
+    }
+}
+
+/// What the hook prints when it hands nothing over: `beforeSubmitPrompt`
+/// must say the prompt may go on.
+pub fn no_answer(payload: &Value) -> Value {
+    if payload["hook_event_name"] == "beforeSubmitPrompt" {
+        serde_json::json!({ "continue": true })
+    } else {
+        serde_json::json!({})
     }
 }
 

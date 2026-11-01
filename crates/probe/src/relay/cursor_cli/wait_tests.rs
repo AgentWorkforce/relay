@@ -462,6 +462,57 @@ fn a_stop_hook_of_an_older_turn_run_late_neither_claims_nor_waits() {
 }
 
 #[test]
+fn a_late_hook_of_an_older_turn_leaves_the_current_turns_hook_waiting() {
+    let (_temp, config, table) = editor();
+    let flags = Flags::new();
+    start(&config, "gen-2");
+    std::thread::scope(|scope| {
+        let hook = scope.spawn(|| park(&config, &table, &flags, HOOK, &stop("gen-2"), LONG, true));
+        eventually("the hook waits", || parked(&config));
+        assert_eq!(
+            run(
+                &config,
+                &table,
+                &flags,
+                HOOK + 1,
+                &turn("postToolUse", "gen-1"),
+                None
+            ),
+            (false, vec![])
+        );
+        assert!(waiting(&config));
+        // It still wakes the chat.
+        message(&config, &table, "m-1", "ping");
+        assert_eq!(
+            hook.join().unwrap(),
+            (Ended::Answered, vec![json!({"followup_message": "ping"})])
+        );
+    });
+}
+
+#[test]
+fn a_prompt_records_a_new_conversation_and_hands_nothing_over() {
+    let (_temp, config, table) = world();
+    table.insert(HOOK, shell(HOST_PID, &[]));
+    let flags = Flags::new();
+    place(&config, "m-1", "ping");
+    assert!(super::super::editor::live(&config, &table, uid(), SESSION).is_none());
+    assert_eq!(
+        run(
+            &config,
+            &table,
+            &flags,
+            HOOK,
+            &turn("beforeSubmitPrompt", "gen-1"),
+            None
+        ),
+        (false, vec![])
+    );
+    assert!(super::super::editor::live(&config, &table, uid(), SESSION).is_some());
+    assert_eq!(staged(&config), 1);
+}
+
+#[test]
 fn an_unknown_current_turn_takes_nothing_until_the_next_turn_starts() {
     let cases: [(&str, fn(&CursorConfig)); 6] = [
         ("its file is missing", |config| {

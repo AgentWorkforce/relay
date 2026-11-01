@@ -1793,6 +1793,19 @@ describe('relay init message injection', () => {
     expect(logs.join('\n')).toContain('messages are held for your approval unless it is "accept"');
   });
 
+  it('reports a core refusing Cursor delivery and leaves it off', async () => {
+    installedProbe();
+    const core = fakeCore({
+      running: true,
+      settings: { auto_activate: true, cursor_direct_delivery: false },
+      refuse: ['cursor_direct_delivery'],
+    });
+    const { run, logs } = setup(core.deps);
+    await run('--tools', 'cursor');
+    expect(core.settings.cursor_direct_delivery).toBe(false);
+    expect(logs.join('\n')).toContain('cursor_direct_delivery is not available');
+  });
+
   it('turns on Cursor delivery and turns it off again on --uninstall', async () => {
     installedProbe();
     const core = fakeCore({ running: true, settings: { auto_activate: true } });

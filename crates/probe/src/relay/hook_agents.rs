@@ -38,8 +38,10 @@ pub fn is_copilot_process(table: &dyn ProcessTable, pid: i32) -> bool {
 /// Whether `pid` is an agent other than Claude Code that runs hooks
 /// written for Claude: Cursor CLI and Copilot CLI read Claude's
 /// `settings.json` hooks, and Devin and Codex run Claude-format hooks of
-/// their own. A hook found under one of these belongs to it, even when a
-/// Claude Code session further up started it.
+/// their own. The Cursor editor's extension host counts too: it runs the
+/// hooks of `~/.cursor/hooks.json`, so one under it is never Claude's. A hook
+/// found under one of these belongs to it, even when a Claude Code session
+/// further up started it.
 pub fn is_other_agent(table: &dyn ProcessTable, pid: i32) -> bool {
     crate::relay::cursor_cli::is_cursor_process(table, pid)
         || crate::relay::cursor_cli::editor::is_editor_host(table, pid)

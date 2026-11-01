@@ -160,7 +160,14 @@ const TURN_VERSION: u32 = 1;
 struct CurrentTurn {
     version: u32,
     generation: String,
+    /// The turns before it, oldest first (`EARLIER_TURNS`): a hook of one
+    /// is late, where a hook of an id not here may be a newer turn's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    earlier: Vec<String>,
 }
+
+/// How many earlier turns `CurrentTurn` keeps.
+const EARLIER_TURNS: usize = 8;
 
 fn turn_file(config: &CursorConfig, session: &str) -> PathBuf {
     dir(config).join(format!("{session}.turn"))
@@ -170,9 +177,13 @@ fn turn_file(config: &CursorConfig, session: &str) -> PathBuf {
 /// unreadable, corrupt or of another version: then no hook waits after a
 /// turn or claims for one until the next turn starts and writes it again.
 fn current_turn(config: &CursorConfig, session: &str) -> Option<String> {
+    read_turn(config, session).map(|turn| turn.generation)
+}
+
+fn read_turn(config: &CursorConfig, session: &str) -> Option<CurrentTurn> {
     let turn: CurrentTurn =
         serde_json::from_slice(&std::fs::read(turn_file(config, session)).ok()?).ok()?;
-    (turn.version == TURN_VERSION).then_some(turn.generation)
+    (turn.version == TURN_VERSION).then_some(turn)
 }
 
 /// Names `generation`, when there is one, the turn that just started.
@@ -180,10 +191,19 @@ fn current_turn(config: &CursorConfig, session: &str) -> Option<String> {
 /// older one is never taken for the newest.
 fn start_turn(config: &CursorConfig, session: &str, generation: Option<&str>) -> Option<String> {
     let path = turn_file(config, session);
+    let mut earlier = Vec::new();
+    if let Some(turn) = read_turn(config, session) {
+        earlier = turn.earlier;
+        if Some(turn.generation.as_str()) != generation {
+            earlier.push(turn.generation);
+        }
+        earlier.drain(..earlier.len().saturating_sub(EARLIER_TURNS));
+    }
     let written = generation.filter(|generation| {
         serde_json::to_vec(&CurrentTurn {
             version: TURN_VERSION,
             generation: generation.to_string(),
+            earlier: earlier.clone(),
         })
         .is_ok_and(|bytes| replace(config, &path, &bytes))
     });
@@ -205,9 +225,9 @@ fn nonce(pid: i32) -> String {
 /// Notes a turn starting (`beforeSubmitPrompt`) as the conversation's
 /// current one, and retires the conversation's waiting hook unless both it
 /// and `payload`'s hook belong to the current turn: Cursor would drop its
-/// follow-up once a newer turn owns the chat, and a hook of another turn is
-/// either that or a late one. Every run of Agent Relay's hook calls this
-/// first. It needs no proof of its caller: retiring and forgetting the turn
+/// follow-up once a newer turn owns the chat, and a hook of an unknown turn
+/// may be that. Only a hook of a turn recorded as earlier leaves it waiting:
+/// that one is late. Every run of Agent Relay's hook calls this first. It needs no proof of its caller: retiring and forgetting the turn
 /// only leave the conversation's messages for its next hooks.
 pub fn turn_seen(config: &CursorConfig, payload: &Value) {
     let Some(session) = payload_session(payload) else {
@@ -224,9 +244,13 @@ pub fn turn_seen(config: &CursorConfig, payload: &Value) {
         } else {
             current_turn(config, session)
         };
+        let late = generation.is_some_and(|generation| {
+            read_turn(config, session)
+                .is_some_and(|turn| turn.earlier.iter().any(|earlier| earlier == generation))
+        });
         let retired = read(config, session).is_some_and(|waiter| {
             Some(waiter.generation.as_str()) != current.as_deref()
-                || Some(waiter.generation.as_str()) != generation
+                || (!late && Some(waiter.generation.as_str()) != generation)
         });
         if retired {
             let _ = std::fs::remove_file(waiter_file(config, session));

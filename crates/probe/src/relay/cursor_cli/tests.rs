@@ -743,9 +743,9 @@ fn a_setting_whose_lock_cannot_be_taken_is_left_as_it_is() {
     let settings = settings(&config);
     settings.set(SETTING, &json!(true)).unwrap().unwrap();
     let on = std::fs::read(config.hooks_file()).unwrap();
-    // The inbox the lock lives in cannot be made.
-    std::fs::remove_dir_all(config.inbox()).unwrap();
-    std::fs::write(config.inbox(), "").unwrap();
+    // The lock cannot be opened.
+    std::fs::remove_file(settings.lock_path()).unwrap();
+    std::fs::create_dir(settings.lock_path()).unwrap();
     assert_eq!(
         settings.set(SETTING, &json!(false)),
         Some(Err(
@@ -941,4 +941,21 @@ fn live_cursor_session_gets_its_messages_once() {
         assert!(drained.join(message_file(&session, id)).exists(), "{id}");
     }
     assert!(pending(&config, &session).is_empty());
+}
+
+#[test]
+fn a_hook_with_nothing_to_hand_over_lets_the_prompt_go_on() {
+    let prompt = json!({"hook_event_name": "beforeSubmitPrompt"});
+    assert_eq!(no_answer(&prompt), json!({"continue": true}));
+    assert_eq!(no_answer(&json!({"hook_event_name": "stop"})), json!({}));
+}
+
+#[test]
+fn every_build_edits_hooks_under_one_lock_and_turning_off_makes_none() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = CursorConfig::from_env(&|_| None, temp.path());
+    let dev = config.clone().development(true);
+    assert_eq!(settings(&config).lock_path(), settings(&dev).lock_path());
+    assert_eq!(settings(&config).set(SETTING, &json!(false)), Some(Ok(())));
+    assert!(!settings(&config).lock_path().exists());
 }

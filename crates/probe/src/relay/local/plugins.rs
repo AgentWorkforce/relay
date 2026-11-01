@@ -121,7 +121,13 @@ pub fn plugins_with_options(
         let cursor_settings = cursor_settings.clone();
         let _ = std::thread::Builder::new()
             .name("cursor-hooks".into())
-            .spawn(move || cursor_settings.refresh());
+            .spawn(move || {
+                if let Err(error) = cursor_settings.refresh() {
+                    crate::relay::diagnostics::write(format_args!(
+                        "cursor: hooks refresh failed: {error}"
+                    ));
+                }
+            });
     }
     // OpenCode processes started from now on load this build's plugin. A
     // copy that cannot be rewritten keeps working as the older version.

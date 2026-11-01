@@ -112,7 +112,7 @@ pub(super) fn hook_payload(event: &str, session: &str) -> Value {
 }
 
 #[test]
-fn only_a_windows_extension_host_is_the_editor() {
+fn only_a_window_extension_host_is_the_editor() {
     let (_temp, _config, table) = world();
     assert!(is_editor_host(&table, HOST_PID));
     // The main process, a renderer and a language server are Cursor too,
@@ -638,6 +638,26 @@ fn a_record_whose_host_pid_was_reused_is_removed() {
     assert!(path.is_file());
     table.insert(HOST_PID, shell(1, &[]));
     assert!(sessions(&config, &table, uid()).is_empty());
+    assert!(!path.exists());
+}
+
+#[test]
+fn removing_a_stale_record_keeps_a_window_that_claimed_the_conversation_since() {
+    let (_temp, config, table) = world();
+    let payload = hook_payload("postToolUse", SESSION);
+    record_editor_hook(&config, &table, HOST_PID, HOST_PID, &payload);
+    let path = config
+        .home
+        .join(".agentworkforce/desktop/cursor/editor")
+        .join(format!("{SESSION}.json"));
+    let newer = read(&path).unwrap();
+    let stale = Record {
+        host_pid: newer.host_pid + 1,
+        ..newer.clone()
+    };
+    remove_stale(&config, SESSION, &stale);
+    assert_eq!(read(&path), Some(newer.clone()));
+    remove_stale(&config, SESSION, &newer);
     assert!(!path.exists());
 }
 

@@ -227,29 +227,44 @@ pub(super) fn claim(
     if !is_session_id(session_id) {
         return false;
     }
+    locked(config, session_id, || {
+        let uid = crate::relay::peer::current_uid();
+        may_claim(config, table, uid, pid, host, session_id)
+            && record(config, table, host, session_id, workspace)
+    })
+    .unwrap_or(false)
+}
+
+/// Runs `run` under `session_id`'s record lock. `None` when it cannot be
+/// taken.
+fn locked<T>(config: &CursorConfig, session_id: &str, run: impl FnOnce() -> T) -> Option<T> {
     let dir = records(config);
-    if std::fs::create_dir_all(&dir).is_err() {
-        return false;
-    }
+    std::fs::create_dir_all(&dir).ok()?;
     let _ = platform::set_mode(&dir, 0o700);
     use platform::OpenOptionsExt;
-    let Ok(lock) = std::fs::OpenOptions::new()
+    let lock = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
         .open(dir.join(format!(".{session_id}.lock")))
-    else {
-        return false;
-    };
-    if fs2::FileExt::lock_exclusive(&lock).is_err() {
-        return false;
-    }
-    let uid = crate::relay::peer::current_uid();
-    let claimed = may_claim(config, table, uid, pid, host, session_id)
-        && record(config, table, host, session_id, workspace);
+        .ok()?;
+    fs2::FileExt::lock_exclusive(&lock).ok()?;
+    let result = run();
     let _ = fs2::FileExt::unlock(&lock);
-    claimed
+    Some(result)
+}
+
+/// Removes `session_id`'s record if it is still `stale`: under the record
+/// lock, so a window that claimed the conversation since `stale` was read
+/// keeps its own.
+pub(super) fn remove_stale(config: &CursorConfig, session_id: &str, stale: &Record) {
+    let path = records(config).join(format!("{session_id}.json"));
+    let _ = locked(config, session_id, || {
+        if read(&path).as_ref() == Some(stale) {
+            let _ = std::fs::remove_file(&path);
+        }
+    });
 }
 
 /// How the processes from `pid` up to (not including) `host` vouch for
@@ -423,7 +438,7 @@ fn record(
     true
 }
 
-fn read(path: &Path) -> Option<Record> {
+pub(super) fn read(path: &Path) -> Option<Record> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
@@ -510,7 +525,7 @@ pub fn sessions(config: &CursorConfig, table: &dyn ProcessTable, uid: u32) -> Ve
                     .process(record.host_pid)
                     .is_some_and(|process| process.start != record.host_start);
                 if replaced || table.process_gone(record.host_pid) {
-                    let _ = std::fs::remove_file(&path);
+                    remove_stale(config, &id, &record);
                 }
                 return None;
             }
