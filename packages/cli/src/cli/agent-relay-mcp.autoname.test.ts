@@ -37,6 +37,9 @@ vi.mock('@agent-relay/sdk', async (importOriginal) => ({
   createWorkspaceClient: () => ({
     agents: { registerOrRotate: relay.registerOrRotate, list: relay.list },
   }),
+  createAgentClient: () => {
+    throw new Error('no agent client in tests');
+  },
   createRealtimeClient: () => {
     throw new Error('no realtime in tests');
   },
