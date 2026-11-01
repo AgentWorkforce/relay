@@ -1,10 +1,11 @@
 //! Claude chats an app hosts as a structured run: Paseo's top-level chats,
-//! T3 Code's chats and the chats in Claude's desktop app. The app runs each Code chat as a local
-//! Claude Code process that publishes the same session record, inbox and
-//! socket as a terminal session, so delivery reaches it the same way. The
-//! app drives that process as a structured `stream-json` run with no
-//! terminal, which [`super::is_interactive_terminal`] rightly takes for
-//! automation, but a person is typing in it.
+//! T3 Code's chats on macOS and Linux and the chats in Claude's desktop app.
+//! The app runs each Code chat as a local Claude Code process that publishes
+//! the same session record, inbox and socket as a terminal session, so
+//! delivery reaches it the same way. The app drives that process as a
+//! structured `stream-json` run with no terminal, which
+//! [`super::is_interactive_terminal`] rightly takes for automation, but a
+//! person is typing in it.
 
 use std::path::Path;
 
@@ -22,21 +23,47 @@ pub fn is_app(executable: &Path) -> bool {
         && path.ends_with("/Claude.app/Contents/MacOS/Claude")
 }
 
-/// T3 Code's main executable on any release channel (`T3 Code` or
-/// `T3 Code (<Channel>)`), installed for all users or for this one.
+/// T3 Code's main executable on any release channel, installed for all
+/// users or for this one: the macOS bundle (`T3 Code.app` or
+/// `T3 Code (<Channel>).app`), the Linux package in
+/// `/opt/T3 Code (<Channel>)/t3code`, or a running Linux AppImage, which
+/// mounts itself at `$TMPDIR/.mount_<random>/t3code`. Its backend server is
+/// the same executable, so a chat's parent matches too.
 pub fn is_t3_app(executable: &Path) -> bool {
     let Some(name) = executable.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    let channel_build = name
-        .strip_prefix("T3 Code (")
-        .and_then(|rest| rest.strip_suffix(')'))
-        .is_some_and(|channel| !channel.is_empty() && channel.chars().all(char::is_alphanumeric));
     let path = executable.to_string_lossy();
-    (name == "T3 Code" || channel_build)
+    if name == "t3code" {
+        let Some(folder) = executable
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|folder| folder.to_str())
+        else {
+            return false;
+        };
+        return path.starts_with('/')
+            && ((is_t3_product(folder) && path == format!("/opt/{folder}/t3code"))
+                || folder
+                    .strip_prefix(".mount_")
+                    .is_some_and(|id| !id.is_empty()));
+    }
+    is_t3_product(name)
         && (path.starts_with("/Applications/")
             || (path.starts_with("/Users/") && path.contains("/Applications/")))
         && path.ends_with(&format!("/{name}.app/Contents/MacOS/{name}"))
+}
+
+/// T3 Code's product name on any release channel: `T3 Code` or
+/// `T3 Code (<Channel>)`.
+fn is_t3_product(name: &str) -> bool {
+    name == "T3 Code"
+        || name
+            .strip_prefix("T3 Code (")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .is_some_and(|channel| {
+                !channel.is_empty() && channel.chars().all(char::is_alphanumeric)
+            })
 }
 
 /// Whether `directory` is a folder the app made for a chat with no project
@@ -185,6 +212,13 @@ mod tests {
             "/Applications/T3 Code (Beta).app/Contents/MacOS/T3 Code (Beta)",
             "/Applications/T3 Code (Nightly).app/Contents/MacOS/T3 Code (Nightly)",
             "/Users/me/Applications/T3 Code (Alpha).app/Contents/MacOS/T3 Code (Alpha)",
+            // The Linux packages: the stable and preview builds install as Beta.
+            "/opt/T3 Code (Beta)/t3code",
+            "/opt/T3 Code (Nightly)/t3code",
+            "/opt/T3 Code/t3code",
+            // A running AppImage, mounted under /tmp or $TMPDIR.
+            "/tmp/.mount_T3-CodmajGcH/t3code",
+            "/home/me/.cache/tmp/.mount_T3-Codx1Y2z3/t3code",
         ] {
             assert!(is_t3_app(Path::new(app)), "{app}");
         }
@@ -195,12 +229,31 @@ mod tests {
             "/Applications/T3 Code ().app/Contents/MacOS/T3 Code ()",
             "/tmp/T3 Code.app/Contents/MacOS/T3 Code",
             "/Applications/Claude.app/Contents/MacOS/Claude",
+            "/opt/T3 Code (Beta)/chrome_crashpad_handler",
+            "/opt/T3 Code (Beta)/resources/resource-monitor/t3-resource-monitor",
+            "/tmp/.mount_T3-CodmajGcH/resources/resource-monitor/t3-resource-monitor",
+            "/opt/T3 Code ()/t3code",
+            "/opt/Other/t3code",
+            "/home/me/opt/T3 Code (Beta)/t3code",
+            "/tmp/.mount_/t3code",
+            "/tmp/squashfs-root/t3code",
+            "/usr/bin/t3code",
+            "/home/me/.local/bin/t3code",
+            "t3code",
+            ".mount_T3-CodmajGcH/t3code",
         ] {
             assert!(!is_t3_app(Path::new(other)), "{other}");
         }
     }
 
     const T3: &str = "/Applications/T3 Code (Alpha).app/Contents/MacOS/T3 Code (Alpha)";
+    /// Every T3 Code main executable a chat's process tree reaches: the macOS
+    /// bundle, the Linux package and a running Linux AppImage.
+    const T3_BUILDS: [&str; 3] = [
+        T3,
+        "/opt/T3 Code (Beta)/t3code",
+        "/tmp/.mount_T3-CodmajGcH/t3code",
+    ];
 
     fn process(parent: i32, executable: Option<&str>) -> FakeProcess {
         FakeProcess {
@@ -250,75 +303,112 @@ mod tests {
 
     #[test]
     fn a_t3_code_chat_is_a_persons_chat_but_what_it_starts_is_not() {
-        let table = FakeProcesses::default();
-        table.insert(10, process(1, Some(T3)));
-        table.insert(11, process(10, Some(T3)));
-        table.insert(12, chat_process(11));
-        table.insert(13, process(12, Some("/bin/zsh")));
-        table.insert(14, chat_process(13));
+        for t3 in T3_BUILDS {
+            // T3 Code's main process starts its backend server from the same
+            // executable, and the server starts each chat.
+            let table = FakeProcesses::default();
+            table.insert(10, process(1, Some(t3)));
+            table.insert(11, process(10, Some(t3)));
+            table.insert(12, chat_process(11));
+            table.insert(13, process(12, Some("/bin/zsh")));
+            table.insert(14, chat_process(13));
 
-        let chat = session(12, Some("interactive"));
-        assert!(is_t3_chat(&table, &chat, &registry(&[&chat])));
-        assert!(is_app_hosted_chat(&table, &chat, &registry(&[&chat])));
+            let chat = session(12, Some("interactive"));
+            assert!(is_t3_chat(&table, &chat, &registry(&[&chat])), "{t3}");
+            assert!(
+                is_app_hosted_chat(&table, &chat, &registry(&[&chat])),
+                "{t3}"
+            );
 
-        let nested = session(14, Some("interactive"));
-        assert!(!is_t3_chat(&table, &nested, &registry(&[&chat, &nested])));
+            let nested = session(14, Some("interactive"));
+            assert!(
+                !is_t3_chat(&table, &nested, &registry(&[&chat, &nested])),
+                "{t3}"
+            );
 
-        // The parent chat's record cannot be read: its pid still stops the walk.
-        let unreadable = Registry {
-            sessions: vec![nested.clone()],
-            unreadable: vec![UnreadableSessionFile {
-                path: "/sessions/12.json".into(),
-                pid: 12,
-                error: "expected value".into(),
-            }],
-        };
-        assert!(!is_t3_chat(&table, &nested, &unreadable));
+            // The parent chat's record cannot be read: its pid still stops the walk.
+            let unreadable = Registry {
+                sessions: vec![nested.clone()],
+                unreadable: vec![UnreadableSessionFile {
+                    path: "/sessions/12.json".into(),
+                    pid: 12,
+                    error: "expected value".into(),
+                }],
+            };
+            assert!(!is_t3_chat(&table, &nested, &unreadable), "{t3}");
 
-        let run = session(12, Some("sdk"));
-        assert!(!is_t3_chat(&table, &run, &registry(&[&run])));
+            let run = session(12, Some("sdk"));
+            assert!(!is_t3_chat(&table, &run, &registry(&[&run])), "{t3}");
+            let unknown = session(12, None);
+            assert!(
+                !is_t3_chat(&table, &unknown, &registry(&[&unknown])),
+                "{t3}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_t3_code_chat_run_by_another_user_is_not_this_users_chat() {
+        for t3 in T3_BUILDS {
+            let table = FakeProcesses::default();
+            table.insert(
+                40,
+                FakeProcess {
+                    uid: 0,
+                    ..process(1, Some(t3))
+                },
+            );
+            table.insert(41, chat_process(40));
+            let chat = session(41, Some("interactive"));
+            assert!(!is_t3_chat(&table, &chat, &registry(&[&chat])), "{t3}");
+        }
     }
 
     #[test]
     fn claude_print_in_t3_codes_terminal_stays_automation() {
-        let table = FakeProcesses::default();
-        table.insert(30, process(1, Some(T3)));
-        table.insert(31, process(30, Some("/bin/zsh")));
-        table.insert(
-            32,
-            FakeProcess {
-                arguments: vec!["claude".into(), "-p".into(), "hello".into()],
-                has_terminal: true,
-                ..process(31, Some("/usr/local/bin/claude"))
-            },
-        );
-        let run = session(32, Some("interactive"));
-        assert!(!is_t3_chat(&table, &run, &registry(&[&run])));
+        for t3 in T3_BUILDS {
+            let table = FakeProcesses::default();
+            table.insert(30, process(1, Some(t3)));
+            table.insert(31, process(30, Some("/bin/zsh")));
+            table.insert(
+                32,
+                FakeProcess {
+                    arguments: vec!["claude".into(), "-p".into(), "hello".into()],
+                    has_terminal: true,
+                    ..process(31, Some("/usr/local/bin/claude"))
+                },
+            );
+            let run = session(32, Some("interactive"));
+            assert!(!is_t3_chat(&table, &run, &registry(&[&run])), "{t3}");
 
-        // A structured pipe in that terminal is a script, not the app's chat.
-        table.insert(
-            33,
-            FakeProcess {
-                has_terminal: true,
-                ..chat_process(31)
-            },
-        );
-        let piped = session(33, Some("interactive"));
-        assert!(!is_t3_chat(&table, &piped, &registry(&[&piped])));
+            // A structured pipe in that terminal is a script, not the app's chat.
+            table.insert(
+                33,
+                FakeProcess {
+                    has_terminal: true,
+                    ..chat_process(31)
+                },
+            );
+            let piped = session(33, Some("interactive"));
+            assert!(!is_t3_chat(&table, &piped, &registry(&[&piped])), "{t3}");
 
-        table.insert(
-            34,
-            FakeProcess {
-                arguments: vec![
-                    "claude".into(),
-                    "-p".into(),
-                    "--input-format=stream-json".into(),
-                ],
-                ..process(30, Some("/usr/local/bin/claude"))
-            },
-        );
-        let printing = session(34, Some("interactive"));
-        assert!(!is_t3_chat(&table, &printing, &registry(&[&printing])));
+            table.insert(
+                34,
+                FakeProcess {
+                    arguments: vec![
+                        "claude".into(),
+                        "-p".into(),
+                        "--input-format=stream-json".into(),
+                    ],
+                    ..process(30, Some("/usr/local/bin/claude"))
+                },
+            );
+            let printing = session(34, Some("interactive"));
+            assert!(
+                !is_t3_chat(&table, &printing, &registry(&[&printing])),
+                "{t3}"
+            );
+        }
     }
 
     #[test]

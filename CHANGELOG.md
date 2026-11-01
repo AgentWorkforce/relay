@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- T3 Code chats running Claude now join Relay by themselves. The core took them for automation, so they never appeared in `relay agent list`.
+- T3 Code chats running Claude now join Relay by themselves on macOS and Linux (the `.deb` install and the AppImage). The core took them for automation, so they never appeared in `relay agent list`.
 
 ## [15.0.1] - 2026-10-31
 
