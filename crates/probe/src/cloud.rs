@@ -2464,8 +2464,6 @@ pub(crate) mod tests {
         .unwrap();
     }
 
-    /// A dead `rth_*` pair is replaced from Agent Relay's own sign-in, so an
-    /// unattended machine recovers without anyone logging in again.
     #[cfg(not(feature = "relay-cli"))]
     #[test]
     fn without_relay_cli_the_official_cli_session_is_not_borrowed() {
@@ -2478,6 +2476,8 @@ pub(crate) mod tests {
         assert_eq!(official_cli_bearer(&api_url), None);
     }
 
+    /// A dead `rth_*` pair is replaced from Agent Relay's own sign-in, so an
+    /// unattended machine recovers without anyone logging in again.
     #[cfg(feature = "relay-cli")]
     #[test]
     fn a_dead_history_session_is_renewed_from_the_agent_relay_sign_in() {

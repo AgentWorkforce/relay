@@ -966,8 +966,12 @@ fn non_empty(value: &Value, key: &str) -> Option<String> {
 
 /// Whether the node claims can be read: none at all is a readable answer;
 /// a directory or claim this user cannot read is not, so ownership is
-/// unknown rather than empty.
+/// unknown rather than empty. Without `relay-cli` no claim is read, so none
+/// can leave ownership unknown.
 fn claims_readable(relay_home: &Path) -> bool {
+    if cfg!(not(feature = "relay-cli")) {
+        return true;
+    }
     let directory = relay_home.join(CLAIMS_DIRECTORY);
     let entries = match std::fs::read_dir(&directory) {
         Ok(entries) => entries,
@@ -1084,6 +1088,17 @@ mod tests {
         assert!(call(&fleet, method::FleetRelease::NAME, json!({}))
             .await
             .is_none());
+    }
+
+    #[cfg(not(feature = "relay-cli"))]
+    #[test]
+    fn without_relay_cli_unreadable_claims_block_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        // A file where the directory belongs cannot be read as claims.
+        std::fs::write(home.path().join(CLAIMS_DIRECTORY), "not a directory").unwrap();
+        let fleet = Fleet::new(home.path().to_path_buf());
+        assert!(fleet.managed_targets_blocking().unwrap().is_empty());
+        assert!(fleet.workers_blocking().unwrap().is_empty());
     }
 
     #[derive(Clone, Debug)]
@@ -2000,6 +2015,7 @@ mod tests {
 
     // Review: an unreadable claims directory is unknown ownership, not none.
     // Unix only: Windows has no mode that makes a file unreadable to its owner.
+    #[cfg(feature = "relay-cli")]
     #[cfg(unix)]
     #[test]
     fn fleet_unreadable_claims_fail_closed() {

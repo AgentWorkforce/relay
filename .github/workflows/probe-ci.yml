@@ -148,6 +148,13 @@ jobs:
           workspaces: crates/probe
           key: without-relay-cli
           cache-bin: false
+      - name: The build really is without relay-cli
+        run: |
+          features="$(cargo tree --locked --no-default-features --features history --depth 0 -f '{f}')"
+          if grep -q 'relay-cli' <<<"$features"; then
+            echo "::error::relay-cli is on in the build that must not have it: $features"
+            exit 1
+          fi
       - name: Test
         run: |
           export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"

@@ -150,6 +150,7 @@ enum Owner {
 }
 
 /// Whether the official CLI holds a sign-in for `site` at all, fresh or not.
+/// Never without `relay-cli`.
 fn cli_signed_in(relay_home: &Path, site: &str) -> bool {
     if cfg!(not(feature = "relay-cli")) {
         return false;
