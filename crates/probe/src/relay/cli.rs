@@ -430,8 +430,9 @@ pub fn devin_hook(development: bool) -> Result<()> {
 /// completes. With `--wait` (the `stop` entry) an editor conversation's
 /// completed turn with nothing pending waits for its next message instead
 /// (`cursor_cli::wait`). A claim is tombstoned once the answer is written
-/// and put back if it is not (`cursor_cli::run_hook`). Anything else prints
-/// `{}` and exits 0, so a hook can never break the session it runs in.
+/// and put back if it is not (`cursor_cli::run_hook`). Anything else exits 0
+/// with `cursor_cli::no_answer`'s output (`{}`, or `{"continue":true}` for
+/// `beforeSubmitPrompt`), so a hook can never break the session it runs in.
 /// `--dev` selects Agent Relay Dev's inbox.
 pub fn cursor_hook(development: bool, wait: bool) -> Result<()> {
     use crate::relay::cursor_cli::{wait as waiting, CursorConfig, CursorSettings};

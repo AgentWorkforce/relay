@@ -235,20 +235,25 @@ pub(super) fn claim(
     .unwrap_or(false)
 }
 
-/// Runs `run` under `session_id`'s record lock. `None` when it cannot be
-/// taken.
-fn locked<T>(config: &CursorConfig, session_id: &str, run: impl FnOnce() -> T) -> Option<T> {
+/// `session_id`'s record lock file, not yet locked.
+pub(super) fn lock_file(config: &CursorConfig, session_id: &str) -> Option<std::fs::File> {
     let dir = records(config);
     std::fs::create_dir_all(&dir).ok()?;
     let _ = platform::set_mode(&dir, 0o700);
     use platform::OpenOptionsExt;
-    let lock = std::fs::OpenOptions::new()
+    std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
         .open(dir.join(format!(".{session_id}.lock")))
-        .ok()?;
+        .ok()
+}
+
+/// Runs `run` under `session_id`'s record lock. `None` when it cannot be
+/// taken.
+fn locked<T>(config: &CursorConfig, session_id: &str, run: impl FnOnce() -> T) -> Option<T> {
+    let lock = lock_file(config, session_id)?;
     fs2::FileExt::lock_exclusive(&lock).ok()?;
     let result = run();
     let _ = fs2::FileExt::unlock(&lock);
@@ -257,14 +262,21 @@ fn locked<T>(config: &CursorConfig, session_id: &str, run: impl FnOnce() -> T) -
 
 /// Removes `session_id`'s record if it is still `stale`: under the record
 /// lock, so a window that claimed the conversation since `stale` was read
-/// keeps its own.
+/// keeps its own. Discovery calls this and a claim can hold the lock through
+/// a signature check, so it never waits: when the lock is held the record
+/// stays for the next discovery.
 pub(super) fn remove_stale(config: &CursorConfig, session_id: &str, stale: &Record) {
     let path = records(config).join(format!("{session_id}.json"));
-    let _ = locked(config, session_id, || {
-        if read(&path).as_ref() == Some(stale) {
-            let _ = std::fs::remove_file(&path);
-        }
-    });
+    let Some(lock) = lock_file(config, session_id) else {
+        return;
+    };
+    if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
+        return;
+    }
+    if read(&path).as_ref() == Some(stale) {
+        let _ = std::fs::remove_file(&path);
+    }
+    let _ = fs2::FileExt::unlock(&lock);
 }
 
 /// How the processes from `pid` up to (not including) `host` vouch for

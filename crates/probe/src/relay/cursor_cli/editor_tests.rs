@@ -662,6 +662,25 @@ fn removing_a_stale_record_keeps_a_window_that_claimed_the_conversation_since() 
 }
 
 #[test]
+fn removing_a_stale_record_never_waits_for_a_claim_holding_the_lock() {
+    let (_temp, config, table) = world();
+    let payload = hook_payload("postToolUse", SESSION);
+    record_editor_hook(&config, &table, HOST_PID, HOST_PID, &payload);
+    let path = config
+        .home
+        .join(".agentworkforce/desktop/cursor/editor")
+        .join(format!("{SESSION}.json"));
+    let stale = read(&path).unwrap();
+    let held = lock_file(&config, SESSION).unwrap();
+    fs2::FileExt::lock_exclusive(&held).unwrap();
+    remove_stale(&config, SESSION, &stale);
+    assert_eq!(read(&path), Some(stale.clone()));
+    fs2::FileExt::unlock(&held).unwrap();
+    remove_stale(&config, SESSION, &stale);
+    assert!(!path.exists());
+}
+
+#[test]
 fn a_blank_first_workspace_root_is_skipped() {
     assert_eq!(
         payload_workspace(&json!({"workspace_roots": ["", " ", "/work/api"]})),
