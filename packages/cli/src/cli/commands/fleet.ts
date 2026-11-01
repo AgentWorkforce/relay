@@ -1477,6 +1477,11 @@ export function registerFleetCommands(
         reason,
         deleteAgent: false,
       });
+      if (released.status === 'dispatched') {
+        deps.warn(
+          'Release was dispatched. If this worker is sandbox-backed, its Cloud/provider sandbox may keep running and incurring cost; `fleet release` does not tear it down.'
+        );
+      }
       if (options.unsubscribeBindings === true || deleteAgent) {
         try {
           // Helper progress (`Retired ...`, `Unsubscribed ...`) must not land
