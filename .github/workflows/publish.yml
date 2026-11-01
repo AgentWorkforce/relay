@@ -45,6 +45,11 @@ on:
         required: false
         type: boolean
         default: false
+      hotfix:
+        description: 'Hotfix: keep one Linux and one macOS check, skip the other smoke and verify jobs'
+        required: false
+        type: boolean
+        default: false
       tag:
         description: 'NPM dist-tag'
         required: false
@@ -80,13 +85,17 @@ jobs:
     # crates/broker/src/util/version.rs — released binaries report this
     # version through health/session/telemetry payloads.
     needs: build
+    # This job can run on a third-party runner (CI_*_RUNNER), so it gets no OIDC
+    # token, which npm provenance needs, and read-only repo access.
+    permissions:
+      contents: read
     runs-on: ${{ matrix.os }}
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease' || github.event.inputs.package == 'sdk'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: ${{ vars.CI_MACOS_RUNNER || 'macos-latest' }}
             target: aarch64-apple-darwin
             broker_pkg: broker-darwin-arm64
             binary_name: agent-relay-broker-darwin-arm64
@@ -96,12 +105,12 @@ jobs:
             broker_pkg: broker-darwin-x64
             binary_name: agent-relay-broker-darwin-x64
             binary_file: agent-relay-broker
-          - os: ubuntu-latest
+          - os: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
             target: x86_64-unknown-linux-musl
             broker_pkg: broker-linux-x64
             binary_name: agent-relay-broker-linux-x64
             binary_file: agent-relay-broker
-          - os: ubuntu-latest
+          - os: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
             target: aarch64-unknown-linux-musl
             broker_pkg: broker-linux-arm64
             binary_name: agent-relay-broker-linux-arm64
@@ -115,6 +124,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -202,28 +213,34 @@ jobs:
   build-standalone:
     name: Build standalone (${{ matrix.target }})
     needs: build # Wait for version bump
+    # This job can run on a third-party runner (CI_*_RUNNER), so it gets no OIDC
+    # token, which npm provenance needs, and read-only repo access.
+    permissions:
+      contents: read
     runs-on: ${{ matrix.os }}
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
+          - os: ${{ vars.CI_MACOS_RUNNER || 'macos-latest' }}
             target: bun-darwin-arm64
             binary_name: agent-relay-darwin-arm64
           - os: macos-latest
             target: bun-darwin-x64
             binary_name: agent-relay-darwin-x64
-          - os: ubuntu-latest
+          - os: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
             target: bun-linux-x64
             binary_name: agent-relay-linux-x64
-          - os: ubuntu-latest
+          - os: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
             target: bun-linux-arm64
             binary_name: agent-relay-linux-arm64
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -332,12 +349,43 @@ jobs:
   # Build all packages once, version them, and upload
   build:
     name: Build & Version
+    # This job can run on a third-party runner (CI_LINUX_RUNNER), so it gets no
+    # OIDC token, which npm provenance needs, and read-only repo access.
+    permissions:
+      contents: read
     runs-on: ${{ vars.CI_LINUX_RUNNER || 'ubuntu-latest' }}
     outputs:
       new_version: ${{ steps.bump.outputs.new_version }}
       is_prerelease: ${{ steps.bump.outputs.is_prerelease }}
+      smoke_matrix: ${{ steps.plan.outputs.smoke_matrix }}
+      standalone_macos_matrix: ${{ steps.plan.outputs.standalone_macos_matrix }}
 
     steps:
+      - name: Plan release checks
+        id: plan
+        env:
+          HOTFIX: ${{ github.event.inputs.hotfix }}
+        run: |
+          set -euo pipefail
+          smoke='[
+            {"platform":"darwin-arm64","os":"macos-15","broker_pkg":"broker-darwin-arm64","binary_name":"agent-relay-broker-darwin-arm64","binary_file":"agent-relay-broker","pkg_os":"darwin","pkg_cpu":"arm64"},
+            {"platform":"linux-x64","os":"ubuntu-latest","broker_pkg":"broker-linux-x64","binary_name":"agent-relay-broker-linux-x64","binary_file":"agent-relay-broker","pkg_os":"linux","pkg_cpu":"x64"},
+            {"platform":"linux-arm64","os":"ubuntu-24.04-arm","broker_pkg":"broker-linux-arm64","binary_name":"agent-relay-broker-linux-arm64","binary_file":"agent-relay-broker","pkg_os":"linux","pkg_cpu":"arm64"},
+            {"platform":"win32-x64","os":"windows-latest","broker_pkg":"broker-win32-x64","binary_name":"agent-relay-broker-win32-x64.exe","binary_file":"agent-relay-broker.exe","pkg_os":"win32","pkg_cpu":"x64"}
+          ]'
+          standalone='[
+            {"binary_name":"agent-relay-darwin-arm64","broker_name":"agent-relay-broker-darwin-arm64","expected_arch":"arm64"},
+            {"binary_name":"agent-relay-darwin-x64","broker_name":"agent-relay-broker-darwin-x64","expected_arch":"x86_64"}
+          ]'
+          if [ "$HOTFIX" = "true" ]; then
+            smoke=$(jq '[.[] | select(.platform == "darwin-arm64" or .platform == "linux-x64")]' <<<"$smoke")
+            standalone=$(jq '[.[] | select(.expected_arch == "arm64")]' <<<"$standalone")
+          fi
+          {
+            echo "smoke_matrix=$(jq -c . <<<"$smoke")"
+            echo "standalone_macos_matrix=$(jq -c . <<<"$standalone")"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Checkout code
         uses: actions/checkout@v4
         with:
@@ -555,40 +603,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # From build.outputs.smoke_matrix: a hotfix keeps darwin-arm64 and linux-x64.
+      # darwin-x64 smoke is intentionally omitted: GitHub's macos-13 (Intel)
+      # runner pool is capacity-constrained and routinely queues for hours. The
+      # x86_64-apple-darwin broker binary is still cross-compiled and published;
+      # we just don't exercise it in CI.
       matrix:
-        include:
-          - platform: darwin-arm64
-            os: macos-15
-            broker_pkg: broker-darwin-arm64
-            binary_name: agent-relay-broker-darwin-arm64
-            binary_file: agent-relay-broker
-            pkg_os: darwin
-            pkg_cpu: arm64
-          # darwin-x64 smoke is intentionally omitted: GitHub's macos-13
-          # (Intel) runner pool is capacity-constrained and routinely queues
-          # for hours. The x86_64-apple-darwin broker binary is still
-          # cross-compiled and published; we just don't exercise it in CI.
-          - platform: linux-x64
-            os: ubuntu-latest
-            broker_pkg: broker-linux-x64
-            binary_name: agent-relay-broker-linux-x64
-            binary_file: agent-relay-broker
-            pkg_os: linux
-            pkg_cpu: x64
-          - platform: linux-arm64
-            os: ubuntu-24.04-arm
-            broker_pkg: broker-linux-arm64
-            binary_name: agent-relay-broker-linux-arm64
-            binary_file: agent-relay-broker
-            pkg_os: linux
-            pkg_cpu: arm64
-          - platform: win32-x64
-            os: windows-latest
-            broker_pkg: broker-win32-x64
-            binary_name: agent-relay-broker-win32-x64.exe
-            binary_file: agent-relay-broker.exe
-            pkg_os: win32
-            pkg_cpu: x64
+        include: ${{ fromJSON(needs.build.outputs.smoke_matrix) }}
 
     steps:
       - name: Checkout code
@@ -1407,19 +1428,14 @@ jobs:
   # Verify standalone binaries on macOS
   verify-standalone-macos:
     name: Verify Standalone (macOS)
-    needs: [build-standalone, build-broker]
+    needs: [build, build-standalone, build-broker]
     runs-on: macos-15
     if: github.event.inputs.package == 'all' || github.event.inputs.package == 'main'
     strategy:
       fail-fast: false
+      # From build.outputs.standalone_macos_matrix: a hotfix keeps arm64.
       matrix:
-        include:
-          - binary_name: agent-relay-darwin-arm64
-            broker_name: agent-relay-broker-darwin-arm64
-            expected_arch: arm64
-          - binary_name: agent-relay-darwin-x64
-            broker_name: agent-relay-broker-darwin-x64
-            expected_arch: x86_64
+        include: ${{ fromJSON(needs.build.outputs.standalone_macos_matrix) }}
 
     steps:
       - name: Checkout code
@@ -2120,6 +2136,7 @@ jobs:
     uses: ./.github/workflows/verify-publish.yml
     with:
       version: ${{ needs.build.outputs.new_version }}
+      hotfix: ${{ github.event.inputs.hotfix == 'true' }}
 
   # Post-publish cross-platform verification of @agent-relay/harness-driver and
   # its per-platform broker optional deps. Installs from the registry on every
@@ -2132,6 +2149,7 @@ jobs:
     if: |
       always() &&
       github.event.inputs.dry_run != 'true' &&
+      github.event.inputs.hotfix != 'true' &&
       github.event.inputs.package == 'all' &&
       needs.publish-broker-packages.result == 'success' &&
       needs.publish-packages.result == 'success'
@@ -2177,6 +2195,7 @@ jobs:
           echo "**NPM Tag**: \`${{ github.event.inputs.tag }}\`" >> $GITHUB_STEP_SUMMARY
           echo "**Prerelease**: \`$IS_PRERELEASE\`" >> $GITHUB_STEP_SUMMARY
           echo "**Dry Run**: \`${{ github.event.inputs.dry_run }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**Hotfix**: \`${{ github.event.inputs.hotfix }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ "$IS_PRERELEASE" = "true" ]; then
             echo "> Users running \`npm install agent-relay\` or \`install.sh\` are **NOT** affected by this prerelease." >> $GITHUB_STEP_SUMMARY
