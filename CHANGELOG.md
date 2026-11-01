@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - With the desktop app on the machine, `relay init --hosted` and `relay workspace create` use `https://cast.agentrelay.com`, the only server its core serves, and `relay init --key` refuses an armadillo key instead of saving a workspace agents could not join.
-- `relay init` run through `npx` prints follow-up commands that work there, because `relay` is not on PATH after `npx`.
+- `relay init` run through `npx` prints follow-up commands that also use `npx`, so they work without a global `relay` install.
 
 ## [15.0.0] - 2026-10-31
 
