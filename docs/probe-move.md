@@ -357,7 +357,7 @@ own, named `<tool>-<project>-<task>`) and, per tool, through `settings.set`:
 | OpenCode    | `opencode_plugin`, `opencode_auto_activate`      | the Agent Relay plugin under `~/.config/opencode/plugins`                                                                                     |
 | Grok CLI    | `grok_leader`                                    | `[cli] use_leader` in `~/.grok/config.toml`                                                                                                   |
 | Devin       | `devin_direct_delivery`                          | lifecycle hooks in `~/.config/devin/config.json`                                                                                              |
-| Cursor      | `cursor_direct_delivery`                         | hooks in `~/.cursor/hooks.json` (the editor route needs a core newer than 15.0.7)                                                                                                               |
+| Cursor      | `cursor_direct_delivery`                         | hooks in `~/.cursor/hooks.json` (the editor route needs a core newer than 15.0.7)                                                             |
 | Pi          | `pi_extension`, `pi_auto_activate`               | the Agent Relay extension in `~/.pi/agent/extensions` (a desktop core installs it at start)                                                   |
 
 `auto_activate` alone never puts an open Pi or OpenCode session on the relay
