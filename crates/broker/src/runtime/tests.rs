@@ -11297,3 +11297,79 @@ async fn already_acked_attachment_replay_bypasses_download_staging() {
         Ok(FleetControlCommand::Send(BrokerToRelaycast::DeliveryAck(_)))
     ));
 }
+
+/// A worker that reported `blocked_on_send` drops a re-sent delivery it already
+/// holds as a duplicate, so a successful handoff to it is not progress. Before
+/// this fix every 5-minute re-send reset `failed_attempts` to 0 and the
+/// delivery stayed pending for days (desktop-upgrade-sf/finn, 2026-10-19).
+#[tokio::test]
+async fn resend_to_blocked_on_send_worker_counts_against_retry_budget_and_dead_letters() {
+    let mut workers = make_worker_registry_with_worker("blocked-worker").await;
+    workers
+        .workers
+        .get_mut("blocked-worker")
+        .expect("fixture worker exists")
+        .state = AgentWorkState::BlockedOnSend;
+    let id = DeliveryId::new("del_blocked");
+    let mut pending_deliveries = HashMap::from([(
+        id.clone(),
+        make_pending_delivery("del_blocked", "blocked-worker"),
+    )]);
+
+    for expected in 1..=MAX_DELIVERY_RETRIES {
+        let outcome = retry_pending_delivery(
+            &id,
+            &mut workers,
+            &mut pending_deliveries,
+            Duration::from_millis(1),
+        )
+        .await
+        .expect("handoff to a live worker succeeds");
+        assert!(matches!(outcome, DeliveryAttemptOutcome::Attempted { .. }));
+        let current = pending_deliveries.get(&id).expect("still pending");
+        assert_eq!(current.failed_attempts, expected, "no reset while blocked");
+        assert_eq!(
+            current.last_error.as_deref(),
+            Some(super::delivery::BLOCKED_ON_SEND_NOT_INJECTED)
+        );
+    }
+
+    let outcome = retry_pending_delivery(
+        &id,
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_millis(1),
+    )
+    .await
+    .expect("exhausted budget classifies as terminal");
+    match outcome {
+        DeliveryAttemptOutcome::Failed { last_error, .. } => {
+            assert_eq!(last_error, super::delivery::BLOCKED_ON_SEND_NOT_INJECTED)
+        }
+        other => panic!("expected dead-letter outcome, got {other:?}"),
+    }
+    assert!(pending_deliveries.is_empty());
+}
+
+/// A busy (Working) worker keeps the old behaviour: a long turn must never
+/// dead-letter wait-mode deliveries queued behind it.
+#[tokio::test]
+async fn resend_to_working_worker_still_resets_failed_attempts() {
+    let mut workers = make_worker_registry_with_worker("busy-worker").await;
+    let id = DeliveryId::new("del_busy");
+    let mut pending = make_pending_delivery("del_busy", "busy-worker");
+    pending.failed_attempts = MAX_DELIVERY_RETRIES - 1;
+    let mut pending_deliveries = HashMap::from([(id.clone(), pending)]);
+
+    retry_pending_delivery(
+        &id,
+        &mut workers,
+        &mut pending_deliveries,
+        Duration::from_millis(1),
+    )
+    .await
+    .expect("handoff succeeds");
+    let current = pending_deliveries.get(&id).expect("still pending");
+    assert_eq!(current.failed_attempts, 0);
+    assert_eq!(current.last_error, None);
+}
