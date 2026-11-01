@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- The core delivers Relay messages to agents in the Cursor editor, not only Cursor CLI, and wakes an idle agent when a message arrives. It uses the Cursor hooks the `cursor_direct_delivery` setting installs, and refreshes installed hooks when it starts.
 
 ## [15.0.2] - 2026-11-01
 

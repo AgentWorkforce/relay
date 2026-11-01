@@ -42,6 +42,7 @@ pub fn is_copilot_process(table: &dyn ProcessTable, pid: i32) -> bool {
 /// Claude Code session further up started it.
 pub fn is_other_agent(table: &dyn ProcessTable, pid: i32) -> bool {
     crate::relay::cursor_cli::is_cursor_process(table, pid)
+        || crate::relay::cursor_cli::editor::is_editor_host(table, pid)
         || is_copilot_process(table, pid)
         || crate::relay::devin::is_devin_process(table, pid)
         || crate::relay::opencode::is_opencode_process(table, pid)

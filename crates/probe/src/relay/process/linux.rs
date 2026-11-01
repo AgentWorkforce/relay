@@ -67,6 +67,14 @@ impl ProcessTable for SystemProcesses {
                 .is_ok_and(|m| (m.uid() == 0 || m.uid() == uid) && m.mode() & 0o022 == 0)
     }
 
+    fn is_trusted_cursor(&self, executable: &Path) -> bool {
+        let uid = crate::relay::peer::current_uid();
+        let mounts = fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+        in_cursor_install(executable, &mounts)
+            && fs::metadata(executable)
+                .is_ok_and(|m| (m.uid() == 0 || m.uid() == uid) && m.mode() & 0o022 == 0)
+    }
+
     fn arguments(&self, pid: i32) -> Vec<String> {
         fs::read(proc(pid).join("cmdline"))
             .map(|bytes| split_nul(&bytes))
@@ -177,5 +185,90 @@ impl ProcessTable for SystemProcesses {
 
     fn start_clock(&self) -> StartClock {
         StartClock::Ticks
+    }
+}
+
+/// Where Cursor's Linux packages put it: the `.deb`/`.rpm` and snap roots,
+/// or a mounted Cursor AppImage (a FUSE mount `/tmp/.mount_Cursor…` that
+/// `mountinfo` lists). A user can mount their own FUSE file system there,
+/// so the AppImage arm only keeps a copied binary in any other folder out.
+/// That is accepted knowingly: a program already running as this user is
+/// outside the editor route's threat model.
+pub fn in_cursor_install(executable: &Path, mountinfo: &str) -> bool {
+    const ROOTS: [&str; 5] = [
+        "/usr/share/cursor",
+        "/usr/lib/cursor",
+        "/opt/cursor",
+        "/opt/Cursor",
+        "/snap/cursor",
+    ];
+    if ROOTS.iter().any(|root| executable.starts_with(root)) {
+        return true;
+    }
+    mountinfo.lines().any(|line| {
+        let Some((mount, fstype)) = line.split_once(" - ") else {
+            return false;
+        };
+        let Some(point) = mount.split(' ').nth(4) else {
+            return false;
+        };
+        let point = PathBuf::from(unescape_mount(point));
+        fstype.starts_with("fuse")
+            && point.parent() == Some(Path::new("/tmp"))
+            && point
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_prefix(".mount_"))
+                .is_some_and(|name| name.to_ascii_lowercase().starts_with("cursor"))
+            && executable.starts_with(&point)
+    })
+}
+
+/// `mountinfo` writes a space, tab, newline and backslash as octal escapes.
+fn unescape_mount(field: &str) -> String {
+    field
+        .replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\012", "\n")
+        .replace("\\134", "\\")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_is_trusted_only_where_its_packages_install_it() {
+        let appimage = "812 30 0:77 / /tmp/.mount_CursorAb12Cd ro,nosuid,nodev - fuse.Cursor-1.7.0-x86_64.AppImage Cursor-1.7.0-x86_64.AppImage ro\n\
+                        813 30 0:78 / /tmp/.mount_sleepXy ro - fuse.sleep sleep ro\n\
+                        814 30 8:1 / /tmp/.mount_Cursorfake rw - ext4 /dev/sda1 rw\n";
+        assert!(in_cursor_install(Path::new("/usr/share/cursor/cursor"), ""));
+        assert!(in_cursor_install(Path::new("/opt/Cursor/cursor"), ""));
+        assert!(in_cursor_install(
+            Path::new("/tmp/.mount_CursorAb12Cd/usr/share/cursor/cursor"),
+            appimage
+        ));
+        assert!(!in_cursor_install(Path::new("/tmp/cursor"), appimage));
+        assert!(!in_cursor_install(
+            Path::new("/home/me/bin/cursor"),
+            appimage
+        ));
+        assert!(!in_cursor_install(
+            Path::new("/usr/share/cursorfake/cursor"),
+            ""
+        ));
+        // Not a Cursor AppImage, not a FUSE mount, or not mounted at all.
+        assert!(!in_cursor_install(
+            Path::new("/tmp/.mount_sleepXy/cursor"),
+            appimage
+        ));
+        assert!(!in_cursor_install(
+            Path::new("/tmp/.mount_Cursorfake/cursor"),
+            appimage
+        ));
+        assert!(!in_cursor_install(
+            Path::new("/tmp/.mount_CursorZz/cursor"),
+            appimage
+        ));
     }
 }

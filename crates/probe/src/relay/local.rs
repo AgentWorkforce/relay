@@ -433,7 +433,7 @@ impl LocalSessions {
                     .map(|session| Target::new(SessionKind::MuseOpen, session.session_id))
                     .ok_or(CallerMiss::NotASession);
             }
-            if let Some(caller) = lock_held::caller(&self.config, table, current, process) {
+            if let Some(caller) = lock_held::caller(&self.config, table, pid, current, process) {
                 return caller;
             }
             let trusted = own
@@ -6013,6 +6013,148 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
             ServingPath::default(),
         )
         .can_reply(&muse_target));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cursor_editor_tool_is_its_conversation_never_the_session_that_started_cursor() {
+        // A Cursor window (main process 690, extension host 700) started
+        // from the Claude Code session at pid 300; the tools of its agent
+        // inherit the outer ids.
+        let world = world();
+        let uid = crate::relay::peer::current_uid();
+        for pid in [300, 310, 320] {
+            let mut process = world.table.processes.lock().unwrap()[&pid].clone();
+            process.uid = uid;
+            world.table.insert(pid, process);
+        }
+        let helper = "/Applications/Cursor.app/Contents/Frameworks/Cursor Helper (Plugin).app/Contents/MacOS/Cursor Helper (Plugin)";
+        let main = "/Applications/Cursor.app/Contents/MacOS/Cursor";
+        world.table.trust_cursor(helper);
+        world.table.trust_cursor(main);
+        world.table.insert(
+            690,
+            FakeProcess {
+                parent: 320,
+                uid,
+                start: 690,
+                executable: Some(main.into()),
+                ..FakeProcess::default()
+            },
+        );
+        let host = |start: u64| FakeProcess {
+            parent: 690,
+            uid,
+            start,
+            executable: Some(helper.into()),
+            arguments: vec!["Cursor Helper (Plugin): extension-host api [1-2]".into()],
+            ..FakeProcess::default()
+        };
+        world.table.insert(700, host(700));
+        let conversation = "9daab59d-0f1f-4c29-9f5d-717d3ecca68f";
+        let codex_thread = "0199a213-81c0-7800-8aa1-bbab2a035a53";
+        let tool = |pid: i32, environment: &[(&str, &str)]| FakeProcess {
+            parent: 700,
+            uid,
+            start: pid as u64,
+            environment: environment
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect(),
+            ..FakeProcess::default()
+        };
+        world.table.insert(
+            710,
+            tool(
+                710,
+                &[
+                    (cursor_cli::editor::CONVERSATION_VAR, conversation),
+                    ("CODEX_THREAD_ID", codex_thread),
+                ],
+            ),
+        );
+        world
+            .table
+            .insert(720, tool(720, &[("CODEX_THREAD_ID", codex_thread)]));
+        let mut config = world.sessions.config.clone();
+        config.uid = uid;
+        let sessions = LocalSessions::new(config.clone(), world.table.clone());
+        let target = Target::new(SessionKind::CursorCli, conversation);
+        // Before a hook of the conversation ran in this window, nobody.
+        assert!(matches!(
+            sessions.caller_target(710),
+            Err(CallerMiss::NotASession)
+        ));
+        // Cursor is writing the conversation's transcript: it is running now.
+        let transcript = config
+            .cursor
+            .home
+            .join(".cursor/projects/api/agent-transcripts")
+            .join(conversation)
+            .join(format!("{conversation}.jsonl"));
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        std::fs::write(&transcript, b"").unwrap();
+        assert!(cursor_cli::record_editor_hook(
+            &config.cursor,
+            world.table.as_ref(),
+            700,
+            700,
+            &serde_json::json!({"hook_event_name": "postToolUse", "conversation_id": conversation}),
+        ));
+        assert_eq!(sessions.caller_target(710).ok(), Some(target.clone()));
+        // Without the conversation's own id, an inherited Codex thread or
+        // the Claude Code session above names nobody.
+        assert!(matches!(
+            sessions.caller_target(720),
+            Err(CallerMiss::NotASession)
+        ));
+        let injector = LocalInjector::new(
+            config.clone(),
+            world.table.clone(),
+            CodexRouter::new(Arc::new(UnusedCodexRoutes)),
+            ServingPath::default(),
+        );
+        assert!(injector.can_reply(&target));
+        // A tool under the window's session-less `cursor-agent … worker
+        // start` is walked past the worker to the host.
+        let worker = |pid: i32, parent: i32| FakeProcess {
+            parent,
+            uid,
+            start: pid as u64,
+            executable: Some("/opt/cursor/bin/cursor-agent".into()),
+            arguments: ["cursor-agent", "worker", "start"]
+                .iter()
+                .map(|argument| argument.to_string())
+                .collect(),
+            ..FakeProcess::default()
+        };
+        world.table.insert(730, worker(730, 700));
+        world.table.insert(
+            731,
+            FakeProcess {
+                parent: 730,
+                ..tool(731, &[(cursor_cli::editor::CONVERSATION_VAR, conversation)])
+            },
+        );
+        assert_eq!(sessions.caller_target(731).ok(), Some(target.clone()));
+        // A session-less worker under anything else ends the walk: its
+        // tools are nobody, never the Claude Code session that started it.
+        world.table.insert(740, tool(740, &[]));
+        world.table.insert(741, worker(741, 740));
+        world.table.insert(
+            742,
+            FakeProcess {
+                parent: 741,
+                ..tool(742, &[(cursor_cli::editor::CONVERSATION_VAR, conversation)])
+            },
+        );
+        assert!(matches!(
+            sessions.caller_target(742),
+            Err(CallerMiss::NotASession)
+        ));
+        // A reloaded window is another extension host.
+        world.table.insert(700, host(701));
+        assert!(!injector.can_reply(&target));
     }
 
     #[test]

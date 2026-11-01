@@ -208,13 +208,18 @@ pub enum RelayCommands {
         #[arg(long)]
         dev: bool,
     },
-    /// Agent Relay's Cursor CLI hook, which Cursor runs after each tool call
-    /// and when a turn ends: hands the session the relay messages waiting
-    /// for it (`additional_context`, or `followup_message` at the end).
+    /// Agent Relay's Cursor CLI hook, which Cursor runs after each tool call,
+    /// when a turn ends and before a prompt starts one: hands the session
+    /// the relay messages waiting for it (`additional_context`, or
+    /// `followup_message` at the end).
     CursorHook {
         /// Read Agent Relay Dev's inbox instead of Agent Relay's.
         #[arg(long)]
         dev: bool,
+        /// At the end of a Cursor editor conversation's completed turn,
+        /// wait for its next message instead of answering at once.
+        #[arg(long)]
+        wait: bool,
     },
     /// Agent Relay's Claude Code SessionStart hook. When this session is not
     /// on the relay, tells Claude to ask the person whether to put it on the
@@ -412,7 +417,7 @@ pub fn run(command: RelayCommands) -> Result<()> {
             relay::cli::codex_stop_hook(socket.as_deref(), dev)
         }
         RelayCommands::DevinHook { dev } => relay::cli::devin_hook(dev),
-        RelayCommands::CursorHook { dev } => relay::cli::cursor_hook(dev),
+        RelayCommands::CursorHook { dev, wait } => relay::cli::cursor_hook(dev, wait),
         RelayCommands::ClaudeSessionHook { dev, socket } => {
             relay::cli::claude_session_hook(socket.as_deref(), dev)
         }

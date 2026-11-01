@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 mod macos_args;
 #[cfg(all(target_os = "macos", test))]
 mod macos_args_bench;
+#[cfg(target_os = "macos")]
+mod macos_signing;
 #[cfg(any(target_os = "macos", test))]
 mod signature_cache;
 
@@ -87,6 +89,14 @@ pub trait ProcessTable: Send + Sync {
     /// and on macOS validly signed by OpenAI; on Linux owned by root or this
     /// user and writable by no one else.
     fn is_trusted_codex(&self, executable: &Path) -> bool;
+    /// Whether `executable` is Cursor's own: on macOS validly signed by
+    /// Cursor's developer (team `VDXQ22DGB9`) in an installed app; on Linux in a folder Cursor's
+    /// packages install to (`process::linux::in_cursor_install`), owned by
+    /// root or this user and writable by no one else. Nowhere else, unless
+    /// a table says.
+    fn is_trusted_cursor(&self, _executable: &Path) -> bool {
+        false
+    }
     fn arguments(&self, pid: i32) -> Vec<String>;
     /// One variable of the process's environment.
     fn environment_var(&self, pid: i32, key: &str) -> Option<String>;
@@ -629,7 +639,9 @@ pub fn is_codex_tui(table: &dyn ProcessTable, pid: i32) -> bool {
 #[derive(Default)]
 pub struct SystemProcesses {
     #[cfg(target_os = "macos")]
-    signatures: macos::SignatureCache,
+    signatures: macos_signing::SignatureCache,
+    #[cfg(target_os = "macos")]
+    cursor_signatures: macos_signing::SignatureCache,
     #[cfg(windows)]
     windows: windows::Cache,
 }
@@ -654,7 +666,6 @@ mod macos {
     use super::*;
     use std::ffi::{c_int, c_void};
     use std::mem::{size_of, zeroed};
-    use std::os::unix::fs::MetadataExt;
 
     const PROC_ALL_PIDS: u32 = 1;
     const PROC_PIDVNODEPATHINFO: c_int = 9;
@@ -777,57 +788,6 @@ mod macos {
         Some(buffer)
     }
 
-    /// One file's identity: replacing or changing the file changes it.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    struct Identity {
-        inode: u64,
-        mtime: (i64, i64),
-        ctime: (i64, i64),
-    }
-
-    fn identity(path: &Path) -> Option<Identity> {
-        let m = std::fs::metadata(path).ok()?;
-        Some(Identity {
-            inode: m.ino(),
-            mtime: (m.mtime(), m.mtime_nsec()),
-            ctime: (m.ctime(), m.ctime_nsec()),
-        })
-    }
-
-    /// Code-signature validation is slow; its result is kept while the path
-    /// names the same unchanged file.
-    #[derive(Default)]
-    pub struct SignatureCache(super::signature_cache::Cache<Identity>);
-
-    impl SignatureCache {
-        fn trusted(&self, path: &Path) -> bool {
-            self.0.trusted(path, identity, verify_codex_signature)
-        }
-    }
-
-    /// OpenAI's Codex: identifier `codex`, team `2DC432GLL2`, strictly
-    /// valid.
-    fn verify_codex_signature(path: &Path) -> bool {
-        use security_framework::os::macos::code_signing::{Flags, SecRequirement, SecStaticCode};
-        let Some(url) = core_foundation_url(path) else {
-            return false;
-        };
-        let Ok(code) = SecStaticCode::from_path(&url, Flags::NONE) else {
-            return false;
-        };
-        let Ok(requirement) = "anchor apple generic and identifier \"codex\" and certificate leaf[subject.OU] = \"2DC432GLL2\""
-            .parse::<SecRequirement>()
-        else {
-            return false;
-        };
-        code.check_validity(Flags::STRICT_VALIDATE, &requirement)
-            .is_ok()
-    }
-
-    fn core_foundation_url(path: &Path) -> Option<core_foundation::url::CFURL> {
-        core_foundation::url::CFURL::from_path(path, false)
-    }
-
     /// The kernel's BSD record of `pid`: its parent, owner, start time and
     /// status. A zombie still has one until it is reaped.
     fn bsd_info(pid: i32) -> Option<libc::proc_bsdinfo> {
@@ -909,6 +869,10 @@ mod macos {
         fn is_trusted_codex(&self, executable: &Path) -> bool {
             executable.file_name().is_some_and(|name| name == "codex")
                 && self.signatures.trusted(executable)
+        }
+
+        fn is_trusted_cursor(&self, executable: &Path) -> bool {
+            self.cursor_signatures.trusted_cursor(executable)
         }
 
         fn arguments(&self, pid: i32) -> Vec<String> {
@@ -1138,11 +1102,13 @@ pub struct FakeProcess {
 }
 
 /// A process table the tests write, so no test starts a real session.
-/// Executables in `trusted_codex` count as trusted Codex.
+/// Executables in `trusted_codex` count as trusted Codex, those in
+/// `trusted_cursor` as Cursor's own.
 #[derive(Default)]
 pub struct FakeProcesses {
     pub processes: std::sync::Mutex<HashMap<i32, FakeProcess>>,
     pub trusted_codex: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+    pub trusted_cursor: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
     pub clock: Option<StartClock>,
     /// Processes whose environment the kernel would not let this user read.
     pub unreadable_environment: std::sync::Mutex<std::collections::HashSet<i32>>,
@@ -1159,6 +1125,13 @@ impl FakeProcesses {
 
     pub fn trust(&self, executable: impl Into<PathBuf>) {
         self.trusted_codex.lock().unwrap().insert(executable.into());
+    }
+
+    pub fn trust_cursor(&self, executable: impl Into<PathBuf>) {
+        self.trusted_cursor
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(executable.into());
     }
 
     fn with<T>(&self, pid: i32, read: impl FnOnce(&FakeProcess) -> T) -> Option<T> {
@@ -1190,6 +1163,12 @@ impl ProcessTable for FakeProcesses {
     fn is_trusted_codex(&self, executable: &Path) -> bool {
         executable.file_name().is_some_and(|name| name == "codex")
             && self.trusted_codex.lock().unwrap().contains(executable)
+    }
+    fn is_trusted_cursor(&self, executable: &Path) -> bool {
+        self.trusted_cursor
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(executable)
     }
     fn arguments(&self, pid: i32) -> Vec<String> {
         self.with(pid, |p| p.arguments.clone()).unwrap_or_default()

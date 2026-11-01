@@ -25,7 +25,8 @@ pub(super) const DRAINED_DIR: &str = "drained";
 pub(super) const DRAINED_FOR: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How long a claim may stay unsettled while its hook can still be
-/// running: Agent Relay's hook entries give Cursor a 10 second timeout.
+/// running: a hook answers within moments of its claim, and the one that
+/// waits stops claiming a minute before Cursor's timeout (`wait::WAIT`).
 pub(super) const CLAIM_GRACE: Duration = Duration::from_secs(30);
 
 /// How much of the end of Cursor's transcript is read for a claim.
@@ -65,8 +66,7 @@ pub(super) fn message_file(session_id: &str, message_id: &str) -> String {
     format!("{session_id}.{nonce}.msg")
 }
 
-const STAGED: &str =
-    "in the session's inbox; Cursor shows it at the session's next tool call or when its turn ends";
+const STAGED: &str = "in the session's inbox; Cursor shows it at the session's next tool call or when its turn ends, or at once to a Cursor editor chat that has finished its turn";
 
 /// Queues `text` for the session in its inbox file, renamed into place once
 /// written and synced, so a hook never reads half a message. `Accepted`
@@ -102,8 +102,10 @@ pub fn send(
     if inbox.join(DRAINED_DIR).join(&name).exists() {
         return InjectOutcome::Delivered;
     }
-    if held(config, table, uid, session_id).is_none() {
-        return InjectOutcome::Waiting("that Cursor CLI session is not running".into());
+    if held(config, table, uid, session_id).is_none()
+        && super::editor::live(config, table, uid, session_id).is_none()
+    {
+        return InjectOutcome::Waiting("that Cursor session is not running".into());
     }
     if let Err(error) = std::fs::create_dir_all(&inbox) {
         return InjectOutcome::Retry(format!("could not open the session's inbox: {error}"));
@@ -205,23 +207,37 @@ pub(super) fn settle_claim(
     )
 }
 
-/// Every transcript Cursor keeps for `session_id`, in any project.
+/// Every transcript Cursor keeps for `session_id`, in any project: its own
+/// `<id>/<id>.jsonl`, or, for a subagent of the editor's agent,
+/// `<parent>/subagents/<id>.jsonl`. Subagent folders are listed only when
+/// no project has its own transcript.
 pub(super) fn transcripts(config: &CursorConfig, session_id: &str) -> Vec<PathBuf> {
-    std::fs::read_dir(config.data_dir.join("projects"))
-        .map(|projects| {
-            projects
+    let file = format!("{session_id}.jsonl");
+    let Ok(projects) = std::fs::read_dir(config.data_dir.join("projects")) else {
+        return Vec::new();
+    };
+    let roots: Vec<PathBuf> = projects
+        .flatten()
+        .map(|project| project.path().join("agent-transcripts"))
+        .collect();
+    let own: Vec<PathBuf> = roots
+        .iter()
+        .map(|transcripts| transcripts.join(session_id).join(&file))
+        .filter(|path| path.is_file())
+        .collect();
+    if !own.is_empty() {
+        return own;
+    }
+    roots
+        .iter()
+        .filter_map(|transcripts| std::fs::read_dir(transcripts).ok())
+        .flat_map(|parents| {
+            parents
                 .flatten()
-                .map(|project| {
-                    project
-                        .path()
-                        .join("agent-transcripts")
-                        .join(session_id)
-                        .join(format!("{session_id}.jsonl"))
-                })
-                .filter(|path| path.is_file())
-                .collect()
+                .map(|parent| parent.path().join("subagents").join(&file))
         })
-        .unwrap_or_default()
+        .filter(|path| path.is_file())
+        .collect()
 }
 
 /// Whether a user turn in the session's transcript carries `text`'s first
@@ -264,9 +280,11 @@ pub(super) fn transcript_records(config: &CursorConfig, session_id: &str, text: 
 /// The probe subcommand Cursor runs for Agent Relay's hooks.
 pub const HOOK_SUBCOMMAND: &str = "relay cursor-hook";
 
-/// The hook events Agent Relay installs: a tool call mid-turn, and the end
-/// of a turn.
-pub const HOOK_EVENTS: [&str; 2] = ["postToolUse", "stop"];
+/// The hook events Agent Relay installs: a tool call mid-turn and the end
+/// of a turn, which hand messages over, and a prompt about to start a
+/// turn, which only retires a hook still waiting after the last one
+/// (`wait::turn_seen`).
+pub const HOOK_EVENTS: [&str; 3] = ["postToolUse", "stop", "beforeSubmitPrompt"];
 
 /// One queued message, still in the inbox.
 pub(super) struct Pending {
@@ -349,7 +367,7 @@ pub fn payload_session(payload: &Value) -> Option<&str> {
 /// that holds this session (`hook_caller_holds`).
 pub fn hook_answer(config: &CursorConfig, payload: &Value) -> Option<HookAnswer> {
     let event = payload["hook_event_name"].as_str()?;
-    if !HOOK_EVENTS.contains(&event) {
+    if !matches!(event, "postToolUse" | "stop") {
         return None;
     }
     if event == "stop" && payload["status"].as_str().is_some_and(|s| s != "completed") {

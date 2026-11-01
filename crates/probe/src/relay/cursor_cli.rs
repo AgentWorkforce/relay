@@ -1,5 +1,7 @@
 //! Cursor CLI (`cursor-agent`) sessions on this computer and the route into
-//! them. Not Cursor Cloud agents, which are reached through Cursor's API.
+//! them, which the Cursor editor's agent conversations share (`editor`).
+//! Not Cursor Cloud agents, which Agent Relay Cloud reaches through Cursor's
+//! API.
 //!
 //! A `cursor-agent` process holds its conversation's
 //! `<cursor data>/chats/<workspace hash>/<conversation id>/store.db` open
@@ -14,8 +16,10 @@
 //! - **Delivery** stages a file in Agent Relay's own inbox for the session.
 //!   Agent Relay's hooks in `~/.cursor/hooks.json` hand it to the session
 //!   at its next tool call (`postToolUse` → `additional_context`) or when
-//!   its turn ends (`stop` → `followup_message`, a new user turn). A session
-//!   idle at its prompt runs no hook, so its messages wait for its person.
+//!   its turn ends (`stop` → `followup_message`, a new user turn). A CLI
+//!   session idle at its prompt runs no hook, so its messages wait for its
+//!   person. An editor conversation's `stop` hook waits after a completed
+//!   turn instead, and answers the next message staged for it (`wait`).
 //! - **Settlement** claims a message before the hook prints it and
 //!   tombstones it once the answer is written. A claim the hook never
 //!   finished is settled by Cursor's transcript, which records a `stop`
@@ -99,10 +103,11 @@ impl CursorConfig {
             .join(name)
     }
 
-    /// Cursor CLI has run on this computer: it writes `cli-config.json`,
-    /// which the Cursor editor does not.
+    /// Cursor CLI has run on this computer (it writes `cli-config.json`),
+    /// or the Cursor editor's agent has (it keeps transcripts in
+    /// `projects/`).
     pub fn installed(&self) -> bool {
-        self.config_dir.join("cli-config.json").is_file()
+        self.config_dir.join("cli-config.json").is_file() || self.data_dir.join("projects").is_dir()
     }
 }
 
@@ -257,6 +262,24 @@ pub fn held(
         .find(|session| session.session_id == session_id)
 }
 
+/// Whether any live `cursor-agent` of `uid`'s holds a `<session_id>/store.db`
+/// open, under whichever data folder: what a hook's or tool's own
+/// `CURSOR_DATA_DIR` names cannot hide a CLI session from the editor route.
+pub(crate) fn held_anywhere(table: &dyn ProcessTable, uid: u32, session_id: &str) -> bool {
+    table.all_pids().into_iter().any(|pid| {
+        table.process(pid).is_some_and(|process| process.uid == uid)
+            && !table.zombie(pid)
+            && is_cursor_process(table, pid)
+            && table.open_files(pid).iter().any(|path| {
+                path.file_name().is_some_and(|name| name == "store.db")
+                    && path
+                        .parent()
+                        .and_then(Path::file_name)
+                        .is_some_and(|name| name == session_id)
+            })
+    })
+}
+
 /// The store `session_id`'s holder has open, under whichever workspace.
 fn store_path(config: &CursorConfig, session_id: &str) -> Option<PathBuf> {
     std::fs::read_dir(config.chats())
@@ -306,8 +329,38 @@ fn modified_ms(path: &Path) -> Option<i64> {
     .ok()
 }
 
-/// The live Cursor CLI sessions on this computer, for the session list.
+/// The live Cursor CLI sessions and Cursor editor conversations on this
+/// computer, for the session list. A conversation a `cursor-agent` holds
+/// is listed as that CLI session.
 pub fn discover(
+    config: &CursorConfig,
+    table: &dyn ProcessTable,
+    uid: u32,
+) -> Vec<DiscoveredSession> {
+    let mut found = discover_cli(config, table, uid);
+    let held: std::collections::HashSet<String> = found
+        .iter()
+        .map(|session| session.target.id.clone())
+        .collect();
+    found.extend(
+        editor::sessions(config, table, uid)
+            .into_iter()
+            .filter(|session| !held.contains(&session.session_id))
+            .map(|session| DiscoveredSession {
+                target: Target::new(SessionKind::CursorCli, session.session_id.clone()),
+                title: editor::title(config, &session.session_id)
+                    .unwrap_or_else(|| session.session_id.clone()),
+                directory: session.workspace,
+                updated_at_ms: Some(session.seen_ms),
+                host: Some(editor::HOST.to_string()),
+                live: true,
+                holder: None,
+            }),
+    );
+    found
+}
+
+fn discover_cli(
     config: &CursorConfig,
     table: &dyn ProcessTable,
     uid: u32,
@@ -341,7 +394,7 @@ pub fn discover(
         .collect()
 }
 
-/// The live Cursor CLI session `session_id` names, as one listing row.
+/// The live Cursor session `session_id` names, as one listing row.
 pub fn session(
     config: &CursorConfig,
     table: &dyn ProcessTable,
@@ -353,46 +406,222 @@ pub fn session(
         .find(|session| session.target.id == session_id)
 }
 
+/// Whether `session_id` runs now, in a `cursor-agent` that alone holds it
+/// or in a Cursor editor window, so a reply command its tools run can
+/// reach the core.
+pub fn running(
+    config: &CursorConfig,
+    table: &dyn ProcessTable,
+    uid: u32,
+    session_id: &str,
+) -> bool {
+    held(config, table, uid, session_id).is_some()
+        || editor::live(config, table, uid, session_id).is_some()
+}
+
 /// How many ancestors a hook climbs to its `cursor-agent`: Cursor runs a
 /// hook through a shell, so it is normally the grandparent.
 const HOOK_ANCESTRY: usize = 8;
 
-/// Whether the hook process `start` runs under the `cursor-agent` holding
-/// `session_id`: the first agent above it is that Cursor process, of this
-/// user's, and it is the one process holding that conversation's store
-/// open, as discovery requires. The payload's id alone never drains a
-/// session's inbox, and neither does Cursor's editor, which reads the same
-/// `hooks.json`, or a second Cursor that resumed the same conversation.
+/// What a hook runs under, when it may hand over a session's messages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HookCaller {
+    /// The one `cursor-agent` holding the session's store.
+    Cli,
+    /// A Cursor window's extension host (`editor`), which runs the
+    /// conversation the payload names.
+    Editor { host: i32 },
+}
+
+/// What the hook process `start` runs under, for `session_id`: the first
+/// agent above the hook, of this user's. Either the `cursor-agent` holding
+/// the session, when it is the one process holding that conversation's
+/// store open, as discovery requires; or a Cursor editor window's extension
+/// host, which runs every conversation of its window and runs their hooks
+/// as its children, when the conversation is not another window's or a
+/// CLI's (`editor::may_claim`). The editor's own `cursor-agent` worker is
+/// walked past. The payload's id alone never drains a session's inbox,
+/// and neither does a second Cursor that resumed the same conversation or a
+/// hook any other agent runs.
+pub fn hook_caller(
+    config: &CursorConfig,
+    table: &dyn ProcessTable,
+    start: i32,
+    session_id: &str,
+) -> Option<HookCaller> {
+    let uid = crate::relay::peer::current_uid();
+    let mut pid = start;
+    for _ in 0..HOOK_ANCESTRY {
+        if pid <= 1 {
+            return None;
+        }
+        let process = table.process(pid)?;
+        if process.uid == uid && is_cursor_process(table, pid) {
+            let holder = held(config, table, uid, session_id).is_some_and(|held| held.pid == pid);
+            if holder {
+                return Some(HookCaller::Cli);
+            }
+            if !editor::is_editor_worker(table, pid) {
+                return None;
+            }
+            pid = process.parent;
+            continue;
+        }
+        if process.uid == uid && editor::is_editor_host(table, pid) {
+            return (platform::SUPPORTED
+                && editor::may_claim(config, table, uid, start, pid, session_id))
+            .then_some(HookCaller::Editor { host: pid });
+        }
+        if crate::relay::hook_agents::is_claude_process(table, pid)
+            || crate::relay::hook_agents::is_other_agent(table, pid)
+        {
+            return None;
+        }
+        pid = process.parent;
+    }
+    None
+}
+
+/// Whether the hook process `start` may hand over `session_id`'s messages
+/// (`hook_caller`).
 pub fn hook_caller_holds(
     config: &CursorConfig,
     table: &dyn ProcessTable,
     start: i32,
     session_id: &str,
 ) -> bool {
-    let uid = crate::relay::peer::current_uid();
-    let mut pid = start;
-    for _ in 0..HOOK_ANCESTRY {
-        if pid <= 1 {
-            return false;
-        }
-        let Some(process) = table.process(pid) else {
-            return false;
-        };
-        if process.uid == uid && is_cursor_process(table, pid) {
-            return held(config, table, uid, session_id).is_some_and(|held| held.pid == pid);
-        }
-        if crate::relay::hook_agents::is_claude_process(table, pid)
-            || crate::relay::hook_agents::is_other_agent(table, pid)
-        {
-            return false;
-        }
-        pid = process.parent;
-    }
-    false
+    hook_caller(config, table, start, session_id).is_some()
 }
 
+/// Claims and records the editor conversation the hook process `start`
+/// under `host` runs (`editor::claim`), so delivery and the session list see
+/// it live. `false` when it may not, or the record failed: the hook then
+/// hands nothing over.
+pub fn record_editor_hook(
+    config: &CursorConfig,
+    table: &dyn ProcessTable,
+    start: i32,
+    host: i32,
+    payload: &Value,
+) -> bool {
+    payload_session(payload).is_some_and(|session_id| {
+        editor::claim(
+            config,
+            table,
+            start,
+            host,
+            session_id,
+            editor::Workspace::Window(editor::payload_workspace(payload)),
+        )
+    })
+}
+
+/// One run of Agent Relay's hook for `payload` in the process `pid`. It
+/// first notes a turn starting and retires a hook still waiting after
+/// another turn of the conversation (`wait::turn_seen`); a
+/// `beforeSubmitPrompt` does only that.
+/// Then, only under the caller `hook_caller` proves, it hands the
+/// conversation's staged messages over through `write`, which says whether
+/// the answer was written in full: claims are tombstoned once it was and
+/// put back if not. With `watch` (the `stop` entry's `--wait`) an editor
+/// conversation's completed turn waits for its next message (`wait::wait`).
+/// A Cursor CLI session answers at once, and keeps Cursor's own limit of
+/// follow-ups in a row (`wait::CURSOR_LOOP_LIMIT`), which that entry lifts.
+/// `true` once it answered.
+pub fn run_hook(
+    config: &CursorConfig,
+    table: &dyn ProcessTable,
+    pid: i32,
+    payload: &Value,
+    watch: Option<&wait::Watch<'_>>,
+    write: &mut dyn FnMut(&Value) -> bool,
+) -> bool {
+    wait::turn_seen(config, payload);
+    let Some(session) = payload_session(payload) else {
+        return false;
+    };
+    if payload["hook_event_name"] == "beforeSubmitPrompt" {
+        return false;
+    }
+    match hook_caller(config, table, pid, session) {
+        None => false,
+        Some(HookCaller::Cli) => {
+            let looped = payload["hook_event_name"] == "stop"
+                && payload["loop_count"]
+                    .as_u64()
+                    .is_some_and(|count| count >= wait::CURSOR_LOOP_LIMIT);
+            !(watch.is_some() && looped) && answer_now(config, payload, write)
+        }
+        Some(HookCaller::Editor { host }) => {
+            if !record_editor_hook(config, table, pid, host, payload) {
+                return false;
+            }
+            match watch {
+                Some(watch) if wait::waits_after(payload) => {
+                    wait::wait(config, table, host, payload, watch, write) == wait::Ended::Answered
+                }
+                _ => answer_now(config, payload, write),
+            }
+        }
+    }
+}
+
+fn answer_now(
+    config: &CursorConfig,
+    payload: &Value,
+    write: &mut dyn FnMut(&Value) -> bool,
+) -> bool {
+    let Some(answer) = hook_answer(config, payload) else {
+        return false;
+    };
+    let written = write(&answer.output);
+    if written {
+        drain(&answer.claimed);
+    } else {
+        unclaim(config, &answer.claimed);
+    }
+    written
+}
+
+/// The caller a tool process `pid` of the editor's agent is, once the walk
+/// up from it reaches the extension host `host` of this user's: the
+/// conversation its `CURSOR_CONVERSATION_ID` names, when a hook of that
+/// conversation already recorded it live under this host, or nobody. A
+/// tool's environment alone never puts a conversation on a host.
+pub fn editor_caller(
+    config: &CursorConfig,
+    table: &dyn ProcessTable,
+    pid: i32,
+    host: i32,
+) -> Option<String> {
+    if !platform::SUPPORTED || !editor::is_editor_host(table, host) {
+        return None;
+    }
+    let uid = crate::relay::peer::current_uid();
+    let session_id = editor::tool_conversation(table, pid, host)?;
+    let owned = editor::live(config, table, uid, &session_id)
+        .is_some_and(|session| session.host_pid == host);
+    if !owned {
+        return None;
+    }
+    let workspace = table
+        .cwd(pid)
+        .map(|path| path.to_string_lossy().into_owned());
+    editor::claim(
+        config,
+        table,
+        pid,
+        host,
+        &session_id,
+        editor::Workspace::Fallback(workspace.as_deref()),
+    )
+    .then_some(session_id)
+}
+
+pub mod editor;
 mod inbox;
 mod settings;
+pub mod wait;
 pub use inbox::{
     drain, hook_answer, payload_session, send, unclaim, HookAnswer, HOOK_EVENTS, HOOK_SUBCOMMAND,
 };
@@ -427,5 +656,7 @@ mod windows_tests {
     }
 }
 
+#[cfg(test)]
+mod editor_tests;
 #[cfg(test)]
 mod tests;

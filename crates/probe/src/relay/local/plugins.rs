@@ -108,7 +108,8 @@ pub fn plugins_with_options(
     // Agent Relay Dev stages into and drains its own Cursor inbox too.
     local.cursor = local.cursor.development(development);
     // Agent Relay's Cursor CLI hooks in ~/.cursor/hooks.json hand staged
-    // messages to the session at its next tool call or turn end.
+    // messages to the session at its next tool call or turn end. An
+    // installed copy is brought up to date off the start path.
     let cursor_settings = Arc::new(crate::relay::cursor_cli::CursorSettings::new(
         &local.cursor,
         crate::relay::cursor_cli::CursorSettings::command_for(
@@ -116,6 +117,12 @@ pub fn plugins_with_options(
             development,
         ),
     ));
+    {
+        let cursor_settings = cursor_settings.clone();
+        let _ = std::thread::Builder::new()
+            .name("cursor-hooks".into())
+            .spawn(move || cursor_settings.refresh());
+    }
     // OpenCode processes started from now on load this build's plugin. A
     // copy that cannot be rewritten keeps working as the older version.
     let _ = opencode_settings.refresh_plugin();

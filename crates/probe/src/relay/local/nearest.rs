@@ -61,7 +61,8 @@ impl LocalSessions {
                     || (self.config.muse_open
                         && crate::relay::muse::is_muse_process(table, current))
                     || devin::is_devin_process(table, current)
-                    || crate::relay::cursor_cli::is_cursor_process(table, current);
+                    || crate::relay::cursor_cli::is_cursor_process(table, current)
+                    || crate::relay::cursor_cli::editor::is_editor_host(table, current);
                 if agent {
                     return false;
                 }
@@ -72,11 +73,12 @@ impl LocalSessions {
     }
 
     /// Whether the nearest agent process of this user's above `pid` (itself
-    /// included) is a `devin` or `cursor-agent` one, rather than a Claude
-    /// Code session, a trusted Codex, a Grok leader, OpenCode or Muse. It is
-    /// what stops an environment tag a nested Devin or Cursor CLI session
-    /// inherited from an enclosing agent naming that outer session: the file
-    /// its own process holds decides instead.
+    /// included) is a `devin`, `cursor-agent` or Cursor editor extension-host
+    /// one, rather than a Claude Code session, a trusted Codex, a Grok
+    /// leader, OpenCode or Muse. It is what stops an environment tag a nested
+    /// Devin or Cursor session inherited from an enclosing agent naming that
+    /// outer session: the file its own process holds, or the editor's hook
+    /// record, decides instead.
     pub(super) fn devin_is_nearest(&self, pid: i32, claude: &claude::Registry) -> bool {
         let table = &*self.table;
         let mut current = pid;
@@ -90,6 +92,7 @@ impl LocalSessions {
             if process.uid == self.config.uid {
                 if devin::is_devin_process(table, current)
                     || crate::relay::cursor_cli::is_cursor_process(table, current)
+                    || crate::relay::cursor_cli::editor::is_editor_host(table, current)
                 {
                     return true;
                 }
