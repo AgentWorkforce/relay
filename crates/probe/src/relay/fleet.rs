@@ -240,7 +240,11 @@ fn connection(state_dir: &Path) -> Option<(url::Url, Option<Secret>)> {
 ///   not go. A relative state dir is not an endpoint either.
 /// - `<relay home>/connection.json` covers a broker that uses the relay home
 ///   itself as its state dir.
+/// - Without `relay-cli` there are no brokers, so nothing routes through one.
 pub fn broker_sources(relay_home: &Path) -> Vec<BrokerSource> {
+    if cfg!(not(feature = "relay-cli")) {
+        return Vec::new();
+    }
     let enrolled = enrollments(relay_home);
 
     let mut names: Vec<String> = std::fs::read_dir(relay_home.join(CLAIMS_DIRECTORY))
@@ -930,6 +934,9 @@ pub fn listing(
 
 /// Answers `method`, or `None` when this module has no such method.
 pub async fn call(fleet: &Fleet, method: &str, raw: Value) -> Option<Result<Value, RpcError>> {
+    if cfg!(not(feature = "relay-cli")) {
+        return None;
+    }
     Some(match method {
         method::FleetList::NAME => {
             answer::<method::FleetList, _>(raw, |_| async { Ok(fleet.list().await) }).await
@@ -1002,6 +1009,7 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) 
 }
 
 #[cfg(test)]
+#[cfg_attr(not(feature = "relay-cli"), allow(dead_code, unused_imports))]
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
@@ -1057,6 +1065,25 @@ mod tests {
         fn fleet(&self) -> Fleet {
             Fleet::new(self.path.clone()).with_timeout(Duration::from_secs(2))
         }
+    }
+
+    #[cfg(not(feature = "relay-cli"))]
+    #[tokio::test]
+    async fn without_relay_cli_there_are_no_brokers_and_no_fleet_methods() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("connection.json"),
+            json!({"url": "http://127.0.0.1:1", "api_key": "broker"}).to_string(),
+        )
+        .unwrap();
+        assert!(broker_sources(home.path()).is_empty());
+        let fleet = Fleet::new(home.path().to_path_buf());
+        assert!(call(&fleet, method::FleetList::NAME, json!({}))
+            .await
+            .is_none());
+        assert!(call(&fleet, method::FleetRelease::NAME, json!({}))
+            .await
+            .is_none());
     }
 
     #[derive(Clone, Debug)]
@@ -1399,6 +1426,7 @@ mod tests {
 
     // FleetAgentsTests.testDiscoversClaimedBrokerWithEnrollmentScoping and
     // test_claimed_broker_with_enrollment_scoping.
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn fleet_discovers_claimed_broker_with_enrollment_scoping() {
         let home = Home::new();
@@ -1434,6 +1462,7 @@ mod tests {
         assert!(!printed.contains("\"k\""));
     }
 
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn fleet_enrollment_names_the_node_when_the_claim_does_not() {
         let home = Home::new();
@@ -1479,6 +1508,7 @@ mod tests {
     }
 
     // test_newest_claim_wins_over_older_generations.
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn fleet_newest_claim_wins_over_older_generations() {
         let home = Home::new();
@@ -1518,6 +1548,7 @@ mod tests {
     }
 
     // FleetAgentsTests.testStandaloneHomeConnectionIsFoundAndDeduplicated.
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn fleet_home_connection_is_deduplicated_against_its_claim() {
         let home = Home::new();
@@ -1538,6 +1569,7 @@ mod tests {
     }
 
     // test_home_connection_covers_unclaimed_broker.
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn fleet_home_connection_covers_unclaimed_broker() {
         let home = Home::new();
@@ -1638,6 +1670,7 @@ mod tests {
 
     // FleetBridgeTests.testWorkersSendsApiKeyToSpawnedAndDecodes and
     // test_discovery_to_listing_over_a_real_socket.
+    #[cfg(feature = "relay-cli")]
     #[tokio::test]
     async fn fleet_discovery_to_listing_sends_the_api_key_to_spawned() {
         let broker = FakeBroker::listing(json!([
@@ -1667,6 +1700,7 @@ mod tests {
 
     // FleetBridgeTests.testReleaseSendsGenerationCheckInBody and
     // test_generation_checked_release_over_a_real_socket.
+    #[cfg(feature = "relay-cli")]
     #[tokio::test]
     async fn fleet_release_sends_the_generation_check_in_the_body() {
         let broker = FakeBroker::listing(json!([]));
@@ -1688,6 +1722,7 @@ mod tests {
 
     // FleetBridgeTests.testReleaseWithoutGenerationRefusesBeforeAnyRequest
     // and the unchecked half of test_generation_checked_release_over_a_real_socket.
+    #[cfg(feature = "relay-cli")]
     #[tokio::test]
     async fn fleet_release_without_generation_refuses_before_any_request() {
         let broker = FakeBroker::listing(json!([]));
@@ -1743,6 +1778,7 @@ mod tests {
 
     // FleetBridgeTests.testTransportFailureMapsToUnreachable and
     // test_dead_broker_is_an_error_not_an_empty_list.
+    #[cfg(feature = "relay-cli")]
     #[tokio::test]
     async fn fleet_dead_broker_is_an_error_not_an_empty_list() {
         let home = Home::new();
@@ -1813,6 +1849,7 @@ mod tests {
         assert_eq!(broker.requests()[0].path, "/api/spawned/..%2Fadmin%20w");
     }
 
+    #[cfg(feature = "relay-cli")]
     #[tokio::test]
     async fn fleet_wedged_broker_hits_the_deadline_while_the_others_list() {
         let live = FakeBroker::listing(json!([{"name":"w","cli":"codex","sessionId":UUID}]));
@@ -1841,6 +1878,7 @@ mod tests {
     }
 
     // InjectableAgents.currentFleetTargetKeys, end to end.
+    #[cfg(feature = "relay-cli")]
     #[tokio::test]
     async fn fleet_managed_targets_read_every_broker_fresh() {
         let broker = FakeBroker::listing(json!([
@@ -1860,6 +1898,7 @@ mod tests {
             .is_empty());
     }
 
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn fleet_resolves_the_exact_worker_and_its_process_hints() {
         let broker = FakeBroker::listing(json!([
@@ -1880,6 +1919,7 @@ mod tests {
 
     // MARK: Bridge methods
 
+    #[cfg(feature = "relay-cli")]
     #[tokio::test]
     async fn fleet_list_method_reports_the_wire_shape() {
         let broker = FakeBroker::listing(json!([
@@ -1905,6 +1945,7 @@ mod tests {
         assert!(!result.to_string().contains("test-key"));
     }
 
+    #[cfg(feature = "relay-cli")]
     #[tokio::test]
     async fn fleet_release_method_maps_broker_answers() {
         let broker = FakeBroker::start(|request| {
@@ -1940,6 +1981,7 @@ mod tests {
         assert_eq!(broker.requests().len(), 5);
     }
 
+    #[cfg(feature = "relay-cli")]
     #[tokio::test]
     async fn fleet_call_answers_only_its_own_methods() {
         let fleet = Fleet::new(Home::new().path);

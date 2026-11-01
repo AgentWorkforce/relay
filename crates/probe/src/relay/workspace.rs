@@ -21,8 +21,13 @@
 //! malformed `relaycast-origins.json`, a bad `RELAY_BASE_URL`, an unreadable
 //! `workspaces.json`), resolution fails closed with that reason instead of
 //! falling back to the account's workspace.
+//!
+//! The first source exists only with the `relay-cli` feature: a build without
+//! it reads the Cloud sign-in alone, whatever the CLI's files or environment say.
 
+#[cfg(feature = "relay-cli")]
 pub mod cli;
+#[cfg(feature = "relay-cli")]
 pub mod origin_binding;
 
 use crate::relay::app_store::CloudWorkspace;
@@ -31,10 +36,11 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 /// Where a key with no recorded server goes, and the Cloud sign-in's fallback.
-/// New hosted workspaces live on [`ARMADILLO_ORIGIN`], but their keys are bound
-/// to it: an unbound key predates that default, so this must not move with it.
+/// New hosted workspaces live on armadillo, but their keys are bound to it: an
+/// unbound key predates that default, so this must not move with it.
 pub const DEFAULT_BASE_URL: &str = "https://cast.agentrelay.com";
 /// The hosted gateway `relay init --hosted` creates workspaces on.
+#[cfg(feature = "relay-cli")]
 pub const ARMADILLO_ORIGIN: &str = "https://armadillo.agentrelay.com";
 
 /// A credential that never prints: `Debug` shows only a prefix. It
@@ -107,6 +113,20 @@ impl WorkspaceSource {
 /// The daemon's workspace: the CLI's when the CLI selects one, else the
 /// Cloud sign-in's (see the module docs). `Ok(None)` when neither names one;
 /// `Err` with a printable reason when the CLI's selection may not be used.
+/// Without `relay-cli` only the Cloud sign-in counts.
+#[cfg(not(feature = "relay-cli"))]
+pub fn resolve(
+    cloud: Option<&CloudWorkspace>,
+    env: &dyn Fn(&str) -> Option<String>,
+    _home: &Path,
+) -> Result<Option<Workspace>, String> {
+    Ok(resolve_cloud(cloud, env))
+}
+
+/// The daemon's workspace: the CLI's when the CLI selects one, else the
+/// Cloud sign-in's (see the module docs). `Ok(None)` when neither names one;
+/// `Err` with a printable reason when the CLI's selection may not be used.
+#[cfg(feature = "relay-cli")]
 pub fn resolve(
     cloud: Option<&CloudWorkspace>,
     env: &dyn Fn(&str) -> Option<String>,
@@ -150,9 +170,10 @@ pub fn relay_home(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> PathBuf 
     }
 }
 
-/// Workspace keys are `rk_live_…` (or `rk_test_…`), or armadillo's `ar_ws_…`.
+/// Workspace keys are `rk_live_…` (or `rk_test_…`), or, with `relay-cli`,
+/// armadillo's `ar_ws_…`.
 pub fn is_workspace_key(value: &str) -> bool {
-    (value.starts_with("rk_") || value.starts_with("ar_ws_"))
+    (value.starts_with("rk_") || (cfg!(feature = "relay-cli") && value.starts_with("ar_ws_")))
         && value.len() >= 12
         && !value.chars().any(char::is_whitespace)
 }
@@ -265,6 +286,7 @@ mod tests {
         .unwrap();
     }
 
+    #[cfg(feature = "relay-cli")]
     fn bind(relay: &Path, key: &str, base_url: &str) {
         std::fs::write(
             relay.join("relaycast-origins.json"),
@@ -276,6 +298,7 @@ mod tests {
         .unwrap();
     }
 
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn the_cli_workspace_wins_over_the_cloud_sign_in() {
         let found = combined(
@@ -295,6 +318,7 @@ mod tests {
         assert_eq!(found.workspace_id, None);
     }
 
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn the_cloud_sign_in_is_used_only_when_the_cli_selects_nothing() {
         let found = combined(
@@ -325,6 +349,7 @@ mod tests {
         assert!(combined(&[], None, |_| {}).unwrap().is_none());
     }
 
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn neither_source_lends_its_origin_to_the_other() {
         // RELAYCAST_URL re-origins only the account's key.
@@ -350,6 +375,7 @@ mod tests {
         assert_eq!(found.base_url, DEFAULT_BASE_URL);
     }
 
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn a_broken_cli_selection_fails_closed_instead_of_falling_back_to_the_account() {
         let error = combined(
@@ -380,6 +406,7 @@ mod tests {
         assert!(error.contains("workspaces.json"), "{error}");
     }
 
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn agent_relay_home_locates_the_cli_state() {
         let elsewhere = tempfile::tempdir().unwrap();
@@ -462,6 +489,50 @@ mod tests {
         ] {
             assert_eq!(validated_base_url(bad), None, "{bad}");
         }
+    }
+
+    #[cfg(not(feature = "relay-cli"))]
+    #[test]
+    fn without_relay_cli_only_the_cloud_sign_in_counts() {
+        let cli_key = "rk_live_cli0000000";
+        let store_only = |relay: &Path| store(relay, cli_key);
+        // Nothing selected but the CLI's environment key and store: no workspace.
+        assert_eq!(
+            combined(&[("RELAY_WORKSPACE_KEY", cli_key)], None, store_only),
+            Ok(None)
+        );
+        // The account keeps its own key and origin beside them.
+        let found = combined(
+            &[("RELAY_WORKSPACE_KEY", cli_key)],
+            Some(account("rk_live_account00", "https://origin.example")),
+            store_only,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(found.key.expose(), "rk_live_account00");
+        assert_eq!(found.base_url, "https://origin.example");
+        assert!(found.source.is_cloud());
+        // A broken CLI file is not read, so it cannot fail anything.
+        assert_eq!(
+            combined(&[], None, |relay| {
+                std::fs::write(relay.join("workspaces.json"), "not json").unwrap()
+            }),
+            Ok(None)
+        );
+    }
+
+    #[cfg(not(feature = "relay-cli"))]
+    #[test]
+    fn without_relay_cli_an_armadillo_key_is_refused() {
+        let key = "ar_ws_0123456789abcdef";
+        assert!(!is_workspace_key(key));
+        assert!(resolve_with(&[], Some(account(key, "https://origin.example"))).is_none());
+    }
+
+    #[cfg(feature = "relay-cli")]
+    #[test]
+    fn an_armadillo_key_is_a_workspace_key() {
+        assert!(is_workspace_key("ar_ws_0123456789abcdef"));
     }
 
     #[test]

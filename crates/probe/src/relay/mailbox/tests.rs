@@ -399,6 +399,30 @@ async fn activation_uses_separate_credentials_and_the_server_s_mailbox_identity(
 }
 
 #[tokio::test]
+async fn an_armadillo_agent_token_activates_only_with_relay_cli() {
+    let network = FakeNetwork::new(|_, _, _| {
+        Ok(room(
+            r#"{"role":"participant","relaycastBaseUrl":"https://mailbox.example","agentToken":"ar_ag_device"}"#,
+        ))
+    });
+    let result = activate(
+        network.as_ref(),
+        "https://control.example",
+        "workspace",
+        &Secret::new("login"),
+        "device",
+        NOW,
+    )
+    .await;
+    if cfg!(feature = "relay-cli") {
+        assert!(!matches!(result, Err(MailboxError::AuthenticationRequired)));
+    } else {
+        assert!(matches!(result, Err(MailboxError::AuthenticationRequired)));
+        assert_eq!(network.requests().len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn activation_refuses_origin_changes_expiry_and_non_participant_tokens() {
     for answer in [
         session("https://other.example", "2099-01-01T00:00:00Z"),

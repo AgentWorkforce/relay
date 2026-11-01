@@ -20,6 +20,10 @@ required-features = ["production-binaries"]
 # Tests of session history (capture, the upload queue, RelayHistory
 # delivery); they need the `history` feature.
 [[test]]
+name = "relay_core_binary"
+required-features = ["production-binaries"]
+
+[[test]]
 name = "build_retry"
 required-features = ["history"]
 
@@ -37,15 +41,15 @@ required-features = ["history"]
 
 [[test]]
 name = "history_flush"
-required-features = ["history"]
+required-features = ["history", "production-binaries"]
 
 [[test]]
 name = "live_capture"
-required-features = ["history"]
+required-features = ["history", "production-binaries"]
 
 [[test]]
 name = "probe_stop"
-required-features = ["history"]
+required-features = ["history", "production-binaries"]
 
 [[test]]
 name = "rebuild"
@@ -62,8 +66,17 @@ required-features = ["history"]
 [features]
 # Ordinary builds keep every production executable. The desktop apps'
 # crates opt out with --no-default-features when they only need the library.
-default = ["production-binaries", "history"]
-production-binaries = []
+default = ["production-binaries", "history", "relay-cli"]
+# Every production executable here is the core relay ships, so it always
+# has `relay-cli`, however the build picks its features.
+production-binaries = ["relay-cli"]
+# The core as the `agent-relay` CLI runs it: the CLI's workspace selection
+# (environment keys, project pins, `workspaces.json`) and origin bindings,
+# armadillo's `ar_ws_`/`ar_ag_` keys, the CLI's Cloud sign-in, and fleet
+# brokers. A build without it reads only the Cloud sign-in and accepts only
+# `rk_` workspace keys; `fleet.*` stay in the contract and answer
+# `method_not_found`.
+relay-cli = []
 # Session history: local capture and upload to RelayHistory, the session
 # catalog, history retention, and the remote (Devin Cloud, Claude web)
 # connectors, all built on relayhistory's `ai-hist`. Without it the core is

@@ -662,6 +662,18 @@ and desktop features would disappear. Until it can:
    and builds the bundled binary from that same commit, so CalVer stamping,
    signing and notarization stay in the desktop build. The steps are below.
 
+### The `relay-cli` feature
+
+`crates/probe` builds the CLI's side of the core behind the `relay-cli` Cargo
+feature. It is in `default`, and `production-binaries` implies it, so relay's
+release command keeps it. It covers the CLI's workspace selection and origin
+bindings, `ar_ws_`/`ar_ag_` keys, the CLI's `cloud-auth.json` sign-in and fleet
+brokers. Without it the core reads only the Cloud sign-in, accepts only `rk_`
+workspace keys, and `fleet.*` stay in the contract but answer
+`method_not_found`. Secret scrubbing keeps the `ar_` prefixes in every build.
+Cargo features merge across a dependency graph, so a consumer that must stay
+without it has to assert that in its own build.
+
 ## What relay-desktop must change to consume the core
 
 Phase 1 changes nothing in relay-desktop. Once relay's contract covers the

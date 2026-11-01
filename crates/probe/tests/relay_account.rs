@@ -1087,6 +1087,7 @@ async fn cancelling_account_switch_restores_the_rotated_saved_session() {
     harness.stop().await;
 }
 
+#[cfg(feature = "relay-cli")]
 #[tokio::test]
 async fn cli_identity_validation_is_background_work_and_is_not_duplicated() {
     for status in [None, Some(503)] {
@@ -1920,6 +1921,7 @@ async fn a_sign_in_while_connected_with_no_usable_session_keeps_one_and_leaves_t
     harness.stop().await;
 }
 
+#[cfg(feature = "relay-cli")]
 #[tokio::test]
 async fn the_cli_s_session_is_used_only_when_no_session_is_kept_for_the_site() {
     // Nothing kept: Cloud calls go as the official CLI's signed-in person.
@@ -3063,6 +3065,7 @@ async fn picker_uses_renewed_credentials_after_a_long_wait() {
     }
 }
 
+#[cfg(feature = "relay-cli")]
 #[tokio::test]
 async fn an_attached_install_with_only_the_cli_s_session_adopts_the_workspace_binding() {
     // A headless core attached by setup never ran an interactive sign-in:
@@ -3095,6 +3098,7 @@ async fn an_attached_install_with_only_the_cli_s_session_adopts_the_workspace_bi
     harness.stop().await;
 }
 
+#[cfg(feature = "relay-cli")]
 #[tokio::test]
 async fn an_expired_cli_sign_in_is_reported_and_never_renewed() {
     let auth = Arc::new(Mutex::new(String::new()));
@@ -3176,6 +3180,7 @@ async fn identity_sync_reads(harness: &Harness, want: &str) {
     panic!("cloud_identity_sync stayed {reported}, not {want}");
 }
 
+#[cfg_attr(not(feature = "relay-cli"), allow(dead_code))]
 fn identity_puts(harness: &Harness) -> usize {
     harness
         .cloud
@@ -3188,6 +3193,7 @@ fn identity_puts(harness: &Harness) -> usize {
         .count()
 }
 
+#[cfg(feature = "relay-cli")]
 #[tokio::test]
 async fn another_person_s_cli_session_neither_binds_nor_syncs() {
     // The CLI is signed in as someone else: its session must not carry this
@@ -3242,6 +3248,7 @@ async fn an_expired_kept_session_is_renewed_to_bind_the_workspace() {
     harness.stop().await;
 }
 
+#[cfg(feature = "relay-cli")]
 #[tokio::test]
 async fn a_binding_that_cloud_refused_is_retried_and_recovers() {
     let harness = Harness::start_with(|cloud, setup| {
@@ -3261,6 +3268,7 @@ async fn a_binding_that_cloud_refused_is_retried_and_recovers() {
     harness.stop().await;
 }
 
+#[cfg(feature = "relay-cli")]
 #[tokio::test]
 async fn a_binding_resolved_after_the_sign_in_changed_is_dropped() {
     // Cloud answers the resolve only after the person signed out: the answer
@@ -3297,6 +3305,7 @@ async fn a_binding_resolved_after_the_sign_in_changed_is_dropped() {
     harness.stop().await;
 }
 
+#[cfg(feature = "relay-cli")]
 #[tokio::test]
 async fn a_bound_computer_sends_no_agent_tokens_with_another_person_s_cli_session() {
     // Already bound by an earlier sign-in, now borrowing a CLI session that
@@ -3322,6 +3331,7 @@ async fn a_bound_computer_sends_no_agent_tokens_with_another_person_s_cli_sessio
     harness.stop().await;
 }
 
+#[cfg(feature = "relay-cli")]
 #[tokio::test]
 async fn a_whoami_that_fails_is_retried_with_backoff_and_not_called_a_mismatch() {
     let harness = Harness::start_with(|cloud, setup| {

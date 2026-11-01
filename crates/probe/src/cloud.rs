@@ -884,14 +884,16 @@ fn desktop_bearer(api_url: &str, home: &std::path::Path) -> Option<String> {
     )
 }
 
-/// Reuse the official CLI's sign-in, then the desktop app's, only for the
+/// Reuse the official CLI's sign-in (only with `relay-cli`), then the desktop
+/// app's, only for the
 /// exact same Cloud and only while it has real lifetime left; anything else
 /// falls through to a fresh device login rather than forwarding a
 /// credential to another host.
 fn official_cli_bearer(api_url: &str) -> Option<String> {
     let home = home_dir()?;
-    let cli = fs::read(home.join(".agentworkforce/relay/cloud-auth.json"))
-        .ok()
+    let cli = cfg!(feature = "relay-cli")
+        .then(|| fs::read(home.join(".agentworkforce/relay/cloud-auth.json")))
+        .and_then(Result::ok)
         .and_then(|raw| serde_json::from_slice::<OfficialCliSession>(&raw).ok())
         .and_then(|session| {
             live(
@@ -1985,17 +1987,20 @@ pub(crate) mod tests {
             let _dev = EnvVarGuard::set(APP_DATA_DIR_VARIABLE, &dev);
             assert_eq!(official_cli_bearer(&api_url).as_deref(), Some("cld_at_dev"));
         }
-        // The official CLI's live session comes first.
+        // The official CLI's live session comes first, where it is read at all.
         write("https://agentrelay.com", "2999-01-01T00:00:00Z");
         write_official_cli_session(home.path(), &api_url);
-        assert_eq!(
-            official_cli_bearer(&api_url).as_deref(),
-            Some("cld_at_official")
-        );
+        let first = if cfg!(feature = "relay-cli") {
+            "cld_at_official"
+        } else {
+            "cld_at_desktop"
+        };
+        assert_eq!(official_cli_bearer(&api_url).as_deref(), Some(first));
     }
 
     /// The official Agent Relay CLI's file is another tool's credential: it is
     /// reused only for the same Cloud, only while it is live, and never written.
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn cloud_bearer_reuses_only_a_matching_unexpired_official_cli_session() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2401,6 +2406,7 @@ pub(crate) mod tests {
     }
 
     /// Serves one workspace-session exchange and hands back the bearer it saw.
+    #[cfg_attr(not(feature = "relay-cli"), allow(dead_code))]
     fn workspace_session_server(
         org_id: &'static str,
     ) -> (String, std::thread::JoinHandle<Option<String>>) {
@@ -2460,6 +2466,19 @@ pub(crate) mod tests {
 
     /// A dead `rth_*` pair is replaced from Agent Relay's own sign-in, so an
     /// unattended machine recovers without anyone logging in again.
+    #[cfg(not(feature = "relay-cli"))]
+    #[test]
+    fn without_relay_cli_the_official_cli_session_is_not_borrowed() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvVarGuard::set("HOME", home.path());
+        let _profile = EnvVarGuard::set("USERPROFILE", home.path());
+        let api_url = cloud_api_url(None).unwrap();
+        write_official_cli_session(home.path(), &api_url);
+        assert_eq!(official_cli_bearer(&api_url), None);
+    }
+
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn a_dead_history_session_is_renewed_from_the_agent_relay_sign_in() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2499,6 +2518,7 @@ pub(crate) mod tests {
         assert_eq!(stored.refresh_token.as_deref(), Some("rth_rt_renewed"));
     }
 
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn renewal_never_adopts_another_destination_or_prompts() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
