@@ -61,6 +61,7 @@ const AGENT_RELAY_TOOL_CALL_METADATA = {
   remove_reaction: { toolType: 'reaction.remove', toolCategory: 'reaction' },
   check_inbox: { toolType: 'inbox.check', toolCategory: 'inbox' },
   mark_message_read: { toolType: 'inbox.mark_read', toolCategory: 'inbox' },
+  acknowledge_delivery: { toolType: 'inbox.acknowledge_delivery', toolCategory: 'inbox' },
   get_message_readers: { toolType: 'inbox.reader_list', toolCategory: 'inbox' },
 } satisfies Record<string, AgentRelayToolCallMetadata>;
 

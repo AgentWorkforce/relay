@@ -109,6 +109,7 @@ pub(crate) const MAX_ACCEPTANCE_LIFETIME: std::time::Duration = std::time::Durat
 /// A pending delivery waiting for echo verification in PTY output.
 #[derive(Debug)]
 pub(crate) struct PendingVerification {
+    pub native_ack: Option<crate::pty_delivery_ack::NativeAck>,
     pub delivery_id: DeliveryId,
     pub event_id: EventId,
     pub expected_echo: String,
@@ -143,6 +144,19 @@ pub(crate) struct PendingVerification {
 }
 
 impl PendingVerification {
+    /// Check parked composers on the short interval even while waiting for a receipt.
+    pub(crate) fn ready_to_assess(&self, window: Duration) -> bool {
+        self.native_ack.as_ref().is_some_and(|ack| ack.confirmed())
+            || self.injected_at.elapsed() >= window
+    }
+
+    /// Defer only inconclusive outcomes while a native recipient can still acknowledge.
+    pub(crate) fn waiting_for_native_ack(&self, cli: &str) -> bool {
+        self.native_ack.is_some()
+            && crate::pty_delivery_ack::native_harness_name(cli).is_some()
+            && !self.acceptance_expired()
+    }
+
     pub(crate) fn observe_raw_process_receipt(&mut self, output: &VerificationOutput, cli: &str) {
         if self.echo_seen || !is_cat_process(cli) || self.body.is_empty() {
             return;
@@ -603,6 +617,25 @@ pub(crate) fn assess_harness_acceptance(
     HarnessAcceptance::Inconclusive
 }
 
+/// Recipient read receipts prove acceptance; terminal output only guides recovery.
+pub(crate) fn assess_delivery_acceptance(
+    cli: &str,
+    verification: &PendingVerification,
+    snapshot: &Snapshot,
+) -> HarnessAcceptance {
+    if verification
+        .native_ack
+        .as_ref()
+        .is_some_and(|ack| ack.confirmed())
+    {
+        return HarnessAcceptance::Accepted("native_mcp_ack".to_string());
+    }
+    match assess_harness_acceptance(cli, verification, snapshot) {
+        HarnessAcceptance::Parked => HarnessAcceptance::Parked,
+        _ => HarnessAcceptance::Inconclusive,
+    }
+}
+
 #[derive(Debug)]
 struct VerificationSegment {
     sequence: u64,
@@ -819,6 +852,7 @@ mod tests {
 
     fn codex_verification(expected: &str) -> PendingVerification {
         PendingVerification {
+            native_ack: None,
             delivery_id: "delivery-acceptance".into(),
             event_id: "event-acceptance".into(),
             expected_echo: expected.to_string(),
@@ -1483,6 +1517,22 @@ mod tests {
         assert!(verification.acceptance_expired());
     }
 
+    #[test]
+    fn native_receipt_wait_preserves_short_recovery_checks_and_total_deadline() {
+        let inbox = crate::pty_delivery_ack::NativeAckInbox::new().unwrap();
+        for cli in ["claude", "codex", "Claude.exe", "Codex.exe"] {
+            let mut verification = codex_verification("bounded delivery");
+            verification.native_ack = Some(inbox.register(cli, "worker").unwrap());
+            verification.injected_at = Instant::now() - VERIFICATION_WINDOW;
+            assert!(verification.ready_to_assess(VERIFICATION_WINDOW));
+            assert!(verification.waiting_for_native_ack(cli));
+            verification.injected_at = Instant::now();
+            assert!(!verification.ready_to_assess(VERIFICATION_WINDOW));
+            verification.verification_started_at = Instant::now() - MAX_ACCEPTANCE_LIFETIME;
+            assert!(!verification.waiting_for_native_ack(cli));
+        }
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn attachment_delivery_to_no_marker_harness_is_confirmed_by_guarded_rule() {
@@ -1599,6 +1649,7 @@ mod tests {
         output.push_str(expected);
         let output_boundary = output.boundary();
         let verification = PendingVerification {
+            native_ack: None,
             delivery_id: "delivery-repeat".into(),
             event_id: "evt-repeat".into(),
             expected_echo: expected.to_string(),
@@ -1636,6 +1687,7 @@ mod tests {
         // producer watermark rather than the consumer's older boundary.
         let output_boundary = 2;
         let verification = PendingVerification {
+            native_ack: None,
             delivery_id: "delivery-queued".into(),
             event_id: "evt-queued".into(),
             expected_echo: expected.to_string(),
@@ -1694,6 +1746,7 @@ mod tests {
         output.push_str(expected);
         output.push_str("\nTool: Write(review.md)\n");
         let verification = PendingVerification {
+            native_ack: None,
             delivery_id: "delivery-activity".into(),
             event_id: "evt-activity".into(),
             expected_echo: expected.to_string(),
@@ -1735,6 +1788,7 @@ mod tests {
         let output_boundary = output.boundary();
         output.push_str(expected);
         let verification = PendingVerification {
+            native_ack: None,
             delivery_id: "delivery-pending".into(),
             event_id: "evt-pending".into(),
             expected_echo: expected.to_string(),
