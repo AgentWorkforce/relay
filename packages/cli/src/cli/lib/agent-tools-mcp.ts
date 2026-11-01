@@ -28,7 +28,7 @@ import path from 'node:path';
 import { isBundledBunEntrypointPath } from './agent-relay-mcp-command.js';
 
 /** The agent tools `relay init` can connect. */
-export const TOOL_IDS = ['claude', 'codex', 'opencode', 'grok', 'pi', 'devin'] as const;
+export const TOOL_IDS = ['claude', 'codex', 'opencode', 'grok', 'pi', 'devin', 'cursor'] as const;
 export type ToolId = (typeof TOOL_IDS)[number];
 
 /** Where an entry is installed: this project, or the user's global config. */
@@ -261,6 +261,18 @@ export const TOOL_TARGETS: readonly ToolTarget[] = [
       launch.command,
       ...launch.args,
     ],
+  },
+  {
+    id: 'cursor',
+    label: 'Cursor (editor and CLI)',
+    binary: 'cursor-agent',
+    format: { kind: 'json', container: 'mcpServers' },
+    configPath: (scope, ctx) =>
+      scope === 'project'
+        ? path.join(ctx.projectRoot, '.cursor', 'mcp.json')
+        : path.join(ctx.home, '.cursor', 'mcp.json'),
+    detectPaths: (ctx) => [path.join(ctx.home, '.cursor')],
+    entry: (launch, env) => stdioEntry(launch, env),
   },
 ];
 
@@ -1031,7 +1043,7 @@ export function writeKeepingMode(file: string, contents: string, fallbackMode = 
 
 /** Mode for a new file: private for user-level tool state, readable otherwise. */
 function newFileMode(target: ToolTarget, scope: InstallScope): number {
-  return scope === 'global' && (target.id === 'claude' || target.id === 'devin') ? 0o600 : 0o644;
+  return scope === 'global' && ['claude', 'devin', 'cursor'].includes(target.id) ? 0o600 : 0o644;
 }
 
 function writeEntryFile(

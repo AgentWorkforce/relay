@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- The core delivers Relay messages to agents in the Cursor editor, not only Cursor CLI, and wakes an idle agent when a message arrives. It uses the Cursor hooks the `cursor_direct_delivery` setting installs, and refreshes installed hooks when it starts.
+- `relay init` sets up Cursor: it adds the Relay MCP server, skill and hooks, so messages reach agents in the Cursor editor and Cursor CLI and wake an idle agent. `relay init --uninstall` removes what it added.
 
 ## [15.0.2] - 2026-11-01
 

@@ -80,8 +80,8 @@ same way `npx skills add` does:
    machines can join. _My own server_ asks for your server's URL and workspace
    key (the key is typed hidden).
 2. **Which agents.** Relay finds the agent tools installed here and pre-checks
-   them. Supported: Claude Code, Codex, OpenCode, Grok CLI, Pi, and Devin (the
-   local CLI).
+   them. Supported: Claude Code, Codex, OpenCode, Grok CLI, Pi, Devin (the local
+   CLI), and Cursor (the editor and CLI).
 3. **Scope.** _Project_ configures only this folder (files you can commit).
    _Global_ configures every project on this machine.
 4. **Install.** Relay adds its MCP server (`agent-relay mcp`) to each tool, with
@@ -97,6 +97,7 @@ same way `npx skills add` does:
 | Grok CLI    | `grok mcp add`                                  | `.grok/config.toml`      | `~/.grok/config.toml`              |
 | Pi          | `pi mcp add`                                    | `.pi/mcp.json`           | `~/.pi/agent/mcp.json`             |
 | Devin       | `devin mcp add`                                 | `.devin/mcp_config.json` | `~/.config/devin/mcp_config.json`  |
+| Cursor      | config file                                     | `.cursor/mcp.json`       | `~/.cursor/mcp.json`               |
 
 Project files name the server portably, since teammates share them:
 `agent-relay mcp` when `agent-relay` is on your PATH, otherwise

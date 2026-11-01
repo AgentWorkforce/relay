@@ -42,6 +42,7 @@ const SKILLS_AGENT: Record<ToolId, string> = {
   grok: 'grok',
   pi: 'pi',
   devin: 'devin',
+  cursor: 'cursor',
 };
 
 /** One copy of the skill init put in place. */
@@ -117,7 +118,7 @@ export const defaultRunSkillsCli: RunSkillsCli = (args, { env, cwd }) => {
  * Where a tool loads global skills, as the `skills` CLI installs them:
  * Claude Code `~/.claude/skills` (or `$CLAUDE_CONFIG_DIR/skills`); Codex,
  * OpenCode and Pi the shared `~/.agents/skills`; Grok `~/.grok/skills`;
- * Devin `$XDG_CONFIG_HOME/devin/skills`.
+ * Devin `$XDG_CONFIG_HOME/devin/skills`; Cursor `~/.cursor/skills`.
  * @param id - The tool
  * @param ctx - Home and environment the tool resolves against
  * @returns The tool's global skills folder
@@ -131,6 +132,8 @@ export function skillsDirFor(id: ToolId, ctx: ToolContext): string {
       return path.join(env.GROK_HOME?.trim() || path.join(ctx.home, '.grok'), 'skills');
     case 'devin':
       return path.join(env.XDG_CONFIG_HOME?.trim() || path.join(ctx.home, '.config'), 'devin', 'skills');
+    case 'cursor':
+      return path.join(ctx.home, '.cursor', 'skills');
     case 'codex':
     case 'opencode':
     case 'pi':

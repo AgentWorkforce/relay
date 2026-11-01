@@ -2502,8 +2502,8 @@ export function registerInitCommand(
     .description(
       'Set up Relay and connect your agent tools without asking: a private server on this machine (default), ' +
         'the hosted service (--hosted), or your own server (--url and --key), every installed agent tool, and ' +
-        'the Agent Relay core injecting messages into running Claude Code, Codex, OpenCode, Grok, Pi and Devin ' +
-        'sessions. --interactive asks each step instead'
+        'the Agent Relay core injecting messages into running Claude Code, Codex, OpenCode, Grok, Pi, Devin and ' +
+        'Cursor sessions. --interactive asks each step instead'
     )
     .option('--hosted', 'Use the hosted service so agents on other machines can join')
     .option('--url <url>', 'Your own Relaycast server (with --key)')

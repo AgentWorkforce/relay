@@ -59,6 +59,7 @@ const EXPECTED_PATHS: Record<ToolId, Record<InstallScope, string>> = {
   grok: { project: 'my-project/.grok/config.toml', global: 'home/.grok/config.toml' },
   pi: { project: 'my-project/.pi/mcp.json', global: 'home/.pi/agent/mcp.json' },
   devin: { project: 'my-project/.devin/mcp_config.json', global: 'home/.config/devin/mcp_config.json' },
+  cursor: { project: 'my-project/.cursor/mcp.json', global: 'home/.cursor/mcp.json' },
 };
 
 /** Unrelated content a person already has in each tool's config. */
@@ -134,7 +135,7 @@ describe('parseToolsFlag', () => {
   });
 
   it('rejects unknown and unsupported tools', () => {
-    expect(() => parseToolsFlag('claude,cursor')).toThrow(/Unknown tool for --tools: cursor/);
+    expect(() => parseToolsFlag('claude,windsurf')).toThrow(/Unknown tool for --tools: windsurf/);
     expect(() => parseToolsFlag('gemini,vscode')).toThrow(/Unknown tools/);
     expect(() => parseToolsFlag('all,claude')).toThrow(/cannot be combined/);
     expect(() => parseToolsFlag(' , ')).toThrow(/needs a value/);
@@ -243,6 +244,8 @@ describe('formats', () => {
   });
 
   it('writes Devin stdio servers with a transport', () => {
+    installTool(target('cursor'), launch, op('global'));
+    expect(fs.statSync(path.join(ctx.home, '.cursor', 'mcp.json')).mode & 0o777).toBe(0o600);
     installTool(target('devin'), launch, op('global'));
     const doc = JSON.parse(read(path.join(ctx.home, '.config', 'devin', 'mcp_config.json')));
     expect(doc.mcpServers['agent-relay']).toMatchObject({ transport: 'stdio', command: launch.command });
@@ -645,5 +648,13 @@ describe('Codex project trust', () => {
 });
 
 it('offers exactly the supported tools', () => {
-  expect(TOOL_TARGETS.map((t) => t.id)).toEqual(['claude', 'codex', 'opencode', 'grok', 'pi', 'devin']);
+  expect(TOOL_TARGETS.map((t) => t.id)).toEqual([
+    'claude',
+    'codex',
+    'opencode',
+    'grok',
+    'pi',
+    'devin',
+    'cursor',
+  ]);
 });
