@@ -124,16 +124,21 @@ function parseSubcommands(helpText) {
  * Whether a command missing from the tree still runs: a hidden command answers
  * `--help` with its own usage, and a removed one with its parent's. Nothing is
  * reported stale on absence alone, because a stale entry gets deleted.
+ *
+ * Only Commander's own "unknown command" refusal counts as a removal. Any other
+ * failure (a timeout, a crash) throws, so the audit exits 2 instead of
+ * reporting a working command as stale.
  */
 function answersHelp(parts) {
+  let help;
   try {
-    const usage = runHelp(parts)
-      .split('\n')
-      .find((line) => line.startsWith('Usage:'));
-    return Boolean(usage?.split(/\s+/).includes(parts.at(-1)));
-  } catch {
-    return false;
+    help = runHelp(parts);
+  } catch (err) {
+    if (/unknown command/i.test(err.message)) return false;
+    throw err;
   }
+  const usage = help.split('\n').find((line) => line.startsWith('Usage:'));
+  return Boolean(usage?.split(/\s+/).includes(parts.at(-1)));
 }
 
 /** Walk the command tree and return every leaf command path. */
