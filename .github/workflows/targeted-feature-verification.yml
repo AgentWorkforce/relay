@@ -9,6 +9,7 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - '.agentworkforce/trajectories/**'
+      - 'crates/probe/**'
       - 'docs/**'
       - 'specs/**'
       - 'web/**'
