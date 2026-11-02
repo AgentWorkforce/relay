@@ -239,7 +239,11 @@ export class Sandbox {
   /** Starts a process named `name` that holds `files` open, for the core to discover. */
   fakeTool(name, files) {
     const executable = path.join(this.bin, name);
-    if (!fs.existsSync(executable)) fs.copyFileSync(process.execPath, executable);
+    if (!fs.existsSync(executable)) {
+      fs.copyFileSync(process.execPath, executable);
+      // The core refuses a tool's binary that anyone else could write to.
+      fs.chmodSync(executable, 0o755);
+    }
     return this.spawn(
       executable,
       [path.join(repoRoot, 'tests/relayflows/core/fake-tool.mjs'), ...files],
@@ -263,6 +267,16 @@ export class Sandbox {
     if (fs.existsSync(log)) {
       assert.doesNotMatch(fs.readFileSync(log, 'utf8'), HOSTED, 'the core log names a hosted service');
     }
+  }
+
+  /** Prints what the core saw, for a failed scenario. Keys never appear in these. */
+  async report() {
+    const log = path.join(this.relayHome, 'local/core.log');
+    for (const method of ['sessions.list', 'agents.list']) {
+      const seen = await this.call(method).catch((error) => error.message);
+      console.error(`${method}: ${JSON.stringify(seen).slice(0, 2000)}`);
+    }
+    if (fs.existsSync(log)) console.error(fs.readFileSync(log, 'utf8').slice(-2000));
   }
 
   /** Stops everything this sandbox started and removes it. */
@@ -311,6 +325,9 @@ export async function withSandbox(run) {
   const sandbox = await createSandbox();
   try {
     return await run(sandbox);
+  } catch (error) {
+    await sandbox.report();
+    throw error;
   } finally {
     await sandbox.dispose();
   }
