@@ -116,14 +116,14 @@ jobs:
             // The core sits outside the Cargo workspace and reaches Node only
             // through the pinned release, so Probe CI covers it. The bridge
             // protocol stays Node-affecting: probe-core.test.ts reads it.
+            const isCore = (file) => file.startsWith('crates/probe/');
             const isCoreOnly = (file) =>
-              file.startsWith('crates/probe/') &&
-              file !== 'crates/probe/src/relay/protocol.rs';
+              isCore(file) && file !== 'crates/probe/src/relay/protocol.rs';
 
             const classifyFiles = (changedFiles) => ({
               rustChanged: changedFiles.some(
                 (file) =>
-                  (isRust(file) && !isInert(file) && !isCoreOnly(file)) || isCi(file)
+                  (isRust(file) && !isInert(file) && !isCore(file)) || isCi(file)
               ),
               nodeChanged: changedFiles.some(
                 (file) => !isSwift(file) && !isInert(file) && !isCoreOnly(file)
