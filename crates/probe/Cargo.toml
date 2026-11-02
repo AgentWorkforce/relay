@@ -85,16 +85,13 @@ history = ["dep:ai-hist", "dep:history-provider-sources", "dep:notify"]
 [workspace]
 
 [dependencies]
-# Pinned to the relayhistory 0.54.1 release commit (tag sdk-ts-v0.54.1).
-# It stays a git pin, not crates.io:
-# `history-provider-sources` is not published to crates.io and its helper
-# surface carries ai-hist types (`Arguments.observation`), so both deps
-# must resolve to one ai-hist package — registry + git would build two.
-ai-hist = { git = "https://github.com/AgentWorkforce/relayhistory", rev = "714da8a34d202dfeb4dc20494fb6f61dfb5325dd", features = ["opencode-backup", "git-hooks", "fs-events"], optional = true }
+# relayhistory 0.56.0 from crates.io. `history-provider-sources` pins
+# ai-hist exactly (its helper surface carries ai-hist types), so ai-hist is
+# pinned to the same exact version here to build a single ai-hist.
+ai-hist = { version = "=0.56.0", features = ["opencode-backup", "git-hooks", "fs-events"], optional = true }
 # The remote source connectors probe composes (`devin-cloud`,
-# `cursor-cloud`). Not on crates.io — the same pin keeps it on the ai-hist
-# above.
-history-provider-sources = { git = "https://github.com/AgentWorkforce/relayhistory", rev = "714da8a34d202dfeb4dc20494fb6f61dfb5325dd", optional = true }
+# `cursor-cloud`).
+history-provider-sources = { version = "=0.56.0", optional = true }
 # The watcher ai-hist's own watch is built on, for selected mode's catalog
 # (src/probe/inventory.rs), which ai-hist's sync-driven watch cannot serve.
 notify = { version = "8", optional = true }

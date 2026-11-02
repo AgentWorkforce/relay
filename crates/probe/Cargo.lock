@@ -75,8 +75,9 @@ dependencies = [
 
 [[package]]
 name = "ai-hist"
-version = "0.54.1"
-source = "git+https://github.com/AgentWorkforce/relayhistory?rev=714da8a34d202dfeb4dc20494fb6f61dfb5325dd#714da8a34d202dfeb4dc20494fb6f61dfb5325dd"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "efb088278833c17617eb174df2e32cac3d5accb9f1c7593eb2056fe800b248c6"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -660,8 +661,9 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "history-provider-sources"
-version = "0.54.1"
-source = "git+https://github.com/AgentWorkforce/relayhistory?rev=714da8a34d202dfeb4dc20494fb6f61dfb5325dd#714da8a34d202dfeb4dc20494fb6f61dfb5325dd"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7b6204e8e091eddbd3a2d6306bc0a643a38446737c5a93d6b66ede90f06c5fe"
 dependencies = [
  "ai-hist",
  "anyhow",
