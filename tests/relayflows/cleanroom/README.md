@@ -14,8 +14,9 @@ The campaign has three promises:
 
 ## Targeted pull-request verification
 
-`.github/workflows/targeted-feature-verification.yml` runs nightly against the
-last day of `main`, and on demand for a chosen base and head. `scripts/verify-features/targeted-pr-plan.mjs` maps the changed paths
+`.github/workflows/targeted-feature-verification.yml` runs the complete smoke
+profile on `main` nightly, and a targeted slice on demand for a chosen base and
+head. `scripts/verify-features/targeted-pr-plan.mjs` maps the changed paths
 through the feature manifest and this campaign's matrix, then
 `flows/verify/targeted-pr.spec.ts` emits a deterministic Relayflows v2 spec for
 only the selected setup and scenarios. A directly mapped feature runs its

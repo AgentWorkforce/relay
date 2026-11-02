@@ -1,10 +1,10 @@
 name: Targeted feature verification
 
-# Runs nightly against the last day of main, not on pull requests: the shards
-# were most of a PR's jobs and were not a merge gate. The selector maps changed
-# files through the feature manifest and cleanroom matrix. Unmapped runtime
-# files fail closed into the complete smoke profile; they never become a green
-# skip.
+# Runs the complete smoke profile nightly, not on pull requests: the shards were
+# most of a PR's jobs and were not a merge gate. Manual dispatch selects by the
+# files between two commits, through the feature manifest and cleanroom matrix.
+# Unmapped runtime files fail closed into the complete smoke profile; they never
+# become a green skip.
 on:
   schedule:
     - cron: '23 6 * * *'
@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: targeted-feature-verification-${{ github.ref }}
+  group: targeted-feature-verification-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -57,16 +57,19 @@ jobs:
       - name: Select affected features and scenarios
         env:
           BASE_SHA: ${{ inputs.base_sha }}
-          HEAD_SHA: ${{ inputs.head_sha || github.sha }}
+          HEAD_SHA: ${{ inputs.head_sha }}
         run: |
           set -euo pipefail
           mkdir -p .workflow-artifacts/targeted-pr
-          BASE_SHA="${BASE_SHA:-$(git rev-list -1 --before='24 hours ago' "$HEAD_SHA")}"
-          # A day with no commits has no changed files, which the selector refuses.
-          if [ "$BASE_SHA" = "$HEAD_SHA" ]; then BASE_SHA="$(git rev-parse "$HEAD_SHA~1")"; fi
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            # The workflow is a self-check path, so it selects the complete profile.
+            echo '[".github/workflows/targeted-feature-verification.yml"]' > "$RUNNER_TEMP/changed-files.json"
+            selection=(--files-json "$RUNNER_TEMP/changed-files.json")
+          else
+            selection=(--base "$BASE_SHA" --head "$HEAD_SHA")
+          fi
           node scripts/verify-features/targeted-pr-plan.mjs plan \
-            --base "$BASE_SHA" \
-            --head "$HEAD_SHA" \
+            "${selection[@]}" \
             --output .workflow-artifacts/targeted-pr/plan.json
 
       - name: Split selection within the job deadline
