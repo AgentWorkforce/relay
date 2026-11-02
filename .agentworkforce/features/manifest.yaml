@@ -985,7 +985,6 @@ categories:
     name: Fleet Management
     description: Distributed fleet node configuration for the workspace
     criticality: standard
-    status: legacy
     features:
       - id: fleet-nodes
         name: List Fleet Nodes

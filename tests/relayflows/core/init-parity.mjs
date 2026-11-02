@@ -14,7 +14,7 @@ const ROUTES = {
     label: 'Claude Code',
     file: '.claude/settings.json',
     userFile: ['.claude/settings.json', '{"theme":"dark"}\n', '"theme"'],
-    settings: ['direct_delivery', 'claude_session_hook'],
+    settings: ['direct_delivery', 'claude_session_hook', 'auto_activate'],
     written: (text) => {
       const settings = JSON.parse(text);
       assert.equal(settings.crossSessionInbound, 'accept');
@@ -24,7 +24,7 @@ const ROUTES = {
   codex: {
     label: 'Codex',
     file: '.codex/hooks.json',
-    settings: ['codex_stop_hook'],
+    settings: ['codex_stop_hook', 'auto_activate'],
     written: (text) => {
       const { hooks } = JSON.parse(text);
       for (const event of ['PostToolUse', 'Stop', 'SessionStart']) {
@@ -35,26 +35,26 @@ const ROUTES = {
   opencode: {
     label: 'OpenCode',
     file: '.config/opencode/plugins/agent-relay.js',
-    settings: ['opencode_plugin'],
+    settings: ['opencode_plugin', 'opencode_auto_activate', 'auto_activate'],
     written: (text) => assert.ok(text.length > 0),
   },
   grok: {
     label: 'Grok CLI',
     file: '.grok/config.toml',
     userFile: ['.grok/config.toml', '[ui]\ntheme = "dark"\n', 'theme = "dark"'],
-    settings: ['grok_leader'],
+    settings: ['grok_leader', 'auto_activate'],
     written: (text) => assert.match(text, /use_leader = true/),
   },
   pi: {
     label: 'Pi',
     file: '.pi/agent/extensions/agent-relay.js',
-    settings: ['pi_extension'],
+    settings: ['pi_extension', 'pi_auto_activate', 'auto_activate'],
     written: (text) => assert.ok(text.length > 0),
   },
   devin: {
     label: 'Devin',
     file: '.config/devin/config.json',
-    settings: ['devin_direct_delivery'],
+    settings: ['devin_direct_delivery', 'auto_activate'],
     written: (text) => assert.ok(has('relay devin-hook')(text), text),
   },
   cursor: {
@@ -65,13 +65,24 @@ const ROUTES = {
       '{"version":1,"hooks":{"stop":[{"command":"my-own-hook"}]}}\n',
       'my-own-hook',
     ],
-    settings: ['cursor_direct_delivery'],
+    settings: ['cursor_direct_delivery', 'auto_activate'],
     written: (text) => {
       const { hooks } = JSON.parse(text);
       assert.match(JSON.stringify(hooks.stop), /relay cursor-hook/);
       assert.match(JSON.stringify(hooks.postToolUse), /relay cursor-hook/);
     },
   },
+};
+
+/** What `--uninstall` must leave no trace of, in a file that stays. */
+const LEFT_BEHIND = {
+  claude: /relay claude-session-hook|crossSessionInbound/,
+  codex: /relay codex-stop-hook/,
+  opencode: /./,
+  grok: /use_leader = true/,
+  pi: /./,
+  devin: /relay devin-hook/,
+  cursor: /relay cursor-hook/,
 };
 
 for (const tool of TOOLS) {
@@ -95,9 +106,7 @@ for (const tool of TOOLS) {
           if (ROUTES[tool].settings.includes(key)) continue;
           assert.notEqual(settings[key], true, `relay init --tools ${tool} turned on ${key}`);
         }
-        if (!ROUTES[other].userFile) {
-          assert.ok(!machine.exists(ROUTES[other].file), `--tools ${tool} wrote ${ROUTES[other].file}`);
-        }
+        assert.ok(!machine.exists(ROUTES[other].file), `--tools ${tool} wrote ${ROUTES[other].file}`);
       }
       await machine.assertLocalOnly();
 
@@ -106,16 +115,21 @@ for (const tool of TOOLS) {
       for (const key of route.settings) assert.notEqual(after[key], true, `${key} stayed on`);
       if (userFile)
         assert.ok(machine.read(userFile).includes(userMark), 'uninstall lost the person’s settings');
-      if (tool === 'grok') assert.doesNotMatch(machine.read(route.file), /use_leader = true/);
-      if (tool === 'cursor') assert.doesNotMatch(machine.read(route.file), /relay cursor-hook/);
+      if (machine.exists(route.file)) assert.doesNotMatch(machine.read(route.file), LEFT_BEHIND[tool]);
+      else assert.ok(!userFile, `uninstall removed ${route.file}, which the person had`);
     })
   );
 }
 
-await scenario('relay init --stop leaves nothing answering', () =>
+await scenario('a second relay init attaches to the running core, and --stop leaves nothing answering', () =>
   withSandbox(async (machine) => {
     machine.markInstalled('grok');
     await machine.init(['grok']);
+    const first = await machine.call('status.get');
+    await machine.init(['grok']);
+    const second = await machine.call('status.get');
+    assert.equal(second.daemon.pid, first.daemon.pid);
+    assert.deepEqual(second.workspace, first.workspace);
     await machine.relayOk(['init', '--stop']);
     await assert.rejects(() => machine.call('status.get'));
   })

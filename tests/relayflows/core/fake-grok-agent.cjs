@@ -1,11 +1,11 @@
 // `grok agent …` for a copy of Node named `grok`: Node runs this file, copied to
 // `agent` in the session's folder, for the commands the core and a Grok TUI use.
 //
-//   grok agent leader                   listens on the home's leader.sock
-//   grok agent … --leader-socket S stdio   answers ACP on stdin and stdout
+//   grok agent leader                   answers ACP on the home's leader.sock
+//   grok agent … --leader-socket S stdio   relays stdin and stdout to that leader
 //
-// There is no model. A prompt is recorded in `prompts.jsonl` beside this file and
-// acknowledged the way Grok's leader queues it.
+// The stdio client only relays to the leader, as Grok's does, so a prompt reaches
+// `prompts.jsonl` through the socket the core proved. There is no model.
 
 const fs = require('node:fs');
 const net = require('node:net');
@@ -15,13 +15,10 @@ const readline = require('node:readline');
 
 const args = process.argv.slice(2);
 
-if (args[0] === 'leader') {
-  const socket = path.join(os.homedir(), '.grok/leader.sock');
-  fs.rmSync(socket, { force: true });
-  net.createServer((connection) => connection.on('error', () => undefined)).listen(socket);
-} else if (args.includes('stdio')) {
-  const reply = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
-  readline.createInterface({ input: process.stdin }).on('line', (line) => {
+/** Answers ACP on one connection, recording each prompt beside this file. */
+function serve(input, output) {
+  const reply = (message) => output.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
+  readline.createInterface({ input }).on('line', (line) => {
     const { id, method, params } = JSON.parse(line);
     if (method === 'initialize') {
       reply({
@@ -49,4 +46,22 @@ if (args[0] === 'leader') {
       });
     }
   });
+}
+
+if (args[0] === 'leader') {
+  const socket = path.join(os.homedir(), '.grok/leader.sock');
+  fs.rmSync(socket, { force: true });
+  net
+    .createServer((connection) => {
+      connection.on('error', () => undefined);
+      serve(connection, connection);
+    })
+    .listen(socket);
+} else if (args.includes('stdio')) {
+  const socket = args[args.indexOf('--leader-socket') + 1];
+  const leader = net.connect(socket);
+  leader.on('error', () => process.exit(1));
+  leader.on('close', () => process.exit(0));
+  process.stdin.pipe(leader);
+  leader.pipe(process.stdout);
 }

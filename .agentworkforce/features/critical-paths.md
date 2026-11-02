@@ -120,10 +120,7 @@ Assert B reads the exact DM and A sees B in readers. Remove the disposable agent
 ```bash
 relay version
 relay status
-relay node status
-relay node up --background --no-spawn
-relay node status
-relay node metrics
+relay agent list
 ```
 
-If any command fails, diagnose that subsystem before testing higher-level paths. Do not treat top-level `relay status` as the broker statistics command; `relay node status` is the direct broker check.
+If any command fails, diagnose that subsystem before testing higher-level paths. For a change to the legacy broker path, also run `relay node up --background --no-spawn`, `relay node status` and `relay node metrics`. Top-level `relay status` is not the broker statistics command; `relay node status` is the direct broker check.

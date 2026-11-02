@@ -103,26 +103,30 @@ Start with the `Fast Health Triage` sequence in `critical-paths.md`; use the hos
 
 ### 4. Determine which features to verify for a given change
 
-| Changed code area                | Verify these feature categories         |
-| -------------------------------- | --------------------------------------- |
-| `crates/broker/`                 | broker, messaging-\*, local-agents, mcp |
-| `crates/relay-pty/`              | local-agents (spawn/attach)             |
-| `packages/cli/src/cli/commands/` | The command that changed + broker       |
-| `packages/cli/src/cli/mcp/`      | mcp category (all tools)                |
-| `packages/harness-driver/`       | harnesses, local-agents                 |
-| `packages/sdk/`                  | sdk category                            |
-| `packages/cloud/`                | cloud category                          |
+| Changed code area                                            | Verify these feature categories         |
+| ------------------------------------------------------------ | --------------------------------------- |
+| `crates/probe/`                                              | core, core-delivery, init               |
+| `packages/cli/src/cli/commands/init.ts`, `lib/probe-core.ts` | init, core                              |
+| `crates/broker/`                                             | broker, messaging-\*, local-agents, mcp |
+| `crates/relay-pty/`                                          | local-agents (spawn/attach)             |
+| `packages/cli/src/cli/commands/`                             | The command that changed                |
+| `packages/cli/src/cli/mcp/`                                  | mcp category (all tools)                |
+| `packages/harness-driver/`                                   | harnesses, local-agents                 |
+| `packages/sdk/`                                              | sdk category                            |
+| `packages/cloud/`                                            | cloud category                          |
 
 ### 5. Check critical paths last
 
 Always run the applicable critical paths from `critical-paths.md` before declaring a change verified:
 
-1. Local broker lifecycle
-2. Cross-agent channel message
-3. Managed local-agent lifecycle (when a provider is available)
-4. MCP stdio round trip
-5. Local workflow run/logs/sync
-6. Direct message and read receipt
+1. `relay init` for your tools
+2. A message reaches a running session
+3. Local broker lifecycle (legacy, only for a change to it)
+4. Cross-agent channel message
+5. Managed local-agent lifecycle (legacy, only for a change to it, when a provider is available)
+6. MCP stdio round trip
+7. Local workflow run/logs/sync
+8. Direct message and read receipt
 
 ## When to update the manifest
 

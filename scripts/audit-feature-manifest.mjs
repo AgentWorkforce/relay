@@ -126,10 +126,14 @@ function parseSubcommands(helpText) {
  * reported stale on absence alone, because a stale entry gets deleted.
  */
 function answersHelp(parts) {
-  const usage = runHelp(parts)
-    .split('\n')
-    .find((line) => line.startsWith('Usage:'));
-  return Boolean(usage?.split(/\s+/).includes(parts.at(-1)));
+  try {
+    const usage = runHelp(parts)
+      .split('\n')
+      .find((line) => line.startsWith('Usage:'));
+    return Boolean(usage?.split(/\s+/).includes(parts.at(-1)));
+  } catch {
+    return false;
+  }
 }
 
 /** Walk the command tree and return every leaf command path. */
