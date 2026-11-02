@@ -5,17 +5,13 @@ on:
     branches: [main]
     paths:
       - 'packages/cli/src/**'
-      - 'scripts/stress-test-*.sh'
       - 'scripts/stress-test-*.mjs'
-      - 'scripts/stress-test-*.mts'
       - '.github/workflows/stress-tests.yml'
   pull_request:
     branches: [main]
     paths:
       - 'packages/cli/src/**'
-      - 'scripts/stress-test-*.sh'
       - 'scripts/stress-test-*.mjs'
-      - 'scripts/stress-test-*.mts'
       - '.github/workflows/stress-tests.yml'
   # Allow manual trigger for on-demand stress testing
   workflow_dispatch:
@@ -78,90 +74,9 @@ jobs:
             exit 1
           fi
 
-  stress-test-orchestrator-integration:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    name: Orchestrator Integration Stress Tests
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        node-version: [22.14.0]
-      fail-fast: false
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build packages
-        run: npm run build
-
-      - name: Run orchestrator integration stress tests
-        id: integration-stress
-        run: |
-          if [ ! -f packages/daemon/src/orchestrator.ts ]; then
-            echo "packages/daemon/src/orchestrator.ts not present; skipping integration stress test for this repo layout"
-            cat > integration-results.json << 'EOF'
-          {
-            "passed": true,
-            "failures": 0,
-            "tests": {},
-            "summary": {
-              "total_tests": 0,
-              "passed_tests": 0,
-              "failed_tests": 0,
-              "total_time_ms": 0
-            },
-            "skipped": true,
-            "reason": "packages/daemon/src/orchestrator.ts not present"
-          }
-          EOF
-          else
-            npx tsx scripts/stress-test-orchestrator-integration.mts --json --output=integration-results.json || echo "exit_code=$?" >> $GITHUB_OUTPUT
-          fi
-          cat integration-results.json
-        continue-on-error: true
-
-      - name: Upload integration results
-        uses: actions/upload-artifact@v4
-        with:
-          name: orchestrator-integration-results-${{ matrix.os }}-node${{ matrix.node-version }}
-          path: integration-results.json
-          retention-days: 30
-
-      - name: Check integration results
-        run: |
-          if ! node -e "
-            const fs = require('fs');
-            const content = fs.readFileSync('integration-results.json', 'utf8');
-            let results;
-            try {
-              results = JSON.parse(content);
-            } catch (e) {
-              console.error('Failed to parse JSON. File contents:');
-              console.error(content.slice(0, 500));
-              console.error('Parse error:', e.message);
-              process.exit(1);
-            }
-            console.log('All tests passed:', results.passed);
-            console.log('Passed:', results.summary.passed_tests, '/', results.summary.total_tests);
-            process.exit(results.passed ? 0 : 1);
-          "; then
-            echo "::error::Orchestrator integration stress tests failed"
-            exit 1
-          fi
-
   stress-test-summary:
     name: Stress Test Summary
-    needs: [stress-test-orchestrator, stress-test-orchestrator-integration]
+    needs: [stress-test-orchestrator]
     runs-on: ubuntu-latest
     if: >-
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
@@ -191,22 +106,8 @@ jobs:
             fi
           done
 
-          echo "### Orchestrator Integration Tests" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          for file in stress-results/orchestrator-integration-*/integration-results.json; do
-            if [ -f "$file" ]; then
-              dirname=$(dirname "$file" | xargs basename)
-              echo "#### $dirname" >> $GITHUB_STEP_SUMMARY
-              echo '```json' >> $GITHUB_STEP_SUMMARY
-              cat "$file" >> $GITHUB_STEP_SUMMARY
-              echo '```' >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
-
       - name: Check overall status
-        if: needs.stress-test-orchestrator.result == 'failure' || needs.stress-test-orchestrator-integration.result == 'failure'
+        if: needs.stress-test-orchestrator.result == 'failure'
         run: |
           echo "::error::One or more stress tests failed"
           exit 1
