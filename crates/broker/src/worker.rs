@@ -2553,10 +2553,89 @@ pub(crate) fn validate_pty_initial_task_size(spec: &AgentSpec, task: Option<&str
     if muse_startup_prompt(&cli.to_ascii_lowercase(), Some(task)).is_some() {
         return Ok(());
     }
-    match crate::injection_wire::task_too_large_error(task) {
-        Some(error) => anyhow::bail!(error),
-        None => Ok(()),
+    let delivery = RelayDelivery {
+        delivery_id: "preflight".into(),
+        event_id: format!("init_{}", "0".repeat(32)).into(),
+        workspace_id: None,
+        workspace_alias: None,
+        from: "broker".into(),
+        target: spec.name.as_str().into(),
+        body: task.into(),
+        thread_id: None,
+        priority: Some(2),
+        injection_mode: Default::default(),
+    };
+    validate_delivery_size(Some(spec), &spec.name, &delivery)
+        .map_err(|error| anyhow::anyhow!("spawn_task_too_large: {error}"))
+}
+
+/// Validate before custody using conservative wire defaults and explicit pacing overrides.
+pub(crate) fn validate_delivery_size(
+    spec: Option<&AgentSpec>,
+    worker: &str,
+    delivery: &RelayDelivery,
+) -> Result<()> {
+    if let Some(spec) = spec.filter(|spec| {
+        spec.harness_config
+            .as_ref()
+            .map(|config| config.runtime())
+            .unwrap_or_else(|| spec.runtime.clone())
+            == AgentRuntime::Headless
+    }) {
+        if spec.harness_config.is_none() {
+            anyhow::ensure!(delivery.body.len() <= MUSE_STARTUP_PROMPT_MAX_BYTES,
+                "injection_too_large: headless process argument limit is {MUSE_STARTUP_PROMPT_MAX_BYTES} bytes; use a brief file pointer");
+        }
+        return Ok(());
     }
+    let cli = spec
+        .map(pty_cli_for_spec)
+        .transpose()?
+        .flatten()
+        .unwrap_or_else(|| "unknown".into());
+    let env = spec.and_then(|spec| match &spec.harness_config {
+        Some(ResolvedHarnessConfig::Pty(config)) => config.env.as_ref(),
+        _ => None,
+    });
+    let value = |key: &str| {
+        env.and_then(|env| env.get(key))
+            .cloned()
+            .or_else(|| std::env::var(key).ok())
+    };
+    let limit = crate::injection_wire::preflight_limit(
+        &cli,
+        value("RELAY_INJECT_RATE_MS").as_deref(),
+        value("RELAY_INJECT_PASTE").as_deref() == Some("0"),
+    );
+    anyhow::ensure!(
+        delivery.body.len() <= crate::injection_wire::MAX_BODY_BYTES.min(limit),
+        "injection_too_large: {cli} conservative body limit is {} bytes; use a brief file pointer",
+        crate::injection_wire::MAX_BODY_BYTES.min(limit)
+    );
+    // The reminder is throttled and registration state belongs to the worker.
+    // Measure all forms, including attribution, workspace context and sanitization.
+    for reminder in [false, true] {
+        for registered in [false, true] {
+            let text = crate::broker::injection_format::format_injection_for_worker_with_workspace(
+                &delivery.from,
+                &delivery.event_id,
+                &delivery.body,
+                &delivery.target,
+                reminder,
+                registered,
+                Some(worker),
+                delivery.workspace_id.as_deref(),
+                delivery.workspace_alias.as_deref(),
+            );
+            let bytes = crate::injection_wire::injection_bytes(
+                crate::injection_wire::InjectionWire::Typed,
+                &text,
+            )
+            .len();
+            anyhow::ensure!(bytes <= limit, "injection_too_large: {cli} effective limit is {limit} bytes including envelope; use a brief file pointer");
+        }
+    }
+    Ok(())
 }
 
 /// Clean Muse config home for a worker spawn, when Relay MCP injection is
@@ -4918,6 +4997,19 @@ sleep 30
         )
         .is_ok());
         assert!(validate_pty_initial_task_size(&spec("codex", AgentRuntime::Pty), None).is_ok());
+        let paced = spec("claude", AgentRuntime::Pty);
+        assert!(validate_pty_initial_task_size(&paced, Some("read /brief.md")).is_ok());
+        assert!(validate_pty_initial_task_size(&paced, Some(&"x".repeat(1537))).is_err());
+        // Body alone fits the typed wire; its real MCP envelope does not.
+        assert!(validate_pty_initial_task_size(&paced, Some(&"x".repeat(1400))).is_err());
+        let mut override_spec = paced;
+        override_spec.harness_config = Some(
+            serde_json::from_value(json!({
+                "runtime":"pty", "command":"claude", "env":{"RELAY_INJECT_RATE_MS":"0"}
+            }))
+            .unwrap(),
+        );
+        assert!(validate_pty_initial_task_size(&override_spec, Some(&fits)).is_ok());
     }
 
     #[test]
