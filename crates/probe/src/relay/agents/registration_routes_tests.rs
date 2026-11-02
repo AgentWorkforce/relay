@@ -442,7 +442,7 @@ mod cli_login {
     async fn a_broken_or_missing_cli_login_is_signed_out_too() {
         for contents in [None, Some("not json"), Some("{}")] {
             let mut attached = None;
-            let (.., _core, _temp) = activate_with(|home, plugins| {
+            let (_directory, failures, _fake, _core, temp) = activate_with(|home, plugins| {
                 if let Some(contents) = contents {
                     write_cli_login(home, contents);
                 }
@@ -452,6 +452,9 @@ mod cli_login {
                 attached = Some(account);
             })
             .await;
+            assert!(failures.is_empty(), "{failures:?}");
+            let relay_home = temp.path().join(".agentworkforce/relay");
+            assert!(cli_session(&relay_home, SITE, crate::relay::state::now_ms()).is_none());
             assert_signed_out(attached.unwrap().as_ref()).await;
         }
     }
