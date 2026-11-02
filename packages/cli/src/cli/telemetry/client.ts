@@ -340,7 +340,9 @@ export function track<E extends TelemetryEventName>(
       ...commonProps,
       ...properties,
       os: telemetryOs(properties?.os ?? commonProps.os),
-      ...(event === 'agent_relay_tool_call' ? { client: telemetryClient(commonProps.orchestrator_harness) } : {}),
+      ...(event === 'agent_relay_tool_call'
+        ? { client: telemetryClient(commonProps.orchestrator_harness) }
+        : {}),
     },
     ...(groups ? { groups } : {}),
   });
