@@ -73,6 +73,23 @@ describe('telemetry client events', () => {
     fs.rmSync(dataDir, { recursive: true, force: true });
   });
 
+  it.each([['claude-code', 'claude'], ['codex', 'codex'], ['private/harness', 'unknown']])('emits bounded stdio client for %s without additional detection', (harness, client) => {
+    initTelemetry({ cliVersion: '1.2.3', orchestratorHarness: harness });
+    posthogMocks.capture.mockClear();
+    track('agent_relay_tool_call', { tool_name: 'send_dm', tool_type: 'message.dm', tool_category: 'message', transport: 'stdio', success: true, duration_ms: 1, os: 'darwin' });
+    const call = posthogMocks.capture.mock.calls.at(-1)![0];
+    expect(call.properties).toMatchObject({ client, os: 'macos', transport: 'stdio' });
+  });
+
+  it('normalizes OS on auth and command captures, including per-event overrides', () => {
+    initTelemetry({ cliVersion: '1.2.3' });
+    posthogMocks.capture.mockClear();
+    track('cli_command_run', { command_name: 'cloud', flags: [], os: 'win32' });
+    expect(posthogMocks.capture.mock.calls.at(-1)![0].properties.os).toBe('windows');
+    track('cloud_auth', { action: 'login', success: true, duration_ms: 1, os: 'darwin', ...{ client: 'relay-cli' } });
+    expect(posthogMocks.capture.mock.calls.at(-1)![0].properties).toMatchObject({ os: 'macos', client: 'relay-cli' });
+  });
+
   it('tracks cli_install on first telemetry initialization only', async () => {
     initTelemetry({
       cliVersion: '1.2.3',

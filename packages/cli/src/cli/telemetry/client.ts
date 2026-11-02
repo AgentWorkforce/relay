@@ -2,6 +2,7 @@
  * PostHog telemetry client singleton.
  */
 
+import { telemetryClient, telemetryOs } from './dimensions.js';
 import { PostHog } from 'posthog-node';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -116,7 +117,7 @@ function buildCommonProperties(
     ...(versions.cliVersion ? { cli_version: versions.cliVersion } : {}),
     ...(versions.sdkVersion ? { sdk_version: versions.sdkVersion } : {}),
     ...(versions.brokerVersion ? { broker_version: versions.brokerVersion } : {}),
-    os: process.platform,
+    os: telemetryOs(process.platform),
     os_version: os.release(),
     node_version: process.version.slice(1),
     arch: process.arch,
@@ -338,6 +339,8 @@ export function track<E extends TelemetryEventName>(
     properties: {
       ...commonProps,
       ...properties,
+      os: telemetryOs(properties?.os ?? commonProps.os),
+      ...(event === 'agent_relay_tool_call' ? { client: telemetryClient(commonProps.orchestrator_harness) } : {}),
     },
     ...(groups ? { groups } : {}),
   });

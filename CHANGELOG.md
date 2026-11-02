@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `relay init` sets up Cursor, so messages reach agents in the Cursor editor and Cursor CLI and wake an idle agent.
 - `relay init --uninstall` removes the Cursor setup it added.
 
+### Fixed
+
+- CLI telemetry uses consistent OS labels and includes a bounded client label on local MCP tool calls.
+
 ## [15.0.2] - 2026-11-01
 
 ### Fixed
