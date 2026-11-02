@@ -73,7 +73,7 @@ export interface CommonProperties {
   sdk_version?: string;
   /** `agent-relay-broker` Rust binary version, if known. */
   broker_version?: string;
-  /** Operating system (e.g., darwin, linux, win32) */
+  /** Bounded operating system (macos, windows, linux, ios, android, unknown). */
   os: string;
   /**
    * OS release version (e.g. `uname -r` output on unix).
@@ -312,6 +312,8 @@ export interface AgentRelayToolCallEvent {
   tool_category: AgentRelayToolCallCategory;
   /** Transport surface that served the `agent-relay mcp` call. */
   transport: 'stdio' | 'http' | 'unknown' | (string & {});
+  /** Added centrally from cached harness context; not verified vendor identity. */
+  client?: 'cursor' | 'chatgpt' | 'claude' | 'muse' | 'codex' | 'grok' | 'unknown';
   /** True when the tool returned a non-error result. */
   success: boolean;
   /** Wall-clock duration in milliseconds. */
