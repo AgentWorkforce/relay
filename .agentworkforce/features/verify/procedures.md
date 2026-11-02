@@ -139,7 +139,7 @@ receiver path and destroys it after the webhook/subscription cleanup below.
 
 **Automated:** `node tests/relayflows/core/delivery.mjs` and `node tests/relayflows/core/grok-join.mjs`, on every pull request that reaches the core lane.
 
-**Prerequisites:** as in `relay-init`, on a static Node binary: a copy of Node stands in for each tool, so Homebrew's `node`, which needs its shared library beside it, does not work.
+**Prerequisites:** as in `relay-init`. A copy of the running Node stands in for each tool; a Node built against a shared `libnode`, such as Homebrew's, gets that library copied beside it, and a copy that still cannot run fails the scenario at once.
 
 **How a session is made:** the scenario meets the contract the core discovers, and no more. A Cursor CLI session is a process named `cursor-agent` holding its conversation's `store.db` open, which runs the hook from `~/.cursor/hooks.json` as its child. A Grok session is a `grok` process with its record in `active_sessions.json`, beside a leader on `leader.sock`. No trust check is relaxed: the core proves the leader from the kernel as it does in production.
 

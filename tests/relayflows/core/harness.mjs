@@ -61,6 +61,21 @@ function freePort() {
   });
 }
 
+/**
+ * A Node built against a shared `libnode` (Homebrew's) looks for it in `../lib`
+ * beside its executable, so a copy needs that library beside it too. A
+ * self-contained Node, as CI uses, has none to copy.
+ */
+function provideNodeLibrary(root) {
+  const library = path.join(path.dirname(process.execPath), '..', 'lib');
+  if (!fs.existsSync(library)) return;
+  for (const file of fs.readdirSync(library).filter((name) => /^libnode\..*(dylib|so)/.test(name))) {
+    fs.mkdirSync(path.join(root, 'lib'), { recursive: true });
+    const target = path.join(root, 'lib', file);
+    if (!fs.existsSync(target)) fs.copyFileSync(path.join(library, file), target);
+  }
+}
+
 /** A process running under the sandbox's HOME, whose output is kept. */
 export class SandboxProcess {
   constructor(child, label) {
@@ -243,6 +258,14 @@ export class Sandbox {
       fs.copyFileSync(process.execPath, executable);
       // The core refuses a tool's binary that anyone else could write to.
       fs.chmodSync(executable, 0o755);
+      provideNodeLibrary(this.root);
+      const check = spawnSync(executable, ['-e', ''], { encoding: 'utf8' });
+      if (check.status !== 0) {
+        throw new Error(
+          `A copy of ${process.execPath} cannot run as ${name}, so no session can be faked. ` +
+            `Use a self-contained Node, such as the official build.\n${check.stderr}`
+        );
+      }
     }
     return this.spawn(
       executable,
