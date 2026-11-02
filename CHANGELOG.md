@@ -12,11 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `relay init` sets up Cursor, so messages reach agents in the Cursor editor and Cursor CLI and wake an idle agent.
 - `relay init --uninstall` removes the Cursor setup it added.
 - `relay serve` now runs the same core as the desktop app: Oh My Pi sessions join the relay, and Relay Connect and mobile handoff work from the CLI.
-- Delivery and session discovery get the desktop app's fixes, so messages reach agents more reliably.
 
 ### Changed
 
 - The core has no account sign-in of its own: methods that need an account answer `method_not_found`, and spawn approvals are off, unless the core is built with an account. `agent-relay cloud login` keeps device sign-in for Relay Connect hosts.
+
+### Fixed
+
+- `relay serve` delivers messages to agents more reliably and finds their sessions more consistently.
 
 ## [15.0.2] - 2026-11-01
 
