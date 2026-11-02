@@ -116,8 +116,14 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
     .output()
     .unwrap();
     assert!(!preview.status.success(), "{preview:?}");
+    // A build without the history feature refuses history methods first.
+    let expected = if cfg!(feature = "history") {
+        "has no such method"
+    } else {
+        "Session history is not available"
+    };
     assert!(
-        String::from_utf8_lossy(&preview.stderr).contains("has no such method"),
+        String::from_utf8_lossy(&preview.stderr).contains(expected),
         "{preview:?}"
     );
 
