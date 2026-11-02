@@ -1,13 +1,11 @@
 name: Targeted feature verification
 
-# Runs the complete smoke profile nightly, not on pull requests: the shards were
-# most of a PR's jobs and were not a merge gate. Manual dispatch selects by the
-# files between two commits, through the feature manifest and cleanroom matrix.
-# Unmapped runtime files fail closed into the complete smoke profile; they never
-# become a green skip.
+# Manual only. These scenarios exercise the broker and PTY path, not the core
+# that `relay init` installs, so they neither gate merges nor run on a schedule.
+# The selector maps changed files through the feature manifest and cleanroom
+# matrix. Unmapped runtime files fail closed into the complete smoke profile;
+# they never become a green skip.
 on:
-  schedule:
-    - cron: '23 6 * * *'
   workflow_dispatch:
     inputs:
       base_sha:
@@ -23,12 +21,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: targeted-feature-verification-${{ github.event_name }}-${{ github.ref }}
+  group: targeted-feature-verification-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   select:
-    if: github.event_name != 'schedule' || github.repository == 'AgentWorkforce/relay'
     name: Select Flows v2 shards
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -61,15 +58,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p .workflow-artifacts/targeted-pr
-          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
-            # The workflow is a self-check path, so it selects the complete profile.
-            echo '[".github/workflows/targeted-feature-verification.yml"]' > "$RUNNER_TEMP/changed-files.json"
-            selection=(--files-json "$RUNNER_TEMP/changed-files.json")
-          else
-            selection=(--base "$BASE_SHA" --head "$HEAD_SHA")
-          fi
           node scripts/verify-features/targeted-pr-plan.mjs plan \
-            "${selection[@]}" \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
             --output .workflow-artifacts/targeted-pr/plan.json
 
       - name: Split selection within the job deadline
