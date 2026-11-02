@@ -590,8 +590,19 @@ fn the_setting_installs_only_its_own_hooks() {
             })
             .collect();
         assert_eq!(ours.len(), 1, "{event}");
-        assert_eq!(ours[0]["timeout"], 10);
+        // The `stop` entry waits: an hour, and no limit on follow-ups.
+        let expected = if event == "stop" {
+            json!({
+                "command": "/opt/relay/agent-relay-probe relay cursor-hook --wait",
+                "timeout": 3600,
+                "loop_limit": null,
+            })
+        } else {
+            json!({"command": "/opt/relay/agent-relay-probe relay cursor-hook", "timeout": 10})
+        };
+        assert_eq!(ours[0], &expected, "{event}");
     }
+    assert!(settings.waits());
     assert_eq!(written["other"], true);
     assert!(written["hooks"]["stop"].to_string().contains("audit.sh"));
     // Backed up once, before the first change.
@@ -610,6 +621,192 @@ fn the_setting_installs_only_its_own_hooks() {
         .to_string()
         .contains("echo relay cursor-hook"));
     assert_eq!(settings.get()[SETTING], json!(false));
+    assert!(!settings.waits());
+}
+
+#[test]
+fn an_earlier_install_is_brought_up_to_date() {
+    let (_temp, config, _table) = world();
+    std::fs::create_dir_all(config.hooks_file().parent().unwrap()).unwrap();
+    let ours = "/opt/relay/agent-relay-probe relay cursor-hook";
+    let earlier = json!({"version": 1, "hooks": {
+        "postToolUse": [{"command": ours, "timeout": 10}],
+        "stop": [{"command": "./audit.sh"}, {"command": ours, "timeout": 10}],
+    }});
+    std::fs::write(
+        config.hooks_file(),
+        serde_json::to_vec_pretty(&earlier).unwrap(),
+    )
+    .unwrap();
+    let settings = settings(&config);
+    // It wakes no editor conversation yet, so it reads as off.
+    assert_eq!(settings.get()[SETTING], json!(false));
+    assert!(!settings.waits());
+    settings.refresh().unwrap();
+    assert_eq!(settings.get()[SETTING], json!(true));
+    let written = hooks(&config);
+    assert_eq!(
+        written["hooks"]["stop"],
+        json!([
+            {"command": "./audit.sh"},
+            {"command": format!("{ours} --wait"), "timeout": 3600, "loop_limit": null},
+        ])
+    );
+    assert_eq!(
+        written["hooks"]["beforeSubmitPrompt"],
+        json!([{"command": ours, "timeout": 10}])
+    );
+    assert!(settings.waits());
+    // Up to date, it is not written again; turned off, it stays off.
+    let current = std::fs::read(config.hooks_file()).unwrap();
+    settings.refresh().unwrap();
+    assert_eq!(std::fs::read(config.hooks_file()).unwrap(), current);
+    settings.set(SETTING, &json!(false)).unwrap().unwrap();
+    let off = std::fs::read(config.hooks_file()).unwrap();
+    settings.refresh().unwrap();
+    assert_eq!(std::fs::read(config.hooks_file()).unwrap(), off);
+}
+
+#[test]
+fn an_earlier_install_that_cannot_be_brought_up_to_date_reads_as_off() {
+    let (_temp, config, _table) = world();
+    std::fs::create_dir_all(config.hooks_file().parent().unwrap()).unwrap();
+    let ours = "/opt/relay/agent-relay-probe relay cursor-hook";
+    let earlier = json!({"version": 1, "hooks": {
+        "postToolUse": [{"command": ours, "timeout": 10}],
+        "stop": [{"command": ours, "timeout": 10}],
+        "beforeSubmitPrompt": "./audit.sh",
+    }});
+    std::fs::write(
+        config.hooks_file(),
+        serde_json::to_vec_pretty(&earlier).unwrap(),
+    )
+    .unwrap();
+    let before = std::fs::read(config.hooks_file()).unwrap();
+    let settings = settings(&config);
+    let refused = "~/.cursor/hooks.json has a beforeSubmitPrompt value that is not a list, so it was left unchanged";
+    assert_eq!(settings.refresh(), Err(refused.to_string()));
+    assert_eq!(std::fs::read(config.hooks_file()).unwrap(), before);
+    assert_eq!(settings.get()[SETTING], json!(false));
+    // Turning it on tries again and says why it cannot.
+    assert_eq!(
+        settings.set(SETTING, &json!(true)),
+        Some(Err(refused.to_string()))
+    );
+    assert_eq!(std::fs::read(config.hooks_file()).unwrap(), before);
+}
+
+#[test]
+fn turning_the_setting_off_waits_for_a_claim_under_way_and_stops_the_next() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (_temp, config, _table) = world();
+    std::fs::create_dir_all(config.hooks_file().parent().unwrap()).unwrap();
+    let settings = settings(&config);
+    settings.set(SETTING, &json!(true)).unwrap().unwrap();
+    let (claiming, turning_off, off) = (
+        AtomicBool::new(false),
+        AtomicBool::new(false),
+        AtomicBool::new(false),
+    );
+    std::thread::scope(|scope| {
+        let setter = scope.spawn(|| {
+            while !claiming.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            turning_off.store(true, Ordering::SeqCst);
+            settings.set(SETTING, &json!(false)).unwrap().unwrap();
+            off.store(true, Ordering::SeqCst);
+        });
+        // The claim sees turning the setting off start and not get through.
+        let held = settings.while_waiting(|| {
+            claiming.store(true, Ordering::SeqCst);
+            while !turning_off.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(300);
+            while std::time::Instant::now() < until && !off.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            !off.load(Ordering::SeqCst)
+        });
+        assert_eq!(held, Some(true));
+        setter.join().unwrap();
+    });
+    assert!(off.load(Ordering::SeqCst));
+    assert_eq!(settings.while_waiting(|| ()), None);
+}
+
+#[test]
+fn a_setting_whose_lock_cannot_be_taken_is_left_as_it_is() {
+    let (_temp, config, _table) = world();
+    std::fs::create_dir_all(config.hooks_file().parent().unwrap()).unwrap();
+    let settings = settings(&config);
+    settings.set(SETTING, &json!(true)).unwrap().unwrap();
+    let on = std::fs::read(config.hooks_file()).unwrap();
+    // The lock cannot be opened.
+    std::fs::remove_file(settings.lock_path()).unwrap();
+    std::fs::create_dir(settings.lock_path()).unwrap();
+    assert_eq!(
+        settings.set(SETTING, &json!(false)),
+        Some(Err(
+            "Agent Relay could not lock its Cursor hooks, so ~/.cursor/hooks.json was left unchanged"
+                .to_string()
+        ))
+    );
+    assert_eq!(std::fs::read(config.hooks_file()).unwrap(), on);
+    assert_eq!(settings.while_waiting(|| ()), None);
+}
+
+#[test]
+fn a_cursor_cli_session_answers_its_turn_at_once() {
+    let (_temp, config, table) = world();
+    // hook (501) → cursor-agent (400), which holds `SESSION`.
+    table.insert(501, shell(400));
+    let never = || false;
+    let always = || true;
+    let claiming = |claim: &mut dyn FnMut() -> Option<wait::Ended>| claim();
+    let watch = wait::Watch {
+        pid: 501,
+        until: std::time::Instant::now() + Duration::from_secs(30),
+        poll: Duration::from_millis(10),
+        stopping: &never,
+        installed: &always,
+        claiming: &claiming,
+    };
+    let stop = |loop_count: u64| {
+        json!({
+            "hook_event_name": "stop",
+            "conversation_id": SESSION,
+            "status": "completed",
+            "generation_id": "gen-1",
+            "loop_count": loop_count,
+        })
+    };
+    let run = |payload: &Value| {
+        let mut written = Vec::new();
+        let answered = run_hook(&config, &table, 501, payload, Some(&watch), &mut |output| {
+            written.push(output.clone());
+            true
+        });
+        (answered, written)
+    };
+    // With nothing pending it says nothing at once, rather than waiting.
+    let started = std::time::Instant::now();
+    assert_eq!(run(&stop(0)), (false, vec![]));
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(!config
+        .inbox()
+        .join("waiting")
+        .join(format!("{SESSION}.wait"))
+        .exists());
+    send(&config, &table, uid(), SESSION, "m-1", "ping");
+    // Cursor's own limit of follow-ups in a row, which the waiting entry
+    // lifts, still holds for a Cursor CLI session.
+    assert_eq!(run(&stop(5)), (false, vec![]));
+    assert_eq!(
+        run(&stop(4)),
+        (true, vec![json!({"followup_message": "ping"})])
+    );
 }
 
 #[test]
@@ -669,6 +866,12 @@ fn hook_commands_are_recognized_per_build() {
     );
     assert!(dev.is_ours("/opt/agent-relay-probe relay cursor-hook --dev"));
     assert!(!dev.is_ours("/opt/agent-relay-probe relay cursor-hook"));
+    // The waiting `stop` entry is each build's too.
+    assert!(settings.is_ours("/opt/relay/agent-relay-probe relay cursor-hook --wait"));
+    assert!(!settings.is_ours("/opt/relay/agent-relay-probe relay cursor-hook --wait --dev"));
+    assert!(dev.is_ours("/opt/agent-relay-probe relay cursor-hook --wait --dev"));
+    assert!(!dev.is_ours("/opt/agent-relay-probe relay cursor-hook --wait"));
+    assert!(!settings.is_ours("/opt/relay/agent-relay-probe relay cursor-hook --wait --wait"));
 }
 
 #[test]
@@ -738,4 +941,21 @@ fn live_cursor_session_gets_its_messages_once() {
         assert!(drained.join(message_file(&session, id)).exists(), "{id}");
     }
     assert!(pending(&config, &session).is_empty());
+}
+
+#[test]
+fn a_hook_with_nothing_to_hand_over_lets_the_prompt_go_on() {
+    let prompt = json!({"hook_event_name": "beforeSubmitPrompt"});
+    assert_eq!(no_answer(&prompt), json!({"continue": true}));
+    assert_eq!(no_answer(&json!({"hook_event_name": "stop"})), json!({}));
+}
+
+#[test]
+fn every_build_edits_hooks_under_one_lock_and_turning_off_makes_none() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = CursorConfig::from_env(&|_| None, temp.path());
+    let dev = config.clone().development(true);
+    assert_eq!(settings(&config).lock_path(), settings(&dev).lock_path());
+    assert_eq!(settings(&config).set(SETTING, &json!(false)), Some(Ok(())));
+    assert!(!settings(&config).lock_path().exists());
 }

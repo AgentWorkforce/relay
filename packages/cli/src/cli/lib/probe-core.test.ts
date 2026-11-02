@@ -253,6 +253,21 @@ describe('enableDelivery', () => {
     ]);
   });
 
+  it('turns on Cursor through its hooks setting, and keeps the other tools when an older core refuses it', async () => {
+    const on = await enableDelivery(client({ auto_activate: true }), ['cursor']);
+    expect(on.results).toEqual([
+      expect.objectContaining({ id: 'cursor', status: 'on', route: 'hooks in ~/.cursor/hooks.json' }),
+    ]);
+    expect(on.turnedOn).toEqual(['cursor_direct_delivery']);
+
+    const refused = client({ auto_activate: true }, ['cursor_direct_delivery']);
+    const outcome = await enableDelivery(refused, ['cursor', 'grok']);
+    expect(outcome.results).toEqual([
+      expect.objectContaining({ id: 'cursor', status: 'failed' }),
+      expect.objectContaining({ id: 'grok', status: 'on' }),
+    ]);
+  });
+
   it('reports a refused setting as a failure for that tool only', async () => {
     const core = client({ auto_activate: true }, ['devin_direct_delivery']);
     const outcome = await enableDelivery(core, ['devin', 'grok']);

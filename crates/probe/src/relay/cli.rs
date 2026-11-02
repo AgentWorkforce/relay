@@ -421,52 +421,80 @@ pub fn devin_hook(development: bool) -> Result<()> {
 }
 
 /// Agent Relay's Cursor CLI hook (`cursor_cli::CursorSettings` installs it
-/// for `postToolUse` and `stop`). Reads Cursor's hook payload and, only
-/// when this process runs under the `cursor-agent` holding the payload's
-/// conversation, claims that session's staged messages and prints them:
+/// for `postToolUse`, `stop` and `beforeSubmitPrompt`). Reads Cursor's hook
+/// payload and, only when this process runs under the `cursor-agent`
+/// holding the payload's conversation or directly under a Cursor editor
+/// window's extension host (which it records as running that
+/// conversation), claims that session's staged messages and prints them:
 /// `additional_context` after a tool call, `followup_message` when the turn
-/// completes. A claim is tombstoned once the answer is written and put back
-/// if it is not. Anything else prints `{}` and exits 0, so a hook can never
-/// break the session it runs in. `--dev` selects Agent Relay Dev's inbox.
-pub fn cursor_hook(development: bool) -> Result<()> {
+/// completes. With `--wait` (the `stop` entry) an editor conversation's
+/// completed turn with nothing pending waits for its next message instead
+/// (`cursor_cli::wait`). A claim is tombstoned once the answer is written
+/// and put back if it is not (`cursor_cli::run_hook`). Anything else exits 0
+/// with `cursor_cli::no_answer`'s output (`{}`, or `{"continue":true}` for
+/// `beforeSubmitPrompt`), so a hook can never break the session it runs in.
+/// `--dev` selects Agent Relay Dev's inbox.
+pub fn cursor_hook(development: bool, wait: bool) -> Result<()> {
+    use crate::relay::cursor_cli::{wait as waiting, CursorConfig, CursorSettings};
     let mut input = Vec::new();
     let _ = std::io::stdin().take(4 << 20).read_to_end(&mut input);
     let payload = serde_json::from_slice::<Value>(&input).unwrap_or_else(|_| json!({}));
-    let answer = paths::home().ok().and_then(|home| {
-        let config =
-            crate::relay::cursor_cli::CursorConfig::from_env(&|key| std::env::var(key).ok(), &home)
-                .development(development);
-        let session = crate::relay::cursor_cli::payload_session(&payload)?;
-        let table = crate::relay::process::SystemProcesses::default();
-        #[cfg(unix)]
-        let parent = std::os::unix::process::parent_id() as i32;
-        #[cfg(not(unix))]
-        let parent = {
-            use crate::relay::process::ProcessTable;
-            table
-                .process(std::process::id() as i32)
-                .map_or(0, |process| process.parent)
-        };
-        if !crate::relay::cursor_cli::hook_caller_holds(&config, &table, parent, session) {
-            return None;
-        }
-        crate::relay::cursor_cli::hook_answer(&config, &payload).map(|answer| (config, answer))
-    });
     let mut stdout = std::io::stdout();
-    let Some((config, answer)) = answer else {
-        stdout.write_all(b"{}\n")?;
-        return Ok(());
-    };
-    let written = serde_json::to_vec(&answer.output)
-        .map_err(std::io::Error::other)
-        .and_then(|bytes| {
-            stdout.write_all(&bytes)?;
-            stdout.write_all(b"\n")?;
-            stdout.flush()
+    let mut answered = false;
+    if let Ok(home) = paths::home() {
+        let config =
+            CursorConfig::from_env(&|key| std::env::var(key).ok(), &home).development(development);
+        let table = crate::relay::process::SystemProcesses::default();
+        // From this process, so its own environment is checked too.
+        let pid = std::process::id() as i32;
+        let settings = CursorSettings::new(
+            &config,
+            CursorSettings::command_for(&std::env::current_exe().unwrap_or_default(), development),
+        );
+        let interrupts = wait.then(waiting::Interrupts::install);
+        let stopping = || {
+            interrupts
+                .as_ref()
+                .is_some_and(waiting::Interrupts::requested)
+        };
+        let installed = || settings.waits();
+        let claiming = |claim: &mut dyn FnMut() -> Option<waiting::Ended>| {
+            settings
+                .while_waiting(claim)
+                .unwrap_or(Some(waiting::Ended::Removed))
+        };
+        let watch = wait.then(|| waiting::Watch {
+            pid,
+            until: std::time::Instant::now() + waiting::WAIT,
+            poll: waiting::POLL,
+            stopping: &stopping,
+            installed: &installed,
+            claiming: &claiming,
         });
-    match written {
-        Ok(()) => crate::relay::cursor_cli::drain(&answer.claimed),
-        Err(_) => crate::relay::cursor_cli::unclaim(&config, &answer.claimed),
+        let mut write = |output: &Value| {
+            answered = true;
+            serde_json::to_vec(output)
+                .map_err(std::io::Error::other)
+                .and_then(|bytes| {
+                    stdout.write_all(&bytes)?;
+                    stdout.write_all(b"\n")?;
+                    stdout.flush()
+                })
+                .is_ok()
+        };
+        crate::relay::cursor_cli::run_hook(
+            &config,
+            &table,
+            pid,
+            &payload,
+            watch.as_ref(),
+            &mut write,
+        );
+    }
+    if !answered {
+        let output = crate::relay::cursor_cli::no_answer(&payload);
+        stdout.write_all(output.to_string().as_bytes())?;
+        stdout.write_all(b"\n")?;
     }
     Ok(())
 }

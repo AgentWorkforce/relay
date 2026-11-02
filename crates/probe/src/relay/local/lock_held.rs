@@ -32,18 +32,31 @@ pub(super) fn discover_devin(
     }
 }
 
-/// The caller, when the walk reaches a `devin` or `cursor-agent` process of
-/// this user's at `current`: the session whose file it holds open, or
-/// nobody. A Devin or Cursor command that is not a session never lends a
-/// caller the outer session's identity. `None` lets the walk go on.
+/// The caller `pid`, when the walk up from it reaches a `devin` or
+/// `cursor-agent` process of this user's at `current`: the session whose
+/// file it holds open, or nobody. A Devin or Cursor command that is not a
+/// session never lends a caller the outer session's identity. At a Cursor
+/// editor window's extension host, the conversation the caller's own
+/// `CURSOR_CONVERSATION_ID` names, or nobody. `None` lets the walk go on.
 pub(super) fn caller(
     config: &LocalConfig,
     table: &dyn ProcessTable,
+    pid: i32,
     current: i32,
     process: ProcessInfo,
 ) -> Option<Result<Target, CallerMiss>> {
     if process.uid != config.uid {
         return None;
+    }
+    if cursor_cli::editor::is_editor_host(table, current) {
+        let session = cursor_cli::editor_caller(&config.cursor, table, pid, current);
+        let same = table.process(current) == Some(process);
+        return Some(
+            session
+                .filter(|_| same)
+                .map(|id| Target::new(SessionKind::CursorCli, id))
+                .ok_or(CallerMiss::NotASession),
+        );
     }
     let (kind, session) = if devin::is_devin_process(table, current) {
         (
@@ -51,10 +64,11 @@ pub(super) fn caller(
             devin::held_session(&config.devin, table, current),
         )
     } else if cursor_cli::is_cursor_process(table, current) {
-        (
-            SessionKind::CursorCli,
-            cursor_cli::held_session(&config.cursor, table, current),
-        )
+        let session = cursor_cli::held_session(&config.cursor, table, current);
+        if session.is_none() && cursor_cli::editor::is_editor_worker(table, current) {
+            return None;
+        }
+        (SessionKind::CursorCli, session)
     } else {
         return None;
     };
@@ -74,7 +88,7 @@ pub(super) fn can_reply(config: &LocalConfig, table: &dyn ProcessTable, target: 
     match target.kind {
         SessionKind::Devin => devin::held(&config.devin, table, config.uid, &target.id).is_some(),
         SessionKind::CursorCli => {
-            cursor_cli::held(&config.cursor, table, config.uid, &target.id).is_some()
+            cursor_cli::running(&config.cursor, table, config.uid, &target.id)
         }
         _ => false,
     }

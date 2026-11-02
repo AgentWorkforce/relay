@@ -775,7 +775,7 @@ describe('relay init agent tools (non-interactive)', () => {
   });
 
   it.each([
-    [['--tools', 'cursor'], /Unknown tool for --tools: cursor/],
+    [['--tools', 'windsurf'], /Unknown tool for --tools: windsurf/],
     [['--tools', 'gemini,vscode,windsurf'], /Unknown tools/],
     [['--scope', 'everywhere'], /Expected project or global/],
   ])('rejects %j before changing anything', async (args, message) => {
@@ -870,7 +870,9 @@ describe('relay init guided flow', () => {
     );
     expect(script.shown.join('\n')).not.toContain('not trusted yet');
     // Detected tools are pre-checked; every supported tool is offered.
-    expect(script.shown).toContain('options Claude Code*,Codex,OpenCode,Grok CLI,Pi*,Devin (local CLI)');
+    expect(script.shown).toContain(
+      'options Claude Code*,Codex,OpenCode,Grok CLI,Pi*,Devin (local CLI),Cursor (editor and CLI)'
+    );
     expect(createWorkspace).not.toHaveBeenCalled();
     expect(boundOrigin('rk_live_corp')).toBe('https://relay.corp.test');
     expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
@@ -1135,6 +1137,7 @@ function fakeCore(
     opencode_auto_activate: false,
     grok_leader: false,
     devin_direct_delivery: false,
+    cursor_direct_delivery: false,
     pi_extension: false,
     pi_auto_activate: false,
     ...options.settings,
@@ -1788,6 +1791,42 @@ describe('relay init message injection', () => {
     await run('--tools', 'claude');
     expect(core.settings.direct_delivery).toBe(false);
     expect(logs.join('\n')).toContain('messages are held for your approval unless it is "accept"');
+  });
+
+  it('reports a core refusing Cursor delivery and leaves it off', async () => {
+    installedProbe();
+    const core = fakeCore({
+      running: true,
+      settings: { auto_activate: true, cursor_direct_delivery: false },
+      refuse: ['cursor_direct_delivery'],
+    });
+    const { run, logs } = setup(core.deps);
+    await run('--tools', 'cursor');
+    expect(core.settings.cursor_direct_delivery).toBe(false);
+    expect(logs.join('\n')).toContain('cursor_direct_delivery is not available');
+  });
+
+  it('turns on Cursor delivery and turns it off again on --uninstall', async () => {
+    installedProbe();
+    const core = fakeCore({ running: true, settings: { auto_activate: true } });
+    await setup(core.deps).run('--tools', 'cursor');
+    expect(core.settings.cursor_direct_delivery).toBe(true);
+
+    const { run, logs } = setup(core.deps);
+    await run('--uninstall');
+    expect(core.settings.cursor_direct_delivery).toBe(false);
+    expect(logs.join('\n')).toContain('turned off what relay init turned on (cursor_direct_delivery)');
+  });
+
+  it('leaves Cursor delivery on at --uninstall when the person had it on already', async () => {
+    installedProbe();
+    const core = fakeCore({
+      running: true,
+      settings: { auto_activate: true, cursor_direct_delivery: true },
+    });
+    await setup(core.deps).run('--tools', 'cursor');
+    await setup(core.deps).run('--uninstall');
+    expect(core.settings.cursor_direct_delivery).toBe(true);
   });
 
   it('turns off on --uninstall exactly what it turned on, and only for the user scope', async () => {

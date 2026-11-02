@@ -2,8 +2,8 @@
  * The Agent Relay core (`agent-relay-probe`): the per-user daemon that finds
  * the coding-agent sessions running on this machine and injects Relay
  * messages into them through each tool's own route (Claude Code's session
- * inbox, Codex hooks and queue, the OpenCode and Pi plugins, Devin hooks,
- * Grok's leader socket). `relay init` installs it from a `probe-v<version>`
+ * inbox, Codex hooks and queue, the OpenCode and Pi plugins, Devin and Cursor
+ * hooks, Grok's leader socket). `relay init` installs it from a `probe-v<version>`
  * GitHub release of this repository, runs it in the background, and turns on
  * the core's delivery settings for the agent tools the person picked.
  *
@@ -376,6 +376,10 @@ export const PROBE_DELIVERY: Record<ToolId, { settings: CoreSetting[]; route: st
   devin: {
     settings: [setting('devin_direct_delivery')],
     route: 'lifecycle hooks in ~/.config/devin/config.json',
+  },
+  cursor: {
+    settings: [setting('cursor_direct_delivery')],
+    route: 'hooks in ~/.cursor/hooks.json',
   },
 };
 
