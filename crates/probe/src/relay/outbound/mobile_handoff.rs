@@ -54,9 +54,8 @@ impl Outbound {
                 "Unknown route. Common session-socket routes: GET /agents, GET /whoami, POST /send, \
                  POST /register, GET|PATCH /settings, GET /messages, POST /attachments/fetch, \
                  POST|DELETE /channels/subscribe, POST /connect/join, POST /connect/send, \
-                 GET /connect/status, POST /connect/leave; setup, webhook and integration \
-                 routes are in docs/agent-driven-setup.md, injected-message routes in \
-                 docs/injectable-agents.md.",
+                 GET /connect/status, POST /connect/leave, and the setup, webhook and \
+                 integration routes.",
             )),
         }
     }
@@ -105,9 +104,9 @@ impl Outbound {
             .store
             .read(|store| store.teammate_native_input_on());
         let (action, waiting) = journal::edit(&self.core.config.app_data_dir, |queue| {
-            let action =
-                queue.poll_allowing(&binding, &runtime, teammates, crate::relay::state::now_ms());
-            let waiting = action.is_none() && queue.queued(&binding);
+            let now = crate::relay::state::now_ms();
+            let action = queue.poll_allowing(&binding, &runtime, teammates, now);
+            let waiting = action.is_none() && queue.queued(&binding, now);
             Ok((action, waiting))
         })
         .map_err(error)?;

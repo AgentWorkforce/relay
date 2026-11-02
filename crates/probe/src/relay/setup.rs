@@ -26,7 +26,8 @@
 //! No route waits on work it does not report. The local defaults are applied
 //! in place; the uploader's sharing mode and Relaycast's verification of a
 //! newly found workspace key continue in the background, and `/setup/status`
-//! answers from the last state they left. See docs/agent-driven-setup.md.
+//! answers from the last state they left. See "The relay-send socket"
+//! in docs/relay-core.md.
 
 mod account_status;
 mod uploader_cache;

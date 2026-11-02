@@ -83,7 +83,8 @@ impl SandboxRules {
                 "read" => "Reads a message Agent Relay relayed to this session",
                 "fetch-attachment" => "Fetches an attachment sent to this session",
                 "subscribe-channel" => "Joins or leaves one channel as this session",
-                _ => "Answers in the Relay Connect room this session joined",
+                "connect-send" => "Answers in the Relay Connect room this session joined",
+                other => panic!("no sandbox rule justification for `{other}`"),
             };
             let words = pattern
                 .iter()

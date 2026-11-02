@@ -662,6 +662,18 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn the_claude_cloud_health_is_carried_into_the_view() {
+        assert!(view(json!({})).claude_cloud.is_none());
+        let health = view(json!({"claude_cloud": {
+            "state": "needs_attention", "reason": "Sign in to Claude Code.", "at_ms": 5,
+        }}))
+        .claude_cloud
+        .unwrap();
+        assert_eq!(health.reason.as_deref(), Some("Sign in to Claude Code."));
+        assert_eq!(health.at_ms, Some(5));
+    }
+
+    #[test]
     fn titles_are_single_line_and_projects_are_the_folder() {
         let session = row(json!({"source": "codex", "session_id": "s1",
                                  "title": "First line\n  second", "cwd": "/home/a/Projects/relay/"}));

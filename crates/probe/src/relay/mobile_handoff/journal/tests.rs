@@ -377,7 +377,11 @@ fn an_open_doorbell_keeps_a_message_waiting_through_a_long_turn() {
     let mut live = Journal::default();
     live.enqueue(binding(), "delivery", "hello", 0).unwrap();
     live.enqueue(binding(), "other", "later", 0).unwrap();
-    assert!(live.queued(&binding()));
+    assert!(live.queued(&binding(), 0));
+    assert!(
+        !live.queued(&binding(), LEASE_MS),
+        "a lapsed lease is not waiting"
+    );
     // No poll while Claude works: the delivery's retries keep it waiting.
     let mut now = 0;
     while now < 10 * LEASE_MS {
@@ -397,7 +401,7 @@ fn an_open_doorbell_keeps_a_message_waiting_through_a_long_turn() {
         live.poll(&binding(), &runtime(false), now),
         Some(Action::Submit { .. })
     ));
-    assert!(!live.queued(&binding()), "collected, no longer queued");
+    assert!(!live.queued(&binding(), now), "collected, no longer queued");
 
     // Another session's message is neither kept nor reported.
     let other = Binding {
@@ -408,7 +412,7 @@ fn an_open_doorbell_keeps_a_message_waiting_through_a_long_turn() {
     journal
         .enqueue(other.clone(), "delivery", "hello", 0)
         .unwrap();
-    assert!(!journal.queued(&binding()));
+    assert!(!journal.queued(&binding(), 0));
     journal.keep_waiting(&binding().scope, "delivery", LEASE_MS - 1);
     assert_eq!(
         journal.previous(&other.scope, "delivery", true, LEASE_MS),

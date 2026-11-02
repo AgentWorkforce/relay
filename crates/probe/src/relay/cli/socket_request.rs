@@ -15,7 +15,7 @@ use std::path::Path;
 /// name the self-limiting commands in `session_cli` instead. On
 /// Windows the session socket is a named pipe, which curl cannot open, so
 /// this is the only client there: it also carries the agent-led setup
-/// routes (`docs/agent-driven-setup.md`) that a script drives with curl over
+/// routes ("The relay-send socket" in `docs/relay-core.md`) that a script drives with curl over
 /// the Unix socket elsewhere.
 pub(super) fn socket_request_allowed(method: &str, path: &str) -> bool {
     if path.bytes().any(|byte| byte <= b' ' || byte == 0x7f) {
@@ -51,10 +51,7 @@ pub(super) fn socket_request_allowed(method: &str, path: &str) -> bool {
         "PATCH" => path == "/settings",
         "DELETE" => {
             path.starts_with("/channels/subscribe?channel=")
-                || matches!(
-                    path,
-                    "/register" | "/integrations/subscribe" | "/connect/join" | "/webhooks"
-                )
+                || matches!(path, "/register" | "/integrations/subscribe" | "/webhooks")
         }
         _ => false,
     }

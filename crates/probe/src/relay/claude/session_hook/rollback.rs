@@ -32,10 +32,17 @@ fn restore_written(
     error: String,
     restore: &mut impl FnMut(&Path, &Option<Vec<u8>>) -> Result<(), String>,
 ) -> String {
+    // Every written file is put back, even after one fails to be.
+    let mut first_failure = None;
     for (path, previous) in written.iter().rev() {
         if let Err(restore_error) = restore(path, previous) {
-            return format!("{error} Restoring the other logins failed: {restore_error}");
+            first_failure.get_or_insert(restore_error);
         }
     }
-    error
+    match first_failure {
+        Some(restore_error) => {
+            format!("{error} Restoring the other logins failed: {restore_error}")
+        }
+        None => error,
+    }
 }

@@ -28,12 +28,10 @@
 //! | `sessions` | The `SessionDirectory` trait: sessions on this computer |
 //! | `cloud_session` | The `CloudAccess` trait; Cloud session calls: refresh, handoff exchange, revoke, whoami, workspace resolve; where the session is kept |
 //! | `cloud_http` | One redirect-free, bounded JSON request to Cloud |
-//! | `cloud_login` | Device sign-in, for Relay Connect hosts |
-//! | `account` | Sign-in, the kept session, the account workspace, sign-out; the daemon's `CloudAccess` |
+//! | `cloud_login` | Device sign-in, for Relay Connect hosts (`agent-relay cloud login`); an account (sign-in, its bridge methods) is a plugin the core is built with (`daemon::plugins::AccountPlugin`) |
 //! | `uploader` | The probe's own capture and upload: its commands, status stages, supervision |
 //! | `probe_copy` | The command-line copy of the probe in `~/.local/bin`, only ever upgraded |
 //! | `probe_alias` | The space-free link to the probe that Codex and Claude Code rules and reply hints name while their hooks are on |
-//! | `account_methods` | The bridge methods for the account, uploader, Skip chat, contractor access, telemetry, launch at login |
 //! | `cloud_chat` | Skip chat: requests, the saved conversation and project view, pushes |
 //! | `messaging` | Messaging as the signed-in person; exact-address proof |
 //! | `people` | Workspace members and the agent roster |
@@ -50,6 +48,7 @@
 //! | `claude_settings` | Claude Code's `crossSessionInbound` (`direct_delivery`) |
 //! | `claude_delivery_policy` | Claude Code per-session and per-sender consent, held approvals |
 //! | `local` | This computer's `SessionDirectory` and `Injector`, and the plugins `relay serve` runs with |
+//! | `fleet` | Fleet workers: broker discovery, `/api/spawned`, `fleet.list` and `fleet.release` |
 //! | `local_methods` | `sessions.list` and the sessions watcher |
 //! | `outbound` | The relay-send socket: sessions send, list, register and run setup |
 //! | `setup` | Agent-led setup routes and defaults |

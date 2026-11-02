@@ -3931,7 +3931,7 @@ async fn the_socket_identifies_callers_by_kernel_pid() {
     for route in [
         "GET /agents",
         "POST /connect/leave",
-        "docs/agent-driven-setup.md",
+        "the setup, webhook and integration routes",
     ] {
         assert!(message.contains(route), "{route} missing from {message}");
     }

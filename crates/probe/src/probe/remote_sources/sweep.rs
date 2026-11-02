@@ -133,13 +133,14 @@ pub(super) fn sweep_with(
     if ready.is_empty() {
         return Ok(Some(outcome));
     }
+    let started = Pacing::load(db);
     let mut run = Run {
         pass: &pass,
         ready: &ready,
         store,
         db,
         now: now_ms(),
-        pacing: Pacing::load(db),
+        pacing: started.clone(),
         started: std::time::Instant::now(),
         attempts: 0,
         signed_out: BTreeSet::new(),
@@ -169,7 +170,7 @@ pub(super) fn sweep_with(
     run.pacing.waiting = waiting;
     outcome.connector_failures = run.pacing.connector_failures();
     outcome.pacing = run.pacing.json();
-    run.pacing.save(db)?;
+    run.pacing.save_after_sweep(db, &started, run.now)?;
     Ok(Some(outcome))
 }
 
@@ -188,6 +189,18 @@ pub(super) fn note_download(
     let Some((connector, _)) = ready.iter().find(|(_, s)| *s == source) else {
         return;
     };
+    Pacing::locked(db, || {
+        note_download_locked(db, connector, source, session_id, result)
+    });
+}
+
+fn note_download_locked(
+    db: &Path,
+    connector: &str,
+    source: &str,
+    session_id: &str,
+    result: &Result<Option<bool>>,
+) {
     let mut pacing = Pacing::load(db);
     let before = pacing.clone();
     match result {

@@ -2337,7 +2337,7 @@ mod tests {
         (router, elapsed)
     }
 
-    // ms-cloudlat on Finn-Mac-Mini: a terminal Codex started in plain tmux,
+    // A terminal Codex started in plain tmux,
     // never spawned by the desktop, joined and got DMs mid-turn through its
     // queue. After a core restart, an idle DM went straight in instead of
     // waiting "behind an earlier relay message" for each one it already had.
@@ -2349,7 +2349,7 @@ mod tests {
         let steered = |n: usize| {
             let id = format!("steered-{n}");
             let text = format!(
-                "[via Agent Relay — from @ms-lead to @codex-ms-cloudlat · message {id} · ref {}]\\n\\ngo",
+                "[via Agent Relay — from @lead to @codex-worker · message {id} · ref {}]\\n\\ngo",
                 MessageRef::of(&id)
             );
             [
@@ -2382,8 +2382,8 @@ mod tests {
         assert_eq!(fake.app_sends.load(Ordering::SeqCst), 1);
     }
 
-    // After a restart with a large backlog in the transcript (112 on
-    // ms-cloudlat), the queue read says none of it is pending: every new DM
+    // After a restart with a large backlog in the transcript (112 in one
+    // session), the queue read says none of it is pending: every new DM
     // goes in at once, each exactly once, with no two-minute wait per entry.
     #[test]
     fn a_restart_with_a_big_backlog_drains_at_once_without_duplicates() {

@@ -41,15 +41,20 @@ fn contract() -> &'static Contract {
     CONTRACT.get_or_init(|| Contract::collect(&[]))
 }
 
-/// Method `M`'s result.
+/// Method `M`'s result. A method this contract does not list (an
+/// extension's) is read strictly with its own type.
 pub fn result<M: Method>(value: Value) -> Result<M::Result, Unreadable> {
     let contract = contract();
-    let ty = contract
+    let Some(ty) = contract
         .methods
         .iter()
         .find(|method| method.name == M::NAME)
         .map(|method| &method.result)
-        .expect("every Method is registered");
+    else {
+        return serde_json::from_value(value).map_err(|error| Unreadable {
+            detail: format!("{}: {error}", M::NAME),
+        });
+    };
     read(contract, ty, value, M::NAME)
 }
 
@@ -188,6 +193,18 @@ mod tests {
     use crate::relay::contract::{connection, method};
     use crate::relay::protocol::ErrorKind;
     use serde_json::json;
+
+    #[test]
+    fn an_extension_methods_result_is_read_strictly_not_refused() {
+        struct Ping;
+        impl Method for Ping {
+            const NAME: &'static str = "extension.ping";
+            type Params = crate::relay::contract::NoParams;
+            type Result = crate::relay::contract::Done;
+        }
+        assert!(result::<Ping>(json!({})).is_ok());
+        assert!(result::<Ping>(json!(7)).is_err());
+    }
 
     #[test]
     fn unknown_topics_and_methods_in_a_handshake_are_left_out() {

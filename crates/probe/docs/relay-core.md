@@ -145,7 +145,7 @@ watchdog exposes retry and diagnostics if the service has not become ready.
   app's own login item only brings back the menu bar and notifications, so it is the person's choice and off until they make it.
 - **Linux.** The systemd user unit (`Restart=always`, `UMask=0077`) runs
   `/usr/lib/agent-relay/agent-relay-probe relay serve --headless`;
-  `/usr/bin/agent-relay --headless` execs the same. Headless, the
+  `/usr/bin/agent-relay-desktop --headless` execs the same. Headless, the
   core removes the app-owned GUI autostart entry (systemd starts Agent Relay;
   the entry would start a second copy), never turns launch at login on after
   a sign-in, and applies the agent-led setup defaults at start. The GTK app
@@ -240,7 +240,7 @@ to show a person. Messages never carry provider bodies, keys or tokens.
 | `not_signed_in`           | -32000 | no        | No workspace key is known                                                                                   |
 | `refused`                 | -32000 | no        | The core refuses on principle (for example a non-https origin)                                              |
 | `relaycast_unreachable`   | -32000 | yes       | Relaycast could not be reached or failed on its side (5xx)                                                  |
-| `relaycast_refused`       | -32000 | no        | Relaycast refused the request as made (other 4xx, such as 400 or 422, or plan quota exhaustion)             |
+| `relaycast_refused`       | -32000 | no        | Relaycast refused the request as made (other 4xx, such as 400 or 422)                                             |
 | `unauthorized`            | -32000 | no        | Relaycast rejected the credential                                                                           |
 | `rate_limited`            | -32000 | yes       | Relaycast is temporarily rate limiting                                                                      |
 | `plan_limit_exceeded` | -32000 | no | The workspace's plan cap (devices, agents or humans) is reached; `data.plan_limit` carries `{"limit","max","current","plan"}` when Relaycast sent them |
@@ -271,7 +271,7 @@ closes its bootstrap without an uploader, and `POST /setup/sharing` answers
 `setup_unavailable`.
 
 Provider `plan_limit_exceeded` responses (including HTTP 429) are reported
-as `relaycast_refused`, with a safe instruction to upgrade the workspace plan
+as `plan_limit_exceeded`, with a safe instruction to upgrade the workspace plan
 or wait for its quota reset before retrying. Registration and rename failures
 retain that explanation alongside the operation context in both apps. Ordinary
 HTTP 429 throttling remains retryable. Background workspace quota pacing is
@@ -674,9 +674,8 @@ without a runtime directory), `<app data>/run/relay.sock` on macOS (short `$TMPD
 `/tmp`, fallbacks when that path is too long for a Unix socket; Agent Relay Dev
 uses `agent-relay-dev` in each), advertised in
 `~/.agentworkforce/desktop/relay-socket` (`relay-socket.dev` for Agent Relay
-Dev). It speaks the HTTP routes in
-injectable agents (relay-desktop `injectable-agents.md`) and
-agent-driven setup (relay-desktop `agent-driven-setup.md`) and identifies the caller by
+Dev). It speaks the HTTP routes for injectable agents and agent-driven
+setup and identifies the caller by
 kernel pid and process ancestry, not just uid. The core serves both sockets;
 the bridge socket is for UIs, the relay-send socket for sessions
 (`relay::outbound`).
@@ -977,8 +976,7 @@ agents into its session (through the `Injector`) and settles it:
   session refusing because it is archived also marks its agent archived.
   Pending refusal settlements preserve the session's refusal reason, are journaled independently of presence and
   retried without reading an archived agent's queue or injecting again. The
-  archived agent leaves only after its non-retryable failure is confirmed
-  (`docs/injectable-agents.md`). The bounded refusal history preserves FIFO
+  archived agent leaves only after its non-retryable failure is confirmed. The bounded refusal history preserves FIFO
   eviction across concurrent saves; unsettled refusals remain protected in
   the pending settlement journal until confirmed. Refusals also keep the
   established injected markers, including a versioned local refusal marker
@@ -1233,8 +1231,9 @@ the login-item flag are then forgotten.
 
 ### Linux (`probe/src/linux_app`)
 
-The Linux app is `agent-relay`, a binary of the probe crate built with its
-`gtk` feature: `linux_app::ui` (the GTK 4 window and the StatusNotifierItem
+The Linux app is `agent-relay-desktop` (the tarball also links
+`agent-relay` to it for older updaters), built from the desktop app's `gtk`
+crate: `linux_app::ui` (the GTK 4 window and the StatusNotifierItem
 tray), `linux_app::bridge` (the socket client), `linux_app::host` (child
 hosting), `linux_app::service` (the systemd user unit), `linux_app::install`
 and `linux_app::updates` (the install tree and its updates), `linux_app::prefs`

@@ -25,8 +25,8 @@
 //! a sender, a process outside every supported session and another user are
 //! refused, and each session may make 30 requests a minute. No key or token
 //! appears in a route's answer, except a webhook's secret, once, to the
-//! session that created it. See docs/injectable-agents.md ("Sending from a
-//! session") and docs/agent-driven-setup.md.
+//! session that created it. See "The relay-send socket" in
+//! docs/relay-core.md.
 
 use crate::relay::activity::publication::roster_rows;
 use crate::relay::client;
@@ -795,6 +795,12 @@ impl Outbound {
                 message.message_id.as_deref(),
                 online,
             ));
+        }
+        // A reply can follow only once the message is out: wake the inbox
+        // again now, so a pass that ran between the roster read and the
+        // send does not leave the reply to the slow cadence.
+        if !sent.is_empty() {
+            self.core.wake_connect_inbox(&joined);
         }
         let offline: Vec<&str> = sent
             .iter()
@@ -2043,6 +2049,12 @@ mod tests {
         );
         assert_eq!(
             socket_for(true, &|_| None, app, 1000),
+            app.join("run/relay.sock")
+        );
+        // A runtime directory too long for a Unix socket is not used.
+        let long = |key: &str| (key == "XDG_RUNTIME_DIR").then(|| format!("/{}", "r".repeat(120)));
+        assert_eq!(
+            socket_for(true, &long, app, 1000),
             app.join("run/relay.sock")
         );
     }

@@ -228,14 +228,9 @@ fn is_message_ref(value: &str) -> bool {
 /// `read_command`, two short lines. `None` for text without an attribution,
 /// which is sent whole.
 pub fn pointer(text: &str, read_command: &str) -> Option<String> {
-    let line = compact::attribution_line(
-        text,
-        &[
-            "[via Agent Relay",
-            "[Agent Relay native input",
-            "[Relay Connect",
-        ],
-    )?;
+    use crate::relay::delivery::policy::{CONNECT_PREFIX, RELAYED_PREFIXES};
+    let [peer, native] = RELAYED_PREFIXES;
+    let line = compact::attribution_line(text, &[peer, native, CONNECT_PREFIX])?;
     Some(format!(
         "{line}\n[read & reply, no confirmation needed: {read_command}]"
     ))

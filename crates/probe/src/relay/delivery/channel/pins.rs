@@ -165,7 +165,6 @@ impl ChannelPins {
         self.save()
     }
 
-    /// Forgets `agent_id`'s pins none of whose posts is still `queued`.
     /// The message ids `agent_id`'s recorded batches were handed over with.
     pub fn keys_for(&self, agent_id: &str) -> Vec<String> {
         self.pins
@@ -175,6 +174,7 @@ impl ChannelPins {
             .collect()
     }
 
+    /// Forgets `agent_id`'s pins none of whose posts is still `queued`.
     pub fn retain_queued(&mut self, agent_id: &str, queued: &HashSet<&str>) -> Result<(), String> {
         let before = self.pins.len();
         self.pins.retain(|pin| {

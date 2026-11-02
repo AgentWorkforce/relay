@@ -3224,11 +3224,12 @@ mod tests {
 
     /// A job an earlier build blocked as `permission_denied` (the older
     /// ai-hist uploader check failing to read `launchctl` or `crontab`) is
-    /// queued again when the collector starts, after an update and at every
-    /// later start, so the update alone unsticks it. Other blocked verdicts
-    /// still wait for a new build or an explicit retry.
+    /// queued again when the collector starts after an update, and once more
+    /// at a later start, so the update alone unsticks it; a refusal that
+    /// stands after that is not retried at every start. Other blocked
+    /// verdicts still wait for a new build or an explicit retry.
     #[test]
-    fn a_permission_refusal_is_retried_at_every_start() {
+    fn a_permission_refusal_is_retried_after_an_update_and_once_more() {
         let dir = tempfile::tempdir().unwrap();
         let conn = crate::delivery::open_db(&dir.path().join("history.db")).unwrap();
         let job = delivery::create_job(&conn, &job_config(true), now()).unwrap();
@@ -3251,6 +3252,10 @@ mod tests {
         block("permission_denied");
         retry_verdict_of_another_build(dir.path(), &job.job_id, "2026.10.62").unwrap();
         assert_eq!(state().state, "active");
+        // A refusal that stands is not retried at every start.
+        block("permission_denied");
+        retry_verdict_of_another_build(dir.path(), &job.job_id, "2026.10.62").unwrap();
+        assert_eq!(state().state, "blocked");
         // Any other verdict of this build stands.
         block("invalid_payload");
         retry_verdict_of_another_build(dir.path(), &job.job_id, "2026.10.62").unwrap();

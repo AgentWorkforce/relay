@@ -122,9 +122,11 @@ impl<'a> Host<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Reach {
     Ready,
-    /// Signed in, but not usable: reported, never run.
+    /// Turned on but not usable (a Claude login that is missing, expired
+    /// or unreadable, or a folder not shared): reported, never run.
     Unusable(&'static str),
-    /// Not signed in: absent, the way a `--all` selection treats it —
+    /// Not set up here (a remote connector not configured, or Claude cloud
+    /// sessions turned off): absent, the way a `--all` selection treats it —
     /// nothing is run, asked for or reported.
     Absent,
 }

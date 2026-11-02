@@ -1,5 +1,5 @@
 //! Fleet workers: the agents this computer's Agent Relay brokers spawned, and
-//! their release. See "Fleet workers" in `docs/injectable-agents.md`.
+//! their release.
 //!
 //! The contract is the files and HTTP surface the `agent-relay` CLI itself
 //! uses, never process lists or terminals:

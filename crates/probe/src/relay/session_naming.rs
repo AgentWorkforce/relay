@@ -121,7 +121,11 @@ fn authority(core: &Core, account: &CloudAccount, generation: u64) -> bool {
 }
 
 /// Automatic edits carry the account and exact registration they were based
-/// on, including across native-title and remote-alias lock waits.
+/// on, including across native-title and remote-alias lock waits. They are
+/// checked (`current`) just before the write, under the title's own lock;
+/// rename, archive and removal take the registration's lock instead, so one
+/// landing between that check and the write is not fenced, only made
+/// unlikely.
 pub(crate) struct AutomaticEdit {
     pub registration: Registration,
     pub account: CloudAccount,

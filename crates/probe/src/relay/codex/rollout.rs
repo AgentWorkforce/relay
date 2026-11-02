@@ -589,7 +589,7 @@ mod tests {
     // the session works, as a terminal Codex started outside the desktop
     // gets them) is written to the history before its UserMessage. It is
     // recorded, never left waiting: a leftover here held every later
-    // message back for minutes after each core restart (ms-cloudlat had 112).
+    // message back for minutes after each core restart (one session had 112).
     #[test]
     fn a_message_steered_into_a_running_turn_does_not_wait_in_the_history() {
         let steered = MessageRef::of("steered-1");

@@ -84,9 +84,14 @@ fn capture_uncaptured_newest_first(
 
 /// A local transcript path the catalog still lists after the file is gone. A
 /// remote session's `raw_path` is a URL, not an absolute path, so it never
-/// matches.
+/// matches. Only a transcript the filesystem says is not there counts: one
+/// that cannot be read (a permission error) is still retried and reported.
 fn transcript_gone(raw_path: Option<&Path>) -> bool {
-    raw_path.is_some_and(|path| path.is_absolute() && !path.exists())
+    raw_path.is_some_and(|path| {
+        path.is_absolute()
+            && std::fs::symlink_metadata(path)
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    })
 }
 
 #[cfg(test)]

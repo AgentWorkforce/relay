@@ -236,6 +236,57 @@ mod tests {
             stderr: stderr.into(),
         })
     }
+    /// Every label `inspect` can push, on every OS path and outcome, is in
+    /// the closed vocabulary.
+    #[test]
+    fn every_job_label_is_in_the_vocabulary() {
+        let mut seen = std::collections::BTreeSet::new();
+        let home = tempfile::tempdir().unwrap();
+        let unreadable = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let agents = unreadable.path().join("Library/LaunchAgents");
+            fs::create_dir_all(&agents).unwrap();
+            fs::set_permissions(&agents, fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let plist = tempfile::tempdir().unwrap();
+        let agents = plist.path().join("Library/LaunchAgents");
+        fs::create_dir_all(&agents).unwrap();
+        fs::write(agents.join("com.ai-hist.push.plist"), "").unwrap();
+        let loaded = || output(true, "- 0 com.ai-hist.push\n", "");
+        let cron = || output(true, "* * * * * ai-hist push # ai-hist push (managed)", "");
+        for os in ["macos", "linux", "windows"] {
+            for root in [home.path(), unreadable.path(), plist.path()] {
+                for (launchctl, crontab) in [
+                    (loaded(), cron()),
+                    (CommandInspection::Failed, CommandInspection::Failed),
+                ] {
+                    let (mut launchctl, mut crontab) = (Some(launchctl), Some(crontab));
+                    let status = inspect(root, os, |program, _| {
+                        if program.contains("launchctl") {
+                            launchctl.take().unwrap()
+                        } else {
+                            crontab.take().unwrap()
+                        }
+                    });
+                    seen.extend(status.jobs);
+                }
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let agents = unreadable.path().join("Library/LaunchAgents");
+            fs::set_permissions(&agents, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // `status`'s own early answers.
+        seen.extend(["legacy-installer-unsupported", "home-unavailable"]);
+        for job in &seen {
+            assert!(JOB_CODES.contains(job), "{job} is not in JOB_CODES");
+        }
+    }
+
     #[test]
     fn clear_when_no_plist_loaded_label_or_active_managed_cron() {
         let home = tempfile::tempdir().unwrap();

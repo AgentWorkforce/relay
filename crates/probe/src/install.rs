@@ -41,8 +41,9 @@ pub const PROBE_NAME: &str = "agent-relay-probe.exe";
 pub const APP: &str = "usr/bin/agent-relay-desktop";
 #[cfg(windows)]
 pub const APP: &str = windows::APP;
-/// The app by the name its launcher entry runs (the npm `agent-relay` CLI
-/// shares the other).
+/// The app by the name its launcher entry runs: on Linux the same path as
+/// [`APP`]. Kept apart because on Windows [`APP`] is the `.exe` in the
+/// MSYS2 prefix, while the launcher entry is Linux's alone.
 pub const DESKTOP_APP: &str = "usr/bin/agent-relay-desktop";
 /// A link to [`APP`] in the tarball only: updaters in releases up to
 /// v2026.10.57 look for this name in the tree they download and relaunch it.

@@ -161,6 +161,10 @@ pub fn retry_job(conn: &Connection, job_id: &str) -> Result<DeliveryStatus> {
 /// Active, paused and cancelled jobs record the build without changing state,
 /// except that a long retry wait is clamped (`clamp_retry_wait`): the
 /// collector runs this as it starts, which an update always does.
+/// Recorded among a job's builds once a `permission_denied` block from
+/// before the older-uploader check was retried (`retry_job_for_build`).
+const LEGACY_PERMISSION_RETRY: &str = "legacy-permission-denied-retry";
+
 pub fn retry_job_for_build(
     conn: &Connection,
     job_id: &str,
@@ -189,15 +193,22 @@ pub fn retry_job_for_build(
     // Earlier builds blocked a job as `permission_denied` when one
     // `launchctl` or `crontab` read failed: the older-uploader check, which
     // is now retried. Nothing stored tells that apart from an account
-    // mismatch or a server 403, so such a job is retried at every start, not
-    // only a new build's: one request per start, and the receiver blocks it
-    // again if the refusal stands.
+    // mismatch or a server 403, so such a job is retried at a new build's
+    // first start and once more at a later start, recorded with
+    // `LEGACY_PERMISSION_RETRY` among its builds; a refusal that stands after
+    // that stays blocked until a new build.
     let failure: Option<String> = tx.query_row(
         "SELECT failure FROM delivery_jobs WHERE id=?",
         [job_id],
         |row| row.get(0),
     )?;
-    let refused = failure.as_deref() == Some(DeliveryFailure::PermissionDenied.code());
+    let refused = !first_run
+        && current.state == "blocked"
+        && failure.as_deref() == Some(DeliveryFailure::PermissionDenied.code())
+        && tx.execute(
+            "INSERT OR IGNORE INTO delivery_job_builds(job_id,build) VALUES (?,?)",
+            params![job_id, LEGACY_PERMISSION_RETRY],
+        )? == 1;
     if (first_run || refused) && current.state == "blocked" {
         reset_job_retry(&tx, job_id)?;
     }

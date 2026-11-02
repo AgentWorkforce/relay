@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 /// Where the relay-send socket lives.
 ///
 /// Linux: `$XDG_RUNTIME_DIR/agent-relay/relay.sock`, private to this user
-/// and cleared at logout; without a runtime directory, `<app data>/run`.
+/// and cleared at logout; without a runtime directory, or with one too long
+/// for a Unix socket, as macOS.
 /// macOS: `<app data>/run/relay.sock`, else a short per-user directory under
 /// `$TMPDIR` (then `/tmp`) when that path is too long for a Unix socket.
 /// Windows: `<app data>/run/relay.sock`, the key of its named pipe.
@@ -34,10 +35,12 @@ pub(super) fn socket_for(
     };
     let preferred = app_data_dir.join("run").join(SOCKET_NAME);
     if linux {
-        return match env("XDG_RUNTIME_DIR").filter(|value| !value.trim().is_empty()) {
-            Some(runtime) => Path::new(runtime.trim()).join(directory).join(SOCKET_NAME),
-            None => preferred,
-        };
+        if let Some(runtime) = env("XDG_RUNTIME_DIR").filter(|value| !value.trim().is_empty()) {
+            let path = Path::new(runtime.trim()).join(directory).join(SOCKET_NAME);
+            if fits_unix_socket(&path) {
+                return path;
+            }
+        }
     }
     if fits_unix_socket(&preferred) {
         return preferred;

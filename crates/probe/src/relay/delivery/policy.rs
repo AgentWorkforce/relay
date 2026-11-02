@@ -315,8 +315,18 @@ pub const NATIVE_HEADER: &str = "[Agent Relay native input — from ";
 /// text behind a pointer (`message_pointer`) asks this, so a new header
 /// cannot slip past the pointer unnoticed.
 pub fn relayed_input(text: &str) -> bool {
-    text.starts_with("[via Agent Relay") || text.starts_with("[Agent Relay native input ")
+    RELAYED_PREFIXES
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
 }
+
+/// The first words of every relayed header [`relayed_input`] accepts; the
+/// pointer (`message_pointer::pointer`) reads the same list.
+/// Each is also the pointer's header word for word, so none ends in a space.
+pub const RELAYED_PREFIXES: [&str; 2] = ["[via Agent Relay", "[Agent Relay native input"];
+
+/// A Relay Connect room message's header, pointed to as relayed input is.
+pub const CONNECT_PREFIX: &str = "[Relay Connect";
 
 /// Twelve hex digits derived from a message id, carried in the injected
 /// attribution line so a transcript turn can be tied back to its message.

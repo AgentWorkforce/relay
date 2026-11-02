@@ -397,13 +397,23 @@ pub(crate) fn all_method_names(core: &Core) -> Vec<&'static str> {
     names
 }
 
-/// The first extension that answers `name`.
+/// The first extension that answers `name`. A method `hello` leaves out (an
+/// account method on a core with no account) is not answered, as for the
+/// core's own account methods.
 async fn extension_call(
     core: &Arc<Core>,
     name: &str,
     raw: Value,
 ) -> Option<Result<Value, RpcError>> {
+    let with_account = core.plugins.account.is_some();
     for extension in &core.plugins.extensions {
+        let offered = extension.specs().iter().any(|spec| {
+            spec.name == name
+                && (with_account || spec.availability == contract::Availability::Always)
+        });
+        if !offered {
+            continue;
+        }
         if let Some(answer) = extension.call(core, name, raw.clone()).await {
             return Some(answer);
         }

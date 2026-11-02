@@ -1152,7 +1152,7 @@ mod tests {
             .exists());
     }
 
-    // docs/injectable-agents.md: the mode is kept and the original is saved
+    // The mode is kept and the original is saved
     // once as settings.json.relay-desktop-backup.
     #[test]
     #[cfg(unix)]

@@ -268,8 +268,10 @@ pub trait Injector: Send + Sync + 'static {
 
     /// What a session's own input route (the Claude plugin's user turn)
     /// hands over in place of relayed `text` while relay messages are
-    /// hidden: the same pointer `inject` gives a terminal session, with the
-    /// text kept for `relay read`. `None` sends `text` whole.
+    /// hidden: the pointer text `inject` gives a terminal session, with the
+    /// text kept for `relay read`. Unlike a Claude `inject`, which is held
+    /// until the session `delivers_directly()`, this route is not held: the
+    /// session's own input takes it at once. `None` sends `text` whole.
     fn native_pointer(&self, _target: &Target, _message_id: &str, _text: &str) -> Option<String> {
         None
     }

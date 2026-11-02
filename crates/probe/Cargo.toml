@@ -116,12 +116,8 @@ relaycast = "10.0.0"
 ryu-js = "1.0.3"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
-serde_yaml = "0.9"
 sha2 = "0.10"
-# Release tarballs the Linux app's updater unpacks (gtk/src/updates.rs).
-tar = "0.4"
 tempfile = "3"
-toml_edit = "0.25"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process"] }
 # The version and TLS stack the relaycast SDK already links, for the node
 # socket it does not expose (see src/relay/sdk_gaps.rs).
@@ -179,5 +175,7 @@ sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 # End of the core's Windows platform shims.
 
 [dev-dependencies]
+# Tests read and write the agent CLIs' TOML config files.
+toml_edit = "0.25"
 rusqlite = { version = "0.32", features = ["hooks"] }
 tokio = { version = "1", features = ["test-util"] }

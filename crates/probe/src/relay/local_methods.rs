@@ -270,19 +270,31 @@ async fn cached_sessions_list(core: &Arc<Core>) -> LocalSessions {
         .filter(|session| !archived.contains(&&session.target))
         .map(|session| row(session, true))
         .collect();
-    let hidden = if store.registrations.iter().any(|registration| {
-        registration.target.kind == crate::relay::store::SessionKind::Devin
-            && !found
-                .iter()
-                .any(|session| session.target == registration.target)
-    }) {
-        let sessions = core.plugins.sessions.clone();
-        tokio::task::spawn_blocking(move || sessions.hidden_sessions())
-            .await
-            .unwrap_or_default()
-    } else {
-        Default::default()
-    };
+    // Only Devin sessions are hidden this way (automation sessions), so the
+    // directory is asked only when a Devin registration was not found, and
+    // only its Devin answers count. A failed read hides those registrations
+    // rather than showing them.
+    let devin = |target: &Target| target.kind == crate::relay::store::SessionKind::Devin;
+    let hidden: std::collections::HashSet<Target> =
+        if store.registrations.iter().any(|registration| {
+            devin(&registration.target)
+                && !found
+                    .iter()
+                    .any(|session| session.target == registration.target)
+        }) {
+            let sessions = core.plugins.sessions.clone();
+            match tokio::task::spawn_blocking(move || sessions.hidden_sessions()).await {
+                Ok(hidden) => hidden.into_iter().filter(|target| devin(target)).collect(),
+                Err(_) => store
+                    .registrations
+                    .iter()
+                    .map(|registration| registration.target.clone())
+                    .filter(|target| devin(target))
+                    .collect(),
+            }
+        } else {
+            Default::default()
+        };
     for registration in &store.registrations {
         if hidden.contains(&registration.target)
             || registration.archived_at.is_some()

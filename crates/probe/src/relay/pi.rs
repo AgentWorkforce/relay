@@ -584,6 +584,22 @@ pub fn final_answer(
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
+    #[test]
+    fn turning_pi_off_leaves_oh_my_pis_extension_in_a_shared_folder() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let omp = PiConfig::omp_from_env(&|_| None, home);
+        std::fs::create_dir_all(&omp.agent_dir).unwrap();
+        omp.install().unwrap();
+        let pi = PiConfig {
+            agent_dir: omp.agent_dir.clone(),
+            ..PiConfig::from_env(&|_| None, home)
+        };
+        assert!(!pi.extension_installed(), "the copy there is Oh My Pi's");
+        pi.remove().unwrap();
+        assert!(omp.extension_installed(), "Oh My Pi's copy is kept");
+    }
+
     use super::*;
     use crate::relay::peer::current_uid;
     use crate::relay::process::SystemProcesses;

@@ -118,7 +118,7 @@ impl LocalConfig {
                     // every drive path.
                     .split(if cfg!(windows) { ';' } else { ':' })
                     .filter(|part| !part.is_empty())
-                    .map(|part| expand_path(part, home))
+                    .filter_map(|part| expand_path(part, home))
                     .collect()
             })
             .unwrap_or_else(|| {

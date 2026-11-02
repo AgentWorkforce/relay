@@ -333,11 +333,14 @@ impl Journal {
         })
     }
 
-    /// Whether the binding has a message no plugin has collected yet.
-    pub fn queued(&self, binding: &Binding) -> bool {
-        self.entries
-            .iter()
-            .any(|entry| entry.binding == *binding && matches!(entry.state, State::Queued { .. }))
+    /// Whether the binding has a message no plugin has collected yet whose
+    /// lease has not passed at `now` (expiry is lazy, so a lapsed one may
+    /// still read `Queued`).
+    pub fn queued(&self, binding: &Binding, now: i64) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.binding == *binding
+                && matches!(entry.state, State::Queued { until } if until > now)
+        })
     }
 
     /// `poll_allowing` with teammates' messages allowed.

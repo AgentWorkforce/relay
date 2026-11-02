@@ -75,12 +75,29 @@ impl ProcessTable for SystemProcesses {
                 .is_ok_and(|m| (m.uid() == 0 || m.uid() == uid) && m.mode() & 0o022 == 0)
     }
 
+    /// The arguments and environment of one process: both are read between
+    /// two reads of its start time, so a pid reused between the reads never
+    /// mixes two processes' facts (retried, else answered empty).
     fn command_line(&self, pid: i32) -> CommandLine {
+        let started = || self.process(pid).map(|info| info.start);
+        for _ in 0..3 {
+            let before = started();
+            let line = CommandLine {
+                arguments: self.arguments(pid),
+                environment: fs::read(proc(pid).join("environ"))
+                    .ok()
+                    .map(|bytes| split_nul(&bytes)),
+            };
+            if before.is_some() && started() == before {
+                return line;
+            }
+            if before.is_none() {
+                break;
+            }
+        }
         CommandLine {
-            arguments: self.arguments(pid),
-            environment: fs::read(proc(pid).join("environ"))
-                .ok()
-                .map(|bytes| split_nul(&bytes)),
+            arguments: Vec::new(),
+            environment: None,
         }
     }
 

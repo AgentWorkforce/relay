@@ -898,7 +898,8 @@ fn stored_bearer(api_url: &str) -> Option<String> {
 }
 
 /// An Agent Relay Cloud bearer for `api_url`: the environment override, then
-/// the desktop app's eligible session, then the OAuth device flow.
+/// the official CLI's eligible session (with `relay-cli`), then the desktop
+/// app's, then the OAuth device flow.
 pub fn cloud_bearer(api_url: &str, options: CloudBearerOptions<'_>) -> Result<String> {
     if let Some(token) = env_cloud_bearer() {
         return Ok(token);

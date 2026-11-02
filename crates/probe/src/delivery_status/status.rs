@@ -129,6 +129,9 @@ pub fn status(directory: &Path) -> Result<Value> {
     store_status(directory, &config).or_else(|error| match current_cycle_report(directory) {
         Some(report) if report["ok"] == false => {
             let mut result = profile(directory, &config, false)?;
+            // The job's own state, when it can still be read; unknown (null)
+            // otherwise, never reported as running.
+            result["paused"] = paused(directory, &config).map_or(Value::Null, Value::Bool);
             result["probe_version"] = json!(crate::VERSION);
             result["last_cycle"] = report;
             result["collector_outdated"] = json!(result["running"] == true && outdated(directory));

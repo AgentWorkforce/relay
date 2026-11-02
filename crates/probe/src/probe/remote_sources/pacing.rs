@@ -152,6 +152,47 @@ impl Pacing {
             .unwrap_or_default()
     }
 
+    /// Holds the pacing file's lock while `edit` reads and writes it, so a
+    /// selected download and a sweep never overwrite each other's record.
+    pub fn locked<T>(db: &Path, edit: impl FnOnce() -> T) -> T {
+        use fs2::FileExt;
+        let lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(db.with_extension("remote-pacing.lock"));
+        let held = lock
+            .as_ref()
+            .is_ok_and(|file| file.lock_exclusive().is_ok());
+        let answer = edit();
+        if held {
+            if let Ok(file) = &lock {
+                let _ = FileExt::unlock(file);
+            }
+        }
+        answer
+    }
+
+    /// Saves a sweep's state, keeping what a selected download recorded
+    /// while the sweep ran (it loaded `started` at `since_ms`): a failure
+    /// recorded since, and a failure resolved since.
+    pub fn save_after_sweep(
+        &mut self,
+        db: &Path,
+        started: &Pacing,
+        since_ms: i64,
+    ) -> std::io::Result<()> {
+        Self::locked(db, || {
+            let now = Pacing::load(db);
+            self.unresolved_failures.merge_concurrent(
+                &started.unresolved_failures,
+                &now.unresolved_failures,
+                since_ms,
+            );
+            self.save(db)
+        })
+    }
+
     pub fn save(&self, db: &Path) -> std::io::Result<()> {
         let target = path(db);
         let partial = target.with_extension("remote-pacing.partial");
@@ -479,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn a_skipped_retry_keeps_its_warning_until_that_session_succeeds() {
+    fn a_failed_session_keeps_its_warning_until_it_succeeds() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("history.db");
         let mut pacing = Pacing::default();

@@ -42,8 +42,16 @@ impl LocalInjector {
                     self.codex.observe(&target.id, message_id)
                 }
                 FleetCodexResolutionRouter::Unavailable(reason) => {
-                    if let Some(cached) = self.fleet_codex.lock().unwrap().get(&target.key()) {
-                        cached.router.observe(&target.id, message_id)
+                    // The router is cloned so the lock is not held through
+                    // its queue and rollout reads.
+                    let cached = self
+                        .fleet_codex
+                        .lock()
+                        .unwrap()
+                        .get(&target.key())
+                        .map(|cached| cached.router.clone());
+                    if let Some(router) = cached {
+                        router.observe(&target.id, message_id)
                     } else {
                         InjectOutcome::Accepted(reason)
                     }

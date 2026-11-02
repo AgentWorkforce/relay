@@ -353,6 +353,9 @@ impl Change {
         if self.native_input.is_some() {
             restored |= put_back!(store, write, extras.spawn_native_input);
         }
+        if self.requester_approvals.is_some() {
+            restored |= put_back!(store, write, extras.spawn_requester_approvals);
+        }
         if self.allow_teammates.is_some() {
             restored |= put_back!(store, write, spawn_allow_teammates);
         }
@@ -642,5 +645,28 @@ mod requester_approvals_tests {
         assert_eq!(values(&store, false)["spawn_requester_approvals"], true);
         set(&mut store, json!({"spawn_native_input": true}));
         assert!(requester_approvals(&store, false));
+    }
+
+    // A `settings.set` batch whose other write fails is put back: approvals
+    // from the spawning agent must not stay on after the failed change.
+    #[test]
+    fn a_failed_change_puts_approvals_from_the_spawning_agent_back() {
+        let previous = Store::default();
+        let change = Change::read(
+            json!({"spawn_requester_approvals": true})
+                .as_object()
+                .unwrap(),
+        )
+        .unwrap();
+        let mut written = previous.clone();
+        change.apply(&mut written);
+        let write = StoreWrite {
+            previous: previous.clone(),
+            written: written.clone(),
+        };
+        let mut store = written;
+        assert!(change.restore(&mut store, &write));
+        assert!(!requester_approvals(&store, false));
+        assert_eq!(store.extras.spawn_requester_approvals, None);
     }
 }

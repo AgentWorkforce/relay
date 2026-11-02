@@ -127,6 +127,8 @@ impl Core {
             .store
             .update(|store| store.rotate_workspace_key(&base, rejected, &current));
         match saved {
+            // An earlier proof already moved every saved copy: nothing new.
+            Ok(0) => KeyProof::Current(current),
             Ok(_) => {
                 self.hub.activity(
                     Level::Info,

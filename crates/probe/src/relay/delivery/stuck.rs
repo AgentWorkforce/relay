@@ -65,22 +65,31 @@ impl Core {
         let stuck_after = self.config.delivery_timing.stuck_after;
         let report = {
             let mut state = self.delivery.lock().unwrap_or_else(PoisonError::into_inner);
+            // One report per agent until its waiting set empties: a message
+            // that starts waiting behind a reported one is not reported again.
+            let agent_reported = state
+                .waiting
+                .values()
+                .any(|waited| waited.agent == registration.name && waited.reported);
             let waited = state.waiting.entry(delivery.id.clone()).or_insert(Waited {
                 agent: registration.name.clone(),
                 since: now,
-                reported: false,
+                reported: agent_reported,
             });
             if waited.reported || now.saturating_duration_since(waited.since) < stuck_after {
                 None
             } else {
-                waited.reported = true;
-                let theirs = state
+                let mut count = 0;
+                let mut oldest = now;
+                for waited in state
                     .waiting
-                    .values()
-                    .filter(|waited| waited.agent == registration.name);
-                let (count, oldest) = theirs.fold((0, now), |(count, oldest), waited| {
-                    (count + 1, oldest.min(waited.since))
-                });
+                    .values_mut()
+                    .filter(|waited| waited.agent == registration.name)
+                {
+                    waited.reported = true;
+                    count += 1;
+                    oldest = oldest.min(waited.since);
+                }
                 Some((count, now.saturating_duration_since(oldest)))
             }
         };

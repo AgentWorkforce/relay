@@ -160,14 +160,18 @@ impl PiConfig {
         self.off_marker().exists()
     }
 
-    /// Whether our extension (not a person's file of that name) is in place.
+    /// Whether our extension for this harness (not a person's file of that
+    /// name, nor the other harness's copy in a shared agent directory) is in
+    /// place.
     pub fn extension_installed(&self) -> bool {
         fs::symlink_metadata(self.extension_file()).is_ok_and(|m| m.is_file())
-            && fs::read_to_string(self.extension_file())
-                .is_ok_and(|text| text.starts_with(EXTENSION_MARK))
+            && fs::read_to_string(self.extension_file()).is_ok_and(|text| {
+                text.starts_with(EXTENSION_MARK) && Self::installed_for(&text) == self.flavor
+            })
     }
 
-    /// Removes our extension; a person's file at that name, or none, is left.
+    /// Removes our extension for this harness; a person's file at that name,
+    /// the other harness's copy, or none, is left.
     pub fn remove(&self) -> Result<(), String> {
         if !self.extension_installed() {
             return Ok(());

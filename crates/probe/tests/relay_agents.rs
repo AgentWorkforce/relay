@@ -1517,7 +1517,7 @@ async fn each_queue_read_tells_the_route_which_messages_still_wait() {
 
 // A message that keeps waiting is reported in the activity log once it has
 // waited `stuck_after`, with the agent's count of waiting messages: a
-// wedged session (ms-cloudlat's DMs waited for hours) cannot hide.
+// wedged session (one whose DMs waited for hours) cannot hide.
 #[tokio::test]
 async fn a_message_that_keeps_waiting_is_reported_once() {
     let h = Harness::start_with_timing(

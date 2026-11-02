@@ -1,6 +1,6 @@
 //! The `agent-relay cloud …` subcommand surface: argument shapes and
-//! dispatch. `install`'s body stays in `main` with the collector plumbing it
-//! drives; `rotate-key` runs entirely here.
+//! dispatch. `install`'s body is `probe::install`, beside the collector
+//! plumbing it drives; `rotate-key` runs entirely here.
 
 use crate::cloud;
 use anyhow::Result;

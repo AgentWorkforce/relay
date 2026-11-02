@@ -1,8 +1,10 @@
 //! Pending server-to-client requests for headless spawned Codex turns.
 //! Only this process's live proxy connection may answer a request. Losing
 //! the connection drops its pending refs; a reply cannot approve a new one.
-//! Every request is answered by the verified machine owner only
-//! (`spawn::drive`); no other agent, the spawn's requester included, can.
+//! Every request is answered by the verified machine owner (`spawn::drive`),
+//! or by the spawning agent when approvals from it are on
+//! (`spawn_requester_approvals`, with native input from it); no other agent
+//! can.
 
 use super::{Client, ClientState};
 use crate::relay::codex::runner::ProxyStream;

@@ -190,11 +190,11 @@ mod tests {
         type Result = Done;
     }
 
-    struct Extension(&'static str);
+    struct Extension(&'static str, Availability);
 
     impl MethodExtension for Extension {
         fn specs(&self) -> Vec<MethodSpec> {
-            let mut spec = MethodSpec::of::<Ping>(Availability::Always);
+            let mut spec = MethodSpec::of::<Ping>(self.1);
             spec.name = self.0;
             vec![spec]
         }
@@ -216,7 +216,7 @@ mod tests {
 
     fn with(name: &'static str) -> Plugins {
         Plugins {
-            extensions: vec![Arc::new(Extension(name))],
+            extensions: vec![Arc::new(Extension(name, Availability::Always))],
             ..Plugins::default()
         }
     }
@@ -247,6 +247,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_account_extension_method_is_not_answered_without_an_account() {
+        let (_home, core) = test_core_with_plugins(Plugins {
+            extensions: vec![Arc::new(Extension("extension.ping", Availability::Account))],
+            ..Plugins::default()
+        });
+        assert!(!server::all_method_names(&core).contains(&"extension.ping"));
+        let answer = server::call(&core, "extension.ping", json!({})).await;
+        assert_eq!(answer.unwrap_err().data.kind, ErrorKind::MethodNotFound);
+    }
+
+    #[tokio::test]
     async fn a_core_without_the_extension_says_it_has_no_such_method() {
         let (_home, core) = test_core_with_plugins(Plugins::default());
         let answer = server::call(&core, "extension.ping", json!({})).await;
@@ -265,7 +276,7 @@ mod tests {
         let mut plugins = with("extension.ping");
         plugins
             .extensions
-            .push(Arc::new(Extension("extension.ping")));
+            .push(Arc::new(Extension("extension.ping", Availability::Always)));
         plugins.extension_method_names(true);
     }
 }

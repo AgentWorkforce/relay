@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `relay init` sets up Cursor, so messages reach agents in the Cursor editor and Cursor CLI and wake an idle agent.
 - `relay init --uninstall` removes the Cursor setup it added.
+- The Agent Relay core (`agent-relay-probe`) is now the same core the desktop app runs, built from `crates/probe`: Oh My Pi sessions, Relay Connect, mobile handoff, spawning with approvals from the spawning agent, and the desktop's delivery and discovery fixes all come to `relay serve`.
+- `agent-relay-probe` takes its session history libraries (`ai-hist`, `history-provider-sources`) from crates.io, and builds without session history (`--no-default-features --features production-binaries`) as the messaging runtime alone.
+
+### Changed
+
+- The core has no account sign-in of its own: methods that need an account answer `method_not_found`, and spawn approvals are off, unless the core is built with an account. `agent-relay cloud login` keeps device sign-in for Relay Connect hosts.
 
 ## [15.0.2] - 2026-11-01
 

@@ -189,7 +189,10 @@ impl HistoryRetention {
     pub fn parse(value: &Value) -> Option<HistoryRetention> {
         Some(HistoryRetention {
             days: value["days"].as_u64()?,
-            cutoff: value["cutoff"].as_str().unwrap_or_default().to_string(),
+            cutoff: value["cutoff"]
+                .as_str()
+                .filter(|cutoff| !cutoff.is_empty())?
+                .to_string(),
         })
     }
 }
@@ -331,6 +334,11 @@ mod tests {
         assert_eq!(retention.cutoff, "2026-10-18T00:00:00Z");
         assert_eq!(HistoryRetention::parse(&Value::Null), None);
         assert_eq!(HistoryRetention::parse(&json!({"cutoff": "x"})), None);
+        assert_eq!(HistoryRetention::parse(&json!({"days": 7})), None);
+        assert_eq!(
+            HistoryRetention::parse(&json!({"days": 7, "cutoff": ""})),
+            None
+        );
     }
 
     #[test]
