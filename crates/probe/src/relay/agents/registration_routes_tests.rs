@@ -325,8 +325,8 @@ async fn a_saved_sign_in_owns_its_session_after_a_restart() {
     assert_eq!(fake.calls("POST", "/v1/agents").len(), 1);
 }
 
-// `agent-relay cloud login` alone: the core's Cloud access stays signed out.
-// The CLI's session only ever stands in for a sign-in the core already holds.
+// `agent-relay cloud login` alone: the CLI's file does not make `CloudAccess`
+// report a signed-in account.
 #[cfg(feature = "relay-cli")]
 mod cli_login {
     use super::*;
@@ -442,7 +442,7 @@ mod cli_login {
     async fn a_broken_or_missing_cli_login_is_signed_out_too() {
         for contents in [None, Some("not json"), Some("{}")] {
             let mut attached = None;
-            let (.., _temp) = activate_with(|home, plugins| {
+            let (.., _core, _temp) = activate_with(|home, plugins| {
                 if let Some(contents) = contents {
                     write_cli_login(home, contents);
                 }

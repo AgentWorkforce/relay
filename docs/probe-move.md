@@ -633,7 +633,11 @@ Nothing. In a release build (no history, so no attached install) the core's
 Cloud access reads only a session the core holds itself. `cloud-auth.json`
 alone leaves `CloudAccess` signed out, so an open Grok session is owned by
 `local-user:<uid>`. Removing `Account` from a core that holds no session of its
-own therefore needs no replacement: `SignedOut` answers the same.
+own therefore needs no replacement for these paths. `SignedOut` answers the same
+except `may_sync_identities` (`true` against `Account`'s `false`), which has no
+effect because the identity sync stops at `account()` first. The core's own
+sign-in can use a CLI session (`Account::session_for`), and that leaves with
+`Account`.
 `registration_routes_tests.rs` (`cli_login`) proves this, with a control showing
 the same `Account` signs in once the core holds a session. A core sharing a data
 directory with a signed-in desktop does hold one, so that case needs its own
