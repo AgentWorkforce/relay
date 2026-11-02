@@ -84,14 +84,14 @@ The manifest tells you:
 
 ### 2. Check verify tier requirements
 
-| Tier | Primary environment                       | Important qualification                                                        |
-| ---- | ----------------------------------------- | ------------------------------------------------------------------------------ |
-| 1    | Isolated local CLI/filesystem             | May still mutate local config; use a temp directory.                           |
+| Tier | Primary environment                       | Important qualification                                                                                                  |
+| ---- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 1    | Isolated local CLI/filesystem             | May still mutate local config; use a temp directory.                                                                     |
 | 2    | Local Relay                               | The core and server `relay init` runs, in a sandboxed home. Legacy features use `relay node up --background --no-spawn`. |
-| 3    | Hosted workspace + one agent              | Requires explicit workspace key/API, not merely a broker.                      |
-| 4    | Hosted workspace + two agents             | Use separate actor tokens for cross-agent assertions.                          |
-| 5    | Authenticated disposable external service | Use a test workspace, receiver, or account and clean it up.                    |
-| 6    | Interactive/pre-provisioned integration   | Browser, SSH, PTY, provider credentials, or external callback may be required. |
+| 3    | Hosted workspace + one agent              | Requires explicit workspace key/API, not merely a broker.                                                                |
+| 4    | Hosted workspace + two agents             | Use separate actor tokens for cross-agent assertions.                                                                    |
+| 5    | Authenticated disposable external service | Use a test workspace, receiver, or account and clean it up.                                                              |
+| 6    | Interactive/pre-provisioned integration   | Browser, SSH, PTY, provider credentials, or external callback may be required.                                           |
 
 ### 3. Run the verification
 
