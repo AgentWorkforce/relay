@@ -627,6 +627,18 @@ Known gaps in phase 3:
 - relay-desktop CI lanes still not ported (above): glibc floor check, arm64
   Linux tests, x64 macOS and arm64 Windows lanes.
 
+## What `agent-relay cloud login` gives the core
+
+Nothing. In a release build (no history, so no attached install) the core's
+Cloud access reads only a session the core holds itself. `cloud-auth.json`
+alone leaves `CloudAccess` signed out, so an open Grok session is owned by
+`local-user:<uid>`. Removing `Account` from a core that holds no session of its
+own therefore needs no replacement: `SignedOut` answers the same.
+`registration_routes_tests.rs` (`cli_login`) proves this, with a control showing
+the same `Account` signs in once the core holds a session. A core sharing a data
+directory with a signed-in desktop does hold one, so that case needs its own
+decision.
+
 ## Until the switch: two cores
 
 relay's `crates/probe` is the relay-desktop core at `5601b739`
