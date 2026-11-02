@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
-import { validateMatrix } from '../../scripts/verify-features/cleanroom.mjs';
+import { enabledForProfile, validateMatrix } from '../../scripts/verify-features/cleanroom.mjs';
 import {
   buildTargetedPlan,
   changedFilesFromGit,
@@ -243,6 +243,12 @@ describe('targeted Flows v2 PR verification', () => {
         ({ requiredCommands }: { requiredCommands?: string[] }) => requiredCommands?.includes('cargo')
       )
     ).toBe(false);
+  });
+
+  it('leaves the source build out of cleanroom runs, which use the pinned core', () => {
+    const core = matrix.lanes.find(({ id }: { id: string }) => id === 'core');
+    const enabled = core.setup.filter((step: object) => enabledForProfile(step, 'full'));
+    expect(enabled.map(({ id }: { id: string }) => id)).toEqual(['build-cli']);
   });
 
   it('keeps the old lanes and corpus for a manual dispatch', () => {

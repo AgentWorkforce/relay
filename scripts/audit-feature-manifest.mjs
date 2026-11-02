@@ -145,6 +145,8 @@ function deriveCliLeaves() {
     // recursing, or the audit reports it as stale when the manifest has it.
     for (const child of children) {
       if (!noWalk(child)) continue;
+      // A mounted group loads its SDK on demand: help proves it still loads.
+      if (MOUNTED_PRODUCTS.has(child) && path.length === 0) runHelp([child]);
       if (!UNDOCUMENTED_ALLOWLIST.has(child)) leaves.push([...path, child].join(' '));
     }
 
