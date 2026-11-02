@@ -61,7 +61,7 @@ await scenario('a Grok session joins Relay on its own and receives a message', (
       const refused = await machine
         .call('agents.register', { target: { kind: 'grok-open', id } })
         .catch((failure) => failure.message);
-      console.error(`agents.register: ${JSON.stringify(refused)}`);
+      console.log(`agents.register: ${JSON.stringify(refused)}`);
       throw error;
     });
 
