@@ -85,6 +85,7 @@ for (const tool of TOOLS) {
       const output = await machine.init([tool]);
       assert.match(output, new RegExp(`✓ ${route.label}.*injected through`), output);
       route.written(machine.read(route.file));
+      if (tool === 'codex') assert.match(machine.read('.codex/trusted.jsonl'), /hooks\.state/);
       if (userFile) assert.ok(machine.read(userFile).includes(userMark), 'init lost the person’s settings');
 
       const settings = await machine.call('settings.get');

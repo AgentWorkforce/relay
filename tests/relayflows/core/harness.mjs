@@ -98,6 +98,8 @@ export class Sandbox {
       AGENT_RELAY_DISABLE_UPDATE_CHECK: '1',
       // The core keeps temporary folders out of automatic activation, and this is one.
       AGENT_RELAY_AUTO_ACTIVATE_EXCLUDED_DIRS: '/var/empty',
+      // Exactly this Codex, so the core neither needs nor finds a real one.
+      RELAY_DESKTOP_CODEX: path.join(repoRoot, 'tests/relayflows/core/fake-codex.mjs'),
       NO_COLOR: '1',
       CI: '1',
     };
