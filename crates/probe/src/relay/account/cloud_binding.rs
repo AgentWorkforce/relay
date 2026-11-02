@@ -150,7 +150,11 @@ enum Owner {
 }
 
 /// Whether the official CLI holds a sign-in for `site` at all, fresh or not.
+/// Never without `relay-cli`.
 fn cli_signed_in(relay_home: &Path, site: &str) -> bool {
+    if cfg!(not(feature = "relay-cli")) {
+        return false;
+    }
     let Ok(raw) = std::fs::read(relay_home.join("cloud-auth.json")) else {
         return false;
     };
@@ -481,6 +485,19 @@ impl Account {
 mod tests {
     use super::*;
 
+    #[cfg(not(feature = "relay-cli"))]
+    #[test]
+    fn without_relay_cli_a_cli_sign_in_is_not_recognised() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join("cloud-auth.json"),
+            json!({"apiUrl": "https://agentrelay.com/cloud/", "accessToken": "token"}).to_string(),
+        )
+        .unwrap();
+        assert!(!cli_signed_in(home.path(), "https://agentrelay.com"));
+    }
+
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn a_cli_sign_in_is_recognised_for_its_site_even_when_expired() {
         let home = tempfile::tempdir().unwrap();

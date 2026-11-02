@@ -579,7 +579,8 @@ pub async fn activate(
     let token = room["agentToken"].as_str().unwrap_or_default();
     let participant = room["role"] == "participant"
         && room["observerToken"].is_null()
-        && (token.starts_with("at_live_") || token.starts_with("ar_ag_"));
+        && (token.starts_with("at_live_")
+            || (cfg!(feature = "relay-cli") && token.starts_with("ar_ag_")));
     if !participant {
         return Err(MailboxError::AuthenticationRequired);
     }

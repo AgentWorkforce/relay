@@ -654,6 +654,7 @@ fn workspace_stale_ms() -> i64 {
 }
 
 /// Points this machine's `agent-relay` CLI at `key`, bound to `site`.
+#[cfg(feature = "relay-cli")]
 fn select_cli_workspace(h: &Harness, key: &str) {
     let relay = h._temp.path().join(".agentworkforce/relay");
     std::fs::create_dir_all(&relay).unwrap();
@@ -674,6 +675,7 @@ fn select_cli_workspace(h: &Harness, key: &str) {
 
 /// A refused key the CLI named is never recovered through the Cloud
 /// account, even when it is the account's key too: the CLI owns it.
+#[cfg(feature = "relay-cli")]
 #[tokio::test]
 async fn recovery_never_applies_to_a_cli_workspace() {
     let h = Harness::new().await;
@@ -694,6 +696,7 @@ async fn recovery_never_applies_to_a_cli_workspace() {
 
 /// A key rotated in the CLI's `workspaces.json` is picked up and verified by
 /// the next refresh pass, without asking Cloud.
+#[cfg(feature = "relay-cli")]
 #[tokio::test]
 async fn refresh_picks_up_a_key_rotated_in_the_cli_store() {
     let h = Harness::new().await;
@@ -716,6 +719,7 @@ async fn refresh_picks_up_a_key_rotated_in_the_cli_store() {
 
 /// A CLI selection that may not be used leaves the daemon with no
 /// workspace rather than falling back to the account's.
+#[cfg(feature = "relay-cli")]
 #[tokio::test]
 async fn a_refused_cli_selection_does_not_fall_back_to_the_account() {
     let h = Harness::new().await;

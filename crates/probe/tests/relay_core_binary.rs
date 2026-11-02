@@ -225,3 +225,13 @@ fn local_model_proxy_command_is_removed() {
     assert!(error.contains("unrecognized subcommand"), "{error}");
     assert!(!error.contains("test-key-must-not-be-consumed"));
 }
+
+/// `production-binaries` is what relay's release builds ask for, and those
+/// must keep the CLI's workspace selection and armadillo's keys.
+#[test]
+fn the_released_core_has_relay_cli() {
+    assert!(cfg!(feature = "relay-cli"));
+    assert!(agent_relay_probe::relay::workspace::is_workspace_key(
+        "ar_ws_0123456789abcdef"
+    ));
+}

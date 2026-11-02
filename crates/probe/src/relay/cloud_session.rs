@@ -531,8 +531,12 @@ pub fn decode_resolution(
 }
 
 /// The official `agent-relay` CLI's session for `site_url`, while its
-/// access token has more than a minute left. Read only.
+/// access token has more than a minute left. Read only. Never without
+/// `relay-cli`.
 pub fn cli_session(relay_home: &Path, site_url: &str, now: i64) -> Option<CloudSession> {
+    if cfg!(not(feature = "relay-cli")) {
+        return None;
+    }
     let value: Value =
         serde_json::from_slice(&fs::read(relay_home.join("cloud-auth.json")).ok()?).ok()?;
     let api = value["apiUrl"].as_str()?.trim().trim_end_matches('/');
@@ -697,6 +701,7 @@ mod tests {
         assert!(!is_workspace_uuid("0f8fad5b-d9cb-469f-a165-70867728950"));
     }
 
+    #[cfg(feature = "relay-cli")]
     #[test]
     fn the_cli_session_is_used_only_for_the_same_site_with_life_left() {
         let home = tempfile::tempdir().unwrap();
@@ -720,6 +725,48 @@ mod tests {
         assert!(cli_session(home.path(), "https://agentrelay.com", now).is_none());
         write("https://agentrelay.com/cloud", None);
         assert!(cli_session(home.path(), "https://agentrelay.com", now).is_none());
+    }
+
+    #[cfg(not(feature = "relay-cli"))]
+    #[test]
+    fn without_relay_cli_the_cli_session_is_ignored() {
+        let home = tempfile::tempdir().unwrap();
+        fs::write(
+            home.path().join("cloud-auth.json"),
+            json!({"apiUrl": "https://agentrelay.com/cloud", "accessToken": "cli-token",
+                   "accessTokenExpiresAt": "2999-01-01T00:00:00Z"})
+            .to_string(),
+        )
+        .unwrap();
+        assert!(cli_session(home.path(), "https://agentrelay.com", 0).is_none());
+    }
+
+    #[cfg(not(feature = "relay-cli"))]
+    #[test]
+    fn without_relay_cli_a_resolved_armadillo_key_is_refused_before_any_origin() {
+        let key = "ar_ws_0123456789abcdef";
+        for answer in [
+            json!({"relaycastApiKey": key}),
+            json!({"relaycastApiKey": key,
+                   "urls": {"relaycastUrl": "https://armadillo.agentrelay.com"}}),
+        ] {
+            assert_eq!(
+                decode_resolution(&answer, "workspace"),
+                Err(ResolveError::NoKey)
+            );
+        }
+    }
+
+    #[cfg(feature = "relay-cli")]
+    #[test]
+    fn a_resolved_armadillo_key_keeps_the_origin_cloud_names() {
+        let found = decode_resolution(
+            &json!({"relaycastApiKey": "ar_ws_0123456789abcdef",
+                    "urls": {"relaycastUrl": "https://armadillo.agentrelay.com"}}),
+            "workspace",
+        )
+        .unwrap();
+        assert_eq!(found.base_url, "https://armadillo.agentrelay.com");
     }
 
     #[test]

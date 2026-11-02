@@ -132,7 +132,10 @@ async fn every_registered_method_reaches_a_handler() {
         let response = answer(call(spec.name, json!("not an object"))).await;
         // A core built without session history refuses its history-only
         // methods before it reads their parameters.
-        let expected = if cfg!(feature = "history") || !contract::needs_history(spec.name) {
+        // One without `relay-cli` has no fleet, so those methods are not found.
+        let expected = if !cfg!(feature = "relay-cli") && spec.name.starts_with("fleet.") {
+            "method_not_found"
+        } else if cfg!(feature = "history") || !contract::needs_history(spec.name) {
             "invalid_params"
         } else {
             "history_unavailable"

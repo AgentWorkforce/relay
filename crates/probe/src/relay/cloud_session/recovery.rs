@@ -71,9 +71,11 @@ pub async fn resolve_workspace_for_recovery(
 }
 
 fn valid_live_key(key: &str) -> bool {
-    let suffix = key
-        .strip_prefix("rk_live_")
-        .or_else(|| key.strip_prefix("ar_ws_"));
+    let suffix = key.strip_prefix("rk_live_").or_else(|| {
+        cfg!(feature = "relay-cli")
+            .then(|| key.strip_prefix("ar_ws_"))
+            .flatten()
+    });
     suffix.is_some_and(|suffix| {
         suffix.len() >= 16
             && suffix.len() <= 128
@@ -81,4 +83,18 @@ fn valid_live_key(key: &str) -> bool {
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_live_key;
+
+    #[test]
+    fn armadillo_keys_recover_only_with_relay_cli() {
+        assert!(valid_live_key("rk_live_0123456789abcdef"));
+        assert_eq!(
+            valid_live_key("ar_ws_0123456789abcdef"),
+            cfg!(feature = "relay-cli")
+        );
+    }
 }
