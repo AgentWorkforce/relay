@@ -1,21 +1,13 @@
 name: Targeted feature verification
 
-# A PR should pay for the smallest verification slice that can honestly cover
-# its affected feature. The selector maps changed files through the feature
-# manifest and cleanroom matrix. Unmapped runtime files fail closed into the
-# complete smoke profile; they never become a green skip.
+# Runs nightly against the last day of main, not on pull requests: the shards
+# were most of a PR's jobs and were not a merge gate. The selector maps changed
+# files through the feature manifest and cleanroom matrix. Unmapped runtime
+# files fail closed into the complete smoke profile; they never become a green
+# skip.
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore:
-      - '.agentworkforce/trajectories/**'
-      - 'crates/probe/**'
-      - 'docs/**'
-      - 'specs/**'
-      - 'web/**'
-      - '**/*.md'
-      - 'CHANGELOG.md'
-      - 'LICENSE'
+  schedule:
+    - cron: '23 6 * * *'
   workflow_dispatch:
     inputs:
       base_sha:
@@ -31,13 +23,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: targeted-feature-verification-${{ github.event.pull_request.number || github.ref }}
+  group: targeted-feature-verification-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   select:
-    # A PR opened with the hotfix label skips these shards; the shard job needs this one.
-    if: (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && !contains(github.event.pull_request.labels.*.name, 'hotfix')
+    if: github.event_name != 'schedule' || github.repository == 'AgentWorkforce/relay'
     name: Select Flows v2 shards
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -65,11 +56,14 @@ jobs:
 
       - name: Select affected features and scenarios
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base_sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || inputs.head_sha }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          HEAD_SHA: ${{ inputs.head_sha || github.sha }}
         run: |
           set -euo pipefail
           mkdir -p .workflow-artifacts/targeted-pr
+          BASE_SHA="${BASE_SHA:-$(git rev-list -1 --before='24 hours ago' "$HEAD_SHA")}"
+          # A day with no commits has no changed files, which the selector refuses.
+          if [ "$BASE_SHA" = "$HEAD_SHA" ]; then BASE_SHA="$(git rev-parse "$HEAD_SHA~1")"; fi
           node scripts/verify-features/targeted-pr-plan.mjs plan \
             --base "$BASE_SHA" \
             --head "$HEAD_SHA" \
@@ -102,7 +96,6 @@ jobs:
           overwrite: true
 
   targeted:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Flows v2 shard ${{ matrix.shard }}
     needs: select
     runs-on: ubuntu-24.04

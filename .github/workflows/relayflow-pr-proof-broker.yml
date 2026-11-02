@@ -12,6 +12,7 @@ on:
     types: [opened, synchronize, reopened, edited, ready_for_review]
     paths:
       - 'crates/**'
+      - '!crates/probe/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/relayflow-pr-proof-broker.yml'

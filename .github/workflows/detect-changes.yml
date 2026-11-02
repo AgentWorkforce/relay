@@ -10,7 +10,8 @@ name: Detect Changes
 #                       TS suite exercises a broker built from the PR's sources.
 #   sdk_swift_changed — Swift SDK jobs (swift build/test)
 #
-# crates/probe/ selects none of these; Probe CI covers it on its own paths.
+# crates/probe/ selects none of these, because Probe CI covers it on its own
+# paths. The exception is protocol.rs, which selects node_changed.
 #
 # When the change scope is unknown (API failure, truncated file list,
 # unexpected event) every output is true — fail open, never silently skip.
