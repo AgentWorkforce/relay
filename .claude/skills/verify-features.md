@@ -77,8 +77,9 @@ fi
 The manifest tells you:
 
 - `criticality` — how important is this feature
-- `verify_tier` — what's required to verify it (1=nothing, 2=broker, 3=agent token, 4=two agents, 5=cloud, 6=manual)
+- `verify_tier` — what's required to verify it (1=nothing, 2=local Relay from `relay init`, 3=agent token, 4=two agents, 5=cloud, 6=manual)
 - `location` — which source files implement it
+- `status: legacy` — a category on the broker and PTY path, verified by hand on demand, never on a pull request
 - `verification.categories` — the named procedure in `verify/procedures.md` that supplies prerequisites, commands, assertions, cleanup, and automation limits
 
 ### 2. Check verify tier requirements
@@ -86,7 +87,7 @@ The manifest tells you:
 | Tier | Primary environment                       | Important qualification                                                        |
 | ---- | ----------------------------------------- | ------------------------------------------------------------------------------ |
 | 1    | Isolated local CLI/filesystem             | May still mutate local config; use a temp directory.                           |
-| 2    | Local broker                              | Start with `relay node up --background --no-spawn`.                            |
+| 2    | Local Relay                               | The core and server `relay init` runs, in a sandboxed home. Legacy features use `relay node up --background --no-spawn`. |
 | 3    | Hosted workspace + one agent              | Requires explicit workspace key/API, not merely a broker.                      |
 | 4    | Hosted workspace + two agents             | Use separate actor tokens for cross-agent assertions.                          |
 | 5    | Authenticated disposable external service | Use a test workspace, receiver, or account and clean it up.                    |

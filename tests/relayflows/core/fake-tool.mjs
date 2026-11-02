@@ -12,7 +12,10 @@ const held = process.argv.slice(2).map((file) => fs.openSync(file, 'r+'));
 readline.createInterface({ input: process.stdin }).on('line', (line) => {
   const { command, input, output } = JSON.parse(line);
   const result = spawnSync('sh', ['-c', command], { input: fs.readFileSync(input) });
-  fs.writeFileSync(`${output}.tmp`, Buffer.concat([result.stdout ?? Buffer.alloc(0), result.stderr ?? Buffer.alloc(0)]));
+  fs.writeFileSync(
+    `${output}.tmp`,
+    Buffer.concat([result.stdout ?? Buffer.alloc(0), result.stderr ?? Buffer.alloc(0)])
+  );
   fs.renameSync(`${output}.tmp`, output);
 });
 

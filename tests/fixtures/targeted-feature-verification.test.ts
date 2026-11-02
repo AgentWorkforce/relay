@@ -35,9 +35,19 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true })));
 });
 
+/** The plan of a manual dispatch, which reaches every lane. */
 function plan(changedFiles: string[]) {
+  return buildTargetedPlan({ changedFiles, matrix, manifestText, corpusCases, includeManual: true });
+}
+
+/** The plan of a pull request. */
+function prPlan(changedFiles: string[]) {
   return buildTargetedPlan({ changedFiles, matrix, manifestText, corpusCases });
 }
+
+const laneIds = (selected: { scenarios: Array<{ laneId: string }> }) =>
+  [...new Set(selected.scenarios.map(({ laneId }) => laneId))].sort();
+const setupIds = (selected: { setup: Array<{ id: string }> }) => selected.setup.map(({ id }) => id);
 
 function generatedCommandPayload(command: string): Record<string, any> {
   const match = command.match(/--payload '([A-Za-z0-9_-]+)'$/);
@@ -179,6 +189,69 @@ describe('targeted Flows v2 PR verification', () => {
     ]);
   });
 
+  it('runs only the core lane on a pull request, whatever the change', () => {
+    for (const file of [
+      'crates/probe/src/relay/delivery.rs',
+      'packages/cli/src/cli/commands/init.ts',
+      'crates/broker/src/main.rs',
+      'packages/cli/src/cli/commands/fleet.ts',
+      'packages/cli/src/cli/lib/new-runtime-surface.ts',
+      'scripts/verify-features/targeted-pr-plan.mjs',
+    ]) {
+      const selected = prPlan([file]);
+      expect(selected.mode, file).not.toBe('skip');
+      expect(laneIds(selected), file).toEqual(['core']);
+    }
+  });
+
+  it('routes core and init paths to the core lane without falling back', () => {
+    for (const file of [
+      'crates/probe/src/relay/delivery.rs',
+      'crates/probe/src/relay/grok.rs',
+      'crates/probe/src/relay/cursor_cli/wait.rs',
+      'crates/probe/Cargo.toml',
+      'packages/cli/src/cli/commands/init.ts',
+      'packages/cli/src/cli/lib/probe-core.ts',
+    ]) {
+      const selected = prPlan([file]);
+      expect(selected.mode, file).toBe('targeted');
+      expect(selected.unmatchedRuntimeFiles, file).toEqual([]);
+    }
+  });
+
+  it('builds the core from source only for a change to the core', () => {
+    expect(setupIds(prPlan(['crates/probe/src/relay/delivery.rs']))).toContain('build-core-from-source');
+    expect(setupIds(prPlan(['packages/cli/src/cli/commands/init.ts']))).not.toContain(
+      'build-core-from-source'
+    );
+    expect(setupIds(prPlan(['scripts/verify-features/targeted-pr-plan.mjs']))).not.toContain(
+      'build-core-from-source'
+    );
+  });
+
+  it('asks for Rust only when the core is built, in one shard', () => {
+    const shards = shardTargetedPlan(prPlan(['crates/probe/src/relay/delivery.rs']));
+    expect(shards).toHaveLength(1);
+    expect(
+      [...shards[0].setup, ...shards[0].scenarios].some(
+        ({ requiredCommands }: { requiredCommands?: string[] }) => requiredCommands?.includes('cargo')
+      )
+    ).toBe(true);
+    const withoutCore = prPlan(['packages/cli/src/cli/commands/init.ts']);
+    expect(
+      [...withoutCore.setup, ...withoutCore.scenarios].some(
+        ({ requiredCommands }: { requiredCommands?: string[] }) => requiredCommands?.includes('cargo')
+      )
+    ).toBe(false);
+  });
+
+  it('keeps the old lanes and corpus for a manual dispatch', () => {
+    expect(prPlan(['scripts/verify-features/targeted-pr-plan.mjs']).scenarios).not.toContainEqual(
+      expect.objectContaining({ relayflowCorpusCase: expect.anything() })
+    );
+    expect(laneIds(plan(['scripts/verify-features/targeted-pr-plan.mjs']))).toContain('regression-corpus');
+  });
+
   it('falls back to smoke when a selected category has only a live coverage gap', () => {
     const result = plan(['packages/cli/src/cli/commands/skills.ts']);
 
@@ -211,6 +284,7 @@ describe('targeted Flows v2 PR verification', () => {
         matrix,
         manifestText,
         corpusCases: [],
+        includeManual: true,
       })
     ).toThrow(/selected an empty RelayFlow corpus/);
   });
@@ -275,6 +349,7 @@ describe('targeted Flows v2 PR verification', () => {
         matrix: invalid,
         manifestText,
         corpusCases,
+        includeManual: true,
       })
     ).toThrow(/unknown fleet-injection-attach setup not-a-setup/);
   });
@@ -301,6 +376,7 @@ describe('targeted Flows v2 PR verification', () => {
         matrix: invalid,
         manifestText,
         corpusCases,
+        includeManual: true,
       })
     ).toThrow(/requires setup build-core that is unavailable in targeted/);
   });
@@ -316,6 +392,7 @@ describe('targeted Flows v2 PR verification', () => {
         matrix: invalid,
         manifestText,
         corpusCases,
+        includeManual: true,
       })
     ).toThrow(
       /RelayFlow corpus scenario regression-corpus\/relayflow-head-regression-corpus requires setup build-core/
@@ -333,6 +410,7 @@ describe('targeted Flows v2 PR verification', () => {
         matrix: invalid,
         manifestText,
         corpusCases,
+        includeManual: true,
       })
     ).toThrow(/expectedExitCodes must contain exit codes/);
   });

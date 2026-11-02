@@ -103,7 +103,8 @@ for (const tool of TOOLS) {
       await machine.relayOk(['init', '--uninstall']);
       const after = await machine.call('settings.get');
       for (const key of route.settings) assert.notEqual(after[key], true, `${key} stayed on`);
-      if (userFile) assert.ok(machine.read(userFile).includes(userMark), 'uninstall lost the person’s settings');
+      if (userFile)
+        assert.ok(machine.read(userFile).includes(userMark), 'uninstall lost the person’s settings');
       if (tool === 'grok') assert.doesNotMatch(machine.read(route.file), /use_leader = true/);
       if (tool === 'cursor') assert.doesNotMatch(machine.read(route.file), /relay cursor-hook/);
     })

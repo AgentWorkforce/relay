@@ -238,7 +238,11 @@ export class Sandbox {
   fakeTool(name, files) {
     const executable = path.join(this.bin, name);
     if (!fs.existsSync(executable)) fs.copyFileSync(process.execPath, executable);
-    return this.spawn(executable, [path.join(repoRoot, 'tests/relayflows/core/fake-tool.mjs'), ...files], name);
+    return this.spawn(
+      executable,
+      [path.join(repoRoot, 'tests/relayflows/core/fake-tool.mjs'), ...files],
+      name
+    );
   }
 
   /** The agents the core has registered on this machine. */
@@ -262,7 +266,8 @@ export class Sandbox {
   /** Stops everything this sandbox started and removes it. */
   async dispose() {
     for (const running of this.processes) running.stop();
-    if (fs.existsSync(cli)) await this.relay(['init', '--stop'], { timeoutMs: 30_000 }).catch(() => undefined);
+    if (fs.existsSync(cli))
+      await this.relay(['init', '--stop'], { timeoutMs: 30_000 }).catch(() => undefined);
     const engine = path.join(this.relayHome, 'bin', engineFile);
     if (fs.existsSync(engine) && !fs.existsSync(path.join(engineCache, engineFile))) {
       fs.mkdirSync(engineCache, { recursive: true, mode: 0o700 });
