@@ -90,7 +90,7 @@ impl SessionPartition {
             SessionKind::ClaudeTerminal | SessionKind::ClaudeCloud => Self::Claude,
             SessionKind::Grok | SessionKind::GrokOpen => Self::Grok,
             SessionKind::MuseOpen => Self::Muse,
-            SessionKind::Pi => Self::Pi,
+            SessionKind::Pi | SessionKind::Omp => Self::Pi,
             SessionKind::OpenCode | SessionKind::OpenCodeOpen => Self::OpenCode,
             SessionKind::Devin => Self::Devin,
             SessionKind::CursorCli => Self::CursorCli,
@@ -120,6 +120,13 @@ pub trait SessionDirectory: Send + Sync + 'static {
         None
     }
 
+    /// Whether the Claude Code session for `target` waits at its prompt, by
+    /// its own registry; `None` when that cannot be told. Unlike
+    /// `mobile_claude_runtime` it names no process and grants nothing.
+    fn mobile_claude_idle(&self, _target: &Target) -> Option<bool> {
+        None
+    }
+
     /// Kernel evidence independent of a provider's registry rewrite.
     /// `None` is unknown and must not revoke a durable native generation.
     fn mobile_claude_incarnation(
@@ -132,6 +139,12 @@ pub trait SessionDirectory: Send + Sync + 'static {
     /// The sessions on this computer now, without those a fleet worker
     /// already owns. May block; called on a blocking thread.
     fn sessions(&self) -> Vec<DiscoveredSession>;
+
+    /// Sessions intentionally hidden even when a stored registration exists.
+    /// May block; called on a blocking thread.
+    fn hidden_sessions(&self) -> std::collections::HashSet<Target> {
+        Default::default()
+    }
 
     /// Fixed, disjoint discovery domains. At most one presentation task is
     /// in flight per domain. Legacy directories retain their whole-list pass.

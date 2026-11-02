@@ -151,51 +151,7 @@ impl SessionCommand {
                 recipient,
                 reply_to,
                 thread,
-            } => {
-                let mut query = match recipient {
-                    Recipient::To(name) if valid_name(name) => format!("to={}", query_encode(name)),
-                    Recipient::To(_) => {
-                        return Err(refuse(
-                            "--to takes one agent name, with no spaces or URL characters.",
-                        ))
-                    }
-                    Recipient::Address(address) if valid_address(address) => {
-                        format!("address={}", query_encode(address))
-                    }
-                    Recipient::Address(_) => {
-                        return Err(refuse("--address takes one agent@machine address."))
-                    }
-                    Recipient::Channel(channel) if valid_channel(channel) => {
-                        format!("channel={}", query_encode(channel))
-                    }
-                    Recipient::Channel(_) => {
-                        return Err(refuse("--channel takes one channel name, with no spaces."))
-                    }
-                };
-                let channel = matches!(recipient, Recipient::Channel(_));
-                if let Some(parent) = reply_to {
-                    if channel {
-                        return Err(refuse("A channel post takes --thread, not --reply-to."));
-                    }
-                    if !crate::relay::delivery::policy::is_plain_id(parent) {
-                        return Err(refuse("--reply-to takes the id of the message to answer."));
-                    }
-                    query.push_str(&format!("&reply_to={}", query_encode(parent)));
-                }
-                if let Some(thread) = thread {
-                    if !channel {
-                        return Err(refuse("--thread needs --channel."));
-                    }
-                    if !crate::relay::delivery::policy::is_plain_id(thread) {
-                        return Err(refuse("--thread takes the id of the thread to answer in."));
-                    }
-                    query.push_str(&format!("&thread_id={}", query_encode(thread)));
-                }
-                Ok(SessionRequest {
-                    method: "POST",
-                    path: format!("/send?{query}"),
-                })
-            }
+            } => send_request(recipient, reply_to.as_deref(), thread.as_deref()),
             SessionCommand::Agents => Ok(SessionRequest {
                 method: "GET",
                 path: "/agents".into(),
@@ -317,6 +273,56 @@ impl SessionCommand {
                 .join(" "),
         )
     }
+}
+
+/// `relay send`: `POST /send` to one recipient, its query built only from
+/// validated words.
+fn send_request(
+    recipient: &Recipient,
+    reply_to: Option<&str>,
+    thread: Option<&str>,
+) -> Result<SessionRequest> {
+    let mut query = match recipient {
+        Recipient::To(name) if valid_name(name) => format!("to={}", query_encode(name)),
+        Recipient::To(_) => {
+            return Err(refuse(
+                "--to takes one agent name, with no spaces or URL characters.",
+            ))
+        }
+        Recipient::Address(address) if valid_address(address) => {
+            format!("address={}", query_encode(address))
+        }
+        Recipient::Address(_) => return Err(refuse("--address takes one agent@machine address.")),
+        Recipient::Channel(channel) if valid_channel(channel) => {
+            format!("channel={}", query_encode(channel))
+        }
+        Recipient::Channel(_) => {
+            return Err(refuse("--channel takes one channel name, with no spaces."))
+        }
+    };
+    let channel = matches!(recipient, Recipient::Channel(_));
+    if let Some(parent) = reply_to {
+        if channel {
+            return Err(refuse("A channel post takes --thread, not --reply-to."));
+        }
+        if !crate::relay::delivery::policy::is_plain_id(parent) {
+            return Err(refuse("--reply-to takes the id of the message to answer."));
+        }
+        query.push_str(&format!("&reply_to={}", query_encode(parent)));
+    }
+    if let Some(thread) = thread {
+        if !channel {
+            return Err(refuse("--thread needs --channel."));
+        }
+        if !crate::relay::delivery::policy::is_plain_id(thread) {
+            return Err(refuse("--thread takes the id of the thread to answer in."));
+        }
+        query.push_str(&format!("&thread_id={}", query_encode(thread)));
+    }
+    Ok(SessionRequest {
+        method: "POST",
+        path: format!("/send?{query}"),
+    })
 }
 
 /// Runs `command` against `socket`: its one request, with `body` (or, for

@@ -1,6 +1,8 @@
-//! Existing Pi sessions through the bundled hot-loadable extension. No terminal
-//! input, Pi upgrade, second Pi process, or upstream patch is needed. A private
-//! per-runtime inbox is live only while the Pi process holds its registry open.
+//! Existing Pi and omp sessions through the bundled extension. No terminal
+//! input, harness upgrade, second process, or upstream patch is needed. A private
+//! per-runtime inbox is live only while the harness process holds its registry
+//! open. omp (oh-my-pi) is a Pi fork with the same extension API; it loads
+//! extensions only when a session starts and has its own agent directory.
 use crate::platform::fs as private_fs;
 use crate::relay::delivery::policy::MessageRef;
 use crate::relay::inject::InjectOutcome;
@@ -13,142 +15,14 @@ use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+mod config;
 mod inbox;
 mod native_choice;
 pub(crate) mod setup;
+pub use config::{Flavor, PiConfig};
 use inbox::{atomic_write_guarded, delivery_lock};
 
 const MAX_RECORD: u64 = 1024 * 1024;
-const SOURCE: &str = include_str!("pi/agent-relay.mjs");
-/// The first line of our extension, telling it from a person's file.
-const EXTENSION_MARK: &str = "// AGENT_RELAY_PI_EXTENSION=";
-
-#[derive(Clone, Debug)]
-pub struct PiConfig {
-    pub agent_dir: PathBuf,
-    pub runtime: PathBuf,
-    pub enabled: bool,
-}
-
-impl PiConfig {
-    pub fn from_env(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> Self {
-        Self {
-            agent_dir: env("PI_CODING_AGENT_DIR")
-                .map(PathBuf::from)
-                .filter(|path| path.is_absolute())
-                .unwrap_or_else(|| home.join(".pi/agent")),
-            runtime: home.join(".agentworkforce/desktop/pi"),
-            // The extension checks file owners with `process.getuid`, which
-            // Node does not have on Windows, so Pi sessions are off there.
-            enabled: !cfg!(windows) && env("AGENT_RELAY_ENABLE_PI").as_deref() != Some("0"),
-        }
-    }
-
-    pub fn extension_source(&self) -> String {
-        let runtime = serde_json::Value::String(self.runtime.to_string_lossy().into_owned());
-        SOURCE.replace("__RUNTIME__", &runtime.to_string())
-    }
-
-    /// Whether Pi has run here (its agent folder exists) and Pi sessions
-    /// are on: where the extension can go.
-    pub fn installed(&self) -> bool {
-        self.enabled && self.agent_dir.is_dir()
-    }
-
-    /// Where the extension goes in Pi's global extensions.
-    pub fn extension_file(&self) -> PathBuf {
-        self.agent_dir.join("extensions/agent-relay.js")
-    }
-
-    /// The marker turning the extension off leaves, in the core's own data
-    /// beside the Pi runtime rather than in Pi's folder.
-    pub fn off_marker(&self) -> PathBuf {
-        self.runtime.with_file_name("pi-extension.off")
-    }
-
-    /// The marker telling the extension that an open Pi session joins the
-    /// relay by itself (`auto_activate` and `pi_auto_activate`, which
-    /// `relay init` turns on), so its banner does not ask the person to
-    /// enable the session by hand. Core data beside the Pi runtime.
-    pub fn auto_join_marker(&self) -> PathBuf {
-        self.runtime.with_file_name("pi-auto-join")
-    }
-
-    /// Keeps [`Self::auto_join_marker`] in step with whether Pi sessions
-    /// join by themselves. Only the banner wording reads it, so a failure is
-    /// ignored; nothing is written where Pi has not run or Pi sessions are
-    /// off.
-    pub fn sync_auto_join(&self, auto_join: bool) {
-        let marker = self.auto_join_marker();
-        // Turned off (`pi_extension`, or Pi sessions off altogether with
-        // `AGENT_RELAY_ENABLE_PI=0`), a loaded extension's session is not
-        // joined, so its banner must not promise otherwise.
-        if !auto_join || !self.enabled || self.turned_off() {
-            let _ = fs::remove_file(&marker);
-            return;
-        }
-        if !self.installed() || marker.exists() {
-            return;
-        }
-        if let Some(parent) = marker.parent() {
-            if private_fs::create_private_dir_all(parent).is_err() {
-                return;
-            }
-        }
-        let _ = fs::write(
-            &marker,
-            "Open Pi sessions join Agent Relay automatically (auto_activate and pi_auto_activate).\n",
-        );
-    }
-
-    /// Whether `pi_extension` was turned off: Pi sessions are then neither
-    /// listed nor delivered to, even one that loaded the extension earlier.
-    pub fn turned_off(&self) -> bool {
-        self.off_marker().exists()
-    }
-
-    /// Whether our extension (not a person's file of that name) is in place.
-    pub fn extension_installed(&self) -> bool {
-        fs::symlink_metadata(self.extension_file()).is_ok_and(|m| m.is_file())
-            && fs::read_to_string(self.extension_file())
-                .is_ok_and(|text| text.starts_with(EXTENSION_MARK))
-    }
-
-    /// Removes our extension; a person's file at that name, or none, is left.
-    pub fn remove(&self) -> Result<(), String> {
-        if !self.extension_installed() {
-            return Ok(());
-        }
-        fs::remove_file(self.extension_file())
-            .map_err(|e| format!("Could not remove the Pi extension: {e}"))
-    }
-
-    /// Preserve a person's extension at this name. Refresh only our own copy.
-    pub fn install(&self) -> Result<(), String> {
-        if !self.installed() {
-            return Ok(());
-        }
-        let path = self.extension_file();
-        if let Ok(metadata) = fs::symlink_metadata(&path) {
-            if !metadata.is_file()
-                || !fs::read_to_string(&path)
-                    .unwrap_or_default()
-                    .starts_with(EXTENSION_MARK)
-            {
-                return Err("A different Pi extension already uses agent-relay.js.".into());
-            }
-        }
-        let source = self.extension_source();
-        if fs::read_to_string(&path).ok().as_deref() == Some(&source) {
-            return Ok(());
-        }
-        let parent = path
-            .parent()
-            .ok_or("Pi extension has no parent directory.")?;
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        atomic_write(&path, source.as_bytes()).map_err(|e| e.to_string())
-    }
-}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -262,7 +136,13 @@ pub fn bindings(config: &PiConfig, table: &dyn ProcessTable, uid: u32) -> Vec<Bi
             continue;
         }
         bindings.push(Binding {
-            reference: format!("pi:{}:{}:{}", process.pid, process.start, instance),
+            reference: format!(
+                "{}:{}:{}:{}",
+                config.flavor.kind().as_str(),
+                process.pid,
+                process.start,
+                instance
+            ),
             registry,
             directory,
         });
@@ -317,7 +197,7 @@ pub fn discover(config: &PiConfig, table: &dyn ProcessTable, uid: u32) -> Vec<Di
     bindings(config, table, uid)
         .into_iter()
         .map(|b| DiscoveredSession {
-            target: Target::new(SessionKind::Pi, b.registry.session_id.clone()),
+            target: Target::new(config.flavor.kind(), b.registry.session_id.clone()),
             title: read::<serde_json::Value>(&b.directory.join("title-state.json"), uid)
                 .filter(|v| v["sessionId"].as_str() == Some(b.registry.session_id.as_str()))
                 .and_then(|v| v["title"].as_str().map(str::to_owned))
@@ -343,10 +223,14 @@ pub fn set_title(
     id: &str,
     title: &str,
 ) -> Result<String, String> {
+    let name = config.name();
     let bound = binding(config, table, uid, id)
         .filter(|b| b.registry.title_editing)
-        .ok_or("Reload the Agent Relay extension in this Pi session to edit its title.")?;
-    let request_id = crate::relay::store::random_hex(16);
+        .ok_or_else(|| {
+            format!("Reload the Agent Relay extension in this {name} session to edit its title.")
+        })?;
+    // The extension reads only `title-<32 hex>.json`; any other name is ignored.
+    let request_id = crate::relay::store::random_hex(32);
     let path = bound.directory.join(format!("title-{request_id}.json"));
     let expires = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -356,14 +240,18 @@ pub fn set_title(
     let record = serde_json::json!({"version":1,"sessionId":id,"requestId":request_id,
         "title":title,"state":"pending","expiresAt":expires});
     atomic_write(&path, record.to_string().as_bytes())
-        .map_err(|_| "Could not send the title to Pi.")?;
+        .map_err(|_| format!("Could not send the title to {name}."))?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let result = loop {
         let Some(current) = binding(config, table, uid, id) else {
-            break Err("The Pi session closed before confirming the title.".into());
+            break Err(format!(
+                "The {name} session closed before confirming the title."
+            ));
         };
         if current.reference != bound.reference {
-            break Err("The Pi session changed before confirming the title.".into());
+            break Err(format!(
+                "The {name} session changed before confirming the title."
+            ));
         }
         if let Some(reply) = read::<serde_json::Value>(&path, uid) {
             if reply["sessionId"] == id && reply["requestId"] == request_id {
@@ -372,18 +260,17 @@ pub fn set_title(
                         .as_str()
                         .filter(|s| !s.trim().is_empty())
                         .map(str::to_owned)
-                        .ok_or_else(|| "Pi returned an empty title.".into());
+                        .ok_or_else(|| format!("{name} returned an empty title."));
                 }
                 if reply["state"] == "failed" {
-                    break Err("Pi could not save the title.".into());
+                    break Err(format!("{name} could not save the title."));
                 }
             }
         }
         if std::time::Instant::now() >= deadline {
-            break Err(
-                "Pi did not confirm the title. Reload its Agent Relay extension and try again."
-                    .into(),
-            );
+            break Err(format!(
+                "{name} did not confirm the title. Reload its Agent Relay extension and try again."
+            ));
         }
         std::thread::sleep(std::time::Duration::from_millis(50));
     };
@@ -438,7 +325,7 @@ fn pinned_directory(
 ) -> Option<PathBuf> {
     let parts: Vec<_> = registration.route_binding.as_deref()?.split(':').collect();
     if parts.len() != 4
-        || parts[0] != "pi"
+        || parts[0] != config.flavor.kind().as_str()
         || !nonce(parts[3])
         || !parts[1].parse::<i32>().is_ok_and(|pid| pid > 0)
         || !parts[2].parse::<u64>().is_ok_and(|start| start > 0)
@@ -479,14 +366,16 @@ fn recorded_delivery(
         {
             // The provider already owns this exact handoff. Neither loss of
             // capability nor a restarted caller may rewrite or resend it.
-            Some(InjectOutcome::Accepted(
-                "Waiting for Pi to record this message.".into(),
-            ))
+            Some(InjectOutcome::Accepted(format!(
+                "Waiting for {} to record this message.",
+                config.name()
+            )))
         }
         Some(record) if matches!(record.state.as_str(), "pending" | "claimed") => None,
-        _ => Some(InjectOutcome::InDoubt(
-            "Pi's saved delivery record could not be verified.".into(),
-        )),
+        _ => Some(InjectOutcome::InDoubt(format!(
+            "{}'s saved delivery record could not be verified.",
+            config.name()
+        ))),
     }
 }
 
@@ -561,7 +450,8 @@ fn send_with(
     admit: Option<&(dyn Fn() -> bool + Send + Sync)>,
 ) -> InjectOutcome {
     let native = admit.is_some();
-    // Settlement must survive Pi exiting or switching runtimes after receipt.
+    let name = config.name();
+    // Settlement must survive the harness exiting or switching runtimes after receipt.
     // Only new submissions need a live process with the exact pinned identity.
     if let Some(outcome) = recorded_delivery(config, uid, registration, message_id, text, native) {
         return outcome;
@@ -584,20 +474,20 @@ fn send_with(
         }
     }
     let Some(binding) = binding(config, table, uid, &registration.target.id) else {
-        return InjectOutcome::Waiting(
-            "Pi is not connected. Run /reload in the Pi session.".into(),
-        );
+        return InjectOutcome::Waiting(format!(
+            "{name} is not connected. {}",
+            config.flavor.reconnect()
+        ));
     };
     if registration.route_binding.as_deref() != Some(&binding.reference) {
-        return InjectOutcome::Refused(
-            "The Pi session binding changed; turn this agent off, then add the session again."
-                .into(),
-        );
+        return InjectOutcome::Refused(format!(
+            "The {name} session binding changed; turn this agent off, then add the session again."
+        ));
     }
     if native && binding.registry.native_continuation != 1 {
-        return InjectOutcome::Refused(
-            "Reload Pi's Agent Relay extension to enable native owner messages.".into(),
-        );
+        return InjectOutcome::Refused(format!(
+            "Reload {name}'s Agent Relay extension to enable native owner messages."
+        ));
     }
     let path = binding.directory.join(format!("{}.json", key(message_id)));
     let result = (|| -> Option<InjectOutcome> {
@@ -624,9 +514,9 @@ fn send_with(
             return Some(match record.state.as_str() {
                 "recorded" => InjectOutcome::Delivered,
                 "pending" | "claimed" => {
-                    InjectOutcome::Accepted("Waiting for Pi to record this message.".into())
+                    InjectOutcome::Accepted(format!("Waiting for {name} to record this message."))
                 }
-                _ => InjectOutcome::InDoubt("Pi's delivery record is unreadable.".into()),
+                _ => InjectOutcome::InDoubt(format!("{name}'s delivery record is unreadable.")),
             });
         }
         let record = Delivery {
@@ -640,27 +530,29 @@ fn send_with(
         };
         let bytes = serde_json::to_vec(&record).ok()?;
         if bytes.len() as u64 > MAX_RECORD / 2 {
-            return Some(InjectOutcome::Refused(
-                "This message is too large for Pi's inbox.".into(),
-            ));
+            return Some(InjectOutcome::Refused(format!(
+                "This message is too large for {name}'s inbox."
+            )));
         }
         let published =
             atomic_write_guarded(&path, &bytes, &|| admit.is_none_or(|admit| admit())).ok()?;
         if !published {
-            return Some(InjectOutcome::Refused(
-                "Pi owner authorization changed.".into(),
-            ));
+            return Some(InjectOutcome::Refused(format!(
+                "{name} owner authorization changed."
+            )));
         }
-        Some(InjectOutcome::Accepted("Waiting for Pi to be idle.".into()))
+        Some(InjectOutcome::Accepted(format!(
+            "Waiting for {name} to be idle."
+        )))
     })();
     result.unwrap_or_else(|| {
-        InjectOutcome::InDoubt(
-            "Pi's delivery inbox is unavailable; this message will not be resent.".into(),
-        )
+        InjectOutcome::InDoubt(format!(
+            "{name}'s delivery inbox is unavailable; this message will not be resent."
+        ))
     })
 }
 
-/// Read receipts even after Pi exits, but only from this registration's pinned runtime.
+/// Read receipts even after the harness exits, but only from this registration's pinned runtime.
 pub fn final_answer(
     config: &PiConfig,
     uid: u32,
@@ -714,6 +606,7 @@ mod tests {
         fs::create_dir_all(&runtime).unwrap();
         fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
         let config = PiConfig {
+            flavor: Flavor::Pi,
             runtime,
             agent_dir: temp.path().join("agent"),
             enabled: true,
@@ -954,6 +847,116 @@ mod tests {
     }
 
     #[test]
+    fn omp_sessions_are_their_own_kind_and_never_accept_a_pi_binding() {
+        let (_temp, mut config, _held, mut registration) = fixture();
+        let table = SystemProcesses::default();
+        let pi_reference = registration.route_binding.clone().unwrap();
+        config.flavor = Flavor::Omp;
+        let rows = discover(&config, &table, current_uid());
+        assert_eq!(rows[0].target, Target::new(SessionKind::Omp, ID));
+        let binding = binding(&config, &table, current_uid(), ID).unwrap();
+        assert!(binding.reference.starts_with("omp:"));
+        registration.target = Target::new(SessionKind::Omp, ID);
+        // A Pi registration's binding never routes into Oh My Pi.
+        assert_eq!(
+            send(&config, &table, current_uid(), &registration, "m", "Hi"),
+            InjectOutcome::Refused(
+                "The Oh My Pi session binding changed; turn this agent off, then add the session again."
+                    .into()
+            )
+        );
+        assert!(pinned_directory(&config, current_uid(), &registration).is_none());
+        registration.route_binding = Some(binding.reference);
+        assert!(matches!(
+            send(&config, &table, current_uid(), &registration, "m", "Hi"),
+            InjectOutcome::Accepted(_)
+        ));
+        assert!(pi_reference.starts_with("pi:"));
+    }
+
+    #[test]
+    fn omp_installs_into_its_own_agent_directory_with_its_harness_named() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let config = PiConfig::omp_from_env(&|_| None, home);
+        assert_eq!(config.agent_dir, home.join(".omp/agent"));
+        assert_eq!(config.runtime, home.join(".agentworkforce/desktop/omp"));
+        // PI_CODING_AGENT_DIR is Pi's too; only omp's config root moves it.
+        let env = |key: &str| match key {
+            "PI_CODING_AGENT_DIR" => Some("/elsewhere".to_string()),
+            "PI_CONFIG_DIR" => Some(".omp-work".to_string()),
+            _ => None,
+        };
+        assert_eq!(
+            PiConfig::omp_from_env(&env, home).agent_dir,
+            home.join(".omp-work/agent")
+        );
+        assert!(
+            !PiConfig::omp_from_env(
+                &|k| (k == "AGENT_RELAY_ENABLE_OMP").then(|| "0".into()),
+                home
+            )
+            .enabled
+        );
+        assert!(config.install().is_ok());
+        assert!(
+            !config.agent_dir.exists(),
+            "no agent directory means omp is not installed"
+        );
+        fs::create_dir_all(&config.agent_dir).unwrap();
+        config.install().unwrap();
+        let source =
+            fs::read_to_string(config.agent_dir.join("extensions/agent-relay.js")).unwrap();
+        assert!(source.contains("const harness = \"omp\";"));
+        assert!(source.contains(".agentworkforce/desktop/omp"));
+        assert!(!source.contains("__HARNESS__"));
+        let pi = PiConfig::from_env(&|_| None, home).extension_source();
+        assert!(pi.contains("const harness = \"pi\";"));
+    }
+
+    #[test]
+    fn pi_and_omp_sharing_an_agent_directory_never_overwrite_each_other() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path();
+        let pi = PiConfig::from_env(&|_| None, home);
+        // PI_CONFIG_DIR=.pi points omp at Pi's own agent directory.
+        let env = |key: &str| (key == "PI_CONFIG_DIR").then(|| "./.pi/".to_string());
+        let omp = PiConfig::omp_from_env(&env, home);
+        fs::create_dir_all(&pi.agent_dir).unwrap();
+        let path = pi.agent_dir.join("extensions/agent-relay.js");
+        pi.install().unwrap();
+        let installed = fs::read_to_string(&path).unwrap();
+        let error = omp.install().unwrap_err();
+        assert!(
+            error.contains("Oh My Pi shares its agent directory with Pi"),
+            "{error}"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            installed,
+            "Pi keeps its extension"
+        );
+        // Through a symlink too, and the other way round.
+        fs::remove_file(&path).unwrap();
+        let linked = home.join(".omp-link");
+        std::os::unix::fs::symlink(home.join(".pi"), &linked).unwrap();
+        let omp = PiConfig::omp_from_env(
+            &|k| (k == "PI_CONFIG_DIR").then(|| ".omp-link".into()),
+            home,
+        );
+        omp.install().unwrap();
+        let installed = fs::read_to_string(&path).unwrap();
+        assert!(installed.contains("const harness = \"omp\";"));
+        assert!(pi
+            .install()
+            .unwrap_err()
+            .contains("Pi shares its agent directory with Oh My Pi"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), installed);
+        // Each harness still refreshes its own copy.
+        omp.install().unwrap();
+    }
+
+    #[test]
     fn installing_preserves_unrelated_extensions_and_respects_opt_out() {
         let temp = tempfile::tempdir().unwrap();
         let mut config = PiConfig::from_env(&|_| None, temp.path());
@@ -969,6 +972,71 @@ mod tests {
         fs::remove_file(&path).unwrap();
         config.install().unwrap();
         assert!(!path.exists());
+    }
+
+    /// The core's title request, as it writes it, against the bundled
+    /// extension running in Node with a stand-in Pi or omp session API.
+    #[test]
+    fn a_title_request_from_the_core_is_applied_by_the_bundled_extension() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipped: node is not installed");
+            return;
+        }
+        for flavor in [Flavor::Pi, Flavor::Omp] {
+            let temp = tempfile::tempdir().unwrap();
+            fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            let config = PiConfig {
+                flavor,
+                runtime: temp.path().join("runtime"),
+                agent_dir: temp.path().join("agent"),
+                enabled: true,
+            };
+            let extension = temp.path().join("extension.mjs");
+            fs::write(&extension, config.extension_source()).unwrap();
+            // omp's setSessionName saves asynchronously; Pi's returns at once.
+            let host = temp.path().join("host.mjs");
+            fs::write(&host, format!(r#"
+const [extension, cwd, harness] = process.argv.slice(2);
+let title = 'Old title';
+const handlers = new Map();
+const pi = {{ getSessionName: () => title, on: (name, fn) => handlers.set(name, fn), sendUserMessage() {{}},
+  setSessionName: value => harness === 'omp'
+    ? new Promise(resolve => setTimeout(() => {{ title = value; resolve(); }}, 20))
+    : void (title = value) }};
+(await import(extension)).default(pi);
+handlers.get('session_start')({{}}, {{ hasUI: true, cwd, ui: {{}}, isIdle: () => true,
+  sessionManager: {{ getSessionFile: () => cwd + '/session.jsonl', getSessionId: () => '{ID}', getBranch: () => [] }} }});
+setInterval(() => {{}}, 1000);
+"#)).unwrap();
+            let harness = match flavor {
+                Flavor::Pi => "pi",
+                Flavor::Omp => "omp",
+            };
+            let mut node = std::process::Command::new("node")
+                .arg(&host)
+                .arg(&extension)
+                .arg(temp.path())
+                .arg(harness)
+                .spawn()
+                .unwrap();
+            let table = SystemProcesses::default();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !can_set_title(&config, &table, current_uid(), ID) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{harness}: the extension never registered"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            let result = set_title(&config, &table, current_uid(), ID, "Renamed from Relay");
+            let _ = node.kill();
+            let _ = node.wait();
+            assert_eq!(result, Ok("Renamed from Relay".into()), "{harness}");
+        }
     }
 
     #[test]

@@ -44,7 +44,7 @@ use relaycast::types::DirectNodeToken;
 use relaycast::{AgentClient, ClientOptions, RelayError, RequestOptions};
 use serde_json::{json, Map, Value};
 use tokio::net::TcpStream;
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 /// Seconds between `node.heartbeat` frames on a direct node socket.
 pub const NODE_HEARTBEAT_SECONDS: u64 = 15;
@@ -554,7 +554,8 @@ pub async fn open_node_socket(
     version: &str,
     machine_id: &str,
 ) -> Result<NodeSocket, tokio_tungstenite::tungstenite::Error> {
-    let (mut socket, _) = connect_async(node_socket_url(base_url, &node.token, version)).await?;
+    let url = node_socket_url(base_url, &node.token, version);
+    let (mut socket, _) = crate::relay::websocket_tls::connect(url, None).await?;
     send_frame(&mut socket, &register_frame(node, version, machine_id)).await?;
     Ok(socket)
 }

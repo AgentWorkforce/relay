@@ -20,7 +20,14 @@
 //! queued after the session has made no progress for the threshold leaves
 //! the session stalled. Only the transcript's tail is read; delivery itself
 //! is unchanged.
+//!
+//! What is watched lives in memory. A core that starts (after an update or
+//! a crash) recovers it from the transcript: relay messages enqueued after
+//! the session's last progress (`recover`), with their enqueue's time.
+//! A message the session made progress after but has not read is then not
+//! recovered, and a session that is not running is not watched.
 
+use crate::relay::delivery::policy::MessageRef;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
@@ -38,8 +45,9 @@ pub const DEFAULT_THRESHOLD: Duration = Duration::from_secs(10 * 60);
 /// The environment variable that changes the threshold, in seconds.
 pub const THRESHOLD_ENV: &str = "RELAY_DESKTOP_CLAUDE_INBOX_STALL_SECS";
 
-/// The most injections remembered per session; later ones are not tracked,
-/// and the oldest, which decide the stall, are kept.
+/// The most injections remembered per session. Past it the oldest is
+/// forgotten: the session reads its queue in order, so the newest are the
+/// last to drain and keep a stall reported until it reads them all.
 pub const MAX_TRACKED: usize = 256;
 
 /// One message written to a session's inbox.
@@ -68,22 +76,46 @@ pub struct Assessment {
     /// The latest progress the session recorded: a dequeue, a removal, or a
     /// `user` or `assistant` entry.
     pub last_progress_ms: Option<i64>,
+    /// Whether the tail said anything: `false` for a window holding no
+    /// whole entry with no file time to go by.
+    pub known: bool,
 }
 
-/// The last `max` bytes of `path`, and whether the read began past the
-/// file's start (so its first line may be partial).
-pub fn read_tail(path: &Path, max: u64) -> std::io::Result<(Vec<u8>, bool)> {
+/// The end of a transcript.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Tail {
+    pub bytes: Vec<u8>,
+    /// Whether the read began past the file's start, so its first line may
+    /// be partial.
+    pub truncated: bool,
+    /// When the file was last written.
+    pub modified_ms: Option<i64>,
+}
+
+/// The last `max` bytes of `path`.
+pub fn read_tail(path: &Path, max: u64) -> std::io::Result<Tail> {
     let mut file = std::fs::File::open(path)?;
-    let len = file.metadata()?.len();
+    let metadata = file.metadata()?;
+    let len = metadata.len();
     let start = len.saturating_sub(max);
     file.seek(SeekFrom::Start(start))?;
     let mut bytes = Vec::with_capacity((len - start) as usize);
     file.take(max).read_to_end(&mut bytes)?;
-    Ok((bytes, start > 0))
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|since| i64::try_from(since.as_millis()).ok());
+    Ok(Tail {
+        bytes,
+        truncated: start > 0,
+        modified_ms,
+    })
 }
 
 enum Kind {
-    Enqueue(String),
+    /// The reference its attribution line carries, if it is a relay message.
+    Enqueue(Option<String>),
     Drain,
     Activity,
     Other,
@@ -105,8 +137,10 @@ fn entries(tail: &[u8], truncated: bool) -> Vec<Entry> {
         .map(|entry| {
             let at_ms = entry["timestamp"].as_str().and_then(crate::parse_iso_ms);
             let kind = match (entry["type"].as_str(), entry["operation"].as_str()) {
+                // Only the attribution line, never the sender's text, names
+                // the message.
                 (Some("queue-operation"), Some("enqueue")) => {
-                    Kind::Enqueue(entry["content"].as_str().unwrap_or_default().to_string())
+                    Kind::Enqueue(entry["content"].as_str().and_then(MessageRef::in_text))
                 }
                 (Some("queue-operation"), Some("dequeue" | "remove")) => Kind::Drain,
                 (Some("user" | "assistant"), _) => Kind::Activity,
@@ -121,21 +155,25 @@ fn entries(tail: &[u8], truncated: bool) -> Vec<Entry> {
 /// enqueue is in the tail is drained by a later dequeue or removal; one whose
 /// enqueue is not (not yet written, or already past the tail) by a dequeue
 /// or removal recorded at or after it was injected. Lines that do not parse,
-/// such as one still being written, are skipped.
-pub fn assess(tail: &[u8], truncated: bool, pending: &[Injection]) -> Assessment {
-    let entries = entries(tail, truncated);
+/// such as one still being written, are skipped. A line still being
+/// written, or a window too short for one whole entry (a large tool result),
+/// is the session writing: the file's time counts as progress.
+pub fn assess(tail: &Tail, pending: &[Injection]) -> Assessment {
+    let entries = entries(&tail.bytes, tail.truncated);
+    let writing = entries.is_empty() || !tail.bytes.ends_with(b"\n");
     let last_progress_ms = entries
         .iter()
         .filter(|e| matches!(e.kind, Kind::Drain | Kind::Activity))
         .filter_map(|e| e.at_ms)
+        .chain(tail.modified_ms.filter(|_| writing))
         .max();
     let undrained = pending
         .iter()
         .filter(|injection| {
-            let marker = format!("ref {}", injection.reference);
-            let enqueued = entries.iter().rposition(
-                |e| matches!(&e.kind, Kind::Enqueue(content) if content.contains(&marker)),
-            );
+            let reference = Some(&injection.reference);
+            let enqueued = entries
+                .iter()
+                .rposition(|e| matches!(&e.kind, Kind::Enqueue(r) if r.as_ref() == reference));
             let drained = match enqueued {
                 Some(at) => entries[at + 1..]
                     .iter()
@@ -152,7 +190,28 @@ pub fn assess(tail: &[u8], truncated: bool, pending: &[Injection]) -> Assessment
     Assessment {
         undrained,
         last_progress_ms,
+        known: !entries.is_empty() || tail.modified_ms.is_some(),
     }
+}
+
+/// The relay messages the tail shows enqueued after the session's last
+/// progress, for a core that did not see them injected.
+pub fn recover(tail: &Tail) -> Vec<Injection> {
+    let entries = entries(&tail.bytes, tail.truncated);
+    let after = entries
+        .iter()
+        .rposition(|e| matches!(e.kind, Kind::Drain | Kind::Activity))
+        .map_or(0, |at| at + 1);
+    entries[after..]
+        .iter()
+        .filter_map(|e| match &e.kind {
+            Kind::Enqueue(Some(reference)) => Some(Injection {
+                reference: reference.clone(),
+                injected_at_ms: e.at_ms?,
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Those of `refs` whose message the transcript tail shows reached Claude:
@@ -237,16 +296,50 @@ impl Watch {
     /// Records a message just written to `session_id`'s inbox. A session
     /// other than the one watched starts the watch over.
     pub fn injected(&mut self, session_id: &str, injection: Injection) {
+        self.recovered(session_id, vec![injection]);
+    }
+
+    /// Records messages found in `session_id`'s inbox, once each, keeping
+    /// the newest `MAX_TRACKED`.
+    pub fn recovered(&mut self, session_id: &str, found: Vec<Injection>) {
         if self.session_id != session_id {
             *self = Watch {
                 session_id: session_id.to_string(),
                 ..Watch::default()
             };
         }
-        if self.pending.len() < MAX_TRACKED {
-            self.pending.push(injection);
+        for injection in found {
+            if !self
+                .pending
+                .iter()
+                .any(|p| p.reference == injection.reference)
+            {
+                self.pending.push(injection);
+            }
         }
+        self.pending.sort_by_key(|i| i.injected_at_ms);
+        let excess = self.pending.len().saturating_sub(MAX_TRACKED);
+        self.pending.drain(..excess);
         self.due = true;
+    }
+
+    /// Checks `checked` (the pending injections when the read began)
+    /// against the transcript's tail. A tail that could not be read, or
+    /// says nothing, leaves the watch as it was: nothing was seen read.
+    /// Returns the stall before and after.
+    pub fn check(
+        &mut self,
+        checked: &[Injection],
+        tail: Option<&Tail>,
+        now_ms: i64,
+        threshold: Duration,
+    ) -> (Option<InboxStall>, Option<InboxStall>) {
+        let Some(assessment) = tail.map(|t| assess(t, checked)).filter(|a| a.known) else {
+            let unchanged = self.report(now_ms);
+            return (unchanged.clone(), unchanged);
+        };
+        let stall = evaluate(&assessment, now_ms, threshold);
+        self.settle(checked, &assessment.undrained, stall, now_ms)
     }
 
     /// Applies a check of `checked` (the pending injections when it began):
@@ -350,8 +443,16 @@ mod tests {
         }
     }
 
+    fn window(bytes: &[u8], truncated: bool) -> Tail {
+        Tail {
+            bytes: bytes.to_vec(),
+            truncated,
+            modified_ms: None,
+        }
+    }
+
     fn stall_at(tail: &[u8], pending: &[Injection], now: i64) -> Option<InboxStall> {
-        evaluate(&assess(tail, false, pending), now, THRESHOLD)
+        evaluate(&assess(&window(tail, false), pending), now, THRESHOLD)
     }
 
     #[test]
@@ -383,7 +484,7 @@ mod tests {
             entry("user", ENQUEUED_MS + 60),
         ]);
         let pending = [injected(REF, ENQUEUED_MS)];
-        let assessment = assess(&tail, false, &pending);
+        let assessment = assess(&window(&tail, false), &pending);
         assert!(assessment.undrained.is_empty());
         assert_eq!(
             evaluate(&assessment, ENQUEUED_MS + 60 * MINUTE, THRESHOLD),
@@ -395,7 +496,7 @@ mod tests {
     fn a_removal_after_the_enqueue_drains_it() {
         let tail = transcript(&[enqueue(REF, ENQUEUED_MS + 20), remove(ENQUEUED_MS + 40)]);
         let pending = [injected(REF, ENQUEUED_MS)];
-        assert!(assess(&tail, false, &pending).undrained.is_empty());
+        assert!(assess(&window(&tail, false), &pending).undrained.is_empty());
     }
 
     #[test]
@@ -404,7 +505,7 @@ mod tests {
         // earlier enqueue: order in the file decides, not the timestamp.
         let tail = transcript(&[dequeue(ENQUEUED_MS + 20), enqueue(REF, ENQUEUED_MS + 20)]);
         let pending = [injected(REF, ENQUEUED_MS)];
-        assert_eq!(assess(&tail, false, &pending).undrained, pending);
+        assert_eq!(assess(&window(&tail, false), &pending).undrained, pending);
     }
 
     #[test]
@@ -451,10 +552,10 @@ mod tests {
         tail.push(b'\n');
         tail.extend(transcript(std::slice::from_ref(&line)));
         let pending = [injected(REF, ENQUEUED_MS)];
-        assert!(assess(&tail, true, &pending).undrained.is_empty());
+        assert!(assess(&window(&tail, true), &pending).undrained.is_empty());
         let only_fragment = format!("{line}\n");
         assert_eq!(
-            assess(only_fragment.as_bytes(), true, &pending).undrained,
+            assess(&window(only_fragment.as_bytes(), true), &pending).undrained,
             pending
         );
     }
@@ -463,9 +564,12 @@ mod tests {
     fn an_enqueue_past_the_tail_is_drained_by_a_later_dequeue() {
         let tail = transcript(&[dequeue(ENQUEUED_MS - MINUTE), dequeue(ENQUEUED_MS + MINUTE)]);
         let pending = [injected(REF, ENQUEUED_MS)];
-        assert!(assess(&tail, false, &pending).undrained.is_empty());
+        assert!(assess(&window(&tail, false), &pending).undrained.is_empty());
         let earlier = transcript(&[dequeue(ENQUEUED_MS - MINUTE)]);
-        assert_eq!(assess(&earlier, false, &pending).undrained, pending);
+        assert_eq!(
+            assess(&window(&earlier, false), &pending).undrained,
+            pending
+        );
     }
 
     #[test]
@@ -477,6 +581,7 @@ mod tests {
         let nothing = Assessment {
             undrained: Vec::new(),
             last_progress_ms: None,
+            known: true,
         };
         assert_eq!(
             evaluate(&nothing, ENQUEUED_MS + 600 * MINUTE, THRESHOLD),
@@ -492,19 +597,22 @@ mod tests {
         let mut lines: Vec<String> = std::iter::repeat_n(filler, 2000).collect();
         lines.push(enqueue(REF, ENQUEUED_MS + 20));
         std::fs::write(&path, transcript(&lines)).unwrap();
-        let (tail, truncated) = read_tail(&path, 4096).unwrap();
-        assert_eq!(tail.len(), 4096);
-        assert!(truncated);
+        let tail = read_tail(&path, 4096).unwrap();
+        assert_eq!(tail.bytes.len(), 4096);
+        assert!(tail.truncated && tail.modified_ms.is_some());
         let pending = [injected(REF, ENQUEUED_MS)];
         let stall = evaluate(
-            &assess(&tail, truncated, &pending),
+            &assess(&tail, &pending),
             ENQUEUED_MS + 11 * MINUTE,
             THRESHOLD,
         );
         assert_eq!(stall.map(|s| s.undrained_count), Some(1));
-        let (whole, truncated) = read_tail(&path, u64::MAX).unwrap();
-        assert!(!truncated);
-        assert_eq!(whole.len() as u64, std::fs::metadata(&path).unwrap().len());
+        let whole = read_tail(&path, u64::MAX).unwrap();
+        assert!(!whole.truncated);
+        assert_eq!(
+            whole.bytes.len() as u64,
+            std::fs::metadata(&path).unwrap().len()
+        );
     }
 
     #[test]
@@ -541,6 +649,135 @@ mod tests {
         watch.injected(SESSION, second.clone());
         watch.injected("8f1c1a52-0c55-4a59-9d55-6d2d3c8b1f00", first.clone());
         assert_eq!(watch.pending, vec![first]);
+    }
+
+    #[test]
+    fn a_reference_quoted_in_a_later_message_is_not_its_enqueue() {
+        let quoting = serde_json::json!({
+            "type": "queue-operation",
+            "operation": "enqueue",
+            "timestamp": iso(ENQUEUED_MS + 2 * MINUTE),
+            "sessionId": SESSION,
+            "content": format!(
+                "[via Agent Relay — from @b to @claude · message 2 · ref 0123456789ab]\nre: ref {REF}]"
+            ),
+        })
+        .to_string();
+        let tail = transcript(&[
+            enqueue(REF, ENQUEUED_MS + 20),
+            dequeue(ENQUEUED_MS + 40),
+            quoting,
+        ]);
+        let pending = [injected(REF, ENQUEUED_MS)];
+        assert!(assess(&window(&tail, false), &pending).undrained.is_empty());
+    }
+
+    #[test]
+    fn a_window_of_one_partial_line_is_not_silence() {
+        // The last 256 KB are one tool result: its write is the session's
+        // latest progress.
+        let pending = [injected(REF, ENQUEUED_MS)];
+        let mut tail = window(&[b'x'; 4096], true);
+        tail.modified_ms = Some(ENQUEUED_MS + 55 * MINUTE);
+        let assessment = assess(&tail, &pending);
+        assert!(assessment.known);
+        assert_eq!(
+            evaluate(&assessment, ENQUEUED_MS + 60 * MINUTE, THRESHOLD),
+            None
+        );
+        // Written long ago and nothing since: stalled.
+        tail.modified_ms = Some(ENQUEUED_MS + MINUTE);
+        let stall = evaluate(
+            &assess(&tail, &pending),
+            ENQUEUED_MS + 60 * MINUTE,
+            THRESHOLD,
+        );
+        assert_eq!(stall.map(|s| s.undrained_count), Some(1));
+        // With no file time either, nothing is known and nothing changes.
+        tail.modified_ms = None;
+        assert!(!assess(&tail, &pending).known);
+        let mut watch = Watch::default();
+        watch.injected(SESSION, pending[0].clone());
+        let checked = watch.pending.clone();
+        let now = ENQUEUED_MS + 60 * MINUTE;
+        assert_eq!(
+            watch.check(&checked, Some(&tail), now, THRESHOLD),
+            (None, None)
+        );
+        assert_eq!(watch.pending, checked);
+    }
+
+    #[test]
+    fn an_unreadable_tail_keeps_an_established_stall() {
+        let mut watch = Watch::default();
+        watch.injected(SESSION, injected(REF, ENQUEUED_MS));
+        let tail = window(&transcript(&[enqueue(REF, ENQUEUED_MS + 20)]), false);
+        let checked = watch.pending.clone();
+        let now = ENQUEUED_MS + 11 * MINUTE;
+        let (before, after) = watch.check(&checked, Some(&tail), now, THRESHOLD);
+        assert!(before.is_none() && after.is_some());
+        let (before, after) = watch.check(&checked, None, now + MINUTE, THRESHOLD);
+        assert_eq!(before, after);
+        assert_eq!(after.map(|s| s.oldest_undrained_age_ms), Some(12 * MINUTE));
+        assert_eq!(watch.pending, checked);
+    }
+
+    #[test]
+    fn messages_enqueued_after_the_last_progress_are_recovered() {
+        let other = "0123456789ab";
+        let tail = window(
+            &transcript(&[
+                enqueue("aaaaaaaaaaaa", ENQUEUED_MS - 2 * MINUTE),
+                dequeue(ENQUEUED_MS - MINUTE),
+                entry("assistant", ENQUEUED_MS),
+                enqueue(REF, ENQUEUED_MS + 20),
+                r#"{"type":"queue-operation","operation":"enqueue","content":"typed by hand"}"#
+                    .into(),
+                enqueue(other, ENQUEUED_MS + MINUTE),
+            ]),
+            false,
+        );
+        let found = recover(&tail);
+        assert_eq!(
+            found,
+            vec![
+                injected(REF, ENQUEUED_MS + 20),
+                injected(other, ENQUEUED_MS + MINUTE)
+            ]
+        );
+        // Merged with what the watch already has, once each, oldest first.
+        let mut watch = Watch::default();
+        watch.injected(SESSION, injected(other, ENQUEUED_MS + MINUTE - 5));
+        watch.recovered(SESSION, found);
+        assert_eq!(
+            watch.pending,
+            vec![
+                injected(REF, ENQUEUED_MS + 20),
+                injected(other, ENQUEUED_MS + MINUTE - 5)
+            ]
+        );
+        // Read since: nothing to recover.
+        let read = window(
+            &transcript(&[enqueue(REF, ENQUEUED_MS), dequeue(ENQUEUED_MS + 1)]),
+            false,
+        );
+        assert!(recover(&read).is_empty());
+    }
+
+    #[test]
+    fn past_the_cap_the_newest_injections_are_kept() {
+        let mut watch = Watch::default();
+        let all: Vec<Injection> = (0..=MAX_TRACKED as i64)
+            .map(|n| injected(&format!("{n:012x}"), ENQUEUED_MS + n))
+            .collect();
+        for injection in &all {
+            watch.injected(SESSION, injection.clone());
+        }
+        let last = all.last().unwrap().clone();
+        // The session reads all but the last.
+        let checked = watch.pending.clone();
+        watch.settle(&checked, std::slice::from_ref(&last), None, ENQUEUED_MS);
+        assert_eq!(watch.pending, vec![last]);
     }
 
     #[test]

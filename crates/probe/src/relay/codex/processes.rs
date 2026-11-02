@@ -285,6 +285,24 @@ pub fn open_threads(table: &dyn ProcessTable, uid: u32) -> BTreeSet<String> {
     open
 }
 
+/// Whether `pid` is the Codex app-server daemon `codex app-server proxy`
+/// reaches: one listening on the default control socket (`unix://`, no
+/// path). An app-server on its own socket path, or over stdio (the Codex
+/// app's own, Conductor's, Paseo's), is not asked.
+pub fn is_proxied_app_server(table: &dyn ProcessTable, pid: i32) -> bool {
+    let arguments = table.arguments(pid);
+    arguments.iter().any(|a| a == "app-server")
+        && arguments
+            .iter()
+            .enumerate()
+            .filter_map(|(at, argument)| match argument.strip_prefix("--listen=") {
+                Some(address) => Some(address),
+                None if argument == "--listen" => arguments.get(at + 1).map(String::as_str),
+                None => None,
+            })
+            .any(|address| address == "unix://")
+}
+
 /// The executable of a trusted live Codex of this user to run `app-server
 /// proxy` with: the app-server daemon's own when it runs (its native
 /// binary speaks its proxy protocol), else any. `None` when no Codex runs,
@@ -313,7 +331,7 @@ pub fn running_executable(table: &dyn ProcessTable, uid: u32) -> Option<PathBuf>
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::relay::process::{FakeProcess, FakeProcesses, ProcessInfo, StartClock};
+    use crate::relay::process::{CommandLine, FakeProcess, FakeProcesses, ProcessInfo, StartClock};
     use std::sync::Mutex;
 
     pub const UID: u32 = 501;
@@ -506,11 +524,8 @@ pub(crate) mod tests {
             self.checks.lock().unwrap().push(executable.to_path_buf());
             self.inner.is_trusted_codex(executable)
         }
-        fn arguments(&self, pid: i32) -> Vec<String> {
-            self.inner.arguments(pid)
-        }
-        fn environment_var(&self, pid: i32, key: &str) -> Option<String> {
-            self.inner.environment_var(pid, key)
+        fn command_line(&self, pid: i32) -> CommandLine {
+            self.inner.command_line(pid)
         }
         fn open_files(&self, pid: i32) -> Vec<PathBuf> {
             self.inner.open_files(pid)

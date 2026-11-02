@@ -54,7 +54,7 @@ impl Watching {
     /// Arm broad capture only after its sharing snapshot was validated.
     pub(super) fn start_roots(
         store: &ai_hist::SessionStore,
-        roots: &crate::history::RootSettings,
+        roots: &crate::probe::history::RootSettings,
         events: mpsc::Sender<Noticed>,
         use_fs_events: bool,
     ) -> Self {
@@ -111,7 +111,7 @@ impl Watching {
     pub(super) fn refresh_roots(
         &mut self,
         store: &ai_hist::SessionStore,
-        roots: &crate::history::RootSettings,
+        roots: &crate::probe::history::RootSettings,
         reset: bool,
     ) {
         if reset {
@@ -124,7 +124,7 @@ impl Watching {
         let Ok(extra) = roots.extra_claude_roots(store) else {
             return;
         };
-        let paths = crate::history::watched_paths_for(store, extra);
+        let paths = crate::probe::history::watched_paths_for(store, extra);
         if self
             .watch
             .as_ref()
@@ -266,9 +266,9 @@ mod admission_tests {
     use super::*;
     #[test]
     fn repeated_admitted_path_at_capacity_does_not_request_reconciliation() {
-        let Some(home) = crate::live::tests::isolated_home("live::watching::admission_tests::repeated_admitted_path_at_capacity_does_not_request_reconciliation") else { return; };
+        let Some(home) = crate::probe::live::tests::isolated_home("probe::live::watching::admission_tests::repeated_admitted_path_at_capacity_does_not_request_reconciliation") else { return; };
         let db = home.join("probe/history.db");
-        crate::history::open(&db).unwrap();
+        crate::probe::history::open(&db).unwrap();
         let project = home.join(".claude/projects/capacity");
         std::fs::create_dir_all(&project).unwrap();
         let path = project.join("known.jsonl");
@@ -300,13 +300,13 @@ mod admission_tests {
 
     #[test]
     fn unrelated_probe_directory_is_ignored_and_provider_directory_requests_rescan() {
-        let Some(home)=crate::live::tests::isolated_home("live::watching::admission_tests::unrelated_probe_directory_is_ignored_and_provider_directory_requests_rescan") else {return};
+        let Some(home)=crate::probe::live::tests::isolated_home("probe::live::watching::admission_tests::unrelated_probe_directory_is_ignored_and_provider_directory_requests_rescan") else {return};
         let directory = home.join("probe");
         std::fs::create_dir_all(&directory).unwrap();
         let project = home.join(".claude/projects/p");
         std::fs::create_dir_all(&project).unwrap();
         let db = directory.join("history.db");
-        crate::history::open(&db).unwrap();
+        crate::probe::history::open(&db).unwrap();
         let (events, _received) = mpsc::channel();
         let watching = Watching::start(&db, events, true);
         assert!(watching.watch.is_ok());

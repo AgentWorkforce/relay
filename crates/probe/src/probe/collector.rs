@@ -1,7 +1,7 @@
 use super::{lock, read_config, save_json, save_status_json, user_error, Config};
-use agent_relay_probe::cloud::{self, Renewal, RenewalFailure};
-use agent_relay_probe::delivery::{self, worker, ExportSelection};
-use agent_relay_probe::destination;
+use crate::cloud::{self, Renewal, RenewalFailure};
+use crate::delivery::{self, worker, ExportSelection};
+use crate::destination;
 use anyhow::{ensure, Context, Result};
 use rusqlite::Connection;
 use serde_json::json;
@@ -18,14 +18,21 @@ use std::{
 };
 
 mod claims;
+#[cfg(test)]
+use crate::delivery_status::current_cycle_report;
+pub(super) use crate::delivery_status::{
+    renewal_failure, renewal_failure_message, replacement_in_progress, RENEWAL_REPORT,
+};
+#[cfg(test)]
+pub(super) use claims::newer_build_live;
+mod legacy_schedules;
 mod passes;
 pub(super) use claims::{
-    collector_version, ensure_no_live_newer_claim, newer_build, newer_build_live, outdated,
-    running, UPDATE_REQUIRED,
+    collector_version, ensure_no_live_newer_claim, newer_build, outdated, running, UPDATE_REQUIRED,
 };
-use passes::deliver;
 #[cfg(test)]
 use passes::deliver_with_receiver;
+use passes::{deliver, receiver_state};
 
 /// The destination and generation this probe delivers as. Both are part of the
 /// saved job configuration, so they cannot change for an existing install.
@@ -106,9 +113,7 @@ pub(super) fn stopping(cancelled: &AtomicBool) -> bool {
     cancelled.load(Ordering::Relaxed) || STOP.load(Ordering::Relaxed)
 }
 
-pub fn now() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
+pub use crate::delivery_status::now;
 /// The stored selection, independent of how much history exists locally:
 /// every evidence kind, in every sharing mode. What a mode withholds is
 /// consent — exclusions and selected-session membership — not kinds. The
@@ -293,7 +298,7 @@ fn cycle_with_stop(
     before_exit: bool,
 ) -> Result<PassOutcome> {
     super::bridge::openclaw_upgrade::enforce_selection(directory, config)?;
-    let conn = agent_relay_probe::delivery::open_db(&directory.join("history.db"))?;
+    let conn = crate::delivery::open_db(&directory.join("history.db"))?;
     let status = delivery::status(&conn, &config.job_id)?;
     let selected = super::bridge::mode(config) == super::bridge::SharingMode::Selected;
     if status.state == "paused" {
@@ -385,7 +390,7 @@ fn run_capture_cycle(
 
 /// Hydrate only authorized members using core observation locks and cancellation.
 fn capture_selected(directory: &Path, config: &Config, cancelled: &Arc<AtomicBool>) -> Result<()> {
-    let conn = agent_relay_probe::delivery::open_db(&directory.join("history.db"))?;
+    let conn = crate::delivery::open_db(&directory.join("history.db"))?;
     let members = delivery::job_selected_sessions(&conn, &config.job_id)?;
     let captured = capture_members(
         directory,
@@ -469,6 +474,9 @@ pub(super) fn capture_members(
 
 /// Classify typed causes into stable public labels without exposing raw error details.
 pub(super) fn capture_error_class(error: &anyhow::Error) -> &'static str {
+    if let Some(class) = legacy_schedules::class(error) {
+        return class;
+    }
     for cause in error.chain() {
         if let Some(store) = cause.downcast_ref::<ai_hist::Error>() {
             return store_error_class(store);
@@ -565,6 +573,7 @@ fn class_failure_message(class: &str) -> Option<&'static str> {
         "permission_denied" => Some("Agent Relay cannot access local history. Check local file permissions."),
         "upload_preparation_failed" => Some("Agent Relay could not prepare local history for upload. It keeps retrying; update Agent Relay if uploads stay stuck."),
         "delivery_conflict" => Some("History delivery conflict: receiver-rejected records are quarantined or await validated conflict details. Inspect delivery status; other records remain queued."),
+        "legacy_schedules_unknown" => Some(destination::LEGACY_SCHEDULES_UNKNOWN_MESSAGE),
         _ => None,
     }
 }
@@ -636,20 +645,6 @@ fn saved_capture_verdict(directory: &Path, run: &str) -> Option<String> {
         .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
         .filter(|report| report["startup_id"] == run)
         .and_then(|report| report["capture"]["error_class"].as_str().map(str::to_owned))
-}
-
-/// The last report, if the collector run `runtime.json` names wrote it. A
-/// report from an earlier run, including one from before reports named their
-/// run, says nothing about the collector now running, whose first capture
-/// pass may take many minutes on a large history.
-pub(super) fn current_cycle_report(directory: &Path) -> Option<serde_json::Value> {
-    let read = |name: &str| {
-        fs::read(directory.join(name))
-            .ok()
-            .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
-    };
-    let run = read("runtime.json")?["startup_id"].as_str()?.to_owned();
-    read("cycle.json").filter(|report| report["startup_id"] == run.as_str())
 }
 
 /// What the drains of one pass moved, and the queue they left: content-free
@@ -739,6 +734,7 @@ fn write_report(
     mut diagnostics: impl Write,
 ) {
     let mut report = cycle_report(verdicts);
+    legacy_schedules::report(&mut report);
     if let Some(metrics) = metrics {
         report["delivery_metrics"] = metrics.report();
     }
@@ -869,7 +865,7 @@ pub fn catalog_for_setup(directory: &Path) {
 /// All/new setup has already captured before creating its baseline. Selected
 /// setup stays shallow unless --once makes this the only capture opportunity.
 pub fn finish_setup(directory: &Path, config: &Config, once: bool) -> Result<()> {
-    retry_verdict_of_another_build(directory, &config.job_id, agent_relay_probe::VERSION)?;
+    retry_verdict_of_another_build(directory, &config.job_id, crate::VERSION)?;
     if once && super::bridge::mode(config) == super::bridge::SharingMode::Selected {
         cycle_with_stop(directory, config, Arc::new(AtomicBool::new(false)), true)?.result()
     } else {
@@ -937,16 +933,11 @@ fn deliver_captured_on(
         );
         recover_authentication_of(&conn, directory, config, &job, || renew_session(config))?;
     }
-    // The receiver blocks the job when an older managed uploader appears, but
-    // its verdict is a generic permission refusal. Name the cause here first so
-    // the user sees which uploader to stop instead of a reconnect suggestion.
-    // The verdict is the receiver's own, inspected at most once a minute
-    // however many passes run, so back-to-back passes do not each spawn the
-    // scheduler commands.
-    super::legacy_schedule_verdict(
-        receiver_state().legacy_scheduler_state(),
-        config.acknowledge_uninspected_schedules,
-    )?;
+    // The receiver retries batches while an older managed uploader is active
+    // (`legacy_uploader_active`) or the check cannot finish (`transient`);
+    // neither blocks the job. The verdict is the receiver's own: a conclusive
+    // one is inspected at most once a minute however many passes run.
+    legacy_schedules::hold_uninspected(config.acknowledge_uninspected_schedules)?;
     let progress = super::progress::Monitor::start(
         directory,
         &config.history_url,
@@ -1021,14 +1012,6 @@ fn recover_authentication_of(
     }
     Ok(())
 }
-/// Why the last renewal failed, while it stands.
-const RENEWAL_REPORT: &str = "renewal.json";
-/// The failure the last renewal recorded; `None` after one succeeded.
-pub(super) fn renewal_failure(directory: &Path) -> Option<RenewalFailure> {
-    let report: serde_json::Value =
-        serde_json::from_slice(&fs::read(directory.join(RENEWAL_REPORT)).ok()?).ok()?;
-    RenewalFailure::parse(report["failure"].as_str()?)
-}
 /// Records `failure` (`None` clears it); `true` when it changed.
 fn record_renewal_failure(directory: &Path, failure: Option<RenewalFailure>) -> bool {
     if renewal_failure(directory) == failure {
@@ -1046,32 +1029,6 @@ fn record_renewal_failure(directory: &Path, failure: Option<RenewalFailure>) -> 
         }
     }
     true
-}
-/// What a person reads for a renewal failure: a fixed sentence per cause.
-pub(super) fn renewal_failure_message(failure: RenewalFailure) -> &'static str {
-    match failure {
-        RenewalFailure::NoCloudSession => {
-            "Uploads need you to sign in to Agent Relay again. Queued records are preserved."
-        }
-        RenewalFailure::CloudRefused => {
-            "Agent Relay Cloud refused to renew the upload sign-in. Check your workspace access, then sign in again. Queued records are preserved."
-        }
-        RenewalFailure::CloudUnreachable => {
-            "Agent Relay Cloud is unreachable or busy, so the upload sign-in could not be renewed. Agent Relay will retry. Queued records are preserved."
-        }
-        RenewalFailure::WrongDestination => {
-            "Agent Relay Cloud renewed the upload sign-in for another workspace. Connect this computer again. Queued records are preserved."
-        }
-    }
-}
-/// What the RelayHistory receiver keeps across this process's passes: its
-/// stage session, its legacy scheduler verdict and the batch limits the
-/// server last published. Kept for the process rather than per pass, so
-/// back-to-back passes neither reread the session nor inspect the
-/// schedulers each time, and batches stay sized to the published limits.
-fn receiver_state() -> &'static destination::ReceiverState {
-    static STATE: std::sync::OnceLock<destination::ReceiverState> = std::sync::OnceLock::new();
-    STATE.get_or_init(destination::ReceiverState::default)
 }
 /// Least gap between asking Cloud to renew, so a Cloud that keeps refusing
 /// is not asked on every pass. Finding no sign-in, or another process
@@ -1200,41 +1157,13 @@ fn spawn_replacement_handoff(directory: &Path, startup_id: &str) -> Result<()> {
         .stderr(Stdio::from(log));
     // A session of its own (Unix `setsid`; on Windows a console process
     // group and no window), so it outlives the collector it replaces.
-    agent_relay_probe::platform::process::new_session(&mut command);
+    crate::platform::process::new_session(&mut command);
     command.spawn()?;
     Ok(())
 }
 pub(super) fn stop_requested(directory: &Path, startup_id: &str) -> bool {
-    let matched = fs::read(directory.join("stop.json"))
-        .ok()
-        .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
-        .is_some_and(|value| value["startup_id"] == startup_id);
-    STOP.load(Ordering::Relaxed) || matched
-}
-/// True only while another build's live collector has received its own,
-/// generation-scoped stop request. This distinguishes an update replacement
-/// from an arbitrary stale stop file.
-pub(super) fn replacement_in_progress(directory: &Path) -> bool {
-    if !outdated(directory) || !running(directory).unwrap_or(false) {
-        return false;
-    }
-    let Ok(control) = fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(directory.join("desktop.lock"))
-    else {
-        return false;
-    };
-    if fs2::FileExt::try_lock_exclusive(&control).is_ok() {
-        return false;
-    }
-    fs::read(directory.join("runtime.json"))
-        .ok()
-        .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
-        .and_then(|runtime| runtime["startup_id"].as_str().map(str::to_owned))
-        .is_some_and(|startup_id| stop_requested(directory, &startup_id))
+    STOP.load(Ordering::Relaxed)
+        || crate::delivery_status::stop_file_requested(directory, startup_id)
 }
 #[cfg(unix)]
 extern "C" fn stop_signal(_: libc::c_int) {
@@ -1289,7 +1218,7 @@ pub fn run_background(directory: &Path, startup_id: &str) -> Result<()> {
     // outlasts that wait too, so readiness comes first.
     save_json(
         &directory.join("runtime.json"),
-        &json!({"startup_id":startup_id,"pid":std::process::id(),"ready":true,"version":agent_relay_probe::VERSION}),
+        &json!({"startup_id":startup_id,"pid":std::process::id(),"ready":true,"version":crate::VERSION}),
     )?;
     let stop = StopWatch::start(directory, startup_id);
     // Opening the store migrates it, and a migration can fail after readiness
@@ -1297,8 +1226,7 @@ pub fn run_background(directory: &Path, startup_id: &str) -> Result<()> {
     // the classified failure as its own and retries, so the desktop shows the
     // cause instead of restarting an uploader that exits while starting.
     while !stopping(&stop.cancelled) {
-        let Err(error) =
-            retry_verdict_of_another_build(directory, &config.job_id, agent_relay_probe::VERSION)
+        let Err(error) = retry_verdict_of_another_build(directory, &config.job_id, crate::VERSION)
         else {
             // The store opens: this run reports at once, before capture or
             // delivery has run. The startup sweep runs beside the first
@@ -1355,7 +1283,7 @@ pub fn run_background(directory: &Path, startup_id: &str) -> Result<()> {
     drop(capture);
     save_json(
         &directory.join("runtime.json"),
-        &json!({"startup_id":startup_id,"pid":std::process::id(),"ready":false,"version":agent_relay_probe::VERSION}),
+        &json!({"startup_id":startup_id,"pid":std::process::id(),"ready":false,"version":crate::VERSION}),
     )?;
     Ok(())
 }
@@ -1406,7 +1334,21 @@ fn deliver_until_stopped(
         if live.take_compact_due() {
             super::live::compact_store(directory, &directory.join("history.db"));
         }
-        agent_relay_probe::retention::maintain(directory, cancelled);
+        crate::retention::maintain(directory, cancelled);
+        // The session census follows what this pass captured, so status
+        // counts sessions without walking every identity the store holds.
+        if let Some(session) = session.as_mut() {
+            if session
+                .connection()
+                .and_then(delivery::refresh_session_census)
+                .is_err()
+            {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "Session counts could not be updated. The next pass updates them."
+                );
+            }
+        }
         // The pass's last drain already read the queue it left; only a pass
         // that ran none reads it again.
         let backlog = metrics
@@ -1620,7 +1562,7 @@ pub fn start_background(directory: &Path) -> Result<()> {
         .stderr(Stdio::from(log));
     // Detached from this terminal: `setsid` on Unix; on Windows a console
     // process group of its own and no window.
-    agent_relay_probe::platform::process::new_session(&mut command);
+    crate::platform::process::new_session(&mut command);
     let mut child = command.spawn()?;
     let deadline = Instant::now() + Duration::from_secs(60);
     while Instant::now() < deadline {
@@ -1661,8 +1603,8 @@ mod tests {
 
     #[test]
     fn startup_retry_defers_projection_backfill_until_capture_driver_is_armed() {
-        let Some(home) = crate::live::tests::isolated_home(
-            "collector::tests::startup_retry_defers_projection_backfill_until_capture_driver_is_armed",
+        let Some(home) = crate::probe::live::tests::isolated_home(
+            "probe::collector::tests::startup_retry_defers_projection_backfill_until_capture_driver_is_armed",
         ) else { return; };
         let directory = home.join("probe");
         let db = directory.join("history.db");
@@ -1686,13 +1628,13 @@ mod tests {
             "startup retry must not parse retained payloads"
         );
         let cancelled = Arc::new(AtomicBool::new(false));
-        let live = Arc::new(crate::live::Shared::default());
-        let capture = crate::live::start(
+        let live = Arc::new(crate::probe::live::Shared::default());
+        let capture = crate::probe::live::start(
             &directory,
-            &crate::live::tests::config(&job, false),
+            &crate::probe::live::tests::config(&job, false),
             cancelled.clone(),
             live.clone(),
-            crate::live::LiveOptions {
+            crate::probe::live::LiveOptions {
                 use_fs_events: false,
                 ..Default::default()
             },
@@ -1914,7 +1856,7 @@ mod tests {
         const CHILD: &str = "RELAYHISTORY_TEST_SELECTED_ONCE_CHILD";
         if std::env::var_os(CHILD).is_none() {
             let output = Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "collector::tests::selected_once_setup_hydrates_only_members_even_when_delivery_is_unavailable", "--nocapture"])
+                .args(["--exact", "probe::collector::tests::selected_once_setup_hydrates_only_members_even_when_delivery_is_unavailable", "--nocapture"])
                 .env(CHILD, "1")
                 .output()
                 .unwrap();
@@ -1940,7 +1882,7 @@ mod tests {
             )
             .unwrap();
         }
-        let conn = agent_relay_probe::delivery::open_db(&home.path().join("history.db")).unwrap();
+        let conn = crate::delivery::open_db(&home.path().join("history.db")).unwrap();
         super::super::history::discover(&home.path().join("history.db"), None, || false).unwrap();
         let job = delivery::create_session_job(&conn, &job_config(false), now()).unwrap();
         delivery::set_job_session(
@@ -1965,6 +1907,7 @@ mod tests {
             workspace_id: "workspace".into(),
             // Invalid URL fails before any credentials or transport can be used.
             history_url: "invalid synthetic URL".into(),
+            cloud_history_origin: None,
             delivery_account: job.config.account_id,
             job_id: job.job_id,
             include_existing: false,
@@ -2008,7 +1951,7 @@ mod tests {
     #[test]
     fn selected_setup_catalogs_sessions_without_capturing_them() {
         let Some(home) = super::super::live::tests::isolated_home(
-            "collector::tests::selected_setup_catalogs_sessions_without_capturing_them",
+            "probe::collector::tests::selected_setup_catalogs_sessions_without_capturing_them",
         ) else {
             return;
         };
@@ -2028,7 +1971,7 @@ mod tests {
             .unwrap()
             .len();
         assert_eq!(listed, 2);
-        let conn = agent_relay_probe::delivery::open_db(&directory.join("history.db")).unwrap();
+        let conn = crate::delivery::open_db(&directory.join("history.db")).unwrap();
         let events: usize = conn
             .query_row("SELECT COUNT(*) FROM session_events", [], |r| r.get(0))
             .unwrap();
@@ -2055,7 +1998,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let conn = agent_relay_probe::delivery::open_db(&home.path().join("history.db")).unwrap();
+        let conn = crate::delivery::open_db(&home.path().join("history.db")).unwrap();
         let job = delivery::create_session_job(&conn, &job_config(true), now()).unwrap();
         let mut options = ai_hist::StoreOptions::default();
         options.db_path = Some(home.path().join("history.db"));
@@ -2135,7 +2078,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("history.db");
-        let conn = agent_relay_probe::delivery::open_db(&path).unwrap();
+        let conn = crate::delivery::open_db(&path).unwrap();
         conn.execute(
             "INSERT INTO sessions(source,session_id) VALUES ('claude','selected')",
             [],
@@ -2174,6 +2117,7 @@ mod tests {
             org_id: "org".into(),
             workspace_id: "workspace".into(),
             history_url: "https://example.invalid".into(),
+            cloud_history_origin: None,
             delivery_account: jc.account_id,
             job_id: job.job_id,
             include_existing: false,
@@ -2528,7 +2472,7 @@ mod tests {
     #[test]
     fn pass_interval_follows_the_active_jobs_backlog() {
         let dir = tempfile::tempdir().unwrap();
-        let conn = agent_relay_probe::delivery::open_db(&dir.path().join("history.db")).unwrap();
+        let conn = crate::delivery::open_db(&dir.path().join("history.db")).unwrap();
         let job = delivery::create_job(&conn, &job_config(true), now()).unwrap();
         let config = Config {
             version: 1,
@@ -2541,6 +2485,7 @@ mod tests {
             org_id: "org".into(),
             workspace_id: "workspace".into(),
             history_url: "https://history.agentrelay.com".into(),
+            cloud_history_origin: None,
             delivery_account: job.config.account_id,
             job_id: job.job_id,
             include_existing: true,
@@ -2737,15 +2682,15 @@ mod tests {
     /// its members' evidence as the capture thread does.
     #[test]
     fn a_one_shot_selected_capture_keeps_only_its_members_evidence() {
-        use crate::live::tests::{append, isolated_home, transcript_line};
+        use crate::probe::live::tests::{append, isolated_home, transcript_line};
         let Some(home) = isolated_home(
-            "collector::tests::a_one_shot_selected_capture_keeps_only_its_members_evidence",
+            "probe::collector::tests::a_one_shot_selected_capture_keeps_only_its_members_evidence",
         ) else {
             return;
         };
         let directory = home.join("probe");
         let db = directory.join("history.db");
-        let conn = agent_relay_probe::delivery::open_db(&db).unwrap();
+        let conn = crate::delivery::open_db(&db).unwrap();
         let project = home.join(".claude/projects/once");
         std::fs::create_dir_all(&project).unwrap();
         for session in ["kept", "other"] {
@@ -2776,7 +2721,7 @@ mod tests {
             .unwrap()
         };
         assert_eq!(events("other"), 1);
-        let config = crate::live::tests::config(&job, true);
+        let config = crate::probe::live::tests::config(&job, true);
         capture_selected(&directory, &config, &Arc::new(AtomicBool::new(false))).unwrap();
         assert_eq!(events("kept"), 1, "the member was captured");
         assert_eq!(
@@ -2828,7 +2773,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("history.db");
-        let conn = agent_relay_probe::delivery::open_db(&db_path).unwrap();
+        let conn = crate::delivery::open_db(&db_path).unwrap();
         conn.execute(
             "INSERT INTO sessions(source,session_id) VALUES ('claude','stuck')",
             [],
@@ -2849,6 +2794,7 @@ mod tests {
             org_id: "org".into(),
             workspace_id: "workspace".into(),
             history_url: "https://history.agentrelay.com".into(),
+            cloud_history_origin: None,
             delivery_account: job.config.account_id,
             job_id: job.job_id,
             include_existing: true,
@@ -2867,6 +2813,30 @@ mod tests {
             "upload_preparation_failed"
         );
         assert!(!report.to_string().contains("offline"));
+    }
+
+    /// A pass the older-uploader check held because it could not finish is
+    /// classified as that, with its own sentence, never as a generic offline
+    /// cycle or the setup-time CLI sentence.
+    #[test]
+    fn a_pass_held_by_an_unfinished_older_uploader_check_names_it() {
+        let held: anyhow::Error = destination::LegacySchedulesHeld {
+            state: "unknown",
+            message: "install-time sentence",
+        }
+        .into();
+        assert_eq!(capture_error_class(&held), "legacy_schedules_unknown");
+        let report = cycle_report(&Verdicts {
+            capture: None,
+            delivery: verdict(&Err(held)),
+            run: None,
+        });
+        assert_eq!(report["error_class"], "legacy_schedules_unknown");
+        assert_eq!(
+            report["message"],
+            destination::LEGACY_SCHEDULES_UNKNOWN_MESSAGE
+        );
+        assert!(destination::legacy_uploader_message().contains("ai-hist push (managed)"));
     }
 
     #[test]
@@ -2901,7 +2871,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("history.db");
-        let conn = agent_relay_probe::delivery::open_db(&db_path).unwrap();
+        let conn = crate::delivery::open_db(&db_path).unwrap();
         conn.execute(
             "INSERT INTO sessions(source,session_id) VALUES ('claude','stuck')",
             [],
@@ -2926,6 +2896,7 @@ mod tests {
             org_id: "org".into(),
             workspace_id: "workspace".into(),
             history_url: "https://history.agentrelay.com".into(),
+            cloud_history_origin: None,
             delivery_account: job.config.account_id,
             job_id: job.job_id,
             include_existing: true,
@@ -2989,7 +2960,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("history.db");
-        let conn = agent_relay_probe::delivery::open_db(&db_path).unwrap();
+        let conn = crate::delivery::open_db(&db_path).unwrap();
         conn.execute(
             "INSERT INTO sessions(source,session_id) VALUES ('claude','in-flight')",
             [],
@@ -3007,6 +2978,7 @@ mod tests {
             org_id: "org".into(),
             workspace_id: "workspace".into(),
             history_url: "https://history.agentrelay.com".into(),
+            cloud_history_origin: None,
             delivery_account: job.config.account_id,
             job_id: job.job_id,
             include_existing: true,
@@ -3076,7 +3048,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("history.db");
-        let conn = agent_relay_probe::delivery::open_db(&db_path).unwrap();
+        let conn = crate::delivery::open_db(&db_path).unwrap();
         for n in 0..150 {
             conn.execute(
                 "INSERT INTO session_events(source,session_id,event_uid,ts_ms,role,kind,text) VALUES ('claude','private-session',?1,?2,'user','text','private transcript text')",
@@ -3096,6 +3068,7 @@ mod tests {
             org_id: "org".into(),
             workspace_id: "workspace".into(),
             history_url: "https://history.agentrelay.com".into(),
+            cloud_history_origin: None,
             delivery_account: job.config.account_id,
             job_id: job.job_id,
             include_existing: true,
@@ -3135,7 +3108,7 @@ mod tests {
     #[test]
     fn a_job_blocked_on_sign_in_resumes_after_agent_relay_renews_it() {
         let dir = tempfile::tempdir().unwrap();
-        let conn = agent_relay_probe::delivery::open_db(&dir.path().join("history.db")).unwrap();
+        let conn = crate::delivery::open_db(&dir.path().join("history.db")).unwrap();
         let job = delivery::create_job(&conn, &job_config(true), now()).unwrap();
         let config = Config {
             version: 1,
@@ -3148,6 +3121,7 @@ mod tests {
             org_id: "org".into(),
             workspace_id: "workspace".into(),
             history_url: "https://history.agentrelay.com".into(),
+            cloud_history_origin: None,
             delivery_account: job.config.account_id,
             job_id: job.job_id.clone(),
             include_existing: true,
@@ -3223,7 +3197,7 @@ mod tests {
     #[test]
     fn a_new_build_retries_a_blocked_job_once() {
         let dir = tempfile::tempdir().unwrap();
-        let conn = agent_relay_probe::delivery::open_db(&dir.path().join("history.db")).unwrap();
+        let conn = crate::delivery::open_db(&dir.path().join("history.db")).unwrap();
         let job = delivery::create_job(&conn, &job_config(true), now()).unwrap();
         let block = || {
             conn.execute(
@@ -3246,6 +3220,42 @@ mod tests {
 
         retry_verdict_of_another_build(dir.path(), &job.job_id, "1.0.1").unwrap();
         assert_eq!(state().state, "active");
+    }
+
+    /// A job an earlier build blocked as `permission_denied` (the older
+    /// ai-hist uploader check failing to read `launchctl` or `crontab`) is
+    /// queued again when the collector starts, after an update and at every
+    /// later start, so the update alone unsticks it. Other blocked verdicts
+    /// still wait for a new build or an explicit retry.
+    #[test]
+    fn a_permission_refusal_is_retried_at_every_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = crate::delivery::open_db(&dir.path().join("history.db")).unwrap();
+        let job = delivery::create_job(&conn, &job_config(true), now()).unwrap();
+        let block = |failure: &str| {
+            conn.execute(
+                "UPDATE delivery_jobs SET state='blocked',failure=?1 WHERE id=?2",
+                [failure, job.job_id.as_str()],
+            )
+            .unwrap();
+        };
+        let state = || delivery::status(&conn, &job.job_id).unwrap();
+        // Blocked under 2026.10.57, then the first start of the fixed build.
+        retry_verdict_of_another_build(dir.path(), &job.job_id, "2026.10.57").unwrap();
+        block("permission_denied");
+        retry_verdict_of_another_build(dir.path(), &job.job_id, "2026.10.62").unwrap();
+        assert_eq!(state().state, "active");
+        assert_eq!(state().failure, None);
+        // Refused again under the same build (an account mismatch, say):
+        // the next start retries it once more.
+        block("permission_denied");
+        retry_verdict_of_another_build(dir.path(), &job.job_id, "2026.10.62").unwrap();
+        assert_eq!(state().state, "active");
+        // Any other verdict of this build stands.
+        block("invalid_payload");
+        retry_verdict_of_another_build(dir.path(), &job.job_id, "2026.10.62").unwrap();
+        assert_eq!(state().state, "blocked");
+        assert_eq!(state().failure.as_deref(), Some("invalid_payload"));
     }
 
     #[test]
@@ -3323,7 +3333,7 @@ mod tests {
             let output = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "collector::tests::unwritable_retry_marker_keeps_verdict_across_processes",
+                    "probe::collector::tests::unwritable_retry_marker_keeps_verdict_across_processes",
                 ])
                 .env(DIRECTORY, dir.path())
                 .env(JOB, &job.job_id)
@@ -3486,6 +3496,7 @@ mod tests {
                 workspace_id: "workspace".into(),
                 // Stop at destination validation, before credentials/network.
                 history_url: "invalid synthetic URL".into(),
+                cloud_history_origin: None,
                 delivery_account: job.config.account_id,
                 job_id: job.job_id,
                 include_existing: true,
@@ -3559,9 +3570,9 @@ mod tests {
         assert_eq!(release("2026.10.4-dev+aaaa"), release("2026.10.4-dev+ffff"));
         assert!(release("2026.10.4-dev+ffff") < release("2026.10.4"));
         assert!(release("2026.10.4-dev+ffff") < release("2026.10.4-rc.1"));
-        if agent_relay_probe::VERSION.contains("-dev+") {
+        if crate::VERSION.contains("-dev+") {
             let dir = tempfile::tempdir().unwrap();
-            let base = agent_relay_probe::VERSION.split('+').next().unwrap();
+            let base = crate::VERSION.split('+').next().unwrap();
             save_json(
                 &dir.path().join("runtime.json"),
                 &json!({"version": format!("{base}+another-revision")}),
@@ -3758,7 +3769,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("history.db");
-        let conn = agent_relay_probe::delivery::open_db(&db).unwrap();
+        let conn = crate::delivery::open_db(&db).unwrap();
         conn.execute(
             "INSERT INTO sessions(source,session_id) VALUES ('claude','queued')",
             [],
@@ -3776,6 +3787,7 @@ mod tests {
             org_id: "org".into(),
             workspace_id: "workspace".into(),
             history_url: "https://history.agentrelay.com".into(),
+            cloud_history_origin: None,
             delivery_account: job.config.account_id,
             job_id: job.job_id,
             include_existing: true,
@@ -4101,7 +4113,7 @@ mod tests {
             }
         }
         let Some(home) = support::isolated_home(
-            "collector::tests::a_capture_tick_and_a_drain_run_concurrently_without_lock_errors",
+            "probe::collector::tests::a_capture_tick_and_a_drain_run_concurrently_without_lock_errors",
         ) else {
             return;
         };

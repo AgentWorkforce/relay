@@ -475,6 +475,7 @@ fn unreadable_consent_never_becomes_permission_to_install_or_revoke() {
     let default = temp.path().join(".claude");
     let file = temp.path().join("folders.json");
     let dirs = ClaudeDirs {
+        private_root: None,
         environment: vec![],
         file: Some(file.clone()),
     };

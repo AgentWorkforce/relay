@@ -126,7 +126,7 @@ pub(super) struct NoticeRetry {
 }
 
 impl NoticeRetry {
-    pub(super) fn new(now: Instant) -> Self {
+    pub fn new(now: Instant) -> Self {
         Self {
             next: now,
             delay: Duration::from_secs(5),

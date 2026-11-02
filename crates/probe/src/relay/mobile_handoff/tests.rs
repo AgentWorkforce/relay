@@ -69,11 +69,18 @@ impl SessionDirectory for Directory {
         vec![session]
     }
     fn caller(&self, pid: i32) -> Result<DiscoveredSession, CallerMiss> {
-        if matches!(pid, 4100 | 4102) {
+        // The test process itself stands in for the plugin's doorbell
+        // helper, a child of Claude that ordinary routes identify.
+        if matches!(pid, 4100 | 4102) || pid == std::process::id() as i32 {
             Ok(self.0.clone())
         } else {
             Err(CallerMiss::NotASession)
         }
+    }
+    fn mobile_claude_idle(&self, target: &Target) -> Option<bool> {
+        (target == &self.0.target)
+            .then(|| self.1.lock().unwrap().as_ref().map(|runtime| runtime.idle))
+            .flatten()
     }
     fn mobile_claude_incarnation(&self, expected: &Runtime) -> Option<bool> {
         Some(
@@ -91,6 +98,28 @@ impl SessionDirectory for Directory {
             .unwrap()
             .clone()
             .filter(|runtime| target == &self.0.target && pid == runtime.pid)
+    }
+}
+/// Hands a session's own input route the real pointer, as the local
+/// injector does while relay messages are hidden.
+struct Pointers(std::path::PathBuf);
+impl crate::relay::inject::Injector for Pointers {
+    fn inject(&self, _: &Target, _: &str, _: &str) -> InjectOutcome {
+        InjectOutcome::Refused("the peer route is not used here".into())
+    }
+    fn final_answer(&self, _: &Target, _: &str) -> Option<String> {
+        None
+    }
+    fn native_pointer(&self, target: &Target, message_id: &str, text: &str) -> Option<String> {
+        crate::relay::message_pointer::prepare(
+            &crate::relay::message_pointer::DeliveredTexts::under(&self.0),
+            &target.key(),
+            message_id,
+            text,
+            target.kind,
+            Some("agent-relay-probe relay read"),
+            crate::relay::state::now_ms(),
+        )
     }
 }
 struct NoDirect;
@@ -1149,6 +1178,7 @@ async fn teammate_direct_messages_start_user_turns_unless_turned_off() {
             Arc::new(std::sync::atomic::AtomicBool::new(true)),
             home.path().join(".claude"),
         )),
+        injector: Arc::new(Pointers(home.path().join("app-data"))),
         ..Plugins::default()
     };
     let (core, _) = Core::with_plugins(config, plugins);
@@ -1235,12 +1265,36 @@ async fn teammate_direct_messages_start_user_turns_unless_turned_off() {
             .await,
         InjectOutcome::Waiting(_)
     ));
+    // Each retry while the turn waits keeps its text readable again.
+    let kept = crate::relay::message_pointer::DeliveredTexts::under(&home.path().join("app-data"));
+    let reference = crate::relay::delivery::policy::MessageRef::of(&delivery.message_id);
+    let kept_at = |now| {
+        kept.read(&registration.target.key(), &reference, now)
+            .map(|kept| kept.kept_at_ms)
+    };
+    let first = kept_at(crate::relay::state::now_ms()).expect("the text is kept");
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert!(matches!(
+        core.deliver_session_text(&registration, &delivery, text.clone(), source)
+            .await,
+        InjectOutcome::Waiting(_)
+    ));
+    assert!(kept_at(crate::relay::state::now_ms()).unwrap() > first);
     let submit = bridge
         .handle(4100, uid, &request("poll", json!({"version":"2.1.310"})))
         .await
         .unwrap();
     assert_eq!(submit["action"], "submit", "{submit}");
-    assert_eq!(submit["text"], text);
+    // The turn shows a pointer, as a peer message does, never the whole
+    // message; the session reads the rest with `relay read`.
+    let shown = submit["text"].as_str().unwrap();
+    assert!(
+        shown.starts_with("[Agent Relay native input — from @teammate · ref "),
+        "{shown}"
+    );
+    assert!(shown.contains("relay read "), "{shown}");
+    assert!(!shown.contains("Please add a line to CLAUDE.md"), "{shown}");
+    assert_eq!(shown.lines().count(), 2, "{shown}");
     assert_eq!(
         submit["forward_answer"], false,
         "a teammate's answer is not sent to the owner's phone"
@@ -1305,4 +1359,238 @@ async fn teammate_direct_messages_start_user_turns_unless_turned_off() {
         text.starts_with("[via Agent Relay — from @teammate"),
         "{text}"
     );
+}
+
+/// Whether the doorbell stays silent for a moment.
+async fn quiet(stream: &mut crate::relay::transport::CoreStream) -> bool {
+    use tokio::io::AsyncReadExt;
+    let mut more = [0u8; 64];
+    tokio::time::timeout(Duration::from_millis(200), stream.read(&mut more))
+        .await
+        .is_err()
+}
+
+/// Reads from the doorbell until `line` arrives, returning all read so far.
+async fn read_until(
+    stream: &mut crate::relay::transport::CoreStream,
+    seen: &mut String,
+    line: &str,
+) {
+    use tokio::io::AsyncReadExt;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut buffer = [0u8; 512];
+        while !seen.contains(line) {
+            let read = stream.read(&mut buffer).await.unwrap();
+            assert!(read > 0, "the doorbell closed early: {seen}");
+            seen.push_str(std::str::from_utf8(&buffer[..read]).unwrap());
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("no {line} in {seen}"));
+}
+
+#[tokio::test]
+async fn the_doorbell_rings_once_per_queued_message_and_carries_nothing() {
+    use crate::relay::delivery::session_text::InputSource;
+    use tokio::io::AsyncWriteExt;
+    let server = fake_relaycast::FakeRelaycast::start(Default::default()).await;
+    let owner = server.seed_agent("owner", "human", json!({}));
+    let agent = server.seed_agent("claude-mobile", "agent", json!({}));
+    let teammate = server.seed_agent("teammate", "agent", json!({}));
+    let home = tempfile::tempdir().unwrap();
+    let config = fixture_config(home.path());
+    let registration: Registration = serde_json::from_value(json!({
+        "name":agent.name, "agentID":agent.id, "target":{"kind":"claude-terminal", "id":"00000000-0000-4000-8000-000000000003"},
+        "title":"Claude", "baseURL":server.base_url, "workspaceKey":fake_relaycast::WORKSPACE_KEY,
+        "registeredAt":"2026-10-28T00:00:00Z"
+    })).unwrap();
+    let session = DiscoveredSession {
+        target: registration.target.clone(),
+        title: "Claude".into(),
+        directory: None,
+        updated_at_ms: None,
+        host: None,
+        live: true,
+        holder: None,
+    };
+    // Claude is working when the message arrives.
+    let runtime = Arc::new(std::sync::Mutex::new(Some(Runtime {
+        pid: 4100,
+        start: 100,
+        idle: false,
+    })));
+    let plugins = Plugins {
+        cloud: Arc::new(SignedIn {
+            base: server.base_url.clone(),
+            owner: owner.id.clone(),
+        }),
+        sessions: Arc::new(Directory(
+            session,
+            runtime.clone(),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            home.path().join(".claude"),
+        )),
+        ..Plugins::default()
+    };
+    let (core, _) = Core::with_plugins(config, plugins);
+    core.store
+        .update(|store| {
+            store.cloud = Some(CloudWorkspace {
+                key: Secret::new(fake_relaycast::WORKSPACE_KEY),
+                base_url: server.base_url.clone(),
+                ..Default::default()
+            });
+            store.add(registration.clone(), Secret::new(agent.token.clone()));
+        })
+        .unwrap();
+    core.install_mobile_claude_plugin().unwrap();
+    std::thread::scope(|scope| scope.spawn(|| core.rediscover_workspace()).join().unwrap());
+    core.hub.update(|status| status.spawn = None);
+    core.person_identity(false)
+        .await
+        .expect("fixture authenticated identity");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while core.status().spawn.is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("identity sync finished");
+    core.hub.update(|status| {
+        status.spawn = Some(crate::relay::state::SpawnStatus {
+            claim: Some(crate::relay::state::SpawnClaim {
+                state: crate::relay::state::SpawnClaimState::Claimed,
+                note: None,
+            }),
+            ..Default::default()
+        })
+    });
+    let bridge = Arc::new(Outbound::new(core.clone(), Arc::new(NoDirect)));
+    let uid = crate::relay::peer::current_uid();
+    let socket_path = home.path().join("r.sock");
+    let socket = crate::relay::outbound::RelaySocket::start(
+        bridge.clone(),
+        &socket_path,
+        &home.path().join("pointer"),
+        Default::default(),
+    )
+    .unwrap();
+
+    let target = registration.target.clone();
+    assert!(!core.mobile_claude_plugins.plugin_seen(&target));
+    let mut door = crate::relay::transport::CoreStream::connect(&socket_path)
+        .await
+        .unwrap();
+    door.write_all(b"GET /claude/mobile-handoff/watch HTTP/1.1\r\nHost: relay\r\n\r\n")
+        .await
+        .unwrap();
+    let mut seen = String::new();
+    read_until(&mut door, &mut seen, "{\"ring\":\"ready\"}\n").await;
+    assert!(seen.starts_with("HTTP/1.1 200 OK\r\n"), "{seen}");
+    assert!(
+        !seen.to_ascii_lowercase().contains("content-length"),
+        "{seen}"
+    );
+    // Any process in the session can open a doorbell, so it proves nothing
+    // alone; Claude's own first poll does, and the open doorbell keeps it.
+    assert!(!core.mobile_claude_plugins.plugin_seen(&target));
+    // Its first poll may have come before the session was registered; the
+    // next refresh asks it once to poll again.
+    core.refresh_mobile_claude_plugin();
+    read_until(&mut door, &mut seen, "{\"ring\":\"queued\"}\n").await;
+    core.refresh_mobile_claude_plugin();
+    assert!(quiet(&mut door).await, "asked once");
+    seen.clear();
+    let poll = || request("poll", json!({"version":"2.1.310"}));
+    assert_eq!(
+        bridge.handle(4100, uid, &poll()).await.unwrap(),
+        json!({"action": null})
+    );
+    assert!(core.mobile_claude_plugins.plugin_seen(&target));
+
+    let delivery = Delivery {
+        id: "doorbell-delivery".into(),
+        message_id: "doorbell-message".into(),
+        sender: Some("teammate".into()),
+        sender_id: Some(teammate.id.clone()),
+        reason: Some("dm".into()),
+        text: Some("Secret plan for the release".into()),
+        ..Default::default()
+    };
+    let (text, _, source) = core
+        .session_text(&registration, (&delivery, None), false, false)
+        .await;
+    assert_eq!(source, InputSource::Teammate);
+    assert!(matches!(
+        core.deliver_session_text(&registration, &delivery, text.clone(), source)
+            .await,
+        InjectOutcome::Waiting(_)
+    ));
+    read_until(&mut door, &mut seen, "{\"ring\":\"queued\"}\n").await;
+    assert!(
+        !seen.contains("Secret plan"),
+        "a ring carries no message: {seen}"
+    );
+
+    // Only Claude's own process collects, and only once Claude is idle.
+    assert_eq!(
+        bridge.handle(4100, uid, &poll()).await.unwrap(),
+        json!({"action": null, "waiting": true})
+    );
+    assert!(
+        bridge
+            .handle(std::process::id() as i32, uid, &poll())
+            .await
+            .is_err(),
+        "the helper cannot collect the message itself"
+    );
+    // The delivery's retries neither ring again nor let it lapse, however
+    // long Claude works: each brings the lease back.
+    let app_data = core.config.app_data_dir.clone();
+    for _ in 0..3 {
+        journal::edit(&app_data, |queue| {
+            queue.age_queued(journal::LEASE_MS - 1_000);
+            Ok(())
+        })
+        .unwrap();
+        assert!(matches!(
+            core.deliver_session_text(&registration, &delivery, text.clone(), source)
+                .await,
+            InjectOutcome::Waiting(_)
+        ));
+    }
+    assert!(quiet(&mut door).await, "no ring while Claude works");
+    // Claude is idle and the message is still there: the plugin missed its
+    // chance (a failed poll, a turn that ended mid-poll), so the next retry
+    // rings again.
+    runtime.lock().unwrap().as_mut().unwrap().idle = true;
+    assert!(matches!(
+        core.deliver_session_text(&registration, &delivery, text.clone(), source)
+            .await,
+        InjectOutcome::Waiting(_)
+    ));
+    let before = seen.matches("queued").count();
+    read_until(&mut door, &mut seen, "queued\"}\n{\"ring\":\"queued").await;
+    assert_eq!(seen.matches("queued").count(), before + 1);
+    let submit = bridge.handle(4100, uid, &poll()).await.unwrap();
+    assert_eq!(submit["action"], "submit", "{submit}");
+    assert_eq!(submit["text"], text);
+    // Collected: retries while it is being submitted do not ring.
+    assert!(matches!(
+        core.deliver_session_text(&registration, &delivery, text.clone(), source)
+            .await,
+        InjectOutcome::Waiting(_)
+    ));
+    assert!(quiet(&mut door).await, "no ring once collected");
+
+    // The helper going away closes the door.
+    drop(door);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while core.mobile_claude_plugins.listening(&target) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the doorbell closed with its helper");
+    drop(socket);
 }

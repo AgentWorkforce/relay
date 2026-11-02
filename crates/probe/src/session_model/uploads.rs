@@ -3,7 +3,9 @@
 //! filters and the reading → collecting → uploading stages.
 
 use super::{capitalized, grouped, search_matches, session_project, sessions_noun};
-use crate::relay::contract::account::{UploadSession, UploadShareStatus, UploaderStatus};
+use crate::relay::contract::account::{
+    ClaudeCloudHealth, UploadSession, UploadShareStatus, UploaderStatus,
+};
 use crate::relay::state::CaptureProgress;
 use crate::relay::uploader::{SharingMode, Stage};
 
@@ -84,6 +86,7 @@ pub struct StatusView {
     pub shared_sessions: u64,
     pub total_sessions: u64,
     pub last_upload_ms: Option<i64>,
+    pub claude_cloud: Option<ClaudeCloudHealth>,
 }
 
 impl StatusView {
@@ -169,20 +172,7 @@ impl StatusView {
             shared_sessions: status.sessions.shared,
             total_sessions: status.sessions.total,
             last_upload_ms: delivery.last_acknowledged_ms,
-        }
-    }
-
-    /// Records sent plus records waiting.
-    pub fn total(&self) -> u64 {
-        self.acknowledged + self.pending
-    }
-
-    /// The share of records sent: `0` with none, `1` with none waiting.
-    pub fn progress(&self) -> f64 {
-        match (self.total(), self.pending) {
-            (0, _) => 0.0,
-            (_, 0) => 1.0,
-            (total, _) => self.acknowledged as f64 / total as f64,
+            claude_cloud: status.claude_cloud.clone(),
         }
     }
 }

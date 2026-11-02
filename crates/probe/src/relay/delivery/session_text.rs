@@ -92,9 +92,21 @@ impl Core {
             .previous_mobile_delivery(registration, delivery, source.mobile_turn())
             .await
         {
+            // Its pointer is already queued; keeping the text again on each
+            // retry keeps `relay read` working however long the turn waits.
+            if source == InputSource::Teammate && matches!(outcome, InjectOutcome::Waiting(_)) {
+                let _ = self.native_turn_text(registration, delivery, text).await;
+            }
             return outcome;
         }
         if source.mobile_turn() && self.mobile_handoff_enabled(registration) {
+            // A teammate's turn shows the same pointer a peer message does;
+            // the person's own message is theirs, and shows whole.
+            let text = if source == InputSource::Owner {
+                text
+            } else {
+                self.native_turn_text(registration, delivery, text).await
+            };
             return self
                 .deliver_mobile_turn(registration, delivery, &text, source == InputSource::Owner)
                 .await;
@@ -126,6 +138,24 @@ impl Core {
         })
         .await
         .unwrap_or_else(|_| InjectOutcome::InDoubt("the injection stopped unexpectedly".into()))
+    }
+
+    /// The pointer a native turn shows for relayed `text`, with the text
+    /// kept for `relay read` (`Injector::native_pointer`), else `text`.
+    async fn native_turn_text(
+        &self,
+        registration: &Registration,
+        delivery: &Delivery,
+        text: String,
+    ) -> String {
+        let injector = self.plugins.injector.clone();
+        let (target, id) = (registration.target.clone(), delivery.message_id.clone());
+        let whole = text.clone();
+        tokio::task::spawn_blocking(move || injector.native_pointer(&target, &id, &whole))
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(text)
     }
 
     /// Whether `delivery` was the owner's reply to a pending Codex or Claude
@@ -238,11 +268,7 @@ impl Core {
             && self.teammate_native_turn(registration, delivery).await;
         let text = injected_text(message, &registration.name, via_webhook, lines.as_deref());
         let text = if native || teammate {
-            text.replacen(
-                "[via Agent Relay — from ",
-                "[Agent Relay native input — from ",
-                1,
-            )
+            text.replacen(super::policy::PEER_HEADER, super::policy::NATIVE_HEADER, 1)
         } else if !via_webhook
             && !via_integration
             && crate::relay::spawn::from_requester(registration, delivery)

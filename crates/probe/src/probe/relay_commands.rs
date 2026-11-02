@@ -1,6 +1,6 @@
 //! Local relay command-line entry points, shared by the desktop helper.
-use crate::{output, user_error};
-use agent_relay_probe::relay;
+use crate::probe::{output, user_error};
+use crate::relay;
 use anyhow::Result;
 use clap::Subcommand;
 use relay::session_cli::{Recipient, SessionCommand};

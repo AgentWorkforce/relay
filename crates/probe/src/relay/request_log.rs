@@ -311,9 +311,13 @@ pub async fn observe<T: Serialize>(
                 _ => "Agent Relay request failed".into(),
             };
             let mut body = json!({"error_code": error.code(), "message": message, "request_id": error.request_id(), "attempts": error.attempts(), "retry_after_ms": error.retry_after_ms()});
-            // The apps' capacity notice reads Relaycast's own upgrade answer.
-            for key in ["plan", "upgrade_available", "upgrade_url"] {
-                if let Some(value) = error.details().and_then(|details| details.get(key)) {
+            // The apps' capacity notice reads Relaycast's own upgrade answer:
+            // at the top level of a busy answer, inside `error` for a plan cap.
+            let details = error.details();
+            let nested = details.and_then(|details| details.get("error")).filter(|error| error.is_object());
+            for key in ["plan", "upgrade_available", "upgrade_url", "limit", "max", "current"] {
+                let found = details.and_then(|details| details.get(key)).or_else(|| nested.and_then(|error| error.get(key)));
+                if let Some(value) = found {
                     body[key] = value.clone();
                 }
             }
@@ -539,6 +543,42 @@ mod tests {
         assert_eq!(body["error_code"], "workspace_busy");
         assert_eq!(body["plan"], "free");
         assert_eq!(body["upgrade_available"], true);
+        assert_eq!(
+            body["upgrade_url"],
+            "https://agentrelay.com/cloud/dashboard/settings#billing"
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_cap_refusals_keep_the_counters_relaycast_nests_in_error() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        let _: relaycast::Result<Value> =
+            observe("POST", "/plan-cap-test", Value::Null, "secret", async {
+                Err(relaycast::RelayError::Api {
+                    code: "plan_limit_exceeded".into(),
+                    message: "Plan limit reached".into(),
+                    status: 429,
+                    request_id: None,
+                    attempts: 1,
+                    retry_after_ms: None,
+                    details: Some(json!({"ok": false, "error": {
+                        "code": "plan_limit_exceeded", "limit": "agents", "max": 15,
+                        "current": 15, "plan": "intro",
+                        "upgrade_url": "https://agentrelay.com/cloud/dashboard/settings#billing"}})),
+                })
+            })
+            .await;
+        let entry = snapshot()
+            .entries
+            .into_iter()
+            .find(|entry| entry.endpoint == "/plan-cap-test")
+            .unwrap();
+        let body: Value = serde_json::from_str(&entry.response).unwrap();
+        assert_eq!(body["error_code"], "plan_limit_exceeded");
+        assert_eq!(body["limit"], "agents");
+        assert_eq!(body["max"], 15);
+        assert_eq!(body["current"], 15);
+        assert_eq!(body["plan"], "intro");
         assert_eq!(
             body["upgrade_url"],
             "https://agentrelay.com/cloud/dashboard/settings#billing"

@@ -110,7 +110,7 @@ fn bypasses_prompts(
     let arguments = table.arguments(session.pid);
     let recorded = transcript::path(config, table, &session.session_id)
         .and_then(|(path, _)| inbox::read_tail(&path, inbox::TAIL_BYTES).ok())
-        .and_then(|(tail, truncated)| inbox::permission_mode(&tail, truncated));
+        .and_then(|tail| inbox::permission_mode(&tail.bytes, tail.truncated));
     let started = argument_mode(&arguments);
     match recorded.or_else(|| started.clone()).as_deref() {
         Some("bypassPermissions") => true,

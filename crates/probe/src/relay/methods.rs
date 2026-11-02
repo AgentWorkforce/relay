@@ -2,6 +2,8 @@
 //! parameters in, results out. Every type is the registry's
 //! (`relay::contract`); see `docs/relay-core.md` for the contract.
 
+mod addressing;
+use addressing::{endpoint, recipient_endpoint};
 mod usage;
 
 use crate::relay::cloud_session::{segment, CloudError};
@@ -25,27 +27,7 @@ use crate::relay::telemetry::{
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
-fn endpoint(raw: &str) -> Result<Endpoint, RpcError> {
-    Endpoint::parse(raw).map_err(|error| RpcError::invalid_params(error.to_string()))
-}
-
-/// A `to` name or an exact `address`: exactly one.
-fn recipient_endpoint(to: Option<&str>, address: Option<&str>) -> Result<Endpoint, RpcError> {
-    match (to, address) {
-        (Some(to), None) => endpoint(to),
-        (None, Some(address)) => match endpoint(address)? {
-            Endpoint::Address(value) => Ok(Endpoint::Address(value)),
-            _ => Err(RpcError::invalid_params(
-                "An address must be of the form \"agent@machine\".",
-            )),
-        },
-        _ => Err(RpcError::invalid_params(
-            "Give exactly one of to and address.",
-        )),
-    }
-}
-
-fn session_path_for(workspace_id: &str, session_id: &str) -> Result<String, RpcError> {
+pub(crate) fn session_path_for(workspace_id: &str, session_id: &str) -> Result<String, RpcError> {
     let session_id = session_id.trim();
     if session_id.is_empty() || session_id.len() > 512 {
         return Err(RpcError::invalid_params(
@@ -253,9 +235,10 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
             })
             .await
         }
-        method::AgentsUnregister::NAME => {
+        method::AgentsUnregister::NAME | method::AgentsEnd::NAME => {
+            let end_spawned = method == method::AgentsEnd::NAME;
             answer::<method::AgentsUnregister, _>(raw, |request| async move {
-                usage::unregister(core, &request.name).await
+                usage::remove(core, &request.name, end_spawned).await
             })
             .await
         }

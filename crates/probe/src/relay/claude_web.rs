@@ -72,22 +72,27 @@ fn same_session(id: &str) -> &str {
 }
 
 /// Appends to `found` the web sessions [`discover`] lists under the probe
-/// root, when there is one; a session the Claude desktop app also has open,
-/// under either form of its id, keeps that row.
+/// root, when there is one. A session the Claude desktop app also has open,
+/// under either form of its id, keeps that row but is marked as web-backed so
+/// clients can join it to the history catalog.
 pub fn extend(config: &crate::relay::local::LocalConfig, found: &mut Vec<DiscoveredSession>) {
     let Some(root) = &config.probe_root else {
         return;
     };
-    let known: std::collections::HashSet<String> = found
-        .iter()
-        .filter(|session| session.target.kind == SessionKind::ClaudeCloud)
-        .map(|session| same_session(&session.target.id).to_string())
-        .collect();
-    found.extend(
-        discover(&config.claude, root)
-            .into_iter()
-            .filter(|session| !known.contains(same_session(&session.target.id))),
-    );
+    extend_discovered(found, discover(&config.claude, root));
+}
+
+fn extend_discovered(found: &mut Vec<DiscoveredSession>, web: Vec<DiscoveredSession>) {
+    for session in web {
+        if let Some(existing) = found.iter_mut().find(|existing| {
+            existing.target.kind == SessionKind::ClaudeCloud
+                && same_session(&existing.target.id) == same_session(&session.target.id)
+        }) {
+            existing.host = Some(HOST.to_string());
+        } else {
+            found.push(session);
+        }
+    }
 }
 
 /// [`discover`] past its opt-in, at `now_ms`.
@@ -270,6 +275,42 @@ mod tests {
             same_session("cse_01AbCdEfGh")
         );
         assert_eq!(same_session("0b6f2d0e"), "0b6f2d0e");
+    }
+
+    #[test]
+    fn a_matching_claude_app_row_is_marked_as_web_backed() {
+        let app_id = "session_01AbCdEfGhIjKlMn";
+        let web_id = "cse_01AbCdEfGhIjKlMn";
+        let app = DiscoveredSession {
+            target: Target::new(SessionKind::ClaudeCloud, app_id),
+            title: "Claude app title".into(),
+            directory: Some("/work/app".into()),
+            updated_at_ms: None,
+            host: None,
+            live: true,
+            holder: None,
+        };
+        let web = DiscoveredSession {
+            target: Target::new(SessionKind::ClaudeCloud, web_id),
+            title: "Web title".into(),
+            directory: Some("/work/web".into()),
+            updated_at_ms: Some(10),
+            host: Some(HOST.into()),
+            live: true,
+            holder: None,
+        };
+        let other = DiscoveredSession {
+            target: Target::new(SessionKind::ClaudeCloud, "cse_01OtherWebSession"),
+            title: "Other web title".into(),
+            ..web.clone()
+        };
+        let mut found = vec![app];
+        extend_discovered(&mut found, vec![web, other.clone()]);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].title, "Claude app title");
+        assert_eq!(found[0].host.as_deref(), Some(HOST));
+        assert_eq!(web_session_id(&found[0].target).as_deref(), Some(web_id));
+        assert_eq!(found[1], other);
     }
 
     #[test]

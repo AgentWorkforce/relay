@@ -7,7 +7,7 @@
 //! controller root, and retain the folder fallback for old/missing paths.
 
 mod cache;
-pub(crate) use cache::Names;
+pub use cache::Names;
 
 use std::fs;
 use std::path::{Path, PathBuf};

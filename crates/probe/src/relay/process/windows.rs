@@ -465,31 +465,24 @@ impl ProcessTable for SystemProcesses {
             && std::fs::metadata(executable).is_ok_and(|metadata| metadata.is_file())
     }
 
+    fn command_line(&self, pid: i32) -> CommandLine {
+        let kind = ProcessRefreshKind::nothing()
+            .with_cmd(UpdateKind::Always)
+            .with_environ(UpdateKind::Always);
+        self.with_info(pid, kind, |process| CommandLine {
+            arguments: process.cmd().iter().map(|arg| lossy(arg)).collect(),
+            environment: (!process.environ().is_empty())
+                .then(|| process.environ().iter().map(|entry| lossy(entry)).collect()),
+        })
+        .unwrap_or_default()
+    }
+
     fn arguments(&self, pid: i32) -> Vec<String> {
         let kind = ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always);
         self.with_info(pid, kind, |process| {
             process.cmd().iter().map(|arg| lossy(arg)).collect()
         })
         .unwrap_or_default()
-    }
-
-    fn environment_readable(&self, pid: i32) -> bool {
-        let kind = ProcessRefreshKind::nothing().with_environ(UpdateKind::Always);
-        self.with_info(pid, kind, |process| !process.environ().is_empty())
-            .unwrap_or(false)
-    }
-
-    /// One variable; Windows names are matched in any case, as Windows does.
-    fn environment_var(&self, pid: i32, key: &str) -> Option<String> {
-        let kind = ProcessRefreshKind::nothing().with_environ(UpdateKind::Always);
-        self.with_info(pid, kind, |process| {
-            process.environ().iter().find_map(|entry| {
-                let entry = lossy(entry);
-                let (name, value) = entry.split_once('=')?;
-                name.eq_ignore_ascii_case(key).then(|| value.to_string())
-            })
-        })
-        .flatten()
     }
 
     fn open_files(&self, pid: i32) -> Vec<PathBuf> {

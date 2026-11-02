@@ -23,6 +23,7 @@ public enum CoreMethod {
     public static let workspaceVerify = "workspace.verify"
     public static let daemonShutdown = "daemon.shutdown"
     public static let accountStatus = "account.status"
+    public static let accountMcpHeaders = "account.mcp_headers"
     public static let accountSignIn = "account.sign_in"
     public static let accountSelectWorkspace = "account.select_workspace"
     public static let accountSignInCancel = "account.sign_in.cancel"
@@ -58,6 +59,7 @@ public enum CoreMethod {
     public static let agentsList = "agents.list"
     public static let agentsRegister = "agents.register"
     public static let agentsUnregister = "agents.unregister"
+    public static let agentsEnd = "agents.end"
     public static let agentsRename = "agents.rename"
     public static let agentsTestMessage = "agents.test_message"
     public static let agentsReplySetting = "agents.reply_setting"
@@ -69,6 +71,10 @@ public enum CoreMethod {
     public static let agentsIntegrationsUnsubscribe = "agents.integrations.unsubscribe"
     public static let agentsIntegrationsCleanUp = "agents.integrations.clean_up"
     public static let settingsGet = "settings.get"
+    public static let toolsStatus = "tools.status"
+    public static let toolsCheck = "tools.check"
+    public static let toolsSelect = "tools.select"
+    public static let toolsManage = "tools.manage"
     public static let settingsSet = "settings.set"
     public static let activityList = "activity.list"
     public static let claudeDeliveryStatus = "claude_delivery.status"
@@ -89,6 +95,7 @@ public enum CoreMethod {
     public static let cursorCloudAgentsList = "cursor_cloud.agents.list"
     public static let cursorCloudAgentsSpawn = "cursor_cloud.agents.spawn"
     public static let cursorCloudAgentsGet = "cursor_cloud.agents.get"
+    public static let cursorCloudAgentsAttach = "cursor_cloud.agents.attach"
     public static let cursorCloudRunsCreate = "cursor_cloud.runs.create"
     public static let cursorCloudRunsList = "cursor_cloud.runs.list"
     public static let cursorCloudRunsGet = "cursor_cloud.runs.get"
@@ -253,14 +260,18 @@ public enum AccountAction: RawRepresentable, Codable, CaseIterable, Hashable, Se
     /// `account.sign_in` with `acknowledge_uninspected_schedules` retries
     /// past an older uploader's schedules that could not be checked.
     case acknowledgeUninspectedSchedules
+    /// The account has no workspace: the person creates one in the Cloud
+    /// dashboard's Workspace settings, then signs in again.
+    case createWorkspace
     /// A value this build does not know, as the core sent it.
     case unknown(String)
 
-    public static let allCases: [AccountAction] = [.acknowledgeUninspectedSchedules]
+    public static let allCases: [AccountAction] = [.acknowledgeUninspectedSchedules, .createWorkspace]
 
     public init(rawValue: String) {
         switch rawValue {
         case "acknowledge_uninspected_schedules": self = .acknowledgeUninspectedSchedules
+        case "create_workspace": self = .createWorkspace
         default: self = .unknown(rawValue)
         }
     }
@@ -268,6 +279,7 @@ public enum AccountAction: RawRepresentable, Codable, CaseIterable, Hashable, Se
     public var rawValue: String {
         switch self {
         case .acknowledgeUninspectedSchedules: return "acknowledge_uninspected_schedules"
+        case .createWorkspace: return "create_workspace"
         case .unknown(let value): return value
         }
     }
@@ -324,7 +336,16 @@ public struct AccountPerson: Codable, Equatable, Hashable, Sendable {
 public struct AccountStatus: Codable, Equatable, Hashable, Sendable {
     /// What the person can do about `error`.
     public let action: AccountAction?
+    /// Last completed authentication check, milliseconds since the Unix epoch.
+    public let authCheckedAt: Int64?
+    public let authError: String?
+    /// Live Cloud authentication and Relaycast verification, independently of uploader installation.
+    public let authHealth: String?
     public let error: String?
+    /// Signed in, but this computer holds no Cloud session it may use: Cloud
+    /// refused the kept one even after a refresh. Cloud calls answer
+    /// `not_signed_in` until the person signs in again.
+    public let needsSignIn: Bool?
     public let person: AccountPerson?
     /// What the attempt is doing: `checking_existing_login`,
     /// `reusing_existing_login`, `waiting_for_browser`,
@@ -344,9 +365,13 @@ public struct AccountStatus: Codable, Equatable, Hashable, Sendable {
     public let workspaceId: String?
     public let workspaceName: String?
 
-    public init(action: AccountAction? = nil, error: String? = nil, person: AccountPerson? = nil, phase: String? = nil, progress: CaptureProgress? = nil, reusedLogin: Bool? = nil, siteUrl: String? = nil, state: SignInState, workspaceAvatarUrl: String? = nil, workspaceChoices: [WorkspaceChoice]? = nil, workspaceCount: Int? = nil, workspaceId: String? = nil, workspaceName: String? = nil) {
+    public init(action: AccountAction? = nil, authCheckedAt: Int64? = nil, authError: String? = nil, authHealth: String? = nil, error: String? = nil, needsSignIn: Bool? = nil, person: AccountPerson? = nil, phase: String? = nil, progress: CaptureProgress? = nil, reusedLogin: Bool? = nil, siteUrl: String? = nil, state: SignInState, workspaceAvatarUrl: String? = nil, workspaceChoices: [WorkspaceChoice]? = nil, workspaceCount: Int? = nil, workspaceId: String? = nil, workspaceName: String? = nil) {
         self.action = action
+        self.authCheckedAt = authCheckedAt
+        self.authError = authError
+        self.authHealth = authHealth
         self.error = error
+        self.needsSignIn = needsSignIn
         self.person = person
         self.phase = phase
         self.progress = progress
@@ -362,7 +387,11 @@ public struct AccountStatus: Codable, Equatable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case action
+        case authCheckedAt = "auth_checked_at"
+        case authError = "auth_error"
+        case authHealth = "auth_health"
         case error
+        case needsSignIn = "needs_sign_in"
         case person
         case phase
         case progress
@@ -379,7 +408,11 @@ public struct AccountStatus: Codable, Equatable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.action = try c.decodeIfPresent(AccountAction.self, forKey: .action)
+        self.authCheckedAt = try c.decodeIfPresent(Int64.self, forKey: .authCheckedAt)
+        self.authError = try c.decodeIfPresent(String.self, forKey: .authError)
+        self.authHealth = try c.decodeIfPresent(String.self, forKey: .authHealth)
         self.error = try c.decodeIfPresent(String.self, forKey: .error)
+        self.needsSignIn = try c.decodeIfPresent(Bool.self, forKey: .needsSignIn)
         self.person = try c.decodeIfPresent(AccountPerson.self, forKey: .person)
         self.phase = try c.decodeIfPresent(String.self, forKey: .phase)
         self.progress = try c.decodeIfPresent(CaptureProgress.self, forKey: .progress)
@@ -396,7 +429,11 @@ public struct AccountStatus: Codable, Equatable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.action, forKey: .action)
+        try c.encode(self.authCheckedAt, forKey: .authCheckedAt)
+        try c.encode(self.authError, forKey: .authError)
+        try c.encode(self.authHealth, forKey: .authHealth)
         try c.encode(self.error, forKey: .error)
+        try c.encodeIfPresent(self.needsSignIn, forKey: .needsSignIn)
         try c.encode(self.person, forKey: .person)
         try c.encode(self.phase, forKey: .phase)
         try c.encode(self.progress, forKey: .progress)
@@ -1347,6 +1384,65 @@ public struct ChatSendParams: Codable, Equatable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.text, forKey: .text)
+    }
+}
+
+/// Health of the Claude Code cloud-session source, credential-free.
+public struct ClaudeCloudHealth: Codable, Equatable, Hashable, Sendable {
+    /// When this source was last checked, in Unix milliseconds.
+    public let atMs: Int64?
+    /// The macOS OSStatus from a failed Keychain read, when one caused it.
+    public let keychainErrorCode: Int?
+    /// Its most recent successful listing, retained across later failures.
+    public let lastSuccessMs: Int64?
+    /// Plain-language cause and next step when not working.
+    public let reason: String?
+    public let state: ClaudeCloudHealthState
+
+    public init(atMs: Int64? = nil, keychainErrorCode: Int? = nil, lastSuccessMs: Int64? = nil, reason: String? = nil, state: ClaudeCloudHealthState) {
+        self.atMs = atMs
+        self.keychainErrorCode = keychainErrorCode
+        self.lastSuccessMs = lastSuccessMs
+        self.reason = reason
+        self.state = state
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case atMs = "at_ms"
+        case keychainErrorCode = "keychain_error_code"
+        case lastSuccessMs = "last_success_ms"
+        case reason
+        case state
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.atMs = try c.decodeIfPresent(Int64.self, forKey: .atMs)
+        self.keychainErrorCode = try c.decodeIfPresent(Int.self, forKey: .keychainErrorCode)
+        self.lastSuccessMs = try c.decodeIfPresent(Int64.self, forKey: .lastSuccessMs)
+        self.reason = try c.decodeIfPresent(String.self, forKey: .reason)
+        self.state = try c.decode(ClaudeCloudHealthState.self, forKey: .state)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(self.atMs, forKey: .atMs)
+        try c.encodeIfPresent(self.keychainErrorCode, forKey: .keychainErrorCode)
+        try c.encodeIfPresent(self.lastSuccessMs, forKey: .lastSuccessMs)
+        try c.encodeIfPresent(self.reason, forKey: .reason)
+        try c.encode(self.state, forKey: .state)
+    }
+}
+
+public enum ClaudeCloudHealthState: String, Codable, CaseIterable, Hashable, Sendable {
+    case working
+    case checking
+    case blocked
+    case needsAttention = "needs_attention"
+
+    /// A value this build does not know reads as `checking`.
+    public init(from decoder: Decoder) throws {
+        self = ClaudeCloudHealthState(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .checking
     }
 }
 
@@ -2980,10 +3076,13 @@ public enum DeliveryFailureCode: RawRepresentable, Codable, CaseIterable, Hashab
     case unsupportedEvidence
     case mappingVersionMismatch
     case deliveryConflict
+    /// An older managed ai-hist uploader is scheduled on this computer.
+    /// Retried: uploads resume by themselves once it is removed.
+    case legacyUploaderActive
     /// A value this build does not know, as the core sent it.
     case unknown(String)
 
-    public static let allCases: [DeliveryFailureCode] = [.transient, .rateLimited, .authenticationRequired, .permissionDenied, .invalidPayload, .receiverRejected, .unsupportedEvidence, .mappingVersionMismatch, .deliveryConflict]
+    public static let allCases: [DeliveryFailureCode] = [.transient, .rateLimited, .authenticationRequired, .permissionDenied, .invalidPayload, .receiverRejected, .unsupportedEvidence, .mappingVersionMismatch, .deliveryConflict, .legacyUploaderActive]
 
     public init(rawValue: String) {
         switch rawValue {
@@ -2996,6 +3095,7 @@ public enum DeliveryFailureCode: RawRepresentable, Codable, CaseIterable, Hashab
         case "unsupported_evidence": self = .unsupportedEvidence
         case "mapping_version_mismatch": self = .mappingVersionMismatch
         case "delivery_conflict": self = .deliveryConflict
+        case "legacy_uploader_active": self = .legacyUploaderActive
         default: self = .unknown(rawValue)
         }
     }
@@ -3011,6 +3111,7 @@ public enum DeliveryFailureCode: RawRepresentable, Codable, CaseIterable, Hashab
         case .unsupportedEvidence: return "unsupported_evidence"
         case .mappingVersionMismatch: return "mapping_version_mismatch"
         case .deliveryConflict: return "delivery_conflict"
+        case .legacyUploaderActive: return "legacy_uploader_active"
         case .unknown(let value): return value
         }
     }
@@ -3175,28 +3276,35 @@ public struct Done: Codable, Equatable, Hashable, Sendable {
 
 public struct ErrorData: Codable, Equatable, Hashable, Sendable {
     public let kind: ErrorKind
+    /// With `plan_limit_exceeded`: which cap was reached and how full it
+    /// is, when Relaycast's refusal said. Absent on every other kind.
+    public let planLimit: PlanLimitExceeded?
     /// Whether repeating the same request later can succeed.
     public let retryable: Bool
 
-    public init(kind: ErrorKind, retryable: Bool) {
+    public init(kind: ErrorKind, planLimit: PlanLimitExceeded? = nil, retryable: Bool) {
         self.kind = kind
+        self.planLimit = planLimit
         self.retryable = retryable
     }
 
     enum CodingKeys: String, CodingKey {
         case kind
+        case planLimit = "plan_limit"
         case retryable
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.kind = try c.decode(ErrorKind.self, forKey: .kind)
+        self.planLimit = try c.decodeIfPresent(PlanLimitExceeded.self, forKey: .planLimit)
         self.retryable = try c.decode(Bool.self, forKey: .retryable)
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.kind, forKey: .kind)
+        try c.encodeIfPresent(self.planLimit, forKey: .planLimit)
         try c.encode(self.retryable, forKey: .retryable)
     }
 }
@@ -3225,6 +3333,10 @@ public enum ErrorKind: String, Codable, CaseIterable, Hashable, Sendable {
     case relaycastRefused = "relaycast_refused"
     /// Relaycast rejected the credential.
     case unauthorized
+    /// The workspace's plan cap (devices, agents or humans) is reached;
+    /// repeating the request cannot succeed until the plan changes.
+    /// `data.plan_limit` carries the counters when Relaycast sent them.
+    case planLimitExceeded = "plan_limit_exceeded"
     /// Relaycast, or this computer, has no such resource.
     case notFound = "not_found"
     /// Another change to the same agent or session is still running.
@@ -3583,27 +3695,33 @@ public struct History: Codable, Equatable, Hashable, Sendable {
 public struct HistoryPage: Codable, Equatable, Hashable, Sendable {
     public let events: [SessionEvent]
     public let nextCursor: String?
+    /// Present when the plan's session retention left older activity out.
+    public let retention: HistoryRetention?
 
-    public init(events: [SessionEvent], nextCursor: String? = nil) {
+    public init(events: [SessionEvent], nextCursor: String? = nil, retention: HistoryRetention? = nil) {
         self.events = events
         self.nextCursor = nextCursor
+        self.retention = retention
     }
 
     enum CodingKeys: String, CodingKey {
         case events
         case nextCursor = "next_cursor"
+        case retention
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.events = try c.decode([SessionEvent].self, forKey: .events)
         self.nextCursor = try c.decodeIfPresent(String.self, forKey: .nextCursor)
+        self.retention = try c.decodeIfPresent(HistoryRetention.self, forKey: .retention)
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.events, forKey: .events)
         try c.encode(self.nextCursor, forKey: .nextCursor)
+        try c.encodeIfPresent(self.retention, forKey: .retention)
     }
 }
 
@@ -3634,6 +3752,35 @@ public struct HistoryParams: Codable, Equatable, Hashable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeIfPresent(self.before, forKey: .before)
         try c.encode(self.endpoint, forKey: .endpoint)
+    }
+}
+
+/// What a history listing says when older sessions were left out: the
+/// plan keeps `days` of history, from `cutoff` (ISO-8601) on.
+public struct HistoryRetention: Codable, Equatable, Hashable, Sendable {
+    public let cutoff: String
+    public let days: Int
+
+    public init(cutoff: String, days: Int) {
+        self.cutoff = cutoff
+        self.days = days
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case cutoff
+        case days
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.cutoff = try c.decode(String.self, forKey: .cutoff)
+        self.days = try c.decode(Int.self, forKey: .days)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.cutoff, forKey: .cutoff)
+        try c.encode(self.days, forKey: .days)
     }
 }
 
@@ -3906,6 +4053,63 @@ public struct JournalCompacted: Codable, Equatable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.removedRecords, forKey: .removedRecords)
+    }
+}
+
+/// What the last inspection of older ai-hist upload schedules found, as
+/// fixed labels (`migration::JOB_CODES`); never a path or scheduler output.
+public enum LegacyScheduleJob: RawRepresentable, Codable, CaseIterable, Hashable, Sendable {
+    case launchdPlistStatusUnknown
+    case launchdStatusUnknown
+    case cronStatusUnknown
+    case homeUnavailable
+    case legacyInstallerUnsupported
+    /// `~/Library/LaunchAgents/com.ai-hist.push.plist` exists.
+    case launchdPlist
+    /// launchd has `com.ai-hist.push` loaded.
+    case launchdLoaded
+    /// The crontab has the `# ai-hist push (managed)` line.
+    case managedCron
+    /// A value this build does not know, as the core sent it.
+    case unknown(String)
+
+    public static let allCases: [LegacyScheduleJob] = [.launchdPlistStatusUnknown, .launchdStatusUnknown, .cronStatusUnknown, .homeUnavailable, .legacyInstallerUnsupported, .launchdPlist, .launchdLoaded, .managedCron]
+
+    public init(rawValue: String) {
+        switch rawValue {
+        case "launchd-plist-status-unknown": self = .launchdPlistStatusUnknown
+        case "launchd-status-unknown": self = .launchdStatusUnknown
+        case "cron-status-unknown": self = .cronStatusUnknown
+        case "home-unavailable": self = .homeUnavailable
+        case "legacy-installer-unsupported": self = .legacyInstallerUnsupported
+        case "launchd-plist": self = .launchdPlist
+        case "launchd-loaded": self = .launchdLoaded
+        case "managed-cron": self = .managedCron
+        default: self = .unknown(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .launchdPlistStatusUnknown: return "launchd-plist-status-unknown"
+        case .launchdStatusUnknown: return "launchd-status-unknown"
+        case .cronStatusUnknown: return "cron-status-unknown"
+        case .homeUnavailable: return "home-unavailable"
+        case .legacyInstallerUnsupported: return "legacy-installer-unsupported"
+        case .launchdPlist: return "launchd-plist"
+        case .launchdLoaded: return "launchd-loaded"
+        case .managedCron: return "managed-cron"
+        case .unknown(let value): return value
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        try c.encode(rawValue)
     }
 }
 
@@ -4572,6 +4776,63 @@ public struct ManagedSessionStarted: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+/// Sensitive response available only through the same-user local core socket.
+/// Never included in status, subscriptions, diagnostics or telemetry.
+public struct McpHeaders: Codable, Equatable, Hashable, Sendable {
+    public let headers: [String: String]
+
+    public init(headers: [String: String]) {
+        self.headers = headers
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case headers
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.headers = try c.decode([String: String].self, forKey: .headers)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.headers, forKey: .headers)
+    }
+}
+
+/// Pinned destination for the credential-only hosted MCP header helper.
+public struct McpHeadersParams: Codable, Equatable, Hashable, Sendable {
+    public let accountId: String
+    public let siteUrl: String
+    public let workspaceId: String
+
+    public init(accountId: String, siteUrl: String, workspaceId: String) {
+        self.accountId = accountId
+        self.siteUrl = siteUrl
+        self.workspaceId = workspaceId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case accountId = "account_id"
+        case siteUrl = "site_url"
+        case workspaceId = "workspace_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.accountId = try c.decode(String.self, forKey: .accountId)
+        self.siteUrl = try c.decode(String.self, forKey: .siteUrl)
+        self.workspaceId = try c.decode(String.self, forKey: .workspaceId)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.accountId, forKey: .accountId)
+        try c.encode(self.siteUrl, forKey: .siteUrl)
+        try c.encode(self.workspaceId, forKey: .workspaceId)
+    }
+}
+
 /// What Relaycast holds for one message to an agent: its delivery row in
 /// the agent's `pending_deliveries`, or that it has none.
 public enum MessageState: String, Codable, CaseIterable, Hashable, Sendable {
@@ -4879,6 +5140,99 @@ public struct People: Codable, Equatable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.people, forKey: .people)
+    }
+}
+
+/// Relaycast refused something because the plan's cap is reached.
+public struct PlanLimitExceeded: Codable, Equatable, Hashable, Sendable {
+    /// How many the workspace has now.
+    public let current: Int
+    public let limit: PlanLimitKind
+    /// The cap.
+    public let max: Int
+    /// The plan's key (`intro`).
+    public let plan: String
+
+    public init(current: Int, limit: PlanLimitKind, max: Int, plan: String) {
+        self.current = current
+        self.limit = limit
+        self.max = max
+        self.plan = plan
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case current
+        case limit
+        case max
+        case plan
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.current = try c.decode(Int.self, forKey: .current)
+        self.limit = try c.decode(PlanLimitKind.self, forKey: .limit)
+        self.max = try c.decode(Int.self, forKey: .max)
+        self.plan = try c.decode(String.self, forKey: .plan)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.current, forKey: .current)
+        try c.encode(self.limit, forKey: .limit)
+        try c.encode(self.max, forKey: .max)
+        try c.encode(self.plan, forKey: .plan)
+    }
+}
+
+/// Which cap a refusal names.
+public enum PlanLimitKind: String, Codable, CaseIterable, Hashable, Sendable {
+    case devices
+    case agents
+    case humans
+    /// A cap this build does not know.
+    case other
+
+    /// A value this build does not know reads as `other`.
+    public init(from decoder: Decoder) throws {
+        self = PlanLimitKind(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .other
+    }
+}
+
+/// A plan's caps; `null` is unlimited.
+public struct PlanLimits: Codable, Equatable, Hashable, Sendable {
+    public let agents: Int?
+    public let devices: Int?
+    public let humans: Int?
+    public let sessionRetentionDays: Int?
+
+    public init(agents: Int? = nil, devices: Int? = nil, humans: Int? = nil, sessionRetentionDays: Int? = nil) {
+        self.agents = agents
+        self.devices = devices
+        self.humans = humans
+        self.sessionRetentionDays = sessionRetentionDays
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case agents
+        case devices
+        case humans
+        case sessionRetentionDays = "session_retention_days"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.agents = try c.decodeIfPresent(Int.self, forKey: .agents)
+        self.devices = try c.decodeIfPresent(Int.self, forKey: .devices)
+        self.humans = try c.decodeIfPresent(Int.self, forKey: .humans)
+        self.sessionRetentionDays = try c.decodeIfPresent(Int.self, forKey: .sessionRetentionDays)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.agents, forKey: .agents)
+        try c.encode(self.devices, forKey: .devices)
+        try c.encode(self.humans, forKey: .humans)
+        try c.encode(self.sessionRetentionDays, forKey: .sessionRetentionDays)
     }
 }
 
@@ -6868,6 +7222,9 @@ public struct SessionKeysParams: Codable, Equatable, Hashable, Sendable {
 public enum SessionKind: RawRepresentable, Codable, CaseIterable, Hashable, Sendable {
     /// An existing Pi session connected through the bundled extension.
     case pi
+    /// An existing Oh My Pi (`omp`) session connected through the same
+    /// bundled extension as Pi, installed in omp's own agent directory.
+    case omp
     /// A Codex thread, in the desktop app or a terminal `codex`.
     case codex
     /// A Claude Code session in a terminal: its cross-session inbox.
@@ -6915,11 +7272,12 @@ public enum SessionKind: RawRepresentable, Codable, CaseIterable, Hashable, Send
     /// A value this build does not know, as the core sent it.
     case unknown(String)
 
-    public static let allCases: [SessionKind] = [.pi, .codex, .claudeTerminal, .claudeCloud, .grok, .grokOpen, .opencode, .museOpen, .opencodeOpen, .devin, .cursorCli, .openclaw, .hermes]
+    public static let allCases: [SessionKind] = [.pi, .omp, .codex, .claudeTerminal, .claudeCloud, .grok, .grokOpen, .opencode, .museOpen, .opencodeOpen, .devin, .cursorCli, .openclaw, .hermes]
 
     public init(rawValue: String) {
         switch rawValue {
         case "pi": self = .pi
+        case "omp": self = .omp
         case "codex": self = .codex
         case "claude-terminal": self = .claudeTerminal
         case "claude-cloud": self = .claudeCloud
@@ -6939,6 +7297,7 @@ public enum SessionKind: RawRepresentable, Codable, CaseIterable, Hashable, Send
     public var rawValue: String {
         switch self {
         case .pi: return "pi"
+        case .omp: return "omp"
         case .codex: return "codex"
         case .claudeTerminal: return "claude-terminal"
         case .claudeCloud: return "claude-cloud"
@@ -7421,6 +7780,8 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     public let claudeSessionHook: Bool?
     /// Adds or removes Agent Relay's Codex Stop hook.
     public let codexStopHook: Bool?
+    /// Whether the tools found here are connected once signed in.
+    public let connectDetectedTools: Bool?
     public let contractorAccess: Bool?
     /// Adds or removes Agent Relay's hooks in Cursor CLI's
     /// `~/.cursor/hooks.json`.
@@ -7466,13 +7827,14 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
     public let spawnMaxAgents: Int?
     public let spawnNativeInput: Bool?
     public let spawnRepositories: [String]?
+    public let spawnRequesterApprovals: Bool?
     public let teammateNativeInput: Bool?
     /// Turns trusting the people in the workspace on or off.
     public let trustWorkspaceMembers: Bool?
     /// Replaces the relay senders trusted like the person.
     public let trustedRelaySenders: [String]?
 
-    public init(acceptSpawns: Bool? = nil, allowSelfRegistration: Bool? = nil, analyticsEnabled: Bool? = nil, autoActivate: Bool? = nil, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDir: ClaudeConfigDirChange? = nil, claudeConfigDirs: [String]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryDefault: Bool? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileNativeContinuation: Bool? = nil, openclawGateway: Bool? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil) {
+    public init(acceptSpawns: Bool? = nil, allowSelfRegistration: Bool? = nil, analyticsEnabled: Bool? = nil, autoActivate: Bool? = nil, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDir: ClaudeConfigDirChange? = nil, claudeConfigDirs: [String]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryDefault: Bool? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileNativeContinuation: Bool? = nil, openclawGateway: Bool? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil) {
         self.acceptSpawns = acceptSpawns
         self.allowSelfRegistration = allowSelfRegistration
         self.analyticsEnabled = analyticsEnabled
@@ -7483,6 +7845,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         self.claudeConfigDirs = claudeConfigDirs
         self.claudeSessionHook = claudeSessionHook
         self.codexStopHook = codexStopHook
+        self.connectDetectedTools = connectDetectedTools
         self.contractorAccess = contractorAccess
         self.cursorDirectDelivery = cursorDirectDelivery
         self.devinDirectDelivery = devinDirectDelivery
@@ -7508,6 +7871,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         self.spawnMaxAgents = spawnMaxAgents
         self.spawnNativeInput = spawnNativeInput
         self.spawnRepositories = spawnRepositories
+        self.spawnRequesterApprovals = spawnRequesterApprovals
         self.teammateNativeInput = teammateNativeInput
         self.trustWorkspaceMembers = trustWorkspaceMembers
         self.trustedRelaySenders = trustedRelaySenders
@@ -7524,6 +7888,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         case claudeConfigDirs = "claude_config_dirs"
         case claudeSessionHook = "claude_session_hook"
         case codexStopHook = "codex_stop_hook"
+        case connectDetectedTools = "connect_detected_tools"
         case contractorAccess = "contractor_access"
         case cursorDirectDelivery = "cursor_direct_delivery"
         case devinDirectDelivery = "devin_direct_delivery"
@@ -7549,6 +7914,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         case spawnMaxAgents = "spawn_max_agents"
         case spawnNativeInput = "spawn_native_input"
         case spawnRepositories = "spawn_repositories"
+        case spawnRequesterApprovals = "spawn_requester_approvals"
         case teammateNativeInput = "teammate_native_input"
         case trustWorkspaceMembers = "trust_workspace_members"
         case trustedRelaySenders = "trusted_relay_senders"
@@ -7566,6 +7932,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         self.claudeConfigDirs = try c.decodeIfPresent([String].self, forKey: .claudeConfigDirs)
         self.claudeSessionHook = try c.decodeIfPresent(Bool.self, forKey: .claudeSessionHook)
         self.codexStopHook = try c.decodeIfPresent(Bool.self, forKey: .codexStopHook)
+        self.connectDetectedTools = try c.decodeIfPresent(Bool.self, forKey: .connectDetectedTools)
         self.contractorAccess = try c.decodeIfPresent(Bool.self, forKey: .contractorAccess)
         self.cursorDirectDelivery = try c.decodeIfPresent(Bool.self, forKey: .cursorDirectDelivery)
         self.devinDirectDelivery = try c.decodeIfPresent(Bool.self, forKey: .devinDirectDelivery)
@@ -7591,6 +7958,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         self.spawnMaxAgents = try c.decodeIfPresent(Int.self, forKey: .spawnMaxAgents)
         self.spawnNativeInput = try c.decodeIfPresent(Bool.self, forKey: .spawnNativeInput)
         self.spawnRepositories = try c.decodeIfPresent([String].self, forKey: .spawnRepositories)
+        self.spawnRequesterApprovals = try c.decodeIfPresent(Bool.self, forKey: .spawnRequesterApprovals)
         self.teammateNativeInput = try c.decodeIfPresent(Bool.self, forKey: .teammateNativeInput)
         self.trustWorkspaceMembers = try c.decodeIfPresent(Bool.self, forKey: .trustWorkspaceMembers)
         self.trustedRelaySenders = try c.decodeIfPresent([String].self, forKey: .trustedRelaySenders)
@@ -7608,6 +7976,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.claudeConfigDirs, forKey: .claudeConfigDirs)
         try c.encodeIfPresent(self.claudeSessionHook, forKey: .claudeSessionHook)
         try c.encodeIfPresent(self.codexStopHook, forKey: .codexStopHook)
+        try c.encodeIfPresent(self.connectDetectedTools, forKey: .connectDetectedTools)
         try c.encodeIfPresent(self.contractorAccess, forKey: .contractorAccess)
         try c.encodeIfPresent(self.cursorDirectDelivery, forKey: .cursorDirectDelivery)
         try c.encodeIfPresent(self.devinDirectDelivery, forKey: .devinDirectDelivery)
@@ -7633,6 +8002,7 @@ public struct SettingsChange: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.spawnMaxAgents, forKey: .spawnMaxAgents)
         try c.encodeIfPresent(self.spawnNativeInput, forKey: .spawnNativeInput)
         try c.encodeIfPresent(self.spawnRepositories, forKey: .spawnRepositories)
+        try c.encodeIfPresent(self.spawnRequesterApprovals, forKey: .spawnRequesterApprovals)
         try c.encodeIfPresent(self.teammateNativeInput, forKey: .teammateNativeInput)
         try c.encodeIfPresent(self.trustWorkspaceMembers, forKey: .trustWorkspaceMembers)
         try c.encodeIfPresent(self.trustedRelaySenders, forKey: .trustedRelaySenders)
@@ -7677,6 +8047,9 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// relayed messages show in Conductor's Codex chats. Absent where
     /// Conductor has never run.
     public let codexStopHook: Bool?
+    /// Whether the tools found here are connected once the person is signed
+    /// in; nothing is written to a tool before. On unless turned off.
+    public let connectDetectedTools: Bool?
     /// Contractor access: a workspace owner grants a contractor's seat
     /// scoped access to the workspace's services. Off unless turned on.
     public let contractorAccess: Bool?
@@ -7685,6 +8058,8 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// when its turn ends. Off unless turned on. Absent where Cursor CLI has
     /// never run.
     public let cursorDirectDelivery: Bool?
+    /// Read-only: the tools signing in connects, by name (`Claude Code`, …).
+    public let detectedTools: [String]?
     /// Whether Agent Relay's lifecycle hooks are in Devin's `config.json`,
     /// so staged inbox messages reach the conversation. Absent where Devin
     /// has never run.
@@ -7779,6 +8154,11 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// Owner/name keys of the repositories this computer offers spawned
     /// agents for, advertised as the node's `repo_keys`.
     public let spawnRepositories: [String]?
+    /// The agent that spawned a session may answer its permission and
+    /// approval requests by direct message, as the machine owner may; the
+    /// first answer counts. Needs `spawn_native_input`. On in Agent Relay Dev
+    /// and off in the release build unless set. Absent in older cores.
+    public let spawnRequesterApprovals: Bool?
     /// A teammate's direct message to a Claude Code session with Agent
     /// Relay's plugin starts a user turn, labelled with the sender; on by
     /// default. Absent in older cores.
@@ -7797,7 +8177,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
     /// off, signed out, or Cloud's list has not been read lately.
     public let workspaceMembers: [TrustedWorkspaceMember]?
 
-    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileClaudeHandoffSupported: Bool? = nil, mobileNativeContinuation: Bool? = nil, mobileNativeContinuationSupported: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil, workspaceMembers: [TrustedWorkspaceMember]? = nil) {
+    public init(acceptSpawns: Bool? = nil, agentChanges: [AgentSettingsChange]? = nil, allowSelfRegistration: Bool, analyticsEnabled: Bool? = nil, autoActivate: Bool, autoJoinGeneral: Bool? = nil, claudeCloudSessions: Bool? = nil, claudeConfigDirs: [ClaudeConfigDir]? = nil, claudeSessionHook: Bool? = nil, codexStopHook: Bool? = nil, connectDetectedTools: Bool? = nil, contractorAccess: Bool? = nil, cursorDirectDelivery: Bool? = nil, detectedTools: [String]? = nil, devinDirectDelivery: Bool? = nil, directDelivery: Bool? = nil, directDeliveryManaged: String? = nil, grokLeader: Bool? = nil, hermesAgent: Bool? = nil, historyRetentionDays: Int? = nil, mobileClaudeHandoff: Bool? = nil, mobileClaudeHandoffSupported: Bool? = nil, mobileNativeContinuation: Bool? = nil, mobileNativeContinuationSupported: Bool? = nil, openclawGateway: Bool? = nil, openclawUnlimitedVersion: String? = nil, opencodeAutoActivate: Bool? = nil, opencodePlugin: Bool? = nil, piAutoActivate: Bool? = nil, piExtension: Bool? = nil, showRelayMessages: Bool? = nil, spawnAllowTeammates: Bool? = nil, spawnBillingClaude: String? = nil, spawnBillingCodex: String? = nil, spawnFullAccessClaude: Bool? = nil, spawnFullAccessCodex: Bool? = nil, spawnHarnesses: [String: SpawnHarnessSettings]? = nil, spawnMaxAgents: Int? = nil, spawnNativeInput: Bool? = nil, spawnRepositories: [String]? = nil, spawnRequesterApprovals: Bool? = nil, teammateNativeInput: Bool? = nil, trustWorkspaceMembers: Bool? = nil, trustedRelaySenders: [String]? = nil, workspaceMembers: [TrustedWorkspaceMember]? = nil) {
         self.acceptSpawns = acceptSpawns
         self.agentChanges = agentChanges
         self.allowSelfRegistration = allowSelfRegistration
@@ -7808,8 +8188,10 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.claudeConfigDirs = claudeConfigDirs
         self.claudeSessionHook = claudeSessionHook
         self.codexStopHook = codexStopHook
+        self.connectDetectedTools = connectDetectedTools
         self.contractorAccess = contractorAccess
         self.cursorDirectDelivery = cursorDirectDelivery
+        self.detectedTools = detectedTools
         self.devinDirectDelivery = devinDirectDelivery
         self.directDelivery = directDelivery
         self.directDeliveryManaged = directDeliveryManaged
@@ -7836,6 +8218,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.spawnMaxAgents = spawnMaxAgents
         self.spawnNativeInput = spawnNativeInput
         self.spawnRepositories = spawnRepositories
+        self.spawnRequesterApprovals = spawnRequesterApprovals
         self.teammateNativeInput = teammateNativeInput
         self.trustWorkspaceMembers = trustWorkspaceMembers
         self.trustedRelaySenders = trustedRelaySenders
@@ -7853,8 +8236,10 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         case claudeConfigDirs = "claude_config_dirs"
         case claudeSessionHook = "claude_session_hook"
         case codexStopHook = "codex_stop_hook"
+        case connectDetectedTools = "connect_detected_tools"
         case contractorAccess = "contractor_access"
         case cursorDirectDelivery = "cursor_direct_delivery"
+        case detectedTools = "detected_tools"
         case devinDirectDelivery = "devin_direct_delivery"
         case directDelivery = "direct_delivery"
         case directDeliveryManaged = "direct_delivery_managed"
@@ -7881,6 +8266,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         case spawnMaxAgents = "spawn_max_agents"
         case spawnNativeInput = "spawn_native_input"
         case spawnRepositories = "spawn_repositories"
+        case spawnRequesterApprovals = "spawn_requester_approvals"
         case teammateNativeInput = "teammate_native_input"
         case trustWorkspaceMembers = "trust_workspace_members"
         case trustedRelaySenders = "trusted_relay_senders"
@@ -7899,8 +8285,10 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.claudeConfigDirs = try c.decodeIfPresent([ClaudeConfigDir].self, forKey: .claudeConfigDirs)
         self.claudeSessionHook = try c.decodeIfPresent(Bool.self, forKey: .claudeSessionHook)
         self.codexStopHook = try c.decodeIfPresent(Bool.self, forKey: .codexStopHook)
+        self.connectDetectedTools = try c.decodeIfPresent(Bool.self, forKey: .connectDetectedTools)
         self.contractorAccess = try c.decodeIfPresent(Bool.self, forKey: .contractorAccess)
         self.cursorDirectDelivery = try c.decodeIfPresent(Bool.self, forKey: .cursorDirectDelivery)
+        self.detectedTools = try c.decodeIfPresent([String].self, forKey: .detectedTools)
         self.devinDirectDelivery = try c.decodeIfPresent(Bool.self, forKey: .devinDirectDelivery)
         self.directDelivery = try c.decodeIfPresent(Bool.self, forKey: .directDelivery)
         self.directDeliveryManaged = try c.decodeIfPresent(String.self, forKey: .directDeliveryManaged)
@@ -7927,6 +8315,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         self.spawnMaxAgents = try c.decodeIfPresent(Int.self, forKey: .spawnMaxAgents)
         self.spawnNativeInput = try c.decodeIfPresent(Bool.self, forKey: .spawnNativeInput)
         self.spawnRepositories = try c.decodeIfPresent([String].self, forKey: .spawnRepositories)
+        self.spawnRequesterApprovals = try c.decodeIfPresent(Bool.self, forKey: .spawnRequesterApprovals)
         self.teammateNativeInput = try c.decodeIfPresent(Bool.self, forKey: .teammateNativeInput)
         self.trustWorkspaceMembers = try c.decodeIfPresent(Bool.self, forKey: .trustWorkspaceMembers)
         self.trustedRelaySenders = try c.decodeIfPresent([String].self, forKey: .trustedRelaySenders)
@@ -7945,8 +8334,10 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.claudeConfigDirs, forKey: .claudeConfigDirs)
         try c.encodeIfPresent(self.claudeSessionHook, forKey: .claudeSessionHook)
         try c.encodeIfPresent(self.codexStopHook, forKey: .codexStopHook)
+        try c.encodeIfPresent(self.connectDetectedTools, forKey: .connectDetectedTools)
         try c.encodeIfPresent(self.contractorAccess, forKey: .contractorAccess)
         try c.encodeIfPresent(self.cursorDirectDelivery, forKey: .cursorDirectDelivery)
+        try c.encodeIfPresent(self.detectedTools, forKey: .detectedTools)
         try c.encodeIfPresent(self.devinDirectDelivery, forKey: .devinDirectDelivery)
         try c.encodeIfPresent(self.directDelivery, forKey: .directDelivery)
         try c.encodeIfPresent(self.directDeliveryManaged, forKey: .directDeliveryManaged)
@@ -7973,6 +8364,7 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.spawnMaxAgents, forKey: .spawnMaxAgents)
         try c.encodeIfPresent(self.spawnNativeInput, forKey: .spawnNativeInput)
         try c.encodeIfPresent(self.spawnRepositories, forKey: .spawnRepositories)
+        try c.encodeIfPresent(self.spawnRequesterApprovals, forKey: .spawnRequesterApprovals)
         try c.encodeIfPresent(self.teammateNativeInput, forKey: .teammateNativeInput)
         try c.encodeIfPresent(self.trustWorkspaceMembers, forKey: .trustWorkspaceMembers)
         try c.encodeIfPresent(self.trustedRelaySenders, forKey: .trustedRelaySenders)
@@ -8080,11 +8472,20 @@ public struct ShutdownNotice: Codable, Equatable, Hashable, Sendable {
 public struct SignInReport: Codable, Equatable, Hashable, Sendable {
     /// What the person can do about `error`.
     public let action: AccountAction?
+    /// Last completed authentication check, milliseconds since the Unix epoch.
+    public let authCheckedAt: Int64?
+    public let authError: String?
+    /// Live Cloud authentication and Relaycast verification, independently of uploader installation.
+    public let authHealth: String?
     public let error: String?
     /// ISO-8601.
     public let expiresAt: String?
     /// Seconds between device-approval polls.
     public let interval: Int?
+    /// Signed in, but this computer holds no Cloud session it may use: Cloud
+    /// refused the kept one even after a refresh. Cloud calls answer
+    /// `not_signed_in` until the person signs in again.
+    public let needsSignIn: Bool?
     public let person: AccountPerson?
     /// What the attempt is doing: `checking_existing_login`,
     /// `reusing_existing_login`, `waiting_for_browser`,
@@ -8108,11 +8509,15 @@ public struct SignInReport: Codable, Equatable, Hashable, Sendable {
     public let workspaceId: String?
     public let workspaceName: String?
 
-    public init(action: AccountAction? = nil, error: String? = nil, expiresAt: String? = nil, interval: Int? = nil, person: AccountPerson? = nil, phase: String? = nil, progress: CaptureProgress? = nil, reusedLogin: Bool? = nil, siteUrl: String? = nil, state: SignInState, userCode: String? = nil, verificationUrl: String? = nil, verificationUrlComplete: String? = nil, workspaceAvatarUrl: String? = nil, workspaceChoices: [WorkspaceChoice]? = nil, workspaceCount: Int? = nil, workspaceId: String? = nil, workspaceName: String? = nil) {
+    public init(action: AccountAction? = nil, authCheckedAt: Int64? = nil, authError: String? = nil, authHealth: String? = nil, error: String? = nil, expiresAt: String? = nil, interval: Int? = nil, needsSignIn: Bool? = nil, person: AccountPerson? = nil, phase: String? = nil, progress: CaptureProgress? = nil, reusedLogin: Bool? = nil, siteUrl: String? = nil, state: SignInState, userCode: String? = nil, verificationUrl: String? = nil, verificationUrlComplete: String? = nil, workspaceAvatarUrl: String? = nil, workspaceChoices: [WorkspaceChoice]? = nil, workspaceCount: Int? = nil, workspaceId: String? = nil, workspaceName: String? = nil) {
         self.action = action
+        self.authCheckedAt = authCheckedAt
+        self.authError = authError
+        self.authHealth = authHealth
         self.error = error
         self.expiresAt = expiresAt
         self.interval = interval
+        self.needsSignIn = needsSignIn
         self.person = person
         self.phase = phase
         self.progress = progress
@@ -8131,9 +8536,13 @@ public struct SignInReport: Codable, Equatable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case action
+        case authCheckedAt = "auth_checked_at"
+        case authError = "auth_error"
+        case authHealth = "auth_health"
         case error
         case expiresAt = "expires_at"
         case interval
+        case needsSignIn = "needs_sign_in"
         case person
         case phase
         case progress
@@ -8153,9 +8562,13 @@ public struct SignInReport: Codable, Equatable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.action = try c.decodeIfPresent(AccountAction.self, forKey: .action)
+        self.authCheckedAt = try c.decodeIfPresent(Int64.self, forKey: .authCheckedAt)
+        self.authError = try c.decodeIfPresent(String.self, forKey: .authError)
+        self.authHealth = try c.decodeIfPresent(String.self, forKey: .authHealth)
         self.error = try c.decodeIfPresent(String.self, forKey: .error)
         self.expiresAt = try c.decodeIfPresent(String.self, forKey: .expiresAt)
         self.interval = try c.decodeIfPresent(Int.self, forKey: .interval)
+        self.needsSignIn = try c.decodeIfPresent(Bool.self, forKey: .needsSignIn)
         self.person = try c.decodeIfPresent(AccountPerson.self, forKey: .person)
         self.phase = try c.decodeIfPresent(String.self, forKey: .phase)
         self.progress = try c.decodeIfPresent(CaptureProgress.self, forKey: .progress)
@@ -8175,9 +8588,13 @@ public struct SignInReport: Codable, Equatable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.action, forKey: .action)
+        try c.encode(self.authCheckedAt, forKey: .authCheckedAt)
+        try c.encode(self.authError, forKey: .authError)
+        try c.encode(self.authHealth, forKey: .authHealth)
         try c.encode(self.error, forKey: .error)
         try c.encode(self.expiresAt, forKey: .expiresAt)
         try c.encode(self.interval, forKey: .interval)
+        try c.encodeIfPresent(self.needsSignIn, forKey: .needsSignIn)
         try c.encode(self.person, forKey: .person)
         try c.encode(self.phase, forKey: .phase)
         try c.encode(self.progress, forKey: .progress)
@@ -8730,17 +9147,21 @@ public struct SpawnStatus: Codable, Equatable, Hashable, Sendable {
     /// The name Agent Relay lists as the spawn target; spawned agents are
     /// addressed `name@<node name>`.
     public let nodeName: String?
+    /// Agent Relay refused to enroll this computer because the plan's
+    /// device cap is reached; `error` says so in words. Absent otherwise.
+    public let planLimit: PlanLimitExceeded?
     /// How many spawned agents it takes and how many places are taken.
     /// Absent in older cores and while spawning is off.
     public let slots: SpawnSlots?
     public let state: SpawnState
 
-    public init(claim: SpawnClaim? = nil, error: String? = nil, harnessDescriptors: [HarnessDescriptor]? = nil, harnesses: [String], nodeName: String? = nil, slots: SpawnSlots? = nil, state: SpawnState) {
+    public init(claim: SpawnClaim? = nil, error: String? = nil, harnessDescriptors: [HarnessDescriptor]? = nil, harnesses: [String], nodeName: String? = nil, planLimit: PlanLimitExceeded? = nil, slots: SpawnSlots? = nil, state: SpawnState) {
         self.claim = claim
         self.error = error
         self.harnessDescriptors = harnessDescriptors
         self.harnesses = harnesses
         self.nodeName = nodeName
+        self.planLimit = planLimit
         self.slots = slots
         self.state = state
     }
@@ -8751,6 +9172,7 @@ public struct SpawnStatus: Codable, Equatable, Hashable, Sendable {
         case harnessDescriptors = "harness_descriptors"
         case harnesses
         case nodeName = "node_name"
+        case planLimit = "plan_limit"
         case slots
         case state
     }
@@ -8762,6 +9184,7 @@ public struct SpawnStatus: Codable, Equatable, Hashable, Sendable {
         self.harnessDescriptors = try c.decodeIfPresent([HarnessDescriptor].self, forKey: .harnessDescriptors)
         self.harnesses = try c.decode([String].self, forKey: .harnesses)
         self.nodeName = try c.decodeIfPresent(String.self, forKey: .nodeName)
+        self.planLimit = try c.decodeIfPresent(PlanLimitExceeded.self, forKey: .planLimit)
         self.slots = try c.decodeIfPresent(SpawnSlots.self, forKey: .slots)
         self.state = try c.decode(SpawnState.self, forKey: .state)
     }
@@ -8773,6 +9196,7 @@ public struct SpawnStatus: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.harnessDescriptors, forKey: .harnessDescriptors)
         try c.encode(self.harnesses, forKey: .harnesses)
         try c.encode(self.nodeName, forKey: .nodeName)
+        try c.encodeIfPresent(self.planLimit, forKey: .planLimit)
         try c.encodeIfPresent(self.slots, forKey: .slots)
         try c.encode(self.state, forKey: .state)
     }
@@ -9174,6 +9598,7 @@ public enum TelemetryFailure: String, Codable, CaseIterable, Hashable, Sendable 
     case uploadUnsupportedEvidence = "upload_unsupported_evidence"
     case uploadMappingVersionMismatch = "upload_mapping_version_mismatch"
     case uploadDeliveryConflict = "upload_delivery_conflict"
+    case uploadLegacyUploaderActive = "upload_legacy_uploader_active"
     case uploadStalled = "upload_stalled"
     case uploadCycle = "upload_cycle"
     case connectionMissing = "connection_missing"
@@ -9236,6 +9661,7 @@ public enum TelemetrySurface: String, Codable, CaseIterable, Hashable, Sendable 
     case messages
     case projects
     case settingsGeneral = "settings_general"
+    case settingsTools = "settings_tools"
     case settingsOpening = "settings_opening"
     case settingsRelay = "settings_relay"
     case settingsSharing = "settings_sharing"
@@ -9290,6 +9716,159 @@ public struct TestMessageSent: Codable, Equatable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.messageId, forKey: .messageId)
+    }
+}
+
+public struct ToolIntegration: Codable, Equatable, Hashable, Sendable {
+    public let canInstall: Bool
+    public let canRepair: Bool
+    public let canUninstall: Bool
+    public let detail: String
+    public let detected: Bool
+    public let id: String
+    public let name: String
+    public let selected: Bool
+    public let state: String
+    public let statusLabel: String
+    public let supported: Bool
+
+    public init(canInstall: Bool, canRepair: Bool, canUninstall: Bool, detail: String, detected: Bool, id: String, name: String, selected: Bool, state: String, statusLabel: String, supported: Bool) {
+        self.canInstall = canInstall
+        self.canRepair = canRepair
+        self.canUninstall = canUninstall
+        self.detail = detail
+        self.detected = detected
+        self.id = id
+        self.name = name
+        self.selected = selected
+        self.state = state
+        self.statusLabel = statusLabel
+        self.supported = supported
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case canInstall = "can_install"
+        case canRepair = "can_repair"
+        case canUninstall = "can_uninstall"
+        case detail
+        case detected
+        case id
+        case name
+        case selected
+        case state
+        case statusLabel = "status_label"
+        case supported
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.canInstall = try c.decode(Bool.self, forKey: .canInstall)
+        self.canRepair = try c.decode(Bool.self, forKey: .canRepair)
+        self.canUninstall = try c.decode(Bool.self, forKey: .canUninstall)
+        self.detail = try c.decode(String.self, forKey: .detail)
+        self.detected = try c.decode(Bool.self, forKey: .detected)
+        self.id = try c.decode(String.self, forKey: .id)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.selected = try c.decode(Bool.self, forKey: .selected)
+        self.state = try c.decode(String.self, forKey: .state)
+        self.statusLabel = try c.decode(String.self, forKey: .statusLabel)
+        self.supported = try c.decode(Bool.self, forKey: .supported)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.canInstall, forKey: .canInstall)
+        try c.encode(self.canRepair, forKey: .canRepair)
+        try c.encode(self.canUninstall, forKey: .canUninstall)
+        try c.encode(self.detail, forKey: .detail)
+        try c.encode(self.detected, forKey: .detected)
+        try c.encode(self.id, forKey: .id)
+        try c.encode(self.name, forKey: .name)
+        try c.encode(self.selected, forKey: .selected)
+        try c.encode(self.state, forKey: .state)
+        try c.encode(self.statusLabel, forKey: .statusLabel)
+        try c.encode(self.supported, forKey: .supported)
+    }
+}
+
+public struct ToolsManageParams: Codable, Equatable, Hashable, Sendable {
+    public let action: String
+    public let toolId: String
+
+    public init(action: String, toolId: String) {
+        self.action = action
+        self.toolId = toolId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case action
+        case toolId = "tool_id"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.action = try c.decode(String.self, forKey: .action)
+        self.toolId = try c.decode(String.self, forKey: .toolId)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.action, forKey: .action)
+        try c.encode(self.toolId, forKey: .toolId)
+    }
+}
+
+public struct ToolsReport: Codable, Equatable, Hashable, Sendable {
+    public let accountHealth: String?
+    public let onboardingComplete: Bool
+    public let tools: [ToolIntegration]
+
+    public init(accountHealth: String? = nil, onboardingComplete: Bool, tools: [ToolIntegration]) {
+        self.accountHealth = accountHealth
+        self.onboardingComplete = onboardingComplete
+        self.tools = tools
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case accountHealth = "account_health"
+        case onboardingComplete = "onboarding_complete"
+        case tools
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.accountHealth = try c.decodeIfPresent(String.self, forKey: .accountHealth)
+        self.onboardingComplete = try c.decode(Bool.self, forKey: .onboardingComplete)
+        self.tools = try c.decode([ToolIntegration].self, forKey: .tools)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.accountHealth, forKey: .accountHealth)
+        try c.encode(self.onboardingComplete, forKey: .onboardingComplete)
+        try c.encode(self.tools, forKey: .tools)
+    }
+}
+
+public struct ToolsSelectParams: Codable, Equatable, Hashable, Sendable {
+    public let toolIds: [String]
+
+    public init(toolIds: [String]) {
+        self.toolIds = toolIds
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case toolIds = "tool_ids"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.toolIds = try c.decode([String].self, forKey: .toolIds)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.toolIds, forKey: .toolIds)
     }
 }
 
@@ -9552,6 +10131,11 @@ public struct UploadDelivery: Codable, Equatable, Hashable, Sendable {
     /// Why delivery is failing, as a code.
     public let failureCode: DeliveryFailureCode?
     public let lastAcknowledgedMs: Int64?
+    /// What the collector's last inspection of older ai-hist upload
+    /// schedules found, when it was not clear: why `legacy_uploader_active`
+    /// holds uploads, or why the inspection could not finish. Left out
+    /// when empty, so an app reads its absence from an older core as none.
+    public let legacyScheduleJobs: [LegacyScheduleJob]?
     public let pendingRecords: Int
     /// Receiver-proven conflicts retained for inspection and repair.
     public let quarantinedRecords: Int
@@ -9564,12 +10148,13 @@ public struct UploadDelivery: Codable, Equatable, Hashable, Sendable {
     public let stopped: Bool
     public let unqueuedChanges: Int
 
-    public init(acknowledgedRecords: Int, bootstrapComplete: Bool, failure: String? = nil, failureCode: DeliveryFailureCode? = nil, lastAcknowledgedMs: Int64? = nil, pendingRecords: Int, quarantinedRecords: Int, renewalFailure: RenewalFailureCode? = nil, skippedRecords: Int, stopped: Bool, unqueuedChanges: Int) {
+    public init(acknowledgedRecords: Int, bootstrapComplete: Bool, failure: String? = nil, failureCode: DeliveryFailureCode? = nil, lastAcknowledgedMs: Int64? = nil, legacyScheduleJobs: [LegacyScheduleJob]? = nil, pendingRecords: Int, quarantinedRecords: Int, renewalFailure: RenewalFailureCode? = nil, skippedRecords: Int, stopped: Bool, unqueuedChanges: Int) {
         self.acknowledgedRecords = acknowledgedRecords
         self.bootstrapComplete = bootstrapComplete
         self.failure = failure
         self.failureCode = failureCode
         self.lastAcknowledgedMs = lastAcknowledgedMs
+        self.legacyScheduleJobs = legacyScheduleJobs
         self.pendingRecords = pendingRecords
         self.quarantinedRecords = quarantinedRecords
         self.renewalFailure = renewalFailure
@@ -9584,6 +10169,7 @@ public struct UploadDelivery: Codable, Equatable, Hashable, Sendable {
         case failure
         case failureCode = "failure_code"
         case lastAcknowledgedMs = "last_acknowledged_ms"
+        case legacyScheduleJobs = "legacy_schedule_jobs"
         case pendingRecords = "pending_records"
         case quarantinedRecords = "quarantined_records"
         case renewalFailure = "renewal_failure"
@@ -9599,6 +10185,7 @@ public struct UploadDelivery: Codable, Equatable, Hashable, Sendable {
         self.failure = try c.decodeIfPresent(String.self, forKey: .failure)
         self.failureCode = try c.decodeIfPresent(DeliveryFailureCode.self, forKey: .failureCode)
         self.lastAcknowledgedMs = try c.decodeIfPresent(Int64.self, forKey: .lastAcknowledgedMs)
+        self.legacyScheduleJobs = try c.decodeIfPresent([LegacyScheduleJob].self, forKey: .legacyScheduleJobs)
         self.pendingRecords = try c.decode(Int.self, forKey: .pendingRecords)
         self.quarantinedRecords = try c.decode(Int.self, forKey: .quarantinedRecords)
         self.renewalFailure = try c.decodeIfPresent(RenewalFailureCode.self, forKey: .renewalFailure)
@@ -9614,6 +10201,7 @@ public struct UploadDelivery: Codable, Equatable, Hashable, Sendable {
         try c.encode(self.failure, forKey: .failure)
         try c.encode(self.failureCode, forKey: .failureCode)
         try c.encode(self.lastAcknowledgedMs, forKey: .lastAcknowledgedMs)
+        try c.encodeIfPresent(self.legacyScheduleJobs, forKey: .legacyScheduleJobs)
         try c.encode(self.pendingRecords, forKey: .pendingRecords)
         try c.encode(self.quarantinedRecords, forKey: .quarantinedRecords)
         try c.encode(self.renewalFailure, forKey: .renewalFailure)
@@ -9867,6 +10455,9 @@ public struct UploaderStarted: Codable, Equatable, Hashable, Sendable {
 
 /// `uploader.status`: the probe's status plus the stage the core derives.
 public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
+    /// The last Claude Code cloud-session listing. Absent before one has
+    /// run or with an older probe.
+    public let claudeCloud: ClaudeCloudHealth?
     /// The running collector is an older build.
     public let collectorOutdated: Bool
     /// A newer collector is replacing the running one.
@@ -9898,7 +10489,8 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
     /// delivery progress. Absent while upgrading or with an older probe.
     public let uploadPolicyRevision: Int64?
 
-    public init(collectorOutdated: Bool, collectorReplacing: Bool, delivery: UploadDelivery, directory: String? = nil, journalFull: Bool, needsStart: Bool, paused: Bool, running: Bool, sessions: SessionCounts, sharingMode: SharingMode, stage: Stage, stageMessage: String? = nil, stalled: Bool, upgrading: Bool, uploadPolicyRevision: Int64? = nil) {
+    public init(claudeCloud: ClaudeCloudHealth? = nil, collectorOutdated: Bool, collectorReplacing: Bool, delivery: UploadDelivery, directory: String? = nil, journalFull: Bool, needsStart: Bool, paused: Bool, running: Bool, sessions: SessionCounts, sharingMode: SharingMode, stage: Stage, stageMessage: String? = nil, stalled: Bool, upgrading: Bool, uploadPolicyRevision: Int64? = nil) {
+        self.claudeCloud = claudeCloud
         self.collectorOutdated = collectorOutdated
         self.collectorReplacing = collectorReplacing
         self.delivery = delivery
@@ -9917,6 +10509,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
+        case claudeCloud = "claude_cloud"
         case collectorOutdated = "collector_outdated"
         case collectorReplacing = "collector_replacing"
         case delivery
@@ -9936,6 +10529,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.claudeCloud = try c.decodeIfPresent(ClaudeCloudHealth.self, forKey: .claudeCloud)
         self.collectorOutdated = try c.decode(Bool.self, forKey: .collectorOutdated)
         self.collectorReplacing = try c.decode(Bool.self, forKey: .collectorReplacing)
         self.delivery = try c.decode(UploadDelivery.self, forKey: .delivery)
@@ -9955,6 +10549,7 @@ public struct UploaderStatus: Codable, Equatable, Hashable, Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(self.claudeCloud, forKey: .claudeCloud)
         try c.encode(self.collectorOutdated, forKey: .collectorOutdated)
         try c.encode(self.collectorReplacing, forKey: .collectorReplacing)
         try c.encode(self.delivery, forKey: .delivery)
@@ -10236,6 +10831,47 @@ public struct WorkspacePerson: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+/// The plan Cloud reports for the account's workspace.
+public struct WorkspacePlan: Codable, Equatable, Hashable, Sendable {
+    /// `intro`, `pro` or `enterprise`.
+    public let key: String
+    public let limits: PlanLimits
+    /// The plan's display name (`Intro`).
+    public let name: String
+    /// Where to change the plan; absent when Cloud sent none.
+    public let upgradeUrl: String?
+
+    public init(key: String, limits: PlanLimits, name: String, upgradeUrl: String? = nil) {
+        self.key = key
+        self.limits = limits
+        self.name = name
+        self.upgradeUrl = upgradeUrl
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case key
+        case limits
+        case name
+        case upgradeUrl = "upgrade_url"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.key = try c.decode(String.self, forKey: .key)
+        self.limits = try c.decode(PlanLimits.self, forKey: .limits)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.upgradeUrl = try c.decodeIfPresent(String.self, forKey: .upgradeUrl)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(self.key, forKey: .key)
+        try c.encode(self.limits, forKey: .limits)
+        try c.encode(self.name, forKey: .name)
+        try c.encodeIfPresent(self.upgradeUrl, forKey: .upgradeUrl)
+    }
+}
+
 /// Whether a workspace key was found.
 public enum WorkspaceState: String, Codable, CaseIterable, Hashable, Sendable {
     case missing
@@ -10251,8 +10887,13 @@ public enum WorkspaceState: String, Codable, CaseIterable, Hashable, Sendable {
 public struct WorkspaceStatus: Codable, Equatable, Hashable, Sendable {
     public let baseUrl: String?
     public let checkedAtMs: Int64?
+    /// The Agent Relay plan Cloud reports for the account's workspace, with
+    /// its caps; absent until read, and when the organization has no plan.
+    public let plan: WorkspacePlan?
     /// `missing` (no key found) or `found`.
     public let state: WorkspaceState
+    /// How much of the plan is used, as far as this core has read.
+    public let usage: WorkspaceUsage?
     public let verification: Verification
     public let workspaceId: String?
     public let workspaceName: String?
@@ -10260,10 +10901,12 @@ public struct WorkspaceStatus: Codable, Equatable, Hashable, Sendable {
     /// `selfhost`), once verification read it.
     public let workspacePlan: String?
 
-    public init(baseUrl: String? = nil, checkedAtMs: Int64? = nil, state: WorkspaceState, verification: Verification, workspaceId: String? = nil, workspaceName: String? = nil, workspacePlan: String? = nil) {
+    public init(baseUrl: String? = nil, checkedAtMs: Int64? = nil, plan: WorkspacePlan? = nil, state: WorkspaceState, usage: WorkspaceUsage? = nil, verification: Verification, workspaceId: String? = nil, workspaceName: String? = nil, workspacePlan: String? = nil) {
         self.baseUrl = baseUrl
         self.checkedAtMs = checkedAtMs
+        self.plan = plan
         self.state = state
+        self.usage = usage
         self.verification = verification
         self.workspaceId = workspaceId
         self.workspaceName = workspaceName
@@ -10273,7 +10916,9 @@ public struct WorkspaceStatus: Codable, Equatable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case baseUrl = "base_url"
         case checkedAtMs = "checked_at_ms"
+        case plan
         case state
+        case usage
         case verification
         case workspaceId = "workspace_id"
         case workspaceName = "workspace_name"
@@ -10284,7 +10929,9 @@ public struct WorkspaceStatus: Codable, Equatable, Hashable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.baseUrl = try c.decodeIfPresent(String.self, forKey: .baseUrl)
         self.checkedAtMs = try c.decodeIfPresent(Int64.self, forKey: .checkedAtMs)
+        self.plan = try c.decodeIfPresent(WorkspacePlan.self, forKey: .plan)
         self.state = try c.decode(WorkspaceState.self, forKey: .state)
+        self.usage = try c.decodeIfPresent(WorkspaceUsage.self, forKey: .usage)
         self.verification = try c.decode(Verification.self, forKey: .verification)
         self.workspaceId = try c.decodeIfPresent(String.self, forKey: .workspaceId)
         self.workspaceName = try c.decodeIfPresent(String.self, forKey: .workspaceName)
@@ -10295,11 +10942,43 @@ public struct WorkspaceStatus: Codable, Equatable, Hashable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.baseUrl, forKey: .baseUrl)
         try c.encode(self.checkedAtMs, forKey: .checkedAtMs)
+        try c.encodeIfPresent(self.plan, forKey: .plan)
         try c.encode(self.state, forKey: .state)
+        try c.encodeIfPresent(self.usage, forKey: .usage)
         try c.encode(self.verification, forKey: .verification)
         try c.encode(self.workspaceId, forKey: .workspaceId)
         try c.encode(self.workspaceName, forKey: .workspaceName)
         try c.encode(self.workspacePlan, forKey: .workspacePlan)
+    }
+}
+
+/// How much of the plan the workspace uses, as far as this core has read:
+/// agents from the full roster, humans from the member list. Absent
+/// counters were not read yet.
+public struct WorkspaceUsage: Codable, Equatable, Hashable, Sendable {
+    public let agents: Int?
+    public let humans: Int?
+
+    public init(agents: Int? = nil, humans: Int? = nil) {
+        self.agents = agents
+        self.humans = humans
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case agents
+        case humans
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.agents = try c.decodeIfPresent(Int.self, forKey: .agents)
+        self.humans = try c.decodeIfPresent(Int.self, forKey: .humans)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(self.agents, forKey: .agents)
+        try c.encodeIfPresent(self.humans, forKey: .humans)
     }
 }
 
@@ -10358,6 +11037,12 @@ extension CoreClient {
     @discardableResult
     public func accountStatus() async throws -> SignInReport {
         try await call(CoreMethod.accountStatus, NoParams())
+    }
+
+    /// `account.mcp_headers`; only a core built with an account answers it.
+    @discardableResult
+    public func accountMcpHeaders(_ params: McpHeadersParams) async throws -> McpHeaders {
+        try await call(CoreMethod.accountMcpHeaders, params)
     }
 
     /// `account.sign_in`; only a core built with an account answers it.
@@ -10570,6 +11255,12 @@ extension CoreClient {
         try await call(CoreMethod.agentsUnregister, params)
     }
 
+    /// `agents.end`.
+    @discardableResult
+    public func agentsEnd(_ params: NameParams) async throws -> Done {
+        try await call(CoreMethod.agentsEnd, params)
+    }
+
     /// `agents.rename`.
     @discardableResult
     public func agentsRename(_ params: RenameParams) async throws -> Renamed {
@@ -10634,6 +11325,30 @@ extension CoreClient {
     @discardableResult
     public func settingsGet() async throws -> SettingsValues {
         try await call(CoreMethod.settingsGet, NoParams())
+    }
+
+    /// `tools.status`; only a core built with an account answers it.
+    @discardableResult
+    public func toolsStatus() async throws -> ToolsReport {
+        try await call(CoreMethod.toolsStatus, NoParams())
+    }
+
+    /// `tools.check`; only a core built with an account answers it.
+    @discardableResult
+    public func toolsCheck() async throws -> ToolsReport {
+        try await call(CoreMethod.toolsCheck, NoParams())
+    }
+
+    /// `tools.select`; only a core built with an account answers it.
+    @discardableResult
+    public func toolsSelect(_ params: ToolsSelectParams) async throws -> ToolsReport {
+        try await call(CoreMethod.toolsSelect, params)
+    }
+
+    /// `tools.manage`; only a core built with an account answers it.
+    @discardableResult
+    public func toolsManage(_ params: ToolsManageParams) async throws -> ToolsReport {
+        try await call(CoreMethod.toolsManage, params)
     }
 
     /// `settings.set`.
@@ -10754,6 +11469,12 @@ extension CoreClient {
     @discardableResult
     public func cursorCloudAgentsGet(_ params: CursorCloudAgentParams) async throws -> CursorCloudAgent {
         try await call(CoreMethod.cursorCloudAgentsGet, params)
+    }
+
+    /// `cursor_cloud.agents.attach`; only a core built with an account answers it.
+    @discardableResult
+    public func cursorCloudAgentsAttach(_ params: CursorCloudAgentParams) async throws -> CursorCloudAgent {
+        try await call(CoreMethod.cursorCloudAgentsAttach, params)
     }
 
     /// `cursor_cloud.runs.create`; only a core built with an account answers it.

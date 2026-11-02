@@ -47,8 +47,10 @@ use crate::relay::workspace::{Secret, DEFAULT_BASE_URL};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 mod date_fields;
+mod session_kind;
 use date_fields::{null_as_default, optional_timestamp, optional_timestamps, timestamp};
 use serde_json::{Map, Value};
+pub use session_kind::SessionKind;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
@@ -69,83 +71,6 @@ const PENDING_REFUSAL_MARKER: &str = "local-pending-refusal:v1:";
 pub const ARCHIVED_SESSIONS_KEPT: usize = 50;
 /// Sent reply records and reply routes kept per store.
 pub const REMEMBERED_REPLIES: usize = 500;
-
-/// Which kind of local session an agent stands for, and so which route a
-/// message takes into it.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
-pub enum SessionKind {
-    /// An existing Pi session connected through the bundled extension.
-    #[serde(rename = "pi")]
-    Pi,
-    /// A Codex thread, in the desktop app or a terminal `codex`.
-    #[serde(rename = "codex")]
-    Codex,
-    /// A Claude Code session in a terminal: its cross-session inbox.
-    #[serde(rename = "claude-terminal")]
-    ClaudeTerminal,
-    /// A Claude desktop app / claude.ai/code session.
-    #[serde(rename = "claude-cloud")]
-    ClaudeCloud,
-    /// A probe-managed Grok ACP session with a verified leader binding.
-    #[serde(rename = "grok")]
-    Grok,
-    /// An already-open Grok ACP session registered with immutable proof of
-    /// its leader. A separate kind from `Grok`, so a registration names one
-    /// route for good and can never be delivered through the other.
-    #[serde(rename = "grok-open")]
-    GrokOpen,
-    /// A probe-managed authenticated OpenCode server session.
-    #[serde(rename = "opencode")]
-    OpenCode,
-    /// A Muse session a person opened in a terminal, delivered to through a
-    /// probe-owned courier Muse session in the same workspace and trust (no
-    /// keystrokes into the person's session; Muse's own peer messaging
-    /// carries the turn). Discovered from Muse's runtime session registry.
-    #[serde(rename = "muse-open")]
-    MuseOpen,
-    /// An OpenCode session a person opened in a plain `opencode` TUI,
-    /// reached through Agent Relay's OpenCode plugin: a per-process Unix
-    /// socket that answers only delivery's requests for the sessions that
-    /// process holds. Discovered from the plugin's per-pid records.
-    #[serde(rename = "opencode-open")]
-    OpenCodeOpen,
-    /// A Devin CLI session a person runs in a terminal: its `devin acp`
-    /// agent process holds `<devin>/cli/session_locks/<session>.lock` open,
-    /// which is the kernel proof used for discovery and caller
-    /// identification. Delivery writes the session's inbox file, which its
-    /// lifecycle hooks drain into the conversation.
-    #[serde(rename = "devin")]
-    Devin,
-    /// A Cursor CLI (`cursor-agent`) session a person runs in a terminal:
-    /// the process holds its conversation's `store.db` open, which is the
-    /// kernel proof used for discovery and caller identification. Delivery
-    /// stages a message in Agent Relay's inbox, which Agent Relay's hooks in
-    /// `~/.cursor/hooks.json` hand to the session at its next tool call or
-    /// when its turn ends (`relay::cursor_cli`). Not a Cursor Cloud agent.
-    #[serde(rename = "cursor-cli")]
-    CursorCli,
-    /// An OpenClaw agent on the person's local OpenClaw Gateway, reached as
-    /// a loopback operator client. Each relay sender gets a session of its
-    /// own on that agent, never the person's main chat (`relay::openclaw`).
-    #[serde(rename = "openclaw")]
-    OpenClaw,
-    /// A Hermes Agent home whose gateway serves its API on loopback. Each
-    /// relay sender gets a Hermes session of its own (`relay::hermes`).
-    #[serde(rename = "hermes")]
-    Hermes,
-}
 
 /// One local session a message can be injected into. `id` is the session's
 /// own id, never a title, so a message cannot land in whichever session
@@ -170,7 +95,10 @@ impl Target {
     /// Claude Code, a tagged `session_…`/`cse_…` id for the Claude app.
     pub fn is_valid(&self) -> bool {
         match self.kind {
-            SessionKind::Pi | SessionKind::Codex | SessionKind::ClaudeTerminal => is_uuid(&self.id),
+            SessionKind::Pi
+            | SessionKind::Omp
+            | SessionKind::Codex
+            | SessionKind::ClaudeTerminal => is_uuid(&self.id),
             SessionKind::ClaudeCloud => is_claude_session_id(&self.id),
             SessionKind::Grok | SessionKind::GrokOpen | SessionKind::MuseOpen => is_uuid(&self.id),
             SessionKind::OpenCode | SessionKind::OpenCodeOpen => {
@@ -825,7 +753,7 @@ pub struct Store {
         skip_serializing_if = "Option::is_none"
     )]
     pub allow_self_registration: Option<bool>,
-    /// Missing means false.
+    /// Missing means true: live-session activation is opt-out.
     #[serde(
         rename = "autoActivate",
         default,
@@ -1755,7 +1683,8 @@ impl Store {
         if let Some(legacy) = store.pending_key_migration_legacy.take() {
             store.record_pending_key_migration(legacy);
         }
-        let mut migrated = legacy.apply(&mut store) || numeric_dates;
+        let mut migrated =
+            legacy.apply(&mut store) | numeric_dates | store.migrate_claude_archive_keys();
         for registration in &mut store.registrations {
             if registration.machine_prefix.is_none() {
                 registration.machine_prefix = Some(machine_prefix.into());
@@ -2011,7 +1940,6 @@ pub fn random_hex(count: usize) -> String {
 // MARK: Merge (`merge`)
 
 mod merge;
-mod session_kind;
 mod settings_extras;
 pub use settings_extras::SettingsExtras;
 pub mod spawn;
@@ -2240,22 +2168,7 @@ impl StoreFile {
         let mut lock_path = self.path.clone().into_os_string();
         lock_path.push(".lock");
         let lock_path = PathBuf::from(lock_path);
-        let lock = crate::platform::fs::private(
-            fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false),
-        )
-        .open(&lock_path)
-        .map_err(|e| unreadable(&lock_path, e))?;
-        loop {
-            match lock.lock_exclusive() {
-                Ok(()) => break,
-                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                Err(error) => return Err(unreadable(&lock_path, error)),
-            }
-        }
+        let lock = session_refresh::lock_file(&lock_path).map_err(|e| unreadable(&lock_path, e))?;
         let result = body(self);
         let _ = FileExt::unlock(&lock);
         result
@@ -2422,6 +2335,7 @@ fn blocking<T>(save: impl FnOnce() -> T) -> T {
 
 mod aliases;
 pub use aliases::{AgentAlias, RetiredAlias};
+pub mod session_refresh;
 
 #[cfg(test)]
 mod tests;

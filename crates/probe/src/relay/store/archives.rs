@@ -1,6 +1,19 @@
 use super::*;
 use std::sync::Arc;
 
+fn archived_keys(target: &Target) -> impl Iterator<Item = String> {
+    let mut keys = vec![target.upload_key().unwrap_or_else(|| target.key())];
+    // A Claude cloud target does not retain whether it came from the Claude
+    // app or Claude Code on the web. Preserve both possible identities: the
+    // app-only row uses the target key, while a web row joins its history key.
+    if target.kind == SessionKind::ClaudeCloud {
+        let id =
+            crate::relay::claude_web::web_session_id(target).unwrap_or_else(|| target.id.clone());
+        keys.push(format!("{}:{id}", target.kind.source()));
+    }
+    keys.into_iter()
+}
+
 impl Store {
     /// Marks `name` archived at `now` and records it, once: returns whether
     /// this was news. Its session is treated as ended from here on, so it
@@ -26,12 +39,7 @@ impl Store {
         if self.archived_session_keys.is_empty() {
             self.archived_session_keys = self.complete_archived_keys();
         }
-        Arc::make_mut(&mut self.archived_session_keys).insert(
-            entry
-                .target
-                .upload_key()
-                .unwrap_or_else(|| entry.target.key()),
-        );
+        Arc::make_mut(&mut self.archived_session_keys).extend(archived_keys(&entry.target));
         let list = self.archived_sessions.get_or_insert_with(Vec::new);
         list.insert(0, entry);
         list.truncate(ARCHIVED_SESSIONS_KEPT);
@@ -48,14 +56,30 @@ impl Store {
             self.archived_sessions
                 .iter()
                 .flatten()
-                .map(|entry| {
-                    entry
-                        .target
-                        .upload_key()
-                        .unwrap_or_else(|| entry.target.key())
-                })
+                .flat_map(|entry| archived_keys(&entry.target))
                 .collect(),
         )
+    }
+
+    /// Completes the host-aware identity added after older stores had already
+    /// persisted their target-only Claude archive keys.
+    pub(super) fn migrate_claude_archive_keys(&mut self) -> bool {
+        let additions: Vec<_> = self
+            .archived_session_keys
+            .iter()
+            .filter_map(|key| key.strip_prefix("claude-cloud:"))
+            .map(|id| {
+                let target = Target::new(SessionKind::ClaudeCloud, id);
+                crate::relay::claude_web::web_session_id(&target).unwrap_or_else(|| id.to_string())
+            })
+            .map(|id| format!("claude:{id}"))
+            .filter(|key| !self.archived_session_keys.contains(key))
+            .collect();
+        if additions.is_empty() {
+            return false;
+        }
+        Arc::make_mut(&mut self.archived_session_keys).extend(additions);
+        true
     }
 
     pub(super) fn merged_archive_keys(ours: &Store, theirs: &Store) -> Arc<BTreeSet<String>> {

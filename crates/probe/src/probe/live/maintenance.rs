@@ -135,12 +135,15 @@ mod tests {
     use super::*;
     #[test]
     fn native_audit_observes_hot_preemption_while_waiting_for_its_write() {
-        let Some(home) = crate::live::tests::isolated_home("live::maintenance::tests::native_audit_observes_hot_preemption_while_waiting_for_its_write") else {return};
+        let Some(home) = crate::probe::live::tests::isolated_home("probe::live::maintenance::tests::native_audit_observes_hot_preemption_while_waiting_for_its_write") else {return};
         let db = home.join("probe/history.db");
         let store = history::open(&db).unwrap();
         let path = home.join(".claude/projects/native/native.jsonl");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        crate::live::tests::append(&path, &crate::live::tests::transcript_line("native", "one"));
+        crate::probe::live::tests::append(
+            &path,
+            &crate::probe::live::tests::transcript_line("native", "one"),
+        );
         let writer = rusqlite::Connection::open(&db).unwrap();
         writer.execute_batch("BEGIN IMMEDIATE").unwrap();
         let activity = Arc::new(AtomicU64::new(0));
@@ -200,7 +203,7 @@ mod tests {
 
     #[test]
     fn a_write_between_queue_drain_and_guard_creation_is_still_new_work() {
-        let Some(home) = crate::live::tests::isolated_home("live::maintenance::tests::a_write_between_queue_drain_and_guard_creation_is_still_new_work") else {return};
+        let Some(home) = crate::probe::live::tests::isolated_home("probe::live::maintenance::tests::a_write_between_queue_drain_and_guard_creation_is_still_new_work") else {return};
         let store = history::open(&home.join("probe/history.db")).unwrap();
         let activity = Arc::new(AtomicU64::new(8));
         let guard = Interrupt::new(
@@ -218,8 +221,8 @@ mod tests {
 
     #[test]
     fn maintenance_stops_when_retained_folder_consent_is_revoked() {
-        let Some(home) = crate::live::tests::isolated_home(
-            "live::maintenance::tests::maintenance_stops_when_retained_folder_consent_is_revoked",
+        let Some(home) = crate::probe::live::tests::isolated_home(
+            "probe::live::maintenance::tests::maintenance_stops_when_retained_folder_consent_is_revoked",
         ) else {
             return;
         };
@@ -227,10 +230,10 @@ mod tests {
         let mut roots = history::RootSettings::default();
         roots.refresh(&mut store).unwrap();
         let env = |key: &str| std::env::var(key).ok();
-        let dirs = agent_relay_probe::relay::claude_dirs::ClaudeDirs::from_env(
+        let dirs = crate::relay::claude_dirs::ClaudeDirs::from_env(
             &env,
             &home,
-            &agent_relay_probe::relay::workspace::relay_home(&env, &home),
+            &crate::relay::workspace::relay_home(&env, &home),
         );
         let default = home.join(".claude");
         dirs.set_shared(default.to_str().unwrap(), false, &default)
@@ -245,7 +248,7 @@ mod tests {
 
     #[test]
     fn admitted_writes_interrupt_maintenance_without_becoming_user_stop() {
-        let Some(home) = crate::live::tests::isolated_home("live::maintenance::tests::admitted_writes_interrupt_maintenance_without_becoming_user_stop") else {return};
+        let Some(home) = crate::probe::live::tests::isolated_home("probe::live::maintenance::tests::admitted_writes_interrupt_maintenance_without_becoming_user_stop") else {return};
         let store = history::open(&home.join("probe/history.db")).unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
         let activity = Arc::new(AtomicU64::new(7));
@@ -258,11 +261,14 @@ mod tests {
     }
     #[test]
     fn missing_watch_uses_bounded_recent_file_changes_to_interrupt_audit() {
-        let Some(home) = crate::live::tests::isolated_home("live::maintenance::tests::missing_watch_uses_bounded_recent_file_changes_to_interrupt_audit") else {return};
+        let Some(home) = crate::probe::live::tests::isolated_home("probe::live::maintenance::tests::missing_watch_uses_bounded_recent_file_changes_to_interrupt_audit") else {return};
         let store = history::open(&home.join("probe/history.db")).unwrap();
         let path = home.join(".claude/projects/a/a.jsonl");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        crate::live::tests::append(&path, &crate::live::tests::transcript_line("a", "one"));
+        crate::probe::live::tests::append(
+            &path,
+            &crate::probe::live::tests::transcript_line("a", "one"),
+        );
         history::sweep_once(&store, true, || false).unwrap();
         let mut recent = history::RecentPaths::default();
         recent.poll(&store).unwrap();
@@ -274,18 +280,24 @@ mod tests {
             None,
         );
         assert!(!guard.stopped());
-        crate::live::tests::append(&path, &crate::live::tests::transcript_line("a", "two"));
+        crate::probe::live::tests::append(
+            &path,
+            &crate::probe::live::tests::transcript_line("a", "two"),
+        );
         guard.recent.as_ref().unwrap().lock().unwrap().0 = Instant::now() - Duration::from_secs(2);
         assert!(guard.stopped());
     }
     #[test]
     fn a_complete_watcher_still_interrupts_audit_for_held_open_writes() {
-        let Some(home)=crate::live::tests::isolated_home("live::maintenance::tests::a_complete_watcher_still_interrupts_audit_for_held_open_writes") else {return};
+        let Some(home)=crate::probe::live::tests::isolated_home("probe::live::maintenance::tests::a_complete_watcher_still_interrupts_audit_for_held_open_writes") else {return};
         let db = home.join("probe/history.db");
         let store = history::open(&db).unwrap();
         let path = home.join(".claude/projects/a/a.jsonl");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        crate::live::tests::append(&path, &crate::live::tests::transcript_line("a", "one"));
+        crate::probe::live::tests::append(
+            &path,
+            &crate::probe::live::tests::transcript_line("a", "one"),
+        );
         history::sweep_once(&store, true, || false).unwrap();
         let mut recent = history::RecentPaths::default();
         recent.poll(&store).unwrap();
@@ -309,7 +321,7 @@ mod tests {
             .unwrap();
         use std::io::Write;
         writer
-            .write_all(crate::live::tests::transcript_line("a", "two").as_bytes())
+            .write_all(crate::probe::live::tests::transcript_line("a", "two").as_bytes())
             .unwrap();
         writer.flush().unwrap();
         guard.recent.as_ref().unwrap().lock().unwrap().0 = Instant::now() - Duration::from_secs(2);

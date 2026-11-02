@@ -124,17 +124,16 @@ pub trait Injector: Send + Sync + 'static {
     /// Puts `text` into the session through the session's own route.
     fn inject(&self, target: &Target, message_id: &str, text: &str) -> InjectOutcome;
 
-    /// Relay Connect may target a broker-owned provider session that is
-    /// intentionally absent from the normal injectable-agent store. Other
-    /// injectors inherit the ordinary route; the local injector resolves the
-    /// exact fleet-owned process and isolated provider home here.
+    /// Relay Connect's route into a session. Other injectors inherit the
+    /// ordinary route; the local injector queues Codex handoffs through the
+    /// Codex router.
     fn inject_connect(&self, target: &Target, message_id: &str, text: &str) -> InjectOutcome {
         self.inject(target, message_id, text)
     }
 
     /// Observes a Connect handoff the provider already accepted. The
     /// default route is unchanged, while Codex overrides this to prohibit a
-    /// second queue write after restart or loss of its fleet binding cache.
+    /// second queue write.
     fn observe_connect(&self, target: &Target, message_id: &str, text: &str) -> InjectOutcome {
         self.inject_connect(target, message_id, text)
     }
@@ -161,6 +160,21 @@ pub trait Injector: Send + Sync + 'static {
         text: &str,
     ) -> InjectOutcome {
         self.inject_registered(registration, route.delivery_id, route.message_id, text)
+    }
+
+    /// The messages (by id) the queue of agent `source`, one of the agent
+    /// ids whose queues feed `target` (`queues`), still holds for it, as the
+    /// delivery runtime just read them; `None` when the read did not return
+    /// the whole queue. Routes that keep messages in order behind one the
+    /// session may hold (Codex) let only pending ones taken up from a
+    /// transcript hold later ones back; others need nothing.
+    fn note_pending(
+        &self,
+        _target: &Target,
+        _source: &str,
+        _queues: &[String],
+        _message_ids: Option<&[String]>,
+    ) {
     }
 
     /// As `inject_routed`, trying a spawned agent's own harness route
@@ -252,6 +266,14 @@ pub trait Injector: Send + Sync + 'static {
         None
     }
 
+    /// What a session's own input route (the Claude plugin's user turn)
+    /// hands over in place of relayed `text` while relay messages are
+    /// hidden: the same pointer `inject` gives a terminal session, with the
+    /// text kept for `relay read`. `None` sends `text` whole.
+    fn native_pointer(&self, _target: &Target, _message_id: &str, _text: &str) -> Option<String> {
+        None
+    }
+
     /// Why the session's own route holds a message it was just handed for
     /// the person's approval, as the activity log says it (Claude Code's
     /// `crossSessionInbound`); `None` when it shows the message.
@@ -307,10 +329,13 @@ pub trait Injector: Send + Sync + 'static {
     }
 
     /// The last `max` bytes of a terminal Claude Code session's transcript,
-    /// and whether they begin past the file's start, for the inbox check
-    /// (`claude::inbox`). `None` for any other session, or a transcript
-    /// that is missing or unreadable.
-    fn inbox_transcript_tail(&self, _target: &Target, _max: u64) -> Option<(Vec<u8>, bool)> {
+    /// for the inbox check (`claude::inbox`). `None` for any other session,
+    /// or a transcript that is missing or unreadable.
+    fn inbox_transcript_tail(
+        &self,
+        _target: &Target,
+        _max: u64,
+    ) -> Option<crate::relay::claude::inbox::Tail> {
         None
     }
 }

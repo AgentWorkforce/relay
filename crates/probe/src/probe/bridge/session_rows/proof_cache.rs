@@ -1,7 +1,7 @@
 //! Bounded page-local proof progress. The SDK validates its opaque cache basis,
 //! feed epoch and job cursor; no provider or proof schema is duplicated here.
 use super::*;
-use agent_relay_probe::platform::fs as private;
+use crate::platform::fs as private;
 use std::io::{Read, Write};
 
 const MAX_BYTES: usize = 16 * 1024 * 1024;

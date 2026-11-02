@@ -304,7 +304,7 @@ pub fn try_progress_access_token(
         return Ok(None);
     };
     // The caller posts this token to `base_url`; never hand it out for a cleartext stage.
-    require_secure_transport(&auth.base_url)?;
+    require_history_destination(&auth.base_url)?;
     if !token_has_valid_lifetime(&auth) {
         let path = refresh_lock_path(base_url)?;
         let file = fs::OpenOptions::new()
@@ -322,10 +322,7 @@ pub fn try_progress_access_token(
         let _lock = AuthRefreshLock { _file: file };
         auth = load_selected_auth(Some(base_url))?.context("progress credentials disappeared")?;
         if !token_has_valid_lifetime(&auth) {
-            let agent = ureq::AgentBuilder::new()
-                .redirects(0)
-                .timeout(timeout)
-                .build();
+            let agent = history_agent().redirects(0).timeout(timeout).build();
             auth = refresh_auth_with_agent(&auth, &agent)
                 .map_err(|_| anyhow::anyhow!("progress credential renewal unavailable"))?;
             save_auth(&auth)?;
@@ -464,7 +461,7 @@ pub(crate) fn send_with_auth_refresh_checked_with_budget(
     remaining()?;
     // Every authenticated request funnels through here; refuse cleartext before any bearer
     // (stored, concurrently rotated or refreshed — all share this stage) is written.
-    require_secure_transport(&auth.base_url)?;
+    require_history_destination(&auth.base_url)?;
     let attempted = auth.clone();
     check(&attempted)?;
     let mut unauthorized = match send(&attempted) {
@@ -507,10 +504,7 @@ pub(crate) fn send_with_auth_refresh_checked_with_budget(
         return Err(mapped(unauthorized));
     }
     let refreshed = if let Some(timeout) = remaining()? {
-        let agent = ureq::AgentBuilder::new()
-            .redirects(0)
-            .timeout(timeout)
-            .build();
+        let agent = history_agent().redirects(0).timeout(timeout).build();
         let refreshed = refresh_auth_with_agent(&current, &agent)?;
         save_auth(&refreshed).context("persisting refreshed relayhistory session")?;
         refreshed
@@ -538,7 +532,7 @@ pub(crate) fn send_with_fixed_auth_checked_with_budget(
 ) -> Result<ureq::Response> {
     let remaining = || budget.map(|remaining| remaining()).transpose();
     remaining()?;
-    require_secure_transport(&auth.base_url)?;
+    require_history_destination(&auth.base_url)?;
     check(auth)?;
     send(auth, remaining()?).map_err(|error| map_error(*error))
 }
@@ -555,11 +549,11 @@ fn refresh_and_save_auth(auth: &StoredAuth) -> Result<StoredAuth> {
 
 #[cfg(feature = "history")]
 fn refresh_auth(auth: &StoredAuth) -> Result<StoredAuth> {
-    refresh_auth_with_agent(auth, &ureq::AgentBuilder::new().build())
+    refresh_auth_with_agent(auth, &history_agent().build())
 }
 
 fn refresh_auth_with_agent(auth: &StoredAuth, agent: &ureq::Agent) -> Result<StoredAuth> {
-    require_secure_transport(&auth.base_url)?;
+    require_history_destination(&auth.base_url)?;
     let refresh_token = auth
         .refresh_token
         .as_deref()
@@ -789,7 +783,7 @@ fn cloud_send(
     bearer: Option<&str>,
     body: Option<serde_json::Value>,
 ) -> Option<ureq::Response> {
-    let agent = ureq::AgentBuilder::new()
+    let agent = history_agent()
         .redirects(0)
         .timeout(std::time::Duration::from_secs(15))
         .build();
@@ -826,16 +820,6 @@ pub struct CloudBearerOptions<'a> {
     pub interactive: bool,
     pub client_name: &'a str,
     pub announce: &'a mut dyn FnMut(&DeviceApproval),
-}
-
-/// The official Agent Relay CLI's own session file. Read only: it belongs to
-/// that CLI, which owns writing and refreshing it.
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OfficialCliSession {
-    api_url: String,
-    access_token: String,
-    access_token_expires_at: String,
 }
 
 /// The home folder: on Windows the profile first, where Claude Code and
@@ -884,12 +868,19 @@ fn desktop_bearer(api_url: &str, home: &std::path::Path) -> Option<String> {
     )
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OfficialCliSession {
+    api_url: String,
+    access_token: String,
+    access_token_expires_at: String,
+}
+
 /// Reuse the official CLI's sign-in (only with `relay-cli`), then the desktop
-/// app's, only for the
-/// exact same Cloud and only while it has real lifetime left; anything else
-/// falls through to a fresh device login rather than forwarding a
-/// credential to another host.
-fn official_cli_bearer(api_url: &str) -> Option<String> {
+/// app's, only for the exact same Cloud and only while it has real lifetime
+/// left; anything else falls through to a fresh device login rather than
+/// forwarding a credential to another host.
+fn stored_bearer(api_url: &str) -> Option<String> {
     let home = home_dir()?;
     let cli = cfg!(feature = "relay-cli")
         .then(|| fs::read(home.join(".agentworkforce/relay/cloud-auth.json")))
@@ -907,13 +898,13 @@ fn official_cli_bearer(api_url: &str) -> Option<String> {
 }
 
 /// An Agent Relay Cloud bearer for `api_url`: the environment override, then
-/// the official CLI's eligible session, then the OAuth device flow.
+/// the desktop app's eligible session, then the OAuth device flow.
 pub fn cloud_bearer(api_url: &str, options: CloudBearerOptions<'_>) -> Result<String> {
     if let Some(token) = env_cloud_bearer() {
         return Ok(token);
     }
     if !options.force_login {
-        if let Some(token) = official_cli_bearer(api_url) {
+        if let Some(token) = stored_bearer(api_url) {
             return Ok(token);
         }
     }
@@ -1085,7 +1076,8 @@ struct WorkspaceSessionResponse {
 /// The Cloud workspace bridge: `POST
 /// {api_url}/api/v1/workspaces/{workspace}/relayhistory/session`. Cloud
 /// authorizes membership and returns the RelayHistory stage together with a
-/// workspace-scoped `rth_*` session for it.
+/// workspace-scoped `rth_*` session for it, or, for a workspace's own
+/// History, a short-lived assertion the probe exchanges there itself.
 pub fn workspace_session(
     api_url: &str,
     bearer: &str,
@@ -1096,6 +1088,9 @@ pub fn workspace_session(
     let session = match issue_workspace_session(api_url, bearer, workspace, mode, label)? {
         Issued::Session(session) => session,
         Issued::Unreachable => return Err(auth_error(CLOUD_UNREACHABLE)),
+        Issued::HistoryStatus(_) | Issued::HistoryUnreachable => {
+            return Err(auth_error(workspace_session::HISTORY_UNAVAILABLE))
+        }
         // Keep response bodies private while giving an actionable cause.
         Issued::Status(status) => {
             return Err(auth_error(match status {
@@ -1119,17 +1114,20 @@ use workspace_session::{issue_workspace_session, Issued};
 
 mod workspace_session;
 
+mod history_origin;
+pub use history_origin::{history_agent, workspace_history_origin};
+pub(crate) use history_origin::{require_history_destination, HistoryUnresolved};
+
 #[cfg(feature = "history")]
 pub(crate) mod devin_credential;
 
 /// The Agent Relay credential renewal uses, needing no interaction:
-/// `CLOUD_API_ACCESS_TOKEN`, then the official Agent Relay CLI's live session
-/// for this exact Cloud, then the desktop app's kept `cloudSession` (which the
-/// relay core refreshes while an upload waits on sign-in). Each must have more
-/// than a minute left. `None` when there is none, so a background process
+/// `CLOUD_API_ACCESS_TOKEN`, then the desktop app's kept `cloudSession` for
+/// this exact Cloud (which the relay core refreshes while an upload waits on
+/// sign-in). Each must have more than a minute left. `None` when there is none, so a background process
 /// never starts a device login.
 pub fn renewal_bearer(api_url: &str) -> Option<String> {
-    env_cloud_bearer().or_else(|| official_cli_bearer(api_url))
+    env_cloud_bearer().or_else(|| stored_bearer(api_url))
 }
 
 /// Why a renewal produced no session, as an allowlisted code.
@@ -1138,9 +1136,11 @@ pub enum RenewalFailure {
     /// No Agent Relay sign-in with time left (`renewal_bearer`).
     NoCloudSession,
     /// Cloud refused the person or workspace (401, 403, 404), or issued
-    /// no usable session.
+    /// no usable session; or the workspace's own History refused its
+    /// sign-in.
     CloudRefused,
-    /// Cloud did not answer, was rate limiting (429) or was failing (5xx).
+    /// Cloud, or the workspace's own History, did not answer, was rate
+    /// limiting (429) or was failing (5xx).
     CloudUnreachable,
     /// Cloud issued a session for another stage, organization or workspace.
     WrongDestination,
@@ -1215,24 +1215,11 @@ pub fn renew_workspace_session(
         return Err(error.into());
     }
     let _lock = AuthRefreshLock { _file: file };
-    let session = match issue_workspace_session(
-        api_url,
-        bearer,
-        workspace,
-        "sync",
-        "Probe session renewal",
-    ) {
-        Ok(Issued::Session(session)) => session,
-        // Cloud refusing this person or workspace needs them; a rate limit
-        // or an outage passes by itself.
-        Ok(Issued::Status(401 | 403 | 404)) => {
-            return Ok(Renewal::Failed(RenewalFailure::CloudRefused))
-        }
-        Ok(Issued::Status(429 | 500..=599) | Issued::Unreachable) => {
-            return Ok(Renewal::Failed(RenewalFailure::CloudUnreachable))
-        }
-        // Any other status, or an answer that is not a usable session.
-        Ok(Issued::Status(_)) | Err(_) => return Ok(Renewal::Failed(RenewalFailure::CloudRefused)),
+    let issued =
+        issue_workspace_session(api_url, bearer, workspace, "sync", "Probe session renewal");
+    let session = match workspace_session::renewed(issued) {
+        Ok(session) => session,
+        Err(failure) => return Ok(Renewal::Failed(failure)),
     };
     if !(same_stage(&session.base_url, history_url)
         && session.org_id.as_deref() == Some(org_id)
@@ -1350,7 +1337,7 @@ pub(crate) mod tests {
 
     // RELAYHISTORY_HOME is process-global; serialize env-home tests so cargo's parallel
     // runner can't clobber it across tests.
-    pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(crate) use crate::TEST_ENV_LOCK as ENV_LOCK;
 
     struct EnvVarGuard {
         key: &'static str,
@@ -1388,7 +1375,7 @@ pub(crate) mod tests {
         f()
     }
 
-    fn read_http_request(
+    pub(crate) fn read_http_request(
         stream: &mut std::net::TcpStream,
     ) -> (String, std::collections::HashMap<String, String>, String) {
         use std::io::{BufRead, BufReader, Read};
@@ -1966,13 +1953,10 @@ pub(crate) mod tests {
         };
         let api_url = cloud_api_url(None).unwrap();
         write("https://agentrelay.com", "2999-01-01T00:00:00Z");
-        assert_eq!(
-            official_cli_bearer(&api_url).as_deref(),
-            Some("cld_at_desktop")
-        );
-        assert_eq!(official_cli_bearer("http://127.0.0.1:3100/cloud"), None);
+        assert_eq!(stored_bearer(&api_url).as_deref(), Some("cld_at_desktop"));
+        assert_eq!(stored_bearer("http://127.0.0.1:3100/cloud"), None);
         write("https://agentrelay.com", "2000-01-01T00:00:00Z");
-        assert_eq!(official_cli_bearer(&api_url), None);
+        assert_eq!(stored_bearer(&api_url), None);
         // A build with its own data directory (Agent Relay Dev) is read there.
         let dev = home.path().join("dev-data");
         fs::create_dir_all(&dev).unwrap();
@@ -1985,7 +1969,7 @@ pub(crate) mod tests {
         .unwrap();
         {
             let _dev = EnvVarGuard::set(APP_DATA_DIR_VARIABLE, &dev);
-            assert_eq!(official_cli_bearer(&api_url).as_deref(), Some("cld_at_dev"));
+            assert_eq!(stored_bearer(&api_url).as_deref(), Some("cld_at_dev"));
         }
         // The official CLI's live session comes first, where it is read at all.
         write("https://agentrelay.com", "2999-01-01T00:00:00Z");
@@ -1995,7 +1979,7 @@ pub(crate) mod tests {
         } else {
             "cld_at_desktop"
         };
-        assert_eq!(official_cli_bearer(&api_url).as_deref(), Some(first));
+        assert_eq!(stored_bearer(&api_url).as_deref(), Some(first));
     }
 
     /// The official Agent Relay CLI's file is another tool's credential: it is
@@ -2048,6 +2032,52 @@ pub(crate) mod tests {
         assert!(bearer(&api_url, true).is_err());
 
         write("2000-01-01T00:00:00.000Z");
+        assert!(bearer(&api_url, false).is_err());
+    }
+
+    /// `cloud_bearer` reuses the desktop app's kept session only for the
+    /// same Cloud, only while it is live, never under `--force-login`, and
+    /// never writes it.
+    #[test]
+    fn cloud_bearer_reuses_only_a_matching_unexpired_desktop_session() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _cloud_token = EnvVarGuard::remove("CLOUD_API_ACCESS_TOKEN");
+        let _cloud_api_url = EnvVarGuard::remove("CLOUD_API_URL");
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvVarGuard::set("HOME", home.path());
+        let _profile = EnvVarGuard::set("USERPROFILE", home.path());
+        let bearer = |api_url: &str, force_login: bool| {
+            cloud_bearer(
+                api_url,
+                CloudBearerOptions {
+                    force_login,
+                    // No terminal: every fall-through below must fail here
+                    // rather than reach the network.
+                    interactive: false,
+                    client_name: "test",
+                    announce: &mut |_| {},
+                },
+            )
+        };
+        let api_url = cloud_api_url(None).unwrap();
+        assert_eq!(api_url, "https://agentrelay.com/cloud");
+
+        let _data = keep_desktop_session(home.path(), &api_url, "2999-01-01T00:00:00Z");
+        let path = home
+            .path()
+            .join("app-data")
+            .join(crate::relay::app_store::STORE_FILE);
+        // Reused without any HTTP request, and the file is left untouched.
+        assert_eq!(bearer(&api_url, false).unwrap(), "cld_at_desktop");
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .contains("cld_at_desktop"));
+        // A session for a different Cloud is never forwarded.
+        assert!(bearer("http://127.0.0.1:3100/cloud", false).is_err());
+        // `--force-login` ignores it entirely.
+        assert!(bearer(&api_url, true).is_err());
+
+        let _data = keep_desktop_session(home.path(), &api_url, "2000-01-01T00:00:00Z");
         assert!(bearer(&api_url, false).is_err());
     }
 
@@ -2449,6 +2479,29 @@ pub(crate) mod tests {
         (site, server)
     }
 
+    /// Keeps the desktop app's sign-in for `api_url`, expiring at
+    /// `expires_at`, in a store under `home` that is read while the returned
+    /// guard lives.
+    fn keep_desktop_session(
+        home: &std::path::Path,
+        api_url: &str,
+        expires_at: &str,
+    ) -> EnvVarGuard {
+        let data = home.join("app-data");
+        fs::create_dir_all(&data).unwrap();
+        fs::write(
+            data.join(crate::relay::app_store::STORE_FILE),
+            serde_json::json!({"cloudSession": {
+                "accessToken": "cld_at_desktop",
+                "accessTokenExpiresAt": expires_at,
+                "siteURL": api_url.trim_end_matches("/cloud"),
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        EnvVarGuard::set(APP_DATA_DIR_VARIABLE, &data)
+    }
+
     fn write_official_cli_session(home: &std::path::Path, api_url: &str) {
         let path = home.join(".agentworkforce/relay/cloud-auth.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -2473,7 +2526,7 @@ pub(crate) mod tests {
         let _profile = EnvVarGuard::set("USERPROFILE", home.path());
         let api_url = cloud_api_url(None).unwrap();
         write_official_cli_session(home.path(), &api_url);
-        assert_eq!(official_cli_bearer(&api_url), None);
+        assert_eq!(stored_bearer(&api_url), None);
     }
 
     /// A dead `rth_*` pair is replaced from Agent Relay's own sign-in, so an
@@ -2500,7 +2553,7 @@ pub(crate) mod tests {
             ..Default::default()
         })
         .unwrap();
-        write_official_cli_session(home.path(), &api_url);
+        let _data = keep_desktop_session(home.path(), &api_url, "2999-01-01T00:00:00Z");
 
         let bearer = renewal_bearer(&api_url).expect("an Agent Relay sign-in is available");
         let Renewal::Renewed(renewed) =
@@ -2510,7 +2563,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             server.join().unwrap().as_deref(),
-            Some("Bearer cld_at_official")
+            Some("Bearer cld_at_desktop")
         );
         assert_eq!(renewed.access_token, "rth_at_renewed");
         let stored = load_auth(Some(&site)).unwrap().unwrap();
@@ -2553,7 +2606,7 @@ pub(crate) mod tests {
         let (site, server) = workspace_session_server("org_other");
         let api_url = format!("{site}/cloud");
         save_auth(&dead(&site)).unwrap();
-        write_official_cli_session(home.path(), &api_url);
+        let _data = keep_desktop_session(home.path(), &api_url, "2999-01-01T00:00:00Z");
         let bearer = renewal_bearer(&api_url).unwrap();
         assert!(matches!(
             renew_workspace_session(&api_url, &bearer, "ws_1", &site, "org_1"),
@@ -2569,7 +2622,7 @@ pub(crate) mod tests {
         let (site, server) = workspace_session_answer("200 OK", "org_1", "ws_other");
         let api_url = format!("{site}/cloud");
         save_auth(&dead(&site)).unwrap();
-        write_official_cli_session(home.path(), &api_url);
+        let _data = keep_desktop_session(home.path(), &api_url, "2999-01-01T00:00:00Z");
         assert!(matches!(
             renew_workspace_session(&api_url, &bearer, "ws_1", &site, "org_1"),
             Ok(Renewal::Failed(RenewalFailure::WrongDestination))

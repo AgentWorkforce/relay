@@ -26,7 +26,7 @@ pub fn writing() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// Keys of `settings.get` that are records, not settings.
-pub const RECORDS: [&str; 1] = ["agent_changes"];
+pub const RECORDS: [&str; 2] = ["agent_changes", "detected_tools"];
 
 /// Settings only the person turns on, in Settings: each widens who can
 /// reach the person's agents or act as the person on this computer (a
@@ -34,14 +34,17 @@ pub const RECORDS: [&str; 1] = ["agent_changes"];
 /// spawned here or let out of its sandbox), or asks the person for
 /// something (Claude Code cloud sessions raise macOS's prompt to read
 /// Claude Code's Keychain login; mobile handoff changes where sessions
-/// run; mobile continuation permits native owner input). An agent may turn
-/// them off.
-pub const PERSON_TURNS_ON: [&str; 25] = [
+/// run; mobile continuation permits native owner input; approvals from the
+/// spawning agent let it answer its session's permission prompts;
+/// `connect_detected_tools` turns on the routes into the tools found here).
+/// An agent may turn them off.
+pub const PERSON_TURNS_ON: [&str; 27] = [
     "accept_spawns",
     "allow_self_registration",
     "auto_activate",
     crate::relay::claude_dirs::CLOUD_SETTING,
     "codex_stop_hook",
+    "connect_detected_tools",
     "contractor_access",
     "cursor_direct_delivery",
     "devin_direct_delivery",
@@ -60,6 +63,7 @@ pub const PERSON_TURNS_ON: [&str; 25] = [
     "spawn_full_access_claude",
     "spawn_full_access_codex",
     "spawn_native_input",
+    "spawn_requester_approvals",
     "teammate_native_input",
     crate::relay::trusted::MEMBERS_SETTING,
 ];

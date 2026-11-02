@@ -371,3 +371,47 @@ fn control_generation_rejects_old_owner_and_recycled_runtime_results() {
     queue.poll(&next, &runtime(true), 7).unwrap();
     assert!(!queue.control_valid(&next, &runtime(true), new, false));
 }
+
+#[test]
+fn an_open_doorbell_keeps_a_message_waiting_through_a_long_turn() {
+    let mut live = Journal::default();
+    live.enqueue(binding(), "delivery", "hello", 0).unwrap();
+    live.enqueue(binding(), "other", "later", 0).unwrap();
+    assert!(live.queued(&binding()));
+    // No poll while Claude works: the delivery's retries keep it waiting.
+    let mut now = 0;
+    while now < 10 * LEASE_MS {
+        now += 5_000;
+        live.keep_waiting(&binding().scope, "delivery", now);
+        assert_eq!(
+            live.previous(&binding().scope, "delivery", true, now),
+            Some(Outcome::Waiting)
+        );
+    }
+    // Each message is kept by its own retries only.
+    assert_eq!(
+        live.previous(&binding().scope, "other", true, now),
+        Some(Outcome::Unavailable)
+    );
+    assert!(matches!(
+        live.poll(&binding(), &runtime(false), now),
+        Some(Action::Submit { .. })
+    ));
+    assert!(!live.queued(&binding()), "collected, no longer queued");
+
+    // Another session's message is neither kept nor reported.
+    let other = Binding {
+        scope: "account/workspace/agent/other".into(),
+        owner: "human-id".into(),
+    };
+    let mut journal = Journal::default();
+    journal
+        .enqueue(other.clone(), "delivery", "hello", 0)
+        .unwrap();
+    assert!(!journal.queued(&binding()));
+    journal.keep_waiting(&binding().scope, "delivery", LEASE_MS - 1);
+    assert_eq!(
+        journal.previous(&other.scope, "delivery", true, LEASE_MS),
+        Some(Outcome::Unavailable)
+    );
+}

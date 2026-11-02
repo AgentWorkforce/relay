@@ -4,6 +4,7 @@
 
 use super::enrollment::{alternate, fingerprint, load, node_file, read, save, Enrollment};
 use super::NodeConfig;
+use crate::relay::contract::plan::PlanLimitExceeded;
 use crate::relay::sdk_gaps;
 use crate::relay::spawn::wire;
 use crate::relay::store::random_hex;
@@ -23,6 +24,8 @@ pub(super) enum Refused {
     Failed(String),
     /// Every name tried was taken: trying again would loop.
     NoName(String),
+    /// The plan's device cap is reached.
+    PlanLimit(PlanLimitExceeded),
 }
 
 impl Refused {
@@ -32,6 +35,7 @@ impl Refused {
                 "Agent Relay did not enroll this computer: another node holds its name.".into()
             }
             Refused::Failed(reason) | Refused::NoName(reason) => reason,
+            Refused::PlanLimit(limit) => limit.message(),
         }
     }
 }
@@ -56,13 +60,18 @@ pub(super) async fn enroll(
         )]),
         idempotency_key: current.rotation_key.clone(),
     });
-    let data: Value =
-        http.post("/v1/nodes", Some(body), options)
-            .await
-            .map_err(|error| match error.code() {
+    let data: Value = http
+        .post("/v1/nodes", Some(body), options)
+        .await
+        .map_err(|error| {
+            if let Some(limit) = PlanLimitExceeded::from_relaycast(&error) {
+                return Refused::PlanLimit(limit);
+            }
+            match error.code() {
                 Some("node_name_conflict") => Refused::NameTaken,
                 _ => Refused::Failed(format!("Agent Relay did not enroll this computer: {error}")),
-            })?;
+            }
+        })?;
     let token = data["token"]
         .as_str()
         .filter(|token| !token.is_empty())

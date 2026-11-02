@@ -122,6 +122,7 @@ impl Watch {
     /// for an admitted rename, pathless loss, or when the
     /// watcher reports an error, after which a write may have gone
     /// unreported.
+    #[cfg(test)]
     pub(super) fn start(
         db: &Path,
         written: impl Fn(Option<PathBuf>) + Send + 'static,
@@ -356,7 +357,7 @@ impl Covered {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::live::tests::{append, eventually, isolated_home, transcript_line};
+    use crate::probe::live::tests::{append, eventually, isolated_home, transcript_line};
     use std::fs;
 
     #[test]
@@ -453,7 +454,7 @@ mod tests {
     #[test]
     fn a_new_session_is_catalogued_by_its_event() {
         let Some(home) =
-            isolated_home("inventory::tests::a_new_session_is_catalogued_by_its_event")
+            isolated_home("probe::inventory::tests::a_new_session_is_catalogued_by_its_event")
         else {
             return;
         };
@@ -471,7 +472,8 @@ mod tests {
     /// backstops.
     #[test]
     fn an_idle_history_is_not_rediscovered() {
-        let Some(home) = isolated_home("inventory::tests::an_idle_history_is_not_rediscovered")
+        let Some(home) =
+            isolated_home("probe::inventory::tests::an_idle_history_is_not_rediscovered")
         else {
             return;
         };
@@ -505,7 +507,7 @@ mod tests {
     #[test]
     fn without_filesystem_events_the_inventory_polls() {
         let Some(home) =
-            isolated_home("inventory::tests::without_filesystem_events_the_inventory_polls")
+            isolated_home("probe::inventory::tests::without_filesystem_events_the_inventory_polls")
         else {
             return;
         };
@@ -522,7 +524,7 @@ mod tests {
     #[test]
     fn stopping_inventory_during_bounded_cold_work_ends_the_worker() {
         let Some(home) = isolated_home(
-            "inventory::tests::stopping_inventory_during_bounded_cold_work_ends_the_worker",
+            "probe::inventory::tests::stopping_inventory_during_bounded_cold_work_ends_the_worker",
         ) else {
             return;
         };
@@ -583,7 +585,7 @@ mod tests {
     #[test]
     fn initialization_retries_after_a_real_store_open_failure() {
         let Some(home) = isolated_home(
-            "inventory::tests::initialization_retries_after_a_real_store_open_failure",
+            "probe::inventory::tests::initialization_retries_after_a_real_store_open_failure",
         ) else {
             return;
         };
@@ -623,15 +625,15 @@ mod tests {
     #[test]
     fn enabling_default_folder_refreshes_an_already_running_inventory() {
         let Some(home) = isolated_home(
-            "inventory::tests::enabling_default_folder_refreshes_an_already_running_inventory",
+            "probe::inventory::tests::enabling_default_folder_refreshes_an_already_running_inventory",
         ) else {
             return;
         };
         let env = |key: &str| std::env::var(key).ok();
-        let dirs = agent_relay_probe::relay::claude_dirs::ClaudeDirs::from_env(
+        let dirs = crate::relay::claude_dirs::ClaudeDirs::from_env(
             &env,
             &home,
-            &agent_relay_probe::relay::workspace::relay_home(&env, &home),
+            &crate::relay::workspace::relay_home(&env, &home),
         );
         let default = home.join(".claude");
         let project = default.join("projects/consent");
@@ -670,7 +672,7 @@ mod tests {
     #[test]
     fn reading_a_provider_database_asks_for_no_pass() {
         let Some(home) =
-            isolated_home("inventory::tests::reading_a_provider_database_asks_for_no_pass")
+            isolated_home("probe::inventory::tests::reading_a_provider_database_asks_for_no_pass")
         else {
             return;
         };
@@ -708,7 +710,8 @@ mod tests {
     /// nothing named a path some source reads.
     #[test]
     fn a_lost_event_asks_for_a_full_pass() {
-        let Some(home) = isolated_home("inventory::tests::a_lost_event_asks_for_a_full_pass")
+        let Some(home) =
+            isolated_home("probe::inventory::tests::a_lost_event_asks_for_a_full_pass")
         else {
             return;
         };
@@ -754,7 +757,7 @@ mod tests {
     #[test]
     fn a_lost_event_registers_the_watcher_again() {
         let Some(home) =
-            isolated_home("inventory::tests::a_lost_event_registers_the_watcher_again")
+            isolated_home("probe::inventory::tests::a_lost_event_registers_the_watcher_again")
         else {
             return;
         };

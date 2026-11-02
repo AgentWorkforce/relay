@@ -12,6 +12,13 @@ struct GateProbe {
 }
 
 impl ProbeRunner for GateProbe {
+    fn status(
+        &self,
+        _: Option<std::path::PathBuf>,
+        _: crate::relay::uploader::HistoryReader,
+    ) -> BoxFuture<'_, Result<Value, UploaderError>> {
+        self.run(vec!["status".into()], None)
+    }
     fn run(
         &self,
         args: Vec<String>,

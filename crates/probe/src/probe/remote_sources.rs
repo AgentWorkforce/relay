@@ -8,13 +8,17 @@
 //!   surface, exactly as the SDK's helper process does;
 //! - `claude-web` (Claude Code cloud sessions on claude.ai) through the same
 //!   connector driven with an explicit home, so the login can come from the
-//!   macOS Keychain (see [`super::claude_cloud`]).
+//!   macOS Keychain (see [`super::claude_cloud`]);
+//! - `cursor-cloud` (Cursor Cloud Agents, which write no local transcript)
+//!   with the Cursor API key the connector resolves itself.
 //!
 //! Connectors fail apart: one that cannot list or read never stops another
 //! one or the local pass it rides, and a connector whose last listing failed
 //! is left alone until the next listing is due.
 mod claude_cloud;
 mod claude_records;
+#[cfg(test)]
+mod cursor_tests;
 mod diagnostic;
 mod hydrate;
 mod pacing;
@@ -23,7 +27,7 @@ mod sweep;
 pub(crate) mod test_host;
 mod withhold;
 
-use agent_relay_probe::relay::claude_dirs;
+use crate::relay::claude_dirs;
 use ai_hist::{
     NormalizedSourceEvidence, ObservationKey, SessionLocation, SessionStore,
     SourceEvidenceSubmission, SourceObservation, SourceObservationBatch,
@@ -33,7 +37,8 @@ use claude_records::*;
 pub use diagnostic::{report_enumeration, report_sweep};
 use history_provider_sources::discover::DiscoveryEnv;
 use history_provider_sources::remote::{
-    remote_connector_statuses_at, CLAUDE_WEB_CONNECTOR, DEVIN_CLOUD_CONNECTOR,
+    remote_connector_statuses_at, CLAUDE_WEB_CONNECTOR, CURSOR_CLOUD_CONNECTOR,
+    DEVIN_CLOUD_CONNECTOR,
 };
 use hydrate::*;
 pub use hydrate::{hydrate, hydrate_reader};
@@ -54,6 +59,7 @@ use withhold::*;
 const CONNECTORS: &[(&str, &str)] = &[
     (DEVIN_CLOUD_CONNECTOR, "devin"),
     (CLAUDE_WEB_CONNECTOR, "claude"),
+    (CURSOR_CLOUD_CONNECTOR, "cursor"),
 ];
 
 /// One connector instance per connector today — the provider CLIs sign in
@@ -138,14 +144,18 @@ fn now_ms() -> i64 {
 fn reach(host: &Host, connector: &str) -> Reach {
     match connector {
         CLAUDE_WEB_CONNECTOR => {
-            if !host.claude || !claude_login_shared(host.home) {
+            let env = |key: &str| std::env::var(key).ok();
+            if !host.claude || !claude_dirs::cloud_sessions_on(&env, host.home) {
                 return Reach::Absent;
+            }
+            if !claude_login_shared(host.home) {
+                return Reach::Unusable(claude_cloud::FOLDER_NOT_SHARED);
             }
             match claude_cloud::choose(host.home, host.keychain.source(), now_ms()) {
                 claude_cloud::Login::File | claude_cloud::Login::Keychain => Reach::Ready,
                 claude_cloud::Login::Expired => Reach::Unusable(claude_cloud::EXPIRED),
                 claude_cloud::Login::Unreadable => Reach::Unusable(claude_cloud::UNREADABLE),
-                claude_cloud::Login::Missing => Reach::Absent,
+                claude_cloud::Login::Missing => Reach::Unusable(claude_cloud::NOT_SIGNED_IN),
             }
         }
         _ => {
@@ -187,17 +197,17 @@ struct Pass<'h, 'a> {
     host: &'h Host<'a>,
     /// Who the pass runs for: a capture pass, or a person opening a session.
     ask: claude_cloud::Ask,
-    claude: OnceCell<Result<claude_cloud::CredentialHome, &'static str>>,
+    claude: OnceCell<Result<claude_cloud::CredentialHome, String>>,
 }
 
 /// A Claude login that cannot be used, as the plain reason the diagnostic
 /// records.
 #[derive(Debug)]
-struct Unready(&'static str);
+struct Unready(String);
 
 impl std::fmt::Display for Unready {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0)
+        f.write_str(&self.0)
     }
 }
 
@@ -212,9 +222,7 @@ pub fn keychain_not_ready(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         matches!(
             cause.downcast_ref::<Unready>(),
-            Some(Unready(reason))
-                if *reason == claude_cloud::KEYCHAIN_WAITING
-                    || *reason == claude_cloud::KEYCHAIN_DENIED
+            Some(Unready(reason)) if claude_cloud::keychain_not_ready(reason)
         )
     })
 }
@@ -222,7 +230,7 @@ pub fn keychain_not_ready(error: &anyhow::Error) -> bool {
 /// The error a hydration returns while Claude's Keychain read waits.
 #[cfg(test)]
 pub fn keychain_waiting_error() -> anyhow::Error {
-    Unready(claude_cloud::KEYCHAIN_WAITING).into()
+    Unready(claude_cloud::KEYCHAIN_WAITING.to_string()).into()
 }
 
 impl<'h, 'a> Pass<'h, 'a> {
@@ -253,7 +261,7 @@ impl<'h, 'a> Pass<'h, 'a> {
             )
         }) {
             Ok(prepared) => Ok(prepared.home()),
-            Err(reason) => Err(Unready(reason).into()),
+            Err(reason) => Err(Unready(reason.clone()).into()),
         }
     }
 
@@ -360,6 +368,12 @@ pub struct ConnectorReport {
     /// A plain reason for `failed` and `unavailable`; never provider detail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// When this connector was checked, in Unix milliseconds.
+    #[serde(default)]
+    pub at_ms: i64,
+    /// Its most recent successful listing, retained across later failures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success_ms: Option<i64>,
 }
 
 /// What one enumeration pass did, per connector.
@@ -389,7 +403,7 @@ impl Enumeration {
 /// used says why; anything else keeps only its code.
 fn failure_reason(connector: &str, error: &anyhow::Error) -> String {
     if let Some(Unready(reason)) = error.downcast_ref::<Unready>() {
-        return (*reason).to_string();
+        return reason.clone();
     }
     let message = error.to_string();
     let code = ERROR_CODES
@@ -399,6 +413,9 @@ fn failure_reason(connector: &str, error: &anyhow::Error) -> String {
         .unwrap_or("CONNECTOR_FAILURE");
     match (connector, code) {
         (CLAUDE_WEB_CONNECTOR, "AUTHENTICATION_EXPIRED") => claude_cloud::EXPIRED.to_string(),
+        (CLAUDE_WEB_CONNECTOR, _) => format!(
+            "Claude.ai cloud-session sync failed ({code}). Agent Relay will try again automatically"
+        ),
         _ => format!("The provider request failed ({code})."),
     }
 }
@@ -410,11 +427,14 @@ fn failure_reason(connector: &str, error: &anyhow::Error) -> String {
 fn enumerate_ready(pass: &Pass, store: &SessionStore) -> Result<Enumeration> {
     let mut report = Enumeration::default();
     for (connector, source, reach) in reaches(pass.host) {
+        let at_ms = now_ms();
         let entry = |state: &str, sessions: usize, reason: Option<String>| ConnectorReport {
             connector: connector.to_string(),
             state: state.to_string(),
             sessions,
             reason,
+            at_ms,
+            last_success_ms: (state == "listed").then_some(at_ms),
         };
         match reach {
             Reach::Absent => {}
@@ -479,6 +499,25 @@ fn due(db: &Path) -> bool {
     stamped.elapsed().unwrap_or(ENUMERATE_INTERVAL) >= ENUMERATE_INTERVAL
 }
 
+/// Whether listing is due for `host`: the interval passed, or a connector
+/// the last listing could not use because Claude Code was not signed in or
+/// its folder was not shared can be used now. A person who signs in, or
+/// shares the folder, then sees their cloud sessions on the next pass
+/// instead of after the interval. Only those two reasons: an expired or
+/// refused login can still look usable before it is read, and must not be
+/// listed again on every pass.
+fn due_for(host: &Host, db: &Path) -> bool {
+    due(db)
+        || last_enumeration(db).connectors.iter().any(|connector| {
+            connector.state == "unavailable"
+                && matches!(
+                    connector.reason.as_deref(),
+                    Some(claude_cloud::NOT_SIGNED_IN | claude_cloud::FOLDER_NOT_SHARED)
+                )
+                && reach(host, &connector.connector) == Reach::Ready
+        })
+}
+
 /// The last enumeration's report; empty when none ran or it is unreadable.
 pub fn last_enumeration(db: &Path) -> Enumeration {
     std::fs::read(marker(db))
@@ -505,7 +544,31 @@ fn held_back(db: &Path) -> BTreeSet<String> {
 
 /// Stamp the marker after a pass ran, whatever each connector did: its
 /// failures are in the report and wait out the interval.
-fn mark_enumerated(db: &Path, report: &Enumeration) -> Result<()> {
+fn mark_enumerated(db: &Path, report: &mut Enumeration) -> Result<()> {
+    let previous = last_enumeration(db);
+    let previous_marker_ms = std::fs::metadata(marker(db))
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64);
+    for current in &mut report.connectors {
+        if current.last_success_ms.is_some() {
+            continue;
+        }
+        current.last_success_ms = previous
+            .connectors
+            .iter()
+            .find(|old| old.connector == current.connector)
+            .and_then(|old| {
+                old.last_success_ms.or_else(|| {
+                    if old.state == "listed" {
+                        (old.at_ms > 0).then_some(old.at_ms).or(previous_marker_ms)
+                    } else {
+                        None
+                    }
+                })
+            });
+    }
     if let Some(parent) = marker(db).parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -541,12 +604,13 @@ fn enumerate_with(
     db: &Path,
     stopped: impl Fn() -> bool,
 ) -> Result<Option<Enumeration>> {
-    if stopped() || !due(db) || reaches(host).iter().all(|(_, _, r)| *r == Reach::Absent) {
+    if stopped() || !due_for(host, db) || reaches(host).iter().all(|(_, _, r)| *r == Reach::Absent)
+    {
         return Ok(None);
     }
     let store = super::history::open(db)?;
-    let report = enumerate_ready(&Pass::new(host), &store)?;
-    mark_enumerated(db, &report)?;
+    let mut report = enumerate_ready(&Pass::new(host), &store)?;
+    mark_enumerated(db, &mut report)?;
     Ok(Some(report))
 }
 
@@ -600,7 +664,64 @@ pub(crate) mod tests {
     use ai_hist::{SessionRef, ShallowSession, Source};
 
     /// Serializes tests that mutate process env.
-    pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    pub(crate) use crate::TEST_ENV_LOCK as ENV_LOCK;
+
+    #[test]
+    fn a_failed_listing_keeps_the_last_success_time() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("history.db");
+        let mut listed = Enumeration {
+            connectors: vec![ConnectorReport {
+                connector: CLAUDE_WEB_CONNECTOR.into(),
+                state: "listed".into(),
+                sessions: 2,
+                reason: None,
+                at_ms: 1_800_000_000_000,
+                last_success_ms: Some(1_800_000_000_000),
+            }],
+        };
+        mark_enumerated(&db, &mut listed).unwrap();
+        let mut failed = Enumeration {
+            connectors: vec![ConnectorReport {
+                connector: CLAUDE_WEB_CONNECTOR.into(),
+                state: "failed".into(),
+                sessions: 0,
+                reason: Some("Claude.ai could not list cloud sessions.".into()),
+                at_ms: 1_800_000_060_000,
+                last_success_ms: None,
+            }],
+        };
+        mark_enumerated(&db, &mut failed).unwrap();
+
+        assert_eq!(
+            failed.connectors[0].last_success_ms,
+            Some(1_800_000_000_000)
+        );
+        assert_eq!(last_enumeration(&db), failed);
+    }
+
+    #[test]
+    fn repeated_failed_listings_do_not_invent_a_success_time() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = directory.path().join("history.db");
+        let failed = |at_ms| Enumeration {
+            connectors: vec![ConnectorReport {
+                connector: CLAUDE_WEB_CONNECTOR.into(),
+                state: "failed".into(),
+                sessions: 0,
+                reason: Some("Claude.ai could not list cloud sessions.".into()),
+                at_ms,
+                last_success_ms: None,
+            }],
+        };
+        let mut first = failed(1_800_000_000_000);
+        mark_enumerated(&db, &mut first).unwrap();
+        let mut second = failed(1_800_000_060_000);
+        mark_enumerated(&db, &mut second).unwrap();
+
+        assert_eq!(second.connectors[0].last_success_ms, None);
+        assert_eq!(last_enumeration(&db), second);
+    }
 
     /// `devin_auth_ready` accepts env overrides; tests asserting "no
     /// connector" must remove them or they silently depend on the host.
@@ -633,7 +754,7 @@ pub(crate) mod tests {
     /// machine's env — the connector also honors the RELAYHISTORY_DEVIN_*
     /// overrides and XDG home redirection, so a bare `home` alone is not
     /// enough on a signed-in host.
-    fn bare_home() -> (tempfile::TempDir, Vec<EnvGuard>) {
+    pub(crate) fn bare_home() -> (tempfile::TempDir, Vec<EnvGuard>) {
         let home = tempfile::tempdir().unwrap();
         let guards = vec![
             EnvGuard::remove("RELAYHISTORY_DEVIN_API_KEY"),
@@ -641,11 +762,15 @@ pub(crate) mod tests {
             EnvGuard::remove("RELAYHISTORY_DEVIN_CREDENTIALS"),
             EnvGuard::remove("RELAYHISTORY_DEVIN_CONFIG"),
             EnvGuard::remove("RELAYHISTORY_DEVIN_API_BASE_URL"),
+            EnvGuard::remove("RELAYHISTORY_CURSOR_API_KEY"),
+            EnvGuard::remove("RELAYHISTORY_CURSOR_API_KEY_FILE"),
+            EnvGuard::remove("RELAYHISTORY_CURSOR_API_BASE_URL"),
+            EnvGuard::remove("CURSOR_API_KEY"),
             EnvGuard::remove(claude_cloud::CREDENTIALS_ENV),
             // Claude's cloud sessions follow `~/.claude`, which must be the
             // watched default: no other Claude folder from this machine.
             EnvGuard::remove("CLAUDE_CONFIG_DIR"),
-            EnvGuard::remove(agent_relay_probe::relay::claude_dirs::DIRS_ENV),
+            EnvGuard::remove(crate::relay::claude_dirs::DIRS_ENV),
             EnvGuard::set("XDG_DATA_HOME", home.path().join("data")),
             EnvGuard::set("XDG_CONFIG_HOME", home.path().join("config")),
             EnvGuard::remove("AGENT_RELAY_HOME"),
@@ -660,11 +785,11 @@ pub(crate) mod tests {
     }
 
     /// The Claude folder choices under `home`'s relay home.
-    fn claude_dirs_here(home: &Path) -> agent_relay_probe::relay::claude_dirs::ClaudeDirs {
+    fn claude_dirs_here(home: &Path) -> crate::relay::claude_dirs::ClaudeDirs {
         let env = |_: &str| None;
-        let relay = agent_relay_probe::relay::workspace::relay_home(&env, home);
+        let relay = crate::relay::workspace::relay_home(&env, home);
         std::fs::create_dir_all(&relay).unwrap();
-        agent_relay_probe::relay::claude_dirs::ClaudeDirs::from_env(&env, home, &relay)
+        crate::relay::claude_dirs::ClaudeDirs::from_env(&env, home, &relay)
     }
 
     /// A sign-in pointed at `api_url`, through the connector's own env
@@ -678,6 +803,13 @@ pub(crate) mod tests {
             EnvGuard::set("RELAYHISTORY_DEVIN_API_KEY", "test-key"),
             EnvGuard::set("RELAYHISTORY_DEVIN_ORG_ID", "org-test"),
             EnvGuard::set("RELAYHISTORY_DEVIN_API_BASE_URL", api_url),
+            // No Cursor key: Devin's stub must not answer Cursor's routes.
+            EnvGuard::remove("RELAYHISTORY_CURSOR_API_KEY"),
+            EnvGuard::remove("CURSOR_API_KEY"),
+            EnvGuard::set(
+                "RELAYHISTORY_CURSOR_API_KEY_FILE",
+                home.path().join("no-cursor-key"),
+            ),
             // No Claude login: a store opened on the real home (`sweep`
             // reads its roots) must not find this machine's, and an
             // override never falls back to the Keychain. Devin is the only
@@ -1020,20 +1152,30 @@ pub(crate) mod tests {
         let store = super::super::history::open(&db).unwrap();
         let host = Host::system(_home.path(), &db);
         enumerate_ready(&Pass::new(&host), &store).unwrap();
-        mark_enumerated(&db, &Enumeration::default()).unwrap();
-        agent_relay_probe::delivery::set_session_excluded(
-            &agent_relay_probe::delivery::open_db(&db).unwrap(),
-            &agent_relay_probe::delivery::SessionIdentity {
+        mark_enumerated(&db, &mut Enumeration::default()).unwrap();
+        crate::delivery::set_session_excluded(
+            &crate::delivery::open_db(&db).unwrap(),
+            &crate::delivery::SessionIdentity {
                 source: "devin".into(),
                 session_id: STUB_SESSION.into(),
             },
             true,
         )
         .unwrap();
+        let mut pacing = Pacing::default();
+        pacing.record_failure(
+            DEVIN_CLOUD_CONNECTOR,
+            "devin",
+            STUB_SESSION,
+            "The provider request failed (CONNECTOR_FAILURE).".into(),
+            now_ms(),
+        );
+        pacing.save(&db).unwrap();
         let fetched = api.fetches();
 
         let outcome = sweep(&db, &store, || false).unwrap().unwrap();
         assert_eq!((outcome.hydrated, outcome.failed), (0, 0));
+        assert!(outcome.connector_failures.is_empty());
         assert_eq!(api.fetches(), fetched, "an excluded session was downloaded");
         assert_eq!(outcome.pacing["waiting"], 0);
     }
@@ -1114,6 +1256,36 @@ pub(crate) mod tests {
             "a moved observation never refetched; pacing {}; requests {:?}",
             fourth.pacing,
             api.lines()
+        );
+    }
+
+    #[test]
+    fn automatic_naming_never_downloads_remote_transcripts() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = StubApi::start();
+        let (_home, _env) = signed_in_home(&api.url());
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("history.db");
+        let store = super::super::history::open(&db).unwrap();
+        let source = Source::parse("devin").unwrap();
+        super::super::transcript::hydrate_for_naming(&store, source, STUB_SESSION).unwrap();
+        assert_eq!(
+            api.fetches(),
+            0,
+            "A fresh background cache must not fetch provider evidence"
+        );
+        // Prove credentials and the stub work: a person opening the reader does fetch.
+        assert_eq!(
+            hydrate_reader(&store, "devin", STUB_SESSION, || false).unwrap(),
+            Some(true)
+        );
+        assert_eq!(api.fetches(), 1);
+        assert!(event_count(&db, STUB_SESSION) >= 2);
+        super::super::transcript::hydrate_for_naming(&store, source, STUB_SESSION).unwrap();
+        assert_eq!(
+            api.fetches(),
+            1,
+            "A cached remote session must not refetch in the background"
         );
     }
 
@@ -1527,6 +1699,106 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_keychain_refusal_during_a_download_is_kept_until_it_downloads() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = ClaudeStub::start(false);
+        let (home, _env) = bare_home();
+        let _base = EnvGuard::set("RELAYHISTORY_CLAUDE_API_BASE_URL", api.url());
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("history.db");
+        let allowed = FakeKeychain::holding(Some(&fresh_login()));
+        let listing = host(home.path(), &db, &allowed);
+        let report = enumerate_with(&listing, &db, || false).unwrap().unwrap();
+        assert_eq!(
+            report_for(&report, CLAUDE_WEB_CONNECTOR).unwrap().state,
+            "listed"
+        );
+        let store = super::super::history::open(&db).unwrap();
+
+        // The listing worked; the next quiet read, for the download, is
+        // refused. Not counted as a failure and retried as before, but kept
+        // for Settings with its code.
+        let refused = FakeKeychain::protected();
+        let refusing = host(home.path(), &db, &refused);
+        let outcome = sweep_with(&refusing, &db, &store, || false)
+            .unwrap()
+            .unwrap();
+        assert!(outcome.enumeration.is_none());
+        assert_eq!((outcome.hydrated, outcome.failed), (0, 0));
+        assert_eq!(
+            outcome
+                .connector_failures
+                .get(CLAUDE_WEB_CONNECTOR)
+                .map(String::as_str),
+            Some(claude_cloud::KEYCHAIN_DENIED)
+        );
+        assert!(ready(&refusing, Some(&db))
+            .iter()
+            .any(|(id, _)| *id == CLAUDE_WEB_CONNECTOR));
+
+        // Allowed again: the session downloads and the warning is gone.
+        let allowing = host(home.path(), &db, &allowed);
+        let outcome = sweep_with(&allowing, &db, &store, || false)
+            .unwrap()
+            .unwrap();
+        assert_eq!((outcome.hydrated, outcome.failed), (1, 0));
+        assert!(outcome.connector_failures.is_empty());
+    }
+
+    #[test]
+    fn a_claude_sign_in_is_listed_without_waiting_out_the_interval() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let api = ClaudeStub::start(false);
+        let (home, _env) = bare_home();
+        let _base = EnvGuard::set("RELAYHISTORY_CLAUDE_API_BASE_URL", api.url());
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("history.db");
+        let keychain = FakeKeychain::holding(None);
+        let host = host(home.path(), &db, &keychain);
+
+        let report = enumerate_with(&host, &db, || false).unwrap().unwrap();
+        let claude = report_for(&report, CLAUDE_WEB_CONNECTOR).unwrap();
+        assert_eq!(claude.state, "unavailable");
+        assert_eq!(claude.reason.as_deref(), Some(claude_cloud::NOT_SIGNED_IN));
+        // Still signed out: the interval holds.
+        assert_eq!(enumerate_with(&host, &db, || false).unwrap(), None);
+
+        // Signed in: listed on the next pass, then the interval holds again.
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        std::fs::write(home.path().join(".claude/.credentials.json"), fresh_login()).unwrap();
+        let report = enumerate_with(&host, &db, || false).unwrap().unwrap();
+        let claude = report_for(&report, CLAUDE_WEB_CONNECTOR).unwrap();
+        assert_eq!((claude.state.as_str(), claude.sessions), ("listed", 1));
+        assert_eq!(enumerate_with(&host, &db, || false).unwrap(), None);
+    }
+
+    #[test]
+    fn a_selected_download_keeps_its_failure_until_it_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("history.db");
+        let ready = [(CLAUDE_WEB_CONNECTOR, "claude")];
+        note_download(
+            &db,
+            &ready,
+            "claude",
+            "s1",
+            &Err(anyhow::anyhow!("CONNECTOR_FAILURE: the provider failed")),
+        );
+        let failures = Pacing::load(&db).connector_failures();
+        assert!(failures[CLAUDE_WEB_CONNECTOR].contains("CONNECTOR_FAILURE"));
+
+        // A Keychain read still waiting, a session no connector serves, and
+        // a session not catalogued change nothing.
+        note_download(&db, &ready, "claude", "s2", &Err(keychain_waiting_error()));
+        note_download(&db, &ready, "devin", "s3", &Err(anyhow::anyhow!("boom")));
+        note_download(&db, &ready, "claude", "s1", &Ok(None));
+        assert_eq!(Pacing::load(&db).connector_failures(), failures);
+
+        note_download(&db, &ready, "claude", "s1", &Ok(Some(false)));
+        assert!(Pacing::load(&db).connector_failures().is_empty());
+    }
+
+    #[test]
     fn an_expired_claude_login_makes_no_request_and_is_reported() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let api = ClaudeStub::start(false);
@@ -1590,18 +1862,18 @@ pub(crate) mod tests {
         let (home, _env) = bare_home();
         let _relay = EnvGuard::remove("AGENT_RELAY_HOME");
         let env = |key: &str| std::env::var(key).ok();
-        let relay = agent_relay_probe::relay::workspace::relay_home(&env, home.path());
+        let relay = crate::relay::workspace::relay_home(&env, home.path());
         std::fs::create_dir_all(&relay).unwrap();
-        let mut recorded = agent_relay_probe::relay::claude_dirs::Recorded {
+        let mut recorded = crate::relay::claude_dirs::Recorded {
             cloud_sessions: true,
             ..Default::default()
         };
         recorded.folders.insert(
             home.path().join(".claude"),
-            agent_relay_probe::relay::claude_dirs::FolderChoice { shared: false },
+            crate::relay::claude_dirs::FolderChoice { shared: false },
         );
         std::fs::write(
-            relay.join(agent_relay_probe::relay::claude_dirs::FILE),
+            relay.join(crate::relay::claude_dirs::FILE),
             serde_json::to_vec(&recorded).unwrap(),
         )
         .unwrap();
@@ -1609,7 +1881,13 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("history.db");
         let host = host(home.path(), &db, &keychain);
-        assert_eq!(enumerate_with(&host, &db, || false).unwrap(), None);
+        let report = enumerate_with(&host, &db, || false).unwrap().unwrap();
+        let claude = report_for(&report, CLAUDE_WEB_CONNECTOR).unwrap();
+        assert_eq!(claude.state, "unavailable");
+        assert_eq!(
+            claude.reason.as_deref(),
+            Some(claude_cloud::FOLDER_NOT_SHARED)
+        );
         assert_eq!(keychain.reads.load(Ordering::SeqCst), 0);
     }
 
@@ -1627,7 +1905,8 @@ pub(crate) mod tests {
             org_id: "org".into(),
             workspace_id: "workspace".into(),
             history_url: "https://history.agentrelay.com".into(),
-            delivery_account: agent_relay_probe::destination::account_id("org", Some("workspace")),
+            cloud_history_origin: None,
+            delivery_account: crate::destination::account_id("org", Some("workspace")),
             job_id: "job".into(),
             include_existing: false,
             sharing_mode: Some(super::super::bridge::SharingMode::New),
@@ -1635,7 +1914,7 @@ pub(crate) mod tests {
         };
         super::super::save_json(&directory.join("config.json"), &config).unwrap();
         assert!(super::super::read_config(directory).is_ok());
-        let conn = agent_relay_probe::delivery::open_db(&directory.join("history.db")).unwrap();
+        let conn = crate::delivery::open_db(&directory.join("history.db")).unwrap();
         if let Some(created) = job_ms {
             conn.execute(
                 "INSERT INTO delivery_jobs(id,destination_id,instance_id,account_id,generation,config_json,state,created_ms) VALUES('job','d','i','a',1,'{}','active',?)",
@@ -1646,10 +1925,10 @@ pub(crate) mod tests {
     }
 
     fn shareable(db: &Path, session_id: &str) -> bool {
-        let conn = agent_relay_probe::delivery::open_db(db).unwrap();
-        agent_relay_probe::delivery::is_shareable(
+        let conn = crate::delivery::open_db(db).unwrap();
+        crate::delivery::is_shareable(
             &conn,
-            &agent_relay_probe::delivery::SessionIdentity {
+            &crate::delivery::SessionIdentity {
                 source: "claude".into(),
                 session_id: session_id.into(),
             },
@@ -1685,7 +1964,7 @@ pub(crate) mod tests {
         // includes stays included on the next listing.
         // (The stand-in job has no real configuration for the include
         // command to check, so the exclusion is withdrawn directly.)
-        agent_relay_probe::delivery::open_db(&db)
+        crate::delivery::open_db(&db)
             .unwrap()
             .execute(
                 "DELETE FROM delivery_exclusions WHERE source='claude' AND session_id=?",
@@ -1712,7 +1991,7 @@ pub(crate) mod tests {
         new_mode_install(dir.path(), Some(1_700_000_030_000));
         let db = dir.path().join("history.db");
         // Including or excluding one session replaces the job: a later one.
-        agent_relay_probe::delivery::open_db(&db)
+        crate::delivery::open_db(&db)
             .unwrap()
             .execute_batch(
                 "UPDATE delivery_jobs SET state='cancelled' WHERE id='job';

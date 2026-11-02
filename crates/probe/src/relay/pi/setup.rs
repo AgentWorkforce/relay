@@ -1,6 +1,6 @@
-//! Pi extension installation, the `pi_extension` setting, and the failure
-//! the desktop must keep visible.
-use super::PiConfig;
+//! Pi and Oh My Pi extension installation, the `pi_extension` setting, and the
+//! failure the desktop must keep visible.
+use super::{Flavor, PiConfig};
 use crate::relay::agents::SettingsExtension;
 use serde_json::{Map, Value};
 use std::sync::Mutex;
@@ -13,22 +13,27 @@ pub(crate) struct PiSetup {
     error: Mutex<Option<String>>,
 }
 
-fn install_failure(error: String) -> String {
-    format!(
-        "Pi extension could not be installed: {error} Resolve the extension conflict or file permissions. Restart Agent Relay, then run /reload in Pi."
-    )
+fn install_failure(flavor: Flavor, error: String) -> String {
+    match flavor {
+        Flavor::Pi => format!(
+            "Pi extension could not be installed: {error} Resolve the extension conflict or file permissions. Restart Agent Relay, then run /reload in Pi."
+        ),
+        Flavor::Omp => format!(
+            "Oh My Pi extension could not be installed: {error} Resolve the extension conflict or file permissions. Restart Agent Relay, then restart Oh My Pi with omp --continue."
+        ),
+    }
 }
 
 impl PiSetup {
     /// `install_at_start`: the desktop's core installs the extension when it
     /// starts, unless it was turned off; a core `relay init` manages
-    /// (`--cli-managed`) writes nothing into Pi's folder until `pi_extension`
-    /// is turned on.
+    /// (`--cli-managed`) writes nothing into the harness's folder until
+    /// `pi_extension` is turned on.
     pub(crate) fn new(config: &PiConfig, install_at_start: bool) -> Self {
         let error = (install_at_start && !config.off_marker().exists())
             .then(|| config.install().err())
             .flatten()
-            .map(install_failure);
+            .map(|error| install_failure(config.flavor, error));
         Self {
             config: config.clone(),
             error: Mutex::new(error),
@@ -51,7 +56,9 @@ impl PiSetup {
         }
         let marker = self.config.off_marker();
         if enabled {
-            self.config.install().map_err(install_failure)?;
+            self.config
+                .install()
+                .map_err(|error| install_failure(self.config.flavor, error))?;
             *self.error.lock().unwrap_or_else(|e| e.into_inner()) = None;
             return match std::fs::remove_file(&marker) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
@@ -78,10 +85,11 @@ impl PiSetup {
 
 impl SettingsExtension for PiSetup {
     /// Present only where Pi has run (its agent folder exists) and Pi
-    /// sessions are on.
+    /// sessions are on. `pi_extension` names Pi's extension alone: Oh My Pi
+    /// shares this type for its install and start-up failure.
     fn get(&self) -> Map<String, Value> {
         let mut settings = Map::new();
-        if self.config.installed() {
+        if self.config.flavor == Flavor::Pi && self.config.installed() {
             settings.insert(
                 SETTING.into(),
                 Value::Bool(self.config.extension_installed()),
@@ -91,7 +99,7 @@ impl SettingsExtension for PiSetup {
     }
 
     fn set(&self, key: &str, value: &Value) -> Option<Result<(), String>> {
-        if key != SETTING {
+        if key != SETTING || self.config.flavor != Flavor::Pi {
             return None;
         }
         let Some(enabled) = value.as_bool() else {

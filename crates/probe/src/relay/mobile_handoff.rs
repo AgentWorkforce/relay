@@ -157,8 +157,40 @@ impl Core {
         }
         authorized &= self.mobile_receipt_retained(registration, &pending.scope);
         match self.mobile_receipt(registration, Some(&pending.scope), &delivery.id, authorized) {
-            Ok((outcome, _)) => outcome.map(delivery_outcome),
+            Ok((outcome, _)) => {
+                if authorized && outcome == Some(journal::Outcome::Waiting) {
+                    self.ring_if_idle(registration, &pending.scope, &delivery.id)
+                        .await;
+                }
+                outcome.map(delivery_outcome)
+            }
             Err(reason) => Some(InjectOutcome::Retry(reason)),
+        }
+    }
+
+    /// Rings again for a message still waiting while Claude sits idle with
+    /// its doorbell open: the plugin missed or lost the first ring (a poll
+    /// that failed, a turn that ended mid-poll, several messages queued in
+    /// one turn). Each retry of the delivery is one more chance, so no
+    /// message waits on a wake-up the plugin never got.
+    async fn ring_if_idle(&self, registration: &Registration, scope: &str, id: &str) {
+        let target = registration.target.clone();
+        let uncollected = || {
+            journal::edit(&self.config.app_data_dir, |queue| {
+                Ok(queue.uncollected(scope, id))
+            })
+            .unwrap_or(false)
+        };
+        if !self.mobile_claude_plugins.listening(&target) || !uncollected() {
+            return;
+        }
+        let sessions = self.plugins.sessions.clone();
+        let idle = {
+            let target = target.clone();
+            tokio::task::spawn_blocking(move || sessions.mobile_claude_idle(&target))
+        };
+        if idle.await.ok().flatten() == Some(true) {
+            self.mobile_claude_plugins.ring(&target);
         }
     }
 
@@ -179,6 +211,7 @@ impl Core {
         delivery_id: &str,
         authorized: bool,
     ) -> Result<(Option<journal::Outcome>, Option<Binding>), String> {
+        let listening = self.mobile_claude_plugins.listening(&registration.target);
         let result = journal::edit(&self.config.app_data_dir, |queue| {
             let Some(key) = scope else {
                 return Ok((
@@ -190,8 +223,15 @@ impl Core {
                 ));
             };
             let before = (queue.status(key), queue.notice(key));
+            let now = crate::relay::state::now_ms();
+            // An open doorbell is the plugin's standing evidence that it is
+            // loaded, as each poll was: this delivery's retries keep its
+            // message waiting while Claude finishes a long turn.
+            if authorized && listening {
+                queue.keep_waiting(key, delivery_id, now);
+            }
             let outcome = queue
-                .previous(key, delivery_id, authorized, crate::relay::state::now_ms())
+                .previous(key, delivery_id, authorized, now)
                 .or_else(|| {
                     queue
                         .contains_delivery(delivery_id)
@@ -393,20 +433,22 @@ impl Core {
             let key = binding.scope.clone();
             let before = (queue.status(&key), queue.notice(&key));
             queue.prune(|id| self.store.read(|store| store.was_handled(id)));
-            let outcome = queue.enqueue_from(
-                binding,
-                &delivery.id,
-                text,
-                !owner_only,
-                crate::relay::state::now_ms(),
-            )?;
+            let now = crate::relay::state::now_ms();
+            let new = !queue.contains_delivery(&delivery.id);
+            let outcome = queue.enqueue_from(binding, &delivery.id, text, !owner_only, now)?;
             let changed = before != (queue.status(&key), queue.notice(&key));
-            Ok((outcome, changed))
+            Ok((outcome, changed, new))
         });
-        if result.as_ref().is_ok_and(|(_, changed)| *changed) {
+        if result.as_ref().is_ok_and(|(_, changed, _)| *changed) {
             self.mobile_handoff_changed(registration);
         }
-        let result = result.map(|(outcome, _)| outcome);
+        if result
+            .as_ref()
+            .is_ok_and(|(outcome, _, new)| *new && matches!(outcome, journal::Outcome::Waiting))
+        {
+            self.mobile_claude_plugins.ring(&registration.target);
+        }
+        let result = result.map(|(outcome, _, _)| outcome);
         result
             .map(delivery_outcome)
             .unwrap_or_else(InjectOutcome::Retry)

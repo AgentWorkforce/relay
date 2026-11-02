@@ -34,6 +34,7 @@ use std::sync::{Arc, Mutex};
 mod activation_journal;
 mod naming;
 mod registration_routes;
+mod removal;
 mod roster_publication;
 use activation_journal::auto_activation_allowance;
 pub use naming::suggested_name;
@@ -47,6 +48,7 @@ const AUTO_ACTIVATE_WINDOW_SECONDS: i64 = 60;
 const AUTO_ACTIVATE_MAX_PER_WINDOW: usize = 5;
 /// Bound automatic name allocation even when many matching names are taken.
 const NAME_ATTEMPTS: usize = 100;
+
 /// Whether the store keeps the setting `key` (spawning's among them); the
 /// rest belong to settings extensions.
 fn store_setting(key: &str) -> bool {
@@ -74,13 +76,11 @@ fn parse_time(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 }
 
 /// Marks each registration whose session is gone with when it went, and
-/// names the automatically activated ones gone for the grace period, which
-/// leave the relay. An automatic agent is present while its session is
-/// still eligible for activation; a manually or self-added one while its
-/// session is `live`. A marked registration is kept, with its name and its
-/// queued messages, but is not heartbeated as present and is not listed:
-/// a reopened Codex thread is back on the relay the moment it runs again.
-/// An archived one is not coming back: it is named due at once.
+/// names those gone for the grace period that `leaves_after_grace`. An
+/// automatic agent is present while its session is eligible; any other
+/// while it is `live` (idle is live). A marked registration is neither
+/// heartbeated nor listed; a hand-added one keeps its name and queue, back
+/// the moment it runs again. An archived one is named due at once.
 fn reconcile_lifecycle(
     store: &mut Store,
     eligible: &HashSet<Target>,
@@ -103,7 +103,7 @@ fn reconcile_lifecycle(
         };
         if present {
             registration.missing_since = None;
-        } else if automatic
+        } else if roster_publication::leaves_after_grace(registration)
             && registration
                 .missing_since
                 .as_deref()
@@ -768,102 +768,6 @@ impl Core {
         }
     }
 
-    /// Takes the agent off the relay: its webhook, its integration channel
-    /// and the agent itself are removed from Relaycast first, then from the
-    /// store, once any delivery in flight for it has finished.
-    pub async fn unregister(&self, name: &str) -> Result<(), RpcError> {
-        self.unregister_with_integrations(name, false).await
-    }
-
-    async fn unregister_with_integrations(
-        &self,
-        name: &str,
-        allow_integrations: bool,
-    ) -> Result<(), RpcError> {
-        let registration = self.registration_named(name)?;
-        let (_changing, _delivering) = removal_guards(
-            &self.target_locks,
-            &self.agent_locks,
-            &registration.target.key(),
-            name,
-        )
-        .await;
-        let registration = self.registration_named(name)?;
-        // A delivery in flight through any alias finishes first, too.
-        let mut _delivering_aliases = Vec::new();
-        for alias in registration.names().into_iter().skip(1) {
-            _delivering_aliases.push(self.agent_locks.get(&alias).lock_owned().await);
-        }
-        // Recheck under the same delivery lock as injection. Discovery can
-        // mark an archive while an in-flight refusal has not journaled yet.
-        if allow_integrations
-            && self
-                .store
-                .read(|s| s.has_pending_refusal_for(&registration))
-        {
-            return Ok(());
-        }
-        if registration.has_integrations() && !allow_integrations {
-            return Err(RpcError::new(
-                ErrorKind::Refused,
-                "Unsubscribe or clean up integrations before removing this agent.",
-            ));
-        }
-        self.keep_spawn_receipt(&registration)?;
-        let key = self.key_for(&registration).ok_or_else(|| key_gone(name))?;
-        let base = &registration.base_url;
-        let workspace = self.relaycast_scope(base, &key);
-        let removed = async {
-            if let Some(webhook) = &registration.webhook {
-                client::delete_webhook(base, &key, &webhook.id).await?;
-                client::delete_channel(base, &key, &webhook.channel_name).await?;
-            }
-            if let Some(channel) = &registration.integration_channel_name {
-                client::delete_channel(base, &key, channel).await?;
-            }
-            // Every name is released together. Aliases go first, each
-            // forgotten as soon as it is gone, so a failure removing the
-            // registered name never leaves a stale alias.
-            for alias in registration.names().into_iter().skip(1) {
-                client::delete_agent(base, &key, &alias).await?;
-                self.forget_removed_alias(name, &alias);
-            }
-            client::delete_agent(base, &key, name).await
-        }
-        .await;
-        self.observe_relaycast_write_result(&workspace, &removed);
-        removed.map_err(|error| {
-            let mut mapped = RpcError::from_relaycast(&error);
-            let status = match &error {
-                relaycast::RelayError::Api { status, .. } => format!(" (HTTP {status})"),
-                _ => String::new(),
-            };
-            mapped.message = format!(
-                "Could not remove @{name} from Agent Relay{status}. {} The registration was kept; retry when the connection is working.",
-                mapped.message,
-            );
-            mapped
-        })?;
-        self.store
-            .update(|store| store.remove(name))
-            .map_err(|error| {
-                RpcError::new(
-                    ErrorKind::StoreFailed,
-                    format!("@{name} was removed from Agent Relay, but this computer could not save that. {error}"),
-                )
-            })?;
-        self.stop_spawned(&registration);
-        self.forget_agent_and_alias(&registration);
-        self.sync_agents().await;
-        self.hub.invalidated(Listing::Agents);
-        let left = match registration.alias_name() {
-            Some(alias) => format!("@{alias} (@{name}) left the relay."),
-            None => format!("@{name} left the relay."),
-        };
-        self.hub.activity(Level::Info, left);
-        Ok(())
-    }
-
     /// Retries Relaycast removals that failed earlier. Only what finished is
     /// dropped: a rename may record new ones meanwhile.
     pub(crate) async fn retry_pending_cleanups(&self) {
@@ -1189,92 +1093,12 @@ impl Core {
     /// Every setting: the store's and the extensions'.
     pub fn settings(&self) -> Map<String, Value> {
         let mut settings = self.store_settings();
-        settings.extend(self.store.read(crate::relay::spawn::settings::values));
+        settings.extend(self.spawn_setting_values());
         for extension in &self.plugins.settings {
             settings.extend(extension.get());
         }
+        settings.insert("detected_tools".into(), json!(self.detected_tools()));
         settings
-    }
-
-    /// Turns on, once each, the integration settings whose tools are
-    /// installed and that this computer has not turned on before or the
-    /// person has not set: Claude Code direct delivery, Grok leader mode and
-    /// the like. A key is remembered once it is on or set, so one the person
-    /// turned off stays off, while a tool installed later gets its default
-    /// on the next pass. One that cannot be changed now is tried again later.
-    pub fn apply_integration_defaults(&self) {
-        let _changing = self.integration_settings.lock().unwrap();
-        let applied = self
-            .store
-            .read(|s| s.integration_defaults_applied.clone().unwrap_or_default());
-        let mut newly = Vec::new();
-        for extension in &self.plugins.settings {
-            for key in extension.default_on() {
-                if applied.iter().any(|done| done == key) || newly.contains(&key) {
-                    continue;
-                }
-                if extension.get().get(key) == Some(&Value::Bool(true)) {
-                    newly.push(key);
-                    continue;
-                }
-                match extension.set(key, &Value::Bool(true)) {
-                    Some(Ok(())) => {
-                        self.hub.activity(
-                            Level::Info,
-                            format!("Turned on {key} by default; turn it off in Settings."),
-                        );
-                        newly.push(key);
-                    }
-                    Some(Err(message)) => self.hub.activity(
-                        Level::Warning,
-                        format!("Could not turn on {key} by default: {message}"),
-                    ),
-                    None => {}
-                }
-            }
-        }
-        if !newly.is_empty() {
-            // A default left unrecorded is already on, so a later pass only
-            // records it.
-            let _ = self.remember_integration_choices(&newly);
-        }
-    }
-
-    /// Runs `change` to the tool behind `key` and, once it succeeds, records
-    /// `key` as the person's choice, so no default reverses it. Callers hold
-    /// `integration_settings`, which also serializes the default pass, so
-    /// recording after the change leaves no window for a default; nothing is
-    /// recorded for a change that fails, so a later default still applies.
-    /// A choice that cannot be recorded is reported as a failure.
-    pub(crate) fn with_integration_choice<T, E>(
-        &self,
-        key: &str,
-        change: impl FnOnce() -> Result<T, E>,
-        stored: impl FnOnce(crate::relay::store::StoreError) -> E,
-    ) -> Result<T, E> {
-        let value = change()?;
-        self.remember_integration_choices(&[key]).map_err(stored)?;
-        Ok(value)
-    }
-
-    /// Records integration keys as applied or chosen, so no default changes
-    /// them again.
-    pub(crate) fn remember_integration_choices(
-        &self,
-        keys: &[&str],
-    ) -> Result<(), crate::relay::store::StoreError> {
-        self.store
-            .update(|store| {
-                let list = store
-                    .integration_defaults_applied
-                    .get_or_insert_with(Vec::new);
-                for key in keys {
-                    if !list.iter().any(|done| done == key) {
-                        list.push((*key).to_string());
-                    }
-                }
-            })
-            .map(|_| ())
     }
 
     /// Applies each given setting; an unknown key or a wrong type changes
@@ -1317,10 +1141,13 @@ impl Core {
         // An extension can still fail after the store settings are saved
         // (its own write, or a check `refuse` cannot make): the store's part
         // of the batch is then put back, so a refused batch changes none of
-        // the store's settings.
+        // the store's settings. Held from the store's save on:
+        // `connect_detected_tools` is saved under the lock the default pass
+        // reads it under, so a pass either finishes before an opt-out is
+        // answered or sees it.
+        let _changing = self.integration_settings.lock().unwrap();
         let write = self.save_store_settings(changes)?;
         let applied = (|| -> Result<(), RpcError> {
-            let _changing = self.integration_settings.lock().unwrap();
             for (key, value) in changes {
                 if store_setting(key) {
                     continue;
@@ -1430,7 +1257,7 @@ impl Core {
         let mut targets: Vec<PushTarget> = store
             .credentials()
             .into_iter()
-            .filter(|(r, _)| r.missing_since.is_none() && r.spawn.is_none())
+            .filter(|(r, _)| roster_publication::heartbeats(r))
             .map(|(r, token)| PushTarget {
                 agent: r.name.clone(),
                 base_url: r.base_url.clone(),
@@ -1451,7 +1278,7 @@ impl Core {
             }
         }
         targets.extend(self.person_push_target());
-        self.sync_push(targets).await;
+        self.sync_push(self.forget_stale_push(targets)).await;
         let error = self.store.error();
         self.hub.update(|status| status.agents.store_error = error);
         self.request_desktop_identity_sync();
@@ -1558,7 +1385,8 @@ impl Core {
         let now_text = now.format("%Y-%m-%dT%H:%M:%SZ").to_string();
         let mut failures = Vec::new();
 
-        let eligible: HashSet<Target> = found.keys().cloned().collect();
+        // An agent joins and stays by itself only while its session uploads.
+        let eligible = super::relay_uploads::admit(self, &mut found, &moved, &mut failures).await;
         found.retain(|target, _| !moved.contains(target));
         let marked_before = self.store.read(present_registration_names);
         let due = match self.reconcile_discovered_registrations(
@@ -1649,7 +1477,7 @@ impl Core {
             }) {
                 continue;
             }
-            if let Err(error) = self.unregister_with_integrations(&name, true).await {
+            if let Err(error) = self.unregister_archived(&name).await {
                 failures.push(format!("{name}: {}", error.message));
             }
         }
@@ -1736,7 +1564,6 @@ impl Core {
     }
 }
 
-// `auto_activation` shares its line with `aliases` so this file stays under its line ratchet.
 mod aliases;
 pub(crate) mod auto_activation;
 use aliases::already_registered;
@@ -1968,6 +1795,7 @@ mod tests {
             (SessionKind::OpenClaw, "OpenClaw agent"),
             (SessionKind::Hermes, "Hermes"),
             (SessionKind::Pi, "Pi session"),
+            (SessionKind::Omp, "Oh My Pi session"),
         ] {
             for directory in [None, Some("/projects/cloud".to_string())] {
                 let project = if directory.is_some() {
@@ -2023,6 +1851,7 @@ mod tests {
             (SessionKind::OpenClaw, "openclaw"),
             (SessionKind::Hermes, "hermes"),
             (SessionKind::Pi, "pi"),
+            (SessionKind::Omp, "omp"),
         ] {
             let task = session(THREAD, "/projects/cloud", kind);
             assert_eq!(suggested_name(&task), format!("{prefix}-cloud-fix-tests"));
@@ -2335,6 +2164,48 @@ mod tests {
         assert_eq!(openclaw.trusted.list(), ["ada-lovelace"]);
     }
 
+    /// A core the relay CLI manages keeps integration defaults off, so a
+    /// first sign-in's "connect detected tools" turns nothing on that
+    /// `relay init` did not choose.
+    #[tokio::test]
+    async fn a_cli_managed_core_connects_no_detected_tools_at_sign_in() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = crate::relay::daemon::Config {
+            paths: crate::relay::paths::CorePaths::for_socket(temp.path().join("core.sock"))
+                .unwrap(),
+            home: temp.path().into(),
+            app_data_dir: temp.path().join("app-data"),
+            env: std::collections::BTreeMap::new(),
+            version: "0.0.0-test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: crate::relay::push::PushTiming::default(),
+            delivery_timing: crate::relay::delivery::DeliveryTiming::default(),
+        };
+        let codex = FakeIntegration::new("codex_stop_hook", true);
+        let plugins = crate::relay::daemon::Plugins {
+            settings: vec![codex.clone()],
+            ..crate::relay::daemon::Plugins::default()
+        };
+        let (core, _signals) = Core::with_plugins(config, plugins);
+        *core.workspace.lock().unwrap() = Some(signed_in());
+        core.integration_defaults.store(false, Ordering::SeqCst);
+
+        core.connect_detected_tools_soon();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!codex.on.load(Ordering::SeqCst));
+        assert_eq!(
+            core.store.read(|s| s.integration_defaults_applied.clone()),
+            None
+        );
+
+        // The same sign-in in a core the app hosts does connect it.
+        core.integration_defaults.store(true, Ordering::SeqCst);
+        core.connect_detected_tools_soon();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(codex.on.load(Ordering::SeqCst));
+    }
+
     #[tokio::test]
     async fn integrations_default_on_once_and_an_opt_out_stays_off() {
         let temp = tempfile::tempdir().unwrap();
@@ -2357,6 +2228,12 @@ mod tests {
             ..crate::relay::daemon::Plugins::default()
         };
         let (core, _signals) = Core::with_plugins(config, plugins);
+
+        // Before sign-in nothing is written, but the tool is named.
+        core.apply_integration_defaults();
+        assert!(!grok.on.load(Ordering::SeqCst));
+        assert_eq!(core.settings()["detected_tools"], json!(["Grok"]));
+        *core.workspace.lock().unwrap() = Some(signed_in());
 
         // An installed tool is turned on; one not installed is left alone.
         core.apply_integration_defaults();
@@ -2407,6 +2284,7 @@ mod tests {
             };
             Core::with_plugins(config, plugins).0
         };
+        *core_with_blocked.workspace.lock().unwrap() = Some(signed_in());
         blocked.refuse.store(true, Ordering::SeqCst);
         let mut off = Map::new();
         off.insert("blocked_tool".into(), json!(false));
@@ -2425,6 +2303,126 @@ mod tests {
         let already = FakeIntegration::new("direct_delivery", true);
         already.on.store(true, Ordering::SeqCst);
         assert!(already.default_on().contains(&"direct_delivery"));
+    }
+
+    fn signed_in() -> crate::relay::workspace::Workspace {
+        crate::relay::workspace::Workspace {
+            key: Secret::new("rk_live_test"),
+            base_url: "https://cast.test".into(),
+            workspace_id: None,
+            source: crate::relay::workspace::WorkspaceSource::Cloud,
+        }
+    }
+
+    #[tokio::test]
+    async fn tools_stay_untouched_when_the_person_declines_at_sign_in() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = crate::relay::daemon::Config {
+            paths: crate::relay::paths::CorePaths::for_socket(temp.path().join("core.sock"))
+                .unwrap(),
+            home: temp.path().into(),
+            app_data_dir: temp.path().join("app-data"),
+            env: std::collections::BTreeMap::new(),
+            version: "0.0.0-test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: crate::relay::push::PushTiming::default(),
+            delivery_timing: crate::relay::delivery::DeliveryTiming::default(),
+        };
+        let claude = FakeIntegration::new("direct_delivery", true);
+        let codex = FakeIntegration::new("codex_stop_hook", true);
+        let plugins = crate::relay::daemon::Plugins {
+            settings: vec![claude.clone(), codex.clone()],
+            ..crate::relay::daemon::Plugins::default()
+        };
+        let (core, _signals) = Core::with_plugins(config, plugins);
+        let settings = core.settings();
+        assert_eq!(settings["connect_detected_tools"], true);
+        assert_eq!(settings["detected_tools"], json!(["Claude Code", "Codex"]));
+
+        let mut decline = Map::new();
+        decline.insert("connect_detected_tools".into(), json!(false));
+        core.set_settings(&decline).unwrap();
+        *core.workspace.lock().unwrap() = Some(signed_in());
+        core.apply_integration_defaults();
+        assert_eq!(claude.sets.load(Ordering::SeqCst), 0);
+        assert_eq!(codex.sets.load(Ordering::SeqCst), 0);
+        assert_eq!(core.settings()["connect_detected_tools"], false);
+
+        // Turned back on, the next pass connects both and names none.
+        let mut accept = Map::new();
+        accept.insert("connect_detected_tools".into(), json!(true));
+        core.set_settings(&accept).unwrap();
+        core.apply_integration_defaults();
+        assert!(claude.on.load(Ordering::SeqCst) && codex.on.load(Ordering::SeqCst));
+        assert_eq!(core.settings()["detected_tools"], json!([]));
+    }
+
+    /// A core signed in with Claude Code installed and not yet connected.
+    fn core_with_claude(dir: &std::path::Path) -> (Arc<Core>, Arc<FakeIntegration>) {
+        let config = crate::relay::daemon::Config {
+            paths: crate::relay::paths::CorePaths::for_socket(dir.join("core.sock")).unwrap(),
+            home: dir.into(),
+            app_data_dir: dir.join("app-data"),
+            env: std::collections::BTreeMap::new(),
+            version: "0.0.0-test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: crate::relay::push::PushTiming::default(),
+            delivery_timing: crate::relay::delivery::DeliveryTiming::default(),
+        };
+        let claude = FakeIntegration::new("direct_delivery", true);
+        let plugins = crate::relay::daemon::Plugins {
+            settings: vec![claude.clone()],
+            ..crate::relay::daemon::Plugins::default()
+        };
+        let (core, _signals) = Core::with_plugins(config, plugins);
+        *core.workspace.lock().unwrap() = Some(signed_in());
+        (core, claude)
+    }
+
+    // Greptile #630: a pass that started before an opt-out was saved, and
+    // waits behind the save, reads the choice once it may write and connects
+    // nothing.
+    #[tokio::test]
+    async fn a_default_pass_waiting_behind_an_opt_out_connects_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let (core, claude) = core_with_claude(temp.path());
+        let saving = core.integration_settings.lock().unwrap();
+        let pass = {
+            let core = core.clone();
+            thread::spawn(move || core.apply_integration_defaults())
+        };
+        // The pass is waiting for the lock when the opt-out lands.
+        thread::sleep(Duration::from_millis(100));
+        core.store
+            .update(|store| store.extras.connect_detected_tools = Some(false))
+            .unwrap();
+        drop(saving);
+        pass.join().unwrap();
+        assert_eq!(claude.sets.load(Ordering::SeqCst), 0);
+        assert!(!claude.on.load(Ordering::SeqCst));
+    }
+
+    // Greptile #630: the apps read the settings again once a pass connects
+    // a tool, so Settings shows it on; a pass that changes nothing is quiet.
+    #[tokio::test]
+    async fn a_default_pass_that_connects_a_tool_publishes_a_settings_update() {
+        use crate::relay::protocol::Topic;
+        let temp = tempfile::tempdir().unwrap();
+        let (core, claude) = core_with_claude(temp.path());
+        let mut events = core.hub().subscribe();
+        let mut settings_updates = move || {
+            std::iter::from_fn(|| events.try_recv().ok())
+                .filter(|event| event.topic == Topic::Invalidated)
+                .filter(|event| event.data == json!({ "what": "settings" }))
+                .count()
+        };
+        core.apply_integration_defaults();
+        assert!(claude.on.load(Ordering::SeqCst));
+        assert_eq!(settings_updates(), 1);
+        core.apply_integration_defaults();
+        assert_eq!(settings_updates(), 0, "nothing changed, nothing published");
     }
 
     #[tokio::test]

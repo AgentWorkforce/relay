@@ -153,8 +153,8 @@ mod tests {
     use super::*;
     #[test]
     fn selected_acquisition_keeps_validated_denial_across_malformed_choices() {
-        let Some(home)=crate::live::tests::isolated_home("live::member_safety::tests::selected_acquisition_keeps_validated_denial_across_malformed_choices") else {return};
-        use agent_relay_probe::relay::{
+        let Some(home)=crate::probe::live::tests::isolated_home("probe::live::member_safety::tests::selected_acquisition_keeps_validated_denial_across_malformed_choices") else {return};
+        use crate::relay::{
             claude_dirs::ClaudeDirs, process::FakeProcesses, workspace::relay_home,
         };
         let env = |key: &str| std::env::var(key).ok();
@@ -169,14 +169,17 @@ mod tests {
             (&base_private, "base-private"),
         ] {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            crate::live::tests::append(path, &crate::live::tests::transcript_line(id, "one"));
+            crate::probe::live::tests::append(
+                path,
+                &crate::probe::live::tests::transcript_line(id, "one"),
+            );
         }
         let directory = home.join("probe");
         let db = directory.join("history.db");
         let conn = delivery::open_db(&db).unwrap();
         history::discover(&db, None, || false).unwrap();
-        let job =
-            delivery::create_session_job(&conn, &crate::live::tests::job_config(), 0).unwrap();
+        let job = delivery::create_session_job(&conn, &crate::probe::live::tests::job_config(), 0)
+            .unwrap();
         let identity = |id: &str| delivery::SessionIdentity {
             source: "claude".into(),
             session_id: id.into(),
@@ -231,7 +234,7 @@ mod tests {
                 &cancelled,
                 &shared,
                 state,
-                &crate::live::tests::options(),
+                &crate::probe::live::tests::options(),
             )
         };
         round(&mut state);
@@ -253,13 +256,13 @@ mod tests {
             ),
             "denied path must not reach stat/watch registration"
         );
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &allowed,
-            &crate::live::tests::transcript_line("allowed", "two"),
+            &crate::probe::live::tests::transcript_line("allowed", "two"),
         );
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &private,
-            &crate::live::tests::transcript_line("private", "two"),
+            &crate::probe::live::tests::transcript_line("private", "two"),
         );
         state.safety = Poll::default();
         state.roots.invalidate();

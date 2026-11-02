@@ -145,6 +145,7 @@ fn upload_sort_tracks_claude_folder_consent_across_pages() {
     let head = store.head_revision().unwrap();
     let policy = delivery::policy_revision(&conn).unwrap();
     let dirs = crate::relay::claude_dirs::ClaudeDirs {
+        private_root: None,
         environment: vec![],
         file: Some(relay_home.join(crate::relay::claude_dirs::FILE)),
     };

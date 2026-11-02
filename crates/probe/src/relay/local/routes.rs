@@ -1,16 +1,22 @@
 //! Provider route identity and reply transport selection.
 use super::*;
 
+impl LocalConfig {
+    /// The Pi-style extension route that serves `kind`, if any.
+    pub fn extension(&self, kind: SessionKind) -> Option<&crate::relay::pi::PiConfig> {
+        match kind {
+            SessionKind::Pi => Some(&self.pi),
+            SessionKind::Omp => Some(&self.omp),
+            _ => None,
+        }
+    }
+}
+
 impl LocalSessions {
     pub(super) fn live_route_binding(&self, target: &Target) -> Option<String> {
-        if target.kind == SessionKind::Pi {
-            return crate::relay::pi::binding(
-                &self.config.pi,
-                &*self.table,
-                self.config.uid,
-                &target.id,
-            )
-            .map(|binding| binding.reference);
+        if let Some(extension) = self.config.extension(target.kind) {
+            return crate::relay::pi::binding(extension, &*self.table, self.config.uid, &target.id)
+                .map(|binding| binding.reference);
         }
         if target.kind != SessionKind::GrokOpen {
             return None;

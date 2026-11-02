@@ -9,6 +9,9 @@ pub const BUILD_REVISION: &str = env!("RELAY_DESKTOP_REVISION");
 #[cfg(feature = "history")]
 pub const HISTORY_VERSION: &str = env!("RELAY_HISTORY_VERSION");
 
+/// Held by every test that changes this process's environment.
+#[cfg(test)]
+pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// [`HISTORY_VERSION`], or `None` for a core built without session history.
 pub fn history_version() -> Option<&'static str> {
     #[cfg(feature = "history")]
@@ -27,11 +30,12 @@ pub mod history_access;
 pub mod install;
 pub mod migration;
 pub mod platform;
+pub mod probe;
 pub mod relay;
 #[cfg(feature = "history")]
 pub mod retention;
 pub mod session_model;
-fn parse_iso_ms(value: &str) -> Option<i64> {
+pub fn parse_iso_ms(value: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(value)
         .ok()
         .map(|date| date.timestamp_millis())

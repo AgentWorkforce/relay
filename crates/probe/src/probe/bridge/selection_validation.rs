@@ -135,7 +135,7 @@ mod tests {
     #[test]
     fn explicit_deny_is_not_lost_when_folder_policy_already_withholds_the_session() {
         let Some(home) =
-            crate::live::tests::isolated_home("bridge::selection_validation::tests::explicit_deny_is_not_lost_when_folder_policy_already_withholds_the_session")
+            crate::probe::live::tests::isolated_home("probe::bridge::selection_validation::tests::explicit_deny_is_not_lost_when_folder_policy_already_withholds_the_session")
         else {
             return;
         };

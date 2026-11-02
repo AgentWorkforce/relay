@@ -5,13 +5,17 @@
 pub(super) mod openclaw_upgrade;
 mod selection_validation;
 mod session_rows;
-mod status;
 use super::session_metadata::SessionMetadata;
 use super::{collector, lock, read_config, save_json, user_error, Config, Target};
-use agent_relay_probe::delivery::{self, DeliveryJobConfig, SessionIdentity};
-use agent_relay_probe::relay::conductor;
+use crate::delivery::{self, DeliveryJobConfig, SessionIdentity};
+pub use crate::delivery_status::mode;
+#[cfg(test)]
+use crate::delivery_status::{delivery_failure_code, delivery_failure_message};
+use crate::delivery_status::{paused, profile, UPGRADING};
+use crate::relay::conductor;
+pub use crate::relay::uploader::SharingMode;
 use anyhow::{ensure, Context, Result};
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
 use fs2::FileExt;
 use rusqlite::Connection;
 #[cfg(test)]
@@ -23,7 +27,6 @@ use serde_json::{json, Value};
 use session_rows::{pending_batches, session_rows_selected_within};
 #[cfg(test)]
 use session_rows::{session_rows, session_rows_within};
-use status::store_status;
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -40,37 +43,10 @@ use std::{
 /// before its first delivery, then ordinary inventory watches later changes.
 static GROK_SELECTION_DISCOVERED: OnceLock<Mutex<HashMap<PathBuf, HashSet<String>>>> =
     OnceLock::new();
-pub use crate::output::{emit, json_mode};
+pub use crate::probe::output::{emit, json_mode};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
-#[serde(rename_all = "lowercase")]
-pub enum SharingMode {
-    All,
-    New,
-    Selected,
-}
-pub fn mode(config: &Config) -> SharingMode {
-    config.sharing_mode.unwrap_or(if config.include_existing {
-        SharingMode::All
-    } else {
-        SharingMode::New
-    })
-}
-
-#[derive(Subcommand)]
-pub enum SessionCommand {
-    List(SessionList),
-    /// Read a local conversation without uploading it.
-    Read(super::transcript::ReadSession),
-    /// Local-only shallow catalog; never reads delivery batches or sends data.
-    Preview(SessionPreview),
-    Include(SessionMutation),
-    Exclude(SessionMutation),
-    /// Delete the cloud copy and stop future uploads; local history is retained.
-    Delete(SessionMutation),
-    /// Reset sessions; --local starts over locally without deleting cloud sessions.
-    Reset(SessionReset),
-}
+mod session_commands;
+pub use session_commands::SessionCommand;
 pub use session_rows::SessionList;
 #[derive(Args)]
 pub struct SessionPreview {
@@ -181,7 +157,7 @@ fn wait_for_control_lock(directory: &Path) -> Result<fs::File> {
 }
 /// The install's store as its owner, which holds the collector lock.
 fn db(directory: &Path) -> Result<Connection> {
-    let conn = agent_relay_probe::delivery::open_db(&directory.join("history.db"))?;
+    let conn = crate::delivery::open_db(&directory.join("history.db"))?;
     conn.busy_timeout(Duration::from_secs(5))?;
     Ok(conn)
 }
@@ -300,15 +276,6 @@ pub(crate) fn enforce_selection_from(
     Ok(())
 }
 
-fn profile(directory: &Path, config: &Config, paused: bool) -> Result<Value> {
-    Ok(
-        json!({"directory":directory, "site_url":config.site_url, "account_id":config.account_id,
-        "account_email":config.account_email, "account_name":config.account_name,
-        "account_avatar_url":config.account_avatar_url,
-        "workspace_id":config.workspace_id, "workspace_name":config.workspace_name, "org_id":config.org_id, "sharing_mode":mode(config),
-        "running":collector::running(directory)?, "paused":paused}),
-    )
-}
 pub fn installs() -> Result<()> {
     emit(installs_value(
         &super::home()?.join(".agentworkforce/probe"),
@@ -351,17 +318,6 @@ fn listed_install(directory: &Path) -> Option<Value> {
     };
     install["collector_version"] = json!(collector::collector_version(directory));
     Some(install)
-}
-/// Whether the install's delivery job is paused. Reads only the job's state,
-/// which every build's store keeps.
-fn paused(directory: &Path, config: &Config) -> Result<bool> {
-    let conn = read_db(directory)?;
-    let state: String = conn.query_row(
-        "SELECT state FROM delivery_jobs WHERE id=?",
-        [&config.job_id],
-        |row| row.get(0),
-    )?;
-    Ok(state == "paused")
 }
 /// The identity of an install whose `config.json` a newer build wrote in a
 /// format this build does not read. A malformed config in this build's own
@@ -435,79 +391,8 @@ fn complete_replacement_with(
     start(directory)
 }
 pub fn status(directory: &Path) -> Result<()> {
-    emit(status_value(directory)?);
+    emit(crate::delivery_status::status(directory)?);
     Ok(())
-}
-/// What the desktop shows while local history waits for the collector to
-/// upgrade it.
-const UPGRADING: &str =
-    "Agent Relay is upgrading local history. Uploads continue when it finishes.";
-fn status_value(directory: &Path) -> Result<Value> {
-    let config = read_config(directory)?;
-    // The collector keeps running when it cannot read the store and reports
-    // why: an open that fails, or a damaged table. Status fails on the same
-    // store, so it answers with that report, the one thing a person can act
-    // on, rather than fail.
-    store_status(directory, &config).or_else(|error| {
-        match collector::current_cycle_report(directory) {
-            Some(report) if report["ok"] == false => {
-                let mut result = profile(directory, &config, false)?;
-                result["probe_version"] = json!(agent_relay_probe::VERSION);
-                result["last_cycle"] = report;
-                result["collector_outdated"] =
-                    json!(result["running"] == true && collector::outdated(directory));
-                result["collector_replacing"] =
-                    json!(collector::replacement_in_progress(directory));
-                result["upgrade_required_live"] = json!(collector::newer_build_live(directory));
-                Ok(result)
-            }
-            _ => Err(error),
-        }
-    })
-}
-
-fn delivery_failure_message(failure: &str) -> &'static str {
-    match failure {
-        "receiver_rejected" => {
-            "The server rejected an upload. Uploads are paused until an update or retry; queued records are preserved."
-        }
-        "invalid_payload" => {
-            "An upload could not be prepared safely. Uploads are stopped until a retry or update; queued records are preserved."
-        }
-        "authentication_required" => {
-            "Uploads need you to sign in to Agent Relay again. Queued records are preserved."
-        }
-        "permission_denied" => {
-            "The server refused permission to upload. Check this workspace connection."
-        }
-        "unsupported_evidence" | "mapping_version_mismatch" => {
-            "The server does not support this upload yet. Queued records are preserved."
-        }
-        "delivery_conflict" => {
-            "History delivery has a receiver conflict. Queued records are preserved for repair."
-        }
-        "rate_limited" => "The server asked uploads to slow down. Agent Relay will retry.",
-        "transient" => "The upload service is temporarily unavailable. Agent Relay will retry.",
-        _ => "The upload service is temporarily unavailable. Agent Relay will retry.",
-    }
-}
-
-/// Only core-owned failure classes cross the status boundary. The sentence
-/// stays suitable for display while the allowlisted code lets Relay derive a
-/// truthful stage after restart, when no live cycle verdict is available.
-fn delivery_failure_code(failure: &str) -> Option<&'static str> {
-    match failure {
-        "transient" => Some("transient"),
-        "rate_limited" => Some("rate_limited"),
-        "authentication_required" => Some("authentication_required"),
-        "permission_denied" => Some("permission_denied"),
-        "invalid_payload" => Some("invalid_payload"),
-        "receiver_rejected" => Some("receiver_rejected"),
-        "unsupported_evidence" => Some("unsupported_evidence"),
-        "mapping_version_mismatch" => Some("mapping_version_mismatch"),
-        "delivery_conflict" => Some("delivery_conflict"),
-        _ => None,
-    }
 }
 pub fn sessions(command: SessionCommand) -> Result<()> {
     if let SessionCommand::Reset(options) = command {
@@ -521,48 +406,16 @@ pub fn sessions(command: SessionCommand) -> Result<()> {
             super::session_reset::reset(&options.target.directory()?, &options.confirmation)
         };
     }
-    let _reader = matches!(
-        &command,
-        SessionCommand::Read(_) | SessionCommand::List(_) | SessionCommand::Preview(_)
-    )
-    .then(super::session_reset::reader_lock)
-    .transpose()?;
+    let _reader = command
+        .requires_reader()
+        .then(super::session_reset::reader_lock)
+        .transpose()?;
     match command {
         SessionCommand::Reset(_) => unreachable!(),
         SessionCommand::Read(options) => super::transcript::read(options)?,
-        SessionCommand::Preview(options) => {
-            let directory = super::home()?.join(".agentworkforce/session-preview");
-            super::private_directory(&directory)?;
-            let db = directory.join("catalog.db");
-            let candidate_limit = recency_candidate_limit(options.limit as usize);
-            if options.refresh {
-                // A separate local metadata cache cannot wait behind the capture writer
-                // or accidentally add unselected sessions to a delivery generation.
-                super::history::discover(&db, Some(candidate_limit), || false)?;
-            }
-            let rows = if db.exists() {
-                // The preview's own cache holds catalog metadata only, so it
-                // is small, and no collector migrates it: it migrates here.
-                let store = match super::history::open_read(&db) {
-                    Err(error) if delivery::is_upgrade_pending(&error) => {
-                        super::history::open(&db)?;
-                        super::history::open_read(&db)?
-                    }
-                    opened => opened?,
-                };
-                let sessions =
-                    super::history::catalog(&store, ai_hist::SessionScope::Local, candidate_limit)?;
-                rank_sessions(sessions, options.limit as usize, &store)
-                    .into_iter()
-                    .map(Preview::from)
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            let response = preview_response(&rows);
-            super::save_json(&directory.join("sessions.json"), &response)?;
-            emit(response);
-        }
+        SessionCommand::NamingCheckpoint(options) => super::transcript::naming_checkpoint(options)?,
+        SessionCommand::Preview(options) => session_commands::preview(options)?,
+
         SessionCommand::List(options) => session_rows::list(options)?,
         SessionCommand::Include(options) => {
             change(&options.target.directory()?, None, &options.keys, true)?
@@ -673,7 +526,7 @@ fn catalog_title(value: Option<&str>) -> Option<&str> {
 /// The catalog title, else the first prompt, last assistant text or session id,
 /// trimmed of surrounding spaces and cut to 120 characters.
 fn title(session: &ai_hist::CatalogSession) -> String {
-    agent_relay_probe::relay::session_query::catalog_title(session)
+    crate::relay::session_query::catalog_title(session)
 }
 
 fn mark_pending(
@@ -962,7 +815,7 @@ fn change_with_cloud(
         delete,
     )?;
     if delete {
-        agent_relay_probe::destination::require_session_deletion(
+        crate::destination::require_session_deletion(
             &config.history_url,
             &config.delivery_account,
         )?;
@@ -1110,7 +963,7 @@ pub fn recover(directory: &Path) -> Result<()> {
 }
 fn apply_plan(directory: &Path, plan: ChangePlan) -> Result<()> {
     apply_plan_with_cloud(directory, plan, |config, origin, selection| {
-        agent_relay_probe::destination::set_session_uploads(
+        crate::destination::set_session_uploads(
             &config.history_url,
             &config.delivery_account,
             &config.account_id,
@@ -1195,9 +1048,9 @@ pub fn disconnect(directory: &Path) -> Result<()> {
     let _guard = lock(directory)?;
     let config = super::saved_config(directory)?.context("No saved workspace connection")?;
     std::env::set_var("RELAYHISTORY_HOME", directory);
-    if let Ok(Some(auth)) = agent_relay_probe::cloud::load_auth(Some(&config.history_url)) {
+    if let Ok(Some(auth)) = crate::cloud::load_auth(Some(&config.history_url)) {
         let token = auth.refresh_token.as_deref().unwrap_or(&auth.access_token);
-        let _ = ureq::AgentBuilder::new()
+        let _ = crate::cloud::history_agent()
             .timeout(Duration::from_secs(5))
             .redirects(0)
             .build()
@@ -1293,6 +1146,17 @@ mod tests {
 
     use super::*;
     use clap::Parser;
+
+    /// Status after a collector pass: the pass brings the session census up
+    /// to the store, then status reads its counts.
+    fn status_value(directory: &Path) -> Result<Value> {
+        // Only a store the collector already upgraded: a pass over an older
+        // one migrates it first, which these reads must never do.
+        if delivery::ensure_current(&directory.join("history.db")).is_ok() {
+            delivery::refresh_session_census(&db(directory)?)?;
+        }
+        crate::delivery_status::status(directory)
+    }
 
     #[test]
     fn delivery_failures_are_truthful_and_never_echo_receiver_content() {
@@ -1497,7 +1361,8 @@ mod tests {
             } else {
                 "https://history.agentrelay.com".into()
             },
-            delivery_account: agent_relay_probe::destination::account_id("org", Some("workspace")),
+            cloud_history_origin: None,
+            delivery_account: crate::destination::account_id("org", Some("workspace")),
             job_id: "job".into(),
             include_existing: mode == SharingMode::All,
             sharing_mode: Some(mode),
@@ -1681,8 +1546,8 @@ mod tests {
         let job = DeliveryJobConfig {
             destination_id: "relayhistory".into(),
             instance_id: "teams-probe".into(),
-            account_id: agent_relay_probe::destination::account_id("org", Some("workspace")),
-            mapping_version: agent_relay_probe::destination::MAPPING_VERSION.into(),
+            account_id: crate::destination::account_id("org", Some("workspace")),
+            mapping_version: crate::destination::MAPPING_VERSION.into(),
             selection: collector::selection(mode == SharingMode::All),
             limits: Default::default(),
         };
@@ -1701,6 +1566,7 @@ mod tests {
             org_id: "org".into(),
             workspace_id: "workspace".into(),
             history_url: "https://history.agentrelay.com".into(),
+            cloud_history_origin: None,
             delivery_account: job.config.account_id,
             job_id: job.job_id,
             include_existing: mode == SharingMode::All,
@@ -1843,7 +1709,7 @@ mod tests {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "bridge::tests::grok_bot_profiles_reach_preview_catalog_and_upload_lists",
+                "probe::bridge::tests::grok_bot_profiles_reach_preview_catalog_and_upload_lists",
                 "--nocapture",
             ])
             .env_remove("AGENT_RELAY_PROBE_TEST_HOME")
@@ -1863,7 +1729,7 @@ mod tests {
     #[test]
     fn grok_bot_profiles_reach_preview_catalog_and_upload_lists() {
         let Some(home) = super::super::live::tests::isolated_home(
-            "bridge::tests::grok_bot_profiles_reach_preview_catalog_and_upload_lists",
+            "probe::bridge::tests::grok_bot_profiles_reach_preview_catalog_and_upload_lists",
         ) else {
             return;
         };
@@ -2117,7 +1983,7 @@ mod tests {
         let path = dir.path().join("history.db");
         let (locked, taken) = std::sync::mpsc::channel();
         let holding = std::thread::spawn(move || {
-            let blocker = agent_relay_probe::delivery::open_db(&path).unwrap();
+            let blocker = crate::delivery::open_db(&path).unwrap();
             blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
             locked.send(()).unwrap();
             // Longer than the interactive timeout, well inside the shared
@@ -2727,8 +2593,8 @@ mod tests {
 
     #[test]
     fn a_preselected_grok_subagent_without_a_parent_stops_uploading_when_identified() {
-        let Some(home) = crate::live::tests::isolated_home(
-            "bridge::tests::a_preselected_grok_subagent_without_a_parent_stops_uploading_when_identified",
+        let Some(home) = crate::probe::live::tests::isolated_home(
+            "probe::bridge::tests::a_preselected_grok_subagent_without_a_parent_stops_uploading_when_identified",
         ) else {
             return;
         };
@@ -2824,8 +2690,8 @@ mod tests {
 
     #[test]
     fn unreadable_grok_summary_blocks_delivery_until_a_retry_classifies_the_child() {
-        let Some(home) = crate::live::tests::isolated_home(
-            "bridge::tests::unreadable_grok_summary_blocks_delivery_until_a_retry_classifies_the_child",
+        let Some(home) = crate::probe::live::tests::isolated_home(
+            "probe::bridge::tests::unreadable_grok_summary_blocks_delivery_until_a_retry_classifies_the_child",
         ) else {
             return;
         };
@@ -2887,8 +2753,8 @@ mod tests {
 
     #[test]
     fn unrelated_broken_grok_summary_does_not_block_a_selected_root() {
-        let Some(home) = crate::live::tests::isolated_home(
-            "bridge::tests::unrelated_broken_grok_summary_does_not_block_a_selected_root",
+        let Some(home) = crate::probe::live::tests::isolated_home(
+            "probe::bridge::tests::unrelated_broken_grok_summary_does_not_block_a_selected_root",
         ) else {
             return;
         };
@@ -3828,8 +3694,8 @@ mod tests {
         let job = DeliveryJobConfig {
             destination_id: "relayhistory".into(),
             instance_id: "teams-probe".into(),
-            account_id: agent_relay_probe::destination::account_id("org", Some("workspace")),
-            mapping_version: agent_relay_probe::destination::MAPPING_VERSION.into(),
+            account_id: crate::destination::account_id("org", Some("workspace")),
+            mapping_version: crate::destination::MAPPING_VERSION.into(),
             selection: collector::selection(true),
             limits: Default::default(),
         };
@@ -4278,7 +4144,7 @@ mod tests {
         assert!(collector::outdated(dir.path()));
         save_json(
             &runtime,
-            &json!({"startup_id":"1-1","pid":1,"ready":true,"version":agent_relay_probe::VERSION}),
+            &json!({"startup_id":"1-1","pid":1,"ready":true,"version":crate::VERSION}),
         )
         .unwrap();
         assert!(!collector::outdated(dir.path()));

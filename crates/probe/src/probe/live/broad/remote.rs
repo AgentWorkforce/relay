@@ -2,7 +2,7 @@ use super::*;
 
 /// Remote acquisition has its own cadence/transport. A large local archive
 /// cannot delay it; it still uses the existing source-intake and consent path.
-pub(in crate::live) fn remote(
+pub(in crate::probe::live) fn remote(
     store: ai_hist::SessionStore,
     cancelled: Arc<AtomicBool>,
     shared: Arc<Shared>,
@@ -29,7 +29,7 @@ pub(in crate::live) fn remote(
         }
     })))
 }
-pub(in crate::live) struct Remote(Option<JoinHandle<()>>);
+pub(in crate::probe::live) struct Remote(Option<JoinHandle<()>>);
 impl Drop for Remote {
     fn drop(&mut self) {
         if let Some(thread) = self.0.take() {

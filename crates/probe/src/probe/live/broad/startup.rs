@@ -2,13 +2,13 @@
 use super::*;
 
 /// The handoff from validated startup roots to the event scheduler.
-pub(in crate::live) struct Started {
-    pub(in crate::live) store: ai_hist::SessionStore,
-    pub(in crate::live) roots: history::RootSettings,
-    pub(in crate::live) watch: Watching,
+pub(in crate::probe::live) struct Started {
+    pub(in crate::probe::live) store: ai_hist::SessionStore,
+    pub(in crate::probe::live) roots: history::RootSettings,
+    pub(in crate::probe::live) watch: Watching,
 }
 
-pub(in crate::live) fn start(
+pub(in crate::probe::live) fn start(
     mut store: ai_hist::SessionStore,
     events: mpsc::Sender<Noticed>,
     cancelled: &Arc<AtomicBool>,
@@ -67,7 +67,7 @@ fn open(
     None
 }
 
-pub(in crate::live) fn capture(
+pub(in crate::probe::live) fn capture(
     directory: &Path,
     history_url: &str,
     cancelled: &Arc<AtomicBool>,
@@ -79,7 +79,7 @@ pub(in crate::live) fn capture(
     let Some(store) = open(&db, cancelled, shared, options) else {
         return;
     };
-    let progress = Some(crate::progress::Monitor::start(
+    let progress = Some(crate::probe::progress::Monitor::start(
         directory,
         history_url,
         None,

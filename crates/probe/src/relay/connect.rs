@@ -13,10 +13,9 @@ use crate::relay::daemon::Core;
 use crate::relay::delivery::policy::{self, Decision, MessageRef};
 use crate::relay::delivery::{preview, DeliveryActivity, DeliveryOutcome, DeliverySettlement};
 use crate::relay::inject::InjectOutcome;
-use crate::relay::outbound::{probe_client, query_encode, shell_quote, OutboundError};
+use crate::relay::outbound::OutboundError;
 use crate::relay::outbox::{create_private_dir, write_atomic};
 use crate::relay::peer::current_uid;
-use crate::relay::process::SystemProcesses;
 use crate::relay::store::random_uuid;
 use crate::relay::store::{SessionKind, Target};
 use crate::relay::workspace::Secret;
@@ -29,6 +28,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+
+mod reply_hint;
+
+use reply_hint::connect_reply_hint;
+#[cfg(test)]
+use reply_hint::connect_reply_line;
 
 pub const CONNECT_STORE_FILE: &str = "connect-sessions.json";
 const CONNECT_JOIN_TIMEOUT: Duration = Duration::from_secs(45);
@@ -696,6 +701,7 @@ pub struct ConnectState {
     /// Connect inboxes poll quickly, but their presence heartbeat keeps the
     /// ordinary delivery heartbeat cadence.
     last_heartbeat_ms: HashMap<String, i64>,
+    pub(crate) inbox_reads: crate::relay::connect_inbox::InboxReads,
     /// Target keys of the sessions the latest discovery pass found running;
     /// `None` until a pass completes. Only a running session's credential
     /// is used, so Relaycast presence follows the session.
@@ -780,6 +786,7 @@ impl ConnectState {
             outcomes,
             join_attempts,
             last_heartbeat_ms: HashMap::new(),
+            inbox_reads: Default::default(),
             live_targets: None,
         }
     }
@@ -1519,11 +1526,10 @@ impl Core {
                     }
                 }
             }
-            if !self.relaycast_poll_allowed(&workspace) {
+            // An idle or failing inbox is read less and less often.
+            let Some(result) = self.read_connect_inbox(&session, &workspace).await else {
                 continue;
-            }
-            let result = client::deliveries(&session.base_url, &session.token).await;
-            self.observe_relaycast_result(&workspace, &result);
+            };
             let deliveries = match result {
                 Ok(items) => items,
                 Err(relaycast::RelayError::Api {
@@ -1678,9 +1684,10 @@ impl Core {
                             None => {
                                 let known = session.target.kind == SessionKind::Codex && {
                                     let thread = session.target.id.clone();
+                                    let processes = self.plugins.processes.clone();
                                     tokio::task::spawn_blocking(move || {
                                         needs_probe_reply_client(
-                                            &SystemProcesses::default(),
+                                            processes.as_ref(),
                                             current_uid(),
                                             &thread,
                                         )
@@ -1934,66 +1941,6 @@ fn connect_notice(session: &ConnectSession, code: &str) -> (String, &'static str
             "[Relay Connect] This Connect expired. Its local credential was removed."
         },
     )
-}
-
-/// The reply line for a Relay Connect message, then the route line that
-/// keeps the answer on it (`hosted_mcp::ROUTE_LINE`).
-fn connect_reply_hint(
-    socket: &Path,
-    sender: &str,
-    kind: SessionKind,
-    needs_probe: bool,
-) -> Option<String> {
-    connect_reply_line(socket, sender, kind, needs_probe)
-        .map(|line| format!("{line}\n{}", crate::relay::hosted_mcp::ROUTE_LINE))
-}
-
-fn connect_reply_line(
-    socket: &Path,
-    sender: &str,
-    kind: SessionKind,
-    needs_probe: bool,
-) -> Option<String> {
-    let socket = socket.to_str()?;
-    let request_path = format!("/connect/send?to={}", query_encode(sender));
-    // macOS hides the environment of /usr/bin/curl from KERN_PROCARGS2.
-    // Use the probe executable so an app-server command keeps its thread ID.
-    // On Windows the socket is a named pipe curl cannot reach, so every
-    // session gets the probe client.
-    // Claude Code's permission rules from Agent Relay allow the probe's
-    // client (`outbound::prefers_probe_client`); curl only when it is unknown.
-    let required = cfg!(windows) || (kind == SessionKind::Codex && probe_client(needs_probe));
-    if required || crate::relay::outbound::prefers_probe_client(kind) {
-        let reply = crate::relay::session_cli::SessionCommand::ConnectSend {
-            to: Some(sender.to_string()),
-        };
-        let command = crate::relay::outbound::probe_session_command(
-            Path::new(socket),
-            &reply,
-            Some("your reply"),
-        );
-        if command.is_some() || required {
-            return Some(format!("[reply: {}]", command?));
-        }
-    }
-    let url = format!("http://relay{request_path}");
-    let parts = [
-        "curl",
-        "-s",
-        "--unix-socket",
-        socket,
-        &url,
-        "--data-binary",
-        "@-",
-    ];
-    Some(format!(
-        "[reply: {}]",
-        parts
-            .iter()
-            .map(|part| shell_quote(part))
-            .collect::<Vec<_>>()
-            .join(" ")
-    ))
 }
 
 #[cfg(test)]

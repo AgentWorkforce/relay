@@ -270,8 +270,22 @@ async fn cached_sessions_list(core: &Arc<Core>) -> LocalSessions {
         .filter(|session| !archived.contains(&&session.target))
         .map(|session| row(session, true))
         .collect();
+    let hidden = if store.registrations.iter().any(|registration| {
+        registration.target.kind == crate::relay::store::SessionKind::Devin
+            && !found
+                .iter()
+                .any(|session| session.target == registration.target)
+    }) {
+        let sessions = core.plugins.sessions.clone();
+        tokio::task::spawn_blocking(move || sessions.hidden_sessions())
+            .await
+            .unwrap_or_default()
+    } else {
+        Default::default()
+    };
     for registration in &store.registrations {
-        if registration.archived_at.is_some()
+        if hidden.contains(&registration.target)
+            || registration.archived_at.is_some()
             || found.iter().any(|s| s.target == registration.target)
         {
             continue;
@@ -306,7 +320,7 @@ pub async fn watch_uploads(core: Arc<Core>) {
     let Some(account) = &core.plugins.account else {
         return;
     };
-    let uploader = account.uploader.clone();
+    let uploader = account.uploader();
     let mut refreshes = tokio::task::JoinSet::new();
     let mut ticks = tokio::time::interval(WATCH_EVERY);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

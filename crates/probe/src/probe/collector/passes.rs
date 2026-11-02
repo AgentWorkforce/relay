@@ -3,7 +3,7 @@ use super::*;
 /// Historical projection seeding starts only after capture attempted its
 /// watcher registration. Paused selected jobs deliberately do no member pass.
 pub(super) fn wait_for_capture_driver(
-    live: &crate::live::Shared,
+    live: &crate::probe::live::Shared,
     cancelled: &AtomicBool,
     paused_selected: bool,
 ) {
@@ -159,4 +159,14 @@ pub(super) fn retry_verdict_of_another_build(
         );
     }
     Ok(())
+}
+
+/// What the RelayHistory receiver keeps across this process's passes: its
+/// stage session, its legacy scheduler verdict and the batch limits the
+/// server last published. Kept for the process rather than per pass, so
+/// back-to-back passes neither reread the session nor inspect the
+/// schedulers each time, and batches stay sized to the published limits.
+pub(super) fn receiver_state() -> &'static destination::ReceiverState {
+    static STATE: std::sync::OnceLock<destination::ReceiverState> = std::sync::OnceLock::new();
+    STATE.get_or_init(destination::ReceiverState::default)
 }

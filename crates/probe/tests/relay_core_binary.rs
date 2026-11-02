@@ -18,11 +18,11 @@ fn listening(socket: &std::path::Path) -> bool {
     }
 }
 
-/// What a cleared environment still needs: Windows processes cannot start
-/// their system libraries without `SystemRoot`.
+/// What a cleared environment still needs: Windows loads its system
+/// libraries through SystemRoot and the MSYS2 runtime DLLs through PATH.
 fn keep_system_environment(command: &mut Command) {
     if cfg!(windows) {
-        for key in ["SystemRoot", "SystemDrive", "TEMP", "TMP"] {
+        for key in ["SystemRoot", "SystemDrive", "TEMP", "TMP", "PATH"] {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
             }
@@ -68,7 +68,15 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
         .unwrap();
     let deadline = std::time::Instant::now() + WAIT;
     while !listening(&socket) {
-        assert!(std::time::Instant::now() < deadline, "the daemon listens");
+        if daemon.try_wait().unwrap().is_some() || std::time::Instant::now() >= deadline {
+            let _ = daemon.kill();
+            let output = daemon.wait_with_output().unwrap();
+            panic!(
+                "the daemon did not listen: {:?}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
 
@@ -95,9 +103,8 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
     assert_eq!(answer["result"]["workspace"]["state"], "missing");
     assert_eq!(answer["result"]["account"]["state"], "signed_out");
 
-    // The uploader runs this same binary's commands: nothing is connected
-    // in an empty home, and the preview answers. A core built without
-    // session history refuses it instead.
+    // The uploader's methods come with an account plugin, which this binary
+    // does not build in: every build answers `method_not_found`.
     let preview = command(&[
         "relay",
         "call",
@@ -108,21 +115,16 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
     ])
     .output()
     .unwrap();
-    if cfg!(feature = "history") {
-        assert!(preview.status.success(), "{preview:?}");
-        let answer: Value = serde_json::from_slice(&preview.stdout).unwrap();
-        assert_eq!(answer["result"]["sessions"], serde_json::json!([]));
-    } else {
-        assert!(!preview.status.success(), "{preview:?}");
-        assert!(
-            String::from_utf8_lossy(&preview.stderr)
-                .contains(agent_relay_probe::relay::protocol::HISTORY_UNAVAILABLE),
-            "{preview:?}"
-        );
-    }
+    assert!(!preview.status.success(), "{preview:?}");
+    assert!(
+        String::from_utf8_lossy(&preview.stderr).contains("has no such method"),
+        "{preview:?}"
+    );
 
     drop(daemon.stdin.take());
-    let deadline = std::time::Instant::now() + WAIT;
+    // The core gives in-flight delivery up to ten seconds to settle, then
+    // shuts down its workers and runtime. Allow that full graceful shutdown.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     let status = loop {
         if let Some(status) = daemon.try_wait().unwrap() {
             break status;

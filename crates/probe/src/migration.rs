@@ -11,7 +11,21 @@ const LABEL: &str = "com.ai-hist.push";
 const CRON_MARKER: &str = "# ai-hist push (managed)";
 const OUTPUT_CAP: u64 = 1024 * 1024;
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+/// Every label `MigrationStatus::jobs` can carry: a closed vocabulary, so the
+/// labels may cross into status and telemetry. Keep it in step with
+/// `relay::contract::account::LegacyScheduleJob`.
+pub const JOB_CODES: [&str; 8] = [
+    "launchd-plist",
+    "launchd-loaded",
+    "managed-cron",
+    "launchd-plist-status-unknown",
+    "launchd-status-unknown",
+    "cron-status-unknown",
+    "home-unavailable",
+    "legacy-installer-unsupported",
+];
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationStatus {
     pub state: &'static str,

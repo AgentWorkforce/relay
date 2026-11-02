@@ -32,10 +32,11 @@ pub fn send_to_spawned(
 
 /// A desktop-driven spawned turn of the thread `claim` holds: as
 /// `send_to_spawned`, but the app-server connection is kept open through
-/// the turn so its approval requests can be answered (`drive`).
+/// the turn so its approval requests can be answered (`drive`), until the
+/// turn completes or `ended` says it is over.
 pub fn send_spawned(
     mut stream: Box<dyn ProxyStream>,
-    claim: drive::Claim,
+    (claim, ended): (drive::Claim, drive::Ended),
     (text, message_id): (&str, &str),
     hide: Hide,
     timeout: Duration,
@@ -50,7 +51,7 @@ pub fn send_spawned(
         timeout,
     );
     if let (Ok(true) | Err(TurnError::InDoubt(_)), Some(state)) = (&result, state) {
-        drive::start(stream, state, claim);
+        drive::start(stream, state, claim, ended);
     }
     result
 }

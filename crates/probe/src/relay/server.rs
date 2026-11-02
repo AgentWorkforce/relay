@@ -14,7 +14,7 @@ use crate::relay::protocol::{
     ErrorKind, Event, Request, Response, RpcError, Topic, BRIDGE_VERSION, MAX_FRAME_BYTES,
 };
 use crate::relay::transport::{CoreListener, CoreStream};
-use crate::relay::{account_methods, local_methods, methods};
+use crate::relay::{host_methods, local_methods, methods};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -268,7 +268,7 @@ async fn dispatch(
                 bridge_version: BRIDGE_VERSION,
                 daemon_version: status.daemon.version,
                 pid: status.daemon.pid,
-                methods: contract::method_names(core.plugins.account.is_some())
+                methods: all_method_names(core)
                     .into_iter()
                     .map(str::to_string)
                     .collect(),
@@ -373,7 +373,10 @@ pub async fn call(core: &Arc<Core>, name: &str, raw: Value) -> Result<Value, Rpc
                 Some(answer) => Some(answer),
                 None => match local_methods::call(core, name, raw.clone()).await {
                     Some(answer) => Some(answer),
-                    None => account_methods::call(core, name, raw).await,
+                    None => match host_methods::call(core, name, raw.clone()).await {
+                        Some(answer) => Some(answer),
+                        None => extension_call(core, name, raw).await,
+                    },
                 },
             };
             answer.unwrap_or_else(|| {
@@ -384,6 +387,28 @@ pub async fn call(core: &Arc<Core>, name: &str, raw: Value) -> Result<Value, Rpc
             })
         }
     }
+}
+
+/// The core's methods and this build's extensions, as `hello` lists them.
+pub(crate) fn all_method_names(core: &Core) -> Vec<&'static str> {
+    let with_account = core.plugins.account.is_some();
+    let mut names = contract::method_names(with_account);
+    names.extend(core.plugins.extension_method_names(with_account));
+    names
+}
+
+/// The first extension that answers `name`.
+async fn extension_call(
+    core: &Arc<Core>,
+    name: &str,
+    raw: Value,
+) -> Option<Result<Value, RpcError>> {
+    for extension in &core.plugins.extensions {
+        if let Some(answer) = extension.call(core, name, raw.clone()).await {
+            return Some(answer);
+        }
+    }
+    None
 }
 
 fn to_line(response: &Response) -> String {

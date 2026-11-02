@@ -22,6 +22,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod unresolved;
+use unresolved::UnresolvedFailures;
+
 /// Sessions one sweep downloads at most.
 pub const PASS_SESSIONS: usize = 20;
 /// How long one sweep downloads at most; the session in flight finishes.
@@ -114,6 +117,8 @@ pub struct Pacing {
     sessions: BTreeMap<String, SessionWait>,
     #[serde(default)]
     connectors: BTreeMap<String, ConnectorWait>,
+    #[serde(default)]
+    unresolved_failures: UnresolvedFailures,
     /// How much remote downloads have grown the database, in bytes.
     #[serde(default)]
     pub grown_bytes: u64,
@@ -193,8 +198,49 @@ impl Pacing {
     }
 
     pub fn succeeded(&mut self, connector: &str, source: &str, session_id: &str) {
-        self.sessions.remove(&session_key(source, session_id));
+        let key = session_key(source, session_id);
+        self.sessions.remove(&key);
+        self.unresolved_failures.succeeded(&key);
         self.connectors.remove(connector);
+    }
+
+    /// Remember a sanitized hydration failure until this exact session is
+    /// downloaded successfully. Backoff-skipped passes must not make the
+    /// warning disappear.
+    pub fn record_failure(
+        &mut self,
+        connector: &str,
+        source: &str,
+        session_id: &str,
+        reason: String,
+        at_ms: i64,
+    ) {
+        self.unresolved_failures.record(
+            session_key(source, session_id),
+            connector,
+            source,
+            session_id,
+            reason,
+            at_ms,
+        );
+    }
+
+    /// Forget a session's download failure once it downloads, without the
+    /// retry waits a sweep keeps: selected capture, which runs no sweep.
+    pub fn resolved(&mut self, source: &str, session_id: &str) {
+        self.unresolved_failures
+            .succeeded(&session_key(source, session_id));
+    }
+
+    /// Forget failures for sessions that the current sharing policy no
+    /// longer wants. A retry wait remains wanted and therefore survives.
+    pub fn retain_wanted(&mut self, wanted: impl FnMut(&str, &str) -> bool) {
+        self.unresolved_failures.retain_wanted(wanted);
+    }
+
+    /// One safe reason per connector for Settings and `core.log`.
+    pub fn connector_failures(&self) -> BTreeMap<String, String> {
+        self.unresolved_failures.by_connector()
     }
 
     pub fn failed(
@@ -430,5 +476,28 @@ mod tests {
         assert_eq!(Pacing::load(&db), pacing);
         std::fs::write(path(&db), b"not json").unwrap();
         assert_eq!(Pacing::load(&db), Pacing::default());
+    }
+
+    #[test]
+    fn a_skipped_retry_keeps_its_warning_until_that_session_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("history.db");
+        let mut pacing = Pacing::default();
+        let reason = "Claude.ai cloud-session sync failed (CONNECTOR_FAILURE). Agent Relay will try again automatically";
+        pacing.record_failure("claude-web", "claude", "cse_1", reason.into(), NOW);
+        pacing.save(&db).unwrap();
+        let mut pacing = Pacing::load(&db);
+
+        assert_eq!(
+            pacing
+                .connector_failures()
+                .get("claude-web")
+                .map(String::as_str),
+            Some(reason)
+        );
+        pacing.succeeded("claude-web", "claude", "cse_2");
+        assert!(pacing.connector_failures().contains_key("claude-web"));
+        pacing.succeeded("claude-web", "claude", "cse_1");
+        assert!(pacing.connector_failures().is_empty());
     }
 }

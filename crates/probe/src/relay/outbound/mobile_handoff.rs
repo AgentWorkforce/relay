@@ -9,6 +9,15 @@ fn error(message: impl Into<String>) -> OutboundError {
     OutboundError::new(409, "mobile_handoff_unavailable", message)
 }
 
+/// The plugin's doorbell: a held response that gains one line whenever the
+/// session has a message to collect. Any process in the session may hold it
+/// (the plugin runs a small helper for it), so a ring carries nothing; the
+/// message itself is collected over `poll`, which only Claude's own
+/// process can call.
+pub(super) const WATCH: &str = "/claude/mobile-handoff/watch";
+const READY: &[u8] = b"{\"ring\":\"ready\"}\n";
+const RING: &[u8] = b"{\"ring\":\"queued\"}\n";
+
 fn supported(version: &str) -> bool {
     let numbers: Vec<_> = version.split('.').map(str::parse::<u64>).collect();
     matches!(numbers.as_slice(), [Ok(2), Ok(1), Ok(patch)] if *patch >= 310)
@@ -42,7 +51,12 @@ impl Outbound {
             _ => Err(OutboundError::new(
                 404,
                 "not_found",
-                "Use a documented Agent Relay session-socket route.",
+                "Unknown route. Common session-socket routes: GET /agents, GET /whoami, POST /send, \
+                 POST /register, GET|PATCH /settings, GET /messages, POST /attachments/fetch, \
+                 POST|DELETE /channels/subscribe, POST /connect/join, POST /connect/send, \
+                 GET /connect/status, POST /connect/leave; setup, webhook and integration \
+                 routes are in docs/agent-driven-setup.md, injected-message routes in \
+                 docs/injectable-agents.md.",
             )),
         }
     }
@@ -90,8 +104,11 @@ impl Outbound {
             .core
             .store
             .read(|store| store.teammate_native_input_on());
-        let action = journal::edit(&self.core.config.app_data_dir, |queue| {
-            Ok(queue.poll_allowing(&binding, &runtime, teammates, crate::relay::state::now_ms()))
+        let (action, waiting) = journal::edit(&self.core.config.app_data_dir, |queue| {
+            let action =
+                queue.poll_allowing(&binding, &runtime, teammates, crate::relay::state::now_ms());
+            let waiting = action.is_none() && queue.queued(&binding);
+            Ok((action, waiting))
         })
         .map_err(error)?;
         if action.is_some() {
@@ -100,7 +117,74 @@ impl Outbound {
         match action {
             Some(action) => serde_json::to_value(action)
                 .map_err(|_| error("Could not encode the mobile handoff action.")),
+            // Queued while Claude works: the plugin asks again when its turn
+            // completes rather than on a timer.
+            None if waiting => Ok(json!({"action": null, "waiting": true})),
             None => Ok(json!({"action": null})),
+        }
+    }
+
+    /// Holds the doorbell open until the plugin's helper or the core goes.
+    pub(super) async fn mobile_handoff_watch(
+        &self,
+        pid: i32,
+        uid: u32,
+        stream: &mut super::CoreStream,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let session = match self.identify(pid, uid).await {
+            Ok(session)
+                if session.target.kind == crate::relay::store::SessionKind::ClaudeTerminal
+                    && crate::relay::claude_mobile_plugin::supported() =>
+            {
+                session
+            }
+            Ok(_) => {
+                let refused = error("Only a Claude Code terminal session has a mobile doorbell.");
+                super::write_error(stream, &refused).await;
+                return;
+            }
+            Err(refused) => {
+                super::write_error(stream, &refused).await;
+                return;
+            }
+        };
+        let Some(mut bell) = self.core.mobile_claude_plugins.listen(&session.target) else {
+            let busy = OutboundError::new(
+                503,
+                "mobile_handoff_busy",
+                "Too many Claude sessions hold a mobile doorbell.",
+            );
+            super::write_error(stream, &busy).await;
+            return;
+        };
+        let head = "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+        // The first line lets the plugin collect whatever was queued before
+        // it listened; later rings coalesce while a write is under way.
+        bell.rings.borrow_and_update();
+        if stream.write_all(head.as_bytes()).await.is_err()
+            || stream.write_all(READY).await.is_err()
+            || stream.flush().await.is_err()
+        {
+            return;
+        }
+        let mut input = [0u8; 64];
+        loop {
+            tokio::select! {
+                changed = bell.rings.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+                    bell.rings.borrow_and_update();
+                    if stream.write_all(RING).await.is_err() || stream.flush().await.is_err() {
+                        break;
+                    }
+                }
+                read = stream.read(&mut input) => match read {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                },
+            }
         }
     }
 

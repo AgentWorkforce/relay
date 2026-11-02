@@ -393,6 +393,11 @@ fn checked(timeout: Option<Duration>) -> io::Result<Option<Duration>> {
 impl BlockingStream {
     pub fn connect(path: &Path) -> io::Result<BlockingStream> {
         let name = pipe_name(path);
+        Self::connect_named(&name)
+    }
+
+    pub(crate) fn connect_named(name: &str) -> io::Result<BlockingStream> {
+        let name = name.to_owned();
         let pipe = run(async move { open_client(&name).await })?;
         Ok(BlockingStream {
             pipe: Arc::new(pipe),

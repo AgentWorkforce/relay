@@ -23,6 +23,20 @@ impl CodexRouter {
         }
     }
 
+    /// The messages the queue `source`, one of the thread's `queues`, still
+    /// holds for `thread`, as the delivery runtime just read them
+    /// (`HiddenOrder::note_pending`).
+    pub fn note_pending(
+        &self,
+        thread: &str,
+        source: &str,
+        queues: &[String],
+        message_ids: Option<&[String]>,
+    ) {
+        self.hidden
+            .note_pending(thread, source, queues, message_ids);
+    }
+
     /// Whether another message's copy waits in the thread's history ahead
     /// of this one (`HiddenOrder::behind`).
     pub(super) fn behind_hidden(&self, thread: &str, message_id: &str) -> bool {

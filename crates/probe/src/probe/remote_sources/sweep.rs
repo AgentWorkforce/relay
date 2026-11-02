@@ -32,7 +32,7 @@ pub(super) struct Wanted {
 
 impl Wanted {
     fn load(db: &Path) -> Wanted {
-        let conn = agent_relay_probe::delivery::open_db(db).ok();
+        let conn = crate::delivery::open_db(db).ok();
         let chosen = db
             .parent()
             .and_then(|directory| super::super::read_config(directory).ok())
@@ -43,9 +43,7 @@ impl Wanted {
                 let conn = conn.as_ref()?;
                 // A selected install's job is a session job: its members,
                 // not its selection, are the chosen sessions.
-                let members =
-                    agent_relay_probe::delivery::job_selected_sessions(conn, &config.job_id)
-                        .ok()?;
+                let members = crate::delivery::job_selected_sessions(conn, &config.job_id).ok()?;
                 Some(
                     members
                         .into_iter()
@@ -58,9 +56,9 @@ impl Wanted {
 
     fn wants(&self, source: &str, session_id: &str) -> bool {
         let shareable = self.conn.as_ref().is_none_or(|conn| {
-            agent_relay_probe::delivery::is_shareable(
+            crate::delivery::is_shareable(
                 conn,
-                &agent_relay_probe::delivery::SessionIdentity {
+                &crate::delivery::SessionIdentity {
                     source: source.to_string(),
                     session_id: session_id.to_string(),
                 },
@@ -82,6 +80,10 @@ impl Wanted {
 pub struct SweepOutcome {
     pub hydrated: usize,
     pub failed: usize,
+    /// Safe, plain reasons for connectors with session reads that have not
+    /// recovered. Kept apart from listing state so hydration diagnostics do
+    /// not change connector scheduling; backoff-skipped passes retain them.
+    pub connector_failures: std::collections::BTreeMap<String, String>,
     pub enumeration: Option<Enumeration>,
     /// What pacing held back, for the remote diagnostic.
     pub pacing: Value,
@@ -118,12 +120,13 @@ pub(super) fn sweep_with(
     let mut outcome = SweepOutcome {
         hydrated: 0,
         failed: 0,
+        connector_failures: std::collections::BTreeMap::new(),
         enumeration: None,
         pacing: Value::Null,
     };
-    if due(db) {
-        let report = enumerate_ready(&pass, store)?;
-        mark_enumerated(db, &report)?;
+    if due_for(host, db) {
+        let mut report = enumerate_ready(&pass, store)?;
+        mark_enumerated(db, &mut report)?;
         outcome.enumeration = Some(report);
     }
     let ready = ready(host, Some(db));
@@ -142,8 +145,12 @@ pub(super) fn sweep_with(
         signed_out: BTreeSet::new(),
     };
     run.pacing.held_back = held_back_reason(db, &run.pacing);
+    let wanted = Wanted::load(db);
+    let rows = due_rows(store, &ready, &wanted)?;
+    run.pacing
+        .retain_wanted(|source, session_id| wanted.wants(source, session_id));
     let mut waiting = 0;
-    for row in due_rows(store, &ready, &Wanted::load(db))? {
+    for row in rows {
         let source = row.source.as_str();
         if !run
             .pacing
@@ -160,9 +167,45 @@ pub(super) fn sweep_with(
         }
     }
     run.pacing.waiting = waiting;
+    outcome.connector_failures = run.pacing.connector_failures();
     outcome.pacing = run.pacing.json();
     run.pacing.save(db)?;
     Ok(Some(outcome))
+}
+
+/// Keep what one selected-capture download did for Settings: selected
+/// capture runs no sweep, so its failures are recorded here, in the same
+/// pacing state a sweep keeps, and each is forgotten once that session
+/// downloads or is no longer shared. A stopped download, or a Keychain read
+/// still waiting, changes nothing.
+pub(super) fn note_download(
+    db: &Path,
+    ready: &[(&'static str, &'static str)],
+    source: &str,
+    session_id: &str,
+    result: &Result<Option<bool>>,
+) {
+    let Some((connector, _)) = ready.iter().find(|(_, s)| *s == source) else {
+        return;
+    };
+    let mut pacing = Pacing::load(db);
+    let before = pacing.clone();
+    match result {
+        Ok(Some(_)) => pacing.resolved(source, session_id),
+        Ok(None) => return,
+        Err(error) => {
+            let reason = failure_reason(connector, error);
+            if reason == claude_cloud::KEYCHAIN_WAITING {
+                return;
+            }
+            pacing.record_failure(connector, source, session_id, reason, now_ms());
+        }
+    }
+    let wanted = Wanted::load(db);
+    pacing.retain_wanted(|source, session_id| wanted.wants(source, session_id));
+    if pacing != before {
+        let _ = pacing.save(db);
+    }
 }
 
 /// Why downloads must wait, as the diagnostic says it.
@@ -261,11 +304,28 @@ impl Run<'_, '_, '_> {
             Err(error) => error,
         };
         if keychain_not_ready(&error) {
-            // Not a failure: Claude is not ready until the Keychain allows it.
+            // Not a failure: Claude is not ready until the Keychain allows
+            // it, and it is retried as before. A refusal is still kept for
+            // Settings until this session downloads; a read still waiting
+            // is not.
+            let reason = failure_reason(connector, &error);
+            if !connector.is_empty() && reason != claude_cloud::KEYCHAIN_WAITING {
+                self.pacing
+                    .record_failure(connector, source, &row.session_id, reason, self.now);
+            }
             self.signed_out.insert(source.to_string());
             return false;
         }
         outcome.failed += 1;
+        if !connector.is_empty() {
+            self.pacing.record_failure(
+                connector,
+                source,
+                &row.session_id,
+                failure_reason(connector, &error),
+                self.now,
+            );
+        }
         if error.is::<Unready>() || error.to_string().starts_with("AUTHENTICATION_EXPIRED") {
             self.signed_out.insert(source.to_string());
             return false;

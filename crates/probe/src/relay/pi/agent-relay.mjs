@@ -1,10 +1,12 @@
 // AGENT_RELAY_PI_EXTENSION=2
-// No Pi package imports: works with both package names and older extension APIs.
+// No Pi package imports: works with both package names, older extension APIs,
+// and omp (oh-my-pi), which shares this API.
 import * as fs from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 
 const runtime = __RUNTIME__;
+const harness = __HARNESS__;
 const limit = 1024 * 1024;
 const digest = text => createHash('sha256').update(text).digest('hex');
 const contentText = content => typeof content === 'string' ? content :
@@ -93,6 +95,8 @@ function inbox(state) {
 
 export default function (pi) {
   let active;
+  // omp saves titles asynchronously; requests in flight are not repeated.
+  const naming = new Set();
 
   function stop() {
     if (!active) return;
@@ -114,13 +118,21 @@ export default function (pi) {
           record.requestId !== name.slice(6, -5) || !Number.isSafeInteger(record.expiresAt) ||
           record.expiresAt < Date.now() || typeof record.title !== 'string' ||
           !record.title.trim() || [...record.title].length > 200 || /[\x00-\x1f\x7f]/.test(record.title)) continue;
+      if (naming.has(name)) continue;
+      const settle = ok => {
+        try {
+          record.title = ok ? pi.getSessionName() : record.title;
+          record.state = ok && typeof record.title === 'string' && record.title.trim() ? 'done' : 'failed';
+        } catch { record.state = 'failed'; }
+        try { write(path, record); } catch {}
+      };
       try {
-        pi.setSessionName(record.title);
-        record.title = pi.getSessionName();
-        if (typeof record.title !== 'string' || !record.title.trim()) throw new Error('No title saved');
-        record.state = 'done';
-      } catch { record.state = 'failed'; }
-      write(path, record);
+        const saving = pi.setSessionName(record.title);
+        if (typeof saving?.then === 'function') {
+          naming.add(name);
+          saving.then(() => settle(true), () => settle(false)).finally(() => naming.delete(name));
+        } else settle(true);
+      } catch { settle(false); }
     }
     const title = pi.getSessionName();
     if (typeof title === 'string' && title !== state.title) {
@@ -171,7 +183,10 @@ export default function (pi) {
           record.state = 'claimed';
           write(path, record);
           submitted = true;
-          pi.sendUserMessage(prompt, { deliverAs: 'followUp' });
+          // Pi starts an idle follow-up as a turn; omp only queues one with an
+          // explicit deliverAs, while a plain send to an idle omp starts a turn.
+          if (harness === 'omp') pi.sendUserMessage(prompt);
+          else pi.sendUserMessage(prompt, { deliverAs: 'followUp' });
         }
       }
     } catch {
@@ -179,7 +194,7 @@ export default function (pi) {
     } finally { state.pumping = false; }
   }
 
-  pi.on('session_start', (_event, ctx) => {
+  function start(ctx) {
     stop();
     // Persistent sessions only. A print/subagent invocation is not an open terminal.
     if (!ctx.hasUI || !ctx.sessionManager.getSessionFile() ||
@@ -193,9 +208,10 @@ export default function (pi) {
       privateDir(dir);
       const path = join(dir, 'session.json');
       write(path, { version: 1, pid: process.pid, sessionId: id,
-        instance, cwd: ctx.cwd, title: pi.getSessionName?.() || 'Pi session',
+        instance, cwd: ctx.cwd, title: pi.getSessionName?.() || (harness === 'omp' ? 'Oh My Pi session' : 'Pi session'),
         titleEditing: typeof pi.setSessionName === 'function' && typeof pi.getSessionName === 'function',
-        nativeContinuation: 1 });
+        // Owner-native input is offered for Pi only; the core never sends it to omp.
+        nativeContinuation: harness === 'omp' ? 0 : 1 });
       const fd = fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
       // Relay proves this exact process still holds this file open, on both OSes.
       active = { id, dir, fd, ctx, finished: new Set(), pumping: false, timer: undefined };
@@ -205,7 +221,16 @@ export default function (pi) {
         ? 'Agent Relay extension loaded. While the Agent Relay core runs, this session joins Agent Relay on its own and receives messages; if it does not appear there, enable Receives messages for it in Agent Relay.'
         : 'Agent Relay extension loaded. Enable Receives messages for this session in Agent Relay.', 'info');
     } catch { stop(); }
-  });
+  }
+
+  pi.on('session_start', (_event, ctx) => start(ctx));
+  // omp keeps its first session_start and reports /new, /resume and forks as
+  // switches; a changed session id must never keep the old one's inbox live.
+  const switched = (_event, ctx) => {
+    if (ctx?.sessionManager?.getSessionId?.() !== active?.id) start(ctx);
+  };
+  pi.on('session_switch', switched);
+  pi.on('session_branch', switched);
   pi.on('message_end', () => pump());
   pi.on('agent_end', () => pump());
   pi.on('session_shutdown', stop);

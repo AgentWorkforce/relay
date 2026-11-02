@@ -14,6 +14,7 @@ pub fn kind_label(kind: SessionKind) -> &'static str {
         SessionKind::OpenClaw => "OpenClaw",
         SessionKind::Hermes => "Hermes",
         SessionKind::Pi => "Pi",
+        SessionKind::Omp => "Oh My Pi",
     }
 }
 
@@ -34,6 +35,8 @@ pub fn source_name(source: &str) -> String {
         "devin" => "Devin",
         "openclaw" => "OpenClaw",
         "hermes" => "Hermes",
+        "pi" => "Pi",
+        "omp" => "Oh My Pi",
         _ => return super::capitalized(source),
     }
     .to_string()
@@ -59,5 +62,15 @@ pub fn hosted_kind_label(kind: SessionKind, host: Option<&str>) -> String {
         Some("paseo") => format!("{provider} in Paseo"),
         Some("conductor") => format!("{provider} in Conductor"),
         _ => provider.to_string(),
+    }
+}
+
+/// The source the session icon is drawn for: a Claude Code terminal
+/// session shows the Claude Code crab, a Claude app session the Claude mark.
+pub fn kind_icon_source(kind: SessionKind) -> &'static str {
+    match kind {
+        SessionKind::ClaudeTerminal => "claude-code",
+        SessionKind::ClaudeCloud => "claude",
+        _ => kind.source(),
     }
 }

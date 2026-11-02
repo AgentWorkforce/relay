@@ -29,7 +29,12 @@
 //! `revision_base`, which keeps every revision above the highest this origin
 //! has sent, including across a replaced database.
 
+mod census;
 mod counters;
+pub use census::{
+    catalog_changed, counts as session_counts, refresh as refresh_session_census,
+    selectable as is_selectable, selectable_session_identities, CensusRefresh, SessionCounts,
+};
 mod database;
 mod exclusions;
 pub use counters::reconcile as reconcile_status_counters;
@@ -345,7 +350,7 @@ pub(crate) struct RetainedPayload {
     text: String,
 }
 impl RetainedPayload {
-    pub(crate) fn new(payload: PreparedPayload) -> Result<Self> {
+    pub fn new(payload: PreparedPayload) -> Result<Self> {
         let text = serde_json::to_string(&payload)?;
         Ok(Self { payload, text })
     }
@@ -465,24 +470,10 @@ pub enum DeliveryFailure {
     UnsupportedEvidence,
     MappingVersionMismatch,
     DeliveryConflict,
-}
-impl DeliveryFailure {
-    fn retryable(self) -> bool {
-        matches!(self, Self::Transient | Self::RateLimited)
-    }
-    fn code(self) -> &'static str {
-        match self {
-            Self::Transient => "transient",
-            Self::RateLimited => "rate_limited",
-            Self::AuthenticationRequired => "authentication_required",
-            Self::PermissionDenied => "permission_denied",
-            Self::InvalidPayload => "invalid_payload",
-            Self::ReceiverRejected => "receiver_rejected",
-            Self::UnsupportedEvidence => "unsupported_evidence",
-            Self::MappingVersionMismatch => "mapping_version_mismatch",
-            Self::DeliveryConflict => "delivery_conflict",
-        }
-    }
+    /// An older managed ai-hist uploader is scheduled on this computer, so
+    /// uploading here could deliver the same history twice. Retried on the
+    /// transient schedule: uploads resume by themselves once it is removed.
+    LegacyUploaderActive,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2363,9 +2354,11 @@ fn change_state(
     let existing = job(&tx, job_id)?;
     ensure!(existing.state != "cancelled", "delivery job is cancelled");
     // Older versions allowed blocked -> paused. Preserve that recorded failure
-    // as well as the current state until an explicit retry clears it.
+    // as well as the current state until an explicit retry clears it. The
+    // retried failures (`DeliveryFailure::retryable`) leave the job active,
+    // so it pauses and resumes like any other.
     let permanent_failure: bool = tx.query_row(
-        "SELECT failure IS NOT NULL AND failure NOT IN ('transient','rate_limited') FROM delivery_jobs WHERE id=?",
+        "SELECT failure IS NOT NULL AND failure NOT IN ('transient','rate_limited','legacy_uploader_active') FROM delivery_jobs WHERE id=?",
         [job_id], |row| row.get(0),
     )?;
     ensure!(
@@ -2771,27 +2764,6 @@ pub fn session_identities(conn: &Connection) -> Result<Vec<SessionIdentity>> {
     let store = feed::store(conn)?;
     let mut identities = Vec::new();
     let mut query = ai_hist::IdentityQuery::default().limit(10_000);
-    loop {
-        let page = store.session_identities(query.clone())?;
-        let Some(last) = page.last().cloned() else {
-            break;
-        };
-        identities.extend(page.into_iter().map(|identity| SessionIdentity {
-            source: identity.source_name,
-            session_id: identity.session_id,
-        }));
-        query = query.after(last);
-    }
-    Ok(identities)
-}
-/// The sessions a person can select: [`session_identities`] without the
-/// subagents and child threads that are part of another session.
-pub fn selectable_session_identities(conn: &Connection) -> Result<Vec<SessionIdentity>> {
-    let store = feed::store(conn)?;
-    let mut identities = Vec::new();
-    let mut query = ai_hist::IdentityQuery::default()
-        .limit(10_000)
-        .exclude_delegated();
     loop {
         let page = store.session_identities(query.clone())?;
         let Some(last) = page.last().cloned() else {
@@ -3479,6 +3451,91 @@ mod tests {
         assert_eq!(blocked.failure.as_deref(), Some("permission_denied"));
         assert_eq!(blocked.acknowledged_records, 4);
         assert_eq!(holder(&conn, &job_id), None);
+    }
+
+    /// An active older ai-hist uploader holds delivery without blocking the
+    /// job: it waits out a backoff, is claimed again, and once the uploader
+    /// is gone the same batch is acknowledged with no explicit retry. It
+    /// used to block the job as `permission_denied` for good.
+    #[test]
+    fn an_active_legacy_uploader_backs_off_and_recovers_without_a_retry() {
+        let (_directory, conn, job_id) = windowed_job(2);
+        let store = feed::store(&conn).unwrap();
+        prepare_batch_from(&conn, &store, &job_id, 0, 2, PublishedLimits::default()).unwrap();
+        let clock = || 1_000;
+        let held = claim_batch(&conn, &job_id, "worker", 30_000, &clock)
+            .unwrap()
+            .unwrap();
+        persisted(&conn, &held, &clock);
+        record_failure(
+            &conn,
+            &held.lease,
+            DeliveryFailure::LegacyUploaderActive,
+            None,
+            &clock,
+        )
+        .unwrap();
+        let waiting = status(&conn, &job_id).unwrap();
+        assert_eq!(waiting.state, "active");
+        assert_eq!(waiting.failure.as_deref(), Some("legacy_uploader_active"));
+        assert!(waiting.next_attempt_ms > 1_000);
+        assert!(waiting.next_attempt_ms <= 1_000 + retry::TRANSIENT_BACKOFF_CEILING_MS * 6 / 5);
+        // Not claimable before its backoff ends.
+        assert!(claim_batch(&conn, &job_id, "worker", 30_000, &clock)
+            .unwrap()
+            .is_none());
+        // After it, the batch is claimed again and, the uploader removed,
+        // acknowledged.
+        let later = || 1_000 + retry::TRANSIENT_BACKOFF_CEILING_MS * 2;
+        let again = claim_batch(&conn, &job_id, "worker", 30_000, &later)
+            .unwrap()
+            .unwrap();
+        persisted(&conn, &again, &later);
+        assert!(
+            settle(&conn, &again.lease, &accepted(&again), &later)
+                .unwrap()
+                .complete
+        );
+        let delivered = status(&conn, &job_id).unwrap();
+        assert_eq!(delivered.state, "active");
+        assert_eq!(delivered.failure, None);
+        assert_eq!(delivered.acknowledged_records, 2);
+    }
+
+    /// Both retried holds of the older-uploader check, an active uploader
+    /// (`legacy_uploader_active`) and a check that could not finish
+    /// (`transient`), leave a job the person can pause, resume and retry.
+    #[test]
+    fn a_job_held_by_the_older_uploader_check_pauses_resumes_and_retries() {
+        for failure in [
+            DeliveryFailure::LegacyUploaderActive,
+            DeliveryFailure::Transient,
+        ] {
+            let (_directory, conn, job_id) = windowed_job(2);
+            let store = feed::store(&conn).unwrap();
+            prepare_batch_from(&conn, &store, &job_id, 0, 2, PublishedLimits::default()).unwrap();
+            let clock = || 1_000;
+            let held = claim_batch(&conn, &job_id, "worker", 30_000, &clock)
+                .unwrap()
+                .unwrap();
+            record_failure(&conn, &held.lease, failure, None, &clock).unwrap();
+            let paused = pause_job(&conn, &job_id).unwrap();
+            assert_eq!(paused.state, "paused", "{failure:?}");
+            // A paused job is not claimed, whatever the backoff says.
+            let later = || 1_000 + retry::TRANSIENT_BACKOFF_CEILING_MS * 2;
+            assert!(claim_batch(&conn, &job_id, "worker", 30_000, &later)
+                .unwrap()
+                .is_none());
+            assert_eq!(resume_job(&conn, &job_id).unwrap().state, "active");
+            // Retry ends the backoff at once.
+            assert!(
+                retry_requested(&conn, &job_id, 1_001).unwrap(),
+                "{failure:?}"
+            );
+            let woken = status(&conn, &job_id).unwrap();
+            assert_eq!(woken.next_attempt_ms, 0);
+            assert_eq!(woken.failure, None);
+        }
     }
 
     /// A stop releases each claim of a window; the last one releases the

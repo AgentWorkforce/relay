@@ -34,7 +34,7 @@ pub(super) fn for_create(
             .expires_at
             .as_deref()
             .and_then(parse_iso_ms)
-            .is_some_and(|expiry| expiry <= agent_relay_probe::relay::state::now_ms())
+            .is_some_and(|expiry| expiry <= crate::relay::state::now_ms())
     });
     let state = match live {
         Some(state) => state,

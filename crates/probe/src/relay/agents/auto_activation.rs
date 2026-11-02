@@ -39,7 +39,7 @@ impl ActivationSettings {
 /// (which `relay init` turns on for a person who chose that tool) do.
 fn own_opt_in(settings: &ActivationSettings, kind: SessionKind) -> Option<bool> {
     match kind {
-        SessionKind::Pi => Some(settings.pi),
+        SessionKind::Pi | SessionKind::Omp => Some(settings.pi),
         SessionKind::OpenCodeOpen => Some(settings.opencode),
         _ => None,
     }

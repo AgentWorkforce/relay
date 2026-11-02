@@ -75,22 +75,19 @@ impl ProcessTable for SystemProcesses {
                 .is_ok_and(|m| (m.uid() == 0 || m.uid() == uid) && m.mode() & 0o022 == 0)
     }
 
+    fn command_line(&self, pid: i32) -> CommandLine {
+        CommandLine {
+            arguments: self.arguments(pid),
+            environment: fs::read(proc(pid).join("environ"))
+                .ok()
+                .map(|bytes| split_nul(&bytes)),
+        }
+    }
+
     fn arguments(&self, pid: i32) -> Vec<String> {
         fs::read(proc(pid).join("cmdline"))
             .map(|bytes| split_nul(&bytes))
             .unwrap_or_default()
-    }
-
-    fn environment_readable(&self, pid: i32) -> bool {
-        fs::read(proc(pid).join("environ")).is_ok()
-    }
-
-    fn environment_var(&self, pid: i32, key: &str) -> Option<String> {
-        let bytes = fs::read(proc(pid).join("environ")).ok()?;
-        split_nul(&bytes).into_iter().find_map(|entry| {
-            let (name, value) = entry.split_once('=')?;
-            (name == key).then(|| value.to_string())
-        })
     }
 
     fn open_files(&self, pid: i32) -> Vec<PathBuf> {

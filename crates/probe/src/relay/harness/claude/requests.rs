@@ -5,8 +5,10 @@
 //! Each gets a short random reference and a fixed summary; what Claude asked
 //! (a command, a path, a form) is never copied into it, since it may hold a
 //! credential. Only the verified machine owner may answer, by Relaycast's
-//! immutable id for the signed-in person: never the agent that asked for the
-//! spawn, nor any other. One not answered within five minutes is denied; when Claude's
+//! immutable id for the signed-in person, and the agent that asked for the
+//! spawn only when **Approvals from the spawning agent** lets it
+//! (`spawn::drive::Core::approving_requester`): never any other. The first
+//! answer counts. One not answered within five minutes is denied; when Claude's
 //! input goes, so do its references, and a later reply finds nothing.
 
 use crate::relay::codex::app_server::drive::ReplyResult;
@@ -320,7 +322,8 @@ fn live<'a>(
 }
 
 /// `approve` or `deny` from `sender_id`, Relaycast's immutable id for the
-/// message's author, never a name the text claims. Only the verified owner.
+/// message's author, never a name the text claims. Only `owner_id`: the
+/// verified owner, or the spawning agent when it may answer.
 pub fn answer(
     session: &str,
     reference: &str,
@@ -342,7 +345,7 @@ pub fn answer(
     ReplyResult::Answered
 }
 
-/// `choose <n>` for an `AskUserQuestion`, from the verified owner only.
+/// `choose <n>` for an `AskUserQuestion`, from `owner_id` only, as `answer`.
 pub fn answer_choice(
     session: &str,
     reference: &str,

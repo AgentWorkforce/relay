@@ -28,10 +28,11 @@
 //! | `sessions` | The `SessionDirectory` trait: sessions on this computer |
 //! | `cloud_session` | The `CloudAccess` trait; Cloud session calls: refresh, handoff exchange, revoke, whoami, workspace resolve; where the session is kept |
 //! | `cloud_http` | One redirect-free, bounded JSON request to Cloud |
-//! | `cloud_login` | Browser (loopback + PKCE) and device sign-in |
+//! | `cloud_login` | Device sign-in, for Relay Connect hosts |
 //! | `account` | Sign-in, the kept session, the account workspace, sign-out; the daemon's `CloudAccess` |
 //! | `uploader` | The probe's own capture and upload: its commands, status stages, supervision |
 //! | `probe_copy` | The command-line copy of the probe in `~/.local/bin`, only ever upgraded |
+//! | `probe_alias` | The space-free link to the probe that Codex and Claude Code rules and reply hints name while their hooks are on |
 //! | `account_methods` | The bridge methods for the account, uploader, Skip chat, contractor access, telemetry, launch at login |
 //! | `cloud_chat` | Skip chat: requests, the saved conversation and project view, pushes |
 //! | `messaging` | Messaging as the signed-in person; exact-address proof |
@@ -48,16 +49,13 @@
 //! | `claude` | Claude Code sessions: registry, peer inbox, Claude app sessions, final answers, the optional SessionStart hook |
 //! | `claude_settings` | Claude Code's `crossSessionInbound` (`direct_delivery`) |
 //! | `claude_delivery_policy` | Claude Code per-session and per-sender consent, held approvals |
-//! | `fleet` | Fleet workers: broker discovery, `/api/spawned`, `fleet.list` and `fleet.release` |
 //! | `local` | This computer's `SessionDirectory` and `Injector`, and the plugins `relay serve` runs with |
-//! | `local_methods` | `sessions.list`, `fleet.*`, and the sessions/fleet watcher |
+//! | `local_methods` | `sessions.list` and the sessions watcher |
 //! | `outbound` | The relay-send socket: sessions send, list, register and run setup |
 //! | `setup` | Agent-led setup routes and defaults |
 //! | `outbox` | Incoming cloud messages: outboxes, delivery workers, sharing policy, inboxes |
 //! | `spawn` | The spawn node: Agent Relay starting Codex and Claude headless on this computer |
 
-pub mod account;
-pub mod account_methods;
 pub mod activity;
 pub mod agents;
 pub mod app_store;
@@ -79,6 +77,7 @@ pub mod codex;
 pub mod codex_mobile;
 pub mod conductor;
 pub mod connect;
+mod connect_inbox;
 mod connect_lifetime;
 pub mod connect_presence;
 pub mod contract;
@@ -91,7 +90,7 @@ pub(crate) mod detach;
 pub mod devin;
 pub mod devin_cloud;
 pub mod diagnostic_http;
-pub(crate) mod diagnostics;
+pub mod diagnostics;
 pub mod existing_session;
 pub mod files;
 pub mod fleet;
@@ -101,9 +100,11 @@ pub mod harness_setup;
 pub mod hermes;
 pub mod history_retention;
 pub mod hook_agents;
+pub mod host_methods;
 pub mod hosted_mcp;
 pub mod incoming;
 pub mod inject;
+pub mod integration_defaults;
 pub mod integrations;
 pub mod links;
 pub mod local;
@@ -130,6 +131,7 @@ pub mod paths;
 pub mod peer;
 pub mod people;
 pub mod pi;
+pub mod plan;
 pub mod probe_alias;
 pub mod probe_copy;
 pub mod process;
@@ -143,6 +145,7 @@ pub mod request_log;
 pub mod sdk_gaps;
 pub mod server;
 pub mod session_cli;
+pub mod session_naming;
 pub mod session_titles;
 pub mod sessions;
 pub mod settings_cli;
@@ -154,9 +157,12 @@ pub mod state;
 pub mod store;
 pub mod store_settings;
 pub mod telemetry;
+#[doc(hidden)]
+pub mod test_account;
 pub mod transport;
 pub mod trusted;
 pub mod uploader;
+pub mod websocket_tls;
 pub mod workspace;
 
 #[cfg(feature = "history")]

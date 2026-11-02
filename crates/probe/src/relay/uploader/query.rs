@@ -4,7 +4,6 @@ use std::hash::{Hash, Hasher};
 #[cfg(feature = "history")]
 mod observations;
 
-#[cfg(feature = "history")]
 fn query_failed() -> RpcError {
     RpcError::new(ErrorKind::Internal, "Session search stopped.")
 }
@@ -35,9 +34,39 @@ impl Uploader {
         Ok(self.runner.run(args, Some(timeouts::SESSIONS)).await?)
     }
 
+    pub(crate) async fn naming_checkpoint(
+        &self,
+        source: &str,
+        id: &str,
+    ) -> Result<crate::relay::session_naming::PromptCheckpoint, RpcError> {
+        let value = self
+            .runner
+            .run(
+                vec![
+                    "sessions".into(),
+                    "naming-checkpoint".into(),
+                    "--json".into(),
+                    "--source".into(),
+                    source.into(),
+                    "--session-id".into(),
+                    id.into(),
+                ],
+                Some(timeouts::SESSIONS),
+            )
+            .await?;
+        let response: crate::relay::session_naming::PromptCheckpointResponse =
+            serde_json::from_value(value).map_err(|_| query_failed())?;
+        response.checkpoint.ok_or_else(|| {
+            RpcError::new(
+                ErrorKind::Busy,
+                "Local prompt evidence is not available yet.",
+            )
+        })
+    }
+
     #[cfg(feature = "history")]
     /// Query pages never increase the legacy listing/background working set.
-    pub(crate) async fn sessions_query(
+    pub async fn sessions_query(
         &self,
         request: crate::relay::contract::account::SessionQueryParams,
         local: Vec<crate::relay::contract::agents::LocalSession>,
@@ -49,27 +78,24 @@ impl Uploader {
         let _refresh = self.query_refresh.lock().await;
         let reader = self.query_reader().await?;
         let generation = self.changes.load(Ordering::SeqCst);
-        // Status polling is independent. A cold/held status helper must not
-        // delay catalog pages; completed status participates in the page token.
-        let status_value = self
+        // Status reads are independent. A cold/held status read must not
+        // delay catalog pages; completed status participates in the page
+        // token as the apps show it, so a queue's age alone changes no page.
+        let shown = self
             .status_snapshot
             .lock()
             .map_err(|_| query_failed())?
             .as_ref()
             .filter(|(version, _)| *version == generation)
-            .map(|(_, value)| value.clone());
+            .map(|(_, value)| crate::relay::contract::account::UploaderStatus::from_probe(value));
         let mut token = std::collections::hash_map::DefaultHasher::new();
         generation.hash(&mut token);
-        status_value
+        shown
             .as_ref()
-            .map(serde_json::Value::to_string)
+            .map(|shown| serde_json::to_string(shown).unwrap_or_default())
             .hash(&mut token);
         let status_token = token.finish();
-        let status = status_value.map(|value| {
-            crate::session_model::StatusView::new(
-                &crate::relay::contract::account::UploaderStatus::from_probe(&value),
-            )
-        });
+        let status = shown.map(|shown| crate::session_model::StatusView::new(&shown));
         let install = self.install().ok_or_else(not_connected)?;
         let directory = PathBuf::from(install.directory.ok_or_else(not_connected)?);
         let catalog_path = directory.join("history.db");
@@ -159,7 +185,7 @@ impl Uploader {
     }
 
     #[cfg(feature = "history")]
-    pub(crate) async fn sessions_facets(
+    pub async fn sessions_facets(
         &self,
         request: crate::relay::contract::account::SessionFacetParams,
     ) -> Result<crate::relay::contract::account::SessionFacetsPage, RpcError> {
@@ -316,7 +342,7 @@ impl Uploader {
         RpcError::history_unavailable()
     }
 
-    pub(crate) async fn sessions_query(
+    pub async fn sessions_query(
         &self,
         _request: crate::relay::contract::account::SessionQueryParams,
         _local: Vec<crate::relay::contract::agents::LocalSession>,
@@ -328,7 +354,7 @@ impl Uploader {
         Err(Self::catalog_unavailable())
     }
 
-    pub(crate) async fn sessions_facets(
+    pub async fn sessions_facets(
         &self,
         _request: crate::relay::contract::account::SessionFacetParams,
     ) -> Result<crate::relay::contract::account::SessionFacetsPage, RpcError> {

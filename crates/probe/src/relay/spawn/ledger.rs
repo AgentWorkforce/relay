@@ -199,6 +199,16 @@ impl Core {
             .clone()
     }
 
+    /// Serializes an app-initiated end with spawn, release and take-over
+    /// work for the same agent without exposing the ledger's guard type.
+    pub(crate) async fn lock_spawn_action(&self, name: &str) -> impl Drop {
+        self.ledger()
+            .actions
+            .get(format!("agent/{name}"))
+            .lock_owned()
+            .await
+    }
+
     pub(super) fn observer(&self) -> Arc<dyn Observe> {
         let ledger = self.ledger();
         let mut observer = ledger.observer.lock().unwrap_or_else(|e| e.into_inner());

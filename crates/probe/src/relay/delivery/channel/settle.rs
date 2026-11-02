@@ -18,11 +18,11 @@ use std::time::Instant;
 pub(super) fn uses_automatic_replies(kind: SessionKind) -> bool {
     matches!(
         kind,
-        SessionKind::OpenClaw | SessionKind::Hermes | SessionKind::Pi
+        SessionKind::OpenClaw | SessionKind::Hermes | SessionKind::Pi | SessionKind::Omp
     )
 }
 
-/// The post an OpenClaw, Hermes or Pi agent's answer to a delivered batch
+/// The post an OpenClaw, Hermes, Pi or Oh My Pi agent's answer to a delivered batch
 /// replies to: its last, the one whose reference the adapters keep the
 /// answer under (`hand_over`). `None` for other kinds, which answer on the
 /// session socket, and for a batch that may not have arrived.
@@ -121,6 +121,7 @@ impl Core {
             let mut state = self.delivery_state();
             for post in settle.posts {
                 state.retries.remove(&post.id);
+                state.waiting.remove(&post.id);
             }
         }
         if let Some(key) = settle.pin_key {
@@ -292,6 +293,7 @@ impl Core {
         }
         self.drain_later(settle.registration, 5.2);
         for post in settle.posts {
+            self.note_waiting(settle.registration, post, outcome);
             self.record_settled(
                 settle.registration,
                 post,
@@ -330,7 +332,12 @@ mod tests {
     #[test]
     fn a_gateway_agents_batch_answer_replies_to_its_last_post() {
         let posts = [post("m-1"), post("m-2")];
-        for kind in [SessionKind::OpenClaw, SessionKind::Hermes, SessionKind::Pi] {
+        for kind in [
+            SessionKind::OpenClaw,
+            SessionKind::Hermes,
+            SessionKind::Pi,
+            SessionKind::Omp,
+        ] {
             let agent = registration(
                 kind,
                 if kind == SessionKind::Hermes {

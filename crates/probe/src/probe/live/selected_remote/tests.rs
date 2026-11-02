@@ -1,9 +1,9 @@
 use super::*;
-use crate::live::tests::{
+use crate::probe::live::tests::{
     append, config, eventually, isolated_home, job_config, options, transcript_line,
 };
-use crate::remote_sources::test_host::{credentials, FakeKeychain};
-use crate::remote_sources::tests::EnvGuard;
+use crate::probe::remote_sources::test_host::{credentials, FakeKeychain};
+use crate::probe::remote_sources::tests::EnvGuard;
 mod api;
 use api::Api;
 
@@ -16,7 +16,7 @@ fn due(db: &Path) {
         .unwrap();
 }
 fn armed_after(
-    clock: &crate::remote_sources::test_host::VirtualClock,
+    clock: &crate::probe::remote_sources::test_host::VirtualClock,
     previous: u64,
 ) -> (u64, Instant) {
     eventually(
@@ -73,9 +73,9 @@ fn count(db: &Path, id: &str) -> i64 {
 }
 fn sharing(home: &Path) {
     let env = |key: &str| std::env::var(key).ok();
-    let relay = agent_relay_probe::relay::workspace::relay_home(&env, home);
+    let relay = crate::relay::workspace::relay_home(&env, home);
     std::fs::create_dir_all(&relay).unwrap();
-    agent_relay_probe::relay::claude_dirs::ClaudeDirs::from_env(&env, home, &relay)
+    crate::relay::claude_dirs::ClaudeDirs::from_env(&env, home, &relay)
         .set_cloud_sessions(true)
         .unwrap();
 }
@@ -89,7 +89,25 @@ fn short() -> LiveOptions {
     }
 }
 
-fn remote_changes(claude: bool, name: &str) {
+fn await_text(db: &Path, id: &str, value: &str, api: &Api, shared: &Shared) {
+    let started = Instant::now();
+    while !text(db, id, value) {
+        if started.elapsed() >= Duration::from_secs(8) {
+            let diagnostic = |name: &str| {
+                std::fs::read_to_string(db.parent().unwrap().join(name))
+                    .unwrap_or_else(|error| error.to_string())
+            };
+            panic!(
+                "selected remote evidence {value} missing after 8s; requests={:?}; metrics={:?}; remote={}; capture={}; listing={:?}",
+                api.lines(), shared.report(), diagnostic("remote-diagnostic.json"),
+                diagnostic("capture-diagnostic.json"), crate::probe::remote_sources::last_enumeration(db),
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn remote_changes(claude: bool, prelisted: bool, name: &str) {
     let Some(home) = isolated_home(name) else {
         return;
     };
@@ -111,22 +129,29 @@ fn remote_changes(claude: bool, name: &str) {
             .then(|| credentials(chrono::Utc::now().timestamp_millis() + 3_600_000))
             .as_deref(),
     );
-    let host = crate::remote_sources::test_host::install(&home, &db, fake);
+    let host = crate::probe::remote_sources::test_host::install(&home, &db, fake);
     let clock = host.clock().unwrap();
+    if prelisted {
+        // Model the remote worker winning startup: its opaque locator must
+        // never be cached as a local path denied by the folder-sharing gate.
+        enumerate(&db, &home, || false).unwrap().unwrap();
+        let paths = history::raw_paths(
+            &history::open_read(&db).unwrap(),
+            &[SessionRef::id(Source::Claude, id)],
+        )
+        .unwrap();
+        assert_eq!(paths, [None], "a remote ID is not a local transcript path");
+    }
     let shared = Arc::new(Shared::default());
     let stopped = Arc::new(AtomicBool::new(false));
-    let capture = crate::live::start(
+    let capture = crate::probe::live::start(
         &directory,
         &config(&job, true),
         stopped.clone(),
         shared.clone(),
         short(),
     );
-    eventually(
-        "actual selected worker lists and actual member loop hydrates",
-        Duration::from_secs(8),
-        || text(&db, id, "version-1"),
-    );
+    await_text(&db, id, "version-1", &api, &shared);
     let unselected = if claude {
         "session_02unselected"
     } else {
@@ -134,7 +159,7 @@ fn remote_changes(claude: bool, name: &str) {
     };
     assert_eq!(count(&db, unselected), 0);
     let store = history::open_read(&db).unwrap();
-    assert!(crate::remote_sources::observed(&store, source, unselected).unwrap());
+    assert!(crate::probe::remote_sources::observed(&store, source, unselected).unwrap());
     // Many real member turns before the provider's 300-second marker is due
     // perform neither another listing nor an evidence acquisition.
     let lists = api.lists();
@@ -178,11 +203,7 @@ fn remote_changes(claude: bool, name: &str) {
     api.version.store(2, Ordering::SeqCst);
     due(&db);
     assert!(clock.advance(next.0, next.1));
-    eventually(
-        "changed remote File(None)/Catalog member refreshes before its one-hour backstop",
-        Duration::from_secs(8),
-        || text(&db, id, "version-2"),
-    );
+    await_text(&db, id, "version-2", &api, &shared);
     assert!(api.lists() > lists);
     assert!(api.fetches() > fetches);
     assert_eq!(count(&db, unselected), 0);
@@ -197,17 +218,22 @@ fn remote_changes(claude: bool, name: &str) {
 
 #[test]
 fn selected_devin_worker_refreshes_shallow_catalog_and_selected_evidence() {
-    remote_changes(false,"live::selected_remote::tests::selected_devin_worker_refreshes_shallow_catalog_and_selected_evidence")
+    remote_changes(false, false,"probe::live::selected_remote::tests::selected_devin_worker_refreshes_shallow_catalog_and_selected_evidence")
 }
 #[test]
 fn selected_claude_worker_refreshes_shallow_catalog_and_selected_evidence() {
-    remote_changes(true,"live::selected_remote::tests::selected_claude_worker_refreshes_shallow_catalog_and_selected_evidence")
+    remote_changes(true, false,"probe::live::selected_remote::tests::selected_claude_worker_refreshes_shallow_catalog_and_selected_evidence")
+}
+
+#[test]
+fn prelisted_claude_session_is_captured_without_local_folder_denial() {
+    remote_changes(true, true,"probe::live::selected_remote::tests::prelisted_claude_session_is_captured_without_local_folder_denial")
 }
 
 #[test]
 fn held_remote_listing_does_not_hold_local_selected_capture() {
     let Some(home) = isolated_home(
-        "live::selected_remote::tests::held_remote_listing_does_not_hold_local_selected_capture",
+        "probe::live::selected_remote::tests::held_remote_listing_does_not_hold_local_selected_capture",
     ) else {
         return;
     };
@@ -228,7 +254,7 @@ fn held_remote_listing_does_not_hold_local_selected_capture() {
         .unwrap();
     let stopped = Arc::new(AtomicBool::new(false));
     let shared = Arc::new(Shared::default());
-    let capture = crate::live::start(
+    let capture = crate::probe::live::start(
         &directory,
         &config(&job, true),
         stopped,
@@ -265,7 +291,7 @@ fn held_remote_listing_does_not_hold_local_selected_capture() {
 #[test]
 fn failed_remote_listing_keeps_provider_interval_pacing() {
     let Some(home) = isolated_home(
-        "live::selected_remote::tests::failed_remote_listing_keeps_provider_interval_pacing",
+        "probe::live::selected_remote::tests::failed_remote_listing_keeps_provider_interval_pacing",
     ) else {
         return;
     };
@@ -300,7 +326,7 @@ fn failed_remote_listing_keeps_provider_interval_pacing() {
 
 #[test]
 fn unprepared_notification_restores_and_concurrent_publication_survives() {
-    let Some(home)=isolated_home("live::selected_remote::tests::unprepared_notification_restores_and_concurrent_publication_survives")else{return};
+    let Some(home)=isolated_home("probe::live::selected_remote::tests::unprepared_notification_restores_and_concurrent_publication_survives")else{return};
     let store = history::open(&home.join("probe/history.db")).unwrap();
     let shared = Shared::default();
     shared.remote_catalogued.store(true, Ordering::Relaxed);
@@ -338,7 +364,7 @@ fn remote_cost_and_retry_deadlines_use_elapsed_work_without_a_timer_cap() {
 #[test]
 fn unconfigured_and_consent_disabled_enumeration_are_inert() {
     let Some(home) = isolated_home(
-        "live::selected_remote::tests::unconfigured_and_consent_disabled_enumeration_are_inert",
+        "probe::live::selected_remote::tests::unconfigured_and_consent_disabled_enumeration_are_inert",
     ) else {
         return;
     };
@@ -350,10 +376,10 @@ fn unconfigured_and_consent_disabled_enumeration_are_inert() {
     sharing(&home);
     let secret = credentials(chrono::Utc::now().timestamp_millis() + 3_600_000);
     let fake = FakeKeychain::holding(Some(&secret));
-    let _host = crate::remote_sources::test_host::install(&home, &db, fake);
+    let _host = crate::probe::remote_sources::test_host::install(&home, &db, fake);
     let env = |key: &str| std::env::var(key).ok();
-    let relay = agent_relay_probe::relay::workspace::relay_home(&env, &home);
-    agent_relay_probe::relay::claude_dirs::ClaudeDirs::from_env(&env, &home, &relay)
+    let relay = crate::relay::workspace::relay_home(&env, &home);
+    crate::relay::claude_dirs::ClaudeDirs::from_env(&env, &home, &relay)
         .set_cloud_sessions(false)
         .unwrap();
     for _ in 0..5 {
@@ -365,7 +391,7 @@ fn unconfigured_and_consent_disabled_enumeration_are_inert() {
 #[test]
 fn paused_member_loop_keeps_remote_notification_pending() {
     let Some(home) = isolated_home(
-        "live::selected_remote::tests::paused_member_loop_keeps_remote_notification_pending",
+        "probe::live::selected_remote::tests::paused_member_loop_keeps_remote_notification_pending",
     ) else {
         return;
     };

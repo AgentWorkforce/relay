@@ -16,9 +16,14 @@ pub const SHOW_RELAY_MESSAGES: &str = "show_relay_messages";
 /// on; agents already registered keep the channels they are in.
 pub const AUTO_JOIN_GENERAL: &str = "auto_join_general";
 
+/// Whether the tools found on this computer are connected to the relay once
+/// the person is signed in. On unless turned off, which the sign-in screen
+/// offers.
+pub const CONNECT_DETECTED_TOOLS: &str = "connect_detected_tools";
+
 /// The store's settings, in `store_settings` order; `spawn::settings` saves
 /// them with spawning's in one write (`Core::set_store_settings`).
-pub(crate) const STORE_SETTINGS: [&str; 9] = [
+pub(crate) const STORE_SETTINGS: [&str; 10] = [
     "allow_self_registration",
     "auto_activate",
     SHOW_RELAY_MESSAGES,
@@ -26,6 +31,7 @@ pub(crate) const STORE_SETTINGS: [&str; 9] = [
     "mobile_claude_handoff",
     "mobile_native_continuation",
     TEAMMATE_NATIVE_INPUT,
+    CONNECT_DETECTED_TOOLS,
     PI_AUTO_ACTIVATE,
     OPENCODE_AUTO_ACTIVATE,
 ];
@@ -56,6 +62,11 @@ impl Store {
     /// Whether agents registered from now on join #general.
     pub fn auto_joins_general(&self) -> bool {
         self.extras.auto_join_general == Some(true)
+    }
+
+    /// Whether the tools found here are connected once signed in.
+    pub fn connects_detected_tools(&self) -> bool {
+        self.extras.connect_detected_tools != Some(false)
     }
 
     pub fn shows_relay_messages(&self) -> bool {
@@ -129,6 +140,7 @@ impl Core {
                     && claimed
                     && s.mobile_native_continuation_on(),
                 s.teammate_native_input_on(),
+                s.connects_detected_tools(),
                 s.pi_auto_activates(),
                 s.opencode_auto_activates(),
             ];

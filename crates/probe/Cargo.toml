@@ -9,7 +9,7 @@ license = "Apache-2.0"
 
 [[bin]]
 name = "agent-relay-probe"
-path = "src/probe/main.rs"
+path = "src/bin/agent-relay-probe.rs"
 required-features = ["production-binaries"]
 
 [[bin]]
@@ -59,10 +59,6 @@ required-features = ["history"]
 name = "record_format"
 required-features = ["history"]
 
-[[example]]
-name = "native_visibility_host"
-required-features = ["history"]
-
 [features]
 # Ordinary builds keep every production executable. The desktop apps'
 # crates opt out with --no-default-features when they only need the library.
@@ -89,15 +85,16 @@ history = ["dep:ai-hist", "dep:history-provider-sources", "dep:notify"]
 [workspace]
 
 [dependencies]
-# Pinned to the relayhistory 0.53.0 release commit (tag sdk-ts-v0.53.0).
+# Pinned to the relayhistory 0.54.1 release commit (tag sdk-ts-v0.54.1).
 # It stays a git pin, not crates.io:
 # `history-provider-sources` is not published to crates.io and its helper
 # surface carries ai-hist types (`Arguments.observation`), so both deps
 # must resolve to one ai-hist package — registry + git would build two.
-ai-hist = { git = "https://github.com/AgentWorkforce/relayhistory", rev = "be827d1e84e6f57de9c0e9c2ac5224369644cf2e", features = ["opencode-backup", "git-hooks", "fs-events"], optional = true }
-# The remote source connectors probe composes (`devin-cloud`). Not on
-# crates.io — the same pin keeps it on the ai-hist above.
-history-provider-sources = { git = "https://github.com/AgentWorkforce/relayhistory", rev = "be827d1e84e6f57de9c0e9c2ac5224369644cf2e", optional = true }
+ai-hist = { git = "https://github.com/AgentWorkforce/relayhistory", rev = "714da8a34d202dfeb4dc20494fb6f61dfb5325dd", features = ["opencode-backup", "git-hooks", "fs-events"], optional = true }
+# The remote source connectors probe composes (`devin-cloud`,
+# `cursor-cloud`). Not on crates.io — the same pin keeps it on the ai-hist
+# above.
+history-provider-sources = { git = "https://github.com/AgentWorkforce/relayhistory", rev = "714da8a34d202dfeb4dc20494fb6f61dfb5325dd", optional = true }
 # The watcher ai-hist's own watch is built on, for selected mode's catalog
 # (src/probe/inventory.rs), which ai-hist's sync-driven watch cannot serve.
 notify = { version = "8", optional = true }
@@ -122,12 +119,21 @@ relaycast = "10.0.0"
 ryu-js = "1.0.3"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+serde_yaml = "0.9"
 sha2 = "0.10"
+# Release tarballs the Linux app's updater unpacks (gtk/src/updates.rs).
+tar = "0.4"
 tempfile = "3"
+toml_edit = "0.25"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process"] }
 # The version and TLS stack the relaycast SDK already links, for the node
 # socket it does not expose (see src/relay/sdk_gaps.rs).
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+# The TLS configuration every WebSocket connect shares, with the platform's
+# roots read once (src/relay/websocket_tls.rs); the versions and features
+# tokio-tungstenite already links.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
 # The local OpenClaw Gateway (src/relay/openclaw.rs): a blocking WebSocket
 # client on the version tokio-tungstenite already links, Ed25519 device
 # signatures from the TLS stack's ring, and its JSON5 config file.

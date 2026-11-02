@@ -11,6 +11,19 @@
 /// The Keychain service Claude Code keeps its claude.ai login under.
 pub const SERVICE: &str = "Claude Code-credentials";
 
+/// A Keychain read failed. The OSStatus is safe to report and is the only
+/// detail retained; the item, account and secret never cross this boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadError {
+    pub code: Option<i32>,
+}
+
+impl ReadError {
+    pub const fn unknown() -> Self {
+        Self { code: None }
+    }
+}
+
 #[cfg(target_os = "macos")]
 static READING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -45,25 +58,31 @@ pub fn present() -> bool {
 }
 
 /// The item's secret: Claude Code's credentials JSON. A quiet read
-/// (`interactive` false) never shows macOS's prompt; it is `None` unless
-/// the person already chose Always Allow. An interactive read waits until
-/// the person answers the prompt.
+/// (`interactive` false) never shows macOS's prompt; it returns an error unless
+/// the person already chose Always Allow. An interactive read waits until the
+/// person answers the prompt.
 #[cfg(target_os = "macos")]
-pub fn read(interactive: bool) -> Option<Vec<u8>> {
+pub fn read(interactive: bool) -> Result<Vec<u8>, ReadError> {
     use security_framework::os::macos::keychain::SecKeychain;
-    let account = account()?;
+    let account = account().ok_or_else(ReadError::unknown)?;
     let _one = READING.lock().unwrap_or_else(|e| e.into_inner());
     // `kSecUseAuthenticationUI` does not cover another app's item's access
     // list; turning user interaction off does.
     let _quiet = if interactive {
         None
     } else {
-        Some(SecKeychain::disable_user_interaction().ok()?)
+        Some(
+            SecKeychain::disable_user_interaction().map_err(|error| ReadError {
+                code: Some(error.code()),
+            })?,
+        )
     };
     security_framework::passwords::generic_password(
         security_framework::passwords::PasswordOptions::new_generic_password(SERVICE, &account),
     )
-    .ok()
+    .map_err(|error| ReadError {
+        code: Some(error.code()),
+    })
 }
 
 /// Asks macOS for access to the item now, on a thread of its own, when it
@@ -92,8 +111,8 @@ pub fn ask_access(wanted: fn() -> bool) {
         .name("claude-keychain-ask".into())
         .spawn(move || {
             let _asking = asking;
-            if present() && read(false).map(|mut secret| secret.fill(0)).is_none() && wanted() {
-                if let Some(mut secret) = read(true) {
+            if present() && read(false).map(|mut secret| secret.fill(0)).is_err() && wanted() {
+                if let Ok(mut secret) = read(true) {
                     secret.fill(0);
                 }
             }

@@ -8,8 +8,15 @@ use crate::delivery::{
     IsolationTask, PreparedPayload, PublishedLimits, MAX_PUBLISHED_BATCH_RECORDS, RETIRED_KINDS,
     SUPPORTED_KINDS,
 };
+use crate::migration::MigrationStatus;
+mod legacy_schedules;
+pub use legacy_schedules::{
+    legacy_uploader_message, LegacySchedulesHeld, LEGACY_SCHEDULES_UNKNOWN_MESSAGE,
+    SCHEDULER_GUARD_TTL,
+};
 pub(crate) mod conflict;
 pub mod encoding;
+mod guard;
 mod payload;
 use anyhow::Result;
 use encoding::{published_encoding, ContentEncoding, WireBody};
@@ -65,6 +72,7 @@ impl TransportFailure {
             DeliveryFailure::UnsupportedEvidence => "DELIVERY_UNSUPPORTED_EVIDENCE",
             DeliveryFailure::MappingVersionMismatch => "DELIVERY_MAPPING_VERSION_MISMATCH",
             DeliveryFailure::DeliveryConflict => "DELIVERY_CONFLICT",
+            DeliveryFailure::LegacyUploaderActive => "DELIVERY_LEGACY_UPLOADER_ACTIVE",
         }
     }
 }
@@ -130,7 +138,7 @@ pub fn require_session_deletion(base_url: &str, expected_account: &str) -> Resul
     let auth = cloud::load_selected_auth(Some(base_url))?
         .ok_or_else(|| fail(DeliveryFailure::AuthenticationRequired))?;
     let url = format!("{}/v1/delivery/limits", cloud::normalized_stage(base_url)?);
-    let agent = ureq::AgentBuilder::new()
+    let agent = cloud::history_agent()
         .redirects(0)
         .timeout(Duration::from_secs(15))
         .build();
@@ -173,7 +181,7 @@ pub fn set_session_uploads(
     );
     let body = serde_json::json!({"account_id": expected_account, "expected_user_id": expected_user, "origin_id": origin,
         "sessions": sessions, "enabled": enabled}).to_string();
-    let agent = ureq::AgentBuilder::new()
+    let agent = cloud::history_agent()
         .redirects(0)
         .timeout(Duration::from_secs(30))
         .build();
@@ -214,7 +222,7 @@ pub fn reset_sessions(
     let body = serde_json::json!({"account_id": expected_account, "request_id": request_id,
         "confirmation": confirmation})
     .to_string();
-    let agent = ureq::AgentBuilder::new()
+    let agent = cloud::history_agent()
         .redirects(0)
         .timeout(Duration::from_secs(120))
         .build();
@@ -383,10 +391,12 @@ fn http_error(error: ureq::Error, submitted_body: &str) -> anyhow::Error {
     match error {
         ureq::Error::Status(status, response) => {
             let retry_after_ms = retry_after::of(status, &response);
-            // Only the typed conflict protocol needs the response body. Other
-            // statuses are classified from the status alone, so avoid reading
-            // up to 512 KiB and reparsing the submitted request for them.
-            let bytes = if status == 409 {
+            // Only the typed conflict protocol needs the response body to
+            // classify, and 429 and 503 keep its code for the log so a refusal
+            // can be told apart from a capacity failure. Other statuses are
+            // classified from the status alone, so avoid reading up to 512 KiB
+            // for them.
+            let bytes = if matches!(status, 409 | 429 | 503) {
                 error_body_bytes(response)
             } else {
                 None
@@ -414,7 +424,7 @@ fn http_error(error: ureq::Error, submitted_body: &str) -> anyhow::Error {
                 409 => DeliveryFailure::Transient,
                 _ => DeliveryFailure::InvalidPayload,
             };
-            let recovery = body.as_ref().and_then(|body| {
+            let recovery = body.as_ref().filter(|_| status == 409).and_then(|body| {
                 let request: Request = serde_json::from_str(submitted_body).ok()?;
                 conflict::parse(status, body, &request.batch)
             });
@@ -480,7 +490,7 @@ fn http_agent() -> &'static ureq::Agent {
     // rather than ureq's default of one per host, which would close all but
     // one after each round of concurrent sends.
     AGENT.get_or_init(|| {
-        ureq::AgentBuilder::new()
+        cloud::history_agent()
             .redirects(0)
             .max_idle_connections_per_host(MAX_IN_FLIGHT)
             .build()
@@ -492,7 +502,7 @@ fn http_agent() -> &'static ureq::Agent {
 fn fresh_agent() -> &'static ureq::Agent {
     static AGENT: OnceLock<ureq::Agent> = OnceLock::new();
     AGENT.get_or_init(|| {
-        ureq::AgentBuilder::new()
+        cloud::history_agent()
             .redirects(0)
             .max_idle_connections(0)
             .build()
@@ -686,12 +696,6 @@ impl Stage<'_> {
     }
 }
 
-/// How long a legacy scheduler inspection is reused by one receiver. Each
-/// inspection runs `launchctl` and `crontab` (two seconds each at most); a
-/// receiver serves one collector pass, and reusing a verdict for at most this
-/// long bounds how late a legacy uploader installed during a pass is noticed.
-pub const SCHEDULER_GUARD_TTL: Duration = Duration::from_secs(60);
-
 /// State a receiver keeps between batches: its stage session and its last
 /// legacy scheduler verdict. Clones share it; `Default` starts empty.
 #[derive(Debug, Clone, Default)]
@@ -699,7 +703,11 @@ pub struct ReceiverState(Arc<ReceiverStateInner>);
 #[derive(Debug, Default)]
 struct ReceiverStateInner {
     session: SessionCache,
-    schedules: Mutex<Option<(Instant, &'static str)>>,
+    schedules: Mutex<Option<(Instant, MigrationStatus)>>,
+    /// The last inspection, conclusive or not, for status reports.
+    last_schedules: Mutex<Option<MigrationStatus>>,
+    /// Replaces `migration::status` (see [`ReceiverState::inspecting_with`]).
+    inspector: Option<fn() -> MigrationStatus>,
     /// The batch limits the last receipt published.
     limits: Mutex<PublishedLimits>,
     /// The request-body coding the server published last.
@@ -739,12 +747,6 @@ impl ReceiverState {
             hosted: true,
             ..Default::default()
         }))
-    }
-    /// The legacy scheduler state this receiver would apply now, inspected
-    /// again once its last inspection is [`SCHEDULER_GUARD_TTL`] old, so a
-    /// host that also checks it directly shares that one inspection.
-    pub fn legacy_scheduler_state(&self) -> &'static str {
-        self.scheduler_state(|| crate::migration::status().state)
     }
     /// Drop the kept session, so the next send reads the auth store: for
     /// a host that has just stored a new one.
@@ -807,22 +809,6 @@ impl ReceiverState {
             }
         }
         self.published_limits()
-    }
-    /// The legacy scheduler state, inspected again once the last inspection
-    /// is [`SCHEDULER_GUARD_TTL`] old.
-    fn scheduler_state(&self, inspect: impl FnOnce() -> &'static str) -> &'static str {
-        if self.0.hosted {
-            return "clear";
-        }
-        let mut cached = self.0.schedules.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((at, state)) = *cached {
-            if at.elapsed() < SCHEDULER_GUARD_TTL {
-                return state;
-            }
-        }
-        let state = inspect();
-        *cached = Some((Instant::now(), state));
-        state
     }
 }
 
@@ -944,7 +930,7 @@ fn send_request(
         |current| check_account(current, &batch.account_id),
         &|| budget.remaining(),
     );
-    let response = response.map_err(|error| {
+    let response = response.map_err(guard::retry_unresolved).map_err(|error| {
         if refused_unresent.load(std::sync::atomic::Ordering::SeqCst) {
             budget.remaining().err().unwrap_or(error)
         } else if error.is::<TransportFailure>() || error.is::<ReceiverRejection>() {
@@ -1339,8 +1325,7 @@ fn send_with_budget(
         });
     }
     let auth = stage.session()?;
-    cloud::require_secure_transport(&auth.base_url)
-        .map_err(|_| fail(DeliveryFailure::PermissionDenied))?;
+    guard::require_destination(&auth.base_url)?;
     let url = format!(
         "{}/v1/delivery/batches",
         cloud::normalized_stage(&auth.base_url)?
@@ -1530,10 +1515,19 @@ impl RelayHistoryReceiver {
     /// endpoint changed, between a batch being prepared and being sent. The
     /// legacy scheduler verdict is reused for up to [`SCHEDULER_GUARD_TTL`];
     /// the account and instance assertions are checked every time.
+    ///
+    /// Neither scheduler verdict blocks the job: an `active` older uploader
+    /// is its own retried failure, `legacy_uploader_active`, so uploads
+    /// resume once it is removed, and an inspection that could not finish is
+    /// `transient`, inspected again on the retry. Only the account assertion
+    /// is a permission refusal.
     fn admit(&self, batch: &HistoryExportBatch) -> Result<(), ReceiverFailure> {
-        let state = self.state.legacy_scheduler_state();
-        if state == "active" || (state == "unknown" && !self.acknowledge_uninspected_schedules) {
-            return Err(DeliveryFailure::PermissionDenied.into());
+        match self.state.legacy_scheduler_state() {
+            "active" => return Err(DeliveryFailure::LegacyUploaderActive.into()),
+            "unknown" if !self.acknowledge_uninspected_schedules => {
+                return Err(DeliveryFailure::Transient.into())
+            }
+            _ => {}
         }
         if self
             .expected_account
@@ -1720,6 +1714,40 @@ mod tests {
             rejection_log(422, None, None),
             "receiver rejected upload status=422"
         );
+    }
+    #[test]
+    fn a_refusal_logs_its_code_but_never_its_body() {
+        assert_eq!(
+            rejection_log(429, Some("delivery_busy"), Some(b"{}")),
+            "receiver rejected upload status=429 code=delivery_busy"
+        );
+        assert_eq!(
+            rejection_log(503, Some("delivery_unavailable"), Some(b"{}")),
+            "receiver rejected upload status=503 code=delivery_unavailable"
+        );
+        assert_eq!(
+            rejection_log(503, None, Some(b"<html>Bad gateway</html>")),
+            "receiver rejected upload status=503"
+        );
+    }
+    #[test]
+    fn a_refusal_keeps_its_classification_and_retry_hint_with_the_body_read() {
+        let refusal = |status, code: &str| {
+            let body = format!("{{\"error\":{{\"code\":\"{code}\"}}}}");
+            let head = format!("HTTP/1.1 {status} Refused\r\nRetry-After: 7\r\n\r\n{body}");
+            let response = head.parse::<ureq::Response>().unwrap();
+            // Not a request: a refusal must not need the submission parsed.
+            http_error(ureq::Error::Status(status, response), "not json")
+        };
+        let busy = refusal(429, "delivery_busy");
+        let busy = busy.downcast_ref::<ReceiverRejection>().unwrap();
+        assert!(matches!(busy.failure, DeliveryFailure::RateLimited));
+        assert!(busy.retry_after_ms.is_some());
+        assert!(busy.recovery.is_none());
+        let unavailable = refusal(503, "delivery_unavailable");
+        let unavailable = unavailable.downcast_ref::<ReceiverRejection>().unwrap();
+        assert!(matches!(unavailable.failure, DeliveryFailure::Transient));
+        assert!(unavailable.recovery.is_none());
     }
     #[test]
     fn an_unrecognized_conflict_logs_a_short_single_line_excerpt() {
@@ -2035,8 +2063,17 @@ mod tests {
         );
     }
 
-    /// A scheduler verdict is reused for its time to live, then inspected
-    /// again; an `active` one keeps blocking every batch while it is reused.
+    fn schedules(state: &'static str, jobs: &[&'static str]) -> MigrationStatus {
+        MigrationStatus {
+            state,
+            jobs: jobs.to_vec(),
+        }
+    }
+
+    /// A conclusive scheduler verdict is reused for its time to live, then
+    /// inspected again; an `active` one keeps holding every batch while it
+    /// is reused, as the retried `legacy_uploader_active`, never a
+    /// permission refusal.
     #[test]
     fn the_scheduler_verdict_is_reused_only_for_its_time_to_live() {
         let receiver = RelayHistoryReceiver {
@@ -2046,39 +2083,139 @@ mod tests {
         let inspections = std::cell::Cell::new(0);
         let inspect = |state| {
             inspections.set(inspections.get() + 1);
-            state
+            schedules(state, &["launchd-loaded"])
         };
         assert_eq!(
-            receiver.state.scheduler_state(|| inspect("active")),
+            receiver.state.schedules(|| inspect("active")).state,
             "active"
         );
         assert_eq!(
-            receiver.state.scheduler_state(|| inspect("clear")),
+            receiver.state.schedules(|| inspect("clear")).state,
             "active"
         );
         assert_eq!(inspections.get(), 1);
+        // The receiver reuses that verdict for the batch.
         let batch = event_batch("text");
-        assert_eq!(
-            receiver.admit(&batch).unwrap_err(),
-            DeliveryFailure::PermissionDenied.into()
-        );
+        let failure = receiver.admit(&batch).unwrap_err();
+        assert_eq!(failure, DeliveryFailure::LegacyUploaderActive.into());
+        assert_ne!(failure, DeliveryFailure::PermissionDenied.into());
+        assert!(DeliveryFailure::LegacyUploaderActive.retryable());
         // Once the verdict is older than its time to live, it is inspected again.
         *receiver.state.0.schedules.lock().unwrap() = Some((
             Instant::now()
                 .checked_sub(SCHEDULER_GUARD_TTL + Duration::from_secs(1))
                 .unwrap(),
-            "active",
+            schedules("active", &["launchd-loaded"]),
         ));
-        assert_eq!(receiver.state.scheduler_state(|| inspect("clear")), "clear");
+        assert_eq!(receiver.state.schedules(|| inspect("clear")).state, "clear");
         assert_eq!(inspections.get(), 2);
         assert!(receiver.admit(&batch).is_ok());
         // Clones share the verdict, so a receiver copied per pass does not
         // inspect again.
         assert_eq!(
-            receiver.clone().state.scheduler_state(|| inspect("active")),
+            receiver.clone().state.schedules(|| inspect("active")).state,
             "clear"
         );
         assert_eq!(inspections.get(), 2);
+    }
+
+    /// An inspection that could not finish (a `launchctl` or `crontab` read
+    /// that failed or timed out) is a transient, retried failure. It is not
+    /// reused, so the retry inspects again and delivery resumes as soon as an
+    /// inspection succeeds. It used to block the job as `permission_denied`
+    /// until someone retried by hand.
+    #[test]
+    fn an_inconclusive_inspection_is_retried_and_never_reused() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn flaky() -> MigrationStatus {
+            if CALLS.fetch_add(1, Ordering::SeqCst) == 0 {
+                MigrationStatus {
+                    state: "unknown",
+                    jobs: vec!["launchd-status-unknown"],
+                }
+            } else {
+                MigrationStatus {
+                    state: "clear",
+                    jobs: vec![],
+                }
+            }
+        }
+        let receiver = RelayHistoryReceiver {
+            state: ReceiverState::inspecting_with(flaky),
+            ..Default::default()
+        };
+        let batch = event_batch("text");
+        let failure = receiver.admit(&batch).unwrap_err();
+        assert_eq!(failure, DeliveryFailure::Transient.into());
+        assert!(DeliveryFailure::Transient.retryable());
+        assert_eq!(
+            receiver.state.last_legacy_schedules().unwrap().jobs,
+            ["launchd-status-unknown"]
+        );
+        // The very next attempt inspects again, well inside the time to live.
+        assert!(receiver.admit(&batch).is_ok());
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            receiver.state.last_legacy_schedules().unwrap().state,
+            "clear"
+        );
+        // The clear verdict is the one reused.
+        assert!(receiver.admit(&batch).is_ok());
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+    }
+
+    /// The person's acknowledgement still lets an inconclusive inspection
+    /// through, and never an active uploader.
+    #[test]
+    fn acknowledged_unknown_passes_but_active_does_not() {
+        fn unknown() -> MigrationStatus {
+            MigrationStatus {
+                state: "unknown",
+                jobs: vec!["cron-status-unknown"],
+            }
+        }
+        fn active() -> MigrationStatus {
+            MigrationStatus {
+                state: "active",
+                jobs: vec!["managed-cron"],
+            }
+        }
+        let batch = event_batch("text");
+        let acknowledged = |inspect| RelayHistoryReceiver {
+            acknowledge_uninspected_schedules: true,
+            state: ReceiverState::inspecting_with(inspect),
+            ..Default::default()
+        };
+        assert!(acknowledged(unknown).admit(&batch).is_ok());
+        assert_eq!(
+            acknowledged(active).admit(&batch).unwrap_err(),
+            DeliveryFailure::LegacyUploaderActive.into()
+        );
+        assert!(ReceiverState::hosted().last_legacy_schedules().is_none());
+    }
+
+    /// The account assertion is unchanged: a batch for another account is a
+    /// permission refusal, which blocks the job.
+    #[test]
+    fn an_account_mismatch_is_still_permission_denied() {
+        fn clear() -> MigrationStatus {
+            MigrationStatus {
+                state: "clear",
+                jobs: vec![],
+            }
+        }
+        let batch = event_batch("text");
+        let receiver = RelayHistoryReceiver {
+            expected_account: Some(format!("{}-other", batch.account_id)),
+            state: ReceiverState::inspecting_with(clear),
+            ..Default::default()
+        };
+        assert_eq!(
+            receiver.admit(&batch).unwrap_err(),
+            DeliveryFailure::PermissionDenied.into()
+        );
+        assert!(!DeliveryFailure::PermissionDenied.retryable());
     }
 
     /// Debug output of a receiver never carries the session it keeps.

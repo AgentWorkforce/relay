@@ -11,26 +11,24 @@
 //! Windows), `daemon.shutdown`, or — with `--exit-on-stdin-eof`, when a
 //! parent app hosts it — its stdin closing.
 
-use crate::relay::agents::{KeyedLocks, SettingsExtension};
+mod watchers;
+use crate::relay::agents::KeyedLocks;
 use crate::relay::backoff::{BackoffNotice, RelaycastBackoff, WorkspaceScope};
 use crate::relay::claude_delivery_policy::ClaudeDeliveryPolicy;
-use crate::relay::cloud_session::{CloudAccess, SignedOut};
-use crate::relay::connect::{CloudJoinClient, ConnectJoinClient, ConnectState, CONNECT_STORE_FILE};
+use crate::relay::connect::{ConnectState, CONNECT_STORE_FILE};
 use crate::relay::delivery::{DeliveryState, DeliveryTiming};
-use crate::relay::inject::{Injector, NoInjector};
 use crate::relay::messaging::MessagingState;
-use crate::relay::outbound::{Outbound, RelaySend, RelaySocket};
+use crate::relay::outbound::{Outbound, RelaySocket};
 use crate::relay::paths::{self, CorePaths};
 use crate::relay::protocol::{ErrorKind, RpcError, BRIDGE_VERSION};
 use crate::relay::push::{PushContext, PushManager, PushSignal, PushTarget, PushTiming};
-use crate::relay::sessions::{NoSessions, SessionDirectory};
 use crate::relay::state::{
     now_ms, DaemonInfo, Hub, Level, MachineInfo, Status, Verification, WorkspaceStatus,
 };
 use crate::relay::store::{PublishedJournal, Registration, StoreHandle};
 use crate::relay::transport::CoreListener;
 use crate::relay::workspace::{self, Secret, Workspace};
-use crate::relay::{app_store, client, files, machine, server};
+use crate::relay::{app_store, client, machine, server};
 use anyhow::{Context, Result};
 use fs2::FileExt;
 use std::collections::BTreeMap;
@@ -42,7 +40,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
-mod key_rotation;
+pub mod key_rotation;
+mod plugins;
+pub use plugins::{AccountPlugin, MethodExtension, Plugins};
 mod relaycast_writes;
 mod workspace_verification;
 
@@ -136,66 +136,27 @@ impl Config {
     }
 }
 
-/// What the core is built with beyond its configuration: the session side
-/// of delivery, discovery, Cloud access, extra settings, and the account
-/// with its uploader. Each defaults to an implementation that does nothing.
-pub struct Plugins {
-    pub injector: Arc<dyn Injector>,
-    pub sessions: Arc<dyn SessionDirectory>,
-    pub cloud: Arc<dyn CloudAccess>,
-    /// Public Relay Connect join and invite-status access. It carries no
-    /// account credential and is fakeable for socket-route tests.
-    pub connect_cloud: Arc<dyn ConnectJoinClient>,
-    pub settings: Vec<Arc<dyn SettingsExtension>>,
-    /// The relay-send socket sessions reach the core through; not served
-    /// when `None`.
-    pub relay_send: Option<RelaySend>,
-    /// Sign-in, the uploader, telemetry; usually
-    /// also `cloud` (`account::plugins`).
-    pub account: Option<Arc<crate::relay::account::Account>>,
-    /// Messages for Conductor's Codex chats that Agent Relay's Codex Stop
-    /// hook collects (`POST /codex/stop-hook`); none without the hook.
-    pub codex_stop_hook: Option<Arc<crate::relay::codex::stop_hook::StopHookInbox>>,
-    /// Starts the agents Agent Relay spawns here (`relay::spawn`).
-    pub spawner: Arc<dyn crate::relay::spawn::launch::Spawner>,
-    /// The trusted senders for OpenClaw and Hermes, whose workspace people
-    /// are read from Cloud; none where neither can be set up.
-    pub trusted: Option<Arc<crate::relay::trusted::TrustedSettings>>,
-}
-
-impl Default for Plugins {
-    fn default() -> Plugins {
-        Plugins {
-            injector: Arc::new(NoInjector),
-            sessions: Arc::new(NoSessions),
-            cloud: Arc::new(SignedOut),
-            connect_cloud: Arc::new(CloudJoinClient),
-            settings: Vec::new(),
-            relay_send: None,
-            account: None,
-            codex_stop_hook: None,
-            spawner: Arc::new(crate::relay::spawn::launch::NoSpawner),
-            trusted: None,
-        }
-    }
-}
-
 /// The running core: state, workspace, the agent store, push channels,
 /// delivery and messaging state, and the stop signal.
 pub struct Core {
-    pub(crate) config: Config,
-    pub(crate) hub: Hub,
-    workspace: Mutex<Option<Workspace>>,
+    #[doc(hidden)]
+    pub config: Config,
+    #[doc(hidden)]
+    pub hub: Hub,
+    pub(crate) workspace: Mutex<Option<Workspace>>,
     /// Why the last discovery could not use the CLI's workspace, once
     /// reported, so the same reason is not repeated every pass.
     discovery_problem: Mutex<Option<String>>,
     push: tokio::sync::Mutex<PushManager>,
     shutdown: watch::Sender<bool>,
     pub(crate) machine_prefix: String,
-    pub(crate) store: StoreHandle,
-    pub(crate) plugins: Plugins,
+    #[doc(hidden)]
+    pub store: StoreHandle,
+    #[doc(hidden)]
+    pub plugins: Plugins,
     /// Project metadata shared by local discovery and upload history.
-    pub(crate) project_names: crate::relay::project::Names,
+    #[doc(hidden)]
+    pub project_names: crate::relay::project::Names,
     /// Completed provider snapshots. Bridge reads never scan providers.
     pub(crate) session_snapshot: crate::relay::local_methods::PresentationSnapshot,
     /// Native title and mobile-state publications fence older roster snapshots.
@@ -237,7 +198,8 @@ pub struct Core {
     /// Accountless Connect credentials are isolated from workspace registrations.
     pub(crate) connect: Mutex<ConnectState>,
     pub(crate) connect_lifetime: super::connect_lifetime::ConnectLifetime,
-    pub(crate) messaging: Mutex<MessagingState>,
+    #[doc(hidden)]
+    pub messaging: Mutex<MessagingState>,
     /// One relayfile subscription change at a time: they share workspace
     /// subscription state.
     pub(crate) integration_lock: tokio::sync::Mutex<()>,
@@ -268,6 +230,7 @@ impl Core {
         config: Config,
         plugins: Plugins,
     ) -> (Arc<Core>, mpsc::UnboundedReceiver<PushSignal>) {
+        plugins.extension_method_names(true); // A repeated name fails at startup.
         let machine_prefix = machine::machine_prefix(&config.host_name);
         let hub = Hub::new(
             DaemonInfo {
@@ -376,7 +339,7 @@ impl Core {
         self.hub.snapshot()
     }
 
-    pub(crate) fn relaycast_scope(&self, base_url: &str, key: &Secret) -> WorkspaceScope {
+    pub fn relaycast_scope(&self, base_url: &str, key: &Secret) -> WorkspaceScope {
         let label = self
             .workspace()
             .filter(|workspace| workspace.base_url == base_url && workspace.key == *key)
@@ -416,7 +379,7 @@ impl Core {
         self.relaycast_backoff.allowed_write(workspace)
     }
 
-    pub(crate) fn observe_relaycast_result<T>(
+    pub fn observe_relaycast_result<T>(
         &self,
         workspace: &WorkspaceScope,
         result: &relaycast::Result<T>,
@@ -482,8 +445,7 @@ impl Core {
             changed
         };
         if changed {
-            self.hub
-                .update(|status| status.workspace = WorkspaceStatus::discovered(found.as_ref()));
+            self.publish_rediscovered_workspace(found.as_ref());
             match &found {
                 Some(workspace) => self.hub.activity(
                     Level::Info,
@@ -674,6 +636,36 @@ impl Drop for BoundSocket {
 
 /// Runs the daemon until it is told to stop.
 pub fn serve(options: ServeOptions) -> Result<()> {
+    serve_with(options, default_plugin_builder())
+}
+
+/// The plugins `relay serve` runs with: a build may set its own once, at
+/// start. Without one the core works from its workspace key, with no account.
+static PLUGIN_BUILDER: std::sync::OnceLock<PluginBuilder> = std::sync::OnceLock::new();
+
+/// Sets what this build adds to the core's plugins.
+pub fn set_plugin_builder(builder: PluginBuilder) {
+    let _ = PLUGIN_BUILDER.set(builder);
+}
+
+fn default_plugin_builder() -> PluginBuilder {
+    PLUGIN_BUILDER.get().copied().unwrap_or(PluginBuilder {
+        profile: |_| None,
+        finish: |local, _, _| local,
+    })
+}
+
+/// What a build of the core adds to this computer's plugins before it serves.
+#[derive(Clone, Copy)]
+pub struct PluginBuilder {
+    /// Where this build's agent CLIs keep their settings.
+    pub profile: fn(&Config) -> Option<crate::relay::local::ClientProfile>,
+    /// Adds this build's plugins to this computer's.
+    pub finish: fn(Plugins, &Config, &ServeOptions) -> Plugins,
+}
+
+/// Serves with the plugins `build` returns from this computer's.
+pub fn serve_with(options: ServeOptions, build: PluginBuilder) -> Result<()> {
     let config = Config::from_process(&options)?;
     let _lock = InstanceLock::acquire(&config.paths)?;
     crate::relay::diagnostics::initialize(&config.home, &config.app_data_dir);
@@ -688,32 +680,21 @@ pub fn serve(options: ServeOptions) -> Result<()> {
         let socket = BoundSocket::bind(&config.paths)?;
         // A CLI-managed core writes into Pi's folder only once relay init
         // turns `pi_extension` on for a person who chose Pi.
-        let mut local =
-            crate::relay::local::plugins_with_options(&config, None, !options.cli_managed);
+        let mut local = crate::relay::local::plugins_with_options(
+            &config,
+            None,
+            (build.profile)(&config),
+            !options.cli_managed,
+        );
         if let Some(relay_send) = &mut local.relay_send {
             relay_send.agent_led_defaults_at_start = own_defaults(&options).agent_led;
         }
-        let plugins = crate::relay::account::with_account(
-            local,
-            &config,
-            options.site_url.as_deref(),
-            options.headless,
-            // The command-line copy in ~/.local/bin is the desktop's; a
-            // core relay init manages leaves it alone.
-            !options.cli_managed,
-        );
+        let plugins = (build.finish)(local, &config, &options);
         let (core, signals) = Core::with_plugins(config, plugins);
         core.integration_defaults.store(
             own_defaults(&options).integration,
             std::sync::atomic::Ordering::SeqCst,
         );
-        // A user may install and open the app after a standalone probe was
-        // started. Once the app's launchd core is registered for this HOME,
-        // yield the socket so its KeepAlive job can take over.
-        #[cfg(target_os = "macos")]
-        if options.headless {
-            watch_macos_app_takeover(core.clone());
-        }
         match headless_cleanup {
             Some(Ok(true)) => core.hub.activity(
                 Level::Info,
@@ -724,6 +705,13 @@ pub fn serve(options: ServeOptions) -> Result<()> {
                 "The app's login entry could not be removed; the headless service still runs.",
             ),
             _ => {}
+        }
+        // A user may install and open the app after a standalone probe was
+        // started. Once the app's launchd core is registered for this HOME,
+        // yield the socket so its KeepAlive job can take over.
+        #[cfg(target_os = "macos")]
+        if options.headless {
+            watch_macos_app_takeover(core.clone());
         }
         if options.connect_ephemeral {
             watch_connect_idle(core.clone());
@@ -834,7 +822,7 @@ async fn run_with(
         core.clone()
             .pump_push_signals(signals, move |agent, frame| waker.wake(agent, frame)),
     );
-    let refresher = tokio::spawn(refresh_loop(core.clone()));
+    let refresher = tokio::spawn(refresh::run(core.clone()));
     core.sync_agents().await;
     let delivery = tokio::spawn(core.clone().delivery_loop());
     let replies = tokio::spawn(core.clone().reply_loop());
@@ -856,9 +844,7 @@ async fn run_with(
         core.shutdown_requested(),
     ));
     let relay_send = serve_relay_send(&core);
-    let watcher = tokio::spawn(crate::relay::local_methods::watch(core.clone()));
-    let upload_watcher = tokio::spawn(crate::relay::local_methods::watch_uploads(core.clone()));
-    let sweep = tokio::spawn(files::store::sweeper(core.config.app_data_dir.clone()));
+    let watchers = watchers::start(&core);
 
     tokio::spawn(crate::relay::trusted::keep_members_current(core.clone()));
     let _ = stopping.wait_for(|stop| *stop).await;
@@ -866,9 +852,7 @@ async fn run_with(
     if let Some(relay_send) = relay_send {
         relay_send.stop().await;
     }
-    watcher.abort();
-    upload_watcher.abort();
-    sweep.abort();
+    drop(watchers);
     if let Some(account) = account {
         account.abort();
     }
@@ -924,28 +908,6 @@ fn serve_relay_send(core: &Arc<Core>) -> Option<RelaySocket> {
         Err(message) => {
             core.hub.activity(Level::Warning, message);
             None
-        }
-    }
-}
-
-async fn refresh_loop(core: Arc<Core>) {
-    let mut ticks = tokio::time::interval(core.config.rediscover_every);
-    // A slow verification delays the next refresh rather than queueing
-    // missed ticks to fire back to back.
-    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        ticks.tick().await;
-        // The workspace, then the hosted MCP links that pick reply hints.
-        core.refresh_pass().await;
-        // A tool installed since the last pass gets its integration default,
-        // unless the relay CLI manages this core and chose the tools itself.
-        if core
-            .integration_defaults
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
-            let defaults = core.clone();
-            let _ =
-                tokio::task::spawn_blocking(move || defaults.apply_integration_defaults()).await;
         }
     }
 }
@@ -1222,6 +1184,48 @@ mod key_migration_tests {
     // rotation. The record is persisted before the network call and survives
     // the failure — the next successful verify resolves it.
     #[test]
+    fn usage_counts_record_only_for_the_workspace_they_were_read_for() {
+        use crate::relay::cloud_session::CloudAccount;
+        let temp = tempfile::tempdir().unwrap();
+        let core = test_core(temp.path());
+        *core.workspace.lock().unwrap() = Some(workspace("rk_live_now"));
+        // A roster read answered after a switch is another workspace's.
+        core.record_agent_usage(&workspace("rk_live_before"), 7);
+        assert_eq!(core.status().workspace.usage, None);
+        core.record_agent_usage(&workspace("rk_live_now"), 7);
+        assert_eq!(
+            core.status()
+                .workspace
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.agents),
+            Some(7)
+        );
+        // A member list read for an account that is no longer signed in, or
+        // for no account, is not this workspace's either.
+        core.record_human_usage(None, 2);
+        let stale = CloudAccount {
+            site_url: "https://agentrelay.com".into(),
+            workspace_id: "0f8fad5b-d9cb-469f-a165-70867728950e".into(),
+            user_id: Some("user_1".into()),
+        };
+        core.record_human_usage(Some(&stale), 2);
+        assert_eq!(
+            core.status()
+                .workspace
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.humans),
+            None
+        );
+        // The plan going away drops the counters with it.
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(core.record_workspace_plan(None));
+        assert_eq!(core.status().workspace.usage, None);
+    }
+
+    #[test]
     fn a_failed_verification_keeps_the_pending_key_migration() {
         let temp = tempfile::tempdir().unwrap();
         let core = test_core(temp.path());
@@ -1453,6 +1457,4 @@ mod key_migration_tests {
     }
 }
 
-#[cfg(test)]
-#[path = "workspace_recovery_tests.rs"]
-mod workspace_recovery_tests;
+mod refresh;

@@ -167,9 +167,13 @@ pub async fn heartbeat(base_url: &str, token: &Secret) -> relaycast::Result<()> 
 }
 
 /// The agent's delivery queue, oldest first.
+/// How many deliveries one queue read returns at most: a read this long
+/// may not be the whole queue.
+pub const QUEUE_PAGE: u32 = 50;
+
 pub async fn deliveries(base_url: &str, token: &Secret) -> relaycast::Result<Vec<Delivery>> {
     let http = sdk_gaps::http(base_url, token)?;
-    let items = sdk_gaps::deliveries(&http, 50).await?;
+    let items = sdk_gaps::deliveries(&http, QUEUE_PAGE).await?;
     Ok(Delivery::list(&Value::Array(items)))
 }
 

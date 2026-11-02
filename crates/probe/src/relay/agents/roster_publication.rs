@@ -2,6 +2,14 @@
 
 use super::*;
 
+/// Settling a registration's rejected saved workspace key.
+#[path = "rejected_keys.rs"]
+pub(super) mod rejected_keys;
+
+#[cfg(test)]
+#[path = "session_end_tests.rs"]
+mod session_end_tests;
+
 /// The registrations whose session runs now: the ones heartbeated and
 /// pushed to. A registration marked `missing_since` keeps its name and its
 /// queue, but is not present on the relay until its session runs again.
@@ -15,7 +23,87 @@ pub(crate) fn present_registration_names(store: &Store) -> Vec<String> {
         .collect()
 }
 
+/// Whether `registration` leaves the relay by itself once its session has
+/// been gone for the grace period: an automatic one, and one Agent Relay
+/// spawned, taken over or not (its session ran for the relay; one that runs
+/// again after it left is a new agent, and its unread messages go with the
+/// old one, as decided for spawned agents). A hand-added one stays, without
+/// a channel, so its name and queue wait for its session.
+pub(crate) fn leaves_after_grace(registration: &Registration) -> bool {
+    registration.auto_activated == Some(true) || registration.spawn.is_some()
+}
+
+/// Whether `registration` gets a push channel of its own: only while its
+/// session runs. A spawned agent's presence is its node's.
+pub(crate) fn heartbeats(registration: &Registration) -> bool {
+    registration.missing_since.is_none() && registration.spawn.is_none()
+}
+
+/// How long an ended agent's registration waits for a final answer it owes
+/// its sender before leaving anyway.
+const REPLY_WAIT_SECONDS: i64 = 60 * 60;
+
+/// Whether `registration` still owes a final answer and has been gone for
+/// less than `REPLY_WAIT_SECONDS`: leaving now would drop the answer unsent.
+fn awaits_reply(
+    store: &Store,
+    registration: &Registration,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    let owed = store
+        .replies
+        .iter()
+        .flatten()
+        .any(|reply| reply.agent_id == registration.agent_id && reply.claimed != Some(true));
+    owed && registration
+        .missing_since
+        .as_deref()
+        .and_then(parse_time)
+        .is_none_or(|gone| now.signed_duration_since(gone).num_seconds() < REPLY_WAIT_SECONDS)
+}
+
 impl Core {
+    /// Drops the push state of every agent with no channel wanted and no
+    /// registration left: one unregistered, or released while its node
+    /// mirrored it, must not stay listed as connected. Returns `targets`.
+    pub(super) fn forget_stale_push(&self, targets: Vec<PushTarget>) -> Vec<PushTarget> {
+        let kept: HashSet<String> = self.store.read(|store| {
+            store
+                .registrations
+                .iter()
+                .filter(|registration| registration.spawn.is_some())
+                .map(|registration| registration.name.clone())
+                .chain(targets.iter().map(|target| target.agent.clone()))
+                .collect()
+        });
+        self.hub
+            .update(|status| status.push.retain(|name, _| kept.contains(name)));
+        targets
+    }
+
+    /// The due agents that may leave now. A spawned one leaves only once
+    /// this core has seen its session end: after a restart, nothing spawned
+    /// is taken off before its first look. One whose final answer is still
+    /// owed to its sender waits for it, for up to `REPLY_WAIT_SECONDS`.
+    fn settled_leavers(&self, due: Vec<String>) -> Vec<String> {
+        let ended = self.spawned_seen_ended();
+        let now = chrono::Utc::now();
+        let held: HashSet<String> = self.store.read(|store| {
+            store
+                .registrations
+                .iter()
+                .filter(|r| r.archived_at.is_none())
+                .filter(|r| {
+                    (r.spawn.is_some() && !ended.contains(&r.name)) || awaits_reply(store, r, now)
+                })
+                .map(|r| r.name.clone())
+                .collect()
+        });
+        due.into_iter()
+            .filter(|name| !held.contains(name))
+            .collect()
+    }
+
     /// Moves each agent whose Claude Code conversation `/clear` replaced to
     /// the conversation now running in its process, unless that one is on
     /// the relay already: the name stays with the terminal the person works
@@ -86,6 +174,7 @@ impl Core {
             titles_changed = self.refresh_discovered_titles(store, sessions, revision);
             reconcile_lifecycle(store, eligible, live, now)
         })?;
+        let due = self.settled_leavers(due);
         if titles_changed {
             self.hub.invalidated(Listing::Agents);
         }
@@ -126,7 +215,7 @@ impl Core {
     /// Tells Relaycast every presence change it has not confirmed yet. A
     /// change for a registration that is gone is dropped; one that fails
     /// stays pending for the next pass.
-    pub(super) async fn announce_pending_presence(&self) {
+    pub(crate) async fn announce_pending_presence(&self) {
         self.refresh_native_continuation_capabilities();
         let pending: Vec<(String, &'static str)> = self
             .presence_pending
@@ -164,15 +253,15 @@ impl Core {
             if !self.relaycast_write_allowed(&workspace) {
                 continue;
             }
-            let result = client::update_agent_status(
-                &registration.base_url,
-                &key,
-                &name,
-                self.roster_status(&registration, &name),
-            )
-            .await;
-            self.observe_relaycast_write_result(&workspace, &result);
-            if result.is_ok() {
+            let roster_status = self.roster_status(&registration, &name);
+            // A workspace out of reach has nothing to be told.
+            let (base, agent) = (registration.base_url.as_str(), name.as_str());
+            let (result, unreachable) = self
+                .write_with_saved_key(&registration, &key, |key| async move {
+                    client::update_agent_status(base, &key, agent, roster_status).await
+                })
+                .await;
+            if result.is_ok() || unreachable {
                 let mut pending = self
                     .presence_pending
                     .lock()

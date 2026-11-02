@@ -164,10 +164,16 @@ pub fn hidden_items(text: &str) -> Value {
 /// and the reference, such as `[via Agent Relay — from @alice · ref …]`.
 /// `None` for text without an attribution, which is sent as it is.
 pub fn visible_line(text: &str) -> Option<String> {
+    attribution_line(text, &["[via Agent Relay", "[Relay Connect"])
+}
+
+/// `visible_line` for text starting with one of `prefixes`.
+pub fn attribution_line(text: &str, prefixes: &[&str]) -> Option<String> {
     let reference = MessageRef::in_text(text)?;
     let first = text.lines().next()?;
-    let prefix = ["[via Agent Relay", "[Relay Connect"]
-        .into_iter()
+    let prefix = prefixes
+        .iter()
+        .copied()
         .find(|prefix| first.starts_with(prefix))?;
     // The sender runs to its address, its recipient, the next field or the
     // end: a display name may have spaces (`a teammate`).

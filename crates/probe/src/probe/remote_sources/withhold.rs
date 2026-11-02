@@ -28,7 +28,7 @@ pub(super) fn withhold_predating_setup(
     let Some(parsed) = ai_hist::Source::parse(source) else {
         return Ok(());
     };
-    let conn = agent_relay_probe::delivery::open_db(db)?;
+    let conn = crate::delivery::open_db(db)?;
     // Setup's time is the install's first job's. Changing one session's
     // sharing replaces the job, so the current job's time would move the
     // cutoff and withhold sessions that started after setup.
@@ -45,9 +45,9 @@ pub(super) fn withhold_predating_setup(
     for (observation, known) in observations.iter().zip(known) {
         let started = observation.session.first_activity_ms;
         if known.is_none() && started.is_none_or(|ms| ms < setup_ms) {
-            agent_relay_probe::delivery::set_session_excluded(
+            crate::delivery::set_session_excluded(
                 &conn,
-                &agent_relay_probe::delivery::SessionIdentity {
+                &crate::delivery::SessionIdentity {
                     source: source.to_string(),
                     session_id: observation.session.session_id.clone(),
                 },

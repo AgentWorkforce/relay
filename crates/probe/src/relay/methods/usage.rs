@@ -52,17 +52,21 @@ pub(super) async fn send(
     .await
 }
 
-pub(super) async fn unregister(
+pub(super) async fn remove(
     core: &Arc<Core>,
     name: &str,
+    end_spawned: bool,
 ) -> Result<crate::relay::contract::Done, RpcError> {
     telemetry::action(
         core,
         TelemetryEvent::new(Op::AgentUnregister, Outcome::Started),
         async {
-            core.unregister(name)
-                .await
-                .map(|_| crate::relay::contract::Done {})
+            let removed = if end_spawned {
+                core.end_spawned_agent(name).await
+            } else {
+                core.unregister(name).await
+            };
+            removed.map(|_| crate::relay::contract::Done {})
         },
     )
     .await

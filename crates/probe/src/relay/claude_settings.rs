@@ -248,6 +248,7 @@ impl ClaudeSettings {
     /// written earlier can be removed.
     pub fn login_settings(&self) -> Vec<ClaudeSettings> {
         std::iter::once(self.clone())
+            .filter(|login| login.dirs.settings_writable(&login.user_settings))
             .chain(self.other_logins())
             .collect()
     }
@@ -261,7 +262,7 @@ impl ClaudeSettings {
             return Vec::new();
         };
         let mut logins = Vec::new();
-        if home.is_dir() {
+        if home.is_dir() && self.dirs.settings_writable(&self.user_settings) {
             logins.push(self.clone());
         }
         let rest = self
@@ -282,11 +283,16 @@ impl ClaudeSettings {
             .into_iter()
             .filter(|folder| folder.join(".claude.json").is_file())
             .map(|folder| folder.join("settings.json"))
+            .filter(|settings| self.dirs.settings_writable(settings))
             .filter(|settings| seen.insert(real(settings)))
             .map(|settings| ClaudeSettings {
                 user_settings: settings,
                 managed_settings: self.managed_settings.clone(),
-                dirs: ClaudeDirs::default(),
+                dirs: if self.dirs.private_root.is_some() {
+                    self.dirs.clone()
+                } else {
+                    ClaudeDirs::default()
+                },
             })
             .collect()
     }
@@ -338,10 +344,21 @@ impl ClaudeSettings {
         Ok(())
     }
 
+    pub(crate) fn check_write_target(&self, path: &Path) -> Result<(), String> {
+        self.dirs
+            .settings_writable(path)
+            .then_some(())
+            .ok_or_else(|| {
+                "Development Claude settings must stay inside the private client profile.".into()
+            })
+    }
+
     /// Rewrites the user's settings with `value`. A symlinked file (dotfiles
     /// kept in a repository) is rewritten at its target, so the link stays a
     /// link; the file's mode is kept; the original is copied once beside it.
     fn write_user(&self, value: Option<&str>) -> Result<(), DirectDeliveryError> {
+        self.check_write_target(&self.user_settings)
+            .map_err(DirectDeliveryError::Failed)?;
         let failed = |e: std::io::Error| {
             DirectDeliveryError::Failed(format!("Could not save your Claude settings: {e}"))
         };
@@ -362,7 +379,7 @@ impl ClaudeSettings {
 /// One lock for every read-modify-write of a Claude `settings.json`.
 /// Direct delivery and the SessionStart hook both rewrite that file; without
 /// a shared lock the one that writes last drops the other's key.
-pub(crate) fn claude_settings_edit_lock() -> std::sync::MutexGuard<'static, ()> {
+pub fn claude_settings_edit_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
 }
@@ -373,7 +390,7 @@ pub(crate) fn claude_settings_edit_lock() -> std::sync::MutexGuard<'static, ()> 
 /// copied once beside it under `backup_suffix`, keeping the same mode since
 /// the original may hold secrets. Shared by the Claude and Grok settings
 /// editors.
-pub(crate) fn write_keeping_file(
+pub fn write_keeping_file(
     path: &Path,
     existing: Option<&[u8]>,
     updated: &[u8],
@@ -414,7 +431,7 @@ pub(crate) fn write_keeping_file(
 
 /// `path` with every symlink followed, also when the final target does not
 /// exist yet.
-pub(crate) fn resolve_symlinks(path: &Path) -> PathBuf {
+pub fn resolve_symlinks(path: &Path) -> PathBuf {
     let mut current = path.to_path_buf();
     for _ in 0..40 {
         let is_link = std::fs::symlink_metadata(&current).is_ok_and(|m| m.file_type().is_symlink());
@@ -572,6 +589,92 @@ mod tests {
         }
     }
 
+    #[test]
+    fn development_delivery_leaves_added_normal_login_settings_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let temp_path = std::fs::canonicalize(temp.path()).unwrap();
+        let root = temp_path.join("Agent Relay.dev");
+        let home = root.join("mcp/clients/.claude");
+        let extra = root.join("mcp/clients/.claude-work");
+        let normal = temp_path.join("normal-claude");
+        for dir in [&home, &extra, &normal] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(".claude.json"), "{}").unwrap();
+            std::fs::write(dir.join("settings.json"), "{\"sentinel\":true}\n").unwrap();
+        }
+        let dirs = ClaudeDirs::development(&root);
+        dirs.set_added(
+            &[
+                normal.to_string_lossy().into_owned(),
+                extra.to_string_lossy().into_owned(),
+            ],
+            &temp_path,
+        )
+        .unwrap();
+        // Persisted normal folders remain discoverable, never writable.
+        let dirs = ClaudeDirs::development(&root);
+        assert!(dirs.extra_homes(&home).contains(&normal));
+        let settings = ClaudeSettings {
+            user_settings: home.join("settings.json"),
+            managed_settings: temp_path.join("managed.json"),
+            dirs,
+        };
+        assert_eq!(
+            settings
+                .other_logins()
+                .iter()
+                .map(|login| login.user_settings.clone())
+                .collect::<Vec<_>>(),
+            vec![extra.join("settings.json")]
+        );
+        settings.apply_default().unwrap();
+        settings.follow_default().unwrap();
+        settings.set_direct_delivery(false).unwrap();
+        settings.set_direct_delivery(true).unwrap();
+        assert_eq!(
+            inbound_value(Some(&std::fs::read(extra.join("settings.json")).unwrap())),
+            Some("accept".into())
+        );
+        assert_eq!(
+            std::fs::read(normal.join("settings.json")).unwrap(),
+            b"{\"sentinel\":true}\n"
+        );
+        assert!(!normal.join("settings.json.relay-desktop-backup").exists());
+        let escaped = ClaudeSettings {
+            user_settings: normal.join("settings.json"),
+            ..settings.clone()
+        };
+        assert!(escaped.set_direct_delivery(true).is_err());
+        assert!(escaped
+            .login_settings()
+            .iter()
+            .all(|login| login.user_settings != escaped.user_settings));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn development_delivery_rejects_settings_symlink_escape() {
+        let temp = tempfile::tempdir().unwrap();
+        let temp_path = std::fs::canonicalize(temp.path()).unwrap();
+        let root = temp_path.join("Agent Relay.dev");
+        let home = root.join("mcp/clients/.claude");
+        std::fs::create_dir_all(&home).unwrap();
+        let normal = temp_path.join("normal-settings.json");
+        std::fs::write(&normal, "{\"sentinel\":true}\n").unwrap();
+        symlink(&normal, home.join("settings.json")).unwrap();
+        let settings = ClaudeSettings {
+            user_settings: home.join("settings.json"),
+            managed_settings: temp_path.join("managed.json"),
+            dirs: ClaudeDirs::development(&root),
+        };
+        assert!(settings.set_direct_delivery(true).is_err());
+        assert!(settings.login_settings().is_empty());
+        assert_eq!(std::fs::read(&normal).unwrap(), b"{\"sentinel\":true}\n");
+        assert!(!normal
+            .with_file_name("normal-settings.json.relay-desktop-backup")
+            .exists());
+    }
+
     // A login under any name (`~/.seclaude`) that is watched follows
     // direct delivery like a sibling, and the watched folders are a setting.
     #[test]
@@ -581,6 +684,7 @@ mod tests {
             user_settings: dir.path().join(".claude/settings.json"),
             managed_settings: dir.path().join("managed-settings.json"),
             dirs: ClaudeDirs {
+                private_root: None,
                 environment: Vec::new(),
                 file: Some(dir.path().join("relay").join(claude_dirs::FILE)),
             },

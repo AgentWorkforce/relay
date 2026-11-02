@@ -1,7 +1,8 @@
 //! Only the verified machine owner is trusted by
 //! a spawned Codex. The spawn's requester gets no native turns and cannot
-//! answer approvals, like any other agent; its messages are framed as the
-//! owner's (`owner_framing`).
+//! answer approvals, like any other agent, unless approvals from the
+//! spawning agent are on (`requester_approvals`); its messages are framed as
+//! the owner's (`owner_framing`).
 
 use super::*;
 use crate::relay::codex::app_server::drive;
@@ -110,7 +111,7 @@ fn the_approval_dm_says_only_the_owner_may_answer() {
         json!({"id": 91, "method": "item/fileChange/requestApproval",
             "params": {"threadId": "thread-text"}}),
     );
-    let text = approval_text("w1", &notice);
+    let text = approval_text("w1", &notice, None);
     assert!(text.starts_with(&format!("[Codex approval {} for @w1]", notice.reference)));
     assert!(
         text.ends_with("Only the signed-in machine owner may answer."),

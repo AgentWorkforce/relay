@@ -35,6 +35,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
+mod clients;
 mod roster_metadata;
 use roster_metadata::{describe, provider_of, REMOTE_SESSION_KINDS};
 
@@ -433,6 +434,7 @@ impl Core {
     pub async fn people(&self) -> Result<Vec<WorkspacePerson>, RpcError> {
         let account = self.plugins.cloud.account();
         let value = members_response(self.plugins.cloud.as_ref()).await?;
+        self.record_members_response(account.as_ref(), &value);
         Ok(decode_members(
             &value,
             account.and_then(|a| a.user_id).as_deref(),
@@ -492,6 +494,9 @@ impl Core {
             ));
         }
         one_row_per_name(&mut items);
+        if query.include_idle && unread.is_empty() {
+            self.record_agent_usage(&workspace, items.len());
+        }
         let local = self.local_liveness(&workspace).await;
         let own = self.owner_hash();
         let agents = roster_rows(self, &items, &local, own.as_deref())
@@ -558,27 +563,6 @@ impl Core {
             agent,
             message,
         })
-    }
-
-    /// The workspace and a client for its roster, with the workspace key.
-    fn roster_client(
-        &self,
-    ) -> Result<
-        (
-            crate::relay::workspace::Workspace,
-            crate::relay::diagnostic_http::HttpClient,
-        ),
-        RpcError,
-    > {
-        let workspace = self.workspace().ok_or_else(|| {
-            RpcError::new(
-                ErrorKind::NotSignedIn,
-                "No Agent Relay workspace key was found.",
-            )
-        })?;
-        let http = sdk_gaps::http(&workspace.base_url, &workspace.key)
-            .map_err(|e| RpcError::from_relaycast(&e))?;
-        Ok((workspace, http))
     }
 
     /// The names registered from this computer in `workspace`, each with
@@ -954,7 +938,7 @@ mod tests {
             json!({"name": "Claude-review", "status": "active"}),
             json!({"name": "cursor-pair", "status": "active", "metadata": {"session_kind": "unknown"}}),
             json!({"name": "reviewer", "status": "active", "metadata": {"session_kind": "weird"}}),
-            // Fleet workers: the broker records the CLI it spawned.
+            // Spawned workers record the CLI they run.
             json!({"name": "code-desktop-cool", "status": "active", "metadata": {"cli": "claude"}}),
             json!({"name": "ios-check", "status": "active", "metadata": {"cli": "/usr/local/bin/Codex --yolo"}}),
             json!({"name": "pair", "status": "active", "metadata": {"cli": "cursor-agent"}}),

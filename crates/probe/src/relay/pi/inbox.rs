@@ -22,7 +22,7 @@ pub(super) fn atomic_write_guarded(
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "Pi record has no parent directory",
+            "Relay record has no parent directory",
         )
     })?;
     let tmp = path.with_extension(format!("{}.tmp", crate::relay::store::random_hex(16)));

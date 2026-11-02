@@ -1,6 +1,6 @@
 //! Actual acquisition must use the validated choices even inside the refresh gap.
 use super::*;
-use crate::live::tests::{append, isolated_home, transcript_line};
+use crate::probe::live::tests::{append, isolated_home, transcript_line};
 
 struct Fixture {
     store: SessionStore,
@@ -22,7 +22,7 @@ impl Fixture {
         let dirs = ClaudeDirs::from_env(&env, home, &relay_home(&env, home));
         // Keep process discovery synthetic too: this isolated child must not
         // import config paths from unrelated live Claude processes.
-        dirs.remember_running(&agent_relay_probe::relay::process::FakeProcesses::default());
+        dirs.remember_running(&crate::relay::process::FakeProcesses::default());
         dirs.set_shared(
             home.join(".claude-work").to_str().unwrap(),
             false,
@@ -86,7 +86,7 @@ impl Fixture {
 
 #[test]
 fn cached_extra_root_denial_fences_actual_cold_and_hot_acquisition() {
-    let Some(home) = isolated_home("history::roots::snapshot_tests::cached_extra_root_denial_fences_actual_cold_and_hot_acquisition") else { return; };
+    let Some(home) = isolated_home("probe::history::roots::snapshot_tests::cached_extra_root_denial_fences_actual_cold_and_hot_acquisition") else { return; };
     let mut f = Fixture::new(&home);
     // Construct the actual SDK rounds AFTER the settings file became malformed.
     f.rounds(false);
@@ -102,9 +102,11 @@ fn cached_extra_root_denial_fences_actual_cold_and_hot_acquisition() {
         "a shared sibling must still acquire"
     );
     let extra = f.settings.extra_claude_roots(&f.store).unwrap();
-    let watch =
-        crate::inventory::Watch::start_paths(watched_paths_for(&f.store, extra.clone()), |_| {})
-            .unwrap();
+    let watch = crate::probe::inventory::Watch::start_paths(
+        watched_paths_for(&f.store, extra.clone()),
+        |_| {},
+    )
+    .unwrap();
     assert!(!watch.covers(&f.private));
     assert!(watch
         .sources(&f.allowed)
@@ -173,7 +175,7 @@ fn cached_extra_root_denial_fences_actual_cold_and_hot_acquisition() {
 
 #[test]
 fn cached_extra_root_denial_fences_shallow_inventory_and_hot_discovery() {
-    let Some(home) = isolated_home("history::roots::snapshot_tests::cached_extra_root_denial_fences_shallow_inventory_and_hot_discovery") else { return; };
+    let Some(home) = isolated_home("probe::history::roots::snapshot_tests::cached_extra_root_denial_fences_shallow_inventory_and_hot_discovery") else { return; };
     let f = Fixture::new(&home);
     f.rounds(true);
     assert!(

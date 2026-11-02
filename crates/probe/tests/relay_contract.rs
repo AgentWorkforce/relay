@@ -3,14 +3,13 @@
 //! that are not an object are refused before any handler runs, so each
 //! method is reached without doing anything.
 
-use agent_relay_probe::relay::account::Account;
-use agent_relay_probe::relay::cloud_session::CloudAccess;
-use agent_relay_probe::relay::contract::{self, METHODS};
+use agent_relay_probe::relay::contract::{self, Availability, METHODS};
 use agent_relay_probe::relay::daemon::{self, BoundSocket, Config, Core, Plugins};
 use agent_relay_probe::relay::delivery::DeliveryTiming;
 use agent_relay_probe::relay::paths::{self, CorePaths};
 use agent_relay_probe::relay::protocol::BRIDGE_VERSION;
 use agent_relay_probe::relay::push::PushTiming;
+use agent_relay_probe::relay::test_account::TestAccount;
 use agent_relay_probe::relay::transport::CoreStream;
 use agent_relay_probe::relay::uploader::{InstallRun, ProbeRunner, Uploader, UploaderError};
 use agent_relay_probe::relay::workspace::Secret;
@@ -25,6 +24,13 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 struct NoProbe;
 
 impl ProbeRunner for NoProbe {
+    fn status(
+        &self,
+        _: Option<std::path::PathBuf>,
+        _: agent_relay_probe::relay::uploader::HistoryReader,
+    ) -> BoxFuture<'_, Result<Value, UploaderError>> {
+        self.run(vec!["status".into()], None)
+    }
     fn run(
         &self,
         _: Vec<String>,
@@ -66,16 +72,9 @@ async fn every_registered_method_reaches_a_handler() {
     };
     paths::socket_directory(config.paths.directory()).unwrap();
     let bound = BoundSocket::bind(&config.paths).unwrap();
-    let account = Arc::new(Account::new(
-        Some("https://agentrelay.com"),
-        &home,
-        &env,
-        &app_data_dir,
-        Arc::new(Uploader::new(Arc::new(NoProbe))),
-    ));
+    let account = TestAccount::new(Arc::new(Uploader::new(Arc::new(NoProbe))));
     let plugins = Plugins {
-        cloud: account.clone() as Arc<dyn CloudAccess>,
-        account: Some(account),
+        account: Some(account.into_plugin()),
         ..Plugins::default()
     };
     let (core, signals): (Arc<Core>, _) = Core::with_plugins(config, plugins);
@@ -128,7 +127,11 @@ async fn every_registered_method_reaches_a_handler() {
         serde_json::to_value(contract::topics()).unwrap()
     );
 
-    for spec in METHODS {
+    // A stand-in account answers no account method; desktop's test does.
+    for spec in METHODS
+        .iter()
+        .filter(|spec| spec.availability == Availability::Always)
+    {
         let response = answer(call(spec.name, json!("not an object"))).await;
         // A core built without session history refuses its history-only
         // methods before it reads their parameters.

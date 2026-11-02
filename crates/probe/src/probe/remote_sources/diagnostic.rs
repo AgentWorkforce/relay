@@ -13,12 +13,13 @@ fn record(
     (captured, failed): (usize, usize),
     error: Option<&anyhow::Error>,
     connectors: Value,
+    connector_failures: Value,
     pacing: Value,
 ) {
     let diagnostic = serde_json::json!({"operation":"capture","stage":stage,
-        "elapsed_ms":started.elapsed().as_millis(),"sessions_captured":captured,
+        "at_ms":now_ms(),"elapsed_ms":started.elapsed().as_millis(),"sessions_captured":captured,
         "failures":failed,"error_class":error.map(super::super::collector::capture_error_class),
-        "connectors":connectors,"pacing":pacing});
+        "connectors":connectors,"connector_failures":connector_failures,"pacing":pacing});
     let _ = super::super::save_status_json(&directory.join("remote-diagnostic.json"), &diagnostic);
     if error.is_some() || failed > 0 {
         eprintln!("{diagnostic}");
@@ -44,6 +45,13 @@ pub fn report_sweep(db: &Path, started: Instant, remote: &Result<Option<SweepOut
         .and_then(Option::as_ref)
         .map_or(Value::Null, |o| o.pacing.clone());
     let listing = last_enumeration(db).json();
+    let connector_failures = remote
+        .as_ref()
+        .ok()
+        .and_then(Option::as_ref)
+        .map_or(Value::Null, |outcome| {
+            serde_json::json!(outcome.connector_failures)
+        });
     record(
         directory,
         "remote_sweep",
@@ -51,6 +59,7 @@ pub fn report_sweep(db: &Path, started: Instant, remote: &Result<Option<SweepOut
         counts,
         remote.as_ref().err(),
         listing,
+        connector_failures,
         pacing,
     );
 }
@@ -72,6 +81,7 @@ pub fn report_enumeration(db: &Path, started: Instant, remote: &Result<Option<En
         counts,
         remote.as_ref().err(),
         listing,
+        Value::Null,
         Value::Null,
     );
 }

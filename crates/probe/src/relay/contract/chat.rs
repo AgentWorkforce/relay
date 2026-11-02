@@ -81,6 +81,9 @@ pub struct ChatHistoryParams {
 pub struct HistoryPage {
     pub events: Vec<SessionEvent>,
     pub next_cursor: Option<String>,
+    /// Present when the plan's session retention left older activity out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<crate::relay::contract::plan::HistoryRetention>,
 }
 
 /// One event of a session's uploaded history.

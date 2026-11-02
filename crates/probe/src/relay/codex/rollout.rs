@@ -256,6 +256,11 @@ impl RolloutSummary {
                     self.give_back_hidden(&turn, reference.as_deref());
                 }
                 if let Some(reference) = reference {
+                    // Its history item came first: a message steered into a
+                    // turn already under way (as `codex queue` delivers one
+                    // mid-turn) is written before its UserMessage. It is
+                    // recorded now, so it no longer waits in the history.
+                    self.hidden_refs.retain(|waiting| *waiting != reference);
                     self.relay_turns.insert(turn.clone());
                     self.turn_by_message_ref.insert(reference, turn);
                 }
@@ -453,6 +458,18 @@ pub fn started_by_relay(config: &CodexConfig, thread: &str, turn: &str) -> bool 
         .is_some_and(|summary| summary.relay_turns.contains(turn))
 }
 
+/// Whether the turn that the message `message_id` started in `thread` has
+/// completed or been aborted. A turn the rollout does not show yet has not.
+pub fn turn_ended(config: &CodexConfig, thread: &str, message_id: &str) -> bool {
+    rollout_path(config, thread)
+        .and_then(|path| RolloutSummary::read(&path))
+        .is_some_and(|summary| {
+            summary
+                .turn_for(message_id)
+                .is_some_and(|turn| summary.outcomes.contains_key(turn))
+        })
+}
+
 /// Whether `thread` has no turn running. A thread with no rollout yet is
 /// idle; one whose rollout cannot be read is not.
 pub fn idle(config: &CodexConfig, thread: &str) -> bool {
@@ -565,6 +582,37 @@ mod tests {
             Some("Sent HIDDEN-1 on the relay.")
         );
         assert!(summary.hidden_refs.is_empty());
+        assert!(summary.is_idle());
+    }
+
+    // A message steered into a turn already under way (`codex queue` while
+    // the session works, as a terminal Codex started outside the desktop
+    // gets them) is written to the history before its UserMessage. It is
+    // recorded, never left waiting: a leftover here held every later
+    // message back for minutes after each core restart (ms-cloudlat had 112).
+    #[test]
+    fn a_message_steered_into_a_running_turn_does_not_wait_in_the_history() {
+        let steered = MessageRef::of("steered-1");
+        let text = format!("[via Agent Relay — from @ms-lead to @codex-a · message steered-1 · ref {steered}]\\n\\ngo");
+        let lines = [
+            started("turn-s"),
+            format!(
+                r#"{{"type":"event_msg","payload":{{"type":"item_completed","turn_id":"turn-s","item":{{"type":"UserMessage","content":[{{"type":"text","text":"start"}}]}}}}}}"#
+            ),
+            format!(
+                r#"{{"type":"event_msg","payload":{{"type":"item_completed","turn_id":"turn-s","item":{{"type":"AgentMessage"}}}}}}"#
+            ),
+            format!(
+                r#"{{"type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"{text}"}}]}}}}"#
+            ),
+            format!(
+                r#"{{"type":"event_msg","payload":{{"type":"item_completed","turn_id":"turn-s","item":{{"type":"UserMessage","content":[{{"type":"text","text":"{text}"}}]}}}}}}"#
+            ),
+            completed("turn-s", "done"),
+        ];
+        let summary = RolloutSummary::parse(lines.join("\n").as_bytes());
+        assert_eq!(summary.turn_for("steered-1"), Some("turn-s"));
+        assert!(summary.hidden_refs.is_empty(), "{:?}", summary.hidden_refs);
         assert!(summary.is_idle());
     }
 
@@ -925,6 +973,33 @@ mod tests {
         std::fs::write(&rollout, FIXTURE).unwrap();
         assert!(idle(&config, THREAD));
         assert_eq!(rollout_path(&config, "not-a-thread"), None);
+    }
+
+    // A driven turn's claim ends with the turn its message started, finished
+    // or aborted, even when `turn/completed` never reached its connection.
+    #[test]
+    fn a_messages_turn_has_ended_once_completed_or_aborted() {
+        let home = tempfile::tempdir().unwrap();
+        let config = config(home.path());
+        assert!(!turn_ended(&config, THREAD, "m-1"));
+        let day = home.path().join("sessions/2026/10/29");
+        std::fs::create_dir_all(&day).unwrap();
+        let rollout = day.join(format!("rollout-2026-10-29T03-18-04-{THREAD}.jsonl"));
+        let started = [
+            r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-9"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-9","item":{"type":"UserMessage","client_id":"m-1","content":[{"type":"text","text":"hello"}]}}}"#,
+        ]
+        .join("\n");
+        std::fs::write(&rollout, &started).unwrap();
+        assert!(!turn_ended(&config, THREAD, "m-1"));
+        for end in [
+            r#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-9"}}"#,
+            r#"{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"turn-9","reason":"interrupted"}}"#,
+        ] {
+            std::fs::write(&rollout, format!("{started}\n{end}")).unwrap();
+            assert!(turn_ended(&config, THREAD, "m-1"));
+            assert!(!turn_ended(&config, THREAD, "m-2"));
+        }
     }
 
     // CodexBridge.rolloutURL: the thread row names the rollout.

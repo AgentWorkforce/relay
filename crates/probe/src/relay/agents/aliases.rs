@@ -104,10 +104,31 @@ impl Core {
     /// a message sent mid-rename or a late reply still arrives. Renaming back
     /// to a name still forwarding takes it up again.
     pub async fn rename(&self, name: &str, raw_new_name: &str) -> Result<Renamed, RpcError> {
+        self.rename_checked(name, raw_new_name, None).await
+    }
+
+    pub(crate) async fn rename_if_current(
+        &self,
+        expected: &crate::relay::session_naming::AutomaticEdit,
+        new_name: &str,
+    ) -> Result<Renamed, RpcError> {
+        self.rename_checked(&expected.registration.name, new_name, Some(expected))
+            .await
+    }
+
+    async fn rename_checked(
+        &self,
+        name: &str,
+        raw_new_name: &str,
+        expected: Option<&crate::relay::session_naming::AutomaticEdit>,
+    ) -> Result<Renamed, RpcError> {
         let registration = self
             .store
             .read(|store| store.registration_answering(name).cloned())
             .ok_or_else(|| not_registered(name))?;
+        if expected.is_some_and(|expected| !expected.current(self)) {
+            return Err(busy());
+        }
         if registration.spawn.is_some() {
             return Err(RpcError::new(
                 ErrorKind::Refused,
@@ -156,6 +177,13 @@ impl Core {
         } else {
             retired
         };
+        if expected.is_some_and(|expected| !expected.current(self)) {
+            if let Some(alias) = alias.as_ref().filter(|_| fresh) {
+                self.delete_or_retry(&registration.base_url, &key, &alias.name)
+                    .await;
+            }
+            return Err(busy());
+        }
         if let Err(error) = self.save_alias(&registration, alias.as_ref()) {
             if let Some(alias) = alias.as_ref().filter(|_| fresh) {
                 self.delete_or_retry(&registration.base_url, &key, &alias.name)
@@ -331,8 +359,16 @@ impl Core {
         let base = &registration.base_url;
         // Relaycast activates PATCHes with no status. Always send the current
         // state, serialized with presence updates so older writes finish first.
-        let result = client::update_agent_metadata(base, key, name, metadata, Some(status)).await;
-        self.observe_relaycast_write_result(&self.relaycast_scope(base, key), &result);
+        // A key rotated since registration is replaced; a workspace out of
+        // reach is not tried again, as no write there can land.
+        let (result, unreachable) = self
+            .write_with_saved_key(&registration, key, |key| {
+                let metadata = metadata.clone();
+                async move {
+                    client::update_agent_metadata(base, &key, name, metadata, Some(status)).await
+                }
+            })
+            .await;
         if let (Some((activity, _)), Ok(())) = (activity, &result) {
             self.activity_published(name, activity);
         }
@@ -347,7 +383,7 @@ impl Core {
                     == handoff_revision;
             let list = s.pending_name_markers.get_or_insert_with(Vec::new);
             list.retain(|pending| pending != &name);
-            if result.is_err() || !unchanged {
+            if (result.is_err() && !unreachable) || !unchanged {
                 list.push(name);
             }
             if list.is_empty() {

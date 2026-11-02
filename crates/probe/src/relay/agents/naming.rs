@@ -5,7 +5,8 @@ use crate::relay::sessions::DiscoveredSession;
 
 /// A readable default: harness, project, and at most two meaningful title
 /// words. Registration allocates a number only when this name is taken;
-/// persisted registrations keep their name when the session title changes.
+/// ordinary title edits leave registrations unchanged. The prompt-based naming
+/// worker explicitly refreshes the alias from an LLM-generated title.
 pub fn suggested_name(session: &DiscoveredSession) -> String {
     suggested_name_numbered(session, 1)
 }
@@ -26,6 +27,7 @@ pub(super) fn suggested_name_numbered(session: &DiscoveredSession, number: usize
                 | ("cursor", "cursor-cli-session")
                 | ("openclaw", "openclaw-agent")
                 | ("hermes", "hermes")
+                | ("omp", "oh-my-pi-session")
         )
         || matches!(
             title.as_str(),

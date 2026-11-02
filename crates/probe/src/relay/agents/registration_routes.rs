@@ -87,11 +87,11 @@ impl Core {
                     "This already-open Grok session has no live binding.",
                 )
             })?)
-        } else if target.kind == SessionKind::Pi {
+        } else if let Some(flavor) = crate::relay::pi::Flavor::of(target.kind) {
             Some(self.live_route_binding(target).await.ok_or_else(|| {
                 RpcError::new(
                     ErrorKind::Refused,
-                    "Pi is not connected. Run /reload in the Pi session.",
+                    format!("{} is not connected. {}", flavor.name(), flavor.reconnect()),
                 )
             })?)
         } else if target.kind == SessionKind::MuseOpen {

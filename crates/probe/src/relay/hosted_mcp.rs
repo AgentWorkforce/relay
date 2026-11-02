@@ -23,6 +23,11 @@ use std::path::Path;
 
 /// The hosted MCP server, as a session names it in `POST /register`.
 pub const SERVER_NAME: &str = "agent-relay-sessions";
+/// The MCP server name hints give the model: the entry desktop installs
+/// (`MCP`), so its tools are `mcp__agent-relay__…`. Naming
+/// the server keeps a model from taking another app's `send_relay_message`,
+/// such as Codex's "Agent Relay in ChatGPT" connector, for this one.
+pub const MCP: &str = "agent-relay";
 
 /// The `POST /register` value for a session without the hosted MCP.
 pub const NO_SERVER: &str = "none";
@@ -187,7 +192,7 @@ fn tools_reply(recipient: &str, reply_to: &str, link: &str) -> String {
         String::new()
     };
     format!(
-        "[reply: send_relay_message to=\"{}\"{parent} ({SERVER_NAME} MCP{link}); list_relay_agents lists peers]",
+        "[reply: send_relay_message to=\"{}\"{parent} ({MCP} MCP{link}); list_relay_agents lists peers]",
         argument(recipient)
     )
 }
@@ -250,7 +255,7 @@ impl ChannelReply<'_> {
         };
         let tools = format!(
             "[reply: in #{channel} with post_relay_channel channel=\"{channel}\" thread_id=\"{thread}\" \
-             ({SERVER_NAME} MCP{link}); DM the author with send_relay_message only if it is private; \
+             ({MCP} MCP{link}); DM the author with send_relay_message only if it is private; \
              unsubscribe_relay_channel channel=\"{channel}\" stops these posts]"
         );
         if self.web_address.is_some() && self.access != McpAccess::SocketOnly {
@@ -360,7 +365,7 @@ pub fn preamble(
         argument(name)
     );
     let tools = format!(
-        "With the {SERVER_NAME} MCP tools: link them to this identity once with join_relay \
+        "With the {MCP} MCP tools: link them to this identity once with join_relay \
          desktop_address=\"{address}\", find peers with list_relay_agents, DM with \
          send_relay_message to=\"<name or address>\", get a channel's posts with \
          subscribe_relay_channel channel=\"<name>\", and post with post_relay_channel."
@@ -634,7 +639,7 @@ mod tests {
         assert_eq!(
             hint,
             format!(
-                "[reply: send_relay_message to=\"a@m\" reply_to=\"42\" (agent-relay-sessions MCP); list_relay_agents lists peers]\n{ROUTE_LINE}"
+                "[reply: send_relay_message to=\"a@m\" reply_to=\"42\" (agent-relay MCP); list_relay_agents lists peers]\n{ROUTE_LINE}"
             )
         );
         assert!(!hint.contains("curl"));
@@ -655,7 +660,7 @@ mod tests {
         assert_eq!(lines[2], ROUTE_LINE);
         assert_eq!(
             lines[0],
-            "[reply: send_relay_message to=\"a@m\" (agent-relay-sessions MCP, linked to this session \
+            "[reply: send_relay_message to=\"a@m\" (agent-relay MCP, linked to this session \
              once with join_relay desktop_address=\"me@mac\"); list_relay_agents lists peers]"
         );
         assert_eq!(
@@ -691,7 +696,7 @@ mod tests {
         assert_eq!(
             web_reply_hint(McpAccess::Unknown, "a@m", "42", "web@mac-1"),
             Some(format!(
-                "[reply: send_relay_message to=\"a@m\" reply_to=\"42\" (agent-relay-sessions MCP, \
+                "[reply: send_relay_message to=\"a@m\" reply_to=\"42\" (agent-relay MCP, \
                  linked to this session once with join_relay desktop_address=\"web@mac-1\"); \
                  list_relay_agents lists peers]\n{ROUTE_LINE}"
             ))
@@ -749,7 +754,7 @@ mod tests {
         assert_eq!(
             web(McpAccess::Unknown),
             "[reply: in #swarm with post_relay_channel channel=\"swarm\" thread_id=\"77\" \
-             (agent-relay-sessions MCP, linked to this session once with join_relay \
+             (agent-relay MCP, linked to this session once with join_relay \
              desktop_address=\"web@mac-1\"); DM the author with send_relay_message only if it is \
              private; unsubscribe_relay_channel channel=\"swarm\" stops these posts]"
         );
@@ -765,7 +770,7 @@ mod tests {
         assert_eq!(
             declared,
             "[reply: in #swarm with post_relay_channel channel=\"swarm\" thread_id=\"77\" \
-             (agent-relay-sessions MCP); DM the author with send_relay_message only if it is \
+             (agent-relay MCP); DM the author with send_relay_message only if it is \
              private; unsubscribe_relay_channel channel=\"swarm\" stops these posts]"
         );
         let unknown = channel(McpAccess::Unknown, true);
@@ -791,6 +796,8 @@ mod tests {
         assert!(declared.starts_with("This session is on Agent Relay as @api (api@mac-1)."));
         assert!(declared.contains("join_relay desktop_address=\"api@mac-1\""));
         assert!(declared.contains("subscribe_relay_channel"));
+        assert!(declared.contains("With the agent-relay MCP tools:"));
+        assert!(!declared.contains(SERVER_NAME));
         assert!(!declared.contains("curl"));
         assert!(declared.ends_with(NORM));
         assert!(declared.contains(ROUTE_RULE));

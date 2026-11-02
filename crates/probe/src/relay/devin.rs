@@ -329,19 +329,19 @@ fn session_record(
     session_id: &str,
 ) -> Option<SessionRecord> {
     database?
-        .query_row(
+        .prepare_cached(
             "SELECT title, working_directory, last_activity_at FROM sessions WHERE id = ?1",
-            [session_id],
-            |row| {
-                Ok(SessionRecord {
-                    title: row.get::<_, Option<String>>(0)?,
-                    working_directory: row.get::<_, Option<String>>(1)?,
-                    last_activity_ms: row
-                        .get::<_, Option<i64>>(2)?
-                        .and_then(|seconds| seconds.checked_mul(1000)),
-                })
-            },
         )
+        .ok()?
+        .query_row([session_id], |row| {
+            Ok(SessionRecord {
+                title: row.get::<_, Option<String>>(0)?,
+                working_directory: row.get::<_, Option<String>>(1)?,
+                last_activity_ms: row
+                    .get::<_, Option<i64>>(2)?
+                    .and_then(|seconds| seconds.checked_mul(1000)),
+            })
+        })
         .ok()
 }
 

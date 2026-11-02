@@ -314,6 +314,43 @@ fn session_events_accept_nullable_fields_and_preserve_cursors() {
     assert_eq!(page.events[0].tool_name.as_deref(), Some("shell"));
     assert_eq!(page.events[0].content_truncated, Some(true));
     assert_eq!(page.next_cursor.as_deref(), Some("older"));
+    assert_eq!(page.retention(), None, "an older server sends no retention");
+}
+
+#[test]
+fn a_truncated_history_page_carries_the_plan_retention() {
+    let page: HistoryEventsPage = serde_json::from_value(json!({
+        "events": [],
+        "nextCursor": null,
+        "retention": {"days": 7, "cutoff": "2026-10-18T00:00:00Z"},
+    }))
+    .unwrap();
+    let retention = page.retention().unwrap();
+    assert_eq!(
+        (retention.days, retention.cutoff.as_str()),
+        (7, "2026-10-18T00:00:00Z")
+    );
+    let malformed: HistoryEventsPage =
+        serde_json::from_value(json!({"events": [], "retention": {"cutoff": "x"}})).unwrap();
+    assert_eq!(malformed.retention(), None);
+    let bridge = HistoryPage {
+        events: vec![],
+        next_cursor: None,
+        retention: page.retention(),
+    };
+    assert_eq!(
+        serde_json::to_value(&bridge).unwrap()["retention"]["days"],
+        7
+    );
+    let without = HistoryPage {
+        events: vec![],
+        next_cursor: None,
+        retention: None,
+    };
+    assert!(serde_json::to_value(&without)
+        .unwrap()
+        .get("retention")
+        .is_none());
 }
 
 #[test]

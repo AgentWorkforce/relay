@@ -1,7 +1,9 @@
 //! A spawned Claude trusts only the verified machine owner, as a spawned
 //! Codex does: the spawn's requester gets no native turns and cannot answer,
 //! like any other agent (its messages are framed as the owner's,
-//! `owner_framing`). And a spawned Claude that has ended is never resumed.
+//! `owner_framing`), unless approvals from the spawning agent are on
+//! (`requester_approvals`). And a spawned Claude that has ended is never
+//! resumed.
 
 use super::*;
 use crate::relay::delivery::policy::Delivery;

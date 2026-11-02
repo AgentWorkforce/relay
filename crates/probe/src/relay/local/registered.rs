@@ -11,14 +11,17 @@ impl LocalInjector {
         text: &str,
     ) -> InjectOutcome {
         match registration.target.kind {
-            SessionKind::Pi => crate::relay::pi::send(
-                &self.config.pi,
-                &*self.table,
-                self.config.uid,
-                registration,
-                message_id,
-                text,
-            ),
+            kind @ (SessionKind::Pi | SessionKind::Omp) => match self.config.extension(kind) {
+                Some(extension) => crate::relay::pi::send(
+                    extension,
+                    &*self.table,
+                    self.config.uid,
+                    registration,
+                    message_id,
+                    text,
+                ),
+                None => InjectOutcome::Refused("This harness has no extension route.".into()),
+            },
             SessionKind::Codex if registration.spawn.as_ref().is_some_and(|spawn| {
                 spawn.harness == "codex" && spawn.taken_over_at.is_none()
             }) => self.codex.inject_spawned(&registration.target.id, message_id, text),

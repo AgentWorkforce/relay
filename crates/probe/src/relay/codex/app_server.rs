@@ -5,9 +5,11 @@
 //! now. Only a registered native spawn may resume an unloaded thread.
 
 mod delivery;
+mod mcp_reload;
 pub mod recovery;
 mod websocket;
 pub use delivery::{send_if_loaded, send_spawned, send_to_spawned};
+pub use mcp_reload::{connected_server, refresh_mcp, reload_mcp, McpReloadReport};
 use websocket::control_frame;
 pub use websocket::{frame, upgrade_request, Decoder, Malformed};
 
@@ -422,6 +424,9 @@ pub struct StartOptions<'a> {
     /// Told the thread's id once it is usable, before its first turn, so a
     /// caller that stops in between still knows the thread.
     pub created: Option<&'a dyn Fn(&str)>,
+    /// For a spawned thread: whether its first turn ended, given the
+    /// thread's id (`drive::Ended`).
+    pub ended: Option<&'a dyn Fn(&str) -> drive::Ended>,
 }
 
 /// Starts a new thread in `directory` on the app-server and its first turn
@@ -533,6 +538,7 @@ pub fn start_spawned_thread(
     timeout: Duration,
     options: StartOptions<'_>,
 ) -> io::Result<StartedThread> {
+    let ended = options.ended;
     let (started, state) = start_thread_state(
         stream.as_mut(),
         directory,
@@ -544,7 +550,8 @@ pub fn start_spawned_thread(
     )?;
     if matches!(&started.turn, Ok(()) | Err(TurnError::InDoubt(_))) {
         if let Some(claim) = drive::claim(&started.thread_id) {
-            drive::start(stream, state, claim);
+            let ended = ended.map_or_else(drive::never, |ended| ended(&started.thread_id));
+            drive::start(stream, state, claim, ended);
         }
     }
     Ok(started)
@@ -1143,6 +1150,7 @@ pub(crate) mod tests {
             StartOptions {
                 isolation: Some(&isolation()),
                 created: Some(&report),
+                ended: None,
             },
         )
         .unwrap();
@@ -1184,6 +1192,7 @@ pub(crate) mod tests {
             StartOptions {
                 isolation: Some(&isolation()),
                 created: None,
+                ended: None,
             },
         )
         .is_err());
@@ -1578,7 +1587,7 @@ pub(crate) mod tests {
         assert_eq!(
             send_spawned(
                 Box::new(server),
-                drive::claim(THREAD).unwrap(),
+                (drive::claim(THREAD).unwrap(), drive::never()),
                 ("hello", "m-resume"),
                 Hide::Never,
                 SEND_TIMEOUT
@@ -1611,6 +1620,47 @@ pub(crate) mod tests {
         }
     }
 
+    // A turn Codex ended without `turn/completed` reaching the connection
+    // that started it releases the thread once its rollout shows it ended;
+    // until then every later message waited for a turn that was over.
+    #[test]
+    fn a_driven_turn_that_ended_unheard_releases_its_thread() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        const THREAD: &str = "01a185aa-2ba8-7e51-b9d4-5acd3fb10d21";
+        let server = FakeAppServer::new(|request| match request["method"].as_str() {
+            Some("thread/loaded/list") => Some(server_frame(
+                &json!({"id": 2, "result": {"data": [THREAD]}}),
+            )),
+            Some("turn/start") => Some(server_frame(
+                &json!({"id": 3, "result": {"turn": {"id": "turn-u"}}}),
+            )),
+            _ => None,
+        });
+        let over = Arc::new(AtomicBool::new(false));
+        let ended: drive::Ended = Box::new({
+            let over = over.clone();
+            move || over.load(Ordering::SeqCst)
+        });
+        assert_eq!(
+            send_spawned(
+                Box::new(server),
+                (drive::claim(THREAD).unwrap(), ended),
+                ("hello", "m-unheard"),
+                Hide::Never,
+                SEND_TIMEOUT
+            ),
+            Ok(true)
+        );
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(drive::driving(THREAD), "a running turn keeps its claim");
+        over.store(true, Ordering::SeqCst);
+        let until = Instant::now() + Duration::from_secs(5);
+        while drive::driving(THREAD) {
+            assert!(Instant::now() < until, "the ended turn kept its thread");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn await_notice(thread: &str) -> drive::Notice {
         let until = Instant::now() + Duration::from_secs(2);
         loop {
@@ -1633,7 +1683,7 @@ pub(crate) mod tests {
         assert_eq!(
             send_spawned(
                 Box::new(server),
-                drive::claim(THREAD).unwrap(),
+                (drive::claim(THREAD).unwrap(), drive::never()),
                 ("Please check CI", "full-message-id-123"),
                 Hide::Never,
                 SEND_TIMEOUT
@@ -1704,7 +1754,7 @@ pub(crate) mod tests {
         assert_eq!(
             send_spawned(
                 Box::new(server),
-                drive::claim(THREAD).unwrap(),
+                (drive::claim(THREAD).unwrap(), drive::never()),
                 ("next", "full-message-id-124"),
                 Hide::Never,
                 SEND_TIMEOUT
@@ -1758,7 +1808,7 @@ pub(crate) mod tests {
         assert_eq!(
             send_spawned(
                 Box::new(server),
-                drive::claim(THREAD).unwrap(),
+                (drive::claim(THREAD).unwrap(), drive::never()),
                 ("task", "m-owner"),
                 Hide::Never,
                 SEND_TIMEOUT

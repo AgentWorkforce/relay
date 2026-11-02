@@ -161,15 +161,15 @@ mod tests {
 
     #[test]
     fn hint_budget_does_not_forget_unchanged_catalog_stamps_or_starve_its_tail() {
-        let Some(home)=crate::live::tests::isolated_home("history::recent_paths::tests::hint_budget_does_not_forget_unchanged_catalog_stamps_or_starve_its_tail") else {return};
+        let Some(home)=crate::probe::live::tests::isolated_home("probe::history::recent_paths::tests::hint_budget_does_not_forget_unchanged_catalog_stamps_or_starve_its_tail") else {return};
         let store = super::super::open(&home.join("probe/history.db")).unwrap();
         let project = home.join(".claude/projects/budget");
         std::fs::create_dir_all(&project).unwrap();
         for n in 0..32 {
             let id = format!("known-{n:02}");
-            crate::live::tests::append(
+            crate::probe::live::tests::append(
                 &project.join(format!("{id}.jsonl")),
-                &crate::live::tests::transcript_line(&id, "one"),
+                &crate::probe::live::tests::transcript_line(&id, "one"),
             );
         }
         store
@@ -200,7 +200,7 @@ mod tests {
             .open(&tail)
             .unwrap();
         writer
-            .write_all(crate::live::tests::transcript_line("known-31", "two").as_bytes())
+            .write_all(crate::probe::live::tests::transcript_line("known-31", "two").as_bytes())
             .unwrap();
         writer.flush().unwrap();
         let changes: Vec<_> = (0..2).flat_map(|_| recent.poll(&store).unwrap()).collect();
@@ -215,7 +215,7 @@ mod tests {
 
     #[test]
     fn an_empty_create_keeps_bounded_stat_retry_until_identity_arrives() {
-        let Some(home)=crate::live::tests::isolated_home("history::recent_paths::tests::an_empty_create_keeps_bounded_stat_retry_until_identity_arrives") else {return};
+        let Some(home)=crate::probe::live::tests::isolated_home("probe::history::recent_paths::tests::an_empty_create_keeps_bounded_stat_retry_until_identity_arrives") else {return};
         let store = super::super::open(&home.join("probe/history.db")).unwrap();
         let path = home.join(".claude/projects/late/late.jsonl");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -236,7 +236,9 @@ mod tests {
             "unchanged empty files must not be reacquired every poll"
         );
         writer
-            .write_all(crate::live::tests::transcript_line("late", "late-first-record").as_bytes())
+            .write_all(
+                crate::probe::live::tests::transcript_line("late", "late-first-record").as_bytes(),
+            )
             .unwrap();
         writer.flush().unwrap();
         assert_eq!(
@@ -262,7 +264,9 @@ mod tests {
         );
         // The just-catalogued row is not proof that a later append was read.
         writer
-            .write_all(crate::live::tests::transcript_line("late", "late-second-record").as_bytes())
+            .write_all(
+                crate::probe::live::tests::transcript_line("late", "late-second-record").as_bytes(),
+            )
             .unwrap();
         writer.flush().unwrap();
         assert_eq!(

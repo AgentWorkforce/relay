@@ -38,7 +38,7 @@ impl std::error::Error for Unreadable {}
 
 fn contract() -> &'static Contract {
     static CONTRACT: OnceLock<Contract> = OnceLock::new();
-    CONTRACT.get_or_init(Contract::collect)
+    CONTRACT.get_or_init(|| Contract::collect(&[]))
 }
 
 /// Method `M`'s result.

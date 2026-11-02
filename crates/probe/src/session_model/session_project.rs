@@ -1,4 +1,4 @@
-//! Project presentation shared by the Linux session models.
+//! Project presentation shared by the core's catalog query and the apps.
 
 use crate::relay::contract::account::UploadSession;
 use std::path::Path;

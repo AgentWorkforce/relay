@@ -34,7 +34,7 @@ fn main() -> std::io::Result<()> {
         eprintln!("relay-contract-codegen: {error}");
         std::process::exit(2);
     });
-    std::fs::write(&path, Contract::collect().swift())?;
+    std::fs::write(&path, Contract::collect(&[]).swift())?;
     println!("wrote {}", path.display());
     Ok(())
 }

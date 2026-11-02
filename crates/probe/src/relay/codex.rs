@@ -50,8 +50,6 @@ pub struct CodexConfig {
     /// Codex home: `CODEX_HOME`, else `~/.codex`.
     pub home: PathBuf,
     /// Codex's SQLite home: `CODEX_SQLITE_HOME`, else `CODEX_HOME`.
-    /// Fleet PTY workers isolate their queue and thread catalog here while
-    /// keeping rollouts under the ordinary Codex home.
     pub sqlite_home: PathBuf,
     /// The `codex` command line that runs `codex queue`, when installed.
     pub executable: Option<PathBuf>,
@@ -277,35 +275,74 @@ impl CodexConfig {
     }
 }
 
-/// Codex threads on this computer as sessions (title, directory,
-/// updated_at_ms, live): the 40 most recently updated, newest first. Empty
-/// when Codex's database cannot be read; `try_discover` tells the two apart.
-pub fn discover(
-    config: &CodexConfig,
-    table: &dyn ProcessTable,
-    uid: u32,
-) -> Vec<DiscoveredSession> {
-    try_discover(config, table, uid).unwrap_or_default()
-}
-
 /// How many threads discovery lists.
 pub const DISCOVERY_LIMIT: usize = 40;
 
-/// `discover`, or `None` when Codex's database cannot be read this pass, so
-/// the caller can keep the last list rather than empty it while Codex holds
-/// a lock.
+/// The writer locks trusted live Codex processes hold on listed threads, as
+/// (pid, start, thread).
+type ListedLocks = BTreeSet<(i32, u64, String)>;
+
+/// The shared app-server's loaded threads among the listed ones, as
+/// discovery last asked, and the listed writer locks it saw then. The
+/// app-server holds a thread's writer lock while the thread is loaded, so an
+/// answer is complete when it names exactly the listed threads whose locks
+/// the app-server the proxy reaches holds. A complete answer is kept until
+/// the locks change; one that is not (a thread still loading or unloading,
+/// or an ask that failed) is asked again on the next pass.
+#[derive(Default)]
+pub struct LoadedThreads(std::sync::Mutex<LoadedAnswer>);
+
+#[derive(Default)]
+struct LoadedAnswer {
+    locks: Option<ListedLocks>,
+    loaded: BTreeSet<String>,
+}
+
+impl LoadedThreads {
+    /// The loaded listed threads under `locks`, where the proxied
+    /// app-server holds `served`: the kept answer, or `ask`'s.
+    fn under(
+        &self,
+        locks: ListedLocks,
+        served: &BTreeSet<String>,
+        ask: impl FnOnce() -> BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        {
+            let kept = self.answer();
+            if kept.locks.as_ref() == Some(&locks) {
+                return kept.loaded.clone();
+            }
+        }
+        let loaded = ask();
+        let mut kept = self.answer();
+        kept.locks = (&loaded == served).then_some(locks);
+        kept.loaded = loaded.clone();
+        loaded
+    }
+
+    fn answer(&self) -> std::sync::MutexGuard<'_, LoadedAnswer> {
+        self.0.lock().unwrap_or_else(|error| error.into_inner())
+    }
+}
+
+/// Codex threads on this computer as sessions (title, directory,
+/// updated_at_ms, live): the 40 most recently updated, newest first. `None`
+/// when Codex's database cannot be read this pass, so the caller can keep
+/// the last list rather than empty it while Codex holds a lock.
 pub fn try_discover(
     config: &CodexConfig,
     table: &dyn ProcessTable,
     uid: u32,
+    loaded: &LoadedThreads,
 ) -> Option<Vec<DiscoveredSession>> {
-    try_discover_with(config, table, uid, &SystemRunner)
+    try_discover_with(config, table, uid, loaded, &SystemRunner)
 }
 
 fn try_discover_with(
     config: &CodexConfig,
     table: &dyn ProcessTable,
     uid: u32,
+    loaded: &LoadedThreads,
     runner: &dyn CodexRunner,
 ) -> Option<Vec<DiscoveredSession>> {
     let threads = threads::read_recent(config, DISCOVERY_LIMIT)?;
@@ -318,7 +355,25 @@ fn try_discover_with(
         .map(|session| session.thread.clone())
         .collect();
     if live.len() < ids.len() {
-        live.extend(loaded_threads(config, table, uid, runner));
+        let held: Vec<_> = process_sessions
+            .iter()
+            .filter(|session| !session.authorizes_callers)
+            .collect();
+        let locks = held
+            .iter()
+            .map(|session| (session.pid, session.start, session.thread.clone()))
+            .collect();
+        let served = held
+            .iter()
+            .filter(|session| processes::is_proxied_app_server(table, session.pid))
+            .map(|session| session.thread.clone())
+            .collect();
+        live.extend(loaded.under(locks, &served, || {
+            loaded_threads(config, table, uid, runner)
+                .intersection(&ids)
+                .cloned()
+                .collect()
+        }));
     }
     let unknown: Vec<String> = threads
         .iter()
@@ -532,8 +587,8 @@ mod tests {
             PathBuf::from("/srv/codex")
         );
         assert_eq!(
-            pinned(&[("CODEX_SQLITE_HOME", "~/fleet-db")]).sqlite_home,
-            home.path().join("fleet-db")
+            pinned(&[("CODEX_SQLITE_HOME", "~/codex-db")]).sqlite_home,
+            home.path().join("codex-db")
         );
     }
 
@@ -768,7 +823,8 @@ mod tests {
             },
         );
         let runner = runner_hosting(&[THIRD]);
-        let found = try_discover_with(&config, &table, UID, &runner).unwrap();
+        let found =
+            try_discover_with(&config, &table, UID, &LoadedThreads::default(), &runner).unwrap();
         let live: Vec<(&str, bool)> = found
             .iter()
             .map(|s| (s.target.id.as_str(), s.live))
@@ -792,12 +848,200 @@ mod tests {
                 started: Arc::new(Mutex::new(Vec::new())),
             };
             let server = std::thread::spawn(move || router.serve(listener.accept().unwrap().0));
-            let found = try_discover_with(&config, &table, UID, &runner_hosting(&[THIRD])).unwrap();
+            let found = try_discover_with(
+                &config,
+                &table,
+                UID,
+                &LoadedThreads::default(),
+                &runner_hosting(&[THIRD]),
+            )
+            .unwrap();
             assert!(found.iter().all(|s| s.live));
             server.join().unwrap();
         }
         #[cfg(windows)]
         let _ = &mut config;
+    }
+
+    /// A runner whose proxies answer `loaded` in turn.
+    fn runner_answering(loaded: &[&[&str]]) -> FakeRunner {
+        let runner = FakeRunner::default();
+        for threads in loaded {
+            runner
+                .streams
+                .lock()
+                .unwrap()
+                .push_back(Box::new(FakeAppServer::hosting(threads, None)));
+        }
+        runner
+    }
+
+    /// The app-server daemon `codex app-server proxy` reaches, holding the
+    /// writer locks of `threads`.
+    fn app_server_holding(threads: &[&str]) -> FakeProcess {
+        FakeProcess {
+            open_files: threads.iter().map(|thread| lock(thread)).collect(),
+            ..codex_process(12, &["codex", "app-server", "--listen", "unix://"])
+        }
+    }
+
+    fn live_ids(found: &[DiscoveredSession]) -> Vec<&str> {
+        found
+            .iter()
+            .filter(|s| s.live)
+            .map(|s| s.target.id.as_str())
+            .collect()
+    }
+
+    // An answer naming exactly the daemon's listed locks is kept until those
+    // locks change: an unchanged pass runs no proxy.
+    #[test]
+    fn unchanged_locks_run_no_proxy() {
+        let home = tempfile::tempdir().unwrap();
+        let config = config(home.path());
+        let db = seed(home.path(), "wal");
+        add_thread(&db, SECOND, 1_790_659_487);
+        add_thread(&db, THIRD, 1_790_659_488);
+        let table = trusted_table();
+        table.insert(602, app_server_holding(&[THIRD]));
+        let runner = runner_answering(&[&[THIRD], &[THIRD, SECOND]]);
+        let loaded = LoadedThreads::default();
+        let pass = || try_discover_with(&config, &table, UID, &loaded, &runner).unwrap();
+        let proxies = || runner.proxies.lock().unwrap().len();
+
+        for _ in 0..4 {
+            assert_eq!(live_ids(&pass()), [THIRD]);
+        }
+        assert_eq!(proxies(), 1, "an unchanged pass runs no proxy");
+
+        // The daemon loads SECOND: it takes SECOND's lock.
+        table.insert(602, app_server_holding(&[THIRD, SECOND]));
+        for _ in 0..3 {
+            assert_eq!(live_ids(&pass()), [THIRD, SECOND]);
+        }
+        assert_eq!(proxies(), 2, "a changed lock asks once");
+    }
+
+    // Codex takes a thread's lock before the thread is loaded: answers that
+    // miss a thread whose lock the daemon holds are asked again, however
+    // many agree, until one names it.
+    #[test]
+    fn a_thread_still_loading_is_asked_about_again() {
+        let home = tempfile::tempdir().unwrap();
+        let config = config(home.path());
+        let db = seed(home.path(), "wal");
+        add_thread(&db, THIRD, 1_790_659_488);
+        let table = trusted_table();
+        table.insert(602, app_server_holding(&[THIRD]));
+        let runner = runner_answering(&[&[], &[], &[THIRD]]);
+        let loaded = LoadedThreads::default();
+        let pass = || try_discover_with(&config, &table, UID, &loaded, &runner).unwrap();
+        let third_live =
+            |found: Vec<DiscoveredSession>| found.iter().any(|s| s.target.id == THIRD && s.live);
+
+        assert!(!third_live(pass()));
+        assert!(!third_live(pass()));
+        assert!(third_live(pass()));
+        assert!(third_live(pass()));
+        assert_eq!(runner.proxies.lock().unwrap().len(), 3);
+    }
+
+    // A failed ask is not an answer that the daemon's threads are unloaded.
+    #[test]
+    fn a_failed_ask_is_retried() {
+        let home = tempfile::tempdir().unwrap();
+        let config = config(home.path());
+        let db = seed(home.path(), "wal");
+        add_thread(&db, THIRD, 1_790_659_488);
+        let table = trusted_table();
+        table.insert(602, app_server_holding(&[THIRD]));
+        let runner = FakeRunner::default();
+        let loaded = LoadedThreads::default();
+        let pass = || try_discover_with(&config, &table, UID, &loaded, &runner).unwrap();
+        let third_live =
+            |found: Vec<DiscoveredSession>| found.iter().any(|s| s.target.id == THIRD && s.live);
+
+        // The first two asks fail: no proxy answers.
+        assert!(!third_live(pass()));
+        assert!(!third_live(pass()));
+        runner
+            .streams
+            .lock()
+            .unwrap()
+            .push_back(Box::new(FakeAppServer::hosting(&[THIRD], None)));
+        assert!(third_live(pass()));
+        assert!(third_live(pass()));
+        assert_eq!(runner.proxies.lock().unwrap().len(), 3);
+    }
+
+    // With no daemon holding a listed lock, an empty answer is complete:
+    // a terminal Codex or a stdio app-server runs one proxy, then none.
+    #[test]
+    fn no_daemon_lock_asks_once() {
+        let home = tempfile::tempdir().unwrap();
+        let config = config(home.path());
+        let db = seed(home.path(), "wal");
+        add_thread(&db, SECOND, 1_790_659_487);
+        let table = trusted_table();
+        table.insert(
+            600,
+            FakeProcess {
+                open_files: vec![lock(THREAD)],
+                ..codex_process(10, &["codex"])
+            },
+        );
+        table.insert(
+            601,
+            FakeProcess {
+                open_files: vec![lock(SECOND)],
+                ..codex_process(11, &["codex", "app-server", "--analytics-default-enabled"])
+            },
+        );
+        let runner = FakeRunner::default();
+        let loaded = LoadedThreads::default();
+        for _ in 0..5 {
+            try_discover_with(&config, &table, UID, &loaded, &runner).unwrap();
+        }
+        assert_eq!(runner.proxies.lock().unwrap().len(), 1);
+    }
+
+    // Only the app-server on the default control socket (`unix://`) is the
+    // proxied daemon; one on its own socket path, over stdio or with no
+    // `--listen` is not.
+    #[test]
+    fn the_proxied_app_server_listens_on_the_default_socket() {
+        let table = trusted_table();
+        let cases: [(&[&str], bool); 6] = [
+            (
+                &["codex", "app-server", "--listen", "unix://", "--managed"],
+                true,
+            ),
+            (&["codex", "app-server", "--listen=unix://"], true),
+            (
+                &["codex", "app-server", "--listen=unix:///tmp/codex.sock"],
+                false,
+            ),
+            (&["codex", "app-server", "--listen", "stdio://"], false),
+            (
+                &[
+                    "codex",
+                    "-c",
+                    "x=1",
+                    "app-server",
+                    "--analytics-default-enabled",
+                ],
+                false,
+            ),
+            (&["codex", "--listen", "unix://"], false),
+        ];
+        for (pid, (arguments, proxied)) in (700..).zip(cases) {
+            table.insert(pid, codex_process(20, arguments));
+            assert_eq!(
+                processes::is_proxied_app_server(&table, pid),
+                proxied,
+                "{arguments:?}"
+            );
+        }
     }
 
     // CodexDiscoveryTests.testUnreadableCodexKeepsTheLastThreads (the
@@ -807,7 +1051,13 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let runner = FakeRunner::default();
         assert_eq!(
-            try_discover_with(&config(home.path()), &trusted_table(), UID, &runner),
+            try_discover_with(
+                &config(home.path()),
+                &trusted_table(),
+                UID,
+                &LoadedThreads::default(),
+                &runner,
+            ),
             None
         );
         assert!(runner.proxies.lock().unwrap().is_empty());
@@ -826,8 +1076,14 @@ mod tests {
             );
         }
         let config = config(home.path());
-        let listed =
-            try_discover_with(&config, &trusted_table(), UID, &FakeRunner::default()).unwrap();
+        let listed = try_discover_with(
+            &config,
+            &trusted_table(),
+            UID,
+            &LoadedThreads::default(),
+            &FakeRunner::default(),
+        )
+        .unwrap();
         assert_eq!(listed.len(), 40);
         assert!(!listed.iter().any(|s| s.target.id == THREAD));
         let peer = thread(&config, THREAD).unwrap();

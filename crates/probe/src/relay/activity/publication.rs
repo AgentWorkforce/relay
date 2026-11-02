@@ -132,6 +132,15 @@ impl Core {
             .clone()
     }
 
+    /// When activity was last derived, moved `by` into the past.
+    #[cfg(test)]
+    pub(crate) fn age_activity(&self, by: Duration) -> Option<Instant> {
+        let state = self.activity();
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        state.derived_at = state.derived_at.map(|at| at - by);
+        state.derived_at
+    }
+
     /// Derives what the running, shared agents are doing, when due, and
     /// queues the changed ones for publication.
     pub(crate) async fn refresh_activity(&self, discovered: &[DiscoveredSession]) {
@@ -153,7 +162,7 @@ impl Core {
             .plugins
             .account
             .as_ref()
-            .map(|account| account.relay_uploads.shared())
+            .map(|account| account.shared_uploads())
             .unwrap_or_default();
         let spawned_live = self.spawned_live();
         let live: HashSet<&Target> = discovered

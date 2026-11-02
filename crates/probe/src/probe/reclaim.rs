@@ -25,7 +25,7 @@
 //! something an earlier build did not, bump [`MARKER`] and every directory an
 //! older marker skipped is examined again.
 use super::{bridge, lock, save_json};
-use agent_relay_probe::delivery;
+use crate::delivery;
 use anyhow::Result;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -251,7 +251,7 @@ pub fn reclaim() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_relay_probe::delivery::{DeliveryJobConfig, ExportSelection};
+    use crate::delivery::{DeliveryJobConfig, ExportSelection};
     use rusqlite::Connection;
 
     fn policy(receipt_page: usize) -> Policy {
@@ -264,8 +264,8 @@ mod tests {
         DeliveryJobConfig {
             destination_id: "relayhistory".into(),
             instance_id: "teams-probe".into(),
-            account_id: agent_relay_probe::destination::account_id("org", Some("workspace")),
-            mapping_version: agent_relay_probe::destination::MAPPING_VERSION.into(),
+            account_id: crate::destination::account_id("org", Some("workspace")),
+            mapping_version: crate::destination::MAPPING_VERSION.into(),
             selection: ExportSelection {
                 all_sources: true,
                 kinds: vec!["session".into()],

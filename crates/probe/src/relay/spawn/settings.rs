@@ -75,12 +75,13 @@ impl SpawnSettings {
 
 /// Every spawn setting the store keeps, as `settings.get` and
 /// `settings.set` name them.
-pub const KEYS: [&str; 10] = [
+pub const KEYS: [&str; 11] = [
     "accept_spawns",
     "spawn_full_access_codex",
     "spawn_full_access_claude",
     "spawn_allow_teammates",
     "spawn_native_input",
+    "spawn_requester_approvals",
     "spawn_max_agents",
     "spawn_billing_codex",
     "spawn_billing_claude",
@@ -223,10 +224,29 @@ impl ConfiguredChange {
     }
 }
 
+/// Whether **Approvals from the spawning agent** is on as set: on in Agent
+/// Relay Dev (`development`) and off in the release build, unless the person
+/// set it.
+pub fn requester_approvals_setting(store: &Store, development: bool) -> bool {
+    store
+        .extras
+        .spawn_requester_approvals
+        .unwrap_or(development)
+}
+
+/// Whether the agent that spawned a session may answer its permission and
+/// approval requests: approvals from the spawning agent on, and native input
+/// from it too, which approvals never outlive.
+pub fn requester_approvals(store: &Store, development: bool) -> bool {
+    store.extras.spawn_native_input != Some(false)
+        && requester_approvals_setting(store, development)
+}
+
 /// `settings.get`'s spawn values: whether spawns are accepted, each
 /// harness's settings, whether teammates may spawn, and the rest of
-/// `CONFIGURED_KEYS`.
-pub fn values(store: &Store) -> Map<String, Value> {
+/// `CONFIGURED_KEYS`. `development` gives approvals from the spawning agent
+/// its default.
+pub fn values(store: &Store, development: bool) -> Map<String, Value> {
     let settings = SpawnSettings::of(store);
     let mut values = Map::new();
     values.insert("accept_spawns".into(), json!(settings.accept));
@@ -244,6 +264,10 @@ pub fn values(store: &Store) -> Map<String, Value> {
         "spawn_native_input".into(),
         json!(store.extras.spawn_native_input != Some(false)),
     );
+    values.insert(
+        "spawn_requester_approvals".into(),
+        json!(requester_approvals_setting(store, development)),
+    );
     values.extend(configured_values(store));
     values.insert(harnesses::KEY.into(), harnesses::value(&settings.harnesses));
     values
@@ -256,6 +280,7 @@ pub struct Change {
     full_access: Vec<(HarnessId, bool)>,
     allow_teammates: Option<bool>,
     native_input: Option<bool>,
+    requester_approvals: Option<bool>,
     configured: ConfiguredChange,
 }
 
@@ -278,6 +303,13 @@ impl Change {
                 .get("spawn_native_input")
                 .map(|v| v.as_bool().ok_or("spawn_native_input must be a boolean."))
                 .transpose()?,
+            requester_approvals: changes
+                .get("spawn_requester_approvals")
+                .map(|v| {
+                    v.as_bool()
+                        .ok_or("spawn_requester_approvals must be a boolean.")
+                })
+                .transpose()?,
             configured,
         })
     }
@@ -299,6 +331,9 @@ impl Change {
         }
         if self.native_input.is_some() {
             store.extras.spawn_native_input = self.native_input;
+        }
+        if self.requester_approvals.is_some() {
+            store.extras.spawn_requester_approvals = self.requester_approvals;
         }
         if self.allow_teammates.is_some() {
             store.spawn_allow_teammates = self.allow_teammates;
@@ -350,12 +385,25 @@ fn put_back_harness(store: &mut Store, write: &StoreWrite, id: HarnessId) -> boo
 }
 
 impl Core {
+    /// Whether this is Agent Relay Dev, which turns approvals from the
+    /// spawning agent on by default.
+    pub(crate) fn development(&self) -> bool {
+        crate::relay::outbound::is_development(&self.config.app_data_dir)
+    }
+
+    /// `settings.get`'s spawn values (`values`) for this build.
+    pub(crate) fn spawn_setting_values(&self) -> Map<String, Value> {
+        let development = self.development();
+        self.store.read(|store| values(store, development))
+    }
+
     /// Saves the settings the store keeps among `changes` in one write:
-    /// self-registration, auto-activation, relay messages, joining #general
-    /// and spawning. The
+    /// self-registration, auto-activation, relay messages, joining #general,
+    /// connecting the tools found here, and spawning. The
     /// save refreshes `show_relay_messages` for the next delivery
     /// (`HandleState::saved`); a change to spawning then brings the spawn
     /// node in line.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn set_store_settings(&self, changes: &Map<String, Value>) -> Result<(), RpcError> {
         self.save_store_settings(changes).map(|_| ())
     }
@@ -369,7 +417,7 @@ impl Core {
         let spawn = Change::read(changes).map_err(RpcError::invalid_params)?;
         let change = |key: &str| changes.get(key).and_then(Value::as_bool);
         let flags = crate::relay::store_settings::STORE_SETTINGS.map(change);
-        let [allow, auto, show, general, mobile_handoff, native_continuation, teammate_input, pi_auto, opencode_auto] =
+        let [allow, auto, show, general, mobile_handoff, native_continuation, teammate_input, connect, pi_auto, opencode_auto] =
             flags;
         if native_continuation == Some(true) {
             self.require_native_continuation_claim()
@@ -409,6 +457,8 @@ impl Core {
                     store.extras.auto_join_general = general.or(store.extras.auto_join_general);
                     store.extras.teammate_native_input =
                         teammate_input.or(store.extras.teammate_native_input);
+                    store.extras.connect_detected_tools =
+                        connect.or(store.extras.connect_detected_tools);
                     store.extras.pi_auto_activate = pi_auto.or(store.extras.pi_auto_activate);
                     store.extras.opencode_auto_activate =
                         opencode_auto.or(store.extras.opencode_auto_activate);
@@ -465,7 +515,7 @@ impl Core {
             return Ok(());
         };
         let changed = |key: &str| changes.get(key).and_then(Value::as_bool).is_some();
-        let [allow, auto, show, general, mobile_handoff, native_continuation, teammate_input, pi_auto, opencode_auto] =
+        let [allow, auto, show, general, mobile_handoff, native_continuation, teammate_input, connect, pi_auto, opencode_auto] =
             crate::relay::store_settings::STORE_SETTINGS.map(changed);
         let (handoff, continuation, spawning) = self
             .store
@@ -484,6 +534,9 @@ impl Core {
                 }
                 if teammate_input {
                     put_back!(store, write, extras.teammate_native_input);
+                }
+                if connect {
+                    put_back!(store, write, extras.connect_detected_tools);
                 }
                 if pi_auto {
                     put_back!(store, write, extras.pi_auto_activate);
@@ -519,18 +572,75 @@ mod native_input_tests {
     #[test]
     fn native_input_is_on_by_default_persisted_and_rejects_non_booleans() {
         let mut store = Store::default();
-        assert_eq!(values(&store)["spawn_native_input"], true);
+        assert_eq!(values(&store, false)["spawn_native_input"], true);
         for enabled in [false, true] {
             Change::read(json!({"spawn_native_input": enabled}).as_object().unwrap())
                 .unwrap()
                 .apply(&mut store);
             store = serde_json::from_value(serde_json::to_value(&store).unwrap()).unwrap();
-            assert_eq!(values(&store)["spawn_native_input"], enabled);
+            assert_eq!(values(&store, false)["spawn_native_input"], enabled);
         }
         for invalid in [json!("true"), json!(null), json!(1)] {
             assert!(
                 Change::read(json!({"spawn_native_input": invalid}).as_object().unwrap()).is_err()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod requester_approvals_tests {
+    use super::*;
+
+    fn set(store: &mut Store, change: Value) {
+        Change::read(change.as_object().unwrap())
+            .unwrap()
+            .apply(store);
+        *store = serde_json::from_value(serde_json::to_value(&*store).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn approvals_from_the_spawning_agent_are_on_in_dev_and_off_in_release_until_set() {
+        let mut store = Store::default();
+        assert_eq!(values(&store, true)["spawn_requester_approvals"], true);
+        assert_eq!(values(&store, false)["spawn_requester_approvals"], false);
+        assert!(requester_approvals(&store, true));
+        assert!(!requester_approvals(&store, false));
+
+        set(&mut store, json!({"spawn_requester_approvals": true}));
+        assert!(
+            requester_approvals(&store, false),
+            "the person turned it on"
+        );
+        set(&mut store, json!({"spawn_requester_approvals": false}));
+        assert!(
+            !requester_approvals(&store, true),
+            "the person turned it off"
+        );
+        assert_eq!(values(&store, true)["spawn_requester_approvals"], false);
+
+        for invalid in [json!("true"), json!(null), json!(1)] {
+            assert!(Change::read(
+                json!({"spawn_requester_approvals": invalid})
+                    .as_object()
+                    .unwrap()
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn approvals_never_outlive_native_input_from_the_spawning_agent() {
+        let mut store = Store::default();
+        set(
+            &mut store,
+            json!({"spawn_requester_approvals": true, "spawn_native_input": false}),
+        );
+        assert!(!requester_approvals(&store, true));
+        assert!(!requester_approvals(&store, false));
+        // The setting itself is kept, and counts again with native input.
+        assert_eq!(values(&store, false)["spawn_requester_approvals"], true);
+        set(&mut store, json!({"spawn_native_input": true}));
+        assert!(requester_approvals(&store, false));
     }
 }

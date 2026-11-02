@@ -4,6 +4,7 @@
 
 #![allow(dead_code)]
 
+use agent_relay_probe::relay::claude::inbox::Tail;
 use agent_relay_probe::relay::cloud_session::{CloudAccess, CloudAccount, CloudError};
 use agent_relay_probe::relay::inject::{InjectOutcome, Injector};
 use agent_relay_probe::relay::managed_sessions::ManagedAuthority;
@@ -280,6 +281,12 @@ pub struct FakeInjector {
     pub hold: AtomicBool,
     pub holding: AtomicBool,
     pub cancelled: Mutex<Vec<(Target, String)>>,
+    /// The Claude Code transcript every terminal Claude session shows the
+    /// inbox check; `None` reads as unreadable.
+    pub transcript: Mutex<Option<Vec<u8>>>,
+    /// Every `note_pending`: the target and the message ids still queued
+    /// (`None` for a read that was not whole).
+    pub pending: Mutex<Vec<(Target, Option<Vec<String>>)>>,
     pub codex_stall: Mutex<Option<agent_relay_probe::relay::claude::inbox::InboxStall>>,
 }
 
@@ -322,6 +329,19 @@ impl Injector for FakeInjector {
             .unwrap_or(InjectOutcome::Delivered)
     }
 
+    fn note_pending(
+        &self,
+        target: &Target,
+        _source: &str,
+        _queues: &[String],
+        message_ids: Option<&[String]>,
+    ) {
+        self.pending
+            .lock()
+            .unwrap()
+            .push((target.clone(), message_ids.map(<[String]>::to_vec)));
+    }
+
     fn cancel(&self, target: &Target, message_id: &str) {
         self.cancelled
             .lock()
@@ -351,6 +371,14 @@ impl Injector for FakeInjector {
 
     fn final_answer(&self, _: &Target, message_ref: &str) -> Option<String> {
         self.answers.lock().unwrap().get(message_ref).cloned()
+    }
+
+    fn inbox_transcript_tail(&self, _: &Target, _: u64) -> Option<Tail> {
+        let bytes = self.transcript.lock().unwrap().clone()?;
+        Some(Tail {
+            bytes,
+            ..Tail::default()
+        })
     }
 }
 
@@ -427,6 +455,33 @@ impl CloudAccess for FakeCloud {
                 message: None,
             }));
         Box::pin(async move { answer })
+    }
+}
+
+/// Waits until discovery has published whether `target` runs: delivery
+/// passes act on the sessions discovery publishes, on its own cadence.
+#[allow(dead_code)]
+pub async fn discovery_published(
+    core: &std::sync::Arc<agent_relay_probe::relay::daemon::Core>,
+    target: &Target,
+    live: bool,
+) {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let listed = agent_relay_probe::relay::local_methods::sessions_list(core).await;
+        if listed
+            .sessions
+            .iter()
+            .any(|row| &row.target == target && row.live)
+            == live
+        {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for discovery to publish {target:?} live={live}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 

@@ -19,7 +19,7 @@ const WORKERS: usize = 4;
 
 /// Positive, absent and timed-out results all expire. Pending lookups are
 /// shared too, so overlapping refreshes do not repeat filesystem work.
-pub(crate) struct Names {
+pub struct Names {
     relay_home: PathBuf,
     cache: Mutex<Cache>,
     workers: Arc<Semaphore>,
@@ -36,7 +36,7 @@ struct Cache {
 }
 
 impl Names {
-    pub(crate) fn new(relay_home: PathBuf) -> Self {
+    pub fn new(relay_home: PathBuf) -> Self {
         Self {
             relay_home,
             cache: Mutex::new(Cache::default()),
@@ -50,7 +50,7 @@ impl Names {
 
     /// Resolve a whole list concurrently: its budget is one deadline, not
     /// the number of distinct directories multiplied by that deadline.
-    pub(crate) async fn list<'a>(
+    pub async fn list<'a>(
         &self,
         directories: impl Iterator<Item = &'a str>,
     ) -> HashMap<String, Option<String>> {

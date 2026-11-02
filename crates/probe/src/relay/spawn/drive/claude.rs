@@ -1,10 +1,12 @@
 //! Relay transport for a spawned Claude's own channel: the verified machine
 //! owner's native turns (`Core::owner_sent` admits a driven Claude), its
-//! permission requests relayed to that owner alone, their replies, and what
-//! a message to a Claude that has ended comes to.
+//! permission requests relayed to that owner (and to the spawning agent when
+//! it may answer, `Core::approving_requester`), their replies, and what a
+//! message to a Claude that has ended comes to.
 
-use super::{direct_from, watching, OwnerReply, ReplyDecision};
+use super::{direct_from, watching, who_may_answer, OwnerReply, ReplyDecision};
 use crate::relay::client;
+use crate::relay::codex::app_server::drive::ReplyResult;
 use crate::relay::daemon::Core;
 use crate::relay::delivery::policy::{Delivery, MessageRef};
 use crate::relay::harness::claude::{self, requests};
@@ -27,6 +29,16 @@ fn spawned_claude(registration: &Registration) -> bool {
 /// The approval DM sent to the owner for `notice` of `agent`. The reference
 /// is the only thing in it the agent's request decided.
 pub(crate) fn approval_text(agent: &str, notice: &requests::Notice) -> String {
+    approval_text_for(agent, notice, None)
+}
+
+/// The approval DM for `notice` of `agent`, naming `requester` when the
+/// spawning agent may answer it too.
+pub(crate) fn approval_text_for(
+    agent: &str,
+    notice: &requests::Notice,
+    requester: Option<&str>,
+) -> String {
     let reference = &notice.reference;
     let response = if notice.approvable {
         format!("Reply `approve {reference}` or `deny {reference}` within five minutes.")
@@ -39,21 +51,22 @@ pub(crate) fn approval_text(agent: &str, notice: &requests::Notice) -> String {
         )
     };
     format!(
-        "[Claude approval {reference} for @{agent}]\n{}\n{response} Only the signed-in machine owner may answer.",
-        notice.description
+        "[Claude approval {reference} for @{agent}]\n{}\n{response} {}",
+        notice.description,
+        who_may_answer(requester)
     )
 }
 
-/// The owner's `approve`, `deny` or `choose` reply to a spawned Claude's
-/// request, answered; what to record.
+/// The `approve`, `deny` or `choose` reply to a spawned Claude's request
+/// from the one allowed to answer (`allowed_id`), answered.
 pub(super) fn answer(
     session: &str,
     (decision, reference): (ReplyDecision, &str),
     sender: Option<&str>,
-    owner_id: &str,
-) -> String {
-    let owner = Some(owner_id);
-    let result = match decision {
+    allowed_id: &str,
+) -> ReplyResult {
+    let owner = Some(allowed_id);
+    match decision {
         ReplyDecision::Choose(choice) => {
             requests::answer_choice(session, reference, sender, owner, choice)
         }
@@ -64,8 +77,7 @@ pub(super) fn answer(
             owner,
             matches!(decision, ReplyDecision::Approve),
         ),
-    };
-    format!("Claude approval reply: {result:?}")
+    }
 }
 
 impl Core {
@@ -73,6 +85,23 @@ impl Core {
     /// Claude spawned before that input existed has not.
     pub(super) fn driven_claude(&self, registration: &Registration) -> bool {
         spawned_claude(registration) && self.plugins.spawner.native_input(&registration.target)
+    }
+
+    /// Whether `registration` is a spawned Claude whose recorded process
+    /// ended. Without a recorded process, nothing says it did.
+    pub(super) async fn claude_ended(&self, registration: &Registration) -> bool {
+        let Some(process) = registration
+            .spawn
+            .as_ref()
+            .filter(|_| spawned_claude(registration))
+            .and_then(|spawn| spawn.process)
+        else {
+            return false;
+        };
+        let (spawner, target) = (self.plugins.spawner.clone(), registration.target.clone());
+        !tokio::task::spawn_blocking(move || spawner.alive(&target, Some(&process)))
+            .await
+            .unwrap_or(true)
     }
 
     /// A spawned Claude whose process ended finished its work: it is never
@@ -83,19 +112,7 @@ impl Core {
         registration: &Registration,
         delivery: &Delivery,
     ) -> OwnerReply {
-        let Some(process) = registration
-            .spawn
-            .as_ref()
-            .filter(|_| spawned_claude(registration))
-            .and_then(|spawn| spawn.process)
-        else {
-            return OwnerReply::NotOne;
-        };
-        let (spawner, target) = (self.plugins.spawner.clone(), registration.target.clone());
-        let alive = tokio::task::spawn_blocking(move || spawner.alive(&target, Some(&process)))
-            .await
-            .unwrap_or(true);
-        if alive {
+        if !self.claude_ended(registration).await {
             return OwnerReply::NotOne;
         }
         if self
@@ -178,32 +195,24 @@ impl Core {
             .filter(|(current, _)| current.agent_id == agent_id && spawned_claude(current))
     }
 
-    /// Sends `notice` to the verified owner. Without one it is never
-    /// forwarded, and the request expires to a refusal.
+    /// Sends `notice` to the verified owner and, when it may answer, the
+    /// spawning agent. With neither it is never forwarded, and the request
+    /// expires to a refusal.
     async fn forward_request(
         &self,
         registration: &Registration,
         token: &Secret,
         notice: &requests::Notice,
     ) {
-        let Some((owner, owner_id)) = self.verified_owner(registration).await else {
-            return;
-        };
-        let text = approval_text(&registration.name, notice);
-        let key = format!(
-            "spawn-approval-{}-{}",
-            notice.reference,
-            MessageRef::of(&owner_id)
+        let requester = self.approving_requester(registration);
+        let text = approval_text_for(
+            &registration.name,
+            notice,
+            requester.as_ref().map(|r| r.name.as_str()),
         );
-        if client::send_dm(
-            &registration.base_url,
-            token,
-            &Endpoint::Name(owner),
-            &text,
-            Some(key),
-        )
-        .await
-        .is_ok()
+        if self
+            .send_approval(registration, token, &notice.reference, &text, requester)
+            .await
         {
             requests::mark_forwarded(&notice.reference);
         }

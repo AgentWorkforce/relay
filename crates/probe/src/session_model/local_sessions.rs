@@ -9,13 +9,13 @@ pub struct LocalSessionRow {
     pub upload: Option<UploadSession>,
     pub relay: Option<LocalSession>,
 }
+
 impl LocalSessionRow {
     pub fn key(&self) -> String {
         self.upload.as_ref().map(session_key).unwrap_or_else(|| {
             self.relay
                 .as_ref()
                 .unwrap()
-                .target
                 .upload_key()
                 .unwrap_or_else(|| self.relay.as_ref().unwrap().target.key())
         })
@@ -37,6 +37,19 @@ impl LocalSessionRow {
             .as_ref()
             .map(|s| s.source.as_str())
             .unwrap_or_else(|| self.relay.as_ref().unwrap().target.kind.source())
+    }
+    /// The source the row's icon is drawn for. History names every Claude
+    /// transcript `claude`; those are Claude Code terminal sessions, while a
+    /// relay-only Claude app session keeps the Claude mark.
+    pub fn icon_source(&self) -> String {
+        if let Some(relay) = &self.relay {
+            return super::kind_icon_source(relay.target.kind).to_string();
+        }
+        if self.source() == "claude" {
+            "claude-code".to_string()
+        } else {
+            self.source().to_string()
+        }
     }
     /// The name this session is messaged by on the relay: its alias once
     /// renamed. `None` while it is off the relay.
@@ -104,6 +117,10 @@ impl LocalSessionRow {
             .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("unknown"))
         {
             parts.push(format!("{effort} reasoning"));
+        }
+        let directory = self.directory();
+        if !directory.is_empty() {
+            parts.push(directory);
         }
         parts.join(" · ")
     }
@@ -194,7 +211,7 @@ pub fn merge_local_sessions(
     let keys: HashSet<_> = uploads.iter().map(session_key).collect();
     let mut relay_by_key = HashMap::new();
     for session in sessions {
-        if let Some(key) = session.target.upload_key() {
+        if let Some(key) = session.upload_key() {
             // A stopped managed session and a live window can share a key:
             // keep the live one, then the first, as `relay_session_for` does.
             let kept = relay_by_key.entry(key).or_insert(session);
@@ -214,8 +231,7 @@ pub fn merge_local_sessions(
         sessions
             .iter()
             .filter(|s| {
-                s.target
-                    .upload_key()
+                s.upload_key()
                     .is_none_or(|key| !keys.contains(&key) && std::ptr::eq(relay_by_key[&key], *s))
             })
             .map(|s| LocalSessionRow {
@@ -233,13 +249,9 @@ pub fn merge_local_sessions(
 /// The relay session a row key names: the live one when a stopped managed
 /// session shares its upload key, otherwise the first.
 pub fn relay_session_for<'a>(sessions: &'a [LocalSession], key: &str) -> Option<&'a LocalSession> {
-    let mut matching = sessions.iter().filter(|session| {
-        session
-            .target
-            .upload_key()
-            .unwrap_or_else(|| session.target.key())
-            == key
-    });
+    let mut matching = sessions
+        .iter()
+        .filter(|session| session.upload_key().unwrap_or_else(|| session.target.key()) == key);
     let first = matching.next()?;
     Some(if first.live {
         first
@@ -270,6 +282,49 @@ pub fn current_hidden_key(key: &str) -> String {
         .iter()
         .find_map(|(old, new)| key.strip_prefix(old).map(|id| format!("{new}{id}")))
         .unwrap_or_else(|| key.to_owned())
+}
+
+/// The host-aware key added beside an older hidden target key. Keeping both
+/// makes the preference stable if web discovery is temporarily unavailable.
+pub fn additional_hidden_key_for_sessions(key: &str, sessions: &[LocalSession]) -> Option<String> {
+    let current = current_hidden_key(key);
+    let session = (current == key).then(|| {
+        sessions.iter().find(|session| {
+            session.target.kind == crate::relay::store::SessionKind::ClaudeCloud
+                && session.host.as_deref() == Some(crate::relay::claude_web::HOST)
+                && crate::relay::claude_web::web_session_id(&session.target).is_some()
+                && (session.target.key() == key || session.upload_key().as_deref() == Some(key))
+        })
+    })??;
+    let target = session.target.key();
+    let upload = session.upload_key()?;
+    if target == key {
+        Some(upload)
+    } else if upload == key {
+        Some(target)
+    } else {
+        None
+    }
+}
+
+/// Whether two persisted row keys are aliases for one Claude web session.
+/// Both are retained while hidden so a discovery outage cannot reveal it;
+/// unhiding either identity removes the complete alias set.
+pub fn same_hidden_session(left: &str, right: &str) -> bool {
+    left == right
+        || claude_hidden_body(left)
+            .zip(claude_hidden_body(right))
+            .is_some_and(|(left, right)| left == right)
+}
+
+fn claude_hidden_body(key: &str) -> Option<&str> {
+    let id = key
+        .strip_prefix("claude-cloud:")
+        .or_else(|| key.strip_prefix("claude:"))?;
+    let body = id
+        .strip_prefix("session_")
+        .or_else(|| id.strip_prefix("cse_"))?;
+    crate::relay::store::is_claude_session_id(id).then_some(body)
 }
 
 #[cfg(test)]
@@ -368,6 +423,103 @@ mod tests {
             .matches("LOGIN cloud claude"));
     }
     #[test]
+    fn icon_source_separates_claude_app_from_claude_code_in_the_terminal() {
+        let history_only = merge_local_sessions(&[upload("claude", "term")], &[]);
+        assert_eq!(history_only[0].icon_source(), "claude-code");
+        let terminal = merge_local_sessions(
+            &[upload("claude", "same")],
+            &[local("claude-terminal", "same")],
+        );
+        assert_eq!(terminal[0].icon_source(), "claude-code");
+        let app = merge_local_sessions(&[], &[local("claude-cloud", "app")]);
+        assert_eq!(app[0].icon_source(), "claude");
+        let codex = merge_local_sessions(&[upload("codex", "c")], &[]);
+        assert_eq!(codex[0].icon_source(), "codex");
+        assert_eq!(
+            super::super::kind_icon_source(crate::relay::store::SessionKind::ClaudeTerminal),
+            "claude-code"
+        );
+        assert_eq!(
+            super::super::kind_icon_source(crate::relay::store::SessionKind::ClaudeCloud),
+            "claude"
+        );
+    }
+    #[test]
+    fn claude_web_history_and_relay_discovery_are_one_row() {
+        let id = "cse_019a7SvoqfvBg4Z6zbjanBat";
+        let target_id = "session_019a7SvoqfvBg4Z6zbjanBat";
+        let mut web = local("claude-cloud", target_id);
+        web.host = Some(crate::relay::claude_web::HOST.into());
+        let rows = merge_local_sessions(&[upload("claude", id)], &[web.clone()]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key(), format!("claude:{id}"));
+        assert_eq!(rows[0].title(), "Fix login");
+        assert_eq!(rows[0].relay.as_ref(), Some(&web));
+        assert_eq!(
+            relay_session_for(&[web.clone()], &rows[0].key()).map(|session| &session.target),
+            Some(&web.target)
+        );
+        assert_eq!(
+            additional_hidden_key_for_sessions(
+                &format!("claude-cloud:{target_id}"),
+                &[web.clone()]
+            ),
+            Some(rows[0].key())
+        );
+        assert_eq!(
+            additional_hidden_key_for_sessions(&rows[0].key(), &[web.clone()]),
+            Some(format!("claude-cloud:{target_id}"))
+        );
+
+        let app = local("claude-cloud", target_id);
+        let app_rows = merge_local_sessions(&[upload("claude", id)], &[app.clone()]);
+        assert_eq!(app_rows.len(), 2);
+        assert!(app_rows
+            .iter()
+            .any(|row| row.key() == format!("claude-cloud:{target_id}")));
+        assert!(app_rows
+            .iter()
+            .any(|row| row.key() == format!("claude:{id}")));
+        assert_eq!(
+            additional_hidden_key_for_sessions(&format!("claude-cloud:{target_id}"), &[app]),
+            None
+        );
+        let mut terminal = local("claude-terminal", id);
+        terminal.host = Some(crate::relay::claude_web::HOST.into());
+        assert_eq!(
+            additional_hidden_key_for_sessions(&format!("claude:{id}"), &[terminal]),
+            None
+        );
+        let mut invalid = local("claude-cloud", "session_short");
+        invalid.host = Some(crate::relay::claude_web::HOST.into());
+        assert_eq!(
+            additional_hidden_key_for_sessions("claude:session_short", &[invalid]),
+            None
+        );
+        assert!(same_hidden_session(
+            &format!("claude-cloud:{target_id}"),
+            &format!("claude:{id}")
+        ));
+        assert!(!same_hidden_session(
+            "claude-cloud:ordinary",
+            "claude:ordinary"
+        ));
+        assert!(!same_hidden_session(
+            "claude-cloud:session_019a7SvoqfvBg4Z6zbjanBat",
+            "claude:cse_019bTotallyOtherSession"
+        ));
+        assert!(!same_hidden_session("claude-cloud:session_", "claude:cse_"));
+        assert!(!same_hidden_session(
+            "claude-cloud:session_invalid-body",
+            "claude:cse_invalid-body"
+        ));
+        let long = "A".repeat(65);
+        assert!(!same_hidden_session(
+            &format!("claude-cloud:session_{long}"),
+            &format!("claude:cse_{long}")
+        ));
+    }
+    #[test]
     fn identity_survives_history_arrival() {
         let session = local("claude-terminal", "a");
         let before = merge_local_sessions(&[], &[session.clone()]);
@@ -424,7 +576,7 @@ mod tests {
         let rows = merge_local_sessions(&[session], &[local("codex", "a")]);
         assert_eq!(
             rows[0].execution_details(),
-            "gpt-6 · Codex · high reasoning"
+            "gpt-6 · Codex · high reasoning · /work/cloud"
         );
         assert_eq!(rows[0].model_name(), "gpt-6");
         assert_eq!(rows[0].reasoning(), "high");

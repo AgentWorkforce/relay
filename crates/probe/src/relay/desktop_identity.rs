@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+mod native;
 mod refusal;
 mod synced;
 
@@ -29,6 +30,7 @@ pub(crate) struct DesktopIdentitySync {
     links: Mutex<McpLinks>,
     refused: Mutex<Option<refusal::RefusedSnapshot>>,
     synced: Mutex<Option<synced::SyncedSnapshot>>,
+    native_capability: Mutex<Option<native::Capability>>,
 }
 
 /// Link times by agent id, for the account workspace that reported them
@@ -89,10 +91,16 @@ fn sync_failure_message(error: &CloudError) -> String {
 }
 
 impl Core {
+    fn note_identity_sync(&self, succeeded: Option<bool>) {
+        if let Some(account) = &self.plugins.account {
+            account.note_identity_sync(self, succeeded);
+        }
+    }
+
     /// Coalesces naturally on `desktop_identity_sync`: every waiter reads the
     /// latest store once it gets the lock, so lifecycle transitions cannot
     /// publish a stale snapshot after a clear.
-    pub(crate) fn request_desktop_identity_sync(&self) {
+    pub fn request_desktop_identity_sync(&self) {
         // A sign-in or a workspace change: the spawn node is claimed for it.
         self.request_spawn_claim();
         // And the people in the workspace trusted like the person.
@@ -103,7 +111,7 @@ impl Core {
         tokio::spawn(async move { core.sync_desktop_identities().await });
     }
 
-    pub(crate) async fn sync_desktop_identities(self: &Arc<Self>) {
+    pub async fn sync_desktop_identities(self: &Arc<Self>) {
         let _one = self.desktop_identity_sync.lock.lock().await;
         // A clear completes below: links cached before it was queued go now.
         self.forget_cleared_links();
@@ -117,11 +125,12 @@ impl Core {
         };
         // Agent tokens go only with a session confirmed as this person's.
         if !self.plugins.cloud.may_sync_identities() {
-            crate::relay::account::note_identity_sync(self, None);
+            self.note_identity_sync(None);
             return;
         }
         let generation = self.plugins.cloud.identity_sync_generation();
         // Agent tokens go only with a session confirmed as this person's.
+        let (support, attestation_key) = self.native_support(&account, generation);
         let active_workspace = self.workspace();
         let active_status = self.status().workspace;
         let body = self.store.read(|store| {
@@ -202,19 +211,13 @@ impl Core {
                             "agent_id": registration.agent_id,
                             "token": token,
                         });
-                        // A claude.ai/code session's hosted MCP names its
-                        // container's session id, so Cloud links it to this
-                        // identity without a `join_relay`.
-                        if let Some(id) =
-                            crate::relay::claude_web::web_session_id(&registration.target)
-                        {
-                            identity["web_session_id"] = json!(id);
-                        }
+                        native::attach(&mut identity, &registration.target, support);
                         identity
                     })
                 })
                 .collect();
-            Some(json!({"source_id": source_id, "identities": identities}))
+            let body = json!({"source_id": source_id, "identities": identities});
+            Some(native::with_attestation_key(body, attestation_key.as_ref()))
         });
         let Some(body) = body else { return };
         if self
@@ -227,7 +230,7 @@ impl Core {
             .desktop_identity_sync
             .wait_for_refusal_retry(&account, generation, &body)
         {
-            crate::relay::account::note_identity_sync(self, Some(false));
+            self.note_identity_sync(Some(false));
             return;
         }
         let clears = self.queued_identity_clears();
@@ -238,15 +241,20 @@ impl Core {
             .await
         {
             Ok(response) => {
+                if self.plugins.cloud.account().as_ref() != Some(&account)
+                    || self.plugins.cloud.identity_sync_generation() != generation
+                {
+                    return;
+                }
                 self.desktop_identity_sync.forget_refusal();
                 self.desktop_identity_sync
                     .remember_synced(account.clone(), generation, body);
-                crate::relay::account::note_identity_sync(self, Some(true));
+                self.note_identity_sync(Some(true));
                 self.apply_mcp_links(&account.workspace_id, &clears, &response);
             }
             Err(error) => {
                 self.desktop_identity_sync.forget_synced();
-                crate::relay::account::note_identity_sync(self, Some(false));
+                self.note_identity_sync(Some(false));
                 // A 503 is Cloud unable to verify identities with Relaycast
                 // right now; sent again every minute it only adds to that
                 // load, so it backs off like a refusal.
@@ -281,7 +289,7 @@ impl Core {
     /// has linked to since the last sync. The identity `PUT` runs only when
     /// the agents change, so a `join_relay` made after it is learned here,
     /// on the refresh pass: a read of Cloud's stored links, no tokens sent.
-    pub(crate) async fn refresh_mcp_links(&self) {
+    pub async fn refresh_mcp_links(&self) {
         let Some(account) = self.plugins.cloud.account() else {
             return;
         };
@@ -307,7 +315,14 @@ impl Core {
             segment(&source_id)
         );
         let clears = self.queued_identity_clears();
+        let generation = self.plugins.cloud.identity_sync_generation();
         if let Ok(response) = self.plugins.cloud.request("GET", path, None).await {
+            if self.plugins.cloud.account().as_ref() != Some(&account)
+                || self.plugins.cloud.identity_sync_generation() != generation
+            {
+                return;
+            }
+            self.record_native_capability(&account, generation, &response);
             self.apply_mcp_links(&account.workspace_id, &clears, &response);
         }
     }
@@ -483,23 +498,21 @@ impl Core {
         ) {
             Ok(()) => return Ok(session),
             Err(CloudError::Rejected) if can_refresh(&session, crate::relay::state::now_ms()) => {
-                if let Ok(refreshed) = cloud_session::refresh(&session).await {
-                    if self.save_refreshed_clear(clear, &refreshed).is_ok() {
-                        session = refreshed;
-                        if cleared(
-                            cloud_session::api(
-                                &session.site_url,
-                                &session.access_token,
-                                "PUT",
-                                &path(&clear.workspace_id),
-                                Some(body()),
-                            )
-                            .await,
+                if let Ok(refreshed) = self.refresh_clear_session(clear, &session).await {
+                    session = refreshed;
+                    if cleared(
+                        cloud_session::api(
+                            &session.site_url,
+                            &session.access_token,
+                            "PUT",
+                            &path(&clear.workspace_id),
+                            Some(body()),
                         )
-                        .is_ok()
-                        {
-                            return Ok(session);
-                        }
+                        .await,
+                    )
+                    .is_ok()
+                    {
+                        return Ok(session);
                     }
                 }
             }
@@ -542,29 +555,45 @@ impl Core {
         if access_is_fresh(&session, FRESH_MARGIN, now) || !can_refresh(&session, now) {
             return Ok(session);
         }
-        let refreshed = cloud_session::refresh(&session).await?;
-        self.save_refreshed_clear(clear, &refreshed)?;
-        Ok(refreshed)
+        self.refresh_clear_session(clear, &session).await
     }
 
-    fn save_refreshed_clear(
+    /// Refreshes the clear's session under the store's session refresh lock,
+    /// from what the store holds now: a copy another holder already rotated
+    /// is used as it is. The new pair replaces every copy of the old one, the
+    /// kept session included when the clear shares it, so no holder is left
+    /// with a refresh token Cloud has retired.
+    async fn refresh_clear_session(
         &self,
         clear: &DesktopIdentityClear,
-        session: &CloudSession,
-    ) -> Result<(), CloudError> {
+        seen: &CloudSession,
+    ) -> Result<CloudSession, CloudError> {
+        let _lock = self
+            .store
+            .lock_session_refresh()
+            .await
+            .ok_or(CloudError::Unreachable)?;
+        self.store.reload().map_err(|_| CloudError::Unreachable)?;
         let request_id = clear.request_id.clone();
-        self.store
-            .update(|store| {
-                if let Some(current) = store
+        let current = self
+            .store
+            .read(|store| {
+                store
                     .desktop_identity_clears_pending
-                    .iter_mut()
+                    .iter()
                     .flatten()
-                    .find(|current| current.request_id == request_id)
-                {
-                    current.session = session.clone();
-                }
+                    .find(|pending| pending.request_id == request_id)
+                    .map(|pending| pending.session.clone())
             })
-            .map_err(|_| CloudError::Unreachable)
+            .unwrap_or_else(|| seen.clone());
+        if &current != seen {
+            return Ok(current);
+        }
+        let refreshed = cloud_session::refresh(&current).await?;
+        self.store
+            .update_latest(|store| store.rotate_session(&current, Some(&refreshed)))
+            .map_err(|_| CloudError::Unreachable)?;
+        Ok(refreshed)
     }
 }
 
