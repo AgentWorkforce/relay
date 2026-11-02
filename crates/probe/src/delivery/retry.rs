@@ -155,16 +155,16 @@ pub fn retry_job(conn: &Connection, job_id: &str) -> Result<DeliveryStatus> {
     status(conn, job_id)
 }
 
+/// Recorded among a job's builds once a `permission_denied` block from
+/// before the older-uploader check was retried (`retry_job_for_build`).
+const LEGACY_PERMISSION_RETRY: &str = "legacy-permission-denied-retry";
+
 /// Retry a blocked verdict once per build, atomically recording the build with
 /// the job transition. History retains every build, including after rollbacks.
 /// A legacy file marker may be imported only when it explicitly names this job.
 /// Active, paused and cancelled jobs record the build without changing state,
 /// except that a long retry wait is clamped (`clamp_retry_wait`): the
 /// collector runs this as it starts, which an update always does.
-/// Recorded among a job's builds once a `permission_denied` block from
-/// before the older-uploader check was retried (`retry_job_for_build`).
-const LEGACY_PERMISSION_RETRY: &str = "legacy-permission-denied-retry";
-
 pub fn retry_job_for_build(
     conn: &Connection,
     job_id: &str,

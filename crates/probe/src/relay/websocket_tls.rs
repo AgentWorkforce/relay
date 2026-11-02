@@ -6,7 +6,8 @@
 //! of tokio-tungstenite reading them again on each one. The configuration is
 //! read again after `REFRESH_AFTER`, so a CA added to or removed from the
 //! platform store (a corporate or development proxy's) applies without a
-//! restart; a read that reported errors is not kept.
+//! restart. A read that reported errors is kept for `PARTIAL_REFRESH_AFTER`
+//! instead, so it is retried sooner without reading on every connect.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -28,6 +29,11 @@ pub async fn connect(
 /// How long one read of the platform's roots is kept.
 const REFRESH_AFTER: Duration = Duration::from_secs(10 * 60);
 
+/// How long a read that reported errors (a stray file in a certificate
+/// directory, a keychain entry that will not parse) is kept before trying
+/// again. Never zero: such a host reports the same errors on every read.
+const PARTIAL_REFRESH_AFTER: Duration = Duration::from_secs(60);
+
 /// The connector for a `wss://` (or plain `ws://`) connect.
 pub fn connector() -> Connector {
     static SHARED: Shared = Shared::new();
@@ -35,7 +41,7 @@ pub fn connector() -> Connector {
 }
 
 /// The platform's roots, and whether they were all read: a load error or a
-/// certificate that would not parse is logged, and that read is not kept.
+/// certificate that would not parse is logged, once per read.
 fn native_roots() -> Roots {
     let loaded = rustls_native_certs::load_native_certs();
     for error in &loaded.errors {
@@ -63,9 +69,10 @@ struct Roots {
 }
 
 /// One configuration, built by the first connect while later ones wait for
-/// it, and read again once it is `REFRESH_AFTER` old. A platform that
-/// offered no roots, or reported errors, is asked again on the next connect.
-struct Shared(Mutex<Option<(Instant, Arc<rustls::ClientConfig>)>>);
+/// it, and read again once it is `REFRESH_AFTER` old (`PARTIAL_REFRESH_AFTER`
+/// for a read that reported errors). A platform that offered no roots is
+/// asked again on the next connect.
+struct Shared(Mutex<Option<(Instant, Duration, Arc<rustls::ClientConfig>)>>);
 
 impl Shared {
     const fn new() -> Shared {
@@ -78,20 +85,25 @@ impl Shared {
 
     fn config_at(&self, now: Instant, roots: impl FnOnce() -> Roots) -> Arc<rustls::ClientConfig> {
         let mut shared = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        if let Some((read, config)) = &*shared {
-            if now.saturating_duration_since(*read) < REFRESH_AFTER {
+        if let Some((read, keep_for, config)) = &*shared {
+            if now.saturating_duration_since(*read) < *keep_for {
                 return config.clone();
             }
         }
         let Roots { store, complete } = roots();
-        let keep = complete && !store.is_empty();
+        let keep = !store.is_empty();
+        let keep_for = if complete {
+            REFRESH_AFTER
+        } else {
+            PARTIAL_REFRESH_AFTER
+        };
         let config = Arc::new(
             rustls::ClientConfig::builder()
                 .with_root_certificates(store)
                 .with_no_client_auth(),
         );
         if keep {
-            *shared = Some((now, config.clone()));
+            *shared = Some((now, keep_for, config.clone()));
         }
         config
     }
@@ -166,26 +178,25 @@ mod tests {
     }
 
     #[test]
-    fn a_read_with_errors_is_asked_for_again() {
+    fn a_read_with_errors_is_reused_then_read_again_sooner() {
         let shared = Shared::new();
         let loads = AtomicUsize::new(0);
-        let partial = || Roots {
-            complete: false,
-            ..one_root()
+        let partial = || {
+            loads.fetch_add(1, Ordering::SeqCst);
+            Roots {
+                complete: false,
+                ..one_root()
+            }
         };
-        shared.config(|| {
-            loads.fetch_add(1, Ordering::SeqCst);
-            partial()
-        });
-        shared.config(|| {
-            loads.fetch_add(1, Ordering::SeqCst);
-            one_root()
-        });
-        shared.config(|| {
-            loads.fetch_add(1, Ordering::SeqCst);
-            one_root()
-        });
+        let start = Instant::now();
+        let first = shared.config_at(start, partial);
+        let kept = shared.config_at(start + PARTIAL_REFRESH_AFTER / 2, partial);
+        assert!(Arc::ptr_eq(&first, &kept));
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+        let again = shared.config_at(start + PARTIAL_REFRESH_AFTER, partial);
+        assert!(!Arc::ptr_eq(&first, &again));
         assert_eq!(loads.load(Ordering::SeqCst), 2);
+        assert!(PARTIAL_REFRESH_AFTER > Duration::ZERO && PARTIAL_REFRESH_AFTER < REFRESH_AFTER);
     }
 
     #[test]
