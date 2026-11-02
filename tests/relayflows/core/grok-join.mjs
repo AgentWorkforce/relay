@@ -7,7 +7,9 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { repoRoot, scenario, waitFor, withSandbox } from './harness.mjs';
+import { leaveRoot, repoRoot, scenario, waitFor, withSandbox } from './harness.mjs';
+
+leaveRoot(import.meta.url);
 
 /** A Grok TUI as the core finds it: a `grok` process and its registry record. */
 function grokSession(machine) {

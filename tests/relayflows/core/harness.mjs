@@ -9,7 +9,7 @@
 // nothing, and `assertLocalOnly` fails a run that touched a hosted service.
 
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -331,6 +331,21 @@ export async function withSandbox(run) {
   } finally {
     await sandbox.dispose();
   }
+}
+
+/**
+ * Reruns a scenario as an ordinary user when started as root, as a CI runner may
+ * be. The core refuses to bind a Grok session owned by root, and no person runs
+ * Grok as root.
+ */
+export function leaveRoot(script) {
+  if (process.getuid() !== 0) return;
+  const { status } = spawnSync(
+    'setpriv',
+    ['--reuid=65534', '--regid=65534', '--clear-groups', process.execPath, fileURLToPath(script)],
+    { stdio: 'inherit', env: { ...process.env, HOME: '/tmp', TMPDIR: '/tmp' } }
+  );
+  process.exit(status ?? 1);
 }
 
 /** Runs named checks in order and prints a line for each. */
