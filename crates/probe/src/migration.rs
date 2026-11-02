@@ -279,6 +279,14 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let agents = unreadable.path().join("Library/LaunchAgents");
             fs::set_permissions(&agents, fs::Permissions::from_mode(0o755)).unwrap();
+            // Root reads a 0o000 directory anyway, so only a non-root run
+            // exercises the unreadable case; there it must answer it.
+            if crate::relay::peer::current_uid() != 0 {
+                assert!(
+                    seen.contains("launchd-plist-status-unknown"),
+                    "the unreadable LaunchAgents fixture was not reported: {seen:?}"
+                );
+            }
         }
         // `status`'s own early answers.
         seen.extend(["legacy-installer-unsupported", "home-unavailable"]);

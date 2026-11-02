@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `relay init` sets up Cursor, so messages reach agents in the Cursor editor and Cursor CLI and wake an idle agent.
 - `relay init --uninstall` removes the Cursor setup it added.
-- The Agent Relay core (`agent-relay-probe`) is now the same core the desktop app runs, built from `crates/probe`: Oh My Pi sessions, Relay Connect, mobile handoff, spawning with approvals from the spawning agent, and the desktop's delivery and discovery fixes all come to `relay serve`.
-- `agent-relay-probe` takes its session history libraries (`ai-hist`, `history-provider-sources`) from crates.io, and builds without session history (`--no-default-features --features production-binaries`) as the messaging runtime alone.
+- `relay serve` now runs the same core as the desktop app: Oh My Pi sessions join the relay, and Relay Connect and mobile handoff work from the CLI.
+- Delivery and session discovery get the desktop app's fixes, so messages reach agents more reliably.
 
 ### Changed
 

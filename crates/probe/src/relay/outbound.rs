@@ -2051,12 +2051,17 @@ mod tests {
             socket_for(true, &|_| None, app, 1000),
             app.join("run/relay.sock")
         );
-        // A runtime directory too long for a Unix socket is not used.
-        let long = |key: &str| (key == "XDG_RUNTIME_DIR").then(|| format!("/{}", "r".repeat(120)));
-        assert_eq!(
-            socket_for(true, &long, app, 1000),
-            app.join("run/relay.sock")
-        );
+        // A runtime directory too long for a Unix socket is not used. Windows
+        // names a pipe, so every path fits there.
+        #[cfg(not(windows))]
+        {
+            let long =
+                |key: &str| (key == "XDG_RUNTIME_DIR").then(|| format!("/{}", "r".repeat(120)));
+            assert_eq!(
+                socket_for(true, &long, app, 1000),
+                app.join("run/relay.sock")
+            );
+        }
     }
 
     // OutboundTests.testLongSupportPathFallsBackToTemporaryDirectory.
