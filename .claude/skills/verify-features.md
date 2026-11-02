@@ -103,17 +103,17 @@ Start with the `Fast Health Triage` sequence in `critical-paths.md`; use the hos
 
 ### 4. Determine which features to verify for a given change
 
-| Changed code area                                            | Verify these feature categories         |
-| ------------------------------------------------------------ | --------------------------------------- |
-| `crates/probe/`                                              | core, core-delivery, init               |
-| `packages/cli/src/cli/commands/init.ts`, `lib/probe-core.ts` | init, core                              |
-| `crates/broker/`                                             | broker, messaging-\*, local-agents, mcp |
-| `crates/relay-pty/`                                          | local-agents (spawn/attach)             |
-| `packages/cli/src/cli/commands/`                             | The command that changed                |
-| `packages/cli/src/cli/mcp/`                                  | mcp category (all tools)                |
-| `packages/harness-driver/`                                   | harnesses, local-agents                 |
-| `packages/sdk/`                                              | sdk category                            |
-| `packages/cloud/`                                            | cloud category                          |
+| Changed code area                                                                 | Verify these feature categories         |
+| --------------------------------------------------------------------------------- | --------------------------------------- |
+| `crates/probe/`                                                                   | core, core-delivery, init               |
+| `packages/cli/src/cli/commands/init.ts`, `packages/cli/src/cli/lib/probe-core.ts` | init, core                              |
+| `crates/broker/`                                                                  | broker, messaging-\*, local-agents, mcp |
+| `crates/relay-pty/`                                                               | local-agents (spawn/attach)             |
+| `packages/cli/src/cli/commands/`                                                  | The command that changed                |
+| `packages/cli/src/cli/mcp/`                                                       | mcp category (all tools)                |
+| `packages/harness-driver/`                                                        | harnesses, local-agents                 |
+| `packages/sdk/`                                                                   | sdk category                            |
+| `packages/cloud/`                                                                 | cloud category                          |
 
 ### 5. Check critical paths last
 
