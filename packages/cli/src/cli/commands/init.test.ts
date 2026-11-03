@@ -1557,6 +1557,22 @@ describe('relay init joining a team after solo relay init', () => {
     expect(logs.join('\n')).toContain('Moved running sessions to "team": codex-api.');
   });
 
+  it('a desktop core this run asked for still gets the sessions moved', async () => {
+    const { core, net } = await solo();
+    await setup({ ...core.deps, ...net, isAlive: vi.fn(() => false) }).run('--stop');
+    const startDesktopCore = vi.fn(() => {
+      core.startForeign(777);
+      return 'open -g -j -b com.agentrelay.desktop';
+    });
+    const { run, logs } = setup({ ...core.deps, ...net, desktopInstalled: () => true, startDesktopCore });
+    await run('--hosted', '--name', 'team', '--tools', 'codex');
+
+    expect(startDesktopCore).toHaveBeenCalledTimes(1);
+    expect(core.deps.startCore).toHaveBeenCalledTimes(1);
+    expect(logs).toContain('Switched this machine to workspace "team"');
+    expect(logs.join('\n')).toContain('Moved running sessions to "team": codex-api.');
+  });
+
   it('says what to do when the core stays on another workspace', async () => {
     installedProbe();
     const core = fakeCore({ agents: [SESSION], followStore: true });
@@ -1700,7 +1716,7 @@ describe('relay init message injection', () => {
       expect(output).toContain(
         `Started the Agent Relay desktop app's core (agent-relay-probe ${PROBE_VERSION}, pid 777)`
       );
-      expect(output).not.toContain('Warning:');
+      expect(output).not.toContain('could not be started');
       expect(core.sets()).toContainEqual({ codex_stop_hook: true });
     });
 
@@ -1723,15 +1739,55 @@ describe('relay init message injection', () => {
       expect(startDesktopCore).toHaveBeenCalledTimes(1);
       expect(core.deps.startCore).toHaveBeenCalledTimes(1);
       expect(JSON.parse(fs.readFileSync(corePath(), 'utf8')).pid).toBe(5151);
-      const warnings = logs.filter((line) => line.startsWith('Warning:'));
+      const warnings = logs.filter((line) => line.includes('its core could not be started'));
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain(
-        'the Agent Relay desktop app is installed, but its core could not be started'
+        '! The Agent Relay desktop app is installed, but its core could not be started'
       );
       expect(warnings[0]).toContain(reason);
       expect(warnings[0]).toContain('relay init started the public Agent Relay core instead');
       expect(warnings[0]).toContain('open the Agent Relay desktop app');
       expect(logs.join('\n')).toContain('Started the Agent Relay core (agent-relay-probe');
+    });
+
+    it('says why in the result when the public core does not start either', async () => {
+      installedProbe();
+      const core = fakeCore();
+      const { run, logs } = setup({
+        ...core.deps,
+        startCore: vi.fn(() => {
+          throw new Error('EACCES');
+        }),
+        desktopInstalled: () => true,
+        startDesktopCore: vi.fn(() => {
+          throw new Error('open -g -j -b com.agentrelay.desktop exited with 1');
+        }),
+      });
+      await run('--tools', 'codex');
+      const output = logs.join('\n');
+      expect(output).toContain(
+        'Message injection is not available (the Agent Relay core could not be started (EACCES)'
+      );
+      expect(output).toContain("the Agent Relay desktop app's core did not start either (open -g -j -b");
+      expect(output.match(/did not start either/g)).toHaveLength(1);
+    });
+
+    it('asks the desktop app once the outdated core init started is retired', async () => {
+      installedProbe();
+      const core = fakeCore();
+      await setup(core.deps).run('--tools', 'codex');
+      core.setVersion('15.0.5');
+      const startDesktopCore = vi.fn(() => {
+        core.startForeign(777);
+        return 'open -g -j -b com.agentrelay.desktop';
+      });
+      const { run, logs } = setup({ ...core.deps, desktopInstalled: () => true, startDesktopCore });
+      await run('--tools', 'codex');
+
+      expect(core.calls.map(([method]) => method)).toContain('daemon.shutdown');
+      expect(startDesktopCore).toHaveBeenCalledTimes(1);
+      expect(core.deps.startCore).toHaveBeenCalledTimes(1);
+      expect(logs.join('\n')).toContain("Started the Agent Relay desktop app's core");
     });
 
     it('never tries the desktop app when it is not installed', async () => {
@@ -1773,7 +1829,7 @@ describe('relay init message injection', () => {
       expect(fs.existsSync(corePath())).toBe(false);
       const output = logs.join('\n');
       expect(output).toContain('Using the Agent Relay core already running on this machine');
-      expect(output).not.toContain('Warning:');
+      expect(output).not.toContain('could not be started');
     });
 
     it('attaches to a desktop core that comes up while the public one downloads', async () => {
@@ -1798,7 +1854,7 @@ describe('relay init message injection', () => {
       expect(core.deps.startCore).not.toHaveBeenCalled();
       expect(stop).not.toHaveBeenCalled();
       expect(fs.existsSync(corePath())).toBe(false);
-      expect(logs.join('\n')).not.toContain('Warning:');
+      expect(logs.join('\n')).not.toContain('could not be started');
     });
 
     it('leaves a core it did not start alone, and asks the desktop app for nothing', async () => {

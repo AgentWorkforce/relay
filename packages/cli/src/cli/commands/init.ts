@@ -1083,6 +1083,8 @@ interface CoreSession {
   status: CoreStatus;
   origin: CoreOrigin;
   logFile?: string;
+  /** Why the desktop app's core is not the one running, when it should have been. */
+  notice?: string;
 }
 
 /**
@@ -1195,7 +1197,7 @@ async function startDesktopAppCore(
 /** Said once when the desktop app is installed but its core did not start, and the public one runs instead. */
 function desktopFallbackWarning(failure: string): string {
   return (
-    `Warning: the Agent Relay desktop app is installed, but its core could not be started (${failure}). ` +
+    `The Agent Relay desktop app is installed, but its core could not be started (${failure}). ` +
     "relay init started the public Agent Relay core instead. To use the desktop app's core, open the " +
     `Agent Relay desktop app, then run ${relayCommand('init --stop')} and ${relayCommand('init')} again.`
   );
@@ -1228,31 +1230,33 @@ async function ensureCore(
       return { ...running, origin: reused ? 'reused' : 'attached' };
     }
   }
+  // No core answers now: none ran, or the outdated one init started was retired.
   let desktopFailure: string | undefined;
-  if (!running && preferDesktop && deps.desktopInstalled()) {
+  if (preferDesktop && deps.desktopInstalled()) {
     const desktop = await startDesktopAppCore(deps, socket);
     if (desktop && 'client' in desktop) return desktop;
     desktopFailure = desktop?.failed;
   }
   const session = await startPublicCore(deps, socket);
-  if (desktopFailure) reportDesktopFallback(deps, desktopFailure, session);
-  return session;
+  return desktopFailure ? withDesktopFallback(desktopFailure, session) : session;
 }
 
-/** Say once why the desktop app's core is not the one running. A desktop core that came up late needs no word. */
-function reportDesktopFallback(
-  deps: InitCommandDependencies,
+/**
+ * Say why the desktop app's core is not the one running, in the result so it
+ * outlasts the guided flow's spinner. A desktop core that came up late needs no word.
+ */
+function withDesktopFallback(
   failure: string,
   session: CoreSession | { reason: string }
-): void {
+): CoreSession | { reason: string } {
   if ('reason' in session) {
-    deps.log(
-      `The Agent Relay desktop app's core did not start either (${failure}). ` +
-        'Open the Agent Relay desktop app to use its core.'
-    );
-  } else if (session.origin === 'started') {
-    deps.log(desktopFallbackWarning(failure));
+    return {
+      reason:
+        `${session.reason}; the Agent Relay desktop app's core did not start either (${failure}), ` +
+        'open the Agent Relay desktop app to use its core',
+    };
   }
+  return session.origin === 'started' ? { ...session, notice: desktopFallbackWarning(failure) } : session;
 }
 
 /**
@@ -1545,6 +1549,8 @@ interface InjectionSetup {
   core: string;
   results: DeliveryResult[];
   workspaceNote?: string;
+  /** Why the desktop app's core is not the one running, when it should have been. */
+  notice?: string;
   /** What moving sessions to a workspace switched to meanwhile did, for a core this run started. */
   moved: string[];
 }
@@ -1627,11 +1633,13 @@ async function setupInjection(
       );
     }
     const note = await coreWorkspaceNote(deps, session.client, setup);
-    // A core this run started kept the registrations of the one before it.
-    const moved = session.origin === 'started' ? await moveCoreToWorkspace(deps, session.client, setup) : [];
+    // A core this run started, or asked the desktop app to start, may keep
+    // the registrations of the one before it.
+    const started = session.origin === 'started' || session.origin === 'desktop';
+    const moved = started ? await moveCoreToWorkspace(deps, session.client, setup) : [];
     // Moving reports the same note when the core stayed on another workspace.
     const workspaceNote = note && (moved.includes(note) || setup.details.includes(note)) ? undefined : note;
-    return { core: describeCore(session), results, workspaceNote, moved };
+    return { core: describeCore(session), notice: session.notice, results, workspaceNote, moved };
   } catch (error) {
     if (error instanceof InjectionStuckError) throw error;
     return { reason: `the Agent Relay core could not be set up (${(error as Error).message})` };
@@ -2284,6 +2292,7 @@ function injectionLines(plan: DeliveryPlan, ctx: ToolContext): string[] {
   if (!plan.injection) return [];
   return [
     plan.injection.core,
+    ...(plan.injection.notice ? [`! ${plan.injection.notice}`] : []),
     ...plan.injection.results.map(describeDelivery),
     ...plan.removedMcp.map((result) => describeSupersededMcp(result, ctx)),
     ...(plan.injection.workspaceNote ? [`! ${plan.injection.workspaceNote}`] : []),
