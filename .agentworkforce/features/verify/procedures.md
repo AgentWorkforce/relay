@@ -2,13 +2,13 @@
 
 This document is the executable companion to `../manifest.yaml`. Its `verification.categories` map assigns every feature in a category to one procedure below. The tier orders work, but never replaces the stated prerequisites, assertions, cleanup, or automation limitation.
 
-Use `relay` (or the equivalent `agent-relay` binary). Run all mutations in a disposable project, workspace, account, configuration directory, or provider fixture. Never use global `update`, non-dry-run `sync`/`uninstall`, `node down --all`, or production credentials in an unattended test.
+Use `relay` (or the equivalent `agent-relay` binary). Run all mutations in a disposable project, workspace, account, configuration directory, or provider fixture. Never use global `update`, non-dry-run `sync`/`uninstall`, or production credentials in an unattended test.
 
 ## Shared fixtures
 
 Start every procedure in a Bash shell with an isolated run identifier, strict
 failure handling, and cleanup. The trap safely cleans only resources named for
-this run, whether the procedure uses a broker, hosted APIs, or both:
+this run, whether the procedure uses local Relay, hosted APIs, or both:
 
 ```bash
 set -Eeuo pipefail
@@ -55,19 +55,10 @@ cleanup() {
   relay agent remove "audit-c-$RUN" 2>/dev/null || true
   relay agent remove "audit-b-$RUN" 2>/dev/null || true
   relay agent remove "audit-a-$RUN" 2>/dev/null || true
-  relay node down --force 2>/dev/null || true
   rm -rf "$TMP" || true
   exit "$status"
 }
 trap cleanup EXIT
-```
-
-For a local broker, use the shared temporary project and only stop the broker it
-created:
-
-```bash
-cd "$TMP"
-relay node up --background --no-spawn
 ```
 
 For hosted APIs, use explicit disposable credentials rather than an operator's active workspace:
@@ -152,29 +143,11 @@ receiver path and destroys it after the webhook/subscription cleanup below.
 
 **Limitation:** the core requires a signature or install location these scenarios cannot meet for the Cursor editor, Codex on macOS and Claude Code's inbox, so waking an idle Cursor editor window and delivery to Claude Code, Codex, OpenCode, Pi and Devin are covered by `cargo test` in `crates/probe` and by live checks with the real tools.
 
-## broker-lifecycle
-
-**Legacy:** this and the other `status: legacy` categories run on the broker and PTY path that the core replaces. They are verified by hand on demand, never on a pull request.
-
-**Features:** `broker-up`, `broker-down`, `broker-status`, `broker-metrics`, `broker-deadletters`, `broker-redeliver`.
-
-**Prerequisites:** local fixture and broker binary.
-
-```bash
-relay node status | grep -Eiq 'running|stopped'
-relay node metrics | jq -e 'type == "object"'
-relay node deadletters --json | jq -e 'type == "object" or type == "array"'
-relay status | grep -Eiq 'Local broker:'
-relay node down; relay node status | grep -Eiq 'stopped|not running'
-```
-
-Assert daemon state and structured metrics/deadletters, then restart only when a later local test needs it. A successful redelivery needs a real dead-letter addressed to a live worker; the public CLI cannot seed one. Use the broker integration fixture, run exactly one of `relay node redeliver <id>` or `relay node redeliver --all`, and assert the delivery leaves the dead-letter queue.
-
 ## workspace-agents-and-capabilities
 
 **Features:** `agent-register`, `agent-add`, `agent-list`, `agent-remove`, `agent-capabilities`, `capabilities-register`, `capabilities-delete`, `system-status`.
 
-**Prerequisites:** hosted fixture; a local broker is not the dependency.
+**Prerequisites:** hosted fixture.
 
 ```bash
 CAP="audit-cap-$RUN"
@@ -186,7 +159,7 @@ relay capabilities delete "$CAP"
 relay capabilities list | jq -e --arg c "$CAP" 'all(.[]; .command != $c)'
 relay agent remove "audit-extra-$RUN"
 relay agent list | jq -e --arg n "audit-extra-$RUN" 'all(.[]; .name != $n)'
-relay status | grep -Eiq 'Workspace:|Local broker:|Cloud:'
+relay status | grep -Eiq 'Workspace:|Cloud:'
 ```
 
 Assert list visibility after every create and absence after every delete; the shared exit trap removes all disposable identities.
@@ -289,40 +262,13 @@ RELAY_AGENT_TOKEN="$TOKEN_A" relay channel archive "$CH"
 
 Assert the reaction is observable after add and absent after remove, and B's unread message becomes A-visible read receipt. Archive and remove identities.
 
-## local-agent-lifecycle
-
-**Features:** `local-agent-spawn`, `local-agent-new`, `local-agent-release`, `local-agent-list`, `local-agent-set-model`, `local-agent-attach`, `local-agent-flush`, `local-agent-hold`, `local-agent-auto`, `local-agent-tail`.
-
-**Prerequisites:** local broker; spawn/new/set-model need an installed authenticated provider CLI and can incur cost.
-
-```bash
-PROVIDER="${PROVIDER:-claude}" # installed and authenticated fixture provider
-TASK_AGENT="audit-task-$RUN"
-TASK_TAIL="$TMP/$TASK_AGENT.tail"
-relay node agent list | jq -e 'type == "array"'
-relay node tail --agent "$TASK_AGENT" >"$TASK_TAIL" 2>&1 & TAIL_PID=$!
-relay node agent spawn "$PROVIDER" --name "$TASK_AGENT" --task 'Reply with exactly relay-e2e-ok, then exit.' --spawn-mode task-exit --exit-after-task
-for _ in $(seq 1 60); do
-  grep -Fq 'relay-e2e-ok' "$TASK_TAIL" && break
-  sleep 1
-done
-grep -Fq 'relay-e2e-ok' "$TASK_TAIL"
-kill "$TAIL_PID" 2>/dev/null || true; wait "$TAIL_PID" 2>/dev/null || true; TAIL_PID=""
-AGENT="audit-worker-$RUN"
-relay node agent spawn "$PROVIDER" --name "$AGENT"
-relay node agent list | jq -e --arg n "$AGENT" '.[] | select(.name == $n)'
-relay node agent message hold "$AGENT" | jq -e 'tostring | test("manual|hold"; "i")'
-relay node agent message auto "$AGENT" | jq -e 'tostring | test("auto"; "i")'
-relay node agent release "$AGENT"
-```
-
-The bounded task-exit worker proves task output through `relay node tail` before it exits; the separate interactive worker proves hold, auto, and release. `new` and `attach` are attended PTY checks; verify `drive`, `view`, and `passthrough`. A model switch proves broker acceptance only, not provider-side model change.
-
 ## local-workflow-lifecycle
+
+**Legacy:** this and the other `status: legacy` categories run on a path that the core replaces. They are verified by hand on demand, never on a pull request.
 
 **Features:** `local-workflow-run`, `local-workflow-logs`, `local-workflow-sync`.
 
-**Prerequisites:** disposable local project and selected workflow runtime; no broker.
+**Prerequisites:** disposable local project and selected workflow runtime.
 
 ```bash
 echo 'console.log("relay-workflow-e2e")' > "$TMP/workflow.js"
@@ -378,17 +324,14 @@ The CLI persists the daemon PID and log path in its isolated local worker state,
 
 ## fleet-management
 
-**Features:** `fleet-nodes`, `fleet-nodes-pretty`, `fleet-status`.
+**Features:** `fleet-nodes`, `fleet-nodes-pretty`.
 
-**Prerequisites:** workspace credentials; `fleet-status` additionally benefits from a local broker.
+**Prerequisites:** workspace credentials.
 
 ```bash
 relay fleet nodes | jq -e '.nodes'
 relay fleet nodes list --pretty | grep -Eiq 'NODE|No fleet nodes found'
-relay fleet status | jq -e '.broker'
 ```
-
-For full two-node dispatch/enrollment coverage, run `npm run test:e2e` with `tests/e2e/fleet/README.md` prerequisites.
 
 ## workspace-management
 
@@ -524,14 +467,6 @@ without it can verify help and routing but not execution.
 
 Launch `relay mcp` as stdio child. Initialize it, call `tools/list` and `prompts/list`, and assert all 31 static tool names in the manifest plus prompt `system`. Call `set_workspace_key`/`register_agent` for A and B; repeat channel/message/thread/DM/reaction/read assertions through MCP fields (`message_id`, `include_archived`, `participants`, `as`). Register an action before `list_actions`/`invoke_action`. Spawn only a disposable worker then `remove_agent`. Configure result callback environment before testing conditional `submit_result`, assert receiver payload, and close the child cleanly.
 
-## harnesses
-
-**Features:** all `harness-*` entries.
-
-**Prerequisites:** named provider CLI installed/authenticated, disposable project, and budget; custom harness only needs the SDK contract.
-
-Run the bounded local-agent spawn test for each installed provider with `--task`, `--spawn-mode task-exit`, and `--exit-after-task`; assert list, sentinel response, and release. PTY providers need attended verification. For a custom harness, run `npm test --workspace @agent-relay/harnesses` plus a `defineHarness` create/send/release fixture.
-
 ## typescript-sdk
 
 **Features:** all `sdk-*` entries.
@@ -539,10 +474,10 @@ Run the bounded local-agent spawn test for each installed provider with `--task`
 **Prerequisites:** local engine or disposable hosted workspace.
 
 ```bash
-node tests/integration/sdk/v8-api-smoke.mjs
+npm --prefix packages/sdk test
 ```
 
-Assert bootstrap/reconnect, participants, channel/thread/reaction/DM/group-DM/listener/action/DeliveryRunner/webhook/node behavior. Release all identities and clean up remote workspace through its control plane; the smoke script does not delete it.
+Assert bootstrap/reconnect, participants, channel/thread/reaction/DM/group-DM/listener/action/DeliveryRunner/webhook/node behavior. Release all identities and clean up remote workspace through its control plane.
 
 ## swift-sdk
 
@@ -603,11 +538,10 @@ Assert both persisted states; unset telemetry opt-out environment variables beca
 
 ## node-command-discovery
 
-**Features:** `node-up`, `node-workflow`.
+**Features:** `node-workflow`.
 
 ```bash
-relay node up --help | grep -Eiq 'config|no-spawn'
 relay node workflow --help | grep -Eiq 'run|logs|sync'
 ```
 
-Use `broker-lifecycle` for start behavior and `local-workflow-lifecycle` for the three workflow leaves. This group procedure is discoverability only, not workflow execution.
+Use `local-workflow-lifecycle` for the three workflow leaves. This group procedure is discoverability only, not workflow execution.

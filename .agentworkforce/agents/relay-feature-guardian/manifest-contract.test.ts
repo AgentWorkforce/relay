@@ -42,22 +42,6 @@ describe('feature manifest contract', () => {
     const commands = features.flatMap((feature) => (feature.cli ? [feature.cli] : []));
     const expected = [
       'relay init',
-      'relay node up',
-      'relay node down',
-      'relay node status',
-      'relay node metrics',
-      'relay node deadletters',
-      'relay node redeliver',
-      'relay node tail',
-      'relay node agent list',
-      'relay node agent spawn',
-      'relay node agent new',
-      'relay node agent release',
-      'relay node agent set-model',
-      'relay node agent attach',
-      'relay node agent message flush',
-      'relay node agent message hold',
-      'relay node agent message auto',
       'relay node workflow run',
       'relay node workflow logs',
       'relay node workflow sync',
@@ -137,7 +121,6 @@ describe('feature manifest contract', () => {
       'relay fleet nodes',
       'relay fleet spawn',
       'relay fleet release',
-      'relay fleet status',
       // Mounted product surfaces. Each product's real tree lives in its own SDK
       // spec, so the manifest documents the group and the surface owns the rest.
       'relay file',
@@ -154,6 +137,8 @@ describe('feature manifest contract', () => {
     expect(commands).not.toContain('relay metrics');
     expect(commands).not.toContain('relay deadletters');
     expect(commands).not.toContain('relay redeliver [id]');
+    // Removed together with the local broker.
+    expect(commands.some((documented) => /^relay node (up|down|agent|tail)\b/.test(documented))).toBe(false);
   });
 
   it('leads with relay init and the core', () => {

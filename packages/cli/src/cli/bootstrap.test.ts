@@ -490,7 +490,8 @@ describe('install.sh quick start', () => {
     // under `node`, so a first run failed with "unknown command 'up'".
     expect(usageFunction).not.toBe('');
     const commands = quickStartCommands('latest');
-    expect(commands).toContain('node up --background');
+    expect(commands).toContain('init');
+    expect(commands.some((command) => /\bnode (up|down)\b/.test(command))).toBe(false);
     const program = createProgram();
     for (const command of commands) {
       let current: Command = program;
@@ -506,9 +507,9 @@ describe('install.sh quick start', () => {
     }
   });
 
-  it('keeps the top-level up/down forms for pinned installs older than 9.2.2', () => {
-    expect(quickStartCommands('9.2.1')).toEqual(['up --background', 'status', 'down']);
-    expect(quickStartCommands('9.2.2')).toEqual(['node up --background', 'status', 'node down']);
-    expect(quickStartCommands('13.1.5')).toEqual(['node up --background', 'status', 'node down']);
+  it('prints the same broker-free quick start for every pinned version', () => {
+    for (const version of ['9.2.1', '13.1.5', 'latest']) {
+      expect(quickStartCommands(version)).toEqual(['init', 'status', '--help']);
+    }
   });
 });

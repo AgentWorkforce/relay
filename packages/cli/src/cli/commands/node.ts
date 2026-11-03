@@ -29,9 +29,8 @@ export const REMOVED_BROKER_COMMANDS = [
 export function removedBrokerCommandMessage(verb: string): string {
   return (
     `'relay ${verb}' was removed together with the local broker. ` +
-    "Run 'relay init' to set up and start the Agent Relay core on this machine (it serves the core's " +
-    "'relay serve'); the core delivers messages and spawns, lists and releases agents, through the " +
-    'Agent Relay MCP spawn tools or the desktop app.'
+    "Run 'relay init' to set up and start the Agent Relay core on this machine: it delivers messages " +
+    'and spawns, lists and releases agents, through the Agent Relay MCP spawn tools or the desktop app.'
   );
 }
 
