@@ -28,12 +28,17 @@ fn main() {
     println!("cargo:rerun-if-changed=build_version.rs");
     // Resolve through git so linked worktrees also track their own HEAD.
     for name in ["HEAD", "index"] {
-        if let Some(path) = git(&["rev-parse", "--git-path", name]) {
+        if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", name]) {
             println!("cargo:rerun-if-changed={path}");
         }
     }
     if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
-        if let Some(path) = git(&["rev-parse", "--git-path", &reference]) {
+        if let Some(path) = git(&[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            &reference,
+        ]) {
             println!("cargo:rerun-if-changed={path}");
         }
     }
