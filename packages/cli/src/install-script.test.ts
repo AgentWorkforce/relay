@@ -91,36 +91,27 @@ describe('install.sh', () => {
     });
   });
 
-  describe('download_broker_binary', () => {
-    const body = fnBody('download_broker_binary');
-
-    it('fetches into a temp file, then installs atomically with the smoke-test check', () => {
-      const fetch = at(body, /fetch_release_asset /);
-      const install = at(body, /install_binary_atomic "\$FETCHED_TMP" "\$d1" check_broker_binary/);
-      expect(fetch).toBeGreaterThanOrEqual(0);
-      expect(install).toBeGreaterThan(fetch);
-    });
-
-    it('never writes or signs the live path directly', () => {
-      expect(body).not.toMatch(/-o\s*"\$target_path"/);
-      expect(body).not.toMatch(/>\s*"\$target_path"/);
-      expect(body).not.toMatch(/codesign[^\n]*"\$target_path"/);
-      expect(body).not.toMatch(/"\$target_path" --help/);
-    });
-
-    it('copies to BIN_DIR through the atomic path, not a bare cp', () => {
-      expect(body).toMatch(/local d1="\$target_path"/);
-      expect(body).toMatch(/local d2="\$BIN_DIR\/agent-relay-broker"/);
-      expect(body).toMatch(/copy_binary_atomic "\$d1" "\$d2"/);
-      expect(body).not.toMatch(/^\s*cp /m);
+  describe('retired broker', () => {
+    it('never downloads, runs or installs an agent-relay-broker', () => {
+      for (const fn of [
+        'download_broker_binary',
+        'check_broker_binary',
+        'smoke_test_broker',
+        'undo_brokers',
+      ]) {
+        expect(installScript).not.toMatch(new RegExp(`^${fn}\\(\\)`, 'm'));
+      }
+      // The only mentions left say an older release's broker is left alone.
+      const mentions = installScript.split('\n').filter((line) => /broker/i.test(line));
+      expect(mentions.length).toBeGreaterThan(0);
+      expect(mentions.every((line) => line.trimStart().startsWith('#'))).toBe(true);
     });
   });
 
   describe('install transaction', () => {
-    it('signal handler snapshots the transaction once and undoes both brokers and the CLI', () => {
+    it('signal handler snapshots the transaction once and undoes the CLI', () => {
       const body = fnBody('handle_signal');
       expect(body).toMatch(/local st="\$TXN_STATE"/);
-      expect(body).toMatch(/undo_brokers/);
       expect(body).toMatch(/undo_cli/);
       expect(body).toMatch(/cleanup_temp_files/);
     });
@@ -128,7 +119,7 @@ describe('install.sh', () => {
     it('commits with a single TXN_STATE assignment before any backup cleanup', () => {
       const body = fnBody('main');
       const commit = at(body, /# COMMIT[\s\S]*?TXN_STATE=""/);
-      const cleanup = at(body, /cleanup_broker_backups/);
+      const cleanup = at(body, /rm -f "\$INSTALL_DIR\/bin\/agent-relay\$\{TXN_SUFFIX\}"/);
       expect(commit).toBeGreaterThanOrEqual(0);
       expect(cleanup).toBeGreaterThan(commit);
     });
@@ -141,16 +132,6 @@ describe('install.sh', () => {
       const digest = at(body, /verify_asset_digest "\$asset" "\$dl"/);
       expect(download).toBeGreaterThanOrEqual(0);
       expect(digest).toBeGreaterThan(download);
-    });
-
-    it('check_broker_binary runs a real init smoke test, not only --help', () => {
-      const check = fnBody('check_broker_binary');
-      expect(check).toMatch(/smoke_test_broker "\$1"/);
-      const smoke = fnBody('smoke_test_broker_run');
-      expect(smoke).toMatch(/env -i/);
-      expect(smoke).toMatch(/"\$bin" init /);
-      expect(smoke).toMatch(/--api-port 0/);
-      expect(smoke).toMatch(/RELAY_BASE_URL=/);
     });
 
     it('the standalone CLI and relay-acp also install through install_binary_atomic', () => {

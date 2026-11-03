@@ -16,18 +16,17 @@ set -e
 # Where everything lives: every Agent Relay binary is installed into ONE
 # directory, $INSTALL_DIR/bin (default ~/.agentworkforce/relay/bin):
 #   agent-relay          standalone CLI
-#   agent-relay-broker   broker
 #   relaycast-engine     local Relaycast server (when published for the platform)
-# The CLI, its broker and the desktop app all resolve binaries from there; npm
-# installs copy their broker there on first run. $BIN_DIR only holds launchers
-# (and a PATH copy of the broker).
+# The CLI and the desktop app resolve binaries from there. $BIN_DIR only holds
+# launchers. An agent-relay-broker binary an older release installed (in either
+# directory) is no longer installed or checked and is left untouched.
 
 REPO_RELAY="AgentWorkforce/relay"
 VERSION="${AGENT_RELAY_VERSION:-latest}"
 DEFAULT_INSTALL_DIR="$HOME/.agentworkforce/relay"
 
 # Normalise an install root exactly as the runtime resolver does
-# (packages/harness-driver/src/install-paths.ts): surrounding whitespace is
+# (packages/cli/src/cli/lib/install-paths.ts): surrounding whitespace is
 # trimmed, a blank value counts as unset (prints nothing), and a relative path
 # is made absolute against the current directory, so launchers never embed a
 # path that only works from where the installer ran.
@@ -319,31 +318,23 @@ check_node() {
 # Atomic, verified binary installation
 #
 # Rules (see https://github.com/AgentWorkforce/relay/issues/1885):
-#   * Never write to, sign or smoke-test a live destination path. Everything
+#   * Never write to, sign or run a live destination path. Everything
 #     happens on a temp file in the destination directory; the final step is an
 #     atomic rename. A process running the old binary keeps its old inode.
 #   * Compare the downloaded bytes with the SHA-256 GitHub publishes per asset.
 #   * Re-hash after the rename and restore the previous binary on mismatch.
-#   * Run the broker for real (`init`) before accepting it; `--help` alone
-#     cannot see a damaged code page.
 # ---------------------------------------------------------------------------
 
 TEMP_FILES=""
-SMOKE_PID=""
-SMOKE_DIR=""
 KEEP_PREV=0
 DIGEST_VERIFIED=0   # set by verify_asset_digest when the last fetched asset matched its published digest
-# One transaction covers the standalone CLI, the launchers and both broker
-# copies. TXN_STATE lists the armed components ("cli", "broker"); the install
-# commits with a SINGLE assignment (TXN_STATE=""), so an interrupt either rolls
-# every component back or finds nothing to roll back, never a mixture.
+# One transaction covers the standalone CLI and the launchers. TXN_STATE lists
+# the armed components ("cli"); the install commits with a SINGLE assignment
+# (TXN_STATE=""), so an interrupt either rolls every component back or finds
+# nothing to roll back, never a mixture.
 TXN_STATE=""
 TXN_SUFFIX=".prev.$$"   # run-unique backup suffix: a stale .prev from an older run is never mistaken for ours
 BACKUP_SUFFIX=""        # empty = default ".prev"; the transactional installs set TXN_SUFFIX
-BROKER_D1=""
-BROKER_D2=""
-BROKER_PRE1=0
-BROKER_PRE2=0
 CLI_PRE=0
 LAUNCHER_PRE=0
 LAUNCHER_BACKUP=""
@@ -359,14 +350,6 @@ register_temp() {
 
 cleanup_temp_files() {
     local f
-    if [ -n "$SMOKE_PID" ]; then
-        kill -9 "$SMOKE_PID" 2>/dev/null || true
-        SMOKE_PID=""
-    fi
-    if [ -n "$SMOKE_DIR" ]; then
-        rm -rf "$SMOKE_DIR" 2>/dev/null
-        SMOKE_DIR=""
-    fi
     [ -n "$TEMP_FILES" ] || return 0
     while IFS= read -r f; do
         [ -n "$f" ] && rm -f "$f" 2>/dev/null
@@ -518,14 +501,14 @@ verify_asset_digest() {
     expected=$(fetch_asset_expected_sha256 "$asset")
     if [ -z "$expected" ]; then
         if [ "$RELEASE_JSON_STATE" = "failed" ]; then
-            warn "Could not fetch release metadata from the GitHub API (rate limit or network); cannot verify the SHA-256 of $asset. Continuing with the smoke test only."
+            warn "Could not fetch release metadata from the GitHub API (rate limit or network); cannot verify the SHA-256 of $asset. Continuing with the post-download check only."
         else
-            warn "Release v${VERSION} publishes no SHA-256 digest for $asset; cannot verify its integrity. Continuing with the smoke test only."
+            warn "Release v${VERSION} publishes no SHA-256 digest for $asset; cannot verify its integrity. Continuing with the post-download check only."
         fi
         return 2
     fi
     if ! actual=$(sha256_of "$file"); then
-        warn "No SHA-256 tool found (shasum, sha256sum or openssl); cannot verify $asset. Continuing with the smoke test only."
+        warn "No SHA-256 tool found (shasum, sha256sum or openssl); cannot verify $asset. Continuing with the post-download check only."
         return 2
     fi
     if [ "$actual" != "$expected" ]; then
@@ -597,148 +580,7 @@ fetch_release_asset() {
     return 0
 }
 
-# Run the broker for real: `init` in a throwaway state dir and temp HOME with a
-# scrubbed environment (no RELAY_*/AGENT_RELAY_* credentials). It must still be
-# alive after a few seconds (or exit 0). Any crash or signal rejects it.
-smoke_test_broker() {
-    # stderr is silenced so bash does not print "Terminated"/"Illegal
-    # instruction" job notices for the process we deliberately run and kill;
-    # the outcome is reported through info/warn (stdout).
-    # Resolve the duration here, outside the silenced call, so an invalid
-    # AGENT_RELAY_SMOKE_SECONDS warning (stderr) is actually shown.
-    local seconds
-    seconds=$(resolve_smoke_seconds)
-    smoke_test_broker_run "$1" "$seconds" 2>/dev/null
-}
-
-# AGENT_RELAY_SMOKE_SECONDS must be a positive integer; anything else (0,
-# negative, non-numeric, empty) would skip the wait and let a crashing broker
-# pass vacuously, so it falls back to the default with a warning. Clamped to 60.
-resolve_smoke_seconds() {
-    local v="${AGENT_RELAY_SMOKE_SECONDS-}"
-    if [ -z "$v" ]; then
-        echo 4
-        return 0
-    fi
-    case "$v" in
-        *[!0-9]*|0|00*)
-            warn "Ignoring invalid AGENT_RELAY_SMOKE_SECONDS='$v' (need a positive integer); using 4" >&2
-            echo 4
-            ;;
-        *)
-            if [ "${#v}" -gt 2 ] || [ "$v" -gt 60 ]; then
-                warn "AGENT_RELAY_SMOKE_SECONDS='$v' is too large; using 60" >&2
-                echo 60
-            else
-                echo "$v"
-            fi
-            ;;
-    esac
-}
-
-smoke_test_broker_run() {
-    local bin="$1"
-    local seconds="$2"
-    local tmp pid rc=0 i=0 alive=1
-
-    # TMPDIR may point somewhere mktemp is not permitted to write (#1963); fall
-    # back to /tmp and then the install root, which must be writable anyway.
-    tmp=$(mktemp -d "${TMPDIR:-/tmp}/agent-relay-smoke.XXXXXX" 2>/dev/null) \
-        || tmp=$(mktemp -d "/tmp/agent-relay-smoke.XXXXXX" 2>/dev/null) \
-        || tmp=$(mktemp -d "$INSTALL_DIR/.agent-relay-smoke.XXXXXX" 2>/dev/null) || {
-        warn "smoke test: could not create a temp dir in ${TMPDIR:-/tmp}, /tmp or $INSTALL_DIR (not writable?)"
-        return 1
-    }
-    SMOKE_DIR="$tmp"
-    mkdir -p "$tmp/home" "$tmp/state"
-
-    # Telemetry: the damaged page from #1885 was reachable from the telemetry
-    # path, so the smoke test must not opt out on the user's behalf; it only
-    # forwards an opt-out the user already made.
-    local optout_a="" optout_b=""
-    if ! telemetry_enabled; then
-        optout_a="AGENT_RELAY_TELEMETRY_DISABLED=1"
-        optout_b="DO_NOT_TRACK=1"
-    fi
-
-    # Run the real fleet-style startup (instance + channels + API port), not
-    # --local-only: --local-only skips code that the damaged build crashed in.
-    # The environment is scrubbed (env -i: no RELAY_*/AGENT_RELAY_* credentials)
-    # and RELAY_BASE_URL points at a closed local port, so the throwaway broker
-    # cannot create or join any workspace. A clean "failed to initialize
-    # relaycast session" exit is therefore the expected outcome for a healthy
-    # binary; a crash (signal) is not.
-    (
-        cd "$tmp" || exit 126
-        exec env -i HOME="$tmp/home" PATH="/usr/bin:/bin" TMPDIR="$tmp" \
-            RELAY_BASE_URL="http://127.0.0.1:9" \
-            ${optout_a:+"$optout_a"} ${optout_b:+"$optout_b"} \
-            "$bin" init --instance-name "smoke-$$" --channels general --api-port 0 \
-            --state-dir "$tmp/state" \
-            < /dev/null > "$tmp/out.log" 2>&1
-    ) &
-    pid=$!
-    SMOKE_PID="$pid"
-
-    while [ "$i" -lt "$seconds" ]; do
-        sleep 1
-        i=$((i + 1))
-        if ! kill -0 "$pid" 2>/dev/null; then
-            alive=0
-            break
-        fi
-    done
-
-    # Accepted-state rule: a broker that is still running after the window, or
-    # exits 0, or stops with the expected clean relaycast error, passes; a signal
-    # or any other failure rejects. The damaged build from #1885 died with
-    # SIGILL (132) within about a second in every run, well inside the window,
-    # and the digest / signature checks run before this, so a late crash or a
-    # stall is the residual risk this short check cannot cover.
-    if [ "$alive" -eq 1 ]; then
-        kill "$pid" 2>/dev/null || true
-        i=0
-        while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 5 ]; do
-            sleep 1
-            i=$((i + 1))
-        done
-        kill -9 "$pid" 2>/dev/null || true
-        { wait "$pid"; } 2>/dev/null || true
-        SMOKE_PID=""
-        rm -rf "$tmp"
-        info "Broker smoke test passed (init stayed up ${seconds}s)"
-        return 0
-    fi
-
-    { wait "$pid"; } 2>/dev/null || rc=$?
-    SMOKE_PID=""
-    if [ "$rc" -eq 0 ]; then
-        rm -rf "$tmp"
-        info "Broker smoke test passed (init exited 0)"
-        return 0
-    fi
-    if [ "$rc" -lt 128 ] && grep -q "failed to initialize relaycast session" "$tmp/out.log" 2>/dev/null; then
-        rm -rf "$tmp"
-        info "Broker smoke test passed (init ran and stopped cleanly at the unreachable workspace service)"
-        return 0
-    fi
-
-    local detail=""
-    if [ "$rc" -gt 128 ]; then
-        detail=" (signal $((rc - 128)))"
-    fi
-    warn "Broker smoke test FAILED: init exited with status $rc${detail}"
-    tail -n 5 "$tmp/out.log" 2>/dev/null | sed 's/^/    /' || true
-    rm -rf "$tmp"
-    return 1
-}
-
 # Checks used with install_binary_atomic.
-check_broker_binary() {
-    "$1" --help >/dev/null 2>&1 || { warn "broker binary failed --help"; return 1; }
-    smoke_test_broker "$1"
-}
-
 check_cli_binary() {
     # Captured in memory, not in a temp file: an unwritable TMPDIR must not be
     # reported as a failed verification of the binary (#1963).
@@ -840,105 +682,6 @@ install_binary_atomic() {
     return 0
 }
 
-# Copy an already verified+signed binary $1 to $2 through the same atomic path.
-copy_binary_atomic() {
-    local src="$1"
-    local dest="$2"
-    local tmp src_hash tmp_hash
-
-    make_temp_file "$(dirname "$dest")" "copy" || return 1
-    tmp="$MADE_TEMP"
-    if ! cp "$src" "$tmp"; then
-        rm -f "$tmp"
-        return 1
-    fi
-    src_hash=$(sha256_of "$src" || true)
-    tmp_hash=$(sha256_of "$tmp" || true)
-    if [ "$src_hash" != "$tmp_hash" ]; then
-        warn "Copy of $src to $dest is corrupt; not installing it"
-        rm -f "$tmp"
-        return 1
-    fi
-    install_binary_atomic "$tmp" "$dest" true nosign
-}
-
-# Download broker binary (Rust broker for workflow/SDK agent spawning)
-# Returns 0 on success, 1 when no binary is available for this platform, and 2
-# when a binary was downloaded but REJECTED (integrity or smoke test failure);
-# the existing broker is left untouched in both failure cases.
-download_broker_binary() {
-    step "Downloading broker binary..."
-
-    local binary_name="agent-relay-broker-${PLATFORM}"
-    local target_path="$INSTALL_DIR/bin/agent-relay-broker"
-    local rc=0
-
-    mkdir -p "$INSTALL_DIR/bin"
-    mkdir -p "$BIN_DIR"
-
-    fetch_release_asset "$binary_name" "$INSTALL_DIR/bin" raw || rc=$?
-    if [ "$rc" -eq 1 ]; then
-        warn "No prebuilt broker binary for $PLATFORM"
-        return 1
-    elif [ "$rc" -eq 3 ]; then
-        warn "Could not create a temporary file in $INSTALL_DIR/bin (not writable, or disk full); the broker was not updated"
-        return 2
-    elif [ "$rc" -ne 0 ]; then
-        warn "broker binary failed integrity verification"
-        return 2
-    fi
-
-    # Two destinations (INSTALL_DIR and BIN_DIR) commit together as part of the
-    # install transaction: both keep a run-unique backup until the whole install
-    # commits, and undo_brokers() restores BOTH (idempotently) on failure or
-    # interrupt. The transaction is armed before any destination is touched.
-    local d1="$target_path"
-    local d2="$BIN_DIR/agent-relay-broker"
-    BROKER_D1="$d1"; BROKER_D2="$d2"
-    BROKER_PRE1=0; BROKER_PRE2=0
-    if [ -e "$d1" ] || [ -L "$d1" ]; then BROKER_PRE1=1; fi
-    if [ -e "$d2" ] || [ -L "$d2" ]; then BROKER_PRE2=1; fi
-    local saved_keep="$KEEP_PREV" saved_suffix="$BACKUP_SUFFIX"
-    TXN_STATE="${TXN_STATE:+$TXN_STATE }broker"
-    KEEP_PREV=1
-    BACKUP_SUFFIX="$TXN_SUFFIX"
-    if install_binary_atomic "$FETCHED_TMP" "$d1" check_broker_binary \
-        && copy_binary_atomic "$d1" "$d2"; then
-        KEEP_PREV="$saved_keep"; BACKUP_SUFFIX="$saved_suffix"
-        if [ "$TXN_STATE" = "broker" ]; then
-            # standalone-less (npm) install: this is the whole transaction
-            TXN_STATE=""
-            cleanup_broker_backups
-        fi
-        success "Downloaded broker binary (workflow agent spawning)"
-        return 0
-    fi
-    KEEP_PREV="$saved_keep"; BACKUP_SUFFIX="$saved_suffix"
-    warn "Could not install the verified broker into both $INSTALL_DIR/bin and $BIN_DIR; restoring the previous broker"
-    undo_brokers
-    if [ "$TXN_STATE" = "broker" ]; then TXN_STATE=""; else TXN_STATE="${TXN_STATE% broker}"; fi
-    warn "broker binary failed verification"
-    return 2
-}
-
-# The standalone CLI and the broker must be the same version. If the broker was
-# rejected after the CLI was replaced, undo the CLI step (transactional
-# install) and fail loudly instead of leaving a CLI/broker version skew.
-abort_standalone_install() {
-    local why="${1:-was rejected (integrity or smoke test failed)}"
-    local broker="$INSTALL_DIR/bin/agent-relay-broker"
-    local old_broker="none installed"
-
-    if [ -x "$broker" ]; then
-        old_broker="$( { "$broker" --version 2>/dev/null || true; } | head -n 1)"
-        [ -n "$old_broker" ] || old_broker="unknown version"
-    fi
-    undo_brokers
-    undo_cli
-    TXN_STATE=""
-    error "The v${VERSION} broker ${why}, so the v${VERSION} CLI was NOT kept: ${ROLLBACK_OUTCOME}. The existing broker (${old_broker}) is untouched. Nothing was upgraded; re-run the installer, or set AGENT_RELAY_VERSION to a known-good version."
-}
-
 # Idempotent undo of one destination: put this run's backup back; a destination
 # that did not exist before is removed; otherwise leave it alone.
 undo_destination() { # undo_destination <dest> <existed-before: 0|1>
@@ -948,17 +691,6 @@ undo_destination() { # undo_destination <dest> <existed-before: 0|1>
     elif [ "$pre" -eq 0 ]; then
         rm -f "$dest"
     fi
-}
-
-undo_brokers() {
-    [ -n "$BROKER_D1" ] || return 0
-    undo_destination "$BROKER_D1" "$BROKER_PRE1"
-    undo_destination "$BROKER_D2" "$BROKER_PRE2"
-}
-
-cleanup_broker_backups() {
-    [ -n "$BROKER_D1" ] || return 0
-    rm -f "${BROKER_D1}${TXN_SUFFIX}" "${BROKER_D2}${TXN_SUFFIX}"
 }
 
 # Undo the standalone CLI install: restore (or remove) the CLI binary and the
@@ -1000,7 +732,6 @@ handle_signal() {
     local code="$1"
     local st="$TXN_STATE"
     TXN_STATE=""
-    case " $st " in *" broker "*) undo_brokers ;; esac
     case " $st " in
         *" cli "*)
             undo_cli
@@ -1404,14 +1135,6 @@ Or use nvm: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.0/instal
     # Install ACP bridge for Zed editor integration
     install_acp_bridge || true
 
-    # Download broker binary for workflow/SDK agent spawning. A rejected broker
-    # (rc 2) must not look like success: the npm CLI is already installed.
-    local broker_rc=0
-    download_broker_binary || broker_rc=$?
-    if [ "$broker_rc" -eq 2 ]; then
-        error "The v${VERSION} broker was rejected (integrity or smoke test failed) after the CLI was installed via npm; the existing broker was left untouched, so CLI and broker versions now differ. Re-run the installer, or install a known-good version with AGENT_RELAY_VERSION."
-    fi
-
     install_relaycast_engine
 
     success "Installed via npm"
@@ -1537,27 +1260,19 @@ verify_installation() {
 
 # Print usage instructions
 print_usage() {
-    # The broker commands moved under `node` in 9.2.2. A pinned older install
-    # (AGENT_RELAY_VERSION) still has only the top-level `up`/`down` forms.
-    local node_group="node "
-    local major minor patch
-    if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
-        major=${BASH_REMATCH[1]}; minor=${BASH_REMATCH[2]}; patch=${BASH_REMATCH[3]}
-        if (( major < 9 || (major == 9 && (minor < 2 || (minor == 2 && patch < 2))) )); then
-            node_group=""
-        fi
-    fi
     echo ""
     echo -e "${BOLD}Quick Start:${NC}"
     echo ""
-    echo "  # Start the local broker (detached so this terminal stays free)"
-    echo "  agent-relay ${node_group}up --background"
+    # `init` is the setup entry point of current releases; a pinned older
+    # AGENT_RELAY_VERSION may predate it, so point at --help as well.
+    echo "  # Set up Relay and the Agent Relay core on this machine (see: agent-relay init --help)"
+    echo "  agent-relay init"
     echo ""
     echo "  # Check status"
     echo "  agent-relay status"
     echo ""
-    echo "  # Stop the broker"
-    echo "  agent-relay ${node_group}down"
+    echo "  # Everything else"
+    echo "  agent-relay --help"
     echo ""
     local launchers="$BIN_DIR/agent-relay"
     if is_our_launcher "$BIN_DIR/relay"; then
@@ -1596,7 +1311,7 @@ main() {
 
     # Try standalone binary first - works without Node.js
     # Back up an existing launcher first: the standalone step overwrites it and
-    # a later broker rejection must be able to put it back unchanged.
+    # a rollback must be able to put it back unchanged.
     LAUNCHER_BACKUP=""
     LAUNCHER_PRE=0
     local skip_standalone=0
@@ -1654,23 +1369,9 @@ main() {
     BACKUP_SUFFIX=""
     if [ "$standalone_ok" -eq 1 ]; then
         INSTALL_METHOD="binary"
-        # Download broker binary for workflow/SDK agent spawning. A rejected
-        # broker (rc 2) rolls the CLI back; an unavailable one (rc 1) is fine,
-        # except for a standalone-only update of an install that already has a
-        # broker: committing the CLI alone would leave a CLI/broker version skew.
-        local broker_rc=0 had_broker=0
-        if [ -e "$INSTALL_DIR/bin/agent-relay-broker" ]; then had_broker=1; fi
-        download_broker_binary || broker_rc=$?
-        if [ "$broker_rc" -eq 2 ]; then
-            abort_standalone_install
-        fi
-        if [ "$broker_rc" -eq 1 ] && [ "$had_broker" -eq 1 ] && [ "${AGENT_RELAY_INSTALL_METHOD:-}" = "standalone" ]; then
-            abort_standalone_install "could not be downloaded for $PLATFORM"
-        fi
         # COMMIT: one assignment; everything after this is cleanup of backups.
         TXN_STATE=""
         rm -f "$INSTALL_DIR/bin/agent-relay${TXN_SUFFIX}"
-        cleanup_broker_backups
         [ -n "$LAUNCHER_BACKUP" ] && rm -f "$LAUNCHER_BACKUP"
         LAUNCHER_BACKUP=""
         [ -n "$RELAY_LAUNCHER_BACKUP" ] && rm -f "$RELAY_LAUNCHER_BACKUP"
