@@ -58,18 +58,18 @@ import {
 import {
   AUTO_ACTIVATE,
   CORE_START_TIMEOUT_MS,
-  PROBE_DELIVERY,
-  PROBE_VERSION,
+  CORE_DELIVERY,
+  RELAY_NODE_VERSION,
   connectCore,
   coreSocketPath,
   deliveryKeys,
   disableDelivery,
   enableDelivery,
-  probeAssetName,
-  probeAssetUrl,
+  relayNodeAssetName,
+  relayNodeAssetUrl,
   readCoreState,
   readDeliveryRecord,
-  readProbeVersion,
+  readRelayNodeVersion,
   startCoreProcess,
   writePrivateJson,
   type CoreClient,
@@ -77,7 +77,7 @@ import {
   type CoreStatus,
   type DeliveryRecord,
   type DeliveryResult,
-} from '../lib/probe-core.js';
+} from '../lib/relay-node.js';
 import { shellQuote, shellWord } from '../lib/agent-registration.js';
 import {
   claudeFileStates,
@@ -103,8 +103,8 @@ import { persistWorkspaceSession } from '../lib/workspace-session.js';
 import { readWorkspaceStore } from '../lib/workspace-store.js';
 import { assertProjectRoot, getProjectPaths, isHomeProjectRoot } from '@agent-relay/config';
 import {
-  PROBE_PATH_ENV,
-  getCanonicalProbePath,
+  RELAY_NODE_PATH_ENV,
+  getCanonicalRelayNodePath,
   getCanonicalRelaycastEnginePath,
   isUsableBinary,
 } from '@agent-relay/harness-driver/install-paths';
@@ -160,9 +160,9 @@ export interface InitCommandDependencies extends SdkCommandDeps {
   /** Start the core detached; returns its pid. */
   startCore: (input: { binary: string; socket: string; logFile: string }) => number;
   /** Downloads one file of the core's release (binary or `.sha256`). */
-  downloadProbe: DownloadFile;
-  /** The version an installed `agent-relay-probe` reports for `--version`. */
-  probeVersion: (binary: string) => string | undefined;
+  downloadRelayNode: DownloadFile;
+  /** The version an installed `agent-relay-node` reports for `--version`. */
+  relayNodeVersion: (binary: string) => string | undefined;
   /** Runs the pinned `skills` CLI that installs the Agent Relay messaging skill. */
   runSkillsCli: RunSkillsCli;
 }
@@ -341,8 +341,8 @@ export function withInitDefaults(overrides: Partial<InitCommandDependencies> = {
     coreSocket: () => coreSocketPath(process.env, os.homedir()),
     connectCore: (socket) => connectCore(socket),
     startCore: startCoreProcess,
-    downloadProbe: fetchDownload,
-    probeVersion: readProbeVersion,
+    downloadRelayNode: fetchDownload,
+    relayNodeVersion: readRelayNodeVersion,
     runSkillsCli: defaultRunSkillsCli,
     ...overrides,
   };
@@ -1092,35 +1092,35 @@ interface CoreSession {
  * runs, by path, since its bin folder is not on PATH (and a core relay init
  * starts keeps no copy in ~/.local/bin).
  */
-function probeCommand(): string {
-  return shellWord(process.env[PROBE_PATH_ENV]?.trim() || getCanonicalProbePath());
+function relayNodeCommand(): string {
+  return shellWord(process.env[RELAY_NODE_PATH_ENV]?.trim() || getCanonicalRelayNodePath());
 }
 
-/** The core binary: `AGENT_RELAY_PROBE_PATH`, else the pinned release in the canonical bin slot. */
-async function installProbe(deps: InitCommandDependencies): Promise<{ binary: string } | { reason: string }> {
-  const explicit = process.env[PROBE_PATH_ENV]?.trim();
+/** The core binary: `AGENT_RELAY_NODE_PATH`, else the pinned release in the canonical bin slot. */
+async function installRelayNode(deps: InitCommandDependencies): Promise<{ binary: string } | { reason: string }> {
+  const explicit = process.env[RELAY_NODE_PATH_ENV]?.trim();
   if (explicit) {
     return isUsableBinary(explicit)
       ? { binary: explicit }
-      : { reason: `${PROBE_PATH_ENV} (${explicit}) is not an executable file` };
+      : { reason: `${RELAY_NODE_PATH_ENV} (${explicit}) is not an executable file` };
   }
-  const target = getCanonicalProbePath();
+  const target = getCanonicalRelayNodePath();
   const platform = deps.enginePlatform();
-  const asset = probeAssetName(PROBE_VERSION, platform);
+  const asset = relayNodeAssetName(RELAY_NODE_VERSION, platform);
   const result = await ensureReleaseBinary({
-    version: PROBE_VERSION,
+    version: RELAY_NODE_VERSION,
     target,
     asset,
-    url: asset ? probeAssetUrl(PROBE_VERSION, asset) : undefined,
+    url: asset ? relayNodeAssetUrl(RELAY_NODE_VERSION, asset) : undefined,
     unsupported: `no Agent Relay core is published for ${platform.platform}-${platform.arch}${
       platform.musl ? ' (musl)' : ''
     }`,
-    description: `the Agent Relay core (agent-relay-probe v${PROBE_VERSION}, ${asset})`,
-    download: deps.downloadProbe,
-    readVersion: deps.probeVersion,
+    description: `the Agent Relay core (agent-relay-node v${RELAY_NODE_VERSION}, ${asset})`,
+    download: deps.downloadRelayNode,
+    readVersion: deps.relayNodeVersion,
     progress: (line) => deps.log(line),
   });
-  if (result.status === 'installed') deps.log(`Installed agent-relay-probe v${PROBE_VERSION} to ${target}.`);
+  if (result.status === 'installed') deps.log(`Installed agent-relay-node v${RELAY_NODE_VERSION} to ${target}.`);
   if (result.status !== 'failed') return { binary: target };
   if (isUsableBinary(target)) {
     deps.log(`Could not update the Agent Relay core (${result.reason}); using the one at ${target}.`);
@@ -1154,14 +1154,14 @@ async function retireOutdatedCore(
   running: NonNullable<Awaited<ReturnType<typeof connectTo>>>
 ): Promise<boolean> {
   const { pid, version } = running.status.daemon;
-  if (version === PROBE_VERSION || process.env[PROBE_PATH_ENV]?.trim()) return false;
-  const probe = await installProbe(deps);
+  if (version === RELAY_NODE_VERSION || process.env[RELAY_NODE_PATH_ENV]?.trim()) return false;
+  const node = await installRelayNode(deps);
   // A failed download leaves the old binary in place and usable.
-  if ('reason' in probe || deps.probeVersion(probe.binary) !== PROBE_VERSION) {
-    deps.log(`Keeping the Agent Relay core ${version}; ${PROBE_VERSION} could not be fetched.`);
+  if ('reason' in node || deps.relayNodeVersion(node.binary) !== RELAY_NODE_VERSION) {
+    deps.log(`Keeping the Agent Relay core ${version}; ${RELAY_NODE_VERSION} could not be fetched.`);
     return false;
   }
-  deps.log(`Updating the Agent Relay core from ${version} to ${PROBE_VERSION}…`);
+  deps.log(`Updating the Agent Relay core from ${version} to ${RELAY_NODE_VERSION}…`);
   await running.client.call('daemon.shutdown').catch(() => undefined);
   running.client.close();
   for (let i = 0; i < 40 && deps.isAlive(pid); i += 1) await deps.sleep(250);
@@ -1269,8 +1269,8 @@ async function startPublicCore(
   deps: InitCommandDependencies,
   socket: string
 ): Promise<CoreSession | { reason: string }> {
-  const probe = await installProbe(deps);
-  if ('reason' in probe) return probe;
+  const node = await installRelayNode(deps);
+  if ('reason' in node) return node;
   // The download can take a while; a desktop app may have started its core meanwhile.
   const meanwhile = await connectTo(deps, socket).catch(() => undefined);
   if (meanwhile) return { ...meanwhile, origin: 'attached' };
@@ -1280,7 +1280,7 @@ async function startPublicCore(
   deps.log('Starting the Agent Relay core…');
   let pid: number;
   try {
-    pid = deps.startCore({ binary: probe.binary, socket, logFile });
+    pid = deps.startCore({ binary: node.binary, socket, logFile });
   } catch (error) {
     return { reason: `the Agent Relay core could not be started (${(error as Error).message})` };
   }
@@ -1292,7 +1292,7 @@ async function startPublicCore(
       // attached to, and the one this run started (never the other) stopped.
       const started = up.status.daemon.pid === pid;
       if (started) {
-        const record: CoreState = { pid, socket, binary: probe.binary, version: up.status.daemon.version };
+        const record: CoreState = { pid, socket, binary: node.binary, version: up.status.daemon.version };
         writePrivateJson(coreStatePath(), record);
       } else if (deps.isAlive(pid)) {
         deps.stop(pid);
@@ -1313,18 +1313,18 @@ function describeCore(session: CoreSession): string {
   const { pid, version } = session.status.daemon;
   switch (session.origin) {
     case 'started':
-      return `Started the Agent Relay core (agent-relay-probe ${version}, pid ${pid}) in the background. Log: ${session.logFile}`;
+      return `Started the Agent Relay core (agent-relay-node ${version}, pid ${pid}) in the background. Log: ${session.logFile}`;
     case 'reused':
-      return `The Agent Relay core relay init started earlier is running (agent-relay-probe ${version}, pid ${pid}).`;
+      return `The Agent Relay core relay init started earlier is running (agent-relay-node ${version}, pid ${pid}).`;
     case 'attached':
       return (
-        `Using the Agent Relay core already running on this machine (agent-relay-probe ${version}, pid ${pid}), ` +
+        `Using the Agent Relay core already running on this machine (agent-relay-node ${version}, pid ${pid}), ` +
         `the desktop app's or a service's. relay init does not start a second one.`
       );
     case 'desktop':
       return (
         `Asked the Agent Relay desktop app to start its core; using the core now running on this machine ` +
-        `(agent-relay-probe ${version}, pid ${pid}).`
+        `(agent-relay-node ${version}, pid ${pid}).`
       );
   }
 }
@@ -1394,7 +1394,7 @@ async function coreWorkspaceNote(
   if (same === undefined) {
     return (
       `Could not confirm that the Agent Relay core serves "${setup.workspace}" (${setup.origin} names no ` +
-      `workspace id it can compare). See which one it serves with: ${probeCommand()} relay call status.get`
+      `workspace id it can compare). See which one it serves with: ${relayNodeCommand()} relay call status.get`
     );
   }
   const served = workspace.workspace_name ? `workspace "${workspace.workspace_name}"` : 'another workspace';
@@ -1711,7 +1711,7 @@ async function undoUnrecorded(
     throw new InjectionStuckError(
       `Could not save ${deliveryRecordPath()} (${cause.message}), and these settings relay init turned on ` +
         `could not be turned off again: ${failures.join('; ')}. Turn them off with ` +
-        `${probeCommand()} relay call settings.set --params '{"<setting>":false}', then run ${relayCommand('init')} again.`,
+        `${relayNodeCommand()} relay call settings.set --params '{"<setting>":false}', then run ${relayCommand('init')} again.`,
       { cause }
     );
   }
@@ -1777,7 +1777,7 @@ function claudeConfigDir(ctx: ToolContext): string {
 
 /**
  * The settings files of every Claude login the core's direct delivery
- * follows (`ClaudeSettings::login_settings` in crates/probe): this login,
+ * follows (`ClaudeSettings::login_settings` in crates/relay-node): this login,
  * then the `.claude` and `.claude-<name>` folders beside it, the folders in
  * `AGENT_RELAY_CLAUDE_CONFIG_DIRS`, and those the core recorded in
  * `claude-config-dirs.json`, each counted only when it holds `.claude.json`.
@@ -2157,35 +2157,6 @@ async function stopLocalServer(deps: InitCommandDependencies): Promise<void> {
   await stopCore(deps);
 }
 
-/**
- * Remove `~/.local/bin/agent-relay-probe` when it is a byte-for-byte copy of
- * the core relay init installs. The desktop app's core keeps that copy up to
- * date for terminal use, and cores up to 15.0.3 did so even when relay init
- * started them; a copy of any other build (the desktop's own) is left alone,
- * and the desktop puts its copy back when it next starts.
- * @returns The removed copy's path, when there was one to remove.
- */
-function removeProbeCopy(ctx: ToolContext): string | undefined {
-  const copy = path.join(
-    ctx.home,
-    '.local',
-    'bin',
-    process.platform === 'win32' ? 'agent-relay-probe.exe' : 'agent-relay-probe'
-  );
-  // Best effort: an unreadable ~/.local/bin never fails the uninstall.
-  try {
-    // lstat, so a symlink there (someone's own install) is never followed.
-    if (!fs.lstatSync(copy, { throwIfNoEntry: false })?.isFile()) return undefined;
-    const ours = readIfFile(getCanonicalProbePath());
-    const theirs = ours ? readIfFile(copy) : undefined;
-    if (!ours || !theirs || !ours.equals(theirs)) return undefined;
-    fs.rmSync(copy);
-    return copy;
-  } catch {
-    return undefined;
-  }
-}
-
 async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise<void> {
   const ctx = deps.toolContext();
   // Outside a project (in ~, or a folder whose nearest Relay folder is a relay
@@ -2217,9 +2188,6 @@ async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise
         '--scope project or --tools to turn it off.'
     );
   }
-  const removedCopy = o.scope !== 'project' && o.tools === undefined ? removeProbeCopy(ctx) : undefined;
-  if (removedCopy)
-    deps.log(`✓ Agent Relay core     removed the copy a core relay init started left at ${removedCopy}`);
   // The skill is installed per user, like injection, and removed with it.
   const skillRecord = readDeliveryRecord(deliveryRecordPath()).relaySkill;
   const skill =
@@ -2231,7 +2199,7 @@ async function uninstall(deps: InitCommandDependencies, o: InitOptions): Promise
       skill.remaining ? { ...rest, relaySkill: skill.remaining } : rest
     );
   }
-  if (shown.length === 0 && turnedOff.length === 0 && !injectionKept && !removedCopy && !skillRecord) {
+  if (shown.length === 0 && turnedOff.length === 0 && !injectionKept && !skillRecord) {
     deps.log('relay init had not added Relay to any agent tool here; nothing to remove.');
     return;
   }
@@ -2509,7 +2477,7 @@ async function runGuided(deps: InitCommandDependencies, o: InitOptions): Promise
   const summary =
     delivery === 'inject'
       ? [
-          ...tools.map((id) => `${findToolTarget(id)!.label.padEnd(18)} ${PROBE_DELIVERY[id].route}`),
+          ...tools.map((id) => `${findToolTarget(id)!.label.padEnd(18)} ${CORE_DELIVERY[id].route}`),
           '',
           'Messages are injected into running sessions by the Agent Relay core, which relay init',
           'starts in the background (or reuses, when the desktop app already runs one).',

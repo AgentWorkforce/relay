@@ -1,0 +1,17 @@
+//! The Agent Relay core: the messaging runtime (`relay`) the desktop apps and
+//! `relay serve` run, and Relay Connect rooms. `agent-relay-node` (src/cli)
+//! is its binary.
+/// The stamped release (AGENT_RELAY_PROBE_VERSION), or a Git-identified development build. The internal
+/// Cargo package version is never presented as a separate product release.
+pub const VERSION: &str = env!("RELAY_DESKTOP_VERSION");
+pub const BUILD_REVISION: &str = env!("RELAY_DESKTOP_REVISION");
+
+pub mod cli;
+pub mod install;
+pub mod platform;
+pub mod relay;
+pub fn parse_iso_ms(value: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|date| date.timestamp_millis())
+}

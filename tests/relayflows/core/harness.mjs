@@ -26,7 +26,7 @@ const BRIDGE_VERSION = 2;
 function builtCore() {
   const configured = process.env.RELAY_CORE_BIN?.trim();
   if (configured) return path.resolve(configured);
-  const prepared = path.join(repoRoot, '.workflow-artifacts/core/agent-relay-probe');
+  const prepared = path.join(repoRoot, '.workflow-artifacts/core/agent-relay-node');
   return fs.existsSync(prepared) ? prepared : undefined;
 }
 

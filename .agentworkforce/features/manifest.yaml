@@ -4,7 +4,7 @@ updated: '2026-11-01'
 # Every user-facing feature in this repo, categorized and scored.
 #
 # Relay's centre is `relay init`: it installs the Agent Relay core
-# (crates/probe) and connects each agent tool, and the core injects messages
+# (crates/relay-node) and connects each agent tool, and the core injects messages
 # into running sessions. The categories below start there.
 #
 # criticality:
@@ -109,49 +109,49 @@ categories:
         name: Connect Claude Code
         cli: relay init --tools claude
         description: Turn on the session inbox and SessionStart hook in the Claude settings file
-        location: packages/cli/src/cli/lib/probe-core.ts, packages/cli/src/cli/lib/init-leftovers.ts
+        location: packages/cli/src/cli/lib/relay-node.ts, packages/cli/src/cli/lib/init-leftovers.ts
         verify_tier: 2
 
       - id: init-tool-codex
         name: Connect Codex
         cli: relay init --tools codex
         description: Install the PostToolUse, Stop and SessionStart hooks in the Codex hooks file
-        location: packages/cli/src/cli/lib/probe-core.ts
+        location: packages/cli/src/cli/lib/relay-node.ts
         verify_tier: 2
 
       - id: init-tool-opencode
         name: Connect OpenCode
         cli: relay init --tools opencode
         description: Install the Agent Relay plugin and its automatic activation for OpenCode
-        location: packages/cli/src/cli/lib/probe-core.ts, packages/cli/src/cli/lib/init-leftovers.ts
+        location: packages/cli/src/cli/lib/relay-node.ts, packages/cli/src/cli/lib/init-leftovers.ts
         verify_tier: 2
 
       - id: init-tool-grok
         name: Connect Grok CLI
         cli: relay init --tools grok
         description: Turn on Grok's leader mode so the core can reach its sessions
-        location: packages/cli/src/cli/lib/probe-core.ts
+        location: packages/cli/src/cli/lib/relay-node.ts
         verify_tier: 2
 
       - id: init-tool-pi
         name: Connect Pi
         cli: relay init --tools pi
         description: Install the Agent Relay extension and its automatic activation for Pi
-        location: packages/cli/src/cli/lib/probe-core.ts, packages/cli/src/cli/lib/init-leftovers.ts
+        location: packages/cli/src/cli/lib/relay-node.ts, packages/cli/src/cli/lib/init-leftovers.ts
         verify_tier: 2
 
       - id: init-tool-devin
         name: Connect Devin
         cli: relay init --tools devin
         description: Install lifecycle hooks in the local Devin configuration
-        location: packages/cli/src/cli/lib/probe-core.ts
+        location: packages/cli/src/cli/lib/relay-node.ts
         verify_tier: 2
 
       - id: init-tool-cursor
         name: Connect Cursor
         cli: relay init --tools cursor
         description: Install the hooks Cursor CLI and the Cursor editor read
-        location: packages/cli/src/cli/lib/probe-core.ts, packages/cli/src/cli/lib/agent-tools-mcp.ts
+        location: packages/cli/src/cli/lib/relay-node.ts, packages/cli/src/cli/lib/agent-tools-mcp.ts
         verify_tier: 2
 
       - id: init-mcp-fallback
@@ -195,55 +195,55 @@ categories:
       - id: core-install
         name: Pinned Install
         description: Install the core release relay init pins, checked against its checksum
-        location: packages/cli/src/cli/lib/probe-core.ts
+        location: packages/cli/src/cli/lib/relay-node.ts
         verify_tier: 2
 
       - id: core-serve
         name: Daemon
         description: Run one headless core per user, attached to and never doubled
-        location: crates/probe/src/relay/daemon.rs, crates/probe/src/probe/
+        location: crates/relay-node/src/relay/daemon.rs, crates/relay-node/src/probe/
         verify_tier: 2
 
       - id: core-bridge
         name: Bridge
         description: JSON-RPC over a private socket, for the CLI and desktop apps
-        location: crates/probe/src/relay/server.rs, crates/probe/src/relay/protocol.rs, crates/probe/src/relay/contract/
+        location: crates/relay-node/src/relay/server.rs, crates/relay-node/src/relay/protocol.rs, crates/relay-node/src/relay/contract/
         verify_tier: 2
 
       - id: core-workspace
         name: Workspace Selection
         description: Follow the workspace relay init saved, on a local or hosted server
-        location: crates/probe/src/relay/workspace.rs, crates/probe/src/relay/workspace/
+        location: crates/relay-node/src/relay/workspace.rs, crates/relay-node/src/relay/workspace/
         verify_tier: 2
 
       - id: core-settings
         name: Settings
         description: Read and change delivery settings for the tools installed on this machine
-        location: crates/probe/src/relay/settings_registry.rs, crates/probe/src/relay/store_settings.rs
+        location: crates/relay-node/src/relay/settings_registry.rs, crates/relay-node/src/relay/store_settings.rs
         verify_tier: 2
 
       - id: core-discovery
         name: Session Discovery
         description: Find running sessions of each tool from kernel evidence alone
-        location: crates/probe/src/relay/sessions.rs, crates/probe/src/relay/local/, crates/probe/src/relay/process/
+        location: crates/relay-node/src/relay/sessions.rs, crates/relay-node/src/relay/local/, crates/relay-node/src/relay/process/
         verify_tier: 2
 
       - id: core-auto-activate
         name: Automatic Joining
         description: Put a discovered session on Relay on its own, outside temporary folders
-        location: crates/probe/src/relay/agents/
+        location: crates/relay-node/src/relay/agents/
         verify_tier: 2
 
       - id: core-send-socket
         name: Session Send Socket
         description: Let a session send and list agents, identified by its process
-        location: crates/probe/src/relay/outbound/, crates/probe/src/relay/outbound.rs
+        location: crates/relay-node/src/relay/outbound/, crates/relay-node/src/relay/outbound.rs
         verify_tier: 2
 
       - id: core-catch-all
         name: Core Runtime
         description: Everything else in the core, so any path here selects the core lane
-        location: crates/probe/
+        location: crates/relay-node/
         verify_tier: 2
 
   core-delivery:
@@ -254,55 +254,55 @@ categories:
       - id: delivery-cursor-cli
         name: Cursor CLI
         description: Hand a message over through Cursor's postToolUse and stop hooks
-        location: crates/probe/src/relay/cursor_cli/
+        location: crates/relay-node/src/relay/cursor_cli/
         verify_tier: 2
 
       - id: delivery-cursor-editor
         name: Cursor Editor
         description: Wake an idle editor conversation through its waiting stop hook
-        location: crates/probe/src/relay/cursor_cli/editor.rs, crates/probe/src/relay/cursor_cli/wait.rs
+        location: crates/relay-node/src/relay/cursor_cli/editor.rs, crates/relay-node/src/relay/cursor_cli/wait.rs
         verify_tier: 6
 
       - id: delivery-grok
         name: Grok
         description: Join a Grok session through its proved leader and prompt it over ACP
-        location: crates/probe/src/relay/grok.rs, crates/probe/src/relay/grok/, crates/probe/src/relay/existing_session/, crates/probe/src/relay/agents/registration_routes.rs
+        location: crates/relay-node/src/relay/grok.rs, crates/relay-node/src/relay/grok/, crates/relay-node/src/relay/existing_session/, crates/relay-node/src/relay/agents/registration_routes.rs
         verify_tier: 2
 
       - id: delivery-claude
         name: Claude Code
         description: Put a message in the session's inbox
-        location: crates/probe/src/relay/claude/, crates/probe/src/relay/claude_settings.rs
+        location: crates/relay-node/src/relay/claude/, crates/relay-node/src/relay/claude_settings.rs
         verify_tier: 6
 
       - id: delivery-codex
         name: Codex
         description: Queue a message through Codex's hooks and queue between turns
-        location: crates/probe/src/relay/codex/, crates/probe/src/relay/codex.rs
+        location: crates/relay-node/src/relay/codex/, crates/relay-node/src/relay/codex.rs
         verify_tier: 6
 
       - id: delivery-opencode
         name: OpenCode
         description: Deliver through the Agent Relay plugin
-        location: crates/probe/src/relay/opencode/, crates/probe/src/relay/opencode_existing/
+        location: crates/relay-node/src/relay/opencode/, crates/relay-node/src/relay/opencode_existing/
         verify_tier: 6
 
       - id: delivery-pi
         name: Pi
         description: Deliver through the Agent Relay extension
-        location: crates/probe/src/relay/pi/, crates/probe/src/relay/pi.rs
+        location: crates/relay-node/src/relay/pi/, crates/relay-node/src/relay/pi.rs
         verify_tier: 6
 
       - id: delivery-devin
         name: Devin
         description: Deliver through the lifecycle hooks of a local session
-        location: crates/probe/src/relay/devin/, crates/probe/src/relay/devin.rs
+        location: crates/relay-node/src/relay/devin/, crates/relay-node/src/relay/devin.rs
         verify_tier: 6
 
       - id: delivery-settle
         name: Settling
         description: Acknowledge only what was injected, and retry what was not
-        location: crates/probe/src/relay/delivery/, crates/probe/src/relay/delivery.rs, crates/probe/src/relay/inject.rs
+        location: crates/relay-node/src/relay/delivery/, crates/relay-node/src/relay/delivery.rs, crates/relay-node/src/relay/inject.rs
         verify_tier: 2
 
   broker:

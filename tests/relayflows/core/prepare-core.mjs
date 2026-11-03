@@ -8,7 +8,7 @@ import path from 'node:path';
 
 import { repoRoot } from './harness.mjs';
 
-const crate = path.join(repoRoot, 'crates/probe');
+const crate = path.join(repoRoot, 'crates/relay-node');
 execFileSync(
   'cargo',
   [
@@ -18,11 +18,11 @@ execFileSync(
     '--features',
     'production-binaries',
     '--bin',
-    'agent-relay-probe',
+    'agent-relay-node',
   ],
   { cwd: crate, stdio: 'inherit' }
 );
-const target = path.join(repoRoot, '.workflow-artifacts/core/agent-relay-probe');
+const target = path.join(repoRoot, '.workflow-artifacts/core/agent-relay-node');
 fs.mkdirSync(path.dirname(target), { recursive: true });
-fs.copyFileSync(path.join(crate, 'target/debug/agent-relay-probe'), target);
+fs.copyFileSync(path.join(crate, 'target/debug/agent-relay-node'), target);
 console.log(`CORE_PREPARED ${target}`);

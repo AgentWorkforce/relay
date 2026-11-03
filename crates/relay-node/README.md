@@ -1,0 +1,116 @@
+# Agent Relay node (`agent-relay-node`)
+
+`crates/relay-node` is the Agent Relay **core**: the native Rust daemon that
+discovers the coding-agent sessions running on a computer (Claude Code, Codex,
+Devin, OpenCode, Grok, Pi, Cursor CLI, OpenClaw, Hermes, Muse, …), puts them
+on the relay, and injects Relay messages into them through each harness's own
+native route (hooks, app servers, plugins and sockets, not a PTY). It is
+messaging only. It builds one binary, `agent-relay-node`, which runs as one
+long-lived process per user:
+
+```sh
+agent-relay-node relay serve [--socket PATH] [--app-data-dir PATH] [--site-url URL] [--headless]
+```
+
+The relay CLI (`relay init`, `relay serve`) installs and runs it headless. The
+desktop apps (macOS, Linux/Windows GTK and iPad, in the relay-desktop
+repository) are clients of the daemon over its JSON bridge, and build their
+own binary on this crate's library with their account and session history
+added through its plugins.
+
+- [`docs/relay-core.md`](docs/relay-core.md): the daemon, its bridge
+  contract, delivery and the relay-send socket.
+
+## Layout
+
+This crate is its **own Cargo workspace** with its own `Cargo.lock`. It is not
+a member of the repository's root workspace (the broker): the two pin
+different `relaycast`, `nix` and `portable-pty` versions.
+
+| Path                                | Owns                                                                                                                                                                                 |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/cli/`                          | The `agent-relay-node` command line: `relay …` and `connect …`                                                                                                                       |
+| `src/relay/`                        | The daemon (`relay serve`): workspace, Relaycast, delivery and injection per harness, harness setup (hooks/plugins), spawning, the bridge and its contract (`relay::contract`)     |
+| `src/install*`                      | Where a packaged desktop install keeps its executables; the core's launch-at-login entry uses it                                                                                    |
+| `src/bin/relay-contract-codegen.rs` | Generates the Swift bridge contract the apps consume                                                                                                                                 |
+| `contract/CoreContract.swift`       | The checked-in generated contract; CI fails on drift                                                                                                                                 |
+| `scripts/`                          | `generate-contract.sh`, `check-open-source.sh`                                                                                                                                       |
+| `tests/`                            | Integration tests, with in-process fakes of Cloud and Relaycast (`tests/support`)                                                                                                    |
+
+## What a build adds
+
+The core runs with `daemon::Plugins`, each of which defaults to doing
+nothing. A build such as relay-desktop's `desktop-core` adds:
+
+| Seam                                      | What it is                                                                                                                                 |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Plugins.account` (`AccountPlugin`)       | Sign-in and Cloud maintenance; it answers the `Availability::Account` methods (`account.*`, `uploader.*`, `sessions.transcript`)            |
+| `Plugins.session_policy` (`SessionPolicy`) | Which sessions join the relay by themselves, may be asked to join, and publish their activity                                              |
+| `Plugins.settings` (`SettingsExtension`)  | Extra settings, such as `history_retention_days`                                                                                           |
+| `Plugins.extensions` (`MethodExtension`)  | Extra bridge methods                                                                                                                       |
+| `Plugins.history_version`                 | The session-history library release `status.get` reports                                                                                  |
+| `PluginBuilder.session_sources`           | `session_sources::SessionSources`: remote sessions (Devin Cloud, Claude Code on the web) it lists and delivers into, and Hermes's homes |
+
+Without them the core is the whole messaging runtime: `relay serve`
+(discovery, native delivery and injection into running sessions, harness
+setup and hooks, Relaycast and the workspace, spawning, the bridge and its
+contract), `relay call`, the harness hooks and `connect`. The account methods
+answer `method_not_found`, and the core uses the workspace the `agent-relay`
+CLI selects (`src/relay/workspace/cli.rs`), with no sign-in needed.
+
+## Build and test
+
+```sh
+cargo build --manifest-path crates/relay-node/Cargo.toml --locked
+cargo build --manifest-path crates/relay-node/Cargo.toml --locked --release --bin agent-relay-node
+# Tests read and write under HOME: use an empty one, keeping the toolchain
+# (rustup and cargo) where it was installed under the real HOME.
+export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+HOME="$(mktemp -d)" cargo test --manifest-path crates/relay-node/Cargo.toml --locked
+```
+
+`.github/workflows/relay-node-ci.yml` builds and tests on Linux x64 and macOS
+arm64, builds on Windows x64, checks the generated contract for drift and runs
+`scripts/check-open-source.sh`.
+
+### Version stamping
+
+`build.rs` stamps `agent_relay_node::VERSION` (what the daemon reports in its
+bridge handshake, telemetry and Relaycast `origin_version`):
+
+| Build                                                              | `VERSION`                                                                                                                                                                          |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AGENT_RELAY_PROBE_VERSION=X` set                                  | `X` exactly: a relay release passes the relay version, relay-desktop passes its CalVer (`2026.10.58`)                                                                              |
+| unset, `AGENT_RELAY_PROBE_BASE_VERSION=B` set                      | `B-dev+<git revision>`: development cores still order below the builder's next release                                                                                             |
+| unset, no `B`, `AGENT_RELAY_PROBE_CHANGELOG=P` (absolute path) set | `<newest non-empty "## v" heading of P>-dev+<git revision>`: relay-desktop sets this from `.cargo/config.toml`; an unreadable `P`, or one with no release heading, fails the build |
+| none of these                                                      | `<crate version>-dev+<git revision>`                                                                                                                                               |
+
+The revision comes from the builder's checkout when `AGENT_RELAY_PROBE_GIT_DIR`
+names one (relay-desktop's, from `.cargo/config.toml`), else from this crate's.
+The internal Cargo package version is never reported as a release on its
+own. On Windows, `AGENT_RELAY_WINDOWS_ICON` additionally embeds an icon and
+version resource.
+
+### The bridge contract
+
+The bridge's methods, events and types are declared once in Rust
+(`src/relay/contract`). `relay-contract-codegen` turns the registry into
+Swift:
+
+```sh
+crates/relay-node/scripts/generate-contract.sh                        # crates/relay-node/contract/CoreContract.swift
+crates/relay-node/scripts/generate-contract.sh --app-root ../relay-desktop  # relay-desktop's macos/Sources/RelayDesktopCore/CoreContract.swift
+crates/relay-node/scripts/generate-contract.sh --out /tmp/CoreContract.swift
+```
+
+## How relay-desktop consumes the core
+
+- **Rust:** relay-desktop's `desktop-core` and GTK app depend on
+  `agent-relay-node` as a library (a git dependency pinned to a relay commit,
+  `default-features = false`). `desktop-core` adds the account, session
+  history and its own binary through the seams above.
+- **Swift (macOS/iPad):** `CoreContract.swift` comes from
+  `contract/CoreContract.swift` (or `generate-contract.sh --app-root`).
+
+One core runs per machine: whichever installed it (the relay CLI or a desktop
+app), the apps attach to the running daemon's socket.

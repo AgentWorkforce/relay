@@ -15,7 +15,7 @@ import { readProjectWorkspaceKey } from '../lib/project-workspace-key.js';
 import { registerAgentCommands } from './agent.js';
 import { DownloadHttpError, engineAssetName } from '../lib/relaycast-engine-install.js';
 import { LOCAL_ENGINE_VERSION, registerInitCommand, type InitCommandDependencies } from './init.js';
-import { PROBE_VERSION, type CoreClient } from '../lib/probe-core.js';
+import { RELAY_NODE_VERSION, type CoreClient } from '../lib/relay-node.js';
 import {
   RELAY_SKILL_NAME,
   RELAY_SKILL_REF,
@@ -46,7 +46,7 @@ beforeEach(() => {
   vi.stubEnv('AGENT_RELAY_PROJECT', project);
   vi.stubEnv('RELAY_BASE_URL', '');
   vi.stubEnv('RELAY_WORKSPACE_KEY', '');
-  vi.stubEnv('AGENT_RELAY_PROBE_PATH', '');
+  vi.stubEnv('AGENT_RELAY_NODE_PATH', '');
   // Never reach a real Agent Relay core on the machine running the tests.
   vi.stubEnv('AGENT_RELAY_CORE_SOCKET', path.join(home, 'no-core.sock'));
 });
@@ -116,10 +116,10 @@ function setup(overrides: Partial<InitCommandDependencies> = {}) {
     startCore: vi.fn(() => {
       throw new Error('no core in this test');
     }),
-    downloadProbe: vi.fn(async () => {
+    downloadRelayNode: vi.fn(async () => {
       throw new Error('offline');
     }),
-    probeVersion: vi.fn(() => undefined),
+    relayNodeVersion: vi.fn(() => undefined),
     // Offline: the messaging skill cannot be fetched unless a test says so.
     runSkillsCli: vi.fn(() => ({ status: 1, output: 'offline' })),
     ...overrides,
@@ -1200,7 +1200,7 @@ function fakeCore(
     fs.mkdirSync(path.dirname(marker), { recursive: true });
     fs.writeFileSync(marker, "Agent Relay's Pi extension was turned off (pi_extension).\n");
   };
-  let version = PROBE_VERSION;
+  let version = RELAY_NODE_VERSION;
   const client: CoreClient = {
     async call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
       calls.push([method, params]);
@@ -1277,7 +1277,7 @@ function fakeCore(
     startForeign: (foreignPid = 777) => {
       up = true;
       pid = foreignPid;
-      version = PROBE_VERSION;
+      version = RELAY_NODE_VERSION;
     },
     setVersion: (next: string) => {
       version = next;
@@ -1288,20 +1288,20 @@ function fakeCore(
       startCore: vi.fn(() => {
         up = true;
         pid = 5151;
-        version = PROBE_VERSION;
+        version = RELAY_NODE_VERSION;
         return pid;
       }),
       // Only the core's pid is alive; the fake local server's is separate.
-      probeVersion: vi.fn(() => PROBE_VERSION),
+      relayNodeVersion: vi.fn(() => RELAY_NODE_VERSION),
     } satisfies Partial<InitCommandDependencies>,
   };
 }
 
-/** A probe binary already in the bin slot, so no download is needed. */
-function installedProbe(): string {
-  const binary = path.join(home, 'bin', 'agent-relay-probe');
+/** A relay node binary already in the bin slot, so no download is needed. */
+function installedRelayNode(): string {
+  const binary = path.join(home, 'bin', 'agent-relay-node');
   fs.mkdirSync(path.dirname(binary), { recursive: true });
-  fs.writeFileSync(binary, '#!/bin/sh\necho agent-relay-probe\n', { mode: 0o755 });
+  fs.writeFileSync(binary, '#!/bin/sh\necho agent-relay-node\n', { mode: 0o755 });
   return binary;
 }
 
@@ -1342,7 +1342,7 @@ describe('relay init joining a team after solo relay init', () => {
 
   /** Solo `relay init` with a running session on `local`. */
   async function solo(agents: FakeAgent[] = [SESSION], onLocal?: string[]) {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ agents, followStore: true });
     const net = servers(onLocal);
     await setup({ ...core.deps, ...net }).run('--tools', 'codex');
@@ -1395,7 +1395,7 @@ describe('relay init joining a team after solo relay init', () => {
 
   it('a real active workspace stays, and nothing in the core moves', async () => {
     writeWorkspaceStore({ active: 'ghsub-live', workspaces: { 'ghsub-live': { key: 'rk_live_fleet' } } });
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ agents: [SESSION] });
     const { run, logs } = setup(core.deps);
     await run('--hosted', '--name', 'team', '--tools', 'codex');
@@ -1491,7 +1491,7 @@ describe('relay init joining a team after solo relay init', () => {
         target: { kind: 'codex', id: 't3' },
       },
     ];
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ agents, followStore: true, ended: ['ended'] });
     const net = servers(agents.map((agent) => agent.name));
     await setup({ ...core.deps, ...net }).run('--tools', 'codex');
@@ -1503,7 +1503,7 @@ describe('relay init joining a team after solo relay init', () => {
   });
 
   it('prints the name a moved session got when its own is taken on the team', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ agents: [SESSION], followStore: true, refuseRegister: ['codex-api'] });
     const net = servers();
     await setup({ ...core.deps, ...net }).run('--tools', 'codex');
@@ -1513,7 +1513,7 @@ describe('relay init joining a team after solo relay init', () => {
   });
 
   it('names a session that left local but could not join the team', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({
       agents: [SESSION],
       followStore: true,
@@ -1527,7 +1527,7 @@ describe('relay init joining a team after solo relay init', () => {
   });
 
   it('a team saved under the name local still moves the sessions off the old key', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ agents: [SESSION], followStore: true });
     const net = servers([SESSION.name], 'local');
     await setup({ ...core.deps, ...net }).run('--tools', 'codex');
@@ -1574,7 +1574,7 @@ describe('relay init joining a team after solo relay init', () => {
   });
 
   it('says what to do when the core stays on another workspace', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ agents: [SESSION], followStore: true });
     const net = servers();
     await setup({ ...core.deps, ...net }).run('--tools', 'codex');
@@ -1634,7 +1634,7 @@ describe('relay init joining a team after solo relay init', () => {
 
 describe('relay init message injection', () => {
   it('starts the core, turns on delivery for the chosen tools, and reuses it on re-run', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const { run, logs, deps } = setup(core.deps);
     await run('--tools', 'claude,codex');
@@ -1642,7 +1642,7 @@ describe('relay init message injection', () => {
     expect(core.deps.startCore).toHaveBeenCalledTimes(1);
     expect(core.deps.startCore).toHaveBeenCalledWith(
       expect.objectContaining({
-        binary: path.join(home, 'bin', 'agent-relay-probe'),
+        binary: path.join(home, 'bin', 'agent-relay-node'),
         socket: deps.coreSocket?.(),
       })
     );
@@ -1653,7 +1653,7 @@ describe('relay init message injection', () => {
       { auto_activate: true },
     ]);
     const output = logs.join('\n');
-    expect(output).toContain(`Started the Agent Relay core (agent-relay-probe ${PROBE_VERSION}, pid 5151)`);
+    expect(output).toContain(`Started the Agent Relay core (agent-relay-node ${RELAY_NODE_VERSION}, pid 5151)`);
     expect(output).toMatch(/Claude Code\s+injected through Claude Code's session inbox/);
     expect(output).toMatch(/Codex\s+injected through PostToolUse, Stop and SessionStart hooks/);
     expect(output).toContain('apply in every project on this machine');
@@ -1678,12 +1678,12 @@ describe('relay init message injection', () => {
   });
 
   it('replaces an older core it started, and keeps it when the new one cannot be fetched', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     await setup(core.deps).run('--tools', 'codex');
 
     core.setVersion('15.0.5');
-    const failed = setup({ ...core.deps, probeVersion: vi.fn(() => '15.0.5') });
+    const failed = setup({ ...core.deps, relayNodeVersion: vi.fn(() => '15.0.5') });
     await failed.run('--tools', 'codex');
     expect(core.deps.startCore).toHaveBeenCalledTimes(1);
     expect(failed.logs.join('\n')).toContain('Keeping the Agent Relay core 15.0.5');
@@ -1692,14 +1692,14 @@ describe('relay init message injection', () => {
     await run('--tools', 'codex');
     expect(core.calls.map(([method]) => method)).toContain('daemon.shutdown');
     expect(core.deps.startCore).toHaveBeenCalledTimes(2);
-    expect(logs.join('\n')).toContain(`Updating the Agent Relay core from 15.0.5 to ${PROBE_VERSION}`);
+    expect(logs.join('\n')).toContain(`Updating the Agent Relay core from 15.0.5 to ${RELAY_NODE_VERSION}`);
   });
 
   describe('starting the desktop app core', () => {
     const corePath = () => path.join(home, 'local', 'core.json');
 
     it('starts the desktop app core when the app is installed and none runs, and writes no core.json', async () => {
-      installedProbe();
+      installedRelayNode();
       const core = fakeCore();
       const startDesktopCore = vi.fn(() => {
         core.startForeign(777);
@@ -1710,11 +1710,11 @@ describe('relay init message injection', () => {
 
       expect(startDesktopCore).toHaveBeenCalledTimes(1);
       expect(core.deps.startCore).not.toHaveBeenCalled();
-      expect(deps.downloadProbe).not.toHaveBeenCalled();
+      expect(deps.downloadRelayNode).not.toHaveBeenCalled();
       expect(fs.existsSync(corePath())).toBe(false);
       const output = logs.join('\n');
       expect(output).toContain(
-        `Asked the Agent Relay desktop app to start its core; using the core now running on this machine (agent-relay-probe ${PROBE_VERSION}, pid 777)`
+        `Asked the Agent Relay desktop app to start its core; using the core now running on this machine (agent-relay-node ${RELAY_NODE_VERSION}, pid 777)`
       );
       expect(output).not.toContain('could not be started');
       expect(core.sets()).toContainEqual({ codex_stop_hook: true });
@@ -1730,7 +1730,7 @@ describe('relay init message injection', () => {
       ],
       ['its core never answers', () => 'systemctl --user start agent-relay.service', 'no core answered on'],
     ])('falls back to the public core with one warning when %s', async (_, start, reason) => {
-      installedProbe();
+      installedRelayNode();
       const core = fakeCore();
       const startDesktopCore = vi.fn(start);
       const { run, logs } = setup({ ...core.deps, desktopInstalled: () => true, startDesktopCore });
@@ -1747,11 +1747,11 @@ describe('relay init message injection', () => {
       expect(warnings[0]).toContain(reason);
       expect(warnings[0]).toContain('relay init started the public Agent Relay core instead');
       expect(warnings[0]).toContain('open the Agent Relay desktop app');
-      expect(logs.join('\n')).toContain('Started the Agent Relay core (agent-relay-probe');
+      expect(logs.join('\n')).toContain('Started the Agent Relay core (agent-relay-node');
     });
 
     it('says why in the result when the public core does not start either', async () => {
-      installedProbe();
+      installedRelayNode();
       const core = fakeCore();
       const { run, logs } = setup({
         ...core.deps,
@@ -1773,7 +1773,7 @@ describe('relay init message injection', () => {
     });
 
     it('asks the desktop app once the outdated core init started is retired', async () => {
-      installedProbe();
+      installedRelayNode();
       const core = fakeCore();
       await setup(core.deps).run('--tools', 'codex');
       core.setVersion('15.0.5');
@@ -1791,7 +1791,7 @@ describe('relay init message injection', () => {
     });
 
     it('gives up on the desktop core by the clock when each attempt stalls', async () => {
-      installedProbe();
+      installedRelayNode();
       const core = fakeCore();
       let now = Date.now();
       const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
@@ -1817,7 +1817,7 @@ describe('relay init message injection', () => {
     });
 
     it('never tries the desktop app when it is not installed', async () => {
-      installedProbe();
+      installedRelayNode();
       const core = fakeCore();
       const { run, logs, deps } = setup(core.deps);
       await run('--tools', 'codex');
@@ -1828,7 +1828,7 @@ describe('relay init message injection', () => {
     });
 
     it('attaches to a desktop core that comes up while the public one starts, stopping only its own', async () => {
-      installedProbe();
+      installedRelayNode();
       const core = fakeCore();
       // The desktop app's core takes the socket first; the one init started finds it taken.
       const startCore = vi.fn(() => {
@@ -1859,16 +1859,16 @@ describe('relay init message injection', () => {
     });
 
     it('attaches to a desktop core that comes up while the public one downloads', async () => {
-      installedProbe();
+      installedRelayNode();
       const core = fakeCore();
-      const probeVersion = vi.fn(() => {
+      const relayNodeVersion = vi.fn(() => {
         core.startForeign(777);
-        return PROBE_VERSION;
+        return RELAY_NODE_VERSION;
       });
       const stop = vi.fn();
       const { run, logs } = setup({
         ...core.deps,
-        probeVersion,
+        relayNodeVersion,
         stop,
         desktopInstalled: () => true,
         startDesktopCore: vi.fn(() => {
@@ -1896,7 +1896,7 @@ describe('relay init message injection', () => {
       expect(core.calls.some(([method]) => method === 'daemon.shutdown')).toBe(false);
       expect(fs.existsSync(corePath())).toBe(false);
       expect(logs.join('\n')).toContain(
-        'Using the Agent Relay core already running on this machine (agent-relay-probe'
+        'Using the Agent Relay core already running on this machine (agent-relay-node'
       );
     });
   });
@@ -1990,7 +1990,7 @@ describe('relay init message injection', () => {
   });
 
   it('stops only the core it started', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const { run } = setup(core.deps);
     await run('--tools', 'claude');
@@ -2007,7 +2007,7 @@ describe('relay init message injection', () => {
     await mcp.run('--tools', 'claude', '--delivery', 'mcp', '--scope', 'project');
     expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
 
-    installedProbe();
+    installedRelayNode();
     const { run, logs } = setup(fakeCore().deps);
     await run('--tools', 'claude', '--scope', 'project');
     expect(fs.existsSync(path.join(project, '.mcp.json'))).toBe(false);
@@ -2015,7 +2015,7 @@ describe('relay init message injection', () => {
   });
 
   it("keeps the person's own crossSessionInbound and says messages are held", async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ settings: { direct_delivery: false } });
     const { run, logs } = setup(core.deps);
     await run('--tools', 'claude');
@@ -2024,7 +2024,7 @@ describe('relay init message injection', () => {
   });
 
   it('reports a core refusing Cursor delivery and leaves it off', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({
       running: true,
       settings: { auto_activate: true, cursor_direct_delivery: false },
@@ -2037,7 +2037,7 @@ describe('relay init message injection', () => {
   });
 
   it('turns on Cursor delivery and turns it off again on --uninstall', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ running: true, settings: { auto_activate: true } });
     await setup(core.deps).run('--tools', 'cursor');
     expect(core.settings.cursor_direct_delivery).toBe(true);
@@ -2049,7 +2049,7 @@ describe('relay init message injection', () => {
   });
 
   it('leaves Cursor delivery on at --uninstall when the person had it on already', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({
       running: true,
       settings: { auto_activate: true, cursor_direct_delivery: true },
@@ -2060,7 +2060,7 @@ describe('relay init message injection', () => {
   });
 
   it('turns off on --uninstall exactly what it turned on, and only for the user scope', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ running: true, settings: { auto_activate: true } });
     await setup(core.deps).run('--tools', 'claude,devin');
 
@@ -2084,7 +2084,7 @@ describe('relay init message injection', () => {
   });
 
   it('removes the crossSessionInbound it added rather than leaving the hold the core writes', async () => {
-    installedProbe();
+    installedRelayNode();
     const claudeSettings = path.join(toolHome, '.claude', 'settings.json');
     fs.mkdirSync(path.dirname(claudeSettings), { recursive: true });
     fs.writeFileSync(claudeSettings, JSON.stringify({ theme: 'dark' }));
@@ -2097,7 +2097,7 @@ describe('relay init message injection', () => {
   });
 
   it('starts a core just to turn injection off when none runs, and stops it again', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     await setup(core.deps).run('--tools', 'opencode');
     await setup({ ...core.deps, isAlive: vi.fn(() => false) }).run('--stop');
@@ -2109,7 +2109,7 @@ describe('relay init message injection', () => {
   });
 
   it('warns when the core serves a different workspace than this project', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ running: true, workspaceName: 'ghsub-live' });
     const { run, logs } = setup(core.deps);
     await run('--tools', 'claude');
@@ -2120,7 +2120,7 @@ describe('relay init message injection', () => {
   });
 
   it('uses the MCP server for a tool the core cannot deliver to', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const connect = core.deps.connectCore;
     const { run, logs } = setup({
@@ -2147,7 +2147,7 @@ describe('relay init message injection', () => {
   });
 
   it('installs the Pi extension only for Pi, records it, and removes it on --uninstall', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     await setup(core.deps).run('--tools', 'codex');
     expect(core.settings.pi_extension).toBe(false);
@@ -2184,7 +2184,7 @@ describe('relay init message injection', () => {
   });
 
   it('lets OpenCode sessions join on their own and turns exactly that off on --uninstall', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     await setup(core.deps).run('--tools', 'opencode');
     expect(core.sets()).toEqual([
@@ -2215,7 +2215,7 @@ describe('relay init message injection', () => {
   // The relay init end-to-end run on 2026-10-29: --uninstall left `{}` in
   // ~/.claude/settings.json and plugins/agent-relay.js.off behind.
   it('leaves the Claude and OpenCode folders as it found them on --uninstall', async () => {
-    installedProbe();
+    installedRelayNode();
     const claude = path.join(toolHome, '.claude');
     fs.mkdirSync(claude);
     fs.writeFileSync(path.join(claude, 'history.jsonl'), 'x\n');
@@ -2237,7 +2237,7 @@ describe('relay init message injection', () => {
   // ~/.agentworkforce/desktop/pi-extension.off, which keeps the desktop app
   // from installing the extension (Pi sessions off), and an empty extensions folder.
   it("leaves Pi's folder and the core's Pi opt-out as it found them on --uninstall", async () => {
-    installedProbe();
+    installedRelayNode();
     const agent = path.join(toolHome, '.pi', 'agent');
     fs.mkdirSync(agent, { recursive: true });
     fs.writeFileSync(path.join(agent, 'auth.json'), '{}');
@@ -2259,7 +2259,7 @@ describe('relay init message injection', () => {
 
   // Review on #2022: turning Pi off in the desktop app after init is the person's choice.
   it('keeps a Pi opt-out marker the person left after init on --uninstall', async () => {
-    installedProbe();
+    installedRelayNode();
     const agent = path.join(toolHome, '.pi', 'agent');
     fs.mkdirSync(agent, { recursive: true });
     const marker = path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off');
@@ -2276,7 +2276,7 @@ describe('relay init message injection', () => {
   });
 
   it("keeps a Pi opt-out marker that links to the person's own file on --uninstall", async () => {
-    installedProbe();
+    installedRelayNode();
     const agent = path.join(toolHome, '.pi', 'agent');
     fs.mkdirSync(agent, { recursive: true });
     const marker = path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off');
@@ -2293,7 +2293,7 @@ describe('relay init message injection', () => {
   });
 
   it('keeps a Pi opt-out marker that was there before init', async () => {
-    installedProbe();
+    installedRelayNode();
     const agent = path.join(toolHome, '.pi', 'agent');
     fs.mkdirSync(agent, { recursive: true });
     const marker = path.join(toolHome, '.agentworkforce', 'desktop', 'pi-extension.off');
@@ -2309,7 +2309,7 @@ describe('relay init message injection', () => {
 
   // Review on #2021: a tool rolled back in the same run is tidied too.
   it('removes the Claude settings file it created when Claude is rolled back to MCP', async () => {
-    installedProbe();
+    installedRelayNode();
     const claude = path.join(toolHome, '.claude');
     fs.mkdirSync(claude);
     const core = fakeCore({
@@ -2322,7 +2322,7 @@ describe('relay init message injection', () => {
   });
 
   it('keeps a Claude settings file and an OpenCode marker that were there before init', async () => {
-    installedProbe();
+    installedRelayNode();
     const claude = path.join(toolHome, '.claude');
     fs.mkdirSync(claude);
     const file = path.join(claude, 'settings.json');
@@ -2345,7 +2345,7 @@ describe('relay init message injection', () => {
   });
 
   it('leaves a Pi or OpenCode opt-in the person turned on themselves on --uninstall', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ running: true, settings: { opencode_auto_activate: true } });
     await setup(core.deps).run('--tools', 'opencode');
     expect(core.sets()).toEqual([{ opencode_plugin: true }, { auto_activate: true }]);
@@ -2358,7 +2358,7 @@ describe('relay init message injection', () => {
   });
 
   it('gives Pi the MCP server, with no opt-in left on, when the core refuses Pi auto-activation', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ refuse: ['pi_auto_activate'] });
     const { run, logs } = setup(core.deps);
     await run('--tools', 'pi');
@@ -2371,7 +2371,7 @@ describe('relay init message injection', () => {
   });
 
   it('turns off what it enabled when its record cannot be saved, then uses the MCP server', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ running: true });
     // A directory where the record goes: writing it fails.
     fs.mkdirSync(path.join(home, 'local', 'core-settings.json'), { recursive: true });
@@ -2385,7 +2385,7 @@ describe('relay init message injection', () => {
   });
 
   it('stops without adding MCP when an unrecorded setting cannot be turned off again', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ running: true });
     fs.mkdirSync(path.join(home, 'local', 'core-settings.json'), { recursive: true });
     const connect = core.deps.connectCore;
@@ -2411,7 +2411,7 @@ describe('relay init message injection', () => {
   });
 
   it('rolls back the settings of a tool whose delivery fails, so it has only the MCP route', async () => {
-    installedProbe();
+    installedRelayNode();
     const claudeSettings = path.join(toolHome, '.claude', 'settings.json');
     const core = fakeCore({ refuse: ['claude_session_hook'], claudeFiles: [claudeSettings] });
     fs.mkdirSync(path.dirname(claudeSettings), { recursive: true });
@@ -2430,7 +2430,7 @@ describe('relay init message injection', () => {
   });
 
   it('turns off what it injected before adding the MCP server for --delivery mcp', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ running: true });
     await setup(core.deps).run('--tools', 'claude,codex', '--scope', 'project');
     expect(core.settings).toMatchObject({
@@ -2462,7 +2462,7 @@ describe('relay init message injection', () => {
   });
 
   it('adds no MCP server for --delivery mcp when injection it turned on cannot be turned off', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ running: true });
     await setup(core.deps).run('--tools', 'claude');
     // The core has gone and one started for the change never answers.
@@ -2478,7 +2478,7 @@ describe('relay init message injection', () => {
   });
 
   it('never signals the pid of a recorded core that no longer answers', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     await setup(core.deps).run('--tools', 'opencode');
     // The core exits and its pid is reused by an unrelated process.
@@ -2497,7 +2497,7 @@ describe('relay init message injection', () => {
   });
 
   it('warns when the core serves another workspace on the same self-hosted server', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ running: true, workspaceId: 'rw_core' });
     core.settings.auto_activate = true;
     const workspaceFetch = (id: string) =>
@@ -2544,7 +2544,7 @@ describe('relay init message injection', () => {
   // core serving another hosted workspace of the same name is not taken
   // for it when neither side names a workspace id.
   it('does not confirm a joined hosted workspace by its name alone', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({
       running: true,
       baseUrl: 'https://cast.agentrelay.com',
@@ -2569,7 +2569,7 @@ describe('relay init message injection', () => {
   });
 
   it('restores crossSessionInbound on every Claude login the core changed', async () => {
-    installedProbe();
+    installedRelayNode();
     const own = path.join(toolHome, '.claude', 'settings.json');
     const work = path.join(toolHome, '.claude-work', 'settings.json');
     const chosen = path.join(toolHome, '.claude-mine', 'settings.json');
@@ -2607,7 +2607,7 @@ describe('relay init message injection', () => {
   }
 
   it("puts back each login's own crossSessionInbound when its record cannot be saved", async () => {
-    installedProbe();
+    installedRelayNode();
     const logins = twoClaudeLogins();
     const core = fakeCore({
       running: true,
@@ -2622,7 +2622,7 @@ describe('relay init message injection', () => {
   });
 
   it("puts back each login's own crossSessionInbound on a switch to MCP", async () => {
-    installedProbe();
+    installedRelayNode();
     const logins = twoClaudeLogins();
     const core = fakeCore({
       running: true,
@@ -2638,7 +2638,7 @@ describe('relay init message injection', () => {
   });
 
   it("puts back each login's own crossSessionInbound when Claude's delivery is rolled back", async () => {
-    installedProbe();
+    installedRelayNode();
     const logins = twoClaudeLogins();
     const core = fakeCore({
       running: true,
@@ -2653,7 +2653,7 @@ describe('relay init message injection', () => {
   });
 
   it('stops without adding MCP when a failed tool cannot be rolled back', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({
       running: true,
       settings: { auto_activate: true },
@@ -2688,7 +2688,7 @@ describe('relay init message injection', () => {
   });
 
   it('falls back to the MCP server when the core cannot be started', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const { run, logs } = setup({
       ...core.deps,
@@ -2705,7 +2705,7 @@ describe('relay init message injection', () => {
     'says so when an earlier MCP entry could not be removed',
     async () => {
       await setup().run('--tools', 'claude', '--delivery', 'mcp', '--scope', 'project');
-      installedProbe();
+      installedRelayNode();
       fs.chmodSync(project, 0o555);
       try {
         const { run, logs } = setup(fakeCore().deps);
@@ -2726,40 +2726,40 @@ describe('relay init message injection', () => {
     expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
   });
 
-  it('downloads, verifies and installs the pinned core from its probe-v release', async () => {
-    const asset = `agent-relay-probe-${PROBE_VERSION}-linux-x64`;
-    const url = `https://github.com/AgentWorkforce/relay/releases/download/probe-v${PROBE_VERSION}/${asset}`;
-    const body = new TextEncoder().encode('#!/bin/sh\necho agent-relay-probe\n');
+  it('downloads, verifies and installs the pinned core from its relay-node-v release', async () => {
+    const asset = `agent-relay-node-${RELAY_NODE_VERSION}-linux-x64`;
+    const url = `https://github.com/AgentWorkforce/relay/releases/download/relay-node-v${RELAY_NODE_VERSION}/${asset}`;
+    const body = new TextEncoder().encode('#!/bin/sh\necho agent-relay-node\n');
     const digest = createHash('sha256').update(body).digest('hex');
-    const downloadProbe = vi.fn(async (requested: string) => {
+    const downloadRelayNode = vi.fn(async (requested: string) => {
       if (requested === url) return body;
       if (requested === `${url}.sha256`) return new TextEncoder().encode(`${digest}  ${asset}\n`);
       throw new DownloadHttpError(requested, 404);
     });
     const core = fakeCore();
-    const probeVersion = vi.fn((binary: string) => (binary.endsWith('.tmp') ? PROBE_VERSION : undefined));
-    const { run, logs } = setup({ ...core.deps, downloadProbe, probeVersion });
+    const relayNodeVersion = vi.fn((binary: string) => (binary.endsWith('.tmp') ? RELAY_NODE_VERSION : undefined));
+    const { run, logs } = setup({ ...core.deps, downloadRelayNode, relayNodeVersion });
     await run('--tools', 'claude');
-    expect(downloadProbe).toHaveBeenCalledWith(url, expect.anything());
-    expect(fs.readFileSync(path.join(home, 'bin', 'agent-relay-probe'))).toEqual(Buffer.from(body));
-    expect(logs.join('\n')).toContain(`Installed agent-relay-probe v${PROBE_VERSION}`);
+    expect(downloadRelayNode).toHaveBeenCalledWith(url, expect.anything());
+    expect(fs.readFileSync(path.join(home, 'bin', 'agent-relay-node'))).toEqual(Buffer.from(body));
+    expect(logs.join('\n')).toContain(`Installed agent-relay-node v${RELAY_NODE_VERSION}`);
     expect(core.deps.startCore).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a core whose checksum does not match, and uses the MCP server', async () => {
-    const downloadProbe = vi.fn(async (requested: string) =>
+    const downloadRelayNode = vi.fn(async (requested: string) =>
       requested.endsWith('.sha256') ? new TextEncoder().encode(`${'0'.repeat(64)}  x\n`) : new Uint8Array([1])
     );
     const core = fakeCore();
-    const { run, logs } = setup({ ...core.deps, downloadProbe });
+    const { run, logs } = setup({ ...core.deps, downloadRelayNode });
     await run('--tools', 'claude');
-    expect(fs.existsSync(path.join(home, 'bin', 'agent-relay-probe'))).toBe(false);
+    expect(fs.existsSync(path.join(home, 'bin', 'agent-relay-node'))).toBe(false);
     expect(core.deps.startCore).not.toHaveBeenCalled();
     expect(logs.join('\n')).toMatch(/Message injection is not available \(SHA-256 mismatch/);
   });
 
   it('guided: shows the injection routes, asks no scope, and proceeds', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const script = scriptedPrompter([['claude'], true]);
     const { run } = setup({ ...core.deps, isInteractive: () => true, prompter: () => script.prompter });
@@ -2844,7 +2844,7 @@ function toolHomeTree(): string[] {
 
 describe('relay init messaging skill', () => {
   it('installs the pinned skill globally for each injected tool, records it, and --uninstall removes exactly that', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     const { run, logs } = setup({ ...core.deps, runSkillsCli: skills.run });
@@ -2898,7 +2898,7 @@ describe('relay init messaging skill', () => {
   });
 
   it("records Cursor's copy in the shared ~/.agents/skills, and --uninstall removes it", async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore({ running: true, settings: { auto_activate: true } });
     const skills = fakeSkillsCli();
     const { run, logs } = setup({ ...core.deps, runSkillsCli: skills.run });
@@ -2914,7 +2914,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('installs without asking anything, even in a terminal, and prints one line', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     const script = scriptedPrompter([]);
@@ -2931,7 +2931,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('leaves a copy that was there before init, and installs only where there is none', async () => {
-    installedProbe();
+    installedRelayNode();
     const own = path.join(toolHome, '.claude', 'skills', RELAY_SKILL_NAME, 'SKILL.md');
     fs.mkdirSync(path.dirname(own), { recursive: true });
     fs.writeFileSync(own, 'my own copy\n');
@@ -2957,7 +2957,7 @@ describe('relay init messaging skill', () => {
   });
 
   it("removes every folder its install created, even where a folder above holds the person's files", async () => {
-    installedProbe();
+    installedRelayNode();
     const state = path.join(toolHome, 'xdg', 'state');
     const core = fakeCore();
     const skills = fakeSkillsCli(0, path.join(state, 'skills', '.skill-lock.json'));
@@ -2974,7 +2974,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('keeps recording what an --uninstall in another environment could not reach', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     const claudeDir = path.join(toolHome, 'claude-config');
@@ -3001,7 +3001,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('tracks each lock file it wrote when the state folder differs between runs', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     const under = (name: string) => {
@@ -3028,7 +3028,7 @@ describe('relay init messaging skill', () => {
   });
 
   it("takes this run's copies back out when the record cannot be saved", async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     const settings = path.join(home, 'local', 'core-settings.json');
@@ -3046,7 +3046,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('names what it could not take back out when the record cannot be saved', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     const settings = path.join(home, 'local', 'core-settings.json');
@@ -3070,7 +3070,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('replaces a shared lock file in one step, keeping its mode and leaving no temporary file', async () => {
-    installedProbe();
+    installedRelayNode();
     const lock = path.join(toolHome, '.agents', '.skill-lock.json');
     fs.mkdirSync(path.dirname(lock), { recursive: true });
     fs.writeFileSync(lock, JSON.stringify({ version: 3, skills: { other: { ref: 'x' } } }), { mode: 0o640 });
@@ -3084,7 +3084,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('says no copies were added when the install failed and the record cannot be saved', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const settings = path.join(home, 'local', 'core-settings.json');
     const blocked: RunSkillsCli = () => {
@@ -3099,7 +3099,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('keeps a link to the lock file a link, and restores the entry in its target', async () => {
-    installedProbe();
+    installedRelayNode();
     const target = path.join(toolHome, 'dotfiles', 'skill-lock.json');
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, JSON.stringify({ version: 3, skills: { other: { ref: 'x' } } }));
@@ -3115,7 +3115,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('keeps the lock file mode under a restrictive umask', async () => {
-    installedProbe();
+    installedRelayNode();
     const lock = path.join(toolHome, '.agents', '.skill-lock.json');
     fs.mkdirSync(path.dirname(lock), { recursive: true });
     fs.writeFileSync(lock, JSON.stringify({ version: 3, skills: { other: { ref: 'x' } } }));
@@ -3133,7 +3133,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('keeps the copies a parallel relay init recorded while it ran', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
@@ -3156,7 +3156,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('puts a refreshed copy back when the record cannot be saved', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     skills.write('old\n');
@@ -3180,7 +3180,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('keeps recording a copy or lock it could not read on --uninstall', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
@@ -3212,7 +3212,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('keeps a saved refresh when its backup cannot be deleted', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     skills.write('old\n');
@@ -3237,7 +3237,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('removes the other copies and keeps recording one it could not remove', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'claude,codex');
@@ -3259,7 +3259,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('keeps a copy with a file added after init on --uninstall', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
@@ -3270,7 +3270,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('retries a refresh that failed, and refreshes each copy by its own ref', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'claude,codex');
@@ -3301,7 +3301,7 @@ describe('relay init messaging skill', () => {
   });
 
   it("puts back the person's own lock entry that the install replaced", async () => {
-    installedProbe();
+    installedRelayNode();
     const lock = path.join(toolHome, '.agents', '.skill-lock.json');
     fs.mkdirSync(path.dirname(lock), { recursive: true });
     const own = { source: 'AgentWorkforce/skills', ref: 'their-ref' };
@@ -3315,7 +3315,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('never removes a folder outside the skills folders, whatever the record says', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
@@ -3331,7 +3331,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('finishes init with a warning when the skills state folder cannot be read', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     const blocked = path.join(toolHome, 'state-is-a-file');
@@ -3348,7 +3348,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('keeps a copy changed after init on --uninstall', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
@@ -3361,7 +3361,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('warns and finishes init when the skill cannot be installed, recording nothing', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli(1);
     const { run, logs } = setup({ ...core.deps, runSkillsCli: skills.run });
@@ -3382,7 +3382,7 @@ describe('relay init messaging skill', () => {
   });
 
   it('keeps the skill on --uninstall --scope project, like injection', async () => {
-    installedProbe();
+    installedRelayNode();
     const core = fakeCore();
     const skills = fakeSkillsCli();
     await setup({ ...core.deps, runSkillsCli: skills.run }).run('--tools', 'codex');
@@ -3470,43 +3470,6 @@ describe('relay init outside a project', () => {
     } finally {
       fs.rmSync(userHome, { recursive: true, force: true });
     }
-  });
-});
-
-describe('relay init --uninstall and the command-line copy of the core', () => {
-  const copyPath = () => path.join(toolHome, '.local', 'bin', 'agent-relay-probe');
-  const corePath = () => path.join(home, 'bin', 'agent-relay-probe');
-  function place(file: string, bytes: string): void {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, bytes, { mode: 0o755 });
-  }
-
-  it('removes ~/.local/bin/agent-relay-probe when it is a copy of the core relay init installed', async () => {
-    place(corePath(), 'core 15.0.3');
-    place(copyPath(), 'core 15.0.3');
-    const { run, logs } = setup();
-    await run('--uninstall');
-    expect(fs.existsSync(copyPath())).toBe(false);
-    expect(fs.existsSync(corePath())).toBe(true);
-    expect(logs.join('\n')).toContain(`removed the copy a core relay init started left at ${copyPath()}`);
-  });
-
-  it("leaves any other build there (the desktop app's), a link, and a partial uninstall alone", async () => {
-    place(corePath(), 'core 15.0.3');
-    place(copyPath(), 'desktop core 16.0.0');
-    await setup().run('--uninstall');
-    expect(fs.readFileSync(copyPath(), 'utf8')).toBe('desktop core 16.0.0');
-
-    fs.rmSync(copyPath());
-    fs.symlinkSync(corePath(), copyPath());
-    await setup().run('--uninstall');
-    expect(fs.lstatSync(copyPath()).isSymbolicLink()).toBe(true);
-
-    fs.rmSync(copyPath());
-    place(copyPath(), 'core 15.0.3');
-    await setup().run('--uninstall', '--scope', 'project');
-    await setup().run('--uninstall', '--tools', 'claude');
-    expect(fs.existsSync(copyPath())).toBe(true);
   });
 });
 

@@ -127,7 +127,7 @@ receiver path and destroys it after the webhook/subscription cleanup below.
 
 ## core-daemon
 
-**Automated:** the scenarios of `relay-init` and `core-delivery` start and drive the real core, and `cargo test` in `crates/probe` covers it against fake services.
+**Automated:** the scenarios of `relay-init` and `core-delivery` start and drive the real core, and `cargo test` in `crates/relay-node` covers it against fake services.
 
 **Prerequisites:** a sandbox as in `relay-init`. The core answers on `AGENT_RELAY_CORE_SOCKET`; `status.get` and `settings.get` are the read-only checks.
 
@@ -150,7 +150,7 @@ receiver path and destroys it after the webhook/subscription cleanup below.
 3. A Grok session with no leader stays off Relay.
 4. Everything stayed local.
 
-**Limitation:** the core requires a signature or install location these scenarios cannot meet for the Cursor editor, Codex on macOS and Claude Code's inbox, so waking an idle Cursor editor window and delivery to Claude Code, Codex, OpenCode, Pi and Devin are covered by `cargo test` in `crates/probe` and by live checks with the real tools.
+**Limitation:** the core requires a signature or install location these scenarios cannot meet for the Cursor editor, Codex on macOS and Claude Code's inbox, so waking an idle Cursor editor window and delivery to Claude Code, Codex, OpenCode, Pi and Devin are covered by `cargo test` in `crates/relay-node` and by live checks with the real tools.
 
 ## broker-lifecycle
 

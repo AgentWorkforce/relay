@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `sessions.location` reports where a session runs on macOS: its Ghostty pane, Terminal tab or iTerm2 pane, or the Claude app link that opens it. Other platforms report it unavailable.
+- Session lists report which client started each session as `originator`, so a Claude app chat (`claude-desktop`) is told apart from Claude Code in the terminal (`cli`).
+
+### Changed
+
+- The core `relay serve` and `relay init` run is messaging-only and is called `agent-relay-node`: `relay init` installs it from `relay-node-v<version>` releases, and `AGENT_RELAY_NODE_PATH` points at a binary of your own. Session history (capture, upload and the session catalog) lives in the Agent Relay desktop app.
 
 ## [15.1.1] - 2026-11-03
 

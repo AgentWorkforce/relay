@@ -15,9 +15,9 @@
  *   agent-relay-broker   Rust broker (install.sh, desktop app, or copied from
  *                        the npm optional dependency on first CLI run)
  *   relaycast-engine     local Relaycast server (install.sh, when published)
- *   agent-relay-probe    the Agent Relay core that injects messages into
+ *   agent-relay-node     the Agent Relay core that injects messages into
  *                        running agent sessions (`relay init`, from a
- *                        `probe-v<version>` GitHub release)
+ *                        `relay-node-v<version>` GitHub release)
  *
  * `install.sh` resolves the same directory, so the shell installer and the
  * runtime resolvers cannot disagree about where binaries live.
@@ -30,7 +30,7 @@ import { join, resolve } from 'node:path';
 
 export const BROKER_BINARY_NAME = 'agent-relay-broker';
 export const RELAYCAST_ENGINE_BINARY_NAME = 'relaycast-engine';
-export const PROBE_BINARY_NAME = 'agent-relay-probe';
+export const RELAY_NODE_BINARY_NAME = 'agent-relay-node';
 
 /** Environment variable that relocates the whole install root. */
 export const RELAY_INSTALL_DIR_ENV = 'AGENT_RELAY_INSTALL_DIR';
@@ -38,8 +38,8 @@ export const RELAY_INSTALL_DIR_ENV = 'AGENT_RELAY_INSTALL_DIR';
 export const RELAY_HOME_ENV = 'AGENT_RELAY_HOME';
 /** Explicit path to a relaycast-engine binary, checked before the canonical slot. */
 export const RELAYCAST_ENGINE_PATH_ENV = 'RELAYCAST_ENGINE_PATH';
-/** Explicit path to an agent-relay-probe binary, used instead of the canonical slot. */
-export const PROBE_PATH_ENV = 'AGENT_RELAY_PROBE_PATH';
+/** Explicit path to an agent-relay-node binary, used instead of the canonical slot. */
+export const RELAY_NODE_PATH_ENV = 'AGENT_RELAY_NODE_PATH';
 
 type Env = Record<string, string | undefined>;
 
@@ -108,16 +108,16 @@ export function getCanonicalRelaycastEnginePath(
 }
 
 /**
- * Canonical path of the Agent Relay core (`agent-relay-probe`) binary (may not exist).
+ * Canonical path of the Agent Relay core (`agent-relay-node`) binary (may not exist).
  * @param env - Environment to read overrides from
  * @param platform - Target platform
- * @returns `<bin>/agent-relay-probe[.exe]`
+ * @returns `<bin>/agent-relay-node[.exe]`
  */
-export function getCanonicalProbePath(
+export function getCanonicalRelayNodePath(
   env: Env = process.env,
   platform: NodeJS.Platform = process.platform
 ): string {
-  return join(getRelayBinDir(env), executableFileName(PROBE_BINARY_NAME, platform));
+  return join(getRelayBinDir(env), executableFileName(RELAY_NODE_BINARY_NAME, platform));
 }
 
 /**

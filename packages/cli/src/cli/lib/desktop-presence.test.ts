@@ -5,7 +5,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { desktopAppInstalled, foreignCoreRunning, startDesktopCore } from './desktop-presence.js';
-import type { CoreClient } from './probe-core.js';
+import type { CoreClient } from './relay-node.js';
 
 let home: string;
 
