@@ -13,7 +13,8 @@ updated: '2026-11-01'
 #   standard - useful feature; verify periodically
 #
 # status (a category without one is current):
-#   legacy - still shipped and reachable, on a path that the core replaces.
+#   legacy - still shipped and reachable, on a path a newer surface replaces
+#            (the core, or `relay flows` for relayflows v1 workflows).
 #            Verified by hand on demand, never on a pull request.
 #            Add nothing here that could live on the core instead.
 #
@@ -874,7 +875,7 @@ categories:
 
       - id: fleet-spawn
         name: Spawn Fleet Agent
-        cli: relay fleet spawn <cli> --name <name> [--task <text>] (--node <name> | --auto-place | --sandbox) [--persona <persona>] [--model <model>]
+        cli: relay fleet spawn <cli> --name <name> [--task <text>] (--node|--target-node <name> | --auto-place | --persona <persona> | --workspace-key <key> | --sandbox) [--model <model>]
         description: Spawn a worker agent onto a live fleet node or a fresh Cloud sandbox, by explicit node, automatic placement, or persona placement
         location: packages/cli/src/cli/commands/fleet.ts
         verify_tier: 5

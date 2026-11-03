@@ -43,6 +43,7 @@
  * not know the replay flags, so it remains the negative arm.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync as legacyExists } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { appendFile, lstat, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -103,11 +104,15 @@ const configPath = path.join(workingDir, '.relayflow-1656-agent37.vitest.config.
 // the probe needs the same mapping, and it must be the same mapping, or
 // `./auth.js` inside fleet-sandbox.ts and the mock below would resolve to two
 // different modules and the network would not actually be stubbed.
-const probeConfigSource = `import path from 'node:path';
+const probeConfigSource = `import fs from 'node:fs';
+import path from 'node:path';
 
 const workspacePackages = [
   'cloud',
   'config',
+  'fleet',
+  'harness-driver',
+  'harnesses',
   'policy',
   'sdk',
   'session',
@@ -116,7 +121,9 @@ const workspacePackages = [
 
 export default {
   resolve: {
-    alias: workspacePackages.flatMap((name) => {
+    alias: workspacePackages
+      .filter((name) => fs.existsSync(path.resolve(process.cwd(), 'packages', name)))
+      .flatMap((name) => {
       const sourceRoot = path.resolve(process.cwd(), 'packages', name, 'src');
       return [
         { find: new RegExp('^@agent-relay/' + name + '/(.+)$'), replacement: sourceRoot + '/$1' },
@@ -131,6 +138,42 @@ export default {
   },
 };
 `;
+
+// A pr-base checkout from before the broker was retired still imports the
+// broker client; mock it only where it exists so both arms load.
+const LEGACY_BROKER_MOCKS = legacyExists(path.join(targetDir, 'packages/cli/src/cli/lib/broker-lifecycle.ts'))
+  ? String.raw`// 'fleet' commands read a local broker session at import/dispatch time. Neither
+// is part of the claim under test and neither exists in a Cloud sandbox.
+vi.mock('../../cli/src/cli/lib/broker-lifecycle.js', () => ({
+  readBrokerConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1', api_key: 'k', pid: 1, port: 1 })),
+}));
+
+vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({
+  ...(await importOriginal()),
+  HarnessDriverClient: class {
+    async getSession() {
+      return {
+        workspace_key: 'rk_probe_secret',
+        node_token: 'nt_probe_secret',
+        node_id: 'node_1',
+        node_name: 'live-node',
+        broker_version: '9.2.3',
+        protocol_version: 2,
+        mode: 'persist',
+        uptime_secs: 1,
+      };
+    }
+    async listAgents() {
+      return [];
+    }
+    async listFleetInventory() {
+      return { nodeName: 'live-node', agents: [] };
+    }
+    disconnect() {}
+  },
+}));
+`
+  : '';
 
 const probeSource = String.raw`import { expect, test, vi } from 'vitest';
 import { writeFile } from 'node:fs/promises';
@@ -152,6 +195,7 @@ vi.mock('./auth.js', () => ({
   authorizedApiFetch: mocks.authorizedApiFetch,
 }));
 
+${LEGACY_BROKER_MOCKS}
 // The REAL Cloud client and the REAL CLI command registration, both from
 // RELAY_PR_PROOF_TARGET_DIR.
 import { deleteCloudFleetSandbox, ensureCloudFleetSandbox } from './fleet-sandbox.js';

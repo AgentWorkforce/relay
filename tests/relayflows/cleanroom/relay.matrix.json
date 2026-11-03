@@ -379,7 +379,15 @@
           "targetedSetup": ["build-core"],
           "evidence": "contract",
           "coversCategories": ["fleet"],
-          "coversFeatures": ["fleet-nodes", "fleet-nodes-pretty", "fleet-spawn", "fleet-release"]
+          "coversFeatures": [
+            "fleet-nodes",
+            "fleet-nodes-pretty",
+            "fleet-spawn",
+            "fleet-spawn-status",
+            "fleet-release",
+            "fleet-agent-list",
+            "fleet-relayfile-attach"
+          ]
         },
         {
           "id": "fleet-daytona-board-contract",

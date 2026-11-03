@@ -53,7 +53,7 @@ jobs:
         run: npm install --no-save rollup || true
 
       - name: Check PR proof transfer guards
-        run: node --test scripts/pr-proof/run-cloud.test.mjs scripts/flows/deploy-listeners.test.mjs scripts/pr-proof/event-from-input.test.mjs
+        run: node --test scripts/pr-proof/broker-transfer.test.mjs scripts/pr-proof/run-cloud.test.mjs scripts/flows/deploy-listeners.test.mjs scripts/pr-proof/event-from-input.test.mjs
 
       - name: Run tests
         run: npm test

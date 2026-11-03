@@ -264,7 +264,7 @@ Assert the reaction is observable after add and absent after remove, and B's unr
 
 ## local-workflow-lifecycle
 
-**Legacy:** this and the other `status: legacy` categories run on a path that the core replaces. They are verified by hand on demand, never on a pull request.
+**Legacy:** `relay node workflow` runs relayflows v1, which `relay flows` (relayflows v2) replaces; this and the other `status: legacy` categories are verified by hand on demand, never on a pull request.
 
 **Features:** `local-workflow-run`, `local-workflow-logs`, `local-workflow-sync`.
 
@@ -477,7 +477,7 @@ Launch `relay mcp` as stdio child. Initialize it, call `tools/list` and `prompts
 npm --prefix packages/sdk test
 ```
 
-Assert bootstrap/reconnect, participants, channel/thread/reaction/DM/group-DM/listener/action/DeliveryRunner/webhook/node behavior. Release all identities and clean up remote workspace through its control plane.
+The SDK suite covers bootstrap/reconnect, participants, channel/thread/reaction/DM/group-DM/listener/action/DeliveryRunner/webhook/node behavior against mocked transports. It does not reach a live engine: for live coverage, run the `message-round-trip`, `direct-messages` and `channel-messaging` procedures, which exercise the same SDK through the CLI against the hosted fixture.
 
 ## swift-sdk
 

@@ -2082,12 +2082,27 @@ describe('confirmed agent subscription setup', () => {
     }
   );
 
+  it.each([
+    ['--spawn-arg=--flag'],
+    ['--cwd', '/tmp'],
+    ['--task', 'watch'],
+    ['--broker-connection', '/tmp/connection.json'],
+  ])('refuses the removed --spawn option %s with the same notice', async (...flags) => {
+    const h = harness();
+    await h.program.parseAsync(ARGS(['--to', '@new-worker', ...flags]), { from: 'user' });
+    expect(h.error).toHaveBeenCalledWith(
+      expect.stringContaining('was removed together with the local broker')
+    );
+    expect(h.relayfile.ensureCompatible).not.toHaveBeenCalled();
+    expect(h.relay.webhooks.createInbound).not.toHaveBeenCalled();
+  });
+
   it('refuses the removed --spawn recipient launch before provisioning anything', async () => {
     const resolveAgentChannel = vi.fn();
     const h = harness({ recipientDeps: { resolveAgentChannel } });
     await h.program.parseAsync(ARGS(['--to', '@new-worker', '--spawn', 'claude']), { from: 'user' });
     expect(h.error).toHaveBeenCalledWith(
-      expect.stringContaining('--spawn was removed together with the local broker')
+      expect.stringContaining('was removed together with the local broker')
     );
     expect(resolveAgentChannel).not.toHaveBeenCalled();
     expect(h.relayfile.ensureCompatible).not.toHaveBeenCalled();

@@ -25,6 +25,8 @@ const INTENT: PendingCleanupEntry = {
 };
 
 const LOCK_DIR = 'pending-cleanups.json.lock.d';
+// Guaranteed to differ from the runner's own hostname.
+const OTHER_HOST = `${os.hostname()}-other`;
 
 /**
  * Hold the journal lock from ANOTHER process using the on-disk protocol
@@ -215,12 +217,12 @@ describe('fileCleanupJournal', () => {
     expect(fs.readdirSync(dir)).toEqual(['pending-cleanups.json']);
   }, 20_000);
 
-  it('never breaks a live holder on this host, however old its heartbeat', async () => {
+  it('does not break a live holder on this host whose heartbeat stalled', async () => {
     const dir = tmpJournalDir();
     const lockDir = path.join(dir, LOCK_DIR);
     fs.mkdirSync(lockDir);
-    // A live pid (this process) on this host with a heartbeat far in the past:
-    // a stalled writer keeps exclusive ownership through its commit.
+    // A live pid (this process) on this host with a heartbeat minutes old: a
+    // stalled writer keeps exclusive ownership through its commit.
     const ownerFile = path.join(lockDir, 'owner.json');
     fs.writeFileSync(ownerFile, JSON.stringify({ pid: process.pid, host: os.hostname(), token: 'stalled' }));
     const past = new Date(Date.now() - 10 * 60_000);
@@ -231,12 +233,26 @@ describe('fileCleanupJournal', () => {
     expect(JSON.parse(fs.readFileSync(ownerFile, 'utf8')).token).toBe('stalled');
   }, 20_000);
 
+  it('breaks a same-host lock whose pid was reused (heartbeat far older than any stall)', async () => {
+    const dir = tmpJournalDir();
+    const lockDir = path.join(dir, LOCK_DIR);
+    fs.mkdirSync(lockDir);
+    const ownerFile = path.join(lockDir, 'owner.json');
+    fs.writeFileSync(ownerFile, JSON.stringify({ pid: process.pid, host: os.hostname(), token: 'reused' }));
+    const past = new Date(Date.now() - 60 * 60_000);
+    fs.utimesSync(ownerFile, past, past);
+
+    const journal = fileCleanupJournal(dir);
+    await journal.update(() => [CONCRETE]);
+    await expect(journal.list()).resolves.toEqual([CONCRETE]);
+  });
+
   it('breaks a lock from another host once its lease heartbeat expired', async () => {
     const dir = tmpJournalDir();
     const lockDir = path.join(dir, LOCK_DIR);
     fs.mkdirSync(lockDir);
     const ownerFile = path.join(lockDir, 'owner.json');
-    fs.writeFileSync(ownerFile, JSON.stringify({ pid: 1, host: 'some-other-host', token: 'remote' }));
+    fs.writeFileSync(ownerFile, JSON.stringify({ pid: 1, host: OTHER_HOST, token: 'remote' }));
     const past = new Date(Date.now() - 10 * 60_000);
     fs.utimesSync(ownerFile, past, past);
 
@@ -251,7 +267,7 @@ describe('fileCleanupJournal', () => {
     fs.mkdirSync(lockDir);
     fs.writeFileSync(
       path.join(lockDir, 'owner.json'),
-      JSON.stringify({ pid: 1, host: 'some-other-host', token: 'remote' })
+      JSON.stringify({ pid: 1, host: OTHER_HOST, token: 'remote' })
     );
     const journal = fileCleanupJournal(dir);
     await expect(journal.update(() => [CONCRETE])).rejects.toMatchObject({ code: 'locked' });

@@ -51,40 +51,10 @@ The wrapper supplies:
 - `RELAY_PR_PROOF_RESULT_PATH`: destination for the observation JSON
 - `RELAY_PR_PROOF_BASE_SHA` and `RELAY_PR_PROOF_HEAD_SHA`
 
-> The Rust broker was retired. The contract below still parses the
-> `broker-linux-x64` requirement, but no current case declares it and the
-> broker artifact producer workflow was removed; a new case must not use it.
-
-Rust broker behavior cases can declare `"requirements": ["broker-linux-x64"]`.
-The trusted dispatcher then resolves Linux broker artifacts built from the exact
-base and head SHAs, verifies their source-SHA manifests and SHA-256 digests,
-and supplies the selected executable as `RELAY_PR_PROOF_BROKER_BINARY`. The
-runner should invoke that binary directly instead of rebuilding it in Cloud.
-Cases without this requirement receive no broker binary.
-
-The broker producer deliberately performs a cold Rust build: it never restores
-or saves a Cargo build cache. Cargo and PR-authored build scripts run under a
-fresh dedicated OS user with no supplemental groups or capabilities, an empty
-environment, `no_new_privs`, empty inheritable, permitted, effective, bounding,
-and ambient capability sets, a read-only checkout, and isolated writable Cargo
-home, target, home, and temporary build directories delegated beneath a
-runner-owned private root. GitHub Actions cache/runtime credentials and
-the workflow command files (`GITHUB_ENV`, `GITHUB_PATH`, `GITHUB_OUTPUT`, and
-`GITHUB_STEP_SUMMARY`) are not exposed, and stdout workflow commands are
-suspended around the build. Cleanup kills processes matching either the
-builder's effective or real UID and verifies none remain, including on build
-failure. Workflow-command parsing is restored only after that zero-process
-proof succeeds. Each process probe must return exactly the documented
-no-matches status. The trusted runner performs those probes as root so a
-`hidepid` mount cannot conceal builder-owned processes, maps match/no-match/error
-to distinct sentinel statuses, and accepts only two no-match sentinels. The root
-probe is non-interactive and runs with a clean, fixed environment and executable
-path. Probe or privilege-escalation errors therefore fail closed rather than
-masquerading as an empty process set. A reap failure keeps parsing suspended and
-takes precedence over the original build status. Only after successful cleanup
-does the trusted runner copy the final regular broker file into runner-owned
-staging for packaging. The 30-minute producer deadline includes this cold-build
-cost; the dispatcher resolver adds separate queue and build headroom.
+> The Rust broker was retired. The case contract still parses a legacy
+> `broker-linux-x64` requirement so older case files load, but nothing can
+> satisfy it any more: the producer that built exact-SHA broker artifacts was
+> removed. A new case must not declare it, and a case that does cannot run.
 
 The runner must finish with exit code zero after observing behavior and write:
 

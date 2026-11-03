@@ -244,12 +244,18 @@ function parseEntries(raw: string, file: string): PendingCleanupEntry[] {
 const LOCK_HEARTBEAT_MS = 5_000;
 /**
  * A lock held from ANOTHER host (a shared data directory) whose heartbeat is
- * older than this is abandoned: its pid cannot be probed from here. A holder on
- * this host is never broken on its lease, only once its pid is gone, so a live
- * writer that stalls (a slow fsync, a suspended laptop) keeps exclusive
- * ownership through its commit.
+ * older than this is abandoned: its pid cannot be probed from here.
  */
 const LOCK_LEASE_MS = 60_000;
+/**
+ * A holder on THIS host is broken as soon as its pid is gone. While its pid
+ * still answers it is broken only once its heartbeat is older than this: a live
+ * holder refreshes every few seconds, so a heartbeat this old means the pid was
+ * reused by an unrelated process after a crash. The window is far longer than
+ * any stalled fsync, so a live writer keeps exclusive ownership through its
+ * commit.
+ */
+const LOCK_LOCAL_REUSE_MS = 15 * 60_000;
 /** A lock directory with no readable owner (crash between mkdir and write). */
 const LOCK_ORPHAN_MS = 30_000;
 const LOCK_RETRY_MS = 25;
@@ -305,16 +311,17 @@ function processIsAlive(pid: number): boolean {
 }
 
 /**
- * The token of an abandoned lock (holder on this host exited, a holder on
- * another host let its lease expire, or an ownerless directory older than the
- * orphan window), or undefined while the lock is live. An ownerless stale lock yields the empty token.
+ * The token of an abandoned lock (holder on this host exited or its pid was
+ * reused, a holder on another host let its lease expire, or an ownerless
+ * directory older than the orphan window), or undefined while the lock is live. An ownerless stale lock yields the empty token.
  */
 function staleLockToken(lockDir: string, now: number): string | undefined {
   const current = readLockOwner(lockDir);
   if (current) {
     const { owner, heartbeatAt } = current;
     if (owner.host === os.hostname()) {
-      return processIsAlive(owner.pid) ? undefined : owner.token;
+      if (!processIsAlive(owner.pid)) return owner.token;
+      return now - heartbeatAt >= LOCK_LOCAL_REUSE_MS ? owner.token : undefined;
     }
     return now - heartbeatAt >= LOCK_LEASE_MS ? owner.token : undefined;
   }
@@ -327,8 +334,9 @@ function staleLockToken(lockDir: string, now: number): string | undefined {
 
 /**
  * Break an abandoned lock. The directory is first renamed aside (atomic), then
- * its owner is re-checked: if a live contender re-took the lock between our
- * staleness check and the rename, it is put back instead of being deleted.
+ * judged again where it now lies: if a live contender re-took the lock, or the
+ * holder refreshed its heartbeat, between our staleness check and the rename,
+ * it is put back instead of being deleted.
  */
 function breakStaleLock(lockDir: string, staleToken: string): void {
   const tombstone = `${lockDir}.stale-${process.pid}-${randomUUID()}`;
@@ -338,7 +346,8 @@ function breakStaleLock(lockDir: string, staleToken: string): void {
     return; // someone else broke (or released) it first
   }
   const moved = readLockOwner(tombstone);
-  if ((moved?.owner.token ?? '') !== staleToken) {
+  const stillStale = staleLockToken(tombstone, Date.now()) === staleToken;
+  if ((moved?.owner.token ?? '') !== staleToken || !stillStale) {
     try {
       fs.renameSync(tombstone, lockDir);
       return;
@@ -385,16 +394,24 @@ function replaceJournalDurably(journal: string, payload: string, stillOwned: () 
     fs.rmSync(tmp, { force: true });
     throw err;
   }
+  // The journal is in place from here on: a failed directory fsync weakens
+  // crash durability of the rename but must not report the committed update as
+  // failed (callers treat a failure as "nothing changed" and would redo it).
+  // Windows cannot open or fsync a directory handle this way at all.
   let dirFd: number | undefined;
   try {
     dirFd = fs.openSync(path.dirname(journal), 'r');
     fs.fsyncSync(dirFd);
-  } catch (err) {
-    // Windows cannot open or fsync a directory handle this way; the rename is
-    // already as durable as that platform offers.
-    if (process.platform !== 'win32') throw err;
+  } catch {
+    // Best-effort, see above.
   } finally {
-    if (dirFd !== undefined) fs.closeSync(dirFd);
+    if (dirFd !== undefined) {
+      try {
+        fs.closeSync(dirFd);
+      } catch {
+        // Best-effort.
+      }
+    }
   }
 }
 
@@ -462,6 +479,12 @@ async function beginJournalTransaction(lockDir: string, journalFile: string): Pr
 
   const ownerFile = path.join(lockDir, LOCK_OWNER_FILE);
   const heartbeat = setInterval(() => {
+    // Never refresh a lock this transaction no longer owns: that would keep a
+    // successor's abandoned lock looking alive.
+    if (!ownsLock(lockDir, token)) {
+      clearInterval(heartbeat);
+      return;
+    }
     try {
       const now = new Date();
       fs.utimesSync(ownerFile, now, now);

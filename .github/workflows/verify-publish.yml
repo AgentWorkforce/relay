@@ -80,6 +80,7 @@ jobs:
           VERSION="${{ inputs.version }}"
           scripts/post-publish-verify/wait-for-package-tarballs.sh \
             "${{ steps.pkg.outputs.spec }}" \
+            "@agent-relay/cli-surface@$VERSION" \
             "@agent-relay/cloud@$VERSION" \
             "@agent-relay/config@$VERSION" \
             "@agent-relay/sdk@$VERSION" \
@@ -253,6 +254,7 @@ jobs:
           VERSION="${{ inputs.version }}"
           scripts/post-publish-verify/wait-for-package-tarballs.sh \
             "${{ steps.pkg.outputs.spec }}" \
+            "@agent-relay/cli-surface@$VERSION" \
             "@agent-relay/cloud@$VERSION" \
             "@agent-relay/config@$VERSION" \
             "@agent-relay/sdk@$VERSION" \
@@ -317,6 +319,7 @@ jobs:
           VERSION="${{ inputs.version }}"
           scripts/post-publish-verify/wait-for-package-tarballs.sh \
             "agent-relay@$VERSION" \
+            "@agent-relay/cli-surface@$VERSION" \
             "@agent-relay/cloud@$VERSION" \
             "@agent-relay/config@$VERSION" \
             "@agent-relay/sdk@$VERSION" \

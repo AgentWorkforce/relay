@@ -553,6 +553,7 @@ try {
     { log: (text) => (jsonText = text) },
     {
       generatedAt: now.toISOString(),
+      nodes: [{ name: 'node-b', lastHeartbeatAt: null, heartbeatAgeMs: null }],
       perNode: output.perNode,
       unplacedRoster: output.unplacedRoster,
       errors: output.errors,
@@ -561,7 +562,7 @@ try {
   const emitted = JSON.parse(jsonText);
   assertEqual(
     Object.keys(emitted).sort().join(','),
-    'errors,generatedAt,perNode,unplacedRoster',
+    'errors,generatedAt,nodes,perNode,unplacedRoster',
     'fleet agent list JSON top-level contract'
   );
   const degradedRow = emitted.perNode.find((row) => row.name === 'worker-1');

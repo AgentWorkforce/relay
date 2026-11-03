@@ -87,7 +87,7 @@ The manifest tells you:
 | Tier | Primary environment                       | Important qualification                                                        |
 | ---- | ----------------------------------------- | ------------------------------------------------------------------------------ |
 | 1    | Isolated local CLI/filesystem             | May still mutate local config; use a temp directory.                           |
-| 2    | Local Relay                               | The core and server `relay init` runs, in a sandboxed home.                    |
+| 2    | Local Relay                               | Run `relay init` in a sandboxed home; it starts the local server and the core. |
 | 3    | Hosted workspace + one agent              | Requires an explicit workspace key/API.                                        |
 | 4    | Hosted workspace + two agents             | Use separate actor tokens for cross-agent assertions.                          |
 | 5    | Authenticated disposable external service | Use a test workspace, receiver, or account and clean it up.                    |

@@ -154,7 +154,8 @@ export interface RelayfileBridge {
 type RelayfileBindingInput = Parameters<RelayfileBridge['bind']>[0];
 
 const SPAWN_RECIPIENT_REMOVED_MESSAGE =
-  '--spawn was removed together with the local broker. Start the recipient agent first (for example with ' +
+  '--spawn (with --spawn-arg, --cwd, --task and --broker-connection) was removed together with the local broker. ' +
+  'Start the recipient agent first (for example with ' +
   "the Agent Relay MCP spawn tools after 'relay init'), then subscribe it with --to @<name>.";
 
 export type IntegrationCommandDependencies = SdkCommandDeps & {
@@ -1548,7 +1549,13 @@ async function runSubscribe(
   providerArg: string | undefined,
   opts: Record<string, unknown>
 ): Promise<void> {
-  if (opts.spawn !== undefined) {
+  if (
+    opts.spawn !== undefined ||
+    opts.spawnArg !== undefined ||
+    opts.cwd !== undefined ||
+    opts.brokerConnection !== undefined ||
+    opts.task !== undefined
+  ) {
     throw new Error(SPAWN_RECIPIENT_REMOVED_MESSAGE);
   }
   await runSubscribeSetup(deps, providerArg, opts);
@@ -2137,6 +2144,14 @@ export function registerIntegrationCommands(
       .option('--to <target>', 'Relay recipient: @agent, #channel, or self (this relay worker)')
       // Removed with the local broker; kept hidden so old scripts get the replacement.
       .addOption(new Option('--spawn <cli>').hideHelp())
+      .addOption(
+        new Option('--spawn-arg <value>')
+          .hideHelp()
+          .argParser((value: string, prior: string[] = []) => [...prior, value])
+      )
+      .addOption(new Option('--cwd <path>').hideHelp())
+      .addOption(new Option('--broker-connection <path>').hideHelp())
+      .addOption(new Option('--task <text>').hideHelp())
       .option('--events <list>', 'Comma-separated relay event names', 'message.created,thread.reply')
       .option('--bridge-url <url>', 'Writeback bridge URL')
       .option('--bridge-secret <secret>', 'HMAC signing secret for the writeback bridge')

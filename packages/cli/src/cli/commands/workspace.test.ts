@@ -528,7 +528,7 @@ describe('registerWorkspaceCommands', () => {
     expect(pinProjectWorkspaceSession).toHaveBeenCalledWith({ workspaceKey: 'rk_live_default' });
     expect(persistWorkspaceSession).not.toHaveBeenCalled();
     expect(deps.log).toHaveBeenCalledWith(
-      `Rebound this project's broker to workspace "default". Restart the broker to apply it.`
+      `Rebound this project to workspace "default".`
     );
   });
 });

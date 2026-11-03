@@ -211,7 +211,7 @@ describe('fleet CLI lifecycle routing', () => {
     expect(direct).toHaveBeenCalledWith({ to: workerName, text: 'hello' });
     expect(nodesList).toHaveBeenCalled();
     expect(release).toHaveBeenCalledWith(expect.objectContaining({ name: workerName, deleteAgent: false }));
-    expect(transportCalls.length).toBeGreaterThanOrEqual(3);
+    expect(transportCalls.length).toBeGreaterThanOrEqual(4);
     expect(
       transportCalls.every(
         (call) => call.workspaceKey === TARGET.relaycastApiKey && call.baseUrl === TARGET.baseUrl

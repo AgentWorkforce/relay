@@ -8,7 +8,7 @@ paths:
 ## Binary
 
 - `agent-relay` (alias `relay`) = TypeScript CLI (user-facing)
-- `agent-relay-probe` = the Agent Relay core (Rust, `crates/probe`), installed and started by `relay init`
+- `agent-relay-probe` = the Agent Relay core (Rust, `crates/probe`); `relay init` installs it when needed and starts it, or reuses the one the desktop app or a service already runs (one core per machine)
 - The Rust broker (`agent-relay-broker`) was retired; do not add code that launches or talks to it
 
 ## Entry Point
@@ -37,7 +37,7 @@ export function registerFooCommands(program: Command, overrides: Partial<FooDepe
 
 ## Command Modules
 
-Located in `packages/cli/src/cli/commands/`:
+Located in `packages/cli/src/cli/commands/` (a representative list; `bootstrap.ts` registers them all):
 
 - `init.ts` — `relay init`: local or hosted server, agent tools, and the core
 - `agent.ts`, `channel.ts`, `message.ts` — workspace agents and messaging

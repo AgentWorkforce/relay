@@ -138,7 +138,13 @@ describe('feature manifest contract', () => {
     expect(commands).not.toContain('relay deadletters');
     expect(commands).not.toContain('relay redeliver [id]');
     // Removed together with the local broker.
-    expect(commands.some((documented) => /^relay node (up|down|agent|tail)\b/.test(documented))).toBe(false);
+    expect(
+      commands.some((documented) =>
+        /^relay (node (up|down|status|metrics|deadletters|redeliver|tail|agent)|fleet status)\b/.test(
+          documented
+        )
+      )
+    ).toBe(false);
   });
 
   it('leads with relay init and the core', () => {

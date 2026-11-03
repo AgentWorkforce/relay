@@ -34,7 +34,7 @@ The more of this you can provide, the faster we can confirm and fix:
 - The impact: what an attacker gains, and what access they need to start.
 - Any proof-of-concept code, logs, or transcripts.
 
-**Redact credentials before you send them.** Workspace keys, node tokens,
+**Redact credentials before you send them.** Workspace keys, agent tokens, node tokens,
 observer tokens, API keys, and OAuth tokens frequently appear in Relay logs and
 terminal transcripts. Replace them with placeholders. If a report requires a
 live credential to demonstrate, say so and we will arrange a channel for it
@@ -67,7 +67,7 @@ current 11.x is how you receive the fix.
 Releases before 11.0 (CLI and packages) are unsupported — we will not
 investigate a report that reproduces only there. The `agent-relay-broker`
 Rust broker and the `@agent-relay/harness-driver`, `@agent-relay/harnesses`,
-`@agent-relay/fleet` and `@agent-relay/broker-*` packages were retired: their
+`@agent-relay/fleet`, `@agent-relay/evals` and `@agent-relay/broker-*` packages were retired: their
 published versions stay installable but receive no further releases, so a
 report that reproduces only there is out of scope.
 Upgrade before reporting against an older release; the issue may already be
@@ -77,7 +77,8 @@ fixed.
 
 **In scope:**
 
-- The `agent-relay` CLI and the published `@agent-relay/*` npm packages.
+- The `agent-relay` CLI and the published `@agent-relay/*` npm packages, except
+  the retired packages listed under Supported versions.
 - The message protocol itself: authentication, authorization between agents,
   workspace and channel isolation, delivery integrity, action routing.
 - Credential handling: how keys and tokens are stored on disk, passed to

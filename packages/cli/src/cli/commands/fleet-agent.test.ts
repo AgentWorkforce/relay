@@ -111,10 +111,14 @@ describe('buildRows — the diagnostic column exists', () => {
             remoteAgents: [remoteAgent('worker-a')],
           },
         ],
-        roster: [],
+        roster: [{ name: 'worker-a' }],
       },
       NOW
     );
+
+    // A heartbeat name that is also in the workspace roster joins it.
+    expect(out.perNode.find((r) => r.name === 'worker-a')?.presence).toBe('remote live+roster');
+    expect(out.unplacedRoster).toEqual([]);
 
     const errorRow = out.perNode.find((r) => r.node === 'chief-broker');
     expect(errorRow).toBeDefined();

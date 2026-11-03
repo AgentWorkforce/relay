@@ -790,7 +790,7 @@ describe('SDK-backed CLI groups', () => {
     });
 
     expect(error).toHaveBeenCalledWith(
-      expect.stringContaining('Recipient @ghost does not exist; start that agent first')
+      'Recipient @ghost does not exist; start that agent first (for example with the Agent Relay MCP spawn tools after relay init), then subscribe it.'
     );
     expect(exit).toHaveBeenCalledWith(1);
     expect(relay.webhooks.createInbound).not.toHaveBeenCalled();

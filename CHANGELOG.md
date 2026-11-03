@@ -18,8 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `relay integration subscribe` and `unsubscribe` keep their cleanup journal without the broker binary, so they no longer fail on a machine that has none.
 - `relay status` reports the workspace and Cloud login only; it no longer has a local broker line.
 - `relay update` on a standalone install updates and checks only the CLI; a broker an older release installed is left in place and not run.
-- `install.sh` no longer downloads, smoke-tests or installs the broker; an existing broker binary is left untouched and never fails or rolls back an install.
-- `relay fleet agent list` lists agents from the fleet nodes' heartbeats and the workspace roster; its JSON no longer has `localNode`. `relay fleet spawn --sandbox` no longer prints an `attachCommand`.
+- `install.sh` installs the CLI without the broker and leaves an existing broker binary as it is.
+- `relay fleet agent list` lists agents from the fleet nodes' heartbeats and the workspace roster; its JSON no longer has `localNode`.
+- `relay fleet spawn --sandbox` no longer prints an `attachCommand`.
 - The core has no account sign-in of its own: methods that need an account answer `method_not_found`, and spawn approvals are off, unless the core is built with an account. `agent-relay cloud login` keeps device sign-in for Relay Connect hosts.
 
 ### Removed
@@ -27,7 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The local Rust broker (`agent-relay-broker`) is retired: the CLI no longer installs, starts or talks to it, and no new broker binaries are released.
 - `relay node up`, `down`, `status`, `metrics`, `deadletters`, `redeliver` and `relay node tail` are removed; they now print a removal notice pointing to `relay init`.
 - `relay node agent spawn`, `new`, `list`, `release`, `set-model`, `attach` and `message flush|hold|auto` are removed, with the same notice. The deprecated `relay local` alias keeps only `run`, `logs` and `sync`.
-- `relay fleet status` is removed, and `relay fleet spawn` no longer spawns on this machine without `--node`, `--auto-place` or `--sandbox`.
+- `relay fleet status` is removed.
+- `relay fleet spawn` no longer spawns on this machine: pass `--node`, `--auto-place` or `--sandbox`.
 - `relay integration subscribe --spawn` (with `--spawn-arg`, `--cwd`, `--task` and `--broker-connection`) is removed; subscribe an agent that already exists.
 - New versions of `@agent-relay/harness-driver`, `@agent-relay/harnesses`, `@agent-relay/fleet`, `@agent-relay/evals` and `@agent-relay/broker-<platform>` are no longer published, and `agent-relay` no longer depends on them or exports `createRuntimeClient` / `spawnAgentWithClient`.
 

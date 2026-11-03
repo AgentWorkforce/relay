@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync as legacyExists } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -132,6 +133,15 @@ try {
   run('npm', ['run', 'build:utils'], targetDir, 'utilities package build');
   run('npm', ['run', 'build:policy'], targetDir, 'policy package build');
   run('npm', ['run', 'build:sdk'], targetDir, 'SDK package build');
+  // Only a pr-base checkout from before the broker was retired has this package.
+  if (legacyExists(path.join(targetDir, 'packages', 'harness-driver')))
+    run('npm', ['run', 'build:harness-driver'], targetDir, 'harness driver package build');
+  // Only a pr-base checkout from before the broker was retired has this package.
+  if (legacyExists(path.join(targetDir, 'packages', 'harnesses')))
+    run('npm', ['run', 'build:harnesses'], targetDir, 'harnesses package build');
+  // Only a pr-base checkout from before the broker was retired has this package.
+  if (legacyExists(path.join(targetDir, 'packages', 'fleet')))
+    run('npm', ['run', 'build:fleet'], targetDir, 'fleet package build');
   run('npm', ['run', 'build:cli'], targetDir, 'CLI package build');
 
   await writeGeneratedFile(probePath, probeSource);
