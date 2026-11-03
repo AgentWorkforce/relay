@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `relay serve` delivers messages to agents more reliably and finds their sessions more consistently.
-- On macOS, a Devin agent the core started no longer drops a prompt, status check or stop request that arrives a moment after its connection opens.
+- Devin agents started on macOS with `relay fleet spawn devin` or an agent's spawn request now get every message; one that arrived a moment after its connection opened could be lost.
 
 ## [15.0.2] - 2026-11-01
 

@@ -110,12 +110,17 @@ impl Sandbox {
 fn warm_binary() {
     static WARM: std::sync::Once = std::sync::Once::new();
     WARM.call_once(|| {
-        let _ = Command::new(env!("CARGO_BIN_EXE_agent-relay-probe"))
+        let Ok(child) = Command::new(env!("CARGO_BIN_EXE_agent-relay-probe"))
             .arg("--version")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status();
+            .spawn()
+        else {
+            return;
+        };
+        // Bounded, so a launch that hangs fails here and not as a hung suite.
+        wait_for_exit(child, Duration::from_secs(60));
     });
 }
 

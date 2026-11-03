@@ -697,7 +697,12 @@ mod tests {
         // between them, so one quiet second proves nothing.
         let mut seen = last_pass(&directory);
         let mut quiet = 0;
+        let settle_by = std::time::Instant::now() + Duration::from_secs(60);
         while quiet < 4 {
+            assert!(
+                std::time::Instant::now() < settle_by,
+                "startup passes never settled"
+            );
             std::thread::sleep(Duration::from_millis(1_000));
             let now = last_pass(&directory);
             quiet = if now == seen { quiet + 1 } else { 0 };

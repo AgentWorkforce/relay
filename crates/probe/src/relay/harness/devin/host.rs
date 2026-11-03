@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -178,38 +178,100 @@ fn provider(
     });
     Ok((provider, input, rx))
 }
-fn accept_control(listener: &UnixListener, engine: &mut Engine) -> Result<bool> {
-    while let Ok((mut stream, _)) = listener.accept() {
+/// A control connection whose request line has not all arrived.
+struct Control {
+    stream: UnixStream,
+    line: Vec<u8>,
+    deadline: Instant,
+}
+
+/// The longest request line a control client may send.
+const CONTROL_LINE_LIMIT: usize = 131_072;
+/// How long a control client has to send its request line.
+const CONTROL_READ_BUDGET: Duration = Duration::from_secs(1);
+
+/// Accepts control connections and answers every request whose line has
+/// arrived, without waiting on any client: a client that has not written
+/// yet stays in `pending` until its line arrives or its budget runs out, so
+/// one silent client never holds up ACP frames or another request.
+fn accept_control(
+    listener: &UnixListener,
+    pending: &mut Vec<Control>,
+    engine: &mut Engine,
+) -> Result<bool> {
+    while let Ok((stream, _)) = listener.accept() {
         if !crate::relay::peer::peer_credentials(&stream)
             .is_ok_and(|p| p.uid == crate::relay::peer::current_uid())
         {
             continue;
         }
-        // macOS hands an accepted socket the listener's non-blocking mode,
-        // where the timeouts below do nothing: a request not yet written
-        // would read as `WouldBlock` and the connection be dropped.
-        stream.set_nonblocking(false)?;
-        stream.set_read_timeout(Some(Duration::from_secs(1)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(1)))?;
-        let mut line = String::new();
-        if BufReader::new(&stream)
-            .take(131_073)
-            .read_line(&mut line)
-            .is_err()
-            || line.len() > 131_072
-        {
-            continue;
-        }
-        let Ok(request) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        let response = engine.request(&request);
-        let _ = writeln!(stream, "{response}");
-        if request["op"] == "stop" {
-            return Ok(true);
+        // macOS hands an accepted socket the listener's non-blocking mode and
+        // Linux does not; set it either way, since reads below must not wait.
+        stream.set_nonblocking(true)?;
+        pending.push(Control {
+            stream,
+            line: Vec::new(),
+            deadline: Instant::now() + CONTROL_READ_BUDGET,
+        });
+    }
+    let now = Instant::now();
+    let mut stop = false;
+    let mut index = 0;
+    while index < pending.len() {
+        match read_control(&mut pending[index]) {
+            ControlRead::Waiting if now < pending[index].deadline => index += 1,
+            ControlRead::Waiting | ControlRead::Dropped => {
+                pending.swap_remove(index);
+            }
+            ControlRead::Line(line) => {
+                let mut control = pending.swap_remove(index);
+                let Ok(request) = serde_json::from_slice::<Value>(&line) else {
+                    continue;
+                };
+                let response = engine.request(&request);
+                // The answer is one short line; give a slow reader a moment.
+                let _ = control.stream.set_nonblocking(false);
+                let _ = control
+                    .stream
+                    .set_write_timeout(Some(CONTROL_READ_BUDGET));
+                let _ = writeln!(control.stream, "{response}");
+                if request["op"] == "stop" {
+                    stop = true;
+                }
+            }
         }
     }
-    Ok(false)
+    Ok(stop)
+}
+
+enum ControlRead {
+    Waiting,
+    Line(Vec<u8>),
+    Dropped,
+}
+
+fn read_control(control: &mut Control) -> ControlRead {
+    let mut chunk = [0u8; 8192];
+    loop {
+        match control.stream.read(&mut chunk) {
+            Ok(0) => return ControlRead::Dropped,
+            Ok(read) => {
+                control.line.extend_from_slice(&chunk[..read]);
+                if let Some(end) = control.line.iter().position(|b| *b == b'\n') {
+                    control.line.truncate(end);
+                    return ControlRead::Line(std::mem::take(&mut control.line));
+                }
+                if control.line.len() > CONTROL_LINE_LIMIT {
+                    return ControlRead::Dropped;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                return ControlRead::Waiting
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return ControlRead::Dropped,
+        }
+    }
 }
 fn drive(
     listener: &UnixListener,
@@ -224,6 +286,7 @@ fn drive(
         ..Engine::default()
     };
     let mut gate = mcp::Gate::new(session, alias);
+    let mut pending = Vec::new();
     loop {
         while let Ok(frame) = rx.try_recv() {
             engine.observe(&frame);
@@ -237,7 +300,7 @@ fn drive(
         if provider.0.try_wait()?.is_some() {
             return Err(anyhow!("Devin ACP exited"));
         }
-        if accept_control(listener, &mut engine)? {
+        if accept_control(listener, &mut pending, &mut engine)? {
             return Ok(());
         }
         if let Some(frame) = engine.next(session) {
@@ -553,6 +616,19 @@ for line in sys.stdin:
                 "idle"
             );
         }
+        // A client that has connected but not written holds up no one else.
+        let silent = UnixStream::connect(&record.socket).unwrap();
+        let asked = Instant::now();
+        assert_eq!(
+            request(&record.socket, json!({"op":"status"}))["state"],
+            "idle"
+        );
+        assert!(
+            asked.elapsed() < Duration::from_millis(500),
+            "a silent client delayed another request by {:?}",
+            asked.elapsed()
+        );
+        drop(silent);
         // A client that connects before it writes is still answered (macOS
         // once handed the host a non-blocking socket that read nothing).
         assert_eq!(
