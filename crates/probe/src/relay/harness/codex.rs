@@ -78,11 +78,23 @@ pub const CODEX_NO_DAEMON: &str = "Codex here cannot start its app-server daemon
 /// already set up (its control socket). A Codex installed only through npm
 /// or a version manager has none, so Codex is not offered there. Files only:
 /// whether a daemon happens to be running must not change what the node
-/// offers.
+/// offers. The package's own binary starts it ([`managed_daemon_executable`]);
+/// an older command-line install cannot start the app-server package.
 /// On Windows the same packages hold `codex.exe`.
 pub fn codex_daemon_possible(home: &Path) -> bool {
-    const UNIX: [&str; 3] = [
-        "app-server-control/app-server-control.sock",
+    // A daemon already set up, or a managed binary the starter would run:
+    // the same predicate as `managed_daemon_executable`, so a dangling link
+    // or a file that is not executable is not offered.
+    std::fs::symlink_metadata(home.join("app-server-control/app-server-control.sock")).is_ok()
+        || managed_daemon_executable(home).is_some()
+}
+
+/// The managed packages' binaries under Codex home, the app-server package
+/// before the older standalone installer; on Windows, their `codex.exe`
+/// first. [`codex_daemon_possible`] and [`managed_daemon_executable`] both
+/// read this one list, so the offer and the starter cannot disagree.
+fn managed_binaries() -> impl Iterator<Item = &'static str> {
+    const UNIX: [&str; 2] = [
         "packages/app-server-daemon/current/bin/codex",
         "packages/standalone/current/codex",
     ];
@@ -91,9 +103,19 @@ pub fn codex_daemon_possible(home: &Path) -> bool {
         "packages/standalone/current/codex.exe",
     ];
     let windows: &[&str] = if cfg!(windows) { &WINDOWS } else { &[] };
-    UNIX.iter()
-        .chain(windows)
-        .any(|path| std::fs::symlink_metadata(home.join(path)).is_ok())
+    windows.iter().chain(UNIX.iter()).copied()
+}
+
+/// The managed package's own `codex`. `daemon start` from an older
+/// command-line install looks only for `packages/standalone` and exits
+/// with "managed standalone Codex install not found" when the home has
+/// `packages/app-server-daemon` instead, so the proxy then closes before
+/// a thread exists. The app-server package is preferred over the older
+/// standalone installer when both are present.
+pub fn managed_daemon_executable(home: &Path) -> Option<PathBuf> {
+    managed_binaries()
+        .map(|path| home.join(path))
+        .find(|path| crate::platform::exe::is_executable(path))
 }
 
 /// Codex on this computer.
@@ -118,8 +140,12 @@ impl CodexAdapter {
 
     /// Starts the daemon if it is not running; one already running answers
     /// at once. Its own answer does not matter: the proxy fails if no
-    /// daemon came up.
+    /// daemon came up. The managed package's binary is used when it is
+    /// installed, not `cli`: a version-managed CLI older than that package
+    /// cannot start it.
     fn start_daemon(&self, cli: &Path) {
+        let starter =
+            managed_daemon_executable(&self.codex.home).unwrap_or_else(|| cli.to_path_buf());
         let (home, sqlite_home) = (&self.codex.home, &self.codex.sqlite_home);
         let start = ["app-server", "daemon", "start"].map(String::from);
         let _ = match &self.systemd_run {
@@ -127,7 +153,7 @@ impl CodexAdapter {
             Some(systemd_run) => {
                 let arguments: Vec<String> = scope_arguments(&scope_unit(&random_uuid()))
                     .into_iter()
-                    .chain(std::iter::once(cli.to_string_lossy().into_owned()))
+                    .chain(std::iter::once(starter.to_string_lossy().into_owned()))
                     .chain(start)
                     .collect();
                 self.runner
@@ -135,8 +161,17 @@ impl CodexAdapter {
             }
             None => self
                 .runner
-                .run_in_home(cli, &start, DAEMON_TIMEOUT, home, sqlite_home),
+                .run_in_home(&starter, &start, DAEMON_TIMEOUT, home, sqlite_home),
         };
+    }
+
+    /// What `app-server proxy` runs: the live app-server's binary when one
+    /// is up, else the managed package, else a running Codex, else `cli`.
+    fn proxy_executable(&self, cli: &Path) -> PathBuf {
+        processes::running_app_server_executable(self.table.as_ref(), self.uid)
+            .or_else(|| managed_daemon_executable(&self.codex.home))
+            .or_else(|| processes::running_executable(self.table.as_ref(), self.uid))
+            .unwrap_or_else(|| cli.to_path_buf())
     }
 
     /// Ends a Codex thread on the daemon that hosts it, saying why it could
@@ -145,16 +180,23 @@ impl CodexAdapter {
     /// does, so a thread whose daemon stopped can still be archived.
     fn archive(&self, thread_id: &str, start: bool) -> Result<(), String> {
         let (home, sqlite_home) = (&self.codex.home, &self.codex.sqlite_home);
-        let running = || processes::running_executable(self.table.as_ref(), self.uid);
         let cli = self.codex.executable.clone();
-        if start && running().is_none() && codex_daemon_possible(home) {
+        // A terminal Codex is not the daemon. Start the package when no
+        // app-server is up, then proxy with that package rather than the CLI.
+        if start
+            && processes::running_app_server_executable(self.table.as_ref(), self.uid).is_none()
+            && codex_daemon_possible(home)
+        {
             if let Some(cli) = &cli {
                 self.start_daemon(cli);
             }
         }
-        let executable = running()
-            .or(cli)
-            .ok_or("Codex is not installed on this computer")?;
+        let Some(cli) =
+            cli.or_else(|| processes::running_executable(self.table.as_ref(), self.uid))
+        else {
+            return Err("Codex is not installed on this computer".into());
+        };
+        let executable = self.proxy_executable(&cli);
         let mut stream = self
             .runner
             .proxy_in_home(&executable, home, sqlite_home)
@@ -272,11 +314,17 @@ impl SpawnFacet for CodexAdapter {
                 crate::relay::codex::router::NOT_RUNNING.into(),
             ));
         }
-        let Some(executable) = processes::running_executable(self.table.as_ref(), self.uid) else {
+        // Proxy as a launch does: the live app-server's own binary, else the
+        // managed package, never an older terminal Codex that cannot reach
+        // the daemon a spawned thread runs on.
+        let Some(live) = processes::running_app_server_executable(self.table.as_ref(), self.uid)
+            .or_else(|| processes::running_executable(self.table.as_ref(), self.uid))
+        else {
             return Some(InjectOutcome::Waiting(
                 "Codex's app-server is not running".into(),
             ));
         };
+        let executable = self.proxy_executable(&live);
         let Ok(stream) =
             self.runner
                 .proxy_in_home(&executable, &self.codex.home, &self.codex.sqlite_home)
@@ -319,8 +367,7 @@ impl SpawnFacet for CodexAdapter {
             }
             self.start_daemon(&cli);
             let (home, sqlite_home) = (&self.codex.home, &self.codex.sqlite_home);
-            let executable =
-                processes::running_executable(self.table.as_ref(), self.uid).unwrap_or(cli);
+            let executable = self.proxy_executable(&cli);
             let stream = self
                 .runner
                 .proxy_in_home(&executable, home, sqlite_home)

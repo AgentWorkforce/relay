@@ -258,8 +258,9 @@ pub fn plugins_with_options(
     } else {
         stop_hook_settings.reconcile_probe_alias();
     }
-    // Optional Claude Code SessionStart hook (`claude::session_hook`). Off
-    // unless the person turns it on; an installed copy is brought up to date
+    // Claude Code SessionStart hook (`claude::session_hook`), on by default
+    // after sign-in unless the person chose Off. Its join prompt is shown only
+    // for selected-session sharing; an installed copy is brought up to date
     // and copied to a login added since. With the hook, Claude Code rules
     // that let the session run this probe's read and reply commands on this
     // core's session socket without a prompt (`session_hook::PermissionRules`).

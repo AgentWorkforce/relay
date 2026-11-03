@@ -492,13 +492,14 @@ pub fn discover(config: &DevinConfig, probe_root: &Path) -> Vec<DiscoveredSessio
         .collect();
     let mut found: std::collections::BTreeMap<String, DiscoveredSession> =
         std::collections::BTreeMap::new();
+    let mut excluded = std::collections::HashSet::new();
     let now = i64::try_from(now_ms()).unwrap_or(i64::MAX);
     for install in installs {
         // A send path exists per install: this machine's own Devin sign-in
         // covers every row, else the install's own workspace credential —
         // another install's workspace says nothing about these rows.
         let live = connector_live || bindings.get(&install).is_some_and(install_credential_ready);
-        for session in remote_sessions(&install.join("history.db"), live) {
+        for session in remote_sessions(&install.join("history.db"), live, &mut excluded) {
             // A session several installs know is listed once: live if any
             // install can send to it (the send tries every binding), from
             // the row with recent activity, else the latest credible time —
@@ -525,12 +526,22 @@ pub fn discover(config: &DevinConfig, probe_root: &Path) -> Vec<DiscoveredSessio
             }
         }
     }
-    found.into_values().collect()
+    found
+        .into_values()
+        .filter(|session| !excluded.contains(&session.target.id))
+        .collect()
 }
 
 #[cfg(feature = "history")]
-/// One install's remote Devin Cloud rows as discovered sessions.
-fn remote_sessions(catalog_db: &Path, live: bool) -> Vec<DiscoveredSession> {
+/// One install's remote Devin Cloud rows as discovered sessions, less the
+/// ones an automation started, each marked `live` as given — whether the
+/// install has a send path. `automation_session_ids` passes `false`: it
+/// reads only the exclusions.
+fn remote_sessions(
+    catalog_db: &Path,
+    live: bool,
+    excluded: &mut std::collections::HashSet<String>,
+) -> Vec<DiscoveredSession> {
     let mut options = StoreOptions::default().db_path(catalog_db);
     options.read_only = true;
     let Ok(store) = SessionStore::open(options) else {
@@ -546,16 +557,35 @@ fn remote_sessions(catalog_db: &Path, live: bool) -> Vec<DiscoveredSession> {
             row.locations.iter().any(|location| location == "remote")
                 && is_cloud_session_id(&row.session_id)
         })
+        .filter(|row| {
+            if started_by_automation(row.originator.as_deref()) {
+                excluded.insert(row.session_id.clone());
+                false
+            } else {
+                true
+            }
+        })
         .map(|row| DiscoveredSession {
+            live,
             target: Target::new(SessionKind::Devin, row.session_id.clone()),
             title: row.title.unwrap_or_else(|| row.session_id.clone()),
             directory: row.cwd,
             updated_at_ms: row.last_activity_ms,
             host: Some(CLOUD_HOST.to_string()),
-            live,
             holder: None,
         })
         .collect()
+}
+
+#[cfg(feature = "history")]
+/// IDs classified as automation by any live install, including registrations
+/// which discovery no longer emits. Read on a blocking thread.
+pub fn automation_session_ids(probe_root: &Path) -> std::collections::HashSet<String> {
+    let mut excluded = std::collections::HashSet::new();
+    for install in installs(probe_root) {
+        remote_sessions(&install.join("history.db"), false, &mut excluded);
+    }
+    excluded
 }
 
 #[cfg(feature = "history")]
@@ -564,29 +594,15 @@ fn remote_sessions(catalog_db: &Path, live: bool) -> Vec<DiscoveredSession> {
 const AUTOMATION_ORIGINATOR: &str = "automation";
 
 #[cfg(feature = "history")]
-/// The Devin Cloud sessions an automation started (Devin reviews), by id.
-/// They never auto-activate: nobody is in them to talk to. Read from each
-/// install's catalog, like `discover`.
-pub fn started_by_automation(probe_root: &Path) -> std::collections::HashSet<String> {
-    let mut found = std::collections::HashSet::new();
-    for install in installs(probe_root) {
-        let mut options = StoreOptions::default().db_path(install.join("history.db"));
-        options.read_only = true;
-        let Ok(store) = SessionStore::open(options) else {
-            continue;
-        };
-        let mut query = CatalogQuery::default();
-        query.scope = SessionScope::Remote;
-        query.sources = Some(vec![Source::Devin]);
-        found.extend(
-            store
-                .sessions(query)
-                .filter_map(|row| row.ok())
-                .filter(|row| row.originator.as_deref() == Some(AUTOMATION_ORIGINATOR))
-                .map(|row| row.session_id),
-        );
-    }
-    found
+/// Whether a catalog originator names an automation (a Devin review).
+/// Nobody is in such a session to talk to, so it is never discovered:
+/// not listed, not auto-activated, not kept on the relay.
+fn started_by_automation(originator: Option<&str>) -> bool {
+    originator.is_some_and(|originator| {
+        originator
+            .trim()
+            .eq_ignore_ascii_case(AUTOMATION_ORIGINATOR)
+    })
 }
 
 #[cfg(feature = "history")]
@@ -1021,10 +1037,11 @@ pub(crate) mod tests {
         assert!(!recently_active(Some(i64::MAX), now));
     }
 
-    /// A session an automation started (a Devin review) stays listed, and
-    /// is named so automatic activation passes it over.
+    /// A session an automation started (a Devin review) is never
+    /// discovered, however the catalog cases or pads its originator; one a
+    /// person started is.
     #[test]
-    fn sessions_an_automation_started_are_listed_and_named() {
+    fn discover_skips_sessions_an_automation_started() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let _env = signed_in_env();
         let temp = tempfile::tempdir().unwrap();
@@ -1034,13 +1051,13 @@ pub(crate) mod tests {
             row.session.originator = Some(originator.into());
             row
         };
-        let review = "7b26a9f9201f4d3380a655e33b20e887";
         let person = "d4005cc839f84411aa3df250a51ce5fa";
         install_with(
             &root,
             "a",
             vec![
-                with_originator(review, "automation"),
+                with_originator("7b26a9f9201f4d3380a655e33b20e887", "automation"),
+                with_originator("8c37baf0312f5e4491b766f44c31f998", " Automation "),
                 with_originator(person, "webapp"),
                 remote_row(CLOUD_ID, "No originator"),
             ],
@@ -1050,13 +1067,28 @@ pub(crate) mod tests {
             .map(|session| session.target.id)
             .collect();
         found.sort();
-        let mut expected = vec![CLOUD_ID.to_string(), person.to_string(), review.to_string()];
+        let mut expected = vec![CLOUD_ID.to_string(), person.to_string()];
         expected.sort();
         assert_eq!(found, expected);
-        assert_eq!(
-            started_by_automation(&root),
-            std::collections::HashSet::from([review.to_string()])
-        );
+    }
+
+    #[test]
+    fn automation_classification_wins_across_installs_in_either_order() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = signed_in_env();
+        for automation_install in ["a", "b"] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("probe");
+            for name in ["a", "b"] {
+                let mut review = remote_row(CLOUD_ID, "Review");
+                if name == automation_install {
+                    review.session.originator = Some(" AuToMaTiOn ".into());
+                }
+                install_with(&root, name, vec![review]);
+            }
+            assert!(discover(&config(temp.path()), &root).is_empty());
+            assert!(automation_session_ids(&root).contains(CLOUD_ID));
+        }
     }
 
     /// A machine with no probe root — or only an install nothing marks
@@ -1650,7 +1682,7 @@ pub fn recent_enough_to_join(_session: &crate::relay::sessions::DiscoveredSessio
 }
 
 #[cfg(not(feature = "history"))]
-pub fn started_by_automation(_probe_root: &std::path::Path) -> std::collections::HashSet<String> {
+pub fn automation_session_ids(_probe_root: &std::path::Path) -> std::collections::HashSet<String> {
     std::collections::HashSet::new()
 }
 

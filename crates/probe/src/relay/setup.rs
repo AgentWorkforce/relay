@@ -30,6 +30,8 @@
 //! in docs/relay-core.md.
 
 mod account_status;
+mod policy;
+use policy::managed_policy;
 mod uploader_cache;
 
 use crate::relay::daemon::Core;
@@ -74,14 +76,6 @@ impl From<&OutboundError> for DefaultsError {
             message: error.message.clone(),
         }
     }
-}
-
-fn managed_policy() -> OutboundError {
-    OutboundError::new(
-        409,
-        "managed_policy",
-        "Managed Claude settings do not allow direct delivery.",
-    )
 }
 
 /// Clears its flag when the background work holding it ends, however it
@@ -733,6 +727,7 @@ impl Setup {
                 .map(|_| self.core.status().workspace.verification),
             "defaults": if self.defaults_applied() { "applied" } else { "pending" },
             "sharing_mode": self.uploader.sharing_mode().unwrap_or_else(|| "selected".to_string()),
+            "claude_prompt_to_join_allowed": self.prompt_to_join_allowed(),
             "auto_activate": self.core.store.read(|s| s.auto_activates()),
             "allow_self_registration": self.core.store.read(|s| s.allows_self_registration()),
             "direct_delivery": self.direct.delivers_directly(),
@@ -743,8 +738,9 @@ impl Setup {
                 "kind": session.target.kind,
                 "registered": registration.is_some(),
                 "auto_activates": auto_activates,
-                "name": registration.as_ref().map(|r| r.name.clone()),
-                "address": registration.as_ref().map(|r| r.direct_address(&self.core.machine_prefix)),
+                "name": registration.as_ref().map(|r| r.display_name().to_string()),
+                "address": registration.as_ref().map(|r| r.current_address(&self.core.machine_prefix)),
+                "link_address": registration.as_ref().map(|r| r.link_address(&self.core.machine_prefix)),
                 "direct_delivery": self.session_delivers_directly(session.target.kind),
                 "mcp": self.core.relay_mcp_access(&session.target),
             },
@@ -761,7 +757,7 @@ impl Setup {
                 result["sign_in_message"] = json!(message);
             }
         } else if state == "pending_approval" {
-            copy_sign_in_link(&account, &mut result);
+            sign_in_state::copy_sign_in_link(&account, &mut result);
             result["sign_in_phase"] = account["phase"].clone();
         } else if state == "preparing" {
             let preparing = preparing(&account);
@@ -847,7 +843,7 @@ impl Setup {
         match started["state"].as_str() {
             Some("pending_approval") => {
                 let mut result = json!({"status": "pending_approval"});
-                copy_sign_in_link(&started, &mut result);
+                sign_in_state::copy_sign_in_link(&started, &mut result);
                 Ok(result)
             }
             Some("signed_in") => Ok(signed_in_response(&self.account().await)),
@@ -866,18 +862,6 @@ impl Setup {
                     .unwrap_or("Sign-in could not start."),
             )),
         }
-    }
-}
-
-fn copy_sign_in_link(account: &Value, result: &mut Value) {
-    for key in [
-        "verification_url",
-        "verification_url_complete",
-        "user_code",
-        "expires_at",
-        "interval",
-    ] {
-        result[key] = account[key].clone();
     }
 }
 

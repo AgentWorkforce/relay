@@ -2753,7 +2753,7 @@ async fn native_continuation_requires_separate_persisted_consent_and_claim() {
     assert_eq!(kind, "refused");
     #[cfg(unix)]
     {
-        mark_mobile_node_claimed(&h.core);
+        mark_mobile_node_claimed(&h.core).await;
         client
             .ok("settings.set", json!({"mobile_native_continuation": true}))
             .await;
@@ -2777,8 +2777,12 @@ async fn native_continuation_requires_separate_persisted_consent_and_claim() {
 }
 
 // Simulates the existing signed-in node claim, never a new production authority.
-fn mark_mobile_node_claimed(core: &Core) {
+async fn mark_mobile_node_claimed(core: &Core) {
     use agent_relay_probe::relay::state::{SpawnClaim, SpawnClaimState, SpawnState, SpawnStatus};
+    // Initial workspace discovery schedules a node sync. Finish discovery
+    // and the sync before seeding the claim, or it can be replaced by Off.
+    core.refresh_workspace().await;
+    core.sync_spawn_node().await;
     core.hub().update(|status| {
         status.spawn = Some(SpawnStatus {
             state: SpawnState::Live,
@@ -2830,7 +2834,7 @@ async fn mobile_claude_handoff_is_on_once_claimed_and_turning_it_off_persists() 
         false
     );
     assert!(h.store()["mobileClaudeHandoff"].is_null());
-    mark_mobile_node_claimed(&h.core);
+    mark_mobile_node_claimed(&h.core).await;
     // On by default once it is, still with nothing stored.
     assert_eq!(
         client.ok("settings.get", json!({})).await["mobile_claude_handoff"],
@@ -2885,7 +2889,7 @@ async fn mobile_claude_handoff_install_failure_keeps_the_setting_off() {
     })
     .await;
     let mut client = h.client().await;
-    mark_mobile_node_claimed(&h.core);
+    mark_mobile_node_claimed(&h.core).await;
     // The one Settings row sets both routes: a failed Claude install stores
     // no choice for Claude but still saves the other adapters' route.
     let (kind, _) = client
@@ -2922,7 +2926,7 @@ async fn mobile_claude_handoff_explains_an_unsafe_shared_skills_target() {
     })
     .await;
     let mut client = h.client().await;
-    mark_mobile_node_claimed(&h.core);
+    mark_mobile_node_claimed(&h.core).await;
 
     let (kind, message) = client
         .error("settings.set", json!({"mobile_claude_handoff": true}))

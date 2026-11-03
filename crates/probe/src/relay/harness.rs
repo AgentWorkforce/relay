@@ -482,8 +482,8 @@ mod tests {
                  "full_access": {"detail": "Spawned OpenCode runs with every permission set to allow. Off lets it read and edit files in its folder and refuses everything else, shell commands included.", "default_on": true}},
                 {"id": "grok", "label": "Grok", "billing": true,
                  "full_access": {"detail": "Spawned Grok runs with --always-approve and without its sandbox. Off runs it in Grok's workspace sandbox, which keeps it to its workspace folder.", "default_on": true}},
-                {"id": "muse", "label": "Muse", "billing": true,
-                 "full_access": {"detail": "Spawned Muse runs with --yolo. Off keeps Muse's sandbox and refuses actions that would ask for approval.", "default_on": false}},
+                {"id": "muse", "label": "Muse Code", "billing": true,
+                 "full_access": {"detail": "Spawned Muse Code runs with --yolo. Off keeps Muse Code's sandbox and refuses actions that would ask for approval.", "default_on": false}},
                 {"id": "devin", "label": "Devin", "billing": true,
                  "full_access": {"detail": "Spawned Devin uses dangerous permission mode. Off uses accept-edits and permits only the private Agent Relay send tool; other approval requests are refused.", "default_on": false}},
             ])
