@@ -1,3 +1,4 @@
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -78,6 +79,95 @@ export function desktopAppInstalled(
   exists: (file: string) => boolean = fs.existsSync
 ): boolean {
   return desktopInstallMarkers(platform, home, env).some((marker) => exists(marker));
+}
+
+/** The macOS app's bundle id (`macos/Info.plist.template` in relay-desktop). */
+export const DESKTOP_BUNDLE_ID = 'com.agentrelay.desktop';
+/** The Linux systemd user unit that runs the desktop's headless core. */
+export const DESKTOP_LINUX_UNIT = 'agent-relay.service';
+const LINUX_LAUNCHER = 'agent-relay-desktop';
+
+/** How {@link startDesktopCore} runs commands; replaced in tests. */
+export interface DesktopStartEffects {
+  /** Run a command to completion; its exit status, or null when it timed out or could not start. */
+  run: (command: string, args: string[]) => number | null;
+  /** Start a command detached, without waiting for it. */
+  launch: (command: string, args: string[]) => void;
+  exists: (file: string) => boolean;
+}
+
+const defaultDesktopStartEffects: DesktopStartEffects = {
+  run: (command, args) => spawnSync(command, args, { stdio: 'ignore', timeout: 15_000 }).status,
+  launch: (command, args) => {
+    const child = spawn(command, args, { detached: true, stdio: 'ignore', env: process.env });
+    child.on('error', () => undefined);
+    child.unref();
+  },
+  exists: fs.existsSync,
+};
+
+/** The Linux app launchers on this machine: the package's, then per-user trees, newest first. */
+function linuxLaunchers(home: string, env: NodeJS.ProcessEnv): string[] {
+  const root = env.AGENT_RELAY_PREFIX?.trim() || path.join(home, '.local', 'lib', 'agent-relay');
+  const trees = linuxTreeMarkers(root)
+    .filter((file) => path.basename(file) === LINUX_LAUNCHER)
+    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  return [path.join('/usr', 'bin', LINUX_LAUNCHER), ...trees];
+}
+
+function shown(command: string, args: string[]): string {
+  return [command, ...args].join(' ');
+}
+
+/** The enabled systemd user unit, else the app's launcher: in the tray with a display, headless without. */
+function startLinuxDesktopCore(home: string, env: NodeJS.ProcessEnv, effects: DesktopStartEffects): string {
+  if (effects.run('systemctl', ['--user', 'is-enabled', '--quiet', DESKTOP_LINUX_UNIT]) === 0) {
+    const args = ['--user', 'start', DESKTOP_LINUX_UNIT];
+    const status = effects.run('systemctl', args);
+    if (status !== 0) throw new Error(`${shown('systemctl', args)} exited with ${status ?? 'no status'}`);
+    return shown('systemctl', args);
+  }
+  const launcher = linuxLaunchers(home, env).find((file) => effects.exists(file));
+  if (!launcher) throw new Error(`${DESKTOP_LINUX_UNIT} is not enabled and no ${LINUX_LAUNCHER} was found`);
+  const display = Boolean(env.DISPLAY?.trim() || env.WAYLAND_DISPLAY?.trim());
+  const args = [display ? '--background' : '--headless'];
+  effects.launch(launcher, args);
+  return shown(launcher, args);
+}
+
+/**
+ * Ask the desktop app to start its own core, without waiting for it to answer.
+ * On macOS the app opens in the background and hidden (`open -g -j -b`), and
+ * registers and starts its core's LaunchAgent as it does on every launch. On
+ * Linux an enabled systemd user unit is started; otherwise the app's launcher
+ * runs, in the tray when there is a display and headless when there is not.
+ * Windows has no start here: its logon task is off unless the person turned it on.
+ *
+ * @param platform - The platform to start it on.
+ * @param home - The person's home directory.
+ * @param env - The environment, for install locations and the display.
+ * @param effects - How commands run; replaced in tests.
+ * @returns The command that was run, or undefined when there is no way to start it here.
+ * @throws When the start command failed.
+ */
+export function startDesktopCore(
+  platform: NodeJS.Platform = process.platform,
+  home: string = os.homedir(),
+  env: NodeJS.ProcessEnv = process.env,
+  effects: DesktopStartEffects = defaultDesktopStartEffects
+): string | undefined {
+  switch (platform) {
+    case 'darwin': {
+      const args = ['-g', '-j', '-b', DESKTOP_BUNDLE_ID];
+      const status = effects.run('open', args);
+      if (status !== 0) throw new Error(`${shown('open', args)} exited with ${status ?? 'no status'}`);
+      return shown('open', args);
+    }
+    case 'linux':
+      return startLinuxDesktopCore(home, env, effects);
+    default:
+      return undefined;
+  }
 }
 
 /**

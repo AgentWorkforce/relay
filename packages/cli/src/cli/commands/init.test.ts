@@ -93,6 +93,8 @@ function setup(overrides: Partial<InitCommandDependencies> = {}) {
     }) as never,
     isInteractive: () => false,
     desktopInstalled: () => false,
+    // Never the real desktop app: no way to start it unless a test says so.
+    startDesktopCore: vi.fn(() => undefined),
     // No tool CLI on PATH and a private home: configs are written as files, here.
     toolContext: () => ({ projectRoot: project, home: toolHome, env: { PATH: '' } }),
     runTool: vi.fn(() => ({ status: 1, output: 'not used' })),
@@ -1271,6 +1273,12 @@ function fakeCore(
     calls,
     agents: () => agents,
     isUp: () => up,
+    /** A core another program started (the desktop app's) comes up on the socket. */
+    startForeign: (foreignPid = 777) => {
+      up = true;
+      pid = foreignPid;
+      version = PROBE_VERSION;
+    },
     setVersion: (next: string) => {
       version = next;
     },
@@ -1669,6 +1677,146 @@ describe('relay init message injection', () => {
     expect(core.calls.map(([method]) => method)).toContain('daemon.shutdown');
     expect(core.deps.startCore).toHaveBeenCalledTimes(2);
     expect(logs.join('\n')).toContain(`Updating the Agent Relay core from 15.0.5 to ${PROBE_VERSION}`);
+  });
+
+  describe('starting the desktop app core', () => {
+    const corePath = () => path.join(home, 'local', 'core.json');
+
+    it('starts the desktop app core when the app is installed and none runs, and writes no core.json', async () => {
+      installedProbe();
+      const core = fakeCore();
+      const startDesktopCore = vi.fn(() => {
+        core.startForeign(777);
+        return 'open -g -j -b com.agentrelay.desktop';
+      });
+      const { run, logs, deps } = setup({ ...core.deps, desktopInstalled: () => true, startDesktopCore });
+      await run('--tools', 'codex');
+
+      expect(startDesktopCore).toHaveBeenCalledTimes(1);
+      expect(core.deps.startCore).not.toHaveBeenCalled();
+      expect(deps.downloadProbe).not.toHaveBeenCalled();
+      expect(fs.existsSync(corePath())).toBe(false);
+      const output = logs.join('\n');
+      expect(output).toContain(
+        `Started the Agent Relay desktop app's core (agent-relay-probe ${PROBE_VERSION}, pid 777)`
+      );
+      expect(output).not.toContain('Warning:');
+      expect(core.sets()).toContainEqual({ codex_stop_hook: true });
+    });
+
+    it.each([
+      [
+        'its start fails',
+        () => {
+          throw new Error('open -g -j -b com.agentrelay.desktop exited with 1');
+        },
+        'exited with 1',
+      ],
+      ['its core never answers', () => 'systemctl --user start agent-relay.service', 'no core answered on'],
+    ])('falls back to the public core with one warning when %s', async (_, start, reason) => {
+      installedProbe();
+      const core = fakeCore();
+      const startDesktopCore = vi.fn(start);
+      const { run, logs } = setup({ ...core.deps, desktopInstalled: () => true, startDesktopCore });
+      await run('--tools', 'codex');
+
+      expect(startDesktopCore).toHaveBeenCalledTimes(1);
+      expect(core.deps.startCore).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(fs.readFileSync(corePath(), 'utf8')).pid).toBe(5151);
+      const warnings = logs.filter((line) => line.startsWith('Warning:'));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain(
+        'the Agent Relay desktop app is installed, but its core could not be started'
+      );
+      expect(warnings[0]).toContain(reason);
+      expect(warnings[0]).toContain('relay init started the public Agent Relay core instead');
+      expect(warnings[0]).toContain('open the Agent Relay desktop app');
+      expect(logs.join('\n')).toContain('Started the Agent Relay core (agent-relay-probe');
+    });
+
+    it('never tries the desktop app when it is not installed', async () => {
+      installedProbe();
+      const core = fakeCore();
+      const { run, logs, deps } = setup(core.deps);
+      await run('--tools', 'codex');
+
+      expect(deps.startDesktopCore).not.toHaveBeenCalled();
+      expect(core.deps.startCore).toHaveBeenCalledTimes(1);
+      expect(logs.join('\n')).not.toContain('desktop app');
+    });
+
+    it('attaches to a desktop core that comes up while the public one starts, stopping only its own', async () => {
+      installedProbe();
+      const core = fakeCore();
+      // The desktop app's core takes the socket first; the one init started finds it taken.
+      const startCore = vi.fn(() => {
+        core.startForeign(777);
+        return 5151;
+      });
+      const isAlive = vi.fn(() => true);
+      const stop = vi.fn();
+      const { run, logs } = setup({
+        ...core.deps,
+        startCore,
+        isAlive,
+        stop,
+        desktopInstalled: () => true,
+        startDesktopCore: vi.fn(() => {
+          throw new Error('not yet');
+        }),
+      });
+      await run('--tools', 'codex');
+
+      expect(stop).toHaveBeenCalledWith(5151);
+      expect(stop).not.toHaveBeenCalledWith(777);
+      expect(core.calls.some(([method]) => method === 'daemon.shutdown')).toBe(false);
+      expect(fs.existsSync(corePath())).toBe(false);
+      const output = logs.join('\n');
+      expect(output).toContain('Using the Agent Relay core already running on this machine');
+      expect(output).not.toContain('Warning:');
+    });
+
+    it('attaches to a desktop core that comes up while the public one downloads', async () => {
+      installedProbe();
+      const core = fakeCore();
+      const probeVersion = vi.fn(() => {
+        core.startForeign(777);
+        return PROBE_VERSION;
+      });
+      const stop = vi.fn();
+      const { run, logs } = setup({
+        ...core.deps,
+        probeVersion,
+        stop,
+        desktopInstalled: () => true,
+        startDesktopCore: vi.fn(() => {
+          throw new Error('not yet');
+        }),
+      });
+      await run('--tools', 'codex');
+
+      expect(core.deps.startCore).not.toHaveBeenCalled();
+      expect(stop).not.toHaveBeenCalled();
+      expect(fs.existsSync(corePath())).toBe(false);
+      expect(logs.join('\n')).not.toContain('Warning:');
+    });
+
+    it('leaves a core it did not start alone, and asks the desktop app for nothing', async () => {
+      const core = fakeCore({ running: true });
+      const stop = vi.fn();
+      const startDesktopCore = vi.fn(() => 'open -g -j -b com.agentrelay.desktop');
+      const { run, logs } = setup({ ...core.deps, stop, desktopInstalled: () => true, startDesktopCore });
+      await run('--tools', 'codex');
+
+      expect(startDesktopCore).not.toHaveBeenCalled();
+      expect(core.deps.startCore).not.toHaveBeenCalled();
+      expect(stop).not.toHaveBeenCalled();
+      expect(core.calls.some(([method]) => method === 'daemon.shutdown')).toBe(false);
+      expect(fs.existsSync(corePath())).toBe(false);
+      expect(logs.join('\n')).toContain(
+        'Using the Agent Relay core already running on this machine (agent-relay-probe'
+      );
+    });
   });
 
   describe('with the desktop app on the machine', () => {
