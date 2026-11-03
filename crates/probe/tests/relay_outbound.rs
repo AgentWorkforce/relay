@@ -1521,16 +1521,22 @@ async fn a_missing_accepted_handoff_settles_in_doubt_without_holding_back_later_
     h.injector.then(InjectOutcome::InDoubt(
         "the accepted item is no longer queued or recorded".into(),
     ));
-    let (first_delivery, first_message) = h.connect_fake.send_dm(
-        "connect-host",
-        "connect-guest",
-        "First, with an uncertain accepted handoff.",
-    );
-    let (second_delivery, second_message) = h.connect_fake.send_dm(
-        "connect-host",
-        "connect-guest",
-        "Second, queued behind the first.",
-    );
+    // Queued together: the scripted outcomes above are taken in call order,
+    // so a pass that saw only the first would hand them to the wrong
+    // message.
+    let mut queued = h
+        .connect_fake
+        .send_dms(
+            "connect-host",
+            "connect-guest",
+            &[
+                "First, with an uncertain accepted handoff.",
+                "Second, queued behind the first.",
+            ],
+        )
+        .into_iter();
+    let (first_delivery, first_message) = queued.next().unwrap();
+    let (second_delivery, second_message) = queued.next().unwrap();
     eventually_for(
         "both handoffs in the provider's ordered queue",
         Duration::from_secs(30),

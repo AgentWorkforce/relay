@@ -185,6 +185,10 @@ fn accept_control(listener: &UnixListener, engine: &mut Engine) -> Result<bool> 
         {
             continue;
         }
+        // macOS hands an accepted socket the listener's non-blocking mode,
+        // where the timeouts below do nothing: a request not yet written
+        // would read as `WouldBlock` and the connection be dropped.
+        stream.set_nonblocking(false)?;
         stream.set_read_timeout(Some(Duration::from_secs(1)))?;
         stream.set_write_timeout(Some(Duration::from_secs(1)))?;
         let mut line = String::new();
@@ -472,10 +476,16 @@ mod transport_tests {
     use std::os::unix::net::UnixStream;
 
     fn request(socket: &Path, request: Value) -> Value {
+        request_after(socket, request, Duration::ZERO)
+    }
+
+    /// A request whose client waits `pause` between connecting and writing.
+    fn request_after(socket: &Path, request: Value, pause: Duration) -> Value {
         let mut stream = UnixStream::connect(socket).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
+        std::thread::sleep(pause);
         writeln!(stream, "{request}").unwrap();
         let mut line = String::new();
         BufReader::new(stream).read_line(&mut line).unwrap();
@@ -543,6 +553,16 @@ for line in sys.stdin:
                 "idle"
             );
         }
+        // A client that connects before it writes is still answered (macOS
+        // once handed the host a non-blocking socket that read nothing).
+        assert_eq!(
+            request_after(
+                &record.socket,
+                json!({"op":"status"}),
+                Duration::from_millis(200)
+            )["state"],
+            "idle"
+        );
         assert_eq!(
             request(&record.socket, json!({"op":"stop"}))["status"],
             "stopped"

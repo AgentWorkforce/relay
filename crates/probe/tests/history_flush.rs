@@ -25,6 +25,7 @@ struct Sandbox {
 }
 impl Sandbox {
     fn new() -> Sandbox {
+        warm_binary();
         Sandbox {
             root: tempfile::tempdir().unwrap(),
         }
@@ -101,6 +102,21 @@ impl Sandbox {
             .stderr(Stdio::piped());
         command
     }
+}
+
+/// Runs the binary once before any test times it. macOS scans a newly
+/// linked executable on its first launch, which can take seconds; the
+/// wall-clock bounds here are for the command, not for that scan.
+fn warm_binary() {
+    static WARM: std::sync::Once = std::sync::Once::new();
+    WARM.call_once(|| {
+        let _ = Command::new(env!("CARGO_BIN_EXE_agent-relay-probe"))
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    });
 }
 
 fn session(base_url: &str) -> Value {

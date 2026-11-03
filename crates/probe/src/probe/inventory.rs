@@ -693,13 +693,14 @@ mod tests {
         }
         drop(writer);
         let (directory, _project, _inventory) = running(&home, true);
+        // Startup's own passes settle first: a slow computer can take seconds
+        // between them, so one quiet second proves nothing.
         let mut seen = last_pass(&directory);
-        loop {
+        let mut quiet = 0;
+        while quiet < 4 {
             std::thread::sleep(Duration::from_millis(1_000));
             let now = last_pass(&directory);
-            if now == seen {
-                break;
-            }
+            quiet = if now == seen { quiet + 1 } else { 0 };
             seen = now;
         }
         std::thread::sleep(Duration::from_millis(1_500));
