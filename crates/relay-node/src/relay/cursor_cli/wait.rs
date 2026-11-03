@@ -2,7 +2,7 @@
 //! message for a conversation that has finished its turn wakes it.
 //!
 //! An editor conversation idle in its window runs no hook until its person
-//! starts a turn. So Agent Relay's `stop` entry (`relay cursor-hook --wait`)
+//! starts a turn. So Agent Relay's `stop` entry (`cursor-hook --wait`)
 //! does not answer at once when a completed turn has nothing pending. Cursor
 //! has already marked the turn completed, so the chat is idle and its person
 //! can type; the hook stays until a message is staged for the conversation

@@ -113,7 +113,7 @@ trap restore EXIT
 
 cargo build --quiet --manifest-path "$REPO_ROOT/Cargo.toml" --bin agent-relay-node
 PROBE="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug/agent-relay-node"
-printf -v HOOK 'env HOME=%q CURSOR_DATA_DIR=%q %q relay cursor-hook' "$WORK/home" "$DATA" "$PROBE"
+printf -v HOOK 'env HOME=%q CURSOR_DATA_DIR=%q %q cursor-hook' "$WORK/home" "$DATA" "$PROBE"
 # Remember whether ~/.cursor existed, so restore leaves none behind.
 if [[ ! -d "$(dirname "$USER_HOOKS")" ]]; then CREATED_CURSOR_DIR="$(dirname "$USER_HOOKS")"; fi
 mkdir -p "$(dirname "$USER_HOOKS")"

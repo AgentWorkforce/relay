@@ -1,4 +1,4 @@
-//! The plugins `relay serve` runs with on this computer: discovery,
+//! The plugins `serve` runs with on this computer: discovery,
 //! injection, the settings extensions, the relay-send socket and the
 //! spawner, assembled from the environment.
 

@@ -25,12 +25,12 @@ pub(super) const RULES_NAMES: usize = 9;
 ///
 /// A prefix rule constrains only a command's leading words: whatever follows
 /// them is allowed too. So the rules name only the probe's self-limiting
-/// session commands (`session_cli::ALLOWED_SUBCOMMANDS`: `relay send`,
+/// session commands (`session_cli::ALLOWED_SUBCOMMANDS`: `send`,
 /// `agents`, `whoami`, `read`, `fetch-attachment`, `connect-send` and
 /// `subscribe-channel`), each only with
 /// `--socket` naming this core's own session socket. Each of those fixes its
 /// own method and route and checks every other argument, so nothing after
-/// the prefix reaches another route; `relay socket-request`, which takes any
+/// the prefix reaches another route; `socket-request`, which takes any
 /// method and path (`PATCH /settings`, `/register`), has no rule and still
 /// asks. Nothing else is widened: no network, no other program, no other
 /// socket.
@@ -48,7 +48,7 @@ pub struct SandboxRules {
 }
 
 impl SandboxRules {
-    /// Each rule's pattern: the probe, `relay`, the subcommand, `--socket`
+    /// Each rule's pattern: the probe, the subcommand, `--socket`
     /// and the socket.
     pub fn patterns(&self) -> Vec<Vec<String>> {
         let probe = self.probe.to_string_lossy().into_owned();
@@ -58,7 +58,6 @@ impl SandboxRules {
             .map(|subcommand| {
                 vec![
                     probe.clone(),
-                    "relay".to_string(),
                     subcommand.to_string(),
                     "--socket".to_string(),
                     socket.clone(),
@@ -76,7 +75,7 @@ impl SandboxRules {
              # command fixes its own route; no other session route is allowed.\n"
         );
         for pattern in self.patterns() {
-            let justification = match pattern[2].as_str() {
+            let justification = match pattern[1].as_str() {
                 "send" => "Sends a message as this session through Agent Relay",
                 "agents" => "Lists the agents this session can message",
                 "whoami" => "Shows this session's own name on Agent Relay",

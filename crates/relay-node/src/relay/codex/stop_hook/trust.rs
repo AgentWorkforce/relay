@@ -326,7 +326,7 @@ mod tests {
     fn real_codex_untrust_puts_config_toml_back_byte_for_byte() {
         let home = tempfile::tempdir().unwrap();
         let codex_home = home.path();
-        let command = "'/Apps/Agent Relay.app/probe' relay codex-stop-hook";
+        let command = "'/Apps/Agent Relay.app/probe' codex-stop-hook";
         let hook = json!([{"hooks": [{"type": "command", "command": command, "timeout": 10}]}]);
         let theirs = "{\"hooks\": {\"Stop\": [{\"hooks\": [{\"type\": \"command\", \"command\": \"notify.sh\"}]}]}}";
         let with_ours = json!({"hooks": {

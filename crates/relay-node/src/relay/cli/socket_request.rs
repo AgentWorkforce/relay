@@ -1,4 +1,4 @@
-//! `relay socket-request`: the probe's own client for this core's session
+//! `socket-request`: the probe's own client for this core's session
 //! socket, limited to the routes sessions use.
 
 use super::{socket_exchange, socket_request_timeout};
@@ -57,7 +57,7 @@ pub(super) fn socket_request_allowed(method: &str, path: &str) -> bool {
     }
 }
 
-/// `relay socket-request`: `body` is the request body (`--body`); without
+/// `socket-request`: `body` is the request body (`--body`); without
 /// it a POST, DELETE or PATCH reads its body from standard input.
 pub fn socket_request(socket: &Path, method: &str, path: &str, body: Option<&str>) -> Result<()> {
     if !socket_request_allowed(method, path) {

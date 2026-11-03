@@ -26,7 +26,7 @@
 //!
 //! With the hook come Claude Code permission rules ([`PermissionRules`],
 //! in `permissions`) that let the session run this probe's self-limiting
-//! session commands (`relay read`, `send`, `agents`, `whoami`,
+//! session commands (`read`, `send`, `agents`, `whoami`,
 //! `fetch-attachment`, `connect-send`) on this core's session socket without an approval
 //! prompt, so it can read and answer a relayed message in Claude's default
 //! permission mode. They go into and out of the same `settings.json` with
@@ -66,7 +66,7 @@ const BACKUP_SUFFIX: &str = ".relay-desktop-backup";
 pub const SETTING: &str = "claude_session_hook";
 
 /// The subcommand the hook runs; also how the hook is recognized as ours.
-pub const SUBCOMMAND: &str = "relay claude-session-hook";
+pub const SUBCOMMAND: &str = "claude-session-hook";
 
 /// Installs and removes the hook. The files are the source of truth, so the
 /// setting is on when any known login has this build's hook.
@@ -771,7 +771,7 @@ mod tests {
                 arguments: vec![
                     "/bin/sh".into(),
                     "-c".into(),
-                    "agent-relay relay claude-session-hook".into(),
+                    "agent-relay claude-session-hook".into(),
                 ],
                 ..FakeProcess::default()
             },
@@ -1065,7 +1065,7 @@ mod tests {
         let ours = command(&installed);
         assert_eq!(
             ours,
-            vec!["'/Apps/Agent Relay.app/probe' relay claude-session-hook"],
+            vec!["'/Apps/Agent Relay.app/probe' claude-session-hook"],
             "{installed}"
         );
         let work = read(&root.path().join(".claude-work/settings.json"));
@@ -1122,6 +1122,8 @@ mod tests {
         login(root.path(), ".claude");
         let dev = format!("/old/probe {SUBCOMMAND} --dev");
         let old = format!("/old/probe {SUBCOMMAND}");
+        // The earlier `<probe> relay claude-session-hook` form is replaced too.
+        let earlier = format!("/old/probe relay {SUBCOMMAND}");
         std::fs::write(
             root.path().join(".claude/settings.json"),
             serde_json::to_vec_pretty(&json!({
@@ -1129,6 +1131,7 @@ mod tests {
                     {"hooks": [
                         {"type": "command", "command": "echo theirs"},
                         {"type": "command", "command": old},
+                        {"type": "command", "command": earlier},
                         {"type": "command", "command": dev}
                     ]}
                 ]}
@@ -1142,6 +1145,7 @@ mod tests {
         let commands = command(&installed);
         assert!(commands.contains(&"echo theirs"), "{commands:?}");
         assert!(commands.contains(&dev.as_str()), "{commands:?}");
+        assert!(!commands.contains(&earlier.as_str()), "{commands:?}");
         assert_eq!(
             commands
                 .iter()
@@ -1563,11 +1567,7 @@ mod probe_tests {
         let text = out["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap();
-        let whoami = format!(
-            "{} relay whoami --socket '{}'",
-            probe.display(),
-            socket.display()
-        );
+        let whoami = format!("{} whoami --socket '{}'", probe.display(), socket.display());
         assert!(text.contains(&whoami), "{text}");
         assert!(
             text.contains("Do not try to put this session on the relay"),
@@ -1598,11 +1598,7 @@ mod probe_tests {
         let text = out["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap();
-        let whoami = format!(
-            "{} relay whoami --socket '{}'",
-            probe.display(),
-            socket.display()
-        );
+        let whoami = format!("{} whoami --socket '{}'", probe.display(), socket.display());
         assert!(text.contains(&whoami), "{text}");
         assert!(rules.iter().any(|rule| covers(rule, &whoami)));
         assert!(
@@ -1639,11 +1635,7 @@ mod probe_tests {
                 .as_str()
                 .unwrap();
             assert!(!text.contains("curl"), "{text}");
-            let agents = format!(
-                "{} relay agents --socket '{}'",
-                probe.display(),
-                socket.display()
-            );
+            let agents = format!("{} agents --socket '{}'", probe.display(), socket.display());
             assert!(text.contains(&agents), "{text}");
             assert!(rules.iter().any(|rule| covers(rule, &agents)));
         }

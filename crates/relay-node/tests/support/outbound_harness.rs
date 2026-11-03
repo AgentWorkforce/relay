@@ -645,7 +645,7 @@ fn sendable_dir() -> tempfile::TempDir {
 // OutboundTests.testAgentsAddsTheLiveCallerWhenRelaycastSnapshotOmitsIt and
 // test_missing_relaycast_caller_is_synthesized_as_live_and_local.
 
-// The headless service (`relay serve --headless`) applies the agent-led
+// The headless service (`serve --headless`) applies the agent-led
 // defaults when its socket starts, as the Linux headless service did; a core
 // hosted by an app waits for a setup route for direct delivery. Automatic
 // activation is on by default for either host.

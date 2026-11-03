@@ -83,14 +83,8 @@ fn the_hook_brings_the_rules_for_this_probes_read_and_reply() {
     assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
     let all = allow(&path);
     assert_eq!(all, rules().rules());
-    assert_eq!(
-        all[0],
-        format!("Bash({PROBE} relay read --socket '{SOCKET}' *)")
-    );
-    assert_eq!(
-        all[1],
-        format!("Bash({PROBE} relay send --socket '{SOCKET}' *)")
-    );
+    assert_eq!(all[0], format!("Bash({PROBE} read --socket '{SOCKET}' *)"));
+    assert_eq!(all[1], format!("Bash({PROBE} send --socket '{SOCKET}' *)"));
     // Recorded as Agent Relay's, by file.
     let added = permissions::Added::load(&root.path().join("app-data"));
     assert_eq!(added.of(&path), rules().rules().as_slice());
@@ -127,7 +121,7 @@ fn the_persons_own_settings_and_rules_come_back_byte_for_byte() {
     // Their own formatting, their own rules (one the same as Agent Relay's),
     // and an empty list a JSON round trip would keep but not as written.
     let mine = format!(
-        "{{ \"model\": \"opus\",\n  \"permissions\": {{ \"allow\": [\"Bash(npm test *)\", \"Bash({PROBE} relay read --socket '{SOCKET}' *)\"], \"deny\": [] }},\n  \"hooks\": {{ \"Stop\": [ {{\"hooks\": [{{\"type\":\"command\",\"command\":\"notify.sh\"}}]}} ] }} }}"
+        "{{ \"model\": \"opus\",\n  \"permissions\": {{ \"allow\": [\"Bash(npm test *)\", \"Bash({PROBE} read --socket '{SOCKET}' *)\"], \"deny\": [] }},\n  \"hooks\": {{ \"Stop\": [ {{\"hooks\": [{{\"type\":\"command\",\"command\":\"notify.sh\"}}]}} ] }} }}"
     );
     std::fs::write(&path, &mine).unwrap();
     let claude = path.parent().unwrap().to_path_buf();
@@ -280,10 +274,7 @@ fn a_probe_path_with_a_space_is_named_by_its_link() {
     assert_eq!(std::fs::read_link(&link).unwrap(), real);
     let all = allow(&path);
     let named = link.display().to_string();
-    assert_eq!(
-        all[0],
-        format!("Bash({named} relay read --socket '{SOCKET}' *)")
-    );
+    assert_eq!(all[0], format!("Bash({named} read --socket '{SOCKET}' *)"));
     assert!(all.iter().all(|rule| !rule.contains("Agent Relay Helper")));
     // What the pointer and the reply hint hand the session, through the
     // link, is what the rules allow.
@@ -301,7 +292,7 @@ fn a_probe_path_with_a_space_is_named_by_its_link() {
         .command_line(&link, socket, None)
         .unwrap();
     for command in [format!("{read} 0123456789ab"), reply, agents] {
-        assert!(command.starts_with(&format!("{named} relay ")), "{command}");
+        assert!(command.starts_with(&format!("{named} ")), "{command}");
         assert!(all.iter().any(|rule| covers(rule, &command)), "{command}");
     }
 
@@ -311,16 +302,16 @@ fn a_probe_path_with_a_space_is_named_by_its_link() {
     assert_eq!(tree(&claude), before);
 }
 
-// An earlier core added `relay socket-request` rules, which a relayed
+// An earlier core added `socket-request` rules, which a relayed
 // message could steer to other routes: the upgrade replaces them, and a
 // rule of the person's stays.
 #[test]
 fn an_older_cores_socket_request_rules_are_replaced_on_upgrade() {
     let root = tempfile::tempdir().unwrap();
     let path = login(root.path());
-    let request = format!("{PROBE} relay socket-request --socket '{SOCKET}'");
+    let request = format!("{PROBE} socket-request --socket '{SOCKET}'");
     let older = vec![
-        format!("Bash({PROBE} relay read --socket '{SOCKET}' *)"),
+        format!("Bash({PROBE} read --socket '{SOCKET}' *)"),
         format!("Bash({request} --method POST --path '/send?*)"),
         format!("Bash({request} --method POST --path '/connect/send?*)"),
         format!("Bash({request} --method POST --path '/attachments/fetch?file_id=*)"),

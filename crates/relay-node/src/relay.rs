@@ -1,5 +1,5 @@
 //! The relay core: the messaging runtime the desktop apps and `relay serve`
-//! run, served by `agent-relay-node relay serve` over one bridge contract.
+//! run, served by `agent-relay-node serve` over one bridge contract.
 //! It finds the coding sessions on this computer, puts them on the relay,
 //! delivers messages into them and sends theirs. What a build adds (an
 //! account, session history, extra methods and sessions) it adds through
@@ -10,7 +10,7 @@
 //! | `protocol` | The bridge wire format: JSON-RPC envelopes, events, errors, `BRIDGE_VERSION` |
 //! | `contract` | The method and topic registry with every params, result and event type; Swift code generation |
 //! | `server` | The socket server: peer checks, handshake, dispatch, event forwarding |
-//! | `daemon` | `relay serve`: single-instance lock, socket lifecycle, the `Core`, shutdown |
+//! | `daemon` | `serve`: single-instance lock, socket lifecycle, the `Core`, shutdown |
 //! | `automatic_edit` | Renames and native titles a build makes on its own, applied only while still current |
 //! | `session_sources` | What a build knows about sessions beyond this computer's discovery: remote sessions, Hermes homes |
 //! | `admission` | Which discovered sessions join the relay by themselves: the build's session policy, or every one |
@@ -25,7 +25,7 @@
 //! | `client` | Relaycast clients over the `relaycast` SDK |
 //! | `sdk_gaps` | The Relaycast surface the SDK does not yet cover |
 //! | `push` | Per-agent direct node sockets |
-//! | `cli` | `relay call`, a one-shot bridge client |
+//! | `cli` | `call`, a one-shot bridge client |
 //! | `store` | The agent store: format, migration, three-way merge, the file |
 //! | `agents` | Registration, rename, removal, webhooks, test messages, settings |
 //! | `delivery` | Inbound delivery: policy, injected text, ack/fail, final answers |
@@ -52,7 +52,7 @@
 //! | `claude` | Claude Code sessions: registry, peer inbox, Claude app sessions, final answers, the optional SessionStart hook |
 //! | `claude_settings` | Claude Code's `crossSessionInbound` (`direct_delivery`) |
 //! | `claude_delivery_policy` | Claude Code per-session and per-sender consent, held approvals |
-//! | `local` | This computer's `SessionDirectory` and `Injector`, and the plugins `relay serve` runs with |
+//! | `local` | This computer's `SessionDirectory` and `Injector`, and the plugins `serve` runs with |
 //! | `fleet` | Fleet workers: broker discovery, `/api/spawned`, `fleet.list` and `fleet.release` |
 //! | `local_methods` | `sessions.list` and the sessions watcher |
 //! | `outbound` | The relay-send socket: sessions send, list, register and run setup |

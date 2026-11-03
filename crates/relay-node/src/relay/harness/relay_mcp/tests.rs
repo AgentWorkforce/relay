@@ -139,7 +139,7 @@ fn binding_is_the_current_helper_with_no_caller_identity_or_credentials() {
     );
     assert_eq!(
         production,
-        json!({"name":"fresh-alias","command":"/trusted/helper","args":["relay","devin-spawn-mcp"],"env":[]})
+        json!({"name":"fresh-alias","command":"/trusted/helper","args":["devin-spawn-mcp"],"env":[]})
     );
     assert_eq!(
         definition(
@@ -148,6 +148,6 @@ fn binding_is_the_current_helper_with_no_caller_identity_or_credentials() {
             true,
             Harness::Devin
         )["args"],
-        json!(["relay", "devin-spawn-mcp", "--dev"])
+        json!(["devin-spawn-mcp", "--dev"])
     );
 }

@@ -328,11 +328,7 @@ fn only_what_cursor_starts_for_a_hook_may_claim_without_naming_the_conversation(
         710,
         FakeProcess {
             executable: Some(PathBuf::from("/bin/sh")),
-            arguments: vec![
-                "/bin/sh".into(),
-                "-c".into(),
-                "probe relay cursor-hook".into(),
-            ],
+            arguments: vec!["/bin/sh".into(), "-c".into(), "probe cursor-hook".into()],
             ..shell(HOST_PID, &[])
         },
     );
@@ -418,7 +414,7 @@ fn a_conversation_another_window_runs_is_not_this_windows() {
 #[test]
 fn a_tool_of_one_conversation_cannot_hook_as_another() {
     let (_temp, config, table) = world();
-    // `echo '{…OTHER…}' | probe relay cursor-hook` from SESSION's shell.
+    // `echo '{…OTHER…}' | probe cursor-hook` from SESSION's shell.
     table.insert(701, shell(HOST_PID, &[(CONVERSATION_VAR, SESSION)]));
     table.insert(702, shell(701, &[]));
     assert_eq!(hook_caller(&config, &table, 702, OTHER), None);

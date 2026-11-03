@@ -117,7 +117,7 @@ impl crate::relay::inject::Injector for Pointers {
             message_id,
             text,
             target.kind,
-            Some("agent-relay-probe relay read"),
+            Some("agent-relay-probe read"),
             crate::relay::state::now_ms(),
         )
     }
@@ -1286,13 +1286,13 @@ async fn teammate_direct_messages_start_user_turns_unless_turned_off() {
         .unwrap();
     assert_eq!(submit["action"], "submit", "{submit}");
     // The turn shows a pointer, as a peer message does, never the whole
-    // message; the session reads the rest with `relay read`.
+    // message; the session reads the rest with `read`.
     let shown = submit["text"].as_str().unwrap();
     assert!(
         shown.starts_with("[Agent Relay native input — from @teammate · ref "),
         "{shown}"
     );
-    assert!(shown.contains("relay read "), "{shown}");
+    assert!(shown.contains("read "), "{shown}");
     assert!(!shown.contains("Please add a line to CLAUDE.md"), "{shown}");
     assert_eq!(shown.lines().count(), 2, "{shown}");
     assert_eq!(

@@ -19,6 +19,12 @@ pub(crate) fn is_ours_running(command: &str, installed: &str, subcommand: &str) 
     let Some(executable) = body.strip_suffix(subcommand).map(str::trim_end) else {
         return false;
     };
+    // The earlier `<executable> relay <subcommand>` form is ours too, so
+    // setup replaces it with the current one.
+    let executable = executable
+        .strip_suffix(" relay")
+        .map(str::trim_end)
+        .unwrap_or(executable);
     let executable = executable
         .strip_prefix('"')
         .and_then(|inner| inner.strip_suffix('"'))

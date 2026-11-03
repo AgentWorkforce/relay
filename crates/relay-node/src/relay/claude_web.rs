@@ -1,4 +1,4 @@
-//! Claude Code on the web (claude.ai/code) sessions as relay agents.
+//! Claude Code on the web (claude.ai/code) sessions as agents.
 //!
 //! A web session runs in Anthropic's cloud container, so nothing on this
 //! computer holds it and the Claude desktop app's `remote-session-spaces.json`

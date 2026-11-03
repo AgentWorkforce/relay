@@ -1,5 +1,6 @@
-//! `agent-relay-node`'s command line: the relay core (`relay …`) and Relay
-//! Connect rooms (`connect …`).
+//! `agent-relay-node`'s command line: the node's own commands (`serve`,
+//! `call`, the session-socket commands and the hooks) and Relay Connect rooms
+//! (`connect …`).
 mod connect;
 mod output;
 mod relay_commands;
@@ -29,11 +30,8 @@ enum Commands {
         #[command(subcommand)]
         command: connect::Command,
     },
-    /// The relay core: the desktop's long-running runtime and its bridge.
-    Relay {
-        #[command(subcommand)]
-        command: RelayCommands,
-    },
+    #[command(flatten)]
+    Node(RelayCommands),
 }
 #[derive(Debug)]
 struct UserError(&'static str);
@@ -67,7 +65,7 @@ pub fn main() {
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Connect { command } => connect::run(command),
-        Commands::Relay { command } => relay_commands::run(command),
+        Commands::Node(command) => relay_commands::run(command),
     }
 }
 
@@ -81,7 +79,6 @@ mod socket_request_tests {
         for body in ["- first item", "--help", "-"] {
             let cli = Cli::try_parse_from([
                 "probe",
-                "relay",
                 "socket-request",
                 "--socket",
                 "/s/relay.sock",
@@ -93,9 +90,9 @@ mod socket_request_tests {
                 body,
             ])
             .unwrap();
-            let Commands::Relay {
-                command: relay_commands::RelayCommands::SocketRequest { body: parsed, .. },
-            } = cli.command
+            let Commands::Node(relay_commands::RelayCommands::SocketRequest {
+                body: parsed, ..
+            }) = cli.command
             else {
                 panic!("socket-request expected")
             };
@@ -108,7 +105,7 @@ mod socket_request_tests {
     #[test]
     fn a_read_bound_to_a_socket_refuses_dev() {
         let read = |extra: &[&str]| {
-            let mut args = vec!["probe", "relay", "read", "--socket", "/s/relay.sock"];
+            let mut args = vec!["probe", "read", "--socket", "/s/relay.sock"];
             args.extend_from_slice(extra);
             Cli::try_parse_from(args)
         };
@@ -201,7 +198,7 @@ mod sandbox_rule_reach_tests {
     ) -> Option<(std::path::PathBuf, &'static str, String)> {
         let matches = command.try_get_matches_from_mut(argv).ok()?;
         let cli = Cli::from_arg_matches(&matches).ok()?;
-        let Commands::Relay { command } = cli.command else {
+        let Commands::Node(command) = cli.command else {
             panic!("{argv:?} parsed as another top-level command");
         };
         let (socket, session, body) = relay_commands::session_command(&command)
@@ -230,9 +227,8 @@ mod sandbox_rule_reach_tests {
             crate::relay::session_cli::ALLOWED_SUBCOMMANDS.len()
         );
         for pattern in &patterns {
-            assert_eq!(pattern[1], "relay");
-            assert_ne!(pattern[2], "socket-request");
-            let (routes, keys) = intended(&pattern[2]);
+            assert_ne!(pattern[1], "socket-request");
+            let (routes, keys) = intended(&pattern[1]);
             let mut suffixes: Vec<Vec<&str>> = vec![vec![]];
             for _ in 0..3 {
                 let longer: Vec<Vec<&str>> = suffixes
@@ -289,7 +285,7 @@ mod sandbox_rule_reach_tests {
                 }
                 reached.insert((sent_method, sent_route.to_string()));
             }
-            assert!(ran > 0, "{} never ran", pattern[2]);
+            assert!(ran > 0, "{} never ran", pattern[1]);
         }
         // The desktop core's setup, settings, webhook and attestation routes
         // are listed, and no allowed command reaches them.
@@ -320,7 +316,7 @@ mod sandbox_rule_reach_tests {
         for (method, route) in SESSION_ROUTES {
             let allowed = patterns
                 .iter()
-                .any(|p| intended(&p[2]).0.contains(&(*method, *route)));
+                .any(|p| intended(&p[1]).0.contains(&(*method, *route)));
             assert_eq!(
                 reached.contains(&(*method, route.to_string())),
                 allowed,
@@ -336,7 +332,6 @@ mod sandbox_rule_reach_tests {
         for subcommand in crate::relay::session_cli::ALLOWED_SUBCOMMANDS {
             let argv = [
                 "agent-relay-node",
-                "relay",
                 subcommand,
                 "--socket",
                 "/s/relay.sock",
@@ -347,7 +342,6 @@ mod sandbox_rule_reach_tests {
         }
         assert!(Cli::try_parse_from([
             "agent-relay-node",
-            "relay",
             "read",
             "--socket",
             "/s/relay.sock",

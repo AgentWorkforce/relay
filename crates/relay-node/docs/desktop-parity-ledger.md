@@ -23,7 +23,7 @@ which dropped some desktop changes made before the split. #2060 restores them.
 
 | Behavior | Desktop commit | Test |
 | --- | --- | --- |
-| `relay serve --headless` keeps the app's Open-at-login entry | d23664e2 | `the_headless_service_preserves_the_apps_login_entry_and_stops_on_sigterm`, `the_binary_serves_answers_calls_and_stops_with_its_host` |
+| `serve --headless` keeps the app's Open-at-login entry | d23664e2 | `the_headless_service_preserves_the_apps_login_entry_and_stops_on_sigterm`, `the_binary_serves_answers_calls_and_stops_with_its_host` |
 | Devin reviews are never listed, activated, or recreated as offline rows | 27854327, aa893455 | `discover_skips_sessions_an_automation_started`, `automation_classification_wins_across_installs_in_either_order`, `a_devin_review_session_is_never_listed_or_auto_activated`, `a_registered_devin_review_is_not_recreated_as_an_offline_session` |
 | Grok usage records do not become empty transcript messages | fc84dd6e | `grok_usage_records_do_not_become_empty_messages_and_pagination_keeps_progress` |
 | Presentation discovery runs on a fixed cadence; reads never start a pass | 96ebd2c5 | `warm_session_reads_do_not_repeat_live_discovery` (tests/relay_agents.rs) |
@@ -119,7 +119,7 @@ account, MCP and attestation code. See relay-desktop `docs/workspace-layout.md`.
 | `src/relay/cursor_cli/tests.rs` | 2 / 17 | equivalent: relay refactor, #2057/#2060 review fix or internal-name sweep |
 | `src/relay/cursor_cli/wait.rs` | 3 / 22 | equivalent: relay refactor, #2057/#2060 review fix or internal-name sweep |
 | `src/relay/cursor_cli/wait_tests.rs` | 0 / 48 | relay-only additions (desktop content all present) |
-| `src/relay/daemon.rs` | 8 / 102 | ported (d23664e2): `relay serve --headless` keeps the app's login entry |
+| `src/relay/daemon.rs` | 8 / 102 | ported (d23664e2): `serve --headless` keeps the app's login entry |
 | `src/relay/daemon/plugins.rs` | 4 / 17 | equivalent: relay refactor, #2057/#2060 review fix or internal-name sweep |
 | `src/relay/daemon/refresh.rs` | 1 / 6 | equivalent: relay refactor, #2057/#2060 review fix or internal-name sweep |
 | `src/relay/delivery/activation.rs` | 8 / 14 | equivalent: relay refactor, #2057/#2060 review fix or internal-name sweep |

@@ -25,10 +25,8 @@ fn config(home: &Path) -> CursorConfig {
 #[test]
 fn explicit_setup_installs_hooks_before_the_first_cursor_chat() {
     let root = tempfile::tempdir().unwrap();
-    let settings = CursorSettings::new(
-        &config(root.path()),
-        "agent-relay-probe relay cursor-hook".into(),
-    );
+    let settings =
+        CursorSettings::new(&config(root.path()), "agent-relay-probe cursor-hook".into());
     assert!(settings.get().is_empty());
     settings.set_enabled(true).unwrap();
     assert_eq!(settings.get()["cursor_direct_delivery"], true);
@@ -568,10 +566,7 @@ fn claudes_hooks_inside_cursor_belong_to_cursor() {
 }
 
 fn settings(config: &CursorConfig) -> CursorSettings {
-    CursorSettings::new(
-        config,
-        "/opt/relay/agent-relay-probe relay cursor-hook".into(),
-    )
+    CursorSettings::new(config, "/opt/relay/agent-relay-probe cursor-hook".into())
 }
 
 fn hooks(config: &CursorConfig) -> Value {
@@ -584,7 +579,7 @@ fn the_setting_installs_only_its_own_hooks() {
     std::fs::create_dir_all(config.hooks_file().parent().unwrap()).unwrap();
     std::fs::write(
         config.hooks_file(),
-        r#"{"version":1,"hooks":{"stop":[{"command":"./audit.sh"},{"command":"echo relay cursor-hook"}]},"other":true}"#,
+        r#"{"version":1,"hooks":{"stop":[{"command":"./audit.sh"},{"command":"echo cursor-hook"}]},"other":true}"#,
     )
     .unwrap();
     let settings = settings(&config);
@@ -611,12 +606,12 @@ fn the_setting_installs_only_its_own_hooks() {
         // The `stop` entry waits: an hour, and no limit on follow-ups.
         let expected = if event == "stop" {
             json!({
-                "command": "/opt/relay/agent-relay-probe relay cursor-hook --wait",
+                "command": "/opt/relay/agent-relay-probe cursor-hook --wait",
                 "timeout": 3600,
                 "loop_limit": null,
             })
         } else {
-            json!({"command": "/opt/relay/agent-relay-probe relay cursor-hook", "timeout": 10})
+            json!({"command": "/opt/relay/agent-relay-probe cursor-hook", "timeout": 10})
         };
         assert_eq!(ours[0], &expected, "{event}");
     }
@@ -637,7 +632,7 @@ fn the_setting_installs_only_its_own_hooks() {
     assert!(written["hooks"]["stop"].to_string().contains("audit.sh"));
     assert!(written["hooks"]["stop"]
         .to_string()
-        .contains("echo relay cursor-hook"));
+        .contains("echo cursor-hook"));
     assert_eq!(settings.get()[SETTING], json!(false));
     assert!(!settings.waits());
 }
@@ -646,7 +641,7 @@ fn the_setting_installs_only_its_own_hooks() {
 fn an_earlier_install_is_brought_up_to_date() {
     let (_temp, config, _table) = world();
     std::fs::create_dir_all(config.hooks_file().parent().unwrap()).unwrap();
-    let ours = "/opt/relay/agent-relay-probe relay cursor-hook";
+    let ours = "/opt/relay/agent-relay-probe cursor-hook";
     let earlier = json!({"version": 1, "hooks": {
         "postToolUse": [{"command": ours, "timeout": 10}],
         "stop": [{"command": "./audit.sh"}, {"command": ours, "timeout": 10}],
@@ -689,7 +684,7 @@ fn an_earlier_install_is_brought_up_to_date() {
 fn an_earlier_install_that_cannot_be_brought_up_to_date_reads_as_off() {
     let (_temp, config, _table) = world();
     std::fs::create_dir_all(config.hooks_file().parent().unwrap()).unwrap();
-    let ours = "/opt/relay/agent-relay-probe relay cursor-hook";
+    let ours = "/opt/relay/agent-relay-probe cursor-hook";
     let earlier = json!({"version": 1, "hooks": {
         "postToolUse": [{"command": ours, "timeout": 10}],
         "stop": [{"command": ours, "timeout": 10}],
@@ -845,7 +840,7 @@ fn the_setting_follows_a_symlinked_hooks_file() {
         .is_symlink());
     assert!(std::fs::read_to_string(&real)
         .unwrap()
-        .contains("relay cursor-hook"));
+        .contains("cursor-hook"));
 }
 
 #[test]
@@ -873,23 +868,20 @@ fn the_setting_fails_closed_and_is_offered_only_where_cursor_cli_ran() {
 fn hook_commands_are_recognized_per_build() {
     let (_temp, config, _table) = world();
     let settings = settings(&config);
-    assert!(settings.is_ours("/opt/relay/agent-relay-probe relay cursor-hook"));
-    assert!(settings.is_ours("'/opt/relay dir/agent-relay-probe' relay cursor-hook"));
-    assert!(!settings.is_ours("/opt/relay/agent-relay-probe relay cursor-hook --dev"));
-    assert!(!settings.is_ours("/opt/relay/agent-relay-probe relay devin-hook"));
-    assert!(!settings.is_ours("echo relay cursor-hook"));
-    let dev = CursorSettings::new(
-        &config,
-        "/opt/agent-relay-probe relay cursor-hook --dev".into(),
-    );
-    assert!(dev.is_ours("/opt/agent-relay-probe relay cursor-hook --dev"));
-    assert!(!dev.is_ours("/opt/agent-relay-probe relay cursor-hook"));
+    assert!(settings.is_ours("/opt/relay/agent-relay-probe cursor-hook"));
+    assert!(settings.is_ours("'/opt/relay dir/agent-relay-probe' cursor-hook"));
+    assert!(!settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --dev"));
+    assert!(!settings.is_ours("/opt/relay/agent-relay-probe devin-hook"));
+    assert!(!settings.is_ours("echo cursor-hook"));
+    let dev = CursorSettings::new(&config, "/opt/agent-relay-probe cursor-hook --dev".into());
+    assert!(dev.is_ours("/opt/agent-relay-probe cursor-hook --dev"));
+    assert!(!dev.is_ours("/opt/agent-relay-probe cursor-hook"));
     // The waiting `stop` entry is each build's too.
-    assert!(settings.is_ours("/opt/relay/agent-relay-probe relay cursor-hook --wait"));
-    assert!(!settings.is_ours("/opt/relay/agent-relay-probe relay cursor-hook --wait --dev"));
-    assert!(dev.is_ours("/opt/agent-relay-probe relay cursor-hook --wait --dev"));
-    assert!(!dev.is_ours("/opt/agent-relay-probe relay cursor-hook --wait"));
-    assert!(!settings.is_ours("/opt/relay/agent-relay-probe relay cursor-hook --wait --wait"));
+    assert!(settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --wait"));
+    assert!(!settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --wait --dev"));
+    assert!(dev.is_ours("/opt/agent-relay-probe cursor-hook --wait --dev"));
+    assert!(!dev.is_ours("/opt/agent-relay-probe cursor-hook --wait"));
+    assert!(!settings.is_ours("/opt/relay/agent-relay-probe cursor-hook --wait --wait"));
 }
 
 #[test]

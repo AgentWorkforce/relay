@@ -264,7 +264,7 @@ pub enum RelayCommands {
 }
 
 /// The self-limiting session command `command` is, with the socket it
-/// names and its `--body`: what `run` sends for `relay send`, `agents`,
+/// names and its `--body`: what `run` sends for `send`, `agents`,
 /// `whoami`, `read --socket`, `fetch-attachment`, `connect-send` and
 /// `subscribe-channel`. `None` for every
 /// other command.
@@ -339,7 +339,7 @@ pub fn session_command(
 }
 
 pub fn run(command: RelayCommands) -> Result<()> {
-    // `relay read` prints the message and its note itself.
+    // `read` prints the message and its note itself.
     if !matches!(command, RelayCommands::Read { .. }) {
         if let Some((socket, session, body)) = session_command(&command) {
             return relay::session_cli::run(socket, &session, body);

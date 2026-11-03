@@ -55,7 +55,7 @@ pub trait Method {
 pub enum Availability {
     /// Every core.
     Always,
-    /// Only a core built with an account (`relay serve`'s own plugins).
+    /// Only a core built with an account (`serve`'s own plugins).
     Account,
 }
 

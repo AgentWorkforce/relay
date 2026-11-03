@@ -2044,7 +2044,7 @@ mod tests {
         );
         // A sender name the probe would refuse is never written into its
         // command: the hint falls back to the encoded curl form.
-        assert!(!hint.contains(" relay connect-send "), "{hint}");
+        assert!(!hint.contains(" connect-send "), "{hint}");
         // Claude Code is handed the probe's one-command reply everywhere: its
         // permission rules from Agent Relay allow exactly that.
         let claude = connect_reply_line(
@@ -2055,9 +2055,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            claude.contains(
-                " relay connect-send --socket '/tmp/Relay Socket'\\''s/run.sock' --to host "
-            ),
+            claude.contains(" connect-send --socket '/tmp/Relay Socket'\\''s/run.sock' --to host "),
             "{claude}"
         );
         assert!(claude.ends_with(" --body 'your reply']"), "{claude}");
@@ -2072,7 +2070,7 @@ mod tests {
         .unwrap();
         if cfg!(windows) {
             // A named pipe is reached through the probe, never curl.
-            assert!(codex.contains(" relay connect-send "));
+            assert!(codex.contains(" connect-send "));
             assert!(!codex.contains("curl"));
         } else {
             assert!(codex.ends_with("--data-binary @-]"), "{codex}");
@@ -2094,9 +2092,8 @@ mod tests {
         assert!(hint.starts_with("[reply: "));
         assert!(!hint.contains(" | "));
         assert!(hint.ends_with(" --body 'your reply']"));
-        assert!(hint.contains(
-            " relay connect-send --socket '/tmp/Relay Socket'\\''s/run.sock' --to host.o_k "
-        ));
+        assert!(hint
+            .contains(" connect-send --socket '/tmp/Relay Socket'\\''s/run.sock' --to host.o_k "));
         assert!(!hint.contains("socket-request"));
         assert!(!hint.contains("curl"));
         // A name that could break the hint gets no probe command at all.

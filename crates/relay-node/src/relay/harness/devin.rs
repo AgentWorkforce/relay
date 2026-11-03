@@ -6,7 +6,7 @@
 pub mod host;
 /// The ACP host owns a Unix control socket and is admitted by the kernel's
 /// peer credentials. On Windows, where Devin is not available,
-/// `relay devin-spawn-host` refuses with the sentence the adapter gives.
+/// `devin-spawn-host` refuses with the sentence the adapter gives.
 #[cfg(windows)]
 pub mod host {
     use std::path::Path;
@@ -364,7 +364,6 @@ impl SpawnFacet for DevinAdapter {
             crate::relay::paths::socket_directory(&dir)
                 .map_err(|_| LaunchError::Failed("Devin spawn folder is not private".into()))?;
             let mut arguments = vec![
-                "relay".into(),
                 "devin-spawn-host".into(),
                 "--executable".into(),
                 executable.display().to_string(),

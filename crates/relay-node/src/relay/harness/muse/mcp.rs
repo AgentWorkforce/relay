@@ -61,7 +61,7 @@ mod tests {
         let server: Value = serde_json::from_str(raw).unwrap();
         assert_eq!(
             server,
-            json!({"transport":"stdio","command":"/trusted/helper","args":["relay","muse-spawn-mcp"],"framing":"line_delimited_json","enabled":true,"mode":"required"})
+            json!({"transport":"stdio","command":"/trusted/helper","args":["muse-spawn-mcp"],"framing":"line_delimited_json","enabled":true,"mode":"required"})
         );
         let task = args.last().unwrap();
         assert!(task.starts_with("Agent Relay transport supplied by this session's local owner:"));

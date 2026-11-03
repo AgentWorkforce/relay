@@ -6,7 +6,7 @@
 #[cfg(unix)]
 pub mod host;
 /// The detached PTY host is built on Unix signals and process groups. On
-/// Windows, where Muse is not available, `relay muse-spawn-host` refuses
+/// Windows, where Muse is not available, `muse-spawn-host` refuses
 /// with the sentence the adapter gives.
 #[cfg(windows)]
 pub mod host {
@@ -234,7 +234,6 @@ impl MuseAdapter {
             );
         }
         let mut args = vec![
-            "relay".into(),
             "muse-spawn-host".into(),
             "--executable".into(),
             executable.to_string_lossy().into_owned(),
@@ -350,7 +349,6 @@ impl SpawnFacet for MuseAdapter {
                 error.diagnose(executable, &args, &log)
             } else {
                 let mut host_args = vec![
-                    "relay".into(),
                     "muse-spawn-host".into(),
                     "--executable".into(),
                     executable.to_string_lossy().into_owned(),

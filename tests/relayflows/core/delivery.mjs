@@ -17,7 +17,7 @@ function cursorSession(machine) {
   /** Runs the hook Cursor would, under this process, with Cursor's payload. */
   const hook = async (payload) => {
     const hooks = JSON.parse(machine.read('.cursor/hooks.json')).hooks.stop;
-    const { command } = hooks.find((entry) => entry.command.includes('relay cursor-hook'));
+    const { command } = hooks.find((entry) => entry.command.includes('cursor-hook'));
     const input = machine.write(`.hook-${randomUUID()}.json`, JSON.stringify(payload));
     const output = `${input}.out`;
     running.child.stdin.write(`${JSON.stringify({ command, input, output })}\n`);

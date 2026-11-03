@@ -419,11 +419,11 @@ pub fn preamble(
 /// socket, which Agent Relay's Codex sandbox rules let run without an
 /// approval prompt (`codex::stop_hook::SandboxRules`).
 pub struct CodexSocketCommands {
-    /// Lists the workspace's agents (`relay agents`).
+    /// Lists the workspace's agents (`agents`).
     pub agents: String,
-    /// Sends a DM to an agent by name (`relay send --to <name>`).
+    /// Sends a DM to an agent by name (`send --to <name>`).
     pub send: String,
-    /// Names this session (`relay whoami`).
+    /// Names this session (`whoami`).
     pub whoami: String,
 }
 
@@ -515,7 +515,7 @@ mod tests {
             );
             // Codex matches a rule only when the program is a plain word.
             assert!(
-                command.starts_with(&format!("{} relay ", probe.display())),
+                command.starts_with(&format!("{} ", probe.display())),
                 "{command}"
             );
         }
@@ -534,7 +534,7 @@ mod tests {
         assert!(joining.contains("run the same command again, never another way"));
         assert!(!joining.contains("socket-request"));
         // The send shape takes a reply or an address the same way, still
-        // inside the `relay send` rule.
+        // inside the `send` rule.
         let reply = crate::relay::session_cli::SessionCommand::Send {
             recipient: crate::relay::session_cli::Recipient::Address("bob@mac".into()),
             reply_to: Some("42".into()),
@@ -858,7 +858,12 @@ mod tests {
         );
         assert!(unknown.contains("list_relay_agents"));
         assert!(!unknown.contains("curl"));
-        assert_eq!(unknown.matches(" relay send ").count(), 1);
+        assert_eq!(
+            unknown
+                .matches(&format!("{} send ", probe.display()))
+                .count(),
+            1
+        );
         let socket_only = preamble(
             "api",
             "api@mac-1",
@@ -877,8 +882,9 @@ mod tests {
         }
         assert!(!socket_only.contains("curl"));
         assert!(!socket_only.contains("socket-request"));
-        assert!(socket_only
-            .contains("/tmp/arc/bin/agent-relay-probe relay agents --socket /tmp/relay.sock;"));
+        assert!(
+            socket_only.contains("/tmp/arc/bin/agent-relay-probe agents --socket /tmp/relay.sock;")
+        );
         assert!(socket_only.contains(ROUTE_RULE));
         assert!(socket_only.ends_with(NORM));
     }

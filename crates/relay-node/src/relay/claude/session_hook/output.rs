@@ -295,7 +295,7 @@ pub fn nudge(socket: &Path, rules_probe: Option<&Path>) -> String {
 }
 
 /// The start text is read once; another agent, Agent Relay or the person can
-/// register the session afterwards. `relay whoami` with the probe Claude's
+/// register the session afterwards. `whoami` with the probe Claude's
 /// rules name runs without an approval prompt; curl, or `socket-request`,
 /// would ask the person first.
 fn recheck(socket: &Path, rules_probe: Option<&Path>) -> String {

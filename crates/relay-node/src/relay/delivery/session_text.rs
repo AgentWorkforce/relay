@@ -93,7 +93,7 @@ impl Core {
             .await
         {
             // Its pointer is already queued; keeping the text again on each
-            // retry keeps `relay read` working however long the turn waits.
+            // retry keeps `read` working however long the turn waits.
             if source == InputSource::Teammate && matches!(outcome, InjectOutcome::Waiting(_)) {
                 let _ = self.native_turn_text(registration, delivery, text).await;
             }
@@ -141,7 +141,7 @@ impl Core {
     }
 
     /// The pointer a native turn shows for relayed `text`, with the text
-    /// kept for `relay read` (`Injector::native_pointer`), else `text`.
+    /// kept for `read` (`Injector::native_pointer`), else `text`.
     async fn native_turn_text(
         &self,
         registration: &Registration,

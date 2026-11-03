@@ -311,7 +311,7 @@ export function startCoreProcess({
 }): number {
   const log = fs.openSync(logFile, 'a', 0o600);
   try {
-    const child = spawn(binary, ['relay', 'serve', '--headless', '--cli-managed', '--socket', socket], {
+    const child = spawn(binary, ['serve', '--headless', '--cli-managed', '--socket', socket], {
       detached: true,
       stdio: ['ignore', log, log],
       env: process.env,

@@ -20,7 +20,7 @@ pub(crate) fn definition(helper: &Path, alias: &str, development: bool, harness:
         Harness::Devin => "devin-spawn-mcp",
         Harness::Muse => "muse-spawn-mcp",
     };
-    let mut arguments = vec!["relay", command];
+    let mut arguments = vec![command];
     if development {
         arguments.push("--dev");
     }

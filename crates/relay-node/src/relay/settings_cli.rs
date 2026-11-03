@@ -1,7 +1,7 @@
-//! `agent-relay-node relay settings`: read or change Agent Relay's settings
+//! `agent-relay-node settings`: read or change Agent Relay's settings
 //! from inside a Codex or Claude session, through the session socket's
 //! `GET /settings` and `PATCH /settings` (`outbound::settings`). Like
-//! `relay subscribe`, the session is told from this process, so a macOS
+//! `subscribe`, the session is told from this process, so a macOS
 //! Codex session that `curl` cannot identify can still use it.
 
 use crate::relay::cli::{pointed_socket, socket_exchange, SOCKET_TIMEOUT};

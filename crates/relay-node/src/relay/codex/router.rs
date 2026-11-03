@@ -2048,7 +2048,7 @@ mod tests {
     }
 
     fn pointer() -> Option<String> {
-        Some("[via Agent Relay — from @alice · ref 0123456789ab]\n[read: relay read]".into())
+        Some("[via Agent Relay — from @alice · ref 0123456789ab]\n[read: read]".into())
     }
 
     // A plain `codex` TUI runs on the shared app-server, so an idle one gets

@@ -11,7 +11,7 @@ what `relay serve` runs. It is Rust, it builds the `agent-relay-node` binary
 as one long-lived daemon per user:
 
 ```sh
-agent-relay-node relay serve [--socket PATH] [--app-data-dir PATH] [--site-url URL] [--exit-on-stdin-eof] [--headless [--cli-managed]]
+agent-relay-node serve [--socket PATH] [--app-data-dir PATH] [--site-url URL] [--exit-on-stdin-eof] [--headless [--cli-managed]]
 ```
 
 A relative `--socket` lives beside the default socket and a relative
@@ -37,7 +37,7 @@ the daemon itself.
                                        │ JSON-RPC 2.0 NDJSON over ~/.agentworkforce/desktop/core.sock
                                        │ (on Windows, a named pipe named for that path)
                                        ▼
- ┌───────────────────────── agent-relay-node relay serve ──────────────────────┐
+ ┌───────────────────────── agent-relay-node serve ──────────────────────┐
  │ workspace discovery · Relaycast (relaycast SDK) · push channels · delivery  │
  │ injectable agents · relay-send socket · fleet · setup API · Cloud sign-in   │
  │ messaging · people · integrations · Cloud model endpoints                    │
@@ -82,7 +82,7 @@ Unix socket (on Windows, a named pipe; see **Windows** below):
   `getpeereid` + `LOCAL_PEERPID` on macOS). Only this user's processes are
   served; another user's connection is closed without a reply. This is the
   same trust boundary as the 0600 agent store, and no method returns a key or
-  token. `relay call` likewise speaks only to a daemon run by this user.
+  token. `call` likewise speaks only to a daemon run by this user.
 - **Windows:** the socket path is only a key. The pipe is
   `\\.\pipe\agent-relay-<16 hex digits>` (the start of the SHA-256 of the
   path), created with a DACL that grants only the current user, refusing
@@ -100,7 +100,7 @@ Unix socket (on Windows, a named pipe; see **Windows** below):
 
 A socket rather than the hosted child's stdio: on Linux the daemon runs under
 systemd with no UI attached, and a GTK app attaches and detaches; on both
-platforms more than one client (the app, `relay call`, support tooling) must
+platforms more than one client (the app, `call`, support tooling) must
 reach the same daemon. One transport serves every case.
 
 Startup applies the subscription's initial status before loading settings and
@@ -112,7 +112,7 @@ watchdog exposes retry and diagnostics if the service has not become ready.
 
 ## Lifecycle
 
-- **Single instance.** `relay serve` takes an exclusive `flock` on
+- **Single instance.** `serve` takes an exclusive `flock` on
   `<socket>.lock` (0600) for its whole life. A second daemon for the same
   socket exits 1 with `Agent Relay core is already running for this socket.`;
   its host connects to the running one instead. Holding the lock, the daemon
@@ -121,7 +121,7 @@ watchdog exposes retry and diagnostics if the service has not become ready.
 - **macOS.** The core is a launchd LaunchAgent the app registers with
   `SMAppService.agent(plistName:)`: `Contents/Library/LaunchAgents/com.agentrelay.desktop.core.plist`
   runs `BundleProgram` `Contents/Helpers/Agent Relay Helper` (the
-  `agent-relay-probe` binary, named for Activity Monitor) with `relay serve`,
+  `agent-relay-probe` binary, named for Activity Monitor) with `serve`,
   `RunAtLoad` and `KeepAlive`. The session collector the core starts runs as
   the hard link beside it, `Agent Relay Helper (Sessions)`, so Activity
   Monitor tells the two apart. It runs at login with no window, keeps
@@ -145,7 +145,7 @@ watchdog exposes retry and diagnostics if the service has not become ready.
   which stops it until the app opens again; removing the app removes it. The
   app's own login item only brings back the menu bar and notifications, so it is the person's choice and off until they make it.
 - **Linux.** The systemd user unit (`Restart=always`, `UMask=0077`) runs
-  `/usr/lib/agent-relay/agent-relay-probe relay serve --headless`;
+  `/usr/lib/agent-relay/agent-relay-probe serve --headless`;
   `/usr/bin/agent-relay-desktop --headless` execs the same. Headless, the
   core removes the app-owned GUI autostart entry (systemd starts Agent Relay;
   the entry would start a second copy), never turns launch at login on after
@@ -159,7 +159,7 @@ watchdog exposes retry and diagnostics if the service has not become ready.
   stopped and replaced.
 - **The relay CLI.** `relay init` attaches to whichever core answers on the
   socket and starts one only when none does:
-  `agent-relay-node relay serve --headless --cli-managed`. `--cli-managed`
+  `agent-relay-node serve --headless --cli-managed`. `--cli-managed`
   keeps the app's login entry and turns on no defaults by itself (neither the
   agent-led defaults at start nor the integration defaults of each refresh
   pass); the CLI turns on the delivery settings the person chose through
@@ -526,7 +526,7 @@ uploads already; an install a newer probe runs is left alone.
 | `agents.webhook.revoke`                             | `{"name"}`                                                                                                                                                                                     | `{"already_deleted"}`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | 2a                                                                                                                                         |
 | `agents.integrations.subscribe`                     | `{"name","provider","resource"}`                                                                                                                                                               | `{"subscribed":true,"provider","resource","path_glob"}`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | 2a                                                                                                                                         |
 | `agents.integrations.unsubscribe` / `.clean_up`     | `{"name","provider","resource"}`                                                                                                                                                               | `{"subscribed":false,"provider","resource","already_unsubscribed"?}`; also finishes an unfinished subscription                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | 2a                                                                                                                                         |
-| `settings.get` / `settings.set`                     | `{"allow_self_registration"?, "auto_activate"?, "claude_session_hook"?, "direct_delivery"?, "direct_delivery_default"?, "devin_direct_delivery"?, "pi_extension"?, "pi_auto_activate"?, "opencode_auto_activate"?, "analytics_enabled"?, "contractor_access"?}` | All settings, plus the read-only `direct_delivery_managed` (the organization's `crossSessionInbound`, absent when it sets none); `direct_delivery_default` is write-only: `true` sets `accept` unless the user's own Claude settings already name `crossSessionInbound`, `false` changes nothing; `claude_session_hook` is off unless turned on and absent when no Claude login directory exists (the SessionStart hook never registers a session; with it come Claude `permissions.allow` rules for this probe's self-limiting commands on the session socket: `relay read`, `relay send`, `relay connect-send`, `relay fetch-attachment`, `relay agents`, `relay whoami` and `relay subscribe-channel`, recorded in `claude-permission-rules.json` and taken out with it); `devin_direct_delivery` adds or removes Agent Relay's lifecycle hooks in `~/.config/devin/config.json`, on by default where Devin has run, and absent where it has not; `pi_extension` installs or removes Agent Relay's extension in `~/.pi/agent/extensions` (only its own file), installed at start by a desktop core unless turned off and only on request by a `--cli-managed` one; while it is off no Pi session is listed and new messages to Pi are refused, even for a session that loaded the extension earlier, though a message already queued before it was turned off stays accepted and that loaded extension can still deliver it; absent where Pi has not run; `pi_auto_activate` and `opencode_auto_activate` (off unless turned on; `relay init` turns on the one for each tool chosen) let an open Pi or OpenCode session join by itself while `auto_activate` is on, which alone never activates those kinds; a setting the core runs without is `invalid_params`, and so are an unknown or read-only key and a non-boolean, which change nothing                                                                                                                                                    | 2a (store settings), 2b (`direct_delivery`, `claude_session_hook`, `devin_direct_delivery`), 2c (`analytics_enabled`, `contractor_access`) |
+| `settings.get` / `settings.set`                     | `{"allow_self_registration"?, "auto_activate"?, "claude_session_hook"?, "direct_delivery"?, "direct_delivery_default"?, "devin_direct_delivery"?, "pi_extension"?, "pi_auto_activate"?, "opencode_auto_activate"?, "analytics_enabled"?, "contractor_access"?}` | All settings, plus the read-only `direct_delivery_managed` (the organization's `crossSessionInbound`, absent when it sets none); `direct_delivery_default` is write-only: `true` sets `accept` unless the user's own Claude settings already name `crossSessionInbound`, `false` changes nothing; `claude_session_hook` is off unless turned on and absent when no Claude login directory exists (the SessionStart hook never registers a session; with it come Claude `permissions.allow` rules for this probe's self-limiting commands on the session socket: `read`, `send`, `connect-send`, `fetch-attachment`, `agents`, `whoami` and `subscribe-channel`, recorded in `claude-permission-rules.json` and taken out with it); `devin_direct_delivery` adds or removes Agent Relay's lifecycle hooks in `~/.config/devin/config.json`, on by default where Devin has run, and absent where it has not; `pi_extension` installs or removes Agent Relay's extension in `~/.pi/agent/extensions` (only its own file), installed at start by a desktop core unless turned off and only on request by a `--cli-managed` one; while it is off no Pi session is listed and new messages to Pi are refused, even for a session that loaded the extension earlier, though a message already queued before it was turned off stays accepted and that loaded extension can still deliver it; absent where Pi has not run; `pi_auto_activate` and `opencode_auto_activate` (off unless turned on; `relay init` turns on the one for each tool chosen) let an open Pi or OpenCode session join by itself while `auto_activate` is on, which alone never activates those kinds; a setting the core runs without is `invalid_params`, and so are an unknown or read-only key and a non-boolean, which change nothing                                                                                                                                                    | 2a (store settings), 2b (`direct_delivery`, `claude_session_hook`, `devin_direct_delivery`), 2c (`analytics_enabled`, `contractor_access`) |
 | `activity.list`                                     | `{"limit"?}`                                                                                                                                                                                   | `{"activity":[{"at_ms","agent","sender","preview","outcome":"injected"\|"skipped"\|"failed"\|"waiting"\|"in_doubt"\|"answered","detail","settlement":"handed_off"\|"waiting_for_turn"\|"visible"\|null}]}`, newest first; `settlement` is set on entries that place the message in the session (a queue handoff, a handoff behind the session's running turn, or the message recorded in the session) and includes Relay Connect deliveries under the participant's name                                                                                                                                                                                                                                                                                                                                                                                                                                           | 2a                                                                                                                                         |
 | `claude_delivery.status`                            | —                                                                                                                                                                                              | `{"restricted","sessions":[{"id","agent","title","direct"}],"allowed_senders":[{"address","name"}],"held":[{"id","agent","session_id","sender","sender_name","text","held_at_ms"}]}`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | 2b                                                                                                                                         |
 | `claude_delivery.restrict` / `.session` / `.sender` | `{"restricted"}` / `{"session_id","direct"}` / `{"sender","name","allowed"}`                                                                                                                   | `{}`; controls allowed-member enforcement, per-session Ask first, and the exact sender allowlist                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | 2b                                                                                                                                         |
@@ -728,7 +728,7 @@ the bridge socket is for UIs, the relay-send socket for sessions
   for macOS Codex threads without a `resume <thread>` ancestor invoke this
   probe's own client because the system curl binary does not expose
   `CODEX_THREAD_ID` to process inspection: the self-limiting commands
-  (`relay send`, `agents`, `whoami`, `read`, `fetch-attachment`, `connect-send`,
+  (`send`, `agents`, `whoami`, `read`, `fetch-attachment`, `connect-send`,
   `subscribe-channel`;
   `relay::session_cli`), each of which fixes its own method and route, so
   the Codex and Claude rules that allow them reach nothing else.
@@ -1052,7 +1052,7 @@ its stage lands.
 | `session_sources::SessionSources` | `probe/src/relay/session_sources.rs`  | Remote sessions (Devin Cloud, Claude Code on the web) a build lists and delivers into; Hermes's homes           | none: only this computer's sessions                           | 2b       |
 | `contractor_access::Provisioner` | `probe/src/relay/contractor_access.rs` | `provision(grant)` / `deprovision()` for this person's own grant, one at a time, in order                       | `PendingSeatTokens`: holds nothing                            | 2c       |
 
-`relay serve` builds its plugins with `local::plugins`: `LocalSessions`
+`serve` builds its plugins with `local::plugins`: `LocalSessions`
 (Codex and Claude discovery over a `process::ProcessTable`, fleet-owned
 sessions left out), `LocalInjector`, `ClaudeSettings` and the relay-send
 socket at its platform path; a build's `daemon::PluginBuilder` adds the
@@ -1128,14 +1128,14 @@ agent and restarts one whose origin, token or machine address changed.
 | `relay::protocol`                                          | Envelopes, events, error kinds, `BRIDGE_VERSION`                                                                                                                                                                               |
 | `relay::contract`                                          | The method and topic registry with every parameter, result and event type; Swift generation (`codegen`, `relay-contract-codegen`); the Rust client's tolerant reading (`reader`)                                               |
 | `relay::server`                                            | Accept loop, peer admission, handshake, dispatch, event forwarding                                                                                                                                                             |
-| `relay::daemon`                                            | `relay serve`, single-instance lock, socket lifecycle, `Core`, shutdown                                                                                                                                                        |
+| `relay::daemon`                                            | `serve`, single-instance lock, socket lifecycle, `Core`, shutdown                                                                                                                                                        |
 | `relay::state`                                             | The snapshot and the event hub                                                                                                                                                                                                 |
 | `relay::paths` / `relay::peer`                             | Socket and lock paths; kernel peer credentials                                                                                                                                                                                 |
 | `relay::workspace` / `relay::app_store` / `relay::machine` | Discovery, origin validation, the store's workspace fields, the machine prefix                                                                                                                                                 |
 | `relay::client`                                            | Relaycast clients over the SDK                                                                                                                                                                                                 |
 | `relay::sdk_gaps`                                          | Relaycast surface the SDK lacks                                                                                                                                                                                                |
 | `relay::push`                                              | Direct node sockets                                                                                                                                                                                                            |
-| `relay::cli`                                               | `relay call METHOD [--params JSON]`; `relay socket-request` (any documented route, for people and debugging; no rule allows it) and `relay subscribe <pull request>`, the session-socket clients                                                                                                   |
+| `relay::cli`                                               | `call METHOD [--params JSON]`; `socket-request` (any documented route, for people and debugging; no rule allows it) and `subscribe <pull request>`, the session-socket clients                                                                                                   |
 | `relay::methods`                                           | The bridge methods for agents, messaging, people, links and settings (2a)                                                                                                                                                      |
 | `relay::store`                                             | The agent store: format, migration, flock, three-way merge, set-aside of unreadable files (2a)                                                                                                                                 |
 | `relay::agents`                                            | Names, registration, rename, removal, webhooks, test sender, settings, cleanups (2a)                                                                                                                                           |
@@ -1148,7 +1148,7 @@ agent and restarts one whose origin, token or machine address changed.
 | `relay::process`                                           | The kernel's process table (`/proc`; `libproc`, `KERN_PROCARGS2` and code signatures on macOS) and the Codex caller rules (2b)                                                                                                 |
 | `relay::codex`                                             | Codex threads, rollouts, `codex queue`, the app-server proxy, the desktop app's IPC socket, the injection router (2b)                                                                                                          |
 | `relay::claude`                                            | Claude Code's session registry, peer inbox, Claude app sessions and `claude --print --cloud`, transcripts (2b)                                                                                                                 |
-| `relay::local`                                             | `LocalSessions`, `LocalInjector` and the plugins `relay serve` runs with (2b)                                                                                                                                                  |
+| `relay::local`                                             | `LocalSessions`, `LocalInjector` and the plugins `serve` runs with (2b)                                                                                                                                                  |
 | `relay::local_methods`                                     | `sessions.list`, `fleet.list`, `fleet.release`, the sessions/fleet watcher (2b)                                                                                                                                                |
 | `relay::outbound`                                          | The relay-send socket and its routes (2b)                                                                                                                                                                                      |
 | `relay::setup`                                             | Agent-led setup routes and defaults (2b)                                                                                                                                                                                       |
@@ -1281,15 +1281,15 @@ PTY runtime or agent harness is started by any test, and no test can find a
 real `codex` or `claude`.
 
 ```sh
-agent-relay-node relay serve &
-agent-relay-node relay call status.get --json
-agent-relay-node relay call workspace.refresh --json
-agent-relay-node relay call agents.list --json
-agent-relay-node relay call roster.list --json
-agent-relay-node relay call sessions.list --json
-agent-relay-node relay call fleet.list --json
+agent-relay-node serve &
+agent-relay-node call status.get --json
+agent-relay-node call workspace.refresh --json
+agent-relay-node call agents.list --json
+agent-relay-node call roster.list --json
+agent-relay-node call sessions.list --json
+agent-relay-node call fleet.list --json
 curl -s --unix-socket "$(cat ~/.agentworkforce/desktop/relay-socket)" http://relay/whoami
-agent-relay-node relay call daemon.shutdown --json
+agent-relay-node call daemon.shutdown --json
 ```
 
 A Connect inbox read that remains pending across heartbeat intervals does not
@@ -1309,6 +1309,6 @@ identities; their filenames scope keys to workspace and caller without storing
 credentials. The control bridge adds no user-facing layout or platform-specific UI.
 
 ```sh
-agent-relay-node relay call spawn.targets --json
-agent-relay-node relay call spawn.status --params '{"caller_name":"my-local-agent","action":"spawn","invocation_id":"invocation_id_from_receipt"}' --json
+agent-relay-node call spawn.targets --json
+agent-relay-node call spawn.status --params '{"caller_name":"my-local-agent","action":"spawn","invocation_id":"invocation_id_from_receipt"}' --json
 ```

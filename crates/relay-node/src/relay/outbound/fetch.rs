@@ -14,7 +14,7 @@ use crate::relay::state::now_ms;
 use serde_json::{json, Value};
 
 /// The probe a session runs for socket commands, reply hints and pointers'
-/// `relay read` alike: this build's own executable, which every install has
+/// `read` alike: this build's own executable, which every install has
 /// without a skill, PATH change or link (the app bundle's helper on macOS,
 /// the package's on Linux). While the core keeps a space-free link to it for
 /// Codex's and Claude Code's rules (`probe_alias`), the link.

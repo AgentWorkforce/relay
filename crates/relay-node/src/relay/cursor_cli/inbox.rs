@@ -278,7 +278,7 @@ pub(super) fn transcript_records(config: &CursorConfig, session_id: &str, text: 
 }
 
 /// The probe subcommand Cursor runs for Agent Relay's hooks.
-pub const HOOK_SUBCOMMAND: &str = "relay cursor-hook";
+pub const HOOK_SUBCOMMAND: &str = "cursor-hook";
 
 /// The hook events Agent Relay installs: a tool call mid-turn and the end
 /// of a turn, which hand messages over, and a prompt about to start a

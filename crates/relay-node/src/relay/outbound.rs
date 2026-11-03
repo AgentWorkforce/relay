@@ -13,7 +13,7 @@
 //! On Windows the same HTTP/1.1 is served on the named pipe
 //! `relay::transport` derives from the socket path. curl cannot reach a
 //! pipe, so every command handed to a session there is the probe's own
-//! client (`agent-relay-node relay send` and the other `session_cli`
+//! client (`agent-relay-node send` and the other `session_cli`
 //! commands, [`probe_client`]).
 //!
 //! The caller is never taken at its word. The kernel reports the connecting
@@ -2217,12 +2217,12 @@ mod tests {
                 channels::channel_reply_command(socket, "swarm", "123", kind, false).unwrap();
             assert!(covered(&thread), "{thread}");
             // Joining or leaving a channel is one of the self-limiting
-            // commands too (`relay subscribe-channel`).
+            // commands too (`subscribe-channel`).
             for join in [true, false] {
                 let command =
                     channels::channel_subscription_command(socket, "swarm", join, kind, false)
                         .unwrap();
-                assert!(command.contains(" relay subscribe-channel "), "{command}");
+                assert!(command.contains(" subscribe-channel "), "{command}");
                 assert!(covered(&command), "{command}");
             }
         }
@@ -2245,9 +2245,9 @@ mod tests {
         // `socket-request`, which a rule prefix could not confine.
         assert!(!hint.contains("socket-request"), "{hint}");
         assert!(hint.contains(
-            " relay send --socket '/tmp/Relay Socket'\\''s/relay.sock' --to host.o_k --reply-to msg_123 "
+            " send --socket '/tmp/Relay Socket'\\''s/relay.sock' --to host.o_k --reply-to msg_123 "
         ), "{hint}");
-        assert!(hint.contains(" relay agents --socket '/tmp/Relay Socket'\\''s/relay.sock']"));
+        assert!(hint.contains(" agents --socket '/tmp/Relay Socket'\\''s/relay.sock']"));
         // Review on #2031: an exact address with more than one `@` keeps its
         // probe reply.
         let multi = reply_hint(
@@ -2260,9 +2260,8 @@ mod tests {
         )
         .unwrap();
         assert!(
-            multi.contains(
-                " relay send --socket /tmp/relay.sock --address x@ops@new-desk --reply-to m1 "
-            ),
+            multi
+                .contains(" send --socket /tmp/relay.sock --address x@ops@new-desk --reply-to m1 "),
             "{multi}"
         );
         // A sender name that could break the hint's lines gets no probe
@@ -2312,7 +2311,7 @@ mod tests {
             true,
         )
         .unwrap();
-        assert!(hint.contains(" relay send --socket /tmp/relay.sock --to host "));
+        assert!(hint.contains(" send --socket /tmp/relay.sock --to host "));
         assert!(!hint.contains("socket-request"));
         assert!(!hint.contains("curl"));
     }
@@ -2345,8 +2344,8 @@ mod tests {
                 true,
             )
             .unwrap();
-            assert!(hint.contains(" relay send --socket /tmp/relay.sock --to host "));
-            assert!(hint.contains(" relay agents --socket /tmp/relay.sock]"));
+            assert!(hint.contains(" send --socket /tmp/relay.sock --to host "));
+            assert!(hint.contains(" agents --socket /tmp/relay.sock]"));
             assert!(!hint.contains("socket-request"));
             assert!(!hint.contains("curl"));
         }
@@ -2358,13 +2357,10 @@ mod tests {
         let socket = Path::new(r"C:\Users\a\AppData\Roaming\com.agentrelay.desktop\run\relay.sock");
         for kind in [SessionKind::ClaudeTerminal, SessionKind::Codex] {
             let hint = reply_hint(socket, Some("host"), None, "msg_123", kind, false).unwrap();
-            assert!(hint.contains(" relay send --socket "), "{hint}");
+            assert!(hint.contains(" send --socket "), "{hint}");
             assert!(!hint.contains("curl"), "{hint}");
             let fetch = fetch_hint(socket, "file_1", kind, false).unwrap();
-            assert!(
-                fetch.contains(" relay fetch-attachment --socket "),
-                "{fetch}"
-            );
+            assert!(fetch.contains(" fetch-attachment --socket "), "{fetch}");
         }
     }
 }

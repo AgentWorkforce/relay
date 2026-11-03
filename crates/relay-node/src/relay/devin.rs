@@ -608,7 +608,7 @@ pub fn send(
 }
 
 /// The probe subcommand Devin's lifecycle hooks call.
-pub const HOOK_SUBCOMMAND: &str = "relay devin-hook";
+pub const HOOK_SUBCOMMAND: &str = "devin-hook";
 
 /// Lifecycle events the managed hook drains the inbox at. `PostToolUse`
 /// delivers mid-turn, `Stop` at the turn's end, `UserPromptSubmit` with
@@ -815,10 +815,10 @@ impl DevinSettings {
         platform::SUPPORTED && self.config.data_dir.is_dir()
     }
 
-    /// This build's hook: `<relay binary> relay devin-hook [--dev]`, where
+    /// This build's hook: `<relay binary> devin-hook [--dev]`, where
     /// the executable is one of ours by name and Agent Relay and Agent
     /// Relay Dev each keep their own. A command that merely ends with the
-    /// subcommand's spelling — `echo relay devin-hook`, a shell wrapper —
+    /// subcommand's spelling — `echo devin-hook`, a shell wrapper —
     /// is the user's own hook and is never removed.
     fn is_ours(&self, command: &str) -> bool {
         hook_command::is_ours(command, &self.command)
@@ -1028,7 +1028,7 @@ mod windows_tests {
             send(&config, &table, 0, "session", "message", "hi"),
             InjectOutcome::Refused("Devin is not available on Windows.".into())
         );
-        let settings = DevinSettings::new(&config, "agent-relay-probe relay devin-hook".into());
+        let settings = DevinSettings::new(&config, "agent-relay-probe devin-hook".into());
         assert!(settings.get().is_empty());
         assert_eq!(
             settings.set(SETTING, &serde_json::Value::Bool(true)),
@@ -1329,10 +1329,7 @@ mod tests {
     }
 
     fn settings(config: &DevinConfig) -> DevinSettings {
-        DevinSettings::new(
-            config,
-            "/opt/relay/agent-relay-probe relay devin-hook".into(),
-        )
+        DevinSettings::new(config, "/opt/relay/agent-relay-probe devin-hook".into())
     }
 
     /// Stamps `name`'s mtime at `seconds` past the epoch, so arrival order
@@ -1520,7 +1517,7 @@ mod tests {
         std::fs::create_dir_all(&config.config_dir).unwrap();
         std::fs::write(
             config.config_file(),
-            r#"{"theme_mode":"dark","hooks":{"UserPromptSubmit":[{"matcher":"","hooks":[{"type":"command","command":"/usr/bin/echo hi"},{"type":"command","command":"/usr/bin/echo relay devin-hook"}]}]}}"#,
+            r#"{"theme_mode":"dark","hooks":{"UserPromptSubmit":[{"matcher":"","hooks":[{"type":"command","command":"/usr/bin/echo hi"},{"type":"command","command":"/usr/bin/echo devin-hook"}]}]}}"#,
         )
         .unwrap();
         let settings = settings(&config);
@@ -1558,7 +1555,7 @@ mod tests {
         }
         assert!(written["hooks"]["UserPromptSubmit"]
             .to_string()
-            .contains("echo relay devin-hook"));
+            .contains("echo devin-hook"));
         assert!(written["hooks"]["UserPromptSubmit"]
             .to_string()
             .contains("echo hi"));
@@ -1576,10 +1573,10 @@ mod tests {
         assert!(written["hooks"]["UserPromptSubmit"]
             .to_string()
             .contains("echo hi"));
-        // The user's own `echo relay devin-hook` is foreign, so it stays.
+        // The user's own `echo devin-hook` is foreign, so it stays.
         assert!(written["hooks"]["UserPromptSubmit"]
             .to_string()
-            .contains("echo relay devin-hook"));
+            .contains("echo devin-hook"));
         assert_eq!(settings.get()[SETTING], serde_json::Value::Bool(false));
         settings
             .set(SETTING, &serde_json::json!(false))
@@ -1662,22 +1659,26 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let config = config(temp.path());
         let settings = settings(&config);
-        assert!(settings.is_ours("/opt/relay/agent-relay-probe relay devin-hook"));
-        assert!(settings.is_ours("'/opt/relay dir/agent-relay-probe' relay devin-hook"));
-        assert!(!settings.is_ours("/opt/relay/agent-relay-probe relay devin-hook --dev"));
+        assert!(settings.is_ours("/opt/relay/agent-relay-probe devin-hook"));
+        assert!(settings.is_ours("'/opt/relay dir/agent-relay-probe' devin-hook"));
+        assert!(!settings.is_ours("/opt/relay/agent-relay-probe devin-hook --dev"));
         assert!(!settings.is_ours("/home/user/.config/devin/relay-hook.py"));
         // A command whose arguments merely spell the subcommand — an echo,
         // a wrapper script, some other binary — is the user's, never ours.
+        assert!(!settings.is_ours("echo devin-hook"));
+        assert!(!settings.is_ours("/opt/relay/probe devin-hook"));
+        assert!(!settings.is_ours("sh -c 'agent-relay-probe devin-hook'"));
+        // The earlier `<executable> relay devin-hook` form is ours, so setup
+        // replaces it; a foreign command spelling it is still the user's.
+        assert!(settings.is_ours("/opt/relay/agent-relay-probe relay devin-hook"));
+        assert!(settings.is_ours(
+            "'/Applications/Agent Relay.app/Contents/Helpers/Agent Relay Helper' relay devin-hook"
+        ));
         assert!(!settings.is_ours("echo relay devin-hook"));
-        assert!(!settings.is_ours("/opt/relay/probe relay devin-hook"));
-        assert!(!settings.is_ours("sh -c 'agent-relay-probe relay devin-hook'"));
-        let dev = DevinSettings::new(
-            &config,
-            "/opt/agent-relay-probe relay devin-hook --dev".into(),
-        );
-        assert!(dev.is_ours("/opt/agent-relay-probe relay devin-hook --dev"));
-        assert!(!dev.is_ours("/opt/agent-relay-probe relay devin-hook"));
-        assert!(!dev.is_ours("/opt/probe relay devin-hook --dev"));
+        let dev = DevinSettings::new(&config, "/opt/agent-relay-probe devin-hook --dev".into());
+        assert!(dev.is_ours("/opt/agent-relay-probe devin-hook --dev"));
+        assert!(!dev.is_ours("/opt/agent-relay-probe devin-hook"));
+        assert!(!dev.is_ours("/opt/probe devin-hook --dev"));
     }
 
     /// A symlink whose target is a `pipe:[N]` name, like `/proc/pid/fd`

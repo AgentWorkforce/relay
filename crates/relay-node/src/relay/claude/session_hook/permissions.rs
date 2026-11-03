@@ -1,8 +1,8 @@
 //! The Claude Code permission rules that come with the SessionStart hook.
 //!
 //! A relayed message reaches a Claude Code session as a pointer whose read
-//! command (`<probe> relay read --socket <socket> <ref>`) prints the message
-//! and its reply command (`<probe> relay send --socket <socket> --to …
+//! command (`<probe> read --socket <socket> <ref>`) prints the message
+//! and its reply command (`<probe> send --socket <socket> --to …
 //! --reply-to … --body '<reply>'`). In Claude Code's default ("manual")
 //! permission mode each of those asked for approval. With the hook, Agent
 //! Relay adds `permissions.allow` rules to the same user `settings.json` for
@@ -10,13 +10,13 @@
 //! this probe on this core's own session socket:
 //!
 //! ```text
-//! Bash(<probe> relay read --socket <socket> *)
-//! Bash(<probe> relay send --socket <socket> *)
-//! Bash(<probe> relay connect-send --socket <socket> *)
-//! Bash(<probe> relay fetch-attachment --socket <socket> *)
-//! Bash(<probe> relay agents --socket <socket>)
-//! Bash(<probe> relay whoami --socket <socket>)
-//! Bash(<probe> relay subscribe-channel --socket <socket> *)
+//! Bash(<probe> read --socket <socket> *)
+//! Bash(<probe> send --socket <socket> *)
+//! Bash(<probe> connect-send --socket <socket> *)
+//! Bash(<probe> fetch-attachment --socket <socket> *)
+//! Bash(<probe> agents --socket <socket>)
+//! Bash(<probe> whoami --socket <socket>)
+//! Bash(<probe> subscribe-channel --socket <socket> *)
 //! ```
 //!
 //! That is: read a message handed to this session, reply (a DM, a channel
@@ -27,7 +27,7 @@
 //! and route and checks every other argument, so nothing after the `*`
 //! reaches another route. Every other session route (`/register`,
 //! `PATCH /settings`, `/integrations/subscribe`, …) is reached only through
-//! `relay socket-request`, which no rule allows, so it still asks.
+//! `socket-request`, which no rule allows, so it still asks.
 //!
 //! Claude Code matches the text before a rule's `*` as written, after it
 //! splits compound commands and strips a few wrappers (verified against
@@ -37,7 +37,7 @@
 //! A double-quoted or backslash-escaped spelling, another socket, another
 //! program, or anything chained after the command (`&&`, `;`, `|`, `$(…)`
 //! outside single quotes) still asks. The socket answers only the calling
-//! session's own requests, and `relay read --socket` refuses `--dev`.
+//! session's own requests, and `read --socket` refuses `--dev`.
 //!
 //! Which rules Agent Relay added is recorded in the core's data folder
 //! ([`RECORD`]), so turning the hook off takes out only those: a rule the
@@ -75,7 +75,7 @@ impl PermissionRules {
         {
             return Vec::new();
         }
-        let command = |name: &str| format!("{probe} relay {name} --socket {socket}");
+        let command = |name: &str| format!("{probe} {name} --socket {socket}");
         vec![
             format!("Bash({} *)", command("read")),
             // A reply: a DM or a channel thread (`outbound::reply_hint`,
@@ -299,13 +299,13 @@ mod tests {
         assert_eq!(
             all,
             vec![
-                format!("Bash({probe} relay read {on} *)"),
-                format!("Bash({probe} relay send {on} *)"),
-                format!("Bash({probe} relay connect-send {on} *)"),
-                format!("Bash({probe} relay fetch-attachment {on} *)"),
-                format!("Bash({probe} relay agents {on})"),
-                format!("Bash({probe} relay whoami {on})"),
-                format!("Bash({probe} relay subscribe-channel {on} *)"),
+                format!("Bash({probe} read {on} *)"),
+                format!("Bash({probe} send {on} *)"),
+                format!("Bash({probe} connect-send {on} *)"),
+                format!("Bash({probe} fetch-attachment {on} *)"),
+                format!("Bash({probe} agents {on})"),
+                format!("Bash({probe} whoami {on})"),
+                format!("Bash({probe} subscribe-channel {on} *)"),
             ]
         );
         // The text before the read's `*` is exactly how the pointer's read
@@ -326,17 +326,17 @@ mod tests {
         let on = "--socket '/Users/me/Library/Application Support/x/run/relay.sock'";
         let allowed = |command: &str| all.iter().any(|rule| covers(rule, command));
         for command in [
-            format!("{probe} relay send {on} --to a --reply-to m1 --body 'x'"),
-            format!("{probe} relay send {on} --channel c --thread 1 --body 'x'"),
-            format!("{probe} relay connect-send {on} --to host --body 'x'"),
-            format!("{probe} relay fetch-attachment {on} f1"),
-            format!("{probe} relay agents {on}"),
-            format!("{probe} relay whoami {on}"),
-            format!("{probe} relay read {on} 0123456789ab"),
+            format!("{probe} send {on} --to a --reply-to m1 --body 'x'"),
+            format!("{probe} send {on} --channel c --thread 1 --body 'x'"),
+            format!("{probe} connect-send {on} --to host --body 'x'"),
+            format!("{probe} fetch-attachment {on} f1"),
+            format!("{probe} agents {on}"),
+            format!("{probe} whoami {on}"),
+            format!("{probe} read {on} 0123456789ab"),
         ] {
             assert!(allowed(&command), "{command}");
         }
-        let request = format!("{probe} relay socket-request {on}");
+        let request = format!("{probe} socket-request {on}");
         for (method, path) in [
             ("POST", "'/send?to=a'"),
             ("GET", "/agents"),
@@ -357,12 +357,12 @@ mod tests {
             );
         }
         for command in [
-            format!("{probe} relay settings {on} auto_join_general=true"),
-            format!("{probe} relay subscribe {on} acme/api#1"),
-            format!("{probe} relay agents {on} --body x"),
+            format!("{probe} settings {on} auto_join_general=true"),
+            format!("{probe} subscribe {on} acme/api#1"),
+            format!("{probe} agents {on} --body x"),
             // Another socket.
-            format!("{probe} relay send --socket /tmp/other.sock --to a --body x"),
-            format!("{probe} relay send {on}x --to a --body x"),
+            format!("{probe} send --socket /tmp/other.sock --to a --body x"),
+            format!("{probe} send {on}x --to a --body x"),
         ] {
             assert!(!allowed(&command), "{command}");
         }
@@ -411,7 +411,7 @@ mod tests {
 
     #[test]
     fn stale_rules_agent_relay_added_are_replaced() {
-        let old = vec!["Bash(/old/probe relay read --socket /s *)".to_string()];
+        let old = vec!["Bash(/old/probe read --socket /s *)".to_string()];
         let ours = rules().rules();
         let mut object = json!({"permissions": {"allow": [old[0].clone(), "Bash(ls *)"]}})
             .as_object()

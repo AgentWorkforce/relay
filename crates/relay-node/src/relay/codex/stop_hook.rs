@@ -28,7 +28,7 @@
 //! for another Agent Relay connector before a relayed message has shown it
 //! the local route (`hosted_mcp::codex_preamble`).
 //!
-//! The hook runs `agent-relay-node relay codex-stop-hook`, which hands its
+//! The hook runs `agent-relay-node codex-stop-hook`, which hands its
 //! input to the relay-send socket (`POST /codex/stop-hook`). The socket
 //! answers only a caller whose nearest trusted Codex holds the named
 //! thread's writer lock, so a process can collect only its own thread's
@@ -52,7 +52,7 @@ use rules::{RULES_HEADER, RULES_NAMES};
 pub const SETTING: &str = "codex_stop_hook";
 
 /// The subcommand the hook runs; also how the hook is recognized as ours.
-pub const SUBCOMMAND: &str = "relay codex-stop-hook";
+pub const SUBCOMMAND: &str = "codex-stop-hook";
 
 /// What a waiting relay message says about the chat it is for.
 pub const HELD: &str = "Waiting — handed over when the Conductor chat's turn ends";
@@ -1166,7 +1166,7 @@ mod tests {
         let socket = "/Users/me/Library/Application Support/x/run/relay.sock";
         for subcommand in crate::relay::session_cli::ALLOWED_SUBCOMMANDS {
             assert!(rules.contains(&format!(
-                "pattern = [\"{named}\", \"relay\", \"{subcommand}\", \"--socket\", \"{socket}\"]"
+                "pattern = [\"{named}\", \"{subcommand}\", \"--socket\", \"{socket}\"]"
             )));
         }
         assert!(!rules.contains("socket-request"));
@@ -1180,10 +1180,10 @@ mod tests {
         }
         .command_line(&link, Path::new(socket), Some("your reply"))
         .unwrap();
-        assert!(reply.starts_with(&format!("{named} relay send --socket '{socket}' ")));
+        assert!(reply.starts_with(&format!("{named} send --socket '{socket}' ")));
         let read =
             crate::relay::message_pointer::socket_reader(Some(&link), Path::new(socket)).unwrap();
-        assert_eq!(read, format!("{named} relay read --socket '{socket}'"));
+        assert_eq!(read, format!("{named} read --socket '{socket}'"));
         // A core start brings it back after the link went missing.
         std::fs::remove_file(&link).unwrap();
         settings.refresh();
@@ -1206,7 +1206,7 @@ mod tests {
         assert_eq!(rules.matches("prefix_rule(").count(), count);
         for subcommand in crate::relay::session_cli::ALLOWED_SUBCOMMANDS {
             assert!(rules.contains(&format!(
-                "pattern = [\"/Apps/Agent Relay.app/probe\", \"relay\", \"{subcommand}\", \"--socket\", \"/s/relay.sock\"]"
+                "pattern = [\"/Apps/Agent Relay.app/probe\", \"{subcommand}\", \"--socket\", \"/s/relay.sock\"]"
             )), "{subcommand}");
         }
         // `socket-request` takes any method and path; a prefix rule could
@@ -1219,7 +1219,7 @@ mod tests {
     /// Codex's own policy engine runs each without a prompt.
     fn hostile_and_intended(probe: &str, socket: &str) -> Vec<(Vec<String>, bool)> {
         let on = |words: &[&str]| -> Vec<String> {
-            [probe, "relay"]
+            [probe]
                 .iter()
                 .chain(words.iter())
                 .map(|word| word.replace("SOCK", socket))
@@ -1339,7 +1339,7 @@ mod tests {
             .ok_or(())
     }
 
-    // An older core's rules (`relay socket-request`, which reached every
+    // An older core's rules (`socket-request`, which reached every
     // session route) are replaced on upgrade, also under a second name,
     // and turning the hook off still leaves `~/.codex` as it was.
     #[test]
@@ -1363,7 +1363,8 @@ mod tests {
         assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
         let rules = std::fs::read_to_string(codex.join("rules/agent-relay.rules")).unwrap();
         assert!(!rules.contains("socket-request"), "{rules}");
-        assert!(rules.contains("\"relay\", \"send\""));
+        assert!(rules.contains(", \"send\", \"--socket\""), "{rules}");
+        assert!(!rules.contains("\"relay\""), "{rules}");
         assert!(!codex.join("rules/agent-relay-2.rules").exists());
         // Already current: a refresh leaves it, and finds no stale copy.
         std::fs::write(codex.join("rules/agent-relay-3.rules"), &older).unwrap();
@@ -1611,6 +1612,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join(".codex")).unwrap();
         let old = json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "'/Old/probe' relay codex-stop-hook"}]}]}});
+        // An older copy in the earlier `<probe> relay codex-stop-hook` form.
         std::fs::write(home.path().join(".codex/hooks.json"), old.to_string()).unwrap();
         let (settings, _, inbox) = settings(home.path());
         settings.refresh();
@@ -1647,8 +1649,8 @@ mod tests {
         std::fs::create_dir_all(home.path().join(".codex")).unwrap();
         let shared = json!({"hooks": {"Stop": [{"hooks": [
             {"type": "command", "command": "notify.sh"},
-            {"type": "command", "command": "'/Old/probe' relay codex-stop-hook"},
-            {"type": "command", "command": "'/Dev/probe' relay codex-stop-hook --dev"}
+            {"type": "command", "command": "'/Old/probe' codex-stop-hook"},
+            {"type": "command", "command": "'/Dev/probe' codex-stop-hook --dev"}
         ]}]}});
         std::fs::write(home.path().join(".codex/hooks.json"), shared.to_string()).unwrap();
         let (settings, _, _) = settings(home.path());
@@ -1670,14 +1672,14 @@ mod tests {
             commands(&read()),
             [
                 "notify.sh".to_string(),
-                "'/Dev/probe' relay codex-stop-hook --dev".to_string(),
+                "'/Dev/probe' codex-stop-hook --dev".to_string(),
                 ours()
             ]
         );
         assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
         assert_eq!(
             commands(&read()),
-            ["notify.sh", "'/Dev/probe' relay codex-stop-hook --dev"]
+            ["notify.sh", "'/Dev/probe' codex-stop-hook --dev"]
         );
     }
 
@@ -1704,7 +1706,7 @@ mod tests {
     fn the_windows_command_is_quoted_for_cmd() {
         assert_eq!(
             CodexStopHookSettings::command_for(Path::new(r"C:\a b\probe.exe"), false),
-            r#""C:\a b\probe.exe" relay codex-stop-hook"#
+            r#""C:\a b\probe.exe" codex-stop-hook"#
         );
     }
 
@@ -1713,7 +1715,7 @@ mod tests {
     fn the_command_names_the_dev_build() {
         assert_eq!(
             CodexStopHookSettings::command_for(Path::new("/a b/probe"), true),
-            "'/a b/probe' relay codex-stop-hook --dev"
+            "'/a b/probe' codex-stop-hook --dev"
         );
     }
 }

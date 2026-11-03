@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The core `relay serve` and `relay init` run is messaging-only and is called `agent-relay-node`: `relay init` installs it from `relay-node-v<version>` releases, and `AGENT_RELAY_NODE_PATH` points at a binary of your own. Session history (capture, upload and the session catalog) lives in the Agent Relay desktop app.
+- The core `relay serve` and `relay init` run is messaging-only and is called `agent-relay-node`: `relay init` installs it from `relay-node-v<version>` releases, and `AGENT_RELAY_NODE_PATH` points at a binary of your own. Its commands have no `relay` word (`agent-relay-node serve`, `agent-relay-node call status.get`), and the hooks, Codex rules and Claude permission rules it installs use that form; setup replaces the earlier `… relay …` entries. Session history (capture, upload and the session catalog) lives in the Agent Relay desktop app.
 
 ## [15.1.1] - 2026-11-03
 

@@ -9,7 +9,7 @@ messaging only. It builds one binary, `agent-relay-node`, which runs as one
 long-lived process per user:
 
 ```sh
-agent-relay-node relay serve [--socket PATH] [--app-data-dir PATH] [--site-url URL] [--headless]
+agent-relay-node serve [--socket PATH] [--app-data-dir PATH] [--site-url URL] [--headless]
 ```
 
 The relay CLI (`relay init`, `relay serve`) installs and runs it headless. The
@@ -27,15 +27,15 @@ This crate is its **own Cargo workspace** with its own `Cargo.lock`. It is not
 a member of the repository's root workspace (the broker): the two pin
 different `relaycast`, `nix` and `portable-pty` versions.
 
-| Path                                | Owns                                                                                                                                                                           |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/cli/`                          | The `agent-relay-node` command line: `relay …` and `connect …`                                                                                                                 |
-| `src/relay/`                        | The daemon (`relay serve`): workspace, Relaycast, delivery and injection per harness, harness setup (hooks/plugins), spawning, the bridge and its contract (`relay::contract`) |
-| `src/install*`                      | Where a packaged desktop install keeps its executables; the core's launch-at-login entry uses it                                                                               |
-| `src/bin/relay-contract-codegen.rs` | Generates the Swift bridge contract the apps consume                                                                                                                           |
-| `contract/CoreContract.swift`       | The checked-in generated contract; CI fails on drift                                                                                                                           |
-| `scripts/`                          | `generate-contract.sh`, `check-open-source.sh`                                                                                                                                 |
-| `tests/`                            | Integration tests, with in-process fakes of Cloud and Relaycast (`tests/support`)                                                                                              |
+| Path                                | Owns                                                                                                                                                                     |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/cli/`                          | The `agent-relay-node` command line: `relay …` and `connect …`                                                                                                           |
+| `src/relay/`                        | The daemon (`serve`): workspace, Relaycast, delivery and injection per harness, harness setup (hooks/plugins), spawning, the bridge and its contract (`relay::contract`) |
+| `src/install*`                      | Where a packaged desktop install keeps its executables; the core's launch-at-login entry uses it                                                                         |
+| `src/bin/relay-contract-codegen.rs` | Generates the Swift bridge contract the apps consume                                                                                                                     |
+| `contract/CoreContract.swift`       | The checked-in generated contract; CI fails on drift                                                                                                                     |
+| `scripts/`                          | `generate-contract.sh`, `check-open-source.sh`                                                                                                                           |
+| `tests/`                            | Integration tests, with in-process fakes of Cloud and Relaycast (`tests/support`)                                                                                        |
 
 ## What a build adds
 
@@ -51,10 +51,10 @@ nothing. A build such as relay-desktop's `desktop-core` adds:
 | `Plugins.history_version`                  | The session-history library release `status.get` reports                                                                                |
 | `PluginBuilder.session_sources`            | `session_sources::SessionSources`: remote sessions (Devin Cloud, Claude Code on the web) it lists and delivers into, and Hermes's homes |
 
-Without them the core is the whole messaging runtime: `relay serve`
+Without them the core is the whole messaging runtime: `agent-relay-node serve`
 (discovery, native delivery and injection into running sessions, harness
 setup and hooks, Relaycast and the workspace, spawning, the bridge and its
-contract), `relay call`, the harness hooks and `connect`. The account methods
+contract), `call`, the harness hooks and `connect`. The account methods
 answer `method_not_found`, and the core uses the workspace the `agent-relay`
 CLI selects (`src/relay/workspace/cli.rs`), with no sign-in needed.
 

@@ -1,4 +1,4 @@
-//! `agent-relay-node relay call`: one request to a running core, for
+//! `agent-relay-node call`: one request to a running core, for
 //! scripts and support. It speaks the same bridge as the apps.
 
 use crate::relay::daemon::SafeError;
@@ -85,7 +85,7 @@ pub fn call(
     request(2, method, params)
 }
 
-/// `relay read <ref>`: prints a relayed message this session was handed as a
+/// `read <ref>`: prints a relayed message this session was handed as a
 /// pointer, then its note (`message_pointer::read_note`). Like the other
 /// session commands (`session_cli`), the session is told from this process,
 /// so it reads only its own messages.
@@ -164,7 +164,7 @@ This is not a setup problem; the core is still running. Try again shortly.",
 /// shorter wait here would report a failure the core goes on to complete.
 const SUBSCRIBE_TIMEOUT: Duration = Duration::from_secs(CONNECT_WAIT.as_secs() + 120);
 
-/// The request `relay subscribe` sends for `pull`, or why it names no pull
+/// The request `subscribe` sends for `pull`, or why it names no pull
 /// request. Checked here so a mistyped argument never reaches the socket.
 fn pull_subscription(pull: &str) -> Result<Vec<u8>> {
     let pull = pull.trim();
@@ -215,7 +215,7 @@ pub fn pointed_socket(home: &Path, development: bool) -> Result<std::path::PathB
     Ok(path.to_path_buf())
 }
 
-/// `agent-relay-node relay subscribe <pull>`: subscribes (or, with
+/// `agent-relay-node subscribe <pull>`: subscribes (or, with
 /// `remove`, unsubscribes) the calling Codex or Claude session to one GitHub
 /// pull request. The core identifies the session from this process; nothing
 /// names it and no credential is sent.

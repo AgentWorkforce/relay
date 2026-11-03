@@ -1,4 +1,4 @@
-//! The shipped `relay serve` binary. It lives in its own test process: the
+//! The shipped `serve` binary. It lives in its own test process: the
 //! children it spawns briefly inherit every descriptor across fork, which
 //! would hold another test's instance lock.
 
@@ -30,8 +30,8 @@ fn keep_system_environment(command: &mut Command) {
     }
 }
 
-/// The shipped binary: `relay serve` refuses a second instance, answers
-/// `relay call`, and stops when its hosting app closes stdin. The
+/// The shipped binary: `serve` refuses a second instance, answers
+/// `call`, and stops when its hosting app closes stdin. The
 /// environment is cleared so no real workspace key or Relaycast is reached.
 #[test]
 fn the_binary_serves_answers_calls_and_stops_with_its_host() {
@@ -79,7 +79,6 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
     };
     let data_dir = temp.path().join("app-data");
     let serve_args = [
-        "relay",
         "serve",
         "--socket",
         socket.to_str().unwrap(),
@@ -116,7 +115,7 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
         agent_relay_node::relay::login_item::enabled(temp.path(), &startup_env),
         "starting the headless service must preserve the GUI startup entry"
     );
-    let second = command(&serve_args[..4]).output().unwrap();
+    let second = command(&serve_args[..3]).output().unwrap();
     assert!(!second.status.success());
     assert_eq!(
         String::from_utf8_lossy(&second.stderr).trim(),
@@ -124,7 +123,6 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
     );
 
     let call = command(&[
-        "relay",
         "call",
         "status.get",
         "--socket",
@@ -142,7 +140,6 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
     // The uploader's methods come with an account plugin, which this binary
     // does not build in: it answers `method_not_found`.
     let preview = command(&[
-        "relay",
         "call",
         "uploader.sessions.preview",
         "--socket",
@@ -174,15 +171,9 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
     assert!(status.success());
     assert!(!socket.exists());
 
-    let gone = command(&[
-        "relay",
-        "call",
-        "status.get",
-        "--socket",
-        socket.to_str().unwrap(),
-    ])
-    .output()
-    .unwrap();
+    let gone = command(&["call", "status.get", "--socket", socket.to_str().unwrap()])
+        .output()
+        .unwrap();
     assert!(!gone.status.success());
     assert!(String::from_utf8_lossy(&gone.stderr).contains("is not running"));
 }
@@ -210,7 +201,6 @@ fn the_headless_service_preserves_the_apps_login_entry_and_stops_on_sigterm() {
             .env("XDG_CONFIG_HOME", temp.path().join("config"))
             .env("XDG_RUNTIME_DIR", temp.path().join("run"))
             .args([
-                "relay",
                 "serve",
                 "--headless",
                 "--socket",

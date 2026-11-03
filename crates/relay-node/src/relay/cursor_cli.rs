@@ -661,7 +661,7 @@ mod windows_tests {
             send(&config, &table, 0, session, "message", "hi"),
             InjectOutcome::Refused("Cursor CLI is not available on Windows.".into())
         );
-        let settings = CursorSettings::new(&config, "agent-relay-probe relay cursor-hook".into());
+        let settings = CursorSettings::new(&config, "agent-relay-probe cursor-hook".into());
         assert!(settings.get().is_empty());
         assert_eq!(
             settings.set(SETTING, &Value::Bool(true)),

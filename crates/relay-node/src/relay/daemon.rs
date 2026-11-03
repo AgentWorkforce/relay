@@ -1,4 +1,4 @@
-//! `agent-relay-node relay serve`: the long-running core the desktop UIs
+//! `agent-relay-node serve`: the long-running core the desktop UIs
 //! drive.
 //!
 //! One daemon per socket, enforced by an exclusive lock held for the
@@ -650,7 +650,7 @@ pub fn serve(options: ServeOptions) -> Result<()> {
     serve_with(options, default_plugin_builder())
 }
 
-/// The plugins `relay serve` runs with: a build may set its own once, at
+/// The plugins `serve` runs with: a build may set its own once, at
 /// start. Without one the core works from its workspace key, with no account.
 static PLUGIN_BUILDER: std::sync::OnceLock<PluginBuilder> = std::sync::OnceLock::new();
 

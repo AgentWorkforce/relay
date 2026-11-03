@@ -1,9 +1,9 @@
-//! The probe's self-limiting session-socket commands: `relay send`,
-//! `relay agents`, `relay whoami`, `relay read`, `relay fetch-attachment`,
-//! `relay connect-send` and `relay subscribe-channel`.
+//! The probe's self-limiting session-socket commands: `send`,
+//! `agents`, `whoami`, `read`, `fetch-attachment`,
+//! `connect-send` and `subscribe-channel`.
 //!
 //! Codex's execpolicy rules match a command by its leading words only, so
-//! a rule for `relay socket-request --socket <sock>` let anything after the
+//! a rule for `socket-request --socket <sock>` let anything after the
 //! socket through: a relayed (untrusted) message could steer Codex into
 //! `--method PATCH --path /settings` with no prompt. Each command here fixes
 //! its method and route itself and takes only the arguments that route
@@ -11,7 +11,7 @@
 //! so a rule that allows the command's leading words reaches that one route
 //! and nothing else (`codex::stop_hook::SandboxRules`). The hints Agent
 //! Relay hands a session name these commands (`outbound::reply_hint` and
-//! the rest), and `relay socket-request` stays, without a rule, for people
+//! the rest), and `socket-request` stays, without a rule, for people
 //! and debugging.
 
 use crate::relay::daemon::SafeError;
@@ -19,7 +19,7 @@ use crate::relay::outbound::{query_encode, shell_quote};
 use anyhow::Result;
 use std::path::Path;
 
-/// Who a `relay send` goes to.
+/// Who a `send` goes to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Recipient {
     /// An agent by name (`--to`).
@@ -33,24 +33,24 @@ pub enum Recipient {
 /// One self-limiting session-socket command, as its arguments were given.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionCommand {
-    /// `relay send`: `POST /send` to one recipient, optionally replying
+    /// `send`: `POST /send` to one recipient, optionally replying
     /// beneath a message (`--reply-to`) or in a channel thread (`--thread`).
     Send {
         recipient: Recipient,
         reply_to: Option<String>,
         thread: Option<String>,
     },
-    /// `relay agents`: `GET /agents`.
+    /// `agents`: `GET /agents`.
     Agents,
-    /// `relay whoami`: `GET /whoami`.
+    /// `whoami`: `GET /whoami`.
     Whoami,
-    /// `relay read <ref>`: `GET /messages?ref=<ref>`.
+    /// `read <ref>`: `GET /messages?ref=<ref>`.
     Read { message_ref: String },
-    /// `relay fetch-attachment <file-id>`: `POST /attachments/fetch`.
+    /// `fetch-attachment <file-id>`: `POST /attachments/fetch`.
     FetchAttachment { file_id: String },
-    /// `relay connect-send [--to <name>]`: `POST /connect/send`.
+    /// `connect-send [--to <name>]`: `POST /connect/send`.
     ConnectSend { to: Option<String> },
-    /// `relay subscribe-channel <channel> [--remove]`: `POST` (or, with
+    /// `subscribe-channel <channel> [--remove]`: `POST` (or, with
     /// `remove`, `DELETE`) `/channels/subscribe`, joining or leaving one
     /// channel as the calling session.
     SubscribeChannel { channel: String, remove: bool },
@@ -256,7 +256,6 @@ impl SessionCommand {
         self.request().ok()?;
         let mut parts = vec![
             executable.to_str()?,
-            "relay",
             self.name(),
             "--socket",
             socket.to_str()?,
@@ -275,7 +274,7 @@ impl SessionCommand {
     }
 }
 
-/// `relay send`: `POST /send` to one recipient, its query built only from
+/// `send`: `POST /send` to one recipient, its query built only from
 /// validated words.
 fn send_request(
     recipient: &Recipient,
@@ -564,13 +563,13 @@ mod tests {
         .unwrap();
         assert_eq!(
             line,
-            "/opt/relay/probe relay send --socket '/Users/me/Library/Application Support/x/relay.sock' \
+            "/opt/relay/probe send --socket '/Users/me/Library/Application Support/x/relay.sock' \
              --to alice --reply-to m1 --body 'your reply'"
         );
         let agents = SessionCommand::Agents
             .command_line(Path::new("/p"), Path::new("/s.sock"), Some("ignored"))
             .unwrap();
-        assert_eq!(agents, "/p relay agents --socket /s.sock");
+        assert_eq!(agents, "/p agents --socket /s.sock");
     }
 
     #[test]

@@ -121,7 +121,7 @@ pub(crate) fn probe_session_command(
     command.command_line(&fetch::probe_executable()?, socket, body)
 }
 
-/// `relay socket-request` through the current probe executable, whose
+/// `socket-request` through the current probe executable, whose
 /// environment remains inspectable on macOS when Apple's system curl does
 /// not expose CODEX_THREAD_ID or AGENT_RELAY_OPENCODE_SESSION. For a route
 /// no session command serves (`/register`, `/whoami`, a channel
@@ -154,7 +154,6 @@ pub(crate) fn probe_command_for(
 ) -> Option<String> {
     let mut parts = vec![
         executable.to_str()?,
-        "relay",
         "socket-request",
         "--socket",
         socket.to_str()?,

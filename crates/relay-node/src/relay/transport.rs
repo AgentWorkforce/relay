@@ -190,7 +190,7 @@ impl AsyncWrite for CoreWriteHalf {
 }
 
 /// A blocking client connection, for the command-line clients (`relay
-/// call`, `relay socket-request`, the hooks). Usable from any thread,
+/// call`, `socket-request`, the hooks). Usable from any thread,
 /// including one inside a tokio runtime: it never starts a runtime on the
 /// caller's thread.
 pub struct BlockingCoreStream {

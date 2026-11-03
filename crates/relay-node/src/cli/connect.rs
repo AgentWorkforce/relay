@@ -231,7 +231,7 @@ fn ensure_probe(home: &Path, start: bool) -> Result<PathBuf> {
         .open(dir.join("probe.log"))?;
     let mut command = Process::new(std::env::current_exe()?);
     command
-        .args(["relay", "serve", "--headless", "--connect-ephemeral"])
+        .args(["serve", "--headless", "--connect-ephemeral"])
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
         .stderr(log);

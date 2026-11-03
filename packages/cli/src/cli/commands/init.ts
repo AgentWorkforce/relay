@@ -1397,7 +1397,7 @@ async function coreWorkspaceNote(
   if (same === undefined) {
     return (
       `Could not confirm that the Agent Relay core serves "${setup.workspace}" (${setup.origin} names no ` +
-      `workspace id it can compare). See which one it serves with: ${relayNodeCommand()} relay call status.get`
+      `workspace id it can compare). See which one it serves with: ${relayNodeCommand()} call status.get`
     );
   }
   const served = workspace.workspace_name ? `workspace "${workspace.workspace_name}"` : 'another workspace';
@@ -1714,7 +1714,7 @@ async function undoUnrecorded(
     throw new InjectionStuckError(
       `Could not save ${deliveryRecordPath()} (${cause.message}), and these settings relay init turned on ` +
         `could not be turned off again: ${failures.join('; ')}. Turn them off with ` +
-        `${relayNodeCommand()} relay call settings.set --params '{"<setting>":false}', then run ${relayCommand('init')} again.`,
+        `${relayNodeCommand()} call settings.set --params '{"<setting>":false}', then run ${relayCommand('init')} again.`,
       { cause }
     );
   }

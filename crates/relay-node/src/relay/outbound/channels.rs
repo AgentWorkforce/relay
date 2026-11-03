@@ -308,7 +308,7 @@ fn not_a_member(error: &relaycast::RelayError) -> bool {
 /// [`super::reply_hint`]), curl elsewhere. `body` is sent as the request body.
 ///
 /// The probe form is `session` (`session_cli`) when one serves the route,
-/// which the sandbox and permission rules allow, else `relay socket-request`,
+/// which the sandbox and permission rules allow, else `socket-request`,
 /// which asks.
 pub fn socket_command(
     socket: &Path,
