@@ -286,7 +286,6 @@ impl Harness {
             use agent_relay_probe::relay::{
                 telemetry::{PostHogProject, Telemetry, TelemetryConfig},
                 test_account::TestAccount,
-                uploader::{ProcessRunner, Uploader},
             };
             let mut telemetry_config = TelemetryConfig::new(
                 config.app_data_dir.clone(),
@@ -296,9 +295,7 @@ impl Harness {
             );
             telemetry_config.project =
                 PostHogProject::new("phc_test", "https://analytics.example.com");
-            let mut account = TestAccount::new(Arc::new(Uploader::new(Arc::new(
-                ProcessRunner::new(home.join("nonexistent-test-probe")),
-            ))));
+            let mut account = TestAccount::new();
             account.telemetry = Some(Telemetry::new(telemetry_config, sender));
             plugins.account = Some(account.into_plugin());
         }

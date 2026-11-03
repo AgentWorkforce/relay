@@ -1,34 +1,27 @@
 //! A stand-in account for tests of the core, and of builds on it, that need
-//! an uploader or usage reports but no sign-in.
+//! usage reports but no sign-in.
 
 use crate::relay::client::WorkspaceInfo;
 use crate::relay::daemon::{AccountPlugin, Core};
 use crate::relay::outbound::{Outbound, OutboundError, Request};
 use crate::relay::protocol::RpcError;
 use crate::relay::telemetry::{Telemetry, TelemetryEvent};
-use crate::relay::uploader::Uploader;
 use crate::relay::workspace::Workspace;
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 pub struct TestAccount {
-    pub uploader: Arc<Uploader>,
     pub telemetry: Option<Arc<Telemetry>>,
-    /// Whether an install was looked for, as a signed-in account does.
-    pub looked: bool,
     /// The account's automatic-activation default
     /// ([`AccountPlugin::auto_activate_by_default`]).
     pub auto_activate_by_default: bool,
 }
 
 impl TestAccount {
-    pub fn new(uploader: Arc<Uploader>) -> TestAccount {
+    pub fn new() -> TestAccount {
         TestAccount {
-            uploader,
             telemetry: None,
-            looked: false,
             auto_activate_by_default: false,
         }
     }
@@ -74,10 +67,6 @@ impl AccountPlugin for TestAccount {
         Box::pin(async { None })
     }
 
-    fn uploader(&self) -> Arc<Uploader> {
-        self.uploader.clone()
-    }
-
     fn note_identity_sync(&self, _core: &Core, _succeeded: Option<bool>) {}
 
     fn cloud_identity_sync(&self, _core: &Core) -> Value {
@@ -112,14 +101,6 @@ impl AccountPlugin for TestAccount {
         if let Some(telemetry) = &self.telemetry {
             telemetry.record(event);
         }
-    }
-
-    fn shared_uploads(&self) -> BTreeSet<String> {
-        BTreeSet::new()
-    }
-
-    fn looked_for_install(&self) -> bool {
-        self.looked
     }
 
     fn auto_activate_by_default(&self) -> bool {

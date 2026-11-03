@@ -1386,7 +1386,7 @@ impl Core {
         let mut failures = Vec::new();
 
         // An agent joins and stays by itself only while its session uploads.
-        let eligible = super::relay_uploads::admit(self, &mut found, &moved, &mut failures).await;
+        let eligible = super::admission::admit(self, &mut found, &moved, &mut failures).await;
         found.retain(|target, _| !moved.contains(target));
         let marked_before = self.store.read(present_registration_names);
         let due = match self.reconcile_discovered_registrations(

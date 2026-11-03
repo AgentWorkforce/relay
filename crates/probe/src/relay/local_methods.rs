@@ -325,30 +325,6 @@ pub async fn watch(core: Arc<Core>) {
     discovery::watch(core).await;
 }
 
-/// History/status refreshes do not queue behind live-agent discovery.
-/// Keep this task alive across sign-in and account changes; the uploader
-/// rejects late results with the previous attachment/mutation generation.
-pub async fn watch_uploads(core: Arc<Core>) {
-    let Some(account) = &core.plugins.account else {
-        return;
-    };
-    let uploader = account.uploader();
-    let mut refreshes = tokio::task::JoinSet::new();
-    let mut ticks = tokio::time::interval(WATCH_EVERY);
-    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    loop {
-        tokio::select! {
-            _ = ticks.tick() => {
-                let (uploader, core) = (uploader.clone(), core.clone());
-                refreshes.spawn(async move {
-                    uploader.refresh_background_snapshots_with(&|| core.hub.invalidated(Listing::Uploader)).await
-                });
-            }
-            Some(_) = refreshes.join_next(), if !refreshes.is_empty() => {}
-        }
-    }
-}
-
 /// What of `sessions.list` a client shows changing: everything but when a
 /// session last wrote its state, and push state, which has its own
 /// `status` events.

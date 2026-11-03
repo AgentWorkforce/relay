@@ -156,14 +156,6 @@ impl Core {
             }
             state.derived_at = Some(now);
         }
-        // Gated on session sharing: only a session shared with the
-        // workspace says what it is doing.
-        let shared = self
-            .plugins
-            .account
-            .as_ref()
-            .map(|account| account.shared_uploads())
-            .unwrap_or_default();
         let spawned_live = self.spawned_live();
         let live: HashSet<&Target> = discovered
             .iter()
@@ -185,13 +177,19 @@ impl Core {
             .iter()
             .map(|r| r.display_name().to_owned())
             .collect();
+        // Only a session the session policy lets publish says what it is doing.
+        let publishing = self
+            .plugins
+            .session_policy
+            .as_ref()
+            .map(|policy| {
+                let targets: Vec<Target> = registrations.iter().map(|r| r.target.clone()).collect();
+                policy.publishes_activity(&targets)
+            })
+            .unwrap_or_default();
         let sharing: Vec<&Registration> = registrations
             .iter()
-            .filter(|r| {
-                r.target
-                    .upload_key()
-                    .is_some_and(|key| shared.contains(&key))
-            })
+            .filter(|r| publishing.contains(&r.target))
             .collect();
         let inputs: Vec<(Target, Option<String>)> = sharing
             .iter()

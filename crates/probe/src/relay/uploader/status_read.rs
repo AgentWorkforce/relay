@@ -156,6 +156,15 @@ impl Uploader {
         Ok(value)
     }
 
+    /// The sharing mode the last completed status reported, however old.
+    pub fn last_sharing_mode(&self) -> Option<String> {
+        self.status_snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .and_then(|(_, value)| value["sharing_mode"].as_str().map(str::to_string))
+    }
+
     pub async fn refresh_status_snapshot(&self) -> Result<(bool, Value), RpcError> {
         let generation = self.changes.load(Ordering::SeqCst);
         let value = self.status().await?;

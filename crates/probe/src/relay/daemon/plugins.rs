@@ -1,5 +1,6 @@
 //! What the core is built with beyond its configuration.
 
+use crate::relay::admission::Admission;
 use crate::relay::agents::SettingsExtension;
 use crate::relay::client::WorkspaceInfo;
 use crate::relay::cloud_session::{CloudAccess, SignedOut};
@@ -10,16 +11,16 @@ use crate::relay::inject::{Injector, NoInjector};
 use crate::relay::outbound::{Outbound, OutboundError, RelaySend, Request};
 use crate::relay::protocol::RpcError;
 use crate::relay::sessions::{NoSessions, SessionDirectory};
+use crate::relay::store::Target as SessionTarget;
 use crate::relay::telemetry::TelemetryEvent;
-use crate::relay::uploader::Uploader;
 use crate::relay::workspace::Workspace;
 use futures_util::future::BoxFuture;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
-/// The signed-in account a build of the core may carry: sign-in, the
-/// uploader's owner and Cloud maintenance. An unsupported internal seam, like
+/// The signed-in account a build of the core may carry: sign-in and Cloud
+/// maintenance. An unsupported internal seam, like
 /// [`MethodExtension`]. A core without one works from its workspace key.
 pub trait AccountPlugin: Send + Sync + 'static {
     /// Connects the account to its core, once.
@@ -45,8 +46,6 @@ pub trait AccountPlugin: Send + Sync + 'static {
         refused: &'a Workspace,
         workspace_id: &'a str,
     ) -> BoxFuture<'a, Option<(Workspace, WorkspaceInfo)>>;
-    /// The uploader this account owns.
-    fn uploader(&self) -> Arc<Uploader>;
     /// Records how the desktop identity sync went: `None` when it was skipped.
     fn note_identity_sync(&self, core: &Core, succeeded: Option<bool>);
     /// The identity sync state `/setup/status` reports.
@@ -70,10 +69,6 @@ pub trait AccountPlugin: Send + Sync + 'static {
     fn site_url(&self) -> String;
     /// Reports usage through the account's opt-out and identity.
     fn record_usage(&self, event: TelemetryEvent);
-    /// Registered sessions asked to upload.
-    fn shared_uploads(&self) -> BTreeSet<String>;
-    /// Whether the account has looked for an install yet.
-    fn looked_for_install(&self) -> bool;
     /// Whether sessions join the relay by themselves until the person turns
     /// it off: the desktop app's default. A core without such an account
     /// (the CLI's) leaves `auto_activate` unset, so only the kinds that join
@@ -83,6 +78,25 @@ pub trait AccountPlugin: Send + Sync + 'static {
     }
     /// The concrete account, for the build that made it.
     fn as_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync>;
+}
+
+/// Which sessions may do what on their own: join the relay, be asked to
+/// join, say what they are doing. A build of the core may carry one; without
+/// it every discovered session may join by itself, none is asked to join,
+/// and none publishes its activity. An unsupported internal seam, like
+/// [`AccountPlugin`].
+pub trait SessionPolicy: Send + Sync + 'static {
+    /// Which of `targets` may join the relay by themselves.
+    fn admitted<'a>(
+        &'a self,
+        core: &'a Core,
+        targets: Vec<SessionTarget>,
+    ) -> BoxFuture<'a, Admission>;
+    /// Whether the SessionStart hook may ask a chat that is not on the relay
+    /// to join, or `None` when the policy cannot say yet.
+    fn may_ask_to_join(&self) -> Option<bool>;
+    /// Which of `targets` may publish what they are doing to the workspace.
+    fn publishes_activity(&self, targets: &[SessionTarget]) -> HashSet<SessionTarget>;
 }
 
 /// Extra bridge methods a build of the core adds. An unsupported internal
@@ -103,8 +117,8 @@ pub trait MethodExtension: Send + Sync + 'static {
 }
 
 /// What the core is built with beyond its configuration: the session side
-/// of delivery, discovery, Cloud access, extra settings, and the account
-/// with its uploader. Each defaults to an implementation that does nothing.
+/// of delivery, discovery, Cloud access, extra settings, the account and the
+/// session policy. Each defaults to an implementation that does nothing.
 pub struct Plugins {
     pub injector: Arc<dyn Injector>,
     pub sessions: Arc<dyn SessionDirectory>,
@@ -118,9 +132,10 @@ pub struct Plugins {
     /// The relay-send socket sessions reach the core through; not served
     /// when `None`.
     pub relay_send: Option<RelaySend>,
-    /// Sign-in, the uploader, telemetry; usually
-    /// also `cloud` (`account::plugins`).
+    /// Sign-in and telemetry; usually also `cloud` (`account::plugins`).
     pub account: Option<Arc<dyn AccountPlugin>>,
+    /// Which sessions may join the relay, be asked to, and publish activity.
+    pub session_policy: Option<Arc<dyn SessionPolicy>>,
     /// Messages for Conductor's Codex chats that Agent Relay's Codex Stop
     /// hook collects (`POST /codex/stop-hook`); none without the hook.
     pub codex_stop_hook: Option<Arc<crate::relay::codex::stop_hook::StopHookInbox>>,
@@ -146,6 +161,7 @@ impl Default for Plugins {
             extensions: Vec::new(),
             relay_send: None,
             account: None,
+            session_policy: None,
             codex_stop_hook: None,
             spawner: Arc::new(crate::relay::spawn::launch::NoSpawner),
             trusted: None,

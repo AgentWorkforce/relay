@@ -439,15 +439,12 @@ mod tests {
 
     /// A core built with an account, which approvals from the spawning agent need.
     fn core_with_account(home: &std::path::Path, spawner: Arc<FakeSpawner>) -> Arc<Core> {
-        let uploader = crate::relay::uploader::Uploader::new(Arc::new(
-            crate::relay::uploader::ProcessRunner::new(home.join("no-probe")),
-        ));
         core_built(
             home,
             spawner,
             Arc::new(crate::relay::cloud_session::SignedOut),
             "http://localhost:9",
-            Some(crate::relay::test_account::TestAccount::new(Arc::new(uploader)).into_plugin()),
+            Some(crate::relay::test_account::TestAccount::new().into_plugin()),
         )
     }
 

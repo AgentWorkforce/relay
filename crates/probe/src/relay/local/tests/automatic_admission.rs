@@ -482,8 +482,12 @@ async fn a_session_the_upload_policy_keeps_local_does_not_join_by_itself() {
     let fake = fake_relaycast::FakeRelaycast::start(Default::default()).await;
     let data = home.join("app-data");
     fake_relaycast::sign_in_store(&data, fake_relaycast::WORKSPACE_KEY, &fake.base_url);
-    let mut account = TestAccount::new(uploader.clone());
-    account.looked = true;
+    let uploads = Arc::new(crate::relay::relay_uploads::RelayUploads::default());
+    uploads.looked_for_install();
+    let policy = crate::relay::relay_uploads::UploaderPolicy {
+        uploader: uploader.clone(),
+        uploads,
+    };
     let (core, _signals) = Core::with_plugins(
         Config {
             paths: CorePaths::for_socket(home.join("core.sock")).unwrap(),
@@ -498,7 +502,8 @@ async fn a_session_the_upload_policy_keeps_local_does_not_join_by_itself() {
         },
         Plugins {
             sessions: Arc::new(world.sessions),
-            account: Some(account.into_plugin()),
+            account: Some(TestAccount::new().into_plugin()),
+            session_policy: Some(Arc::new(policy)),
             ..Default::default()
         },
     );
@@ -673,7 +678,6 @@ async fn a_stale_devin_cloud_session_never_joins_by_itself_and_an_automatic_one_
 async fn the_desktop_account_turns_automatic_activation_on_unless_turned_off() {
     use crate::relay::agents::auto_activation::{activation_applies, ActivationSettings};
     use crate::relay::test_account::TestAccount;
-    use crate::relay::uploader::{ProcessRunner, Uploader};
     let start = |home: &Path, default_on: Option<bool>, saved: Option<bool>| {
         let data = home.join("app-data");
         std::fs::create_dir_all(&data).unwrap();
@@ -687,9 +691,7 @@ async fn the_desktop_account_turns_automatic_activation_on_unless_turned_off() {
                 .unwrap();
         }
         let account = default_on.map(|on| {
-            let mut account = TestAccount::new(Arc::new(Uploader::new(Arc::new(
-                ProcessRunner::new(home.join("unused")),
-            ))));
+            let mut account = TestAccount::new();
             account.auto_activate_by_default = on;
             account.into_plugin()
         });

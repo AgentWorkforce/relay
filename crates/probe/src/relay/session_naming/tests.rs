@@ -194,6 +194,7 @@ impl SessionDirectory for Titles {
 }
 struct Case {
     core: Arc<Core>,
+    uploader: Arc<Uploader>,
     counter: Arc<Counter>,
     cloud: Arc<Cloud>,
     titles: Arc<Titles>,
@@ -233,7 +234,6 @@ impl Case {
             fail: AtomicBool::new(false),
         });
         let uploader = Arc::new(Uploader::new(counter.clone()));
-        let account = crate::relay::test_account::TestAccount::new(uploader);
         let config = crate::relay::daemon::Config {
             paths: crate::relay::paths::CorePaths::for_socket(dir.path().join("core.sock"))
                 .unwrap(),
@@ -251,7 +251,7 @@ impl Case {
             crate::relay::daemon::Plugins {
                 sessions: titles.clone(),
                 cloud: cloud.clone(),
-                account: Some(account.into_plugin()),
+                account: Some(crate::relay::test_account::TestAccount::new().into_plugin()),
                 ..Default::default()
             },
         )
@@ -263,6 +263,7 @@ impl Case {
         core.session_snapshot.lock().unwrap().1 = vec![session];
         Self {
             core,
+            uploader,
             counter,
             cloud,
             titles,
@@ -285,7 +286,9 @@ impl Case {
         self.dir.path().join("naming.json")
     }
     async fn pass(&self, journal: &mut Journal) {
-        pass(&self.core, journal, &self.path()).await.unwrap();
+        pass(&self.core, journal, &self.path(), &self.uploader)
+            .await
+            .unwrap();
     }
     fn retry(journal: &mut Journal) {
         for entry in journal.entries.values_mut() {
@@ -488,7 +491,7 @@ async fn unavailable_evidence_never_requires_a_durable_retry_marker() {
     case.counter.0.store(u64::MAX, Ordering::SeqCst);
     // A directory cannot be replaced with the checkpoint file. No rename is
     // possible yet, so this ordinary missing-evidence result needs no write.
-    pass(&case.core, &mut journal, case.dir.path())
+    pass(&case.core, &mut journal, case.dir.path(), &case.uploader)
         .await
         .unwrap();
     assert!(journal.entries.is_empty());
@@ -497,7 +500,7 @@ async fn unavailable_evidence_never_requires_a_durable_retry_marker() {
         .unwrap()
         .get("evidence_attempts")
         .is_none());
-    pass(&case.core, &mut journal, case.dir.path())
+    pass(&case.core, &mut journal, case.dir.path(), &case.uploader)
         .await
         .unwrap();
     assert_eq!(case.counter.1.load(Ordering::SeqCst), 1);
@@ -507,7 +510,7 @@ async fn unavailable_evidence_never_requires_a_durable_retry_marker() {
             store.registrations.clear();
         })
         .unwrap();
-    pass(&case.core, &mut journal, case.dir.path())
+    pass(&case.core, &mut journal, case.dir.path(), &case.uploader)
         .await
         .unwrap();
     assert!(

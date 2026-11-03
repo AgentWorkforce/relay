@@ -8,6 +8,7 @@
 //! | `contract` | The method and topic registry with every params, result and event type; Swift code generation |
 //! | `server` | The socket server: peer checks, handshake, dispatch, event forwarding |
 //! | `daemon` | `relay serve`: single-instance lock, socket lifecycle, the `Core`, shutdown |
+//! | `admission` | Which discovered sessions join the relay by themselves: the build's session policy, or every one |
 //! | `detach` | Starting a process in a process session of its own |
 //! | `state` | The status snapshot and the event hub |
 //! | `paths` | Socket and lock locations |
@@ -56,6 +57,7 @@
 //! | `spawn` | The spawn node: Agent Relay starting Codex and Claude headless on this computer |
 
 pub mod activity;
+pub mod admission;
 pub mod agents;
 pub mod app_store;
 pub mod backoff;

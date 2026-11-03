@@ -8,8 +8,8 @@ mod support {
     pub mod fake_relaycast;
 }
 
-fn account(_config: &Config, probe: &Arc<dyn ProbeRunner>) -> TestAccount {
-    TestAccount::new(Arc::new(Uploader::new(probe.clone())))
+fn account(_config: &Config, _probe: &Arc<dyn ProbeRunner>) -> TestAccount {
+    TestAccount::new()
 }
 
 include!("support/outbound_harness.rs");

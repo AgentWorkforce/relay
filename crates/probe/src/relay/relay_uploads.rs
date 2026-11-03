@@ -12,6 +12,7 @@
 //! an install a newer probe runs is left alone.
 
 use crate::delivery_status::{Inclusion, SessionIdentity};
+use crate::relay::admission::Admission;
 use crate::relay::daemon::Core;
 use crate::relay::state::Listing;
 use crate::relay::store::Target as SessionTarget;
@@ -78,86 +79,18 @@ pub fn pending(
         .collect()
 }
 
-/// Which sessions the sharing policy lets Agent Relay put on the relay by
-/// itself.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Admission {
-    /// Every one: nothing uploads here, or the install is not this
-    /// computer's to read (another workspace's, a newer build's).
-    All,
-    /// Only these: those the install uploads, and those it never could.
-    Only(HashSet<SessionTarget>),
-    /// Not known this time, and why when it is worth saying: nothing new
-    /// joins and no one leaves until a later pass reads it.
-    Unknown(Option<String>),
-}
-
-impl Admission {
-    pub fn admits(&self, target: &SessionTarget) -> bool {
-        match self {
-            Admission::All => true,
-            Admission::Only(admitted) => admitted.contains(target),
-            Admission::Unknown(_) => false,
-        }
-    }
-}
-
-/// Keeps in `found` only the sessions the sharing policy lets join the
-/// relay by themselves, and returns those still eligible to stay there.
-/// Why the policy could not be read goes on `failures`. An automatically
-/// activated agent `/clear` just `moved` to a conversation the policy does
-/// not upload is told why it leaves, and how to keep it.
-pub async fn admit<T>(
-    core: &Core,
-    found: &mut std::collections::HashMap<SessionTarget, T>,
-    moved: &[SessionTarget],
-    failures: &mut Vec<String>,
-) -> HashSet<SessionTarget> {
-    if found.is_empty() {
-        return HashSet::new();
-    }
-    let admission = admitted(core, found.keys().cloned().collect()).await;
-    let eligible: HashSet<SessionTarget> = match &admission {
-        Admission::Unknown(why) => {
-            failures.extend(why.clone());
-            found.keys().cloned().collect()
-        }
-        _ => found
-            .keys()
-            .filter(|target| admission.admits(target))
-            .cloned()
-            .collect(),
-    };
-    let leaving: Vec<String> = core.store.read(|store| {
-        moved
-            .iter()
-            .filter(|target| !eligible.contains(*target))
-            .filter_map(|target| store.registration_for(target))
-            .filter(|r| r.auto_activated == Some(true))
-            .map(|r| r.display_name().to_owned())
-            .collect()
-    });
-    if !leaving.is_empty() {
-        core.hub.activity(
-            crate::relay::state::Level::Info,
-            format!(
-                "Conversation cleared: @{} joined the relay by itself, and its new conversation is not uploaded, so it leaves the relay in a few minutes. Turn on Upload session for the new conversation to keep it.",
-                leaving.join(", @")
-            ),
-        );
-    }
-    found.retain(|target, _| admission.admits(target));
-    eligible
-}
-
 /// What the sharing policy admits of `targets`: the sessions the install
 /// uploads (under `selected` those a person chose, under `new` those
 /// started after setup, under `all` those not withheld), and those the
 /// uploader never collects, which are not the policy's to hold back.
-pub async fn admitted(core: &Core, targets: Vec<SessionTarget>) -> Admission {
-    let account = core.plugins.account.as_ref();
-    let uploader = account.map(|a| a.uploader());
-    let looked = account.is_some_and(|a| a.looked_for_install());
+pub async fn admitted(
+    core: &Core,
+    uploader: &Arc<Uploader>,
+    uploads: &RelayUploads,
+    targets: Vec<SessionTarget>,
+) -> Admission {
+    let uploader = Some(uploader.clone());
+    let looked = uploads.has_looked();
     let workspace = core.store.read(|store| {
         store
             .cloud
@@ -497,8 +430,91 @@ pub async fn watch(core: Arc<Core>, uploader: Arc<Uploader>, uploads: Arc<RelayU
     }
 }
 
+/// The session policy the uploader's sharing makes: a session joins the
+/// relay by itself, is asked to join and publishes its activity as the
+/// install shares it.
+pub struct UploaderPolicy {
+    pub uploader: Arc<Uploader>,
+    pub uploads: Arc<RelayUploads>,
+}
+
+impl crate::relay::daemon::SessionPolicy for UploaderPolicy {
+    fn admitted<'a>(
+        &'a self,
+        core: &'a Core,
+        targets: Vec<SessionTarget>,
+    ) -> futures_util::future::BoxFuture<'a, Admission> {
+        Box::pin(admitted(core, &self.uploader, &self.uploads, targets))
+    }
+
+    fn may_ask_to_join(&self) -> Option<bool> {
+        let installed = self
+            .uploader
+            .install()
+            .and_then(|install| install.sharing_mode)
+            .map(|mode| mode.as_str().to_string());
+        ask_to_join(installed, self.uploader.last_sharing_mode())
+    }
+
+    fn publishes_activity(&self, targets: &[SessionTarget]) -> HashSet<SessionTarget> {
+        let shared = self.uploads.shared();
+        targets
+            .iter()
+            .filter(|target| target.upload_key().is_some_and(|key| shared.contains(&key)))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Whether a chat not on the relay may be asked to join: only when the install
+/// shares the sessions the person selects. The attached install, updated
+/// synchronously when sharing changes, decides first, then the last status the
+/// uploader read; with neither the answer is unknown.
+fn ask_to_join(installed: Option<String>, last_status: Option<String>) -> Option<bool> {
+    installed.or(last_status).map(|mode| mode == "selected")
+}
+
+/// How often the uploader's background snapshots are refreshed.
+const REFRESH_EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Keeps `uploader`'s background snapshots current until the daemon stops.
+/// Status refreshes do not queue behind live-agent discovery. The task lives
+/// across sign-in and account changes; the uploader rejects late results with
+/// the previous attachment and mutation generation. The build that owns the
+/// uploader starts it.
+pub async fn refresh_snapshots(core: Arc<Core>, uploader: Arc<Uploader>) {
+    let mut refreshes = tokio::task::JoinSet::new();
+    let mut ticks = tokio::time::interval(REFRESH_EVERY);
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = ticks.tick() => {
+                let (uploader, core) = (uploader.clone(), core.clone());
+                refreshes.spawn(async move {
+                    uploader.refresh_background_snapshots_with(&|| core.hub.invalidated(Listing::Uploader)).await
+                });
+            }
+            Some(_) = refreshes.join_next(), if !refreshes.is_empty() => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_selected_sharing_asks_a_chat_to_join() {
+        use super::ask_to_join;
+        let some = |mode: &str| Some(mode.to_string());
+        // The attached install outranks a stale last status.
+        assert_eq!(ask_to_join(some("selected"), some("all")), Some(true));
+        assert_eq!(ask_to_join(some("all"), some("selected")), Some(false));
+        assert_eq!(ask_to_join(some("new"), None), Some(false));
+        // With no install, the last status decides.
+        assert_eq!(ask_to_join(None, some("selected")), Some(true));
+        // Nothing known: no answer, which setup takes as no prompt.
+        assert_eq!(ask_to_join(None, None), None);
+    }
+
     #[test]
     fn automatic_uploads_do_not_follow_registrations_into_another_workspace() {
         use crate::relay::workspace::Secret;
@@ -607,6 +623,7 @@ mod tests {
         use crate::delivery::{self, SessionIdentity};
         use crate::relay::store::SessionKind;
         use crate::relay::uploader::{Install, ProcessRunner};
+        use std::collections::HashSet;
         let directory = crate::delivery_status::status_tests::install(&[
             "codex:chosen",
             "codex:other",

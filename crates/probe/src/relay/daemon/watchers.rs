@@ -8,11 +8,9 @@ pub(super) struct Watchers(Vec<JoinHandle<()>>);
 pub(super) fn start(core: &Arc<Core>) -> Watchers {
     Watchers(vec![
         tokio::spawn(crate::relay::local_methods::watch(core.clone())),
-        tokio::spawn(crate::relay::local_methods::watch_uploads(core.clone())),
         tokio::spawn(crate::relay::files::store::sweeper(
             core.config.app_data_dir.clone(),
         )),
-        tokio::spawn(crate::relay::session_naming::watch(core.clone())),
     ])
 }
 

@@ -176,7 +176,9 @@ fn ready_title(value: &Value, row: &Registration, prompts: &PromptCheckpoint) ->
     crate::relay::session_titles::validate_title(value["brief"]["title"].as_str()?).ok()
 }
 
-pub(crate) async fn watch(core: Arc<Core>) {
+/// Names this computer's live sessions from the prompts `uploader` reads,
+/// until the daemon stops. The build that owns the uploader starts it.
+pub async fn watch(core: Arc<Core>, uploader: Arc<crate::relay::uploader::Uploader>) {
     let path = core.config.app_data_dir.join("session-naming.json");
     let Ok(mut journal) = Journal::load(&path) else {
         core.hub.activity(
@@ -189,7 +191,7 @@ pub(crate) async fn watch(core: Arc<Core>) {
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticks.tick().await;
-        if pass(&core, &mut journal, &path).await.is_err() {
+        if pass(&core, &mut journal, &path, &uploader).await.is_err() {
             // A failed durable checkpoint must never turn into a rename loop.
             core.hub.activity(crate::relay::state::Level::Warning, "Automatic naming could not save its checkpoint. Existing names will be kept until Relay restarts.");
             return;
@@ -197,7 +199,12 @@ pub(crate) async fn watch(core: Arc<Core>) {
     }
 }
 
-async fn pass(core: &Arc<Core>, journal: &mut Journal, path: &Path) -> anyhow::Result<()> {
+async fn pass(
+    core: &Arc<Core>,
+    journal: &mut Journal,
+    path: &Path,
+    uploader: &crate::relay::uploader::Uploader,
+) -> anyhow::Result<()> {
     let Some(account) = core.plugins.cloud.account() else {
         return Ok(());
     };
@@ -205,14 +212,6 @@ async fn pass(core: &Arc<Core>, journal: &mut Journal, path: &Path) -> anyhow::R
     if !authority(core, &account, generation) {
         return Ok(());
     }
-    let Some(uploader) = core
-        .plugins
-        .account
-        .as_ref()
-        .map(|account| account.uploader())
-    else {
-        return Ok(());
-    };
     let sessions = core
         .session_snapshot
         .lock()
@@ -235,10 +234,7 @@ async fn pass(core: &Arc<Core>, journal: &mut Journal, path: &Path) -> anyhow::R
         .evidence_attempts
         .retain(|key, _| ids.iter().any(|id| key.ends_with(&format!("\n{id}"))));
     for session in sessions.iter().filter(|session| session.live) {
-        refresh_session(
-            core, journal, path, session, &account, generation, &uploader,
-        )
-        .await?;
+        refresh_session(core, journal, path, session, &account, generation, uploader).await?;
     }
     Ok(())
 }

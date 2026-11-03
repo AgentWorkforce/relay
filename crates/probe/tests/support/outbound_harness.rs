@@ -17,7 +17,7 @@ use agent_relay_probe::relay::sessions::UnreadableSessionFile;
 use agent_relay_probe::relay::setup::DirectDelivery;
 use agent_relay_probe::relay::state::{SignInState, Verification};
 use agent_relay_probe::relay::store::{SessionKind, Target};
-use agent_relay_probe::relay::uploader::{InstallRun, ProbeRunner, Uploader, UploaderError};
+use agent_relay_probe::relay::uploader::{InstallRun, ProbeRunner, UploaderError};
 use agent_relay_probe::relay::workspace::{validated_base_url, Secret};
 use futures_util::future::BoxFuture;
 use serde_json::{json, Map, Value};

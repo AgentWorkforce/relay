@@ -11,42 +11,11 @@ use agent_relay_probe::relay::protocol::BRIDGE_VERSION;
 use agent_relay_probe::relay::push::PushTiming;
 use agent_relay_probe::relay::test_account::TestAccount;
 use agent_relay_probe::relay::transport::CoreStream;
-use agent_relay_probe::relay::uploader::{InstallRun, ProbeRunner, Uploader, UploaderError};
-use agent_relay_probe::relay::workspace::Secret;
-use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-
-/// An uploader whose every command fails: nothing here runs the probe.
-struct NoProbe;
-
-impl ProbeRunner for NoProbe {
-    fn status(
-        &self,
-        _: Option<std::path::PathBuf>,
-        _: agent_relay_probe::relay::uploader::HistoryReader,
-    ) -> BoxFuture<'_, Result<Value, UploaderError>> {
-        self.run(vec!["status".into()], None)
-    }
-    fn run(
-        &self,
-        _: Vec<String>,
-        _: Option<Duration>,
-    ) -> BoxFuture<'_, Result<Value, UploaderError>> {
-        Box::pin(async { Err(UploaderError::new("No probe in this test.")) })
-    }
-
-    fn install(&self, _: Vec<String>, _: Option<Secret>) -> Result<InstallRun, UploaderError> {
-        Err(UploaderError::new("No probe in this test."))
-    }
-
-    fn cancel_all(&self) -> BoxFuture<'_, Result<(), UploaderError>> {
-        Box::pin(async { Ok(()) })
-    }
-}
 
 #[tokio::test]
 async fn every_registered_method_reaches_a_handler() {
@@ -72,7 +41,7 @@ async fn every_registered_method_reaches_a_handler() {
     };
     paths::socket_directory(config.paths.directory()).unwrap();
     let bound = BoundSocket::bind(&config.paths).unwrap();
-    let account = TestAccount::new(Arc::new(Uploader::new(Arc::new(NoProbe))));
+    let account = TestAccount::new();
     let plugins = Plugins {
         account: Some(account.into_plugin()),
         ..Plugins::default()
