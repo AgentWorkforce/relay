@@ -8614,7 +8614,8 @@ public struct SignInReport: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-/// `account.sign_in`'s parameters.
+/// `account.sign_in`'s parameters. The sign-in is to the site the core was
+/// built for (`AGENT_RELAY_SITE_URL`); nothing in the request chooses it.
 public struct SignInRequest: Codable, Equatable, Hashable, Sendable {
     public let acknowledgeUninspectedSchedules: Bool
     public let flow: Flow?
@@ -8623,15 +8624,13 @@ public struct SignInRequest: Codable, Equatable, Hashable, Sendable {
     /// sign-in); this core's own device sign-in ignores it.
     public let provider: SignInProvider?
     public let sharing: SharingMode
-    public let siteUrl: String?
     public let workspace: String?
 
-    public init(acknowledgeUninspectedSchedules: Bool = false, flow: Flow? = nil, provider: SignInProvider? = nil, sharing: SharingMode, siteUrl: String? = nil, workspace: String? = nil) {
+    public init(acknowledgeUninspectedSchedules: Bool = false, flow: Flow? = nil, provider: SignInProvider? = nil, sharing: SharingMode, workspace: String? = nil) {
         self.acknowledgeUninspectedSchedules = acknowledgeUninspectedSchedules
         self.flow = flow
         self.provider = provider
         self.sharing = sharing
-        self.siteUrl = siteUrl
         self.workspace = workspace
     }
 
@@ -8640,7 +8639,6 @@ public struct SignInRequest: Codable, Equatable, Hashable, Sendable {
         case flow
         case provider
         case sharing
-        case siteUrl = "site_url"
         case workspace
     }
 
@@ -8650,7 +8648,6 @@ public struct SignInRequest: Codable, Equatable, Hashable, Sendable {
         self.flow = try c.decodeIfPresent(Flow.self, forKey: .flow)
         self.provider = try c.decodeIfPresent(SignInProvider.self, forKey: .provider)
         self.sharing = try c.decode(SharingMode.self, forKey: .sharing)
-        self.siteUrl = try c.decodeIfPresent(String.self, forKey: .siteUrl)
         self.workspace = try c.decodeIfPresent(String.self, forKey: .workspace)
     }
 
@@ -8660,7 +8657,6 @@ public struct SignInRequest: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.flow, forKey: .flow)
         try c.encodeIfPresent(self.provider, forKey: .provider)
         try c.encode(self.sharing, forKey: .sharing)
-        try c.encodeIfPresent(self.siteUrl, forKey: .siteUrl)
         try c.encodeIfPresent(self.workspace, forKey: .workspace)
     }
 }
