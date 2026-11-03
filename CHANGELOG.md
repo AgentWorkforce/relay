@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cursor CLI messaging hooks that setup installed before Cursor's first chat now show as installed and can be turned on or off.
 - Turning uploads Off for a session you connected yourself keeps it off after `relay serve` restarts.
 - A session whose upload was deleted from Cloud no longer rejoins the relay by itself.
+- Devin agents started on macOS with `relay fleet spawn devin` or an agent's spawn request now get every message; one that arrived a moment after its connection opened could be lost.
 
 ## [15.0.2] - 2026-11-01
 

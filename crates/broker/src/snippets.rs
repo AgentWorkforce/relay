@@ -3480,28 +3480,33 @@ printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"send_dm"},{"n
         let relay = temp.path().join("agent-relay");
         fs::write(
             &relay,
-            r#"#!/bin/sh
-cat >/dev/null &
+            r#"cat >/dev/null &
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"agent-relay","version":"test"}}}'
 printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"check_inbox"}]}}'
 "#,
         )
-        .expect("write fake MCP executable");
-        fs::set_permissions(&relay, fs::Permissions::from_mode(0o755))
-            .expect("make MCP executable");
+        .expect("write fake MCP script");
+        // Run through `sh` rather than executing the file just written: a
+        // test on another thread that forks while the write is open makes
+        // exec fail with `ETXTBSY` on Linux.
         let command = super::AgentRelayMcpCommand {
-            command: relay.to_string_lossy().into_owned(),
-            args: Vec::new(),
+            command: "/bin/sh".into(),
+            args: vec![relay.to_string_lossy().into_owned()],
         };
 
+        // The budget only bounds a hung server; this one answers at once,
+        // so a loaded runner must not turn it into a timeout.
         let error = super::probe_agent_relay_mcp_command_with_timeout(
             &command,
-            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(10),
         )
         .await
         .expect_err("incomplete MCP tool list must fail");
 
-        assert!(error.to_string().contains("send_dm, post_message"));
+        assert!(
+            error.to_string().contains("send_dm, post_message"),
+            "{error}"
+        );
     }
 
     #[cfg(unix)]
