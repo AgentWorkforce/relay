@@ -671,7 +671,11 @@ async fn connect_settlements_honor_heartbeat_write_contention() {
 async fn a_slow_initial_connect_poll_does_not_block_team_heartbeats_or_queues() {
     let connect = FakeRelaycast::start(Behaviour::default()).await;
     let connect_release = connect.hold("GET /v1/deliveries");
-    let (h, release) = held_heartbeat_cohort_with_connect(Some(&connect)).await;
+    // Team queue reads fail: a successful one refreshes presence and
+    // rightly makes the REST heartbeat this test waits for redundant.
+    let (h, release) =
+        held_heartbeat_cohort_with_queue_reads(Some(&connect), Duration::from_secs(3600), false)
+            .await;
     eventually("initial Connect read held", || {
         connect.held("GET /v1/deliveries") >= 1
     })
