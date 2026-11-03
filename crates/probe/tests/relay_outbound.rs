@@ -1521,16 +1521,22 @@ async fn a_missing_accepted_handoff_settles_in_doubt_without_holding_back_later_
     h.injector.then(InjectOutcome::InDoubt(
         "the accepted item is no longer queued or recorded".into(),
     ));
-    let (first_delivery, first_message) = h.connect_fake.send_dm(
-        "connect-host",
-        "connect-guest",
-        "First, with an uncertain accepted handoff.",
-    );
-    let (second_delivery, second_message) = h.connect_fake.send_dm(
-        "connect-host",
-        "connect-guest",
-        "Second, queued behind the first.",
-    );
+    // Queued together: the scripted outcomes above are taken in call order,
+    // so a pass that saw only the first would hand them to the wrong
+    // message.
+    let mut queued = h
+        .connect_fake
+        .send_dms(
+            "connect-host",
+            "connect-guest",
+            &[
+                "First, with an uncertain accepted handoff.",
+                "Second, queued behind the first.",
+            ],
+        )
+        .into_iter();
+    let (first_delivery, first_message) = queued.next().unwrap();
+    let (second_delivery, second_message) = queued.next().unwrap();
     eventually_for(
         "both handoffs in the provider's ordered queue",
         Duration::from_secs(30),
@@ -2524,6 +2530,32 @@ async fn leaving_a_channel_leaves_under_every_forwarding_name() {
     .await
     .unwrap();
     assert_eq!(h.fake.channel_members("swarm"), ["peer"]);
+    h.stop().await;
+}
+
+// The SessionStart hook read the registered name from /setup/status after a
+// rename, and named a session by a name that only forwards (2026-11-02).
+#[tokio::test]
+async fn setup_status_names_a_renamed_session_as_whoami_does() {
+    let h = Harness::start().await;
+    h.register(IN_CLAUDE, json!({"name": "claude-first"})).await;
+    h.register(IN_CLAUDE, json!({"name": "tan-man"})).await;
+    let me = h
+        .call(IN_CLAUDE, "GET", "/whoami", Value::Null)
+        .await
+        .unwrap();
+    let status = h
+        .call(IN_CLAUDE, "GET", "/setup/status", Value::Null)
+        .await
+        .unwrap();
+    assert_eq!(me["name"], "tan-man");
+    assert_eq!(status["session"]["registered"], true);
+    assert_eq!(status["session"]["name"], me["name"]);
+    assert_eq!(status["session"]["address"], me["address"]);
+    // join_relay links the address Desktop syncs to Cloud: the registered one.
+    let link = status["session"]["link_address"].as_str().unwrap();
+    assert!(link.starts_with("claude-first@"), "{link}");
+    assert_ne!(status["session"]["link_address"], me["address"]);
     h.stop().await;
 }
 

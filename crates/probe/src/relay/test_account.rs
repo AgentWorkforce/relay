@@ -18,6 +18,9 @@ pub struct TestAccount {
     pub telemetry: Option<Arc<Telemetry>>,
     /// Whether an install was looked for, as a signed-in account does.
     pub looked: bool,
+    /// The account's automatic-activation default
+    /// ([`AccountPlugin::auto_activate_by_default`]).
+    pub auto_activate_by_default: bool,
 }
 
 impl TestAccount {
@@ -26,6 +29,7 @@ impl TestAccount {
             uploader,
             telemetry: None,
             looked: false,
+            auto_activate_by_default: false,
         }
     }
 
@@ -116,6 +120,10 @@ impl AccountPlugin for TestAccount {
 
     fn looked_for_install(&self) -> bool {
         self.looked
+    }
+
+    fn auto_activate_by_default(&self) -> bool {
+        self.auto_activate_by_default
     }
 
     fn as_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync> {

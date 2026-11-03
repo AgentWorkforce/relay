@@ -188,6 +188,32 @@ jobs:
           mkdir -p "$HOME"
           cargo test --locked -- --test-threads=4
 
+  harness-live:
+    name: Live Pi, Oh My Pi and Claude mobile harnesses
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: crates/probe
+          cache-bin: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Test live Pi sessions (legacy and current packages)
+        run: bash scripts/test-pi-live.sh
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.3.14'
+      - name: Test live Oh My Pi sessions
+        run: bash scripts/test-omp-live.sh
+      - name: Test the native Claude mobile bridge and OpenCode managed replies
+        run: node --test scripts/test-claude-mobile-plugin.mjs scripts/test-opencode-managed-replies.mjs scripts/install-pi-extension.test.mjs
+
   windows:
     name: Windows x64 build
     runs-on: windows-latest
@@ -220,3 +246,16 @@ jobs:
         env:
           CARGO_HOME: C:\ch
         run: cargo build --locked --no-default-features --features production-binaries
+      # The file and install helpers the desktop apps rely on, on Windows.
+      - name: Test the platform file helpers
+        shell: bash
+        env:
+          CARGO_HOME: C:\ch
+        run: 'cargo test --locked --no-default-features --features production-binaries --lib platform::'
+      - name: Test where the install lives and the session view model
+        shell: bash
+        env:
+          CARGO_HOME: C:\ch
+        run: |
+          cargo test --locked --no-default-features --features production-binaries --lib -- install::
+          cargo test --locked --no-default-features --features production-binaries --lib -- session_model

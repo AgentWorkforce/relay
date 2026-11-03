@@ -87,10 +87,13 @@ client (`linux_app::bridge`), so it stays with that client.
   `build-windows.sh` and `desktop-release.yml` pass the desktop CalVer, and
   a relay release would pass the relay version.
 - Otherwise, a development build is `<base>-dev+<git revision>`. The base is
-  `AGENT_RELAY_PROBE_BASE_VERSION` when set: relay-desktop should pass its
-  newest CalVer, which it used to read from its changelog, so development
-  cores still order below the next desktop release. Without it, the base is
-  the crate version (`0.1.0`).
+  `AGENT_RELAY_PROBE_BASE_VERSION` when set; else the newest non-empty `## v`
+  heading of the changelog `AGENT_RELAY_PROBE_CHANGELOG` names (an absolute
+  path; an unreadable one, or one with no release, fails the build); else the
+  crate version (`0.1.0`). relay-desktop sets `AGENT_RELAY_PROBE_CHANGELOG`
+  and `AGENT_RELAY_PROBE_GIT_DIR` (the checkout the revision is read from) in
+  its `.cargo/config.toml`, so its development cores carry its CalVer and
+  revision and still order below the next desktop release.
 
 ## CI
 
@@ -357,7 +360,7 @@ own, named `<tool>-<project>-<task>`) and, per tool, through `settings.set`:
 | OpenCode    | `opencode_plugin`, `opencode_auto_activate`      | the Agent Relay plugin under `~/.config/opencode/plugins`                                                                                     |
 | Grok CLI    | `grok_leader`                                    | `[cli] use_leader` in `~/.grok/config.toml`                                                                                                   |
 | Devin       | `devin_direct_delivery`                          | lifecycle hooks in `~/.config/devin/config.json`                                                                                              |
-| Cursor      | `cursor_direct_delivery`                         | hooks in `~/.cursor/hooks.json` (the editor route needs a core newer than 15.0.7)                                                             |
+| Cursor      | `cursor_direct_delivery`                         | hooks in `~/.cursor/hooks.json` (the editor route needs core 15.0.8 or newer)                                                                 |
 | Pi          | `pi_extension`, `pi_auto_activate`               | the Agent Relay extension in `~/.pi/agent/extensions` (a desktop core installs it at start)                                                   |
 
 `auto_activate` alone never puts an open Pi or OpenCode session on the relay
@@ -712,7 +715,9 @@ agent_relay_probe::install;`. In `linux_app/models.rs`, delete the six
    relay release binary is built without it). That is `scripts/build-probe.sh`,
    `build-linux.sh`, `build-windows.sh`, `package-{linux,macos}-probe.sh`
    and the Desktop Release workflow. Keep passing `AGENT_RELAY_PROBE_VERSION`
-   and add `AGENT_RELAY_PROBE_BASE_VERSION` for development builds.
+   for releases, and for development builds set `AGENT_RELAY_PROBE_CHANGELOG`
+   and `AGENT_RELAY_PROBE_GIT_DIR` in `.cargo/config.toml` (an explicit
+   `AGENT_RELAY_PROBE_BASE_VERSION` would take precedence over the changelog).
 4. Get `CoreContract.swift` either by copying relay's
    `crates/probe/contract/CoreContract.swift` or by running
    `crates/probe/scripts/generate-contract.sh --app-root <relay-desktop>`.

@@ -85,7 +85,8 @@ impl ProcessTable for FakeProcesses {
         self.with(pid, |p| p.executable.clone()).flatten()
     }
     fn is_trusted_codex(&self, executable: &Path) -> bool {
-        executable.file_name().is_some_and(|name| name == "codex")
+        // `codex`, or `codex.exe` on Windows.
+        executable.file_stem().is_some_and(|name| name == "codex")
             && self.trusted_codex.lock().unwrap().contains(executable)
     }
     fn is_trusted_cursor(&self, executable: &Path) -> bool {

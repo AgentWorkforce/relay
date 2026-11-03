@@ -97,6 +97,8 @@ pub const PERSON_WAIT: Duration = Duration::from_secs(60);
 /// its pass gave up still reaches the next listing, and never lingers
 /// longer than that in the long-lived helper.
 pub const ANSWER_TTL: Duration = Duration::from_secs(6 * 60);
+/// A denied background recovery check is not repeated on every capture tick.
+const RECOVERY_RETRY: Duration = Duration::from_secs(5);
 
 /// Where Claude Code keeps a login other than its credentials file. The
 /// macOS login Keychain in the app; a fake in tests, which never touch the
@@ -174,6 +176,7 @@ struct SlotState {
     reading: Option<Instant>,
     /// The last read's answer, shared by every caller until it expires.
     answer: Option<Answer>,
+    recovery_checked: Option<Instant>,
 }
 
 /// What a read answered: the secret, or `None` when it was refused or
@@ -238,7 +241,37 @@ impl Keychain {
 
     /// Drop a kept answer: the Keychain is no longer the login in use.
     pub fn forget(&self) {
-        self.slot.lock().answer = None;
+        let mut state = self.slot.lock();
+        state.answer = None;
+        state.recovery_checked = None;
+    }
+
+    /// Whether a previous Keychain refusal has recovered. Never prompts, and
+    /// probes a still-refused item at most once every five seconds. An answer
+    /// from a successful read is reused immediately, including one that arrived
+    /// after a pass stopped waiting for it.
+    pub(super) fn access_recovered(&self) -> bool {
+        {
+            let mut state = self.slot.lock();
+            state.expire(self.ttl);
+            if state
+                .answer
+                .as_ref()
+                .is_some_and(|answer| answer.secret.is_ok())
+            {
+                return true;
+            }
+            if state
+                .recovery_checked
+                .is_some_and(|checked| checked.elapsed() < RECOVERY_RETRY)
+            {
+                return false;
+            }
+            state.recovery_checked = Some(Instant::now());
+        }
+        self.read(Ask::Pass)
+            .map(|mut secret| secret.fill(0))
+            .is_ok()
     }
 
     /// The item's secret, waiting no longer than `ask` allows. `Err` is the
@@ -671,6 +704,24 @@ pub(crate) mod tests {
             0,
             "the Keychain was read"
         );
+    }
+
+    #[test]
+    fn recovery_checks_are_quiet_and_throttled_until_access_returns() {
+        let denied = FakeKeychain::protected();
+        let keychain = denied.keychain();
+        assert!(!keychain.access_recovered());
+        let reads = denied.reads.load(Ordering::SeqCst);
+        assert!(!keychain.access_recovered());
+        assert_eq!(denied.reads.load(Ordering::SeqCst), reads);
+        assert_eq!(denied.interactive_reads.load(Ordering::SeqCst), 0);
+
+        let allowed = FakeKeychain::holding(Some(&credentials(NOW + 60_000)));
+        let keychain = allowed.keychain();
+        assert!(keychain.access_recovered());
+        assert!(keychain.access_recovered());
+        assert_eq!(allowed.reads.load(Ordering::SeqCst), 1);
+        assert_eq!(allowed.interactive_reads.load(Ordering::SeqCst), 0);
     }
 
     #[test]

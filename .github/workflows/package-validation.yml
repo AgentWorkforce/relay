@@ -99,7 +99,7 @@ jobs:
           ERRORS=0
 
           # Check dist files exist (skip non-Node package directories).
-          SKIP_PACKAGES="build-plans brand personas"
+          SKIP_PACKAGES="build-plans personas"
           for pkg_dir in packages/*/; do
             pkg_name=$(basename "$pkg_dir")
             if [ ! -f "$pkg_dir/package.json" ]; then

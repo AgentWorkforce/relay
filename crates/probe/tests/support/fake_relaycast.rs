@@ -364,6 +364,20 @@ impl FakeRelaycast {
         self.queue(recipient, "dm", None, sender, text)
     }
 
+    /// Queues DMs from `sender` to `recipient` together, so no fetch sees
+    /// only some of them; returns each `(delivery id, message id)` in order.
+    pub fn send_dms(&self, sender: &str, recipient: &str, texts: &[&str]) -> Vec<(String, String)> {
+        let mut shared = self.shared.lock().unwrap();
+        texts
+            .iter()
+            .map(|text| {
+                let message = store_message(&mut shared.world, sender, recipient, text, None);
+                let id = queue(&mut shared.world, recipient, &message, "dm", None);
+                (id, message.id)
+            })
+            .collect()
+    }
+
     /// Queues a delivery for `agent`, returning `(delivery id, message id)`.
     pub fn queue(
         &self,

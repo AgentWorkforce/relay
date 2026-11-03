@@ -1,5 +1,6 @@
-//! Bounded independent presentation discovery. Reads request work; they never
-//! wait for a provider, and a held provider owns only its own single task.
+//! Bounded independent presentation discovery on a fixed cadence. Reads never
+//! wait for a provider or start one, and a held provider owns only its own
+//! single task.
 use super::*;
 use crate::relay::sessions::SessionPartition;
 use std::sync::{LockResult, Mutex, MutexGuard};
@@ -7,42 +8,24 @@ use std::time::Duration;
 use tokio::task::JoinSet;
 use tokio::time::Instant as Deadline;
 
-/// Cached rows and coalesced presentation demand share the core's lifetime.
+/// Completed provider rows, for the core's lifetime. Reads are answered from
+/// them; only the watch's own cadence runs discovery.
 #[derive(Default)]
 pub(crate) struct PresentationSnapshot {
     rows: Mutex<(u64, Vec<DiscoveredSession>)>,
-    demand: PresentationDemand,
 }
 impl PresentationSnapshot {
     pub(crate) fn lock(&self) -> LockResult<MutexGuard<'_, (u64, Vec<DiscoveredSession>)>> {
         self.rows.lock()
     }
-    pub(super) fn request(&self) {
-        self.demand.request();
-    }
 }
 
-#[derive(Default)]
-struct PresentationDemand {
-    last: Mutex<Option<Deadline>>,
-    notify: tokio::sync::Notify,
-}
-impl PresentationDemand {
-    pub(super) fn request(&self) {
-        let mut last = self.last.lock().unwrap_or_else(|error| error.into_inner());
-        if last.is_none_or(|last| last.elapsed() >= WATCH_EVERY) {
-            *last = Some(Deadline::now());
-            self.notify.notify_one();
-        }
-    }
-}
-
+/// One fixed discovery domain, or (`partition` none) the shared fleet
+/// authority, refreshed on the same cadence.
 struct Slot {
     partition: Option<SessionPartition>,
     due: Deadline,
     busy: bool,
-    started: Deadline,
-    requested: bool,
 }
 struct Completed {
     slot: usize,
@@ -61,8 +44,6 @@ pub(super) async fn watch(core: Arc<Core>) {
             partition: Some(partition),
             due: Deadline::now(),
             busy: false,
-            started: Deadline::now() - WATCH_EVERY,
-            requested: false,
         })
         .collect();
     // Shared fleet authority is refreshed once per cadence, independently of
@@ -71,8 +52,6 @@ pub(super) async fn watch(core: Arc<Core>) {
         partition: None,
         due: Deadline::now(),
         busy: false,
-        started: Deadline::now() - WATCH_EVERY,
-        requested: false,
     });
     let mut jobs = JoinSet::new();
     let mut authority_ready = false;
@@ -92,17 +71,11 @@ pub(super) async fn watch(core: Arc<Core>) {
         tokio::select! {
             _ = stopping.wait_for(|stop| *stop) => break,
             _ = tokio::time::sleep_until(next) => {},
-            _ = core.session_snapshot.demand.notify.notified() => {
-                // Demand can shorten the post-completion sleep after a slow
-                // read, but never start a domain more often than the idle rate.
-                wake_stale(&mut slots);
-            },
             Some(result) = jobs.join_next(), if !jobs.is_empty() => {
                 if let Ok(done) = result {
                     let slot = &mut slots[done.slot];
                     slot.busy = false;
-                    slot.due = if slot.requested { Deadline::now() } else { Deadline::now() + WATCH_EVERY };
-                    slot.requested = false;
+                    slot.due = Deadline::now() + WATCH_EVERY;
                     if slot.partition.is_none() { authority_ready = true; }
                     publish(&core, slot.partition, done);
                 }
@@ -112,18 +85,6 @@ pub(super) async fn watch(core: Arc<Core>) {
     // Dropping JoinSets cancels async supervisors. A running blocking call
     // cannot be forcibly stopped; at most one per fixed domain remains, and
     // no replacement is started after shutdown.
-}
-
-fn wake_stale(slots: &mut [Slot]) {
-    for slot in slots {
-        if slot.started.elapsed() >= WATCH_EVERY {
-            if slot.busy {
-                slot.requested = true;
-            } else {
-                slot.due = Deadline::now();
-            }
-        }
-    }
 }
 
 fn start_due(
@@ -138,7 +99,6 @@ fn start_due(
             continue;
         }
         slot.busy = true;
-        slot.started = Deadline::now();
         let directory = core.plugins.sessions.clone();
         let partition = slot.partition;
         let generation = core
@@ -246,7 +206,7 @@ async fn maintain(core: Arc<Core>) {
     let mut fleet = None;
     loop {
         // Keep the old registration/project/fleet shape comparison cadence;
-        // internal reads never request another provider pass.
+        // it reads the snapshot and never starts a provider pass.
         compare(&core, &mut sessions, &mut fleet).await;
         let config = core.config();
         let env = |key: &str| config.env.get(key).cloned();

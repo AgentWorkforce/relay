@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `install.sh` installs the CLI without the broker and leaves an existing broker binary as it is.
 - `relay fleet agent list` lists agents from the fleet nodes' heartbeats and the workspace roster; its JSON no longer has `localNode`.
 - `relay fleet spawn --sandbox` no longer prints an `attachCommand`.
+- On macOS and Linux, `relay init` starts the Agent Relay desktop app's own core when the app is installed and no core is running on the default socket, and starts the public core only if that one does not come up, with a warning saying how to switch to the desktop app's core.
 - The core has no account sign-in of its own: methods that need an account answer `method_not_found`, and spawn approvals are off, unless the core is built with an account. `agent-relay cloud login` keeps device sign-in for Relay Connect hosts.
 
 ### Removed
@@ -32,10 +33,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `relay fleet spawn` no longer spawns on this machine: pass `--node`, `--auto-place` or `--sandbox`.
 - `relay integration subscribe --spawn` (with `--spawn-arg`, `--cwd`, `--task` and `--broker-connection`) is removed; subscribe an agent that already exists.
 - New versions of `@agent-relay/harness-driver`, `@agent-relay/harnesses`, `@agent-relay/fleet`, `@agent-relay/evals` and `@agent-relay/broker-<platform>` are no longer published, and `agent-relay` no longer depends on them or exports `createRuntimeClient` / `spawnAgentWithClient`.
+- `@agent-relay/policy` and `@agent-relay/brand` are no longer published; existing versions stay installable on npm.
 
 ### Fixed
 
 - `relay serve` delivers messages to agents more reliably and finds their sessions more consistently.
+- Codex agents that `relay serve` spawns now run the installed Codex app-server build whenever there is one, instead of the `codex` command on `PATH`.
+- Follow-up messages to Codex agents that `relay serve` spawns reach them through that same Codex build.
+- A Claude Code session renamed on the relay is told its current name and address when it starts, not the name it first registered under.
+- Choosing to upload a session again no longer re-uploads its unchanged history after `relay serve` restarts.
+- Cursor CLI messaging hooks that setup installed before Cursor's first chat now show as installed and can be turned on or off.
+- Turning uploads Off for a session you connected yourself keeps it off after `relay serve` restarts.
+- A session whose upload was deleted from Cloud no longer rejoins the relay by itself.
+- Devin agents that `relay serve` starts on macOS, including from an agent's spawn request, now get every message; one that arrived a moment after its connection opened could be lost.
 
 ### Migration Guidance
 

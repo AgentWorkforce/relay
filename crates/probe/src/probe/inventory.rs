@@ -693,13 +693,20 @@ mod tests {
         }
         drop(writer);
         let (directory, _project, _inventory) = running(&home, true);
+        // Startup's own passes settle first: a slow computer can take seconds
+        // between them, so one quiet second proves nothing.
         let mut seen = last_pass(&directory);
-        loop {
+        let mut quiet = 0;
+        let settling = std::time::Instant::now();
+        while quiet < 4 {
+            assert!(
+                settling.elapsed() < Duration::from_secs(30),
+                "inventory never becomes idle; last diagnostic: {:?}",
+                fs::read_to_string(directory.join("inventory-diagnostic.json"))
+            );
             std::thread::sleep(Duration::from_millis(1_000));
             let now = last_pass(&directory);
-            if now == seen {
-                break;
-            }
+            quiet = if now == seen { quiet + 1 } else { 0 };
             seen = now;
         }
         std::thread::sleep(Duration::from_millis(1_500));

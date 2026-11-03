@@ -48,6 +48,20 @@ pub(super) fn reported(attached: bool, account: &Value) -> (bool, String) {
     (ready(attached, account), state.to_string())
 }
 
+/// Copies the device sign-in link fields (URL, code, expiry, poll interval)
+/// from the account status into a setup answer.
+pub(super) fn copy_sign_in_link(account: &Value, result: &mut Value) {
+    for key in [
+        "verification_url",
+        "verification_url_complete",
+        "user_code",
+        "expires_at",
+        "interval",
+    ] {
+        result[key] = account[key].clone();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -44,9 +44,9 @@ use std::time::{Duration, Instant};
 pub const ID: HarnessId = HarnessId("muse");
 pub const DESCRIPTOR: Descriptor = Descriptor {
     id: ID,
-    label: "Muse",
+    label: "Muse Code",
     full_access: Some(FullAccess {
-        detail: "Spawned Muse runs with --yolo. Off keeps Muse's sandbox and refuses actions that would ask for approval.",
+        detail: "Spawned Muse Code runs with --yolo. Off keeps Muse Code's sandbox and refuses actions that would ask for approval.",
         default: false,
     }),
     billing: true,
@@ -545,7 +545,7 @@ mod windows_tests {
         let adapter = MuseAdapter::new(&cx);
         assert_eq!(
             adapter.detect(),
-            Installed::Unusable("Muse is not available on Windows.".into())
+            Installed::Unusable("Muse Code is not available on Windows.".into())
         );
     }
 }

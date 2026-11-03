@@ -66,7 +66,17 @@ impl CursorSettings {
     }
 
     fn installed(&self) -> bool {
-        platform::SUPPORTED && self.config.installed()
+        platform::SUPPORTED && (self.config.installed() || self.hook_enabled())
+    }
+
+    /// Explicit provider setup can install hooks before the first Cursor chat.
+    /// The caller owns the opt-in; ordinary maintenance only refreshes hooks
+    /// already installed and never turns them on again after an explicit Off.
+    pub fn set_enabled(&self, enabled: bool) -> Result<(), String> {
+        if let Some(reason) = platform::unsupported(LABEL) {
+            return Err(reason);
+        }
+        self.edit(enabled)
     }
 
     pub(super) fn is_ours(&self, command: &str) -> bool {
@@ -288,9 +298,8 @@ impl CursorSettings {
     }
 }
 
-/// Never turned on by default: where Cursor CLI has run, Settings offers
-/// the hooks (`cursor_direct_delivery` false), and hooks already in place
-/// stay as they are.
+/// Never turned on by default: Settings offers the hooks where Cursor has run,
+/// or after explicit provider setup installed them before the first chat.
 impl crate::relay::agents::SettingsExtension for CursorSettings {
     /// On only while this build's waiting `stop` entry is in place, as the
     /// setting's wording promises: an earlier install that `refresh` could
@@ -328,6 +337,6 @@ impl crate::relay::agents::SettingsExtension for CursorSettings {
         let Some(enabled) = value.as_bool() else {
             return Some(Err(format!("{SETTING} must be true or false.")));
         };
-        Some(self.edit(enabled))
+        Some(self.set_enabled(enabled))
     }
 }

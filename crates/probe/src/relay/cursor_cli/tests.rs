@@ -22,6 +22,24 @@ fn config(home: &Path) -> CursorConfig {
     CursorConfig::from_env(&|_| None, home)
 }
 
+#[test]
+fn explicit_setup_installs_hooks_before_the_first_cursor_chat() {
+    let root = tempfile::tempdir().unwrap();
+    let settings = CursorSettings::new(
+        &config(root.path()),
+        "agent-relay-probe relay cursor-hook".into(),
+    );
+    assert!(settings.get().is_empty());
+    settings.set_enabled(true).unwrap();
+    assert_eq!(settings.get()["cursor_direct_delivery"], true);
+    settings.set_enabled(false).unwrap();
+    settings.refresh().unwrap();
+    assert!(
+        settings.get().is_empty(),
+        "refresh never re-enables an explicit Off"
+    );
+}
+
 /// `<chats>/<workspace>/<id>/store.db`, created, as a holder keeps it open.
 fn store(config: &CursorConfig, id: &str) -> PathBuf {
     let dir = config

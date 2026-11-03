@@ -677,14 +677,13 @@ async fn stopping_a_channel_whose_peer_stopped_reading_is_bounded() {
     .await;
     let (context, mut signals) = push_context();
     let channel = PushChannel::spawn(target(&fake, "alice", None), context);
-    wait_signal(&mut signals, |signal| {
-        matches!(
-            signal,
-            PushSignal::State {
-                state: PushState::Live,
-                ..
-            }
-        )
+    // The register reply can arrive after a heartbeat write has already
+    // wedged, and a wedged write reads nothing, so the channel may never go
+    // live here: wait for the peer to have the register and stop reading.
+    fake.wait_for("the register", |fake| {
+        fake.frames()
+            .iter()
+            .any(|frame| frame["type"] == "node.register")
     })
     .await;
     tokio::time::sleep(Duration::from_millis(500)).await;

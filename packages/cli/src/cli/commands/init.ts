@@ -42,7 +42,7 @@ import {
   type ToolResult,
   type ToolTarget,
 } from '../lib/agent-tools-mcp.js';
-import { desktopAppInstalled } from '../lib/desktop-presence.js';
+import { desktopAppInstalled, startDesktopCore } from '../lib/desktop-presence.js';
 import { CANCELLED, clackPrompter, type InitPrompter } from '../lib/init-prompts.js';
 import { sessionBaseName } from '../lib/mcp-session-name.js';
 import { runSdk, withSdkDefaults, type SdkCommandDeps } from '../lib/sdk-command.js';
@@ -127,6 +127,12 @@ export interface InitCommandDependencies extends SdkCommandDeps {
   isInteractive: () => boolean;
   /** Whether the Agent Relay desktop app is installed, running or not. */
   desktopInstalled: () => boolean;
+  /**
+   * Ask the desktop app to start its own core, without waiting for it.
+   * Returns the command run, or undefined when there is no way to start it
+   * here; throws when the start failed.
+   */
+  startDesktopCore: () => string | undefined;
   prompter: () => InitPrompter;
   /** Project root, home and environment the agent-tool configs resolve against. */
   toolContext: () => ToolContext;
@@ -319,6 +325,11 @@ export function withInitDefaults(overrides: Partial<InitCommandDependencies> = {
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     isInteractive: () => Boolean(process.stdin.isTTY && process.stdout.isTTY),
     desktopInstalled: () => desktopAppInstalled(),
+    // The desktop's core serves only the default socket; a moved one is never its.
+    startDesktopCore: () =>
+      coreSocketPath(process.env, os.homedir()) === coreSocketPath({}, os.homedir())
+        ? startDesktopCore()
+        : undefined,
     prompter: clackPrompter,
     toolContext: () => defaultToolContext(projectRoot()),
     runTool: defaultRunTool,
@@ -1064,14 +1075,16 @@ function deliveryRecordPath(): string {
   return path.join(localDir(), 'core-settings.json');
 }
 
-/** How init came to be talking to the core. */
-type CoreOrigin = 'started' | 'reused' | 'attached';
+/** How init came to be talking to the core. `desktop`: the desktop app's, which this run asked it to start. */
+type CoreOrigin = 'started' | 'reused' | 'attached' | 'desktop';
 
 interface CoreSession {
   client: CoreClient;
   status: CoreStatus;
   origin: CoreOrigin;
   logFile?: string;
+  /** Why the desktop app's core is not the one running, when it should have been. */
+  notice?: string;
 }
 
 /**
@@ -1157,11 +1170,54 @@ async function retireOutdatedCore(
 }
 
 /**
+ * Ask the desktop app to start its own core and wait for a core to answer on
+ * the socket. Whoever answers is attached to: one core runs per machine.
+ * @returns The session; why no core answered; or undefined when this machine has no way to start it
+ */
+async function startDesktopAppCore(
+  deps: InitCommandDependencies,
+  socket: string
+): Promise<CoreSession | { failed: string } | undefined> {
+  let command: string | undefined;
+  try {
+    command = deps.startDesktopCore();
+  } catch (error) {
+    return { failed: (error as Error).message };
+  }
+  if (!command) return undefined;
+  deps.log("Starting the Agent Relay desktop app's core…");
+  // Bounded by the clock (a stalled socket can hold one attempt for seconds) and by attempts.
+  const deadline = Date.now() + CORE_START_TIMEOUT_MS;
+  for (let i = 0; i < CORE_START_TIMEOUT_MS / 250 && Date.now() < deadline; i += 1) {
+    const up = await connectTo(deps, socket).catch(() => undefined);
+    if (up) return { ...up, origin: 'desktop' };
+    await deps.sleep(250);
+  }
+  return { failed: `no core answered on ${socket} within ${CORE_START_TIMEOUT_MS / 1000}s of ${command}` };
+}
+
+/** Said once when the desktop app is installed but its core did not start, and the public one runs instead. */
+function desktopFallbackWarning(failure: string): string {
+  return (
+    `The Agent Relay desktop app is installed, but its core could not be started (${failure}). ` +
+    "relay init started the public Agent Relay core instead. To use the desktop app's core, open the " +
+    `Agent Relay desktop app, then run ${relayCommand('init --stop')} and ${relayCommand('init')} again.`
+  );
+}
+
+/**
  * Attach to the core running on this machine, or start one. One core runs
  * per machine: the desktop app's, a service's, or the one an earlier
- * `relay init` started; a second is never started beside it.
+ * `relay init` started; a second is never started beside it. With
+ * `preferDesktop`, when none answers and the desktop app is installed, the
+ * app is asked to start its own core first; the public core is started only
+ * when that one does not answer, since the install markers can outlive an
+ * uninstall or a disabled service.
  */
-async function ensureCore(deps: InitCommandDependencies): Promise<CoreSession | { reason: string }> {
+async function ensureCore(
+  deps: InitCommandDependencies,
+  { preferDesktop = false }: { preferDesktop?: boolean } = {}
+): Promise<CoreSession | { reason: string }> {
   const socket = deps.coreSocket();
   const state = readCoreState(coreStatePath());
   let running: Awaited<ReturnType<typeof connectTo>>;
@@ -1176,6 +1232,43 @@ async function ensureCore(deps: InitCommandDependencies): Promise<CoreSession | 
       return { ...running, origin: reused ? 'reused' : 'attached' };
     }
   }
+  // No core answers now: none ran, or the outdated one init started was retired.
+  let desktopFailure: string | undefined;
+  if (preferDesktop && deps.desktopInstalled()) {
+    const desktop = await startDesktopAppCore(deps, socket);
+    if (desktop && 'client' in desktop) return desktop;
+    desktopFailure = desktop?.failed;
+  }
+  const session = await startPublicCore(deps, socket);
+  return desktopFailure ? withDesktopFallback(desktopFailure, session) : session;
+}
+
+/**
+ * Say why the desktop app's core is not the one running, in the result so it
+ * outlasts the guided flow's spinner. A desktop core that came up late needs no word.
+ */
+function withDesktopFallback(
+  failure: string,
+  session: CoreSession | { reason: string }
+): CoreSession | { reason: string } {
+  if ('reason' in session) {
+    return {
+      reason:
+        `${session.reason}; the Agent Relay desktop app's core did not start either (${failure}), ` +
+        'open the Agent Relay desktop app to use its core',
+    };
+  }
+  return session.origin === 'started' ? { ...session, notice: desktopFallbackWarning(failure) } : session;
+}
+
+/**
+ * Install and start the public core, attaching instead to a core that takes
+ * the socket first (the desktop app's, started meanwhile).
+ */
+async function startPublicCore(
+  deps: InitCommandDependencies,
+  socket: string
+): Promise<CoreSession | { reason: string }> {
   const probe = await installProbe(deps);
   if ('reason' in probe) return probe;
   // The download can take a while; a desktop app may have started its core meanwhile.
@@ -1195,11 +1288,14 @@ async function ensureCore(deps: InitCommandDependencies): Promise<CoreSession | 
   while (Date.now() < deadline) {
     const up = await connectTo(deps, socket).catch(() => undefined);
     if (up) {
-      // Another core may have taken the socket first; that one is then attached to.
+      // Another core may have taken the socket first; that one is then
+      // attached to, and the one this run started (never the other) stopped.
       const started = up.status.daemon.pid === pid;
       if (started) {
         const record: CoreState = { pid, socket, binary: probe.binary, version: up.status.daemon.version };
         writePrivateJson(coreStatePath(), record);
+      } else if (deps.isAlive(pid)) {
+        deps.stop(pid);
       }
       return { ...up, origin: started ? 'started' : 'attached', logFile };
     }
@@ -1224,6 +1320,11 @@ function describeCore(session: CoreSession): string {
       return (
         `Using the Agent Relay core already running on this machine (agent-relay-probe ${version}, pid ${pid}), ` +
         `the desktop app's or a service's. relay init does not start a second one.`
+      );
+    case 'desktop':
+      return (
+        `Asked the Agent Relay desktop app to start its core; using the core now running on this machine ` +
+        `(agent-relay-probe ${version}, pid ${pid}).`
       );
   }
 }
@@ -1453,6 +1554,8 @@ interface InjectionSetup {
   core: string;
   results: DeliveryResult[];
   workspaceNote?: string;
+  /** Why the desktop app's core is not the one running, when it should have been. */
+  notice?: string;
   /** What moving sessions to a workspace switched to meanwhile did, for a core this run started. */
   moved: string[];
 }
@@ -1467,7 +1570,7 @@ async function setupInjection(
   tools: ToolId[],
   setup: ServerSetup
 ): Promise<InjectionSetup | { reason: string }> {
-  const session = await ensureCore(deps);
+  const session = await ensureCore(deps, { preferDesktop: true });
   if ('reason' in session) return session;
   try {
     const record = readDeliveryRecord(deliveryRecordPath());
@@ -1535,14 +1638,17 @@ async function setupInjection(
       );
     }
     const note = await coreWorkspaceNote(deps, session.client, setup);
-    // A core this run started kept the registrations of the one before it.
-    const moved = session.origin === 'started' ? await moveCoreToWorkspace(deps, session.client, setup) : [];
+    // A core this run started, or asked the desktop app to start, may keep
+    // the registrations of the one before it.
+    const started = session.origin === 'started' || session.origin === 'desktop';
+    const moved = started ? await moveCoreToWorkspace(deps, session.client, setup) : [];
     // Moving reports the same note when the core stayed on another workspace.
     const workspaceNote = note && (moved.includes(note) || setup.details.includes(note)) ? undefined : note;
-    return { core: describeCore(session), results, workspaceNote, moved };
+    return { core: describeCore(session), notice: session.notice, results, workspaceNote, moved };
   } catch (error) {
     if (error instanceof InjectionStuckError) throw error;
-    return { reason: `the Agent Relay core could not be set up (${(error as Error).message})` };
+    const notice = session.notice ? `. ${session.notice}` : '';
+    return { reason: `the Agent Relay core could not be set up (${(error as Error).message})${notice}` };
   } finally {
     session.client.close();
   }
@@ -2192,6 +2298,7 @@ function injectionLines(plan: DeliveryPlan, ctx: ToolContext): string[] {
   if (!plan.injection) return [];
   return [
     plan.injection.core,
+    ...(plan.injection.notice ? [`! ${plan.injection.notice}`] : []),
     ...plan.injection.results.map(describeDelivery),
     ...plan.removedMcp.map((result) => describeSupersededMcp(result, ctx)),
     ...(plan.injection.workspaceNote ? [`! ${plan.injection.workspaceNote}`] : []),
