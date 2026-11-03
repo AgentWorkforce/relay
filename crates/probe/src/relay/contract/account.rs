@@ -513,7 +513,9 @@ pub struct SignInRequest {
     #[serde(default)]
     pub acknowledge_uninspected_schedules: bool,
     pub flow: Option<Flow>,
-    /// The browser identity provider; absent preserves the default login flow.
+    /// The browser identity provider; absent preserves the default login
+    /// flow. Read by a core built with an account (the desktop's browser
+    /// sign-in); this core's own device sign-in ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<SignInProvider>,
 }

@@ -79,11 +79,20 @@ pub const CODEX_NO_DAEMON: &str = "Codex here cannot start its app-server daemon
 /// or a version manager has none, so Codex is not offered there. Files only:
 /// whether a daemon happens to be running must not change what the node
 /// offers. The package's own binary starts it ([`managed_daemon_executable`]);
-/// an older command-line install cannot.
+/// an older command-line install cannot start the app-server package.
 /// On Windows the same packages hold `codex.exe`.
 pub fn codex_daemon_possible(home: &Path) -> bool {
-    const UNIX: [&str; 3] = [
-        "app-server-control/app-server-control.sock",
+    std::iter::once("app-server-control/app-server-control.sock")
+        .chain(managed_binaries())
+        .any(|path| std::fs::symlink_metadata(home.join(path)).is_ok())
+}
+
+/// The managed packages' binaries under Codex home, the app-server package
+/// before the older standalone installer; on Windows, their `codex.exe`
+/// first. [`codex_daemon_possible`] and [`managed_daemon_executable`] both
+/// read this one list, so the offer and the starter cannot disagree.
+fn managed_binaries() -> impl Iterator<Item = &'static str> {
+    const UNIX: [&str; 2] = [
         "packages/app-server-daemon/current/bin/codex",
         "packages/standalone/current/codex",
     ];
@@ -92,9 +101,7 @@ pub fn codex_daemon_possible(home: &Path) -> bool {
         "packages/standalone/current/codex.exe",
     ];
     let windows: &[&str] = if cfg!(windows) { &WINDOWS } else { &[] };
-    UNIX.iter()
-        .chain(windows)
-        .any(|path| std::fs::symlink_metadata(home.join(path)).is_ok())
+    windows.iter().chain(UNIX.iter()).copied()
 }
 
 /// The managed package's own `codex`. `daemon start` from an older
@@ -104,21 +111,7 @@ pub fn codex_daemon_possible(home: &Path) -> bool {
 /// a thread exists. The app-server package is preferred over the older
 /// standalone installer when both are present.
 pub fn managed_daemon_executable(home: &Path) -> Option<PathBuf> {
-    let mut relative = vec![
-        "packages/app-server-daemon/current/bin/codex",
-        "packages/standalone/current/codex",
-    ];
-    if cfg!(windows) {
-        relative.splice(
-            0..0,
-            [
-                "packages/app-server-daemon/current/bin/codex.exe",
-                "packages/standalone/current/codex.exe",
-            ],
-        );
-    }
-    relative
-        .into_iter()
+    managed_binaries()
         .map(|path| home.join(path))
         .find(|path| crate::platform::exe::is_executable(path))
 }
@@ -319,11 +312,17 @@ impl SpawnFacet for CodexAdapter {
                 crate::relay::codex::router::NOT_RUNNING.into(),
             ));
         }
-        let Some(executable) = processes::running_executable(self.table.as_ref(), self.uid) else {
+        // Proxy as a launch does: the live app-server's own binary, else the
+        // managed package, never an older terminal Codex that cannot reach
+        // the daemon a spawned thread runs on.
+        let Some(live) = processes::running_app_server_executable(self.table.as_ref(), self.uid)
+            .or_else(|| processes::running_executable(self.table.as_ref(), self.uid))
+        else {
             return Some(InjectOutcome::Waiting(
                 "Codex's app-server is not running".into(),
             ));
         };
+        let executable = self.proxy_executable(&live);
         let Ok(stream) =
             self.runner
                 .proxy_in_home(&executable, &self.codex.home, &self.codex.sqlite_home)

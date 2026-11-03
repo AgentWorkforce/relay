@@ -545,7 +545,7 @@ mod windows_tests {
         let adapter = MuseAdapter::new(&cx);
         assert_eq!(
             adapter.detect(),
-            Installed::Unusable("Muse is not available on Windows.".into())
+            Installed::Unusable("Muse Code is not available on Windows.".into())
         );
     }
 }

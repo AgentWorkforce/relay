@@ -459,3 +459,62 @@ fn a_follow_up_waits_while_the_rollout_cannot_be_read() {
         "no proxy was opened"
     );
 }
+
+/// A follow-up to a spawned thread proxies as the launch did: an older
+/// terminal Codex beside the managed package is never the proxy, or the
+/// message would go to a CLI that cannot reach the thread's daemon.
+#[test]
+fn a_follow_up_proxies_with_the_managed_package_not_a_terminal_codex() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path();
+    let mut codex = config(home);
+    codex.home = home.join("codex");
+    codex.sqlite_home = home.join("codex");
+    write_rollout(home, "{}\n");
+    let db = rusqlite::Connection::open(home.join("codex/state_5.sqlite")).unwrap();
+    db.execute_batch(&format!(
+        "create table threads (id text, archived integer); insert into threads values ('{THREAD}', 0);"
+    ))
+    .unwrap();
+    drop(db);
+    let package = install_codex(
+        &codex.home,
+        if cfg!(windows) {
+            "packages/app-server-daemon/current/bin/codex.exe"
+        } else {
+            "packages/app-server-daemon/current/bin/codex"
+        },
+    );
+    let tui = PathBuf::from(if cfg!(windows) {
+        r"C:\tui\codex.exe"
+    } else {
+        "/opt/tui/codex"
+    });
+    let table = Arc::new(FakeProcesses::default());
+    table.trust(tui.clone());
+    table.insert(
+        7,
+        FakeProcess {
+            uid: 501,
+            executable: Some(tui.clone()),
+            arguments: vec!["codex".into()],
+            ..FakeProcess::default()
+        },
+    );
+    let runner = Arc::new(FakeRunner::default());
+    let adapter = CodexAdapter {
+        codex,
+        table,
+        uid: 501,
+        runner: runner.clone(),
+        systemd_run: None,
+    };
+    let message = crate::relay::spawn::launch::Message {
+        delivery_id: "d1",
+        message_id: "m1",
+        text: "follow-up",
+        native: false,
+    };
+    let _ = adapter.deliver(&Target::new(SessionKind::Codex, THREAD), &message);
+    assert_eq!(runner.proxies.lock().unwrap().as_slice(), &[package]);
+}

@@ -328,9 +328,11 @@ pub fn running_executable(table: &dyn ProcessTable, uid: u32) -> Option<PathBuf>
     first
 }
 
-/// The executable of a trusted live app-server of this user, when one is
-/// running. A terminal Codex is not one: its binary may be an older
-/// command-line install that cannot speak the managed daemon's protocol.
+/// The executable of a trusted live app-server daemon of this user, when one
+/// is running: one `app-server proxy` reaches (`--listen unix://`). A
+/// terminal Codex is not one: its binary may be an older command-line
+/// install that cannot speak the managed daemon's protocol. Nor is a stdio
+/// or custom-socket app-server, which the proxy cannot reach.
 pub fn running_app_server_executable(table: &dyn ProcessTable, uid: u32) -> Option<PathBuf> {
     let mut trust = Trust::default();
     for pid in table.all_pids() {
@@ -340,9 +342,7 @@ pub fn running_app_server_executable(table: &dyn ProcessTable, uid: u32) -> Opti
         let Some(executable) = table.executable(pid) else {
             continue;
         };
-        if trust.trusted(table, &executable)
-            && table.arguments(pid).iter().any(|a| a == "app-server")
-        {
+        if trust.trusted(table, &executable) && is_proxied_app_server(table, pid) {
             return Some(executable);
         }
     }
@@ -804,12 +804,24 @@ pub(crate) mod tests {
         assert_eq!(running_executable(&table, UID), None);
         table.insert(600, codex_process(10, &["codex", "resume", SESSION]));
         assert_eq!(running_executable(&table, UID), Some(codex()));
+        // A stdio app-server (the Codex app's, Conductor's) is not the
+        // daemon `app-server proxy` reaches.
+        table.trust("/stdio/codex");
+        table.insert(
+            602,
+            FakeProcess {
+                executable: Some("/stdio/codex".into()),
+                ..codex_process(12, &["codex", "app-server"])
+            },
+        );
+        assert_eq!(running_app_server_executable(&table, UID), None);
+        table.remove(602);
         table.trust("/daemon/codex");
         table.insert(
             601,
             FakeProcess {
                 executable: Some("/daemon/codex".into()),
-                ..codex_process(11, &["codex", "app-server"])
+                ..codex_process(11, &["codex", "app-server", "--listen", "unix://"])
             },
         );
         assert_eq!(

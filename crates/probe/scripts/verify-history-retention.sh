@@ -22,12 +22,13 @@ esac
 
 if [[ "$verify_exact" == true ]]; then
   env -u CODEX_HOME cargo test --manifest-path "$verification_root/Cargo.toml" \
-    --locked --no-default-features --lib "$verification_case" -- --list --exact |
-    grep -Fqx "$verification_case: test"
+    --locked --no-default-features --features history --lib "$verification_case" -- --list --exact |
+    grep -Fx "$verification_case: test" >/dev/null
 fi
 
-# This filter invokes only synthetic tests. Each child also requires a
+# Retention is part of session history, so the history feature is on; the
+# production binaries stay off. This filter invokes only synthetic tests. Each child also requires a
 # test-owned marker under the temporary directory. No app, provider sync,
 # login credentials, HTTP transport or live history database is involved.
 env -u CODEX_HOME cargo test --manifest-path "$verification_root/Cargo.toml" \
-  --locked --no-default-features --lib "$verification_case" -- "${verification_flags[@]}"
+  --locked --no-default-features --features history --lib "$verification_case" -- "${verification_flags[@]}"

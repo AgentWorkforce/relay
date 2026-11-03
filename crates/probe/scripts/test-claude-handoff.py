@@ -210,8 +210,12 @@ class Terminal:
         import pty
         self.pid, self.fd = pty.fork()
         if self.pid == 0:
-            os.chdir(cwd)
-            os.execv(command[0], command)
+            # The child never returns into the harness, even if exec fails.
+            try:
+                os.chdir(cwd)
+                os.execv(command[0], command)
+            finally:
+                os._exit(127)
         import fcntl, struct, termios
         fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 120, 0, 0))
         self.root = root

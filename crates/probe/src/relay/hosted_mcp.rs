@@ -353,7 +353,9 @@ impl SocketCommands {
 /// asks.
 pub fn preamble(
     name: &str,
+    // The current address, shown in the head.
     address: &str,
+    // The registered address `join_relay` links the hosted MCP tools to.
     link_address: &str,
     access: McpAccess,
     socket: &Path,

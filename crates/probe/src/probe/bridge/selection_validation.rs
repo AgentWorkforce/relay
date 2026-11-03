@@ -11,14 +11,21 @@ pub(super) fn cloud_selection(
 ) -> Result<Option<CloudSelection>> {
     let mut deleted = deleted_uploads(directory)?;
     let mut sessions = Vec::new();
+    // One history store for every key, opened only when deleting.
+    let store = if delete && !include {
+        Some(super::super::history::open_read(
+            &directory.join("history.db"),
+        )?)
+    } else {
+        None
+    };
     for key in keys {
         if include {
             if let Some(family) = deleted.remove(key) {
                 sessions.extend(family);
             }
-        } else if delete {
+        } else if let Some(store) = &store {
             let root = parse_key(key)?;
-            let store = super::super::history::open_read(&directory.join("history.db"))?;
             let children = store.delegated_descendants(&[ai_hist::SessionIdentity::new(
                 root.source.as_str(),
                 root.session_id.as_str(),

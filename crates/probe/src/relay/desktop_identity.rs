@@ -298,11 +298,23 @@ impl Core {
         // the read is in flight; one queued meanwhile changes the pending
         // set, and `apply_mcp_links` then drops the response.
         let _one = self.desktop_identity_sync.lock.lock().await;
+        let generation = self.plugins.cloud.identity_sync_generation();
+        // With no agent present there are no links to learn: once this
+        // account generation's capability is known, nothing is read until
+        // an agent joins or the account changes.
+        let known = self
+            .desktop_identity_sync
+            .capability_known(&account, generation);
         let source_id = self.store.read(|store| {
+            let present = store
+                .registrations
+                .iter()
+                .any(|registration| registration.missing_since.is_none());
             let cloud = store.cloud.as_ref()?;
-            (cloud.account_workspace_id.as_deref() == Some(account.workspace_id.as_str()))
-                .then(|| store.desktop_sync_source_id.clone())
-                .flatten()
+            ((present || !known)
+                && cloud.account_workspace_id.as_deref() == Some(account.workspace_id.as_str()))
+            .then(|| store.desktop_sync_source_id.clone())
+            .flatten()
         });
         let Some(source_id) = source_id else { return };
         let path = format!(
@@ -311,7 +323,6 @@ impl Core {
             segment(&source_id)
         );
         let clears = self.queued_identity_clears();
-        let generation = self.plugins.cloud.identity_sync_generation();
         if let Ok(response) = self.plugins.cloud.request("GET", path, None).await {
             if self.plugins.cloud.account().as_ref() != Some(&account)
                 || self.plugins.cloud.identity_sync_generation() != generation
@@ -1595,6 +1606,10 @@ mod tests {
                 assert!(store.add(gone, Secret::new("secret")));
             })
             .unwrap();
+        core.refresh_mcp_links().await;
+        assert_eq!(cloud.calls.lock().unwrap().len(), 1);
+        // Known now, and still no agent to link: later passes read nothing.
+        core.refresh_mcp_links().await;
         core.refresh_mcp_links().await;
         assert_eq!(cloud.calls.lock().unwrap().len(), 1);
     }

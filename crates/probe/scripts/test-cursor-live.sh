@@ -68,9 +68,16 @@ def restore(before):
         return read(orig) if os.path.exists(orig) else b""
     print(path + " changed during the run; removing only this run's hook from it.", file=sys.stderr)
     data = json.loads(before)
-    for event, entries in data.get("hooks", {}).items():
+    original = json.loads(read(orig) or b"{}") if os.path.exists(orig) else {}
+    kept = set(original.get("hooks", {})) if isinstance(original, dict) else set()
+    for event, entries in list(data.get("hooks", {}).items()):
         if isinstance(entries, list):
-            data["hooks"][event] = [e for e in entries if not (isinstance(e, dict) and e.get("command") == hook)]
+            entries = [e for e in entries if not (isinstance(e, dict) and e.get("command") == hook)]
+            # An event key this run added goes once its list is empty.
+            if entries or event in kept:
+                data["hooks"][event] = entries
+            else:
+                del data["hooks"][event]
     return json.dumps(data, indent=2).encode()
 
 before = read(path)
@@ -99,13 +106,16 @@ restore() {
     echo "  $HOOK" >&2
   fi
   rm -f "$STAGED"
+  if [[ -n "${CREATED_CURSOR_DIR:-}" ]]; then rmdir "$CREATED_CURSOR_DIR" 2>/dev/null || true; fi
   rm -rf "$WORK"
 }
 trap restore EXIT
 
 cargo build --quiet --manifest-path "$REPO_ROOT/Cargo.toml" --bin agent-relay-probe
 PROBE="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug/agent-relay-probe"
-HOOK="env HOME='$WORK/home' CURSOR_DATA_DIR='$DATA' '$PROBE' relay cursor-hook"
+printf -v HOOK 'env HOME=%q CURSOR_DATA_DIR=%q %q relay cursor-hook' "$WORK/home" "$DATA" "$PROBE"
+# Remember whether ~/.cursor existed, so restore leaves none behind.
+if [[ ! -d "$(dirname "$USER_HOOKS")" ]]; then CREATED_CURSOR_DIR="$(dirname "$USER_HOOKS")"; fi
 mkdir -p "$(dirname "$USER_HOOKS")"
 python3 -I "$WORK/hooks.py" install "$USER_HOOKS" "$STAGED" "$HOOK" \
   "$WORK/hooks.json.ours" "$WORK/hooks.json.orig"

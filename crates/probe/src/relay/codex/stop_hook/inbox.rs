@@ -10,6 +10,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+/// The most threads remembered as already guided; past it the record starts
+/// over, so a long-lived core holds a bounded set and a forgotten thread at
+/// worst gets the command once more.
+const GUIDED_LIMIT: usize = 4096;
+
 /// The most idle deliveries one recap shows.
 pub(super) const RECAP_LIMIT: usize = 10;
 
@@ -29,7 +34,9 @@ pub(super) struct Unseen {
 
 #[derive(Default)]
 pub(super) struct State {
-    /// Registration guidance is context, not a reason to keep a turn open.
+    /// Lowercase thread ids already given the one registration command an
+    /// unregistered chat gets (context, not a reason to keep a turn open).
+    /// Bounded by [`GUIDED_LIMIT`].
     registration_guidance: HashSet<String>,
     /// By lowercase thread id.
     held: HashMap<String, VecDeque<Held>>,
@@ -62,9 +69,11 @@ impl StopHookInbox {
 
     /// Called only after the kernel-backed thread check succeeds.
     pub(crate) fn take_registration_guidance(&self, thread: &str) -> bool {
-        self.state()
-            .registration_guidance
-            .insert(thread.to_lowercase())
+        let mut state = self.state();
+        if state.registration_guidance.len() >= GUIDED_LIMIT {
+            state.registration_guidance.clear();
+        }
+        state.registration_guidance.insert(thread.to_lowercase())
     }
 
     /// The inbox whose running-turn claims are kept by `turns`.

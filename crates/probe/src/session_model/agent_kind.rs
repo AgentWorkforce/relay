@@ -8,7 +8,7 @@ pub fn kind_label(kind: SessionKind) -> &'static str {
         SessionKind::ClaudeCloud => "Claude app",
         SessionKind::Grok | SessionKind::GrokOpen => "Grok",
         SessionKind::OpenCode | SessionKind::OpenCodeOpen => "OpenCode",
-        SessionKind::MuseOpen => "Muse",
+        SessionKind::MuseOpen => "Muse Code",
         SessionKind::Devin => "Devin",
         SessionKind::CursorCli => "Cursor CLI",
         SessionKind::OpenClaw => "OpenClaw",

@@ -10,15 +10,18 @@ use super::*;
 pub(super) fn due_for(host: &Host, db: &Path) -> bool {
     due(db)
         || last_enumeration(db).connectors.iter().any(|connector| {
-            if connector.state != "unavailable" || reach(host, &connector.connector) != Reach::Ready
-            {
+            if connector.state != "unavailable" {
                 return false;
             }
+            // The reason first: one that can never retry early (an expired
+            // or unreadable login) costs no sign-in or config check.
+            let ready = || reach(host, &connector.connector) == Reach::Ready;
             match connector.reason.as_deref() {
-                Some(claude_cloud::NOT_SIGNED_IN | claude_cloud::FOLDER_NOT_SHARED) => true,
+                Some(claude_cloud::NOT_SIGNED_IN | claude_cloud::FOLDER_NOT_SHARED) => ready(),
                 Some(reason)
                     if connector.connector == CLAUDE_WEB_CONNECTOR
-                        && claude_cloud::keychain_not_ready(reason) =>
+                        && claude_cloud::keychain_not_ready(reason)
+                        && ready() =>
                 {
                     match claude_cloud::choose(host.home, host.keychain.source(), now_ms()) {
                         claude_cloud::Login::File => true,

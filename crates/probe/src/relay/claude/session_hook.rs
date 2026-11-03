@@ -627,7 +627,10 @@ impl ClaudeSessionHookSettings {
 
 impl SettingsExtension for ClaudeSessionHookSettings {
     fn default_on(&self) -> Vec<&'static str> {
-        if self.applies() && !self.hook_enabled() {
+        // Only a shared login's hook counts: a stale copy on a login no
+        // longer shared must not keep the hook off the shared ones, since
+        // `refresh` removes that copy and would leave none.
+        if self.applies() && !self.shared_has_hook() {
             vec![SETTING]
         } else {
             Vec::new()

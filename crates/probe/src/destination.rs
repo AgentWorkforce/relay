@@ -76,6 +76,15 @@ impl TransportFailure {
         }
     }
 }
+/// The delivery failure an error carries, whether the client decided it
+/// (no sign-in, another account) or the server answered with it.
+pub fn failure_of(error: &anyhow::Error) -> Option<DeliveryFailure> {
+    error
+        .downcast_ref::<TransportFailure>()
+        .map(|failure| failure.0)
+        .or_else(|| error.downcast_ref::<ReceiverRejection>().map(|r| r.failure))
+}
+
 fn fail(kind: DeliveryFailure) -> anyhow::Error {
     TransportFailure(kind).into()
 }

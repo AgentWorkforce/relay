@@ -184,7 +184,7 @@ test('an unsupported background action cannot replace the native session', async
   );
 });
 
-test('a core refusal never falls back to submitting peer-framed text', async () => {
+test('a failed poll never falls back to submitting peer-framed text', async () => {
   const f = await fixture({ action: turn, reject: () => true });
   await f.tick();
   assert.deepEqual(f.submitted, []);

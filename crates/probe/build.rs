@@ -2,8 +2,15 @@ mod build_version;
 
 use std::{env, fs, path::PathBuf, process::Command};
 
+/// Git in the builder's repository: AGENT_RELAY_PROBE_GIT_DIR when a crate
+/// building this one as a dependency names its own checkout (relay-desktop
+/// does), else this crate's.
 fn git(args: &[&str]) -> Option<String> {
-    let output = Command::new("git").args(args).output().ok()?;
+    let mut command = Command::new("git");
+    if let Some(dir) = env::var_os("AGENT_RELAY_PROBE_GIT_DIR").filter(|dir| !dir.is_empty()) {
+        command.arg("-C").arg(dir);
+    }
+    let output = command.args(args).output().ok()?;
     output
         .status
         .success()
@@ -13,6 +20,8 @@ fn git(args: &[&str]) -> Option<String> {
 fn main() {
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_PROBE_VERSION");
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_PROBE_BASE_VERSION");
+    println!("cargo:rerun-if-env-changed=AGENT_RELAY_PROBE_CHANGELOG");
+    println!("cargo:rerun-if-env-changed=AGENT_RELAY_PROBE_GIT_DIR");
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_POSTHOG_API_KEY");
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_POSTHOG_HOST");
     println!("cargo:rerun-if-changed=Cargo.lock");
@@ -32,13 +41,28 @@ fn main() {
     // A release passes its full version in AGENT_RELAY_PROBE_VERSION (relay
     // releases pass the relay version; relay-desktop passes its CalVer). A
     // development build is `<base>-dev+<revision>`: the base is
-    // AGENT_RELAY_PROBE_BASE_VERSION when the builder orders its own builds
-    // (relay-desktop passes its newest CalVer release), else the crate
-    // version. The Git revision is build metadata only: hashes have no
+    // AGENT_RELAY_PROBE_BASE_VERSION, or the newest release in
+    // AGENT_RELAY_PROBE_CHANGELOG, when the builder orders its own builds,
+    // else the crate version. The Git revision is build metadata only: hashes have no
     // chronological ordering.
+    // AGENT_RELAY_PROBE_CHANGELOG names a changelog whose newest `## v`
+    // heading is that base, read on every build that changes it, so a
+    // builder whose own builds are ordered by its releases (relay-desktop's
+    // CalVer) need not keep a version in step by hand.
+    let changelog_base = env::var_os("AGENT_RELAY_PROBE_CHANGELOG")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .and_then(|path| {
+            println!("cargo:rerun-if-changed={}", path.display());
+            let text = fs::read_to_string(&path).ok()?;
+            text.lines()
+                .find_map(|line| line.strip_prefix("## v"))
+                .map(|heading| heading.trim().to_owned())
+        });
     let base = env::var("AGENT_RELAY_PROBE_BASE_VERSION")
         .ok()
         .filter(|s| !s.trim().is_empty())
+        .or(changelog_base)
         .unwrap_or_else(|| env::var("CARGO_PKG_VERSION").unwrap());
     let version = env::var("AGENT_RELAY_PROBE_VERSION")
         .ok()

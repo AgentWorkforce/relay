@@ -4,10 +4,11 @@
 //! included unless Agent Relay put it on the relay by itself: an
 //! automatically activated session follows the sharing policy, and is
 //! activated only when that policy shares it ([`admitted`]). The rest are
-//! included once. An explicit upload exclusion persists across restarts and
-//! takes any matching registered session off the relay; joining the relay
-//! never silently reverses that saved upload choice. Checked whenever the agents change and on every
-//! uploader supervision tick. With sharing `all` everything uploads already;
+//! included once. An explicit upload exclusion persists across restarts, and
+//! joining the relay never silently reverses that saved upload choice. Only
+//! a Cloud-confirmed deletion (the `deleted-uploads.json` journal) also takes
+//! the matching registered sessions off the relay. Checked whenever the agents
+//! change and on every uploader supervision tick. With sharing `all` everything uploads already;
 //! an install a newer probe runs is left alone.
 
 use crate::delivery_status::{Inclusion, SessionIdentity};
@@ -237,7 +238,12 @@ async fn admitted_by(
                     collected
                         .into_iter()
                         .zip(read)
-                        .filter(|(_, inclusion)| inclusion.included)
+                        // A session whose upload Cloud confirmed deleted stays
+                        // off, even if the process stopped before its local
+                        // exclusion was saved.
+                        .filter(|(_, inclusion)| {
+                            inclusion.included && !inclusion.deleted_from_cloud
+                        })
                         .map(|((_, target), _)| target),
                 )
                 .collect(),
@@ -861,8 +867,9 @@ mod tests {
         assert!(core.store.read(|store| store.registrations.is_empty()));
         server.await.unwrap();
         drop(core);
-        // A fresh core reloads registrations from disk and loses all in-memory
-        // requested history. New local activity must not undo Upload Off.
+        // A fresh core reloads registrations from disk (none now) and loses
+        // its in-memory requests. The saved exclusion outlives the process:
+        // its sync, after new local activity, includes nothing again.
         let (restarted, _) = Core::new(config);
         conn.execute(
             "UPDATE sessions SET last_activity_ms=99 WHERE session_id=?",

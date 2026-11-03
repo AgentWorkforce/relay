@@ -506,4 +506,33 @@ pub(crate) mod tests {
             ]
         );
     }
+
+    #[test]
+    fn the_cloud_deletion_journal_marks_its_sessions_and_fails_closed() {
+        let directory = install(&["codex:a", "codex:b"]);
+        let identity = |id: &str| delivery::SessionIdentity {
+            source: "codex".into(),
+            session_id: id.into(),
+        };
+        let sessions = [identity("a"), identity("b")];
+        // No journal: nothing was deleted.
+        let (_, read) = crate::delivery_status::inclusion(directory.path(), &sessions).unwrap();
+        assert!(read.iter().all(|inclusion| !inclusion.deleted_from_cloud));
+        // A confirmed deletion marks the family it names.
+        let journal = directory.path().join("deleted-uploads.json");
+        std::fs::write(
+            &journal,
+            serde_json::to_vec(&serde_json::json!({
+                "codex:a": [{"source": "codex", "session_id": "a"}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (_, read) = crate::delivery_status::inclusion(directory.path(), &sessions).unwrap();
+        assert!(read[0].deleted_from_cloud);
+        assert!(!read[1].deleted_from_cloud);
+        // A journal that cannot be read is never taken as "nothing deleted".
+        std::fs::write(&journal, b"not json").unwrap();
+        assert!(crate::delivery_status::inclusion(directory.path(), &sessions).is_err());
+    }
 }

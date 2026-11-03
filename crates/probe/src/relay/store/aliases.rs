@@ -53,6 +53,8 @@ impl Registration {
     /// The address `join_relay` links the hosted MCP tools to: the registered
     /// one, which Desktop's identity sync uploads to Cloud, even once renamed.
     /// Every hint naming `join_relay` uses it, so a session gets one address.
+    /// Call it on the owning registration: on an alias view it is the alias's
+    /// own address (`Store::link_address_for` resolves the owner first).
     pub fn link_address(&self, current_prefix: &str) -> String {
         self.direct_address(current_prefix)
     }

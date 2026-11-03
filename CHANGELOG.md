@@ -20,10 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `relay serve` delivers messages to agents more reliably and finds their sessions more consistently.
-- Codex agents that `relay serve` spawns start from the managed app-server package in Codex's home when it is newer than the `codex` command on `PATH`.
+- Codex agents that `relay serve` spawns now run the newer Codex build when one is installed, instead of an older `codex` on `PATH`, and follow-up messages reach them the same way.
 - A Claude Code session renamed on the relay is told its current name and address when it starts, not the name it first registered under.
-- Repeating an accepted session upload choice keeps the running upload job, so restarting the core no longer re-uploads unchanged history.
-- Cursor CLI hooks that provider setup installed before Cursor's first chat are kept and can be turned on, and turning sharing Off for a manually connected session keeps it off after a restart.
+- Choosing to upload a session again no longer re-uploads its unchanged history after `relay serve` restarts.
+- Cursor CLI messaging hooks that setup installed before Cursor's first chat now show as installed and can be turned on or off.
+- Turning uploads Off for a session you connected yourself keeps it off after `relay serve` restarts, and a session whose upload was deleted from Cloud no longer rejoins the relay by itself.
 
 ## [15.0.2] - 2026-11-01
 

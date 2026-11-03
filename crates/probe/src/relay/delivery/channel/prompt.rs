@@ -129,18 +129,23 @@ impl Core {
             self.relay_mcp_access(&registration.target)
         };
         // The hints use it only for join_relay.
-        let address = self
+        let link_address = self
             .store
             .read(|store| store.link_address_for(registration, &self.machine_prefix));
         if registration.target.kind == SessionKind::ClaudeCloud && socket.is_none() {
-            return hosted_mcp::web_reply_hint(access, &recipient, &delivery.message_id, &address);
+            return hosted_mcp::web_reply_hint(
+                access,
+                &recipient,
+                &delivery.message_id,
+                &link_address,
+            );
         }
         hosted_mcp::dm_reply_hint(
             access,
             &recipient,
             &delivery.message_id,
             socket.as_deref(),
-            &address,
+            &link_address,
         )
     }
 }

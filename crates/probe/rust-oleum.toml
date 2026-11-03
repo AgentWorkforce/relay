@@ -74,7 +74,6 @@ rust_roots = ["src"]
 "src/relay/store.rs" = 1916
 "src/relay/telemetry.rs" = 823
 "src/relay/uploader.rs" = 1090
-"src/session_model/uploads.rs" = 546
 
 [baseline.cyclomatic]
 "src/delivery.rs::prepare" = 38
