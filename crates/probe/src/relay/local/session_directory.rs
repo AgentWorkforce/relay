@@ -276,7 +276,7 @@ impl LocalSessions {
     ) -> Option<Vec<DiscoveredSession>> {
         let found = match partition {
             SessionPartition::All => self.all(),
-            SessionPartition::Codex => return self.codex_sessions(),
+            SessionPartition::Codex => self.codex_sessions()?,
             SessionPartition::Claude => {
                 let mut found = claude::discover(&self.config.claude, &*self.scans);
                 // Claude Code on the web sessions the history catalogs list.
@@ -306,6 +306,9 @@ impl LocalSessions {
                 .map(|config| self.hermes.sessions(config))
                 .unwrap_or_default(),
         };
+        if matches!(partition, SessionPartition::Codex | SessionPartition::Claude | SessionPartition::Grok) {
+            crate::relay::session_locations::observe(&self.config, &*self.scans, &found);
+        }
         Some(found)
     }
 

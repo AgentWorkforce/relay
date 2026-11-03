@@ -105,6 +105,10 @@ impl SessionPartition {
 }
 
 pub trait SessionDirectory: Send + Sync + 'static {
+    fn location(&self, _source: &str, _id: &str) -> Result<crate::relay::contract::session_locations::SessionLocationReport, String> {
+        Ok(crate::relay::session_locations::unavailable())
+    }
+
     /// Unique live Claude session config roots, refreshed during discovery.
     /// Ambiguous IDs must be absent. Capability checks use the core's cache.
     fn mobile_claude_config_roots(&self) -> std::collections::BTreeMap<Target, std::path::PathBuf> {

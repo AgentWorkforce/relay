@@ -213,6 +213,8 @@ impl ProcessTable for ProcessSnapshot {
         self.inner.owns_tcp_listener(pid, host, port)
     }
 
+    fn terminal_path(&self, pid: i32) -> Option<PathBuf> { self.inner.terminal_path(pid) }
+
     fn has_terminal(&self, pid: i32) -> bool {
         *self
             .facts(pid)

@@ -144,6 +144,7 @@ pub mod request_log;
 pub mod sdk_gaps;
 pub mod server;
 pub mod session_cli;
+pub mod session_locations;
 pub mod session_naming;
 pub mod session_titles;
 pub mod sessions;
