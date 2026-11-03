@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `cloud integration connect` explains unsupported providers instead of reporting a lifecycle conflict.
 - `relay serve` delivers messages to agents more reliably and finds their sessions more consistently.
 - Codex agents that `relay serve` spawns now run the installed Codex app-server build whenever there is one, instead of the `codex` command on `PATH`.
 - Follow-up messages to Codex agents that `relay serve` spawns reach them through that same Codex build.
