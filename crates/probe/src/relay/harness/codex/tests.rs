@@ -47,10 +47,21 @@ fn codex_is_offered_only_where_its_daemon_can_run() {
     );
     let refused = system(codex.clone()).launch(&launch(home.path()), &|_, _| {});
     assert!(matches!(&refused, Err(LaunchError::Unavailable(reason)) if reason == CODEX_NO_DAEMON));
+    let (package, standalone) = if cfg!(windows) {
+        (
+            "packages/app-server-daemon/current/bin/codex.exe",
+            "packages/standalone/current/codex.exe",
+        )
+    } else {
+        (
+            "packages/app-server-daemon/current/bin/codex",
+            "packages/standalone/current/codex",
+        )
+    };
     for layout in [
         "app-server-control/app-server-control.sock",
-        "packages/app-server-daemon/current/bin/codex",
-        "packages/standalone/current/codex",
+        package,
+        standalone,
     ] {
         let codex_home = tempfile::tempdir().unwrap();
         // A managed binary counts once it can run, as the starter needs.

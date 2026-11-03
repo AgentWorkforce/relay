@@ -69,8 +69,16 @@ fn main() {
     // (relay-desktop's CalVer) need not keep a version in step by hand. A
     // configured changelog that cannot be read, or names no release, fails
     // the build rather than stamping a version that orders below them all.
+    // Read only when no override supplies the version: an override must
+    // build whatever the changelog holds.
+    let overridden = [
+        "AGENT_RELAY_PROBE_VERSION",
+        "AGENT_RELAY_PROBE_BASE_VERSION",
+    ]
+    .iter()
+    .any(|key| env::var(key).is_ok_and(|value| !value.trim().is_empty()));
     let changelog_base = env::var_os("AGENT_RELAY_PROBE_CHANGELOG")
-        .filter(|path| !path.is_empty())
+        .filter(|path| !path.is_empty() && !overridden)
         .map(PathBuf::from)
         .map(|path| {
             println!("cargo:rerun-if-changed={}", path.display());
