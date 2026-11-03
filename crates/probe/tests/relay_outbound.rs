@@ -2527,6 +2527,32 @@ async fn leaving_a_channel_leaves_under_every_forwarding_name() {
     h.stop().await;
 }
 
+// The SessionStart hook read the registered name from /setup/status after a
+// rename, and named a session by a name that only forwards (2026-11-02).
+#[tokio::test]
+async fn setup_status_names_a_renamed_session_as_whoami_does() {
+    let h = Harness::start().await;
+    h.register(IN_CLAUDE, json!({"name": "claude-first"})).await;
+    h.register(IN_CLAUDE, json!({"name": "tan-man"})).await;
+    let me = h
+        .call(IN_CLAUDE, "GET", "/whoami", Value::Null)
+        .await
+        .unwrap();
+    let status = h
+        .call(IN_CLAUDE, "GET", "/setup/status", Value::Null)
+        .await
+        .unwrap();
+    assert_eq!(me["name"], "tan-man");
+    assert_eq!(status["session"]["registered"], true);
+    assert_eq!(status["session"]["name"], me["name"]);
+    assert_eq!(status["session"]["address"], me["address"]);
+    // join_relay links the address Desktop syncs to Cloud: the registered one.
+    let link = status["session"]["link_address"].as_str().unwrap();
+    assert!(link.starts_with("claude-first@"), "{link}");
+    assert_ne!(status["session"]["link_address"], me["address"]);
+    h.stop().await;
+}
+
 #[tokio::test]
 async fn a_self_rename_keeps_the_mcp_it_declares() {
     let h = Harness::start().await;

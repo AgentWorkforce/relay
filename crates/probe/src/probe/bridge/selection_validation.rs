@@ -1,4 +1,51 @@
 use super::*;
+
+pub(super) fn deleted_uploads(directory: &Path) -> Result<HashMap<String, Vec<SessionIdentity>>> {
+    saved(&directory.join("deleted-uploads.json"))
+}
+pub(super) fn cloud_selection(
+    directory: &Path,
+    keys: &[String],
+    include: bool,
+    delete: bool,
+) -> Result<Option<CloudSelection>> {
+    let mut deleted = deleted_uploads(directory)?;
+    let mut sessions = Vec::new();
+    for key in keys {
+        if include {
+            if let Some(family) = deleted.remove(key) {
+                sessions.extend(family);
+            }
+        } else if delete {
+            let root = parse_key(key)?;
+            let store = super::super::history::open_read(&directory.join("history.db"))?;
+            let children = store.delegated_descendants(&[ai_hist::SessionIdentity::new(
+                root.source.as_str(),
+                root.session_id.as_str(),
+            )])?;
+            let mut family = vec![root];
+            family.extend(children.into_iter().map(|id| SessionIdentity {
+                source: id.source_name,
+                session_id: id.session_id,
+            }));
+            // A retry also deletes children discovered before a partial failure.
+            if let Some(previous) = deleted.get(key) {
+                family.extend(previous.clone());
+            }
+            let mut seen = HashSet::new();
+            family.retain(|identity| seen.insert(identity.clone()));
+            sessions.extend(family.clone());
+            deleted.insert(key.clone(), family);
+        }
+    }
+    let mut seen = HashSet::new();
+    sessions.retain(|identity| seen.insert(identity.clone()));
+    Ok((!sessions.is_empty()).then_some(CloudSelection {
+        enabled: include,
+        sessions,
+        deleted,
+    }))
+}
 pub(super) fn parse_key(key: &str) -> Result<SessionIdentity> {
     let (source, id) = key
         .split_once(':')
@@ -114,6 +161,44 @@ pub(super) fn mutation_unchanged(
         !member && delivery::is_explicitly_excluded(conn, id)?
     })
 }
+
+/// A completed broad-mode include has already saved its intent before replying.
+/// Replaying it must preserve the delivery generation even while folder consent
+/// withholds the session. A first include or a later explicit deny still changes
+/// consent and takes the normal generation-replacement path.
+pub(super) fn mutations_unchanged(
+    conn: &Connection,
+    directory: &Path,
+    config: &Config,
+    identities: &[SessionIdentity],
+    include: bool,
+) -> Result<bool> {
+    let scoped = delivery::is_session_job(conn, &config.job_id)?;
+    if mode(config) == SharingMode::Selected {
+        if !scoped {
+            return Ok(false);
+        }
+        validate_mutation_identities(conn, identities, include)?;
+        for identity in identities {
+            if !mutation_unchanged(conn, &config.job_id, identity, include)? {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
+    if !include || scoped {
+        return Ok(false);
+    }
+    validate_mutation_identities(conn, identities, true)?;
+    let accepted = selected(directory)?;
+    for identity in identities {
+        if !accepted.contains(identity) || delivery::is_explicitly_excluded(conn, identity)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 pub(super) fn apply_member_change(
     conn: &Connection,
     job: &str,
@@ -128,6 +213,8 @@ pub(super) fn apply_member_change(
     }
     Ok(())
 }
+#[cfg(test)]
+mod idempotency_tests;
 #[cfg(test)]
 mod tests {
     use super::super::tests::{apply, fixture};

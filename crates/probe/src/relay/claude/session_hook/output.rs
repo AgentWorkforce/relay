@@ -33,6 +33,9 @@ pub enum StatusRead {
     OnRelay {
         name: String,
         address: String,
+        /// The address join_relay links to: the registered one, which
+        /// Desktop syncs to Cloud. Same as `address` unless renamed.
+        link_address: String,
         mcp: McpAccess,
     },
     Again,
@@ -67,6 +70,9 @@ pub fn read_status(http_status: u16, body: &[u8]) -> StatusRead {
             return StatusRead::OnRelay {
                 name: name.into(),
                 address: address.into(),
+                // An older core sends no link_address; its address is the
+                // registered one.
+                link_address: session["link_address"].as_str().unwrap_or(address).into(),
                 mcp: McpAccess::parse(session["mcp"].as_str()),
             };
         }
@@ -75,6 +81,19 @@ pub fn read_status(http_status: u16, body: &[u8]) -> StatusRead {
         // session's folder is excluded from it.
         if !on_relay && session["auto_activates"].as_bool() == Some(true) {
             return StatusRead::Joining;
+        }
+        // Registered sessions always retain their identity preamble above.
+        // The optional flag also distinguishes an unknown initial policy from
+        // the selected-mode display fallback used by older setup clients.
+        let prompt_allowed = value["data"]["claude_prompt_to_join_allowed"]
+            .as_bool()
+            .unwrap_or_else(|| {
+                value["data"]["sharing_mode"]
+                    .as_str()
+                    .map_or(true, |mode| mode == "selected")
+            });
+        if !on_relay && !prompt_allowed {
+            return StatusRead::Unknown;
         }
         let self_registration = value["data"]["allow_self_registration"]
             .as_bool()
@@ -140,8 +159,14 @@ pub fn hook_output(
     interactive: bool,
     probe: Option<&Path>,
 ) -> Value {
-    if let Some(StatusRead::OnRelay { name, address, mcp }) = &status {
-        let context = hosted_mcp::preamble(name, address, *mcp, socket, probe);
+    if let Some(StatusRead::OnRelay {
+        name,
+        address,
+        link_address,
+        mcp,
+    }) = &status
+    {
+        let context = hosted_mcp::preamble(name, address, link_address, *mcp, socket, probe);
         return json!({
             "hookSpecificOutput": {
                 "hookEventName": "SessionStart",
@@ -157,13 +182,17 @@ pub fn hook_output(
         Some(StatusRead::Registered {
             on_relay: false,
             self_registration: true,
-        }) => (NUDGE_FOR_PERSON.to_string(), nudge(socket)),
+        }) => (NUDGE_FOR_PERSON.to_string(), nudge(socket, probe)),
         Some(StatusRead::Registered {
             on_relay: false,
             self_registration: false,
         }) => {
             let text = registration_off(socket);
-            let agent = format!("{text} {DO_NOT_REGISTER_UNASKED}");
+            // The person reads `text`; only Claude needs the re-check.
+            let agent = format!(
+                "{text} {DO_NOT_REGISTER_UNASKED} {}",
+                recheck(socket, probe)
+            );
             (text, agent)
         }
         _ => return json!({}),
@@ -235,7 +264,7 @@ pub fn registration_off(socket: &Path) -> String {
 /// on the relay, and the `NAME`, are the person's to choose. The example
 /// uses curl, or the probe's own socket client where curl cannot reach the
 /// socket (`outbound::probe_client`: always on Windows, a named pipe).
-pub fn nudge(socket: &Path) -> String {
+pub fn nudge(socket: &Path, rules_probe: Option<&Path>) -> String {
     let shown = socket.display().to_string();
     let quoted = crate::relay::outbound::shell_quote(&shown);
     let server = hosted_mcp::SERVER_NAME;
@@ -250,6 +279,7 @@ pub fn nudge(socket: &Path) -> String {
              'Content-Type: application/json' --data-binary {body}"
         ),
     };
+    let recheck = recheck(socket, rules_probe);
     format!(
         "This Claude Code session is not on Agent Relay. Do not put it on the relay on \
          your own. In your first reply, before any other work, ask the person whether to \
@@ -260,6 +290,32 @@ pub fn nudge(socket: &Path) -> String {
          POST /register on the Agent Relay session socket at {shown} with the name they \
          chose; include \"mcp\":\"{server}\" if you have the {server} MCP tools, or \
          \"mcp\":\"none\" if you do not. For example: {example}. If they say no, leave it \
-         off the relay. Agent Relay does not register this session for you."
+         off the relay. Agent Relay does not register this session for you. {recheck}"
+    )
+}
+
+/// The start text is read once; another agent, Agent Relay or the person can
+/// register the session afterwards. `relay whoami` with the probe Claude's
+/// rules name runs without an approval prompt; curl, or `socket-request`,
+/// would ask the person first.
+fn recheck(socket: &Path, rules_probe: Option<&Path>) -> String {
+    let shown = socket.display().to_string();
+    let whoami = rules_probe
+        .and_then(|probe| {
+            crate::relay::session_cli::SessionCommand::Whoami.command_line(probe, socket, None)
+        })
+        .or_else(|| {
+            crate::relay::outbound::probe_client(false)
+                .then(|| crate::relay::outbound::probe_socket_command(socket, "GET", "/whoami"))
+                .flatten()
+        })
+        // No command the rules allow is known: name the request rather than
+        // hand Claude a curl line that asks the person.
+        .unwrap_or_else(|| format!("GET /whoami on the session socket at {shown}"));
+    format!(
+        "This was read when the session started, and another agent, Agent Relay or the \
+         person can register it afterwards. If a relay message addressed to this session \
+         arrives, run {whoami} first: when it answers \"registered\":true, the session is \
+         already on the relay under that name, so do not ask and do not register it again."
     )
 }

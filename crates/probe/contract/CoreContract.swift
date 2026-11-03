@@ -8467,6 +8467,11 @@ public struct ShutdownNotice: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+public enum SignInProvider: String, Codable, CaseIterable, Hashable, Sendable {
+    case google
+    case microsoft
+}
+
 /// `account.status`, `account.sign_in` and the `sign_in` topic: the account
 /// plus the link waiting for the person, if any.
 public struct SignInReport: Codable, Equatable, Hashable, Sendable {
@@ -8616,13 +8621,16 @@ public struct SignInReport: Codable, Equatable, Hashable, Sendable {
 public struct SignInRequest: Codable, Equatable, Hashable, Sendable {
     public let acknowledgeUninspectedSchedules: Bool
     public let flow: Flow?
+    /// The browser identity provider; absent preserves the default login flow.
+    public let provider: SignInProvider?
     public let sharing: SharingMode
     public let siteUrl: String?
     public let workspace: String?
 
-    public init(acknowledgeUninspectedSchedules: Bool = false, flow: Flow? = nil, sharing: SharingMode, siteUrl: String? = nil, workspace: String? = nil) {
+    public init(acknowledgeUninspectedSchedules: Bool = false, flow: Flow? = nil, provider: SignInProvider? = nil, sharing: SharingMode, siteUrl: String? = nil, workspace: String? = nil) {
         self.acknowledgeUninspectedSchedules = acknowledgeUninspectedSchedules
         self.flow = flow
+        self.provider = provider
         self.sharing = sharing
         self.siteUrl = siteUrl
         self.workspace = workspace
@@ -8631,6 +8639,7 @@ public struct SignInRequest: Codable, Equatable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case acknowledgeUninspectedSchedules = "acknowledge_uninspected_schedules"
         case flow
+        case provider
         case sharing
         case siteUrl = "site_url"
         case workspace
@@ -8640,6 +8649,7 @@ public struct SignInRequest: Codable, Equatable, Hashable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.acknowledgeUninspectedSchedules = try c.decodeIfPresent(Bool.self, forKey: .acknowledgeUninspectedSchedules) ?? false
         self.flow = try c.decodeIfPresent(Flow.self, forKey: .flow)
+        self.provider = try c.decodeIfPresent(SignInProvider.self, forKey: .provider)
         self.sharing = try c.decode(SharingMode.self, forKey: .sharing)
         self.siteUrl = try c.decodeIfPresent(String.self, forKey: .siteUrl)
         self.workspace = try c.decodeIfPresent(String.self, forKey: .workspace)
@@ -8649,6 +8659,7 @@ public struct SignInRequest: Codable, Equatable, Hashable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.acknowledgeUninspectedSchedules, forKey: .acknowledgeUninspectedSchedules)
         try c.encodeIfPresent(self.flow, forKey: .flow)
+        try c.encodeIfPresent(self.provider, forKey: .provider)
         try c.encode(self.sharing, forKey: .sharing)
         try c.encodeIfPresent(self.siteUrl, forKey: .siteUrl)
         try c.encodeIfPresent(self.workspace, forKey: .workspace)

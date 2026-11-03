@@ -11,7 +11,7 @@ use serde_json::Value;
 /// The tool an integration default connects, as the sign-in screen names it.
 fn tool_name(key: &str) -> Option<&'static str> {
     Some(match key {
-        "direct_delivery" => "Claude Code",
+        "direct_delivery" | "claude_session_hook" => "Claude Code",
         "grok_leader" => "Grok",
         "opencode_plugin" => "OpenCode",
         "codex_stop_hook" => "Codex",

@@ -4,9 +4,9 @@
 //! included unless Agent Relay put it on the relay by itself: an
 //! automatically activated session follows the sharing policy, and is
 //! activated only when that policy shares it ([`admitted`]). The rest are
-//! included once: a session whose inclusion was refused, or that someone
-//! stopped uploading afterwards, is not asked for again until it leaves the
-//! relay and returns. Checked whenever the agents change and on every
+//! included once. An explicit upload exclusion persists across restarts and
+//! takes any matching registered session off the relay; joining the relay
+//! never silently reverses that saved upload choice. Checked whenever the agents change and on every
 //! uploader supervision tick. With sharing `all` everything uploads already;
 //! an install a newer probe runs is left alone.
 
@@ -42,7 +42,10 @@ pub type Read = BTreeMap<String, Inclusion>;
 pub fn shared(registered: &BTreeSet<String>, read: &Read) -> BTreeSet<String> {
     registered
         .iter()
-        .filter(|key| read.get(*key).is_some_and(|session| session.included))
+        .filter(|key| {
+            read.get(*key)
+                .is_some_and(|session| session.included && !session.deleted_from_cloud)
+        })
         .cloned()
         .collect()
 }
@@ -63,9 +66,12 @@ pub fn pending(
     registered
         .iter()
         .filter(|key| {
-            read.get(*key)
-                .is_some_and(|session| session.selectable && !session.included)
-                && !requested.contains(*key)
+            read.get(*key).is_some_and(|session| {
+                session.selectable
+                    && !session.included
+                    && !session.explicitly_excluded
+                    && !session.deleted_from_cloud
+            }) && !requested.contains(*key)
         })
         .cloned()
         .collect()
@@ -325,7 +331,11 @@ impl RelayUploads {
         }
         let target = install.target;
         // `chosen`: the registered keys a person put on the relay.
-        let (registered, chosen): (BTreeSet<String>, BTreeSet<String>) = core.store.read(|store| {
+        let (registered, chosen, registrations): (
+            BTreeSet<String>,
+            BTreeSet<String>,
+            Vec<crate::relay::store::Registration>,
+        ) = core.store.read(|store| {
             // Registrations outlive sign-out and retain their original key.
             // Only the authenticated upload workspace may auto-include them.
             let Some(cloud) = store.cloud.as_ref().filter(|cloud| {
@@ -334,14 +344,21 @@ impl RelayUploads {
             }) else {
                 return Default::default();
             };
-            registered_keys(store.registrations.iter().filter(|r| {
-                belongs_to_upload_workspace(
-                    r.workspace_key.as_ref(),
-                    &r.base_url,
-                    &cloud.key,
-                    &cloud.base_url,
-                )
-            }))
+            let registrations: Vec<_> = store
+                .registrations
+                .iter()
+                .filter(|r| {
+                    belongs_to_upload_workspace(
+                        r.workspace_key.as_ref(),
+                        &r.base_url,
+                        &cloud.key,
+                        &cloud.base_url,
+                    )
+                })
+                .cloned()
+                .collect();
+            let (registered, chosen) = registered_keys(registrations.iter());
+            (registered, chosen, registrations)
         });
         {
             let mut requested = self.requested.lock().unwrap();
@@ -394,6 +411,29 @@ impl RelayUploads {
             return;
         }
         let read: Read = sessions.into_iter().map(|(key, _)| key).zip(read).collect();
+        // Upload Off is an explicit privacy choice. The saved exclusion is
+        // authoritative even after this process's requested cache is lost.
+        // Only the confirmed Cloud-deletion journal authorizes integration
+        // cleanup. A plain exclusion or a missing read never grants it.
+        // Manual registrations must leave too, rather than re-upload on restart.
+        for registration in registrations {
+            let denied = registration
+                .target
+                .upload_key()
+                .and_then(|key| read.get(&key))
+                .is_some_and(|session| session.deleted_from_cloud);
+            if denied {
+                if let Err(error) = core.unregister_upload_excluded(&registration.name).await {
+                    core.hub.activity(
+                        crate::relay::state::Level::Warning,
+                        format!(
+                            "Uploads are off, but @{} could not leave Agent Relay yet: {}",
+                            registration.name, error.message
+                        ),
+                    );
+                }
+            }
+        }
         *self.shared.lock().unwrap_or_else(|e| e.into_inner()) = shared(&registered, &read);
         let keys = {
             let mut requested = self.requested.lock().unwrap();
@@ -437,7 +477,9 @@ pub async fn watch(core: Arc<Core>, uploader: Arc<Uploader>, uploads: Arc<RelayU
     loop {
         match events.recv().await {
             Ok(event) => {
-                if event.topic == Topic::Invalidated && event.data["what"] == "agents" {
+                if event.topic == Topic::Invalidated
+                    && matches!(event.data["what"].as_str(), Some("agents" | "uploader"))
+                {
                     uploads.sync(&core, &uploader).await;
                 }
             }
@@ -497,6 +539,8 @@ mod tests {
                     Inclusion {
                         selectable: *selectable,
                         included: *included,
+                        explicitly_excluded: false,
+                        deleted_from_cloud: false,
                     },
                 )
             })
@@ -678,6 +722,163 @@ mod tests {
         };
         assert_eq!(registered, BTreeSet::from([key("added"), key("automatic")]));
         assert_eq!(chosen, BTreeSet::from([key("added")]));
+    }
+
+    #[test]
+    fn a_manual_upload_off_survives_a_cold_requested_cache() {
+        let registered = keys(&["codex:manual"]);
+        let sessions = Read::from([(
+            "codex:manual".into(),
+            Inclusion {
+                selectable: true,
+                included: false,
+                explicitly_excluded: true,
+                deleted_from_cloud: true,
+            },
+        )]);
+        // A fresh core knows nothing about the previous process's requests.
+        // The durable exclusion alone must prevent an automatic include.
+        assert!(pending(
+            &registered,
+            SharingMode::Selected,
+            &sessions,
+            &mut BTreeSet::new()
+        )
+        .is_empty());
+        assert!(pending(
+            &registered,
+            SharingMode::New,
+            &sessions,
+            &mut BTreeSet::new()
+        )
+        .is_empty());
+    }
+
+    // Uploads live in the session-history delivery store.
+    #[cfg(feature = "history")]
+    #[tokio::test]
+    async fn manual_upload_off_leaves_relay_and_stays_off_after_core_restart() {
+        use crate::delivery;
+        use crate::relay::daemon::Config;
+        use crate::relay::paths::CorePaths;
+        use crate::relay::store::{CloudWorkspace, Registration, SessionKind};
+        use crate::relay::uploader::{Install, ProcessRunner};
+        use crate::relay::workspace::Secret;
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let id = "019a0000-0000-7000-8000-000000000001";
+        let key = format!("codex:{id}");
+        let directory = crate::delivery_status::status_tests::install(&[&key]);
+        let config_path = directory.path().join("config.json");
+        let mut upload_config: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+        upload_config["sharing_mode"] = "selected".into();
+        std::fs::write(&config_path, serde_json::to_vec(&upload_config).unwrap()).unwrap();
+        let conn = delivery::open_db(&directory.path().join("history.db")).unwrap();
+        let identity = delivery::SessionIdentity {
+            source: "codex".into(),
+            session_id: id.into(),
+        };
+        let job = upload_config["job_id"].as_str().unwrap();
+        delivery::adopt_session_job(&conn, job, std::slice::from_ref(&identity)).unwrap();
+        // The completed deletion's durable local consent, independent of this
+        // core process or its requested set. Cloud deletion itself is tested
+        // by the command and History-service integration fixtures.
+        delivery::set_session_excluded(&conn, &identity, true).unwrap();
+        delivery::set_job_session(&conn, job, &identity, false).unwrap();
+        std::fs::write(
+            directory.path().join("deleted-uploads.json"),
+            serde_json::to_vec(&BTreeMap::from([(key.clone(), vec![identity.clone()])])).unwrap(),
+        )
+        .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                assert_eq!(stream.read(&mut byte).await.unwrap(), 1);
+                request.push(byte[0]);
+            }
+            assert!(String::from_utf8(request)
+                .unwrap()
+                .starts_with("DELETE /v1/agents/manual "));
+            stream
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+        let root = tempfile::tempdir().unwrap();
+        let config = Config {
+            paths: CorePaths::for_socket(root.path().join("core.sock")).unwrap(),
+            home: root.path().into(),
+            app_data_dir: root.path().join("app-data"),
+            env: BTreeMap::new(),
+            version: "test".into(),
+            host_name: "Test Desk".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: Default::default(),
+            delivery_timing: Default::default(),
+        };
+        let (core, _) = Core::new(config.clone());
+        let registration: Registration = serde_json::from_value(serde_json::json!({
+            "name":"manual", "agentID":"manual-id", "target":{"kind":"codex","id":id},
+            "title":"Manual session", "baseURL":base, "registeredAt":"2026-11-02T00:00:00Z",
+            "workspaceKey":"rk_live_test"
+        }))
+        .unwrap();
+        assert_eq!(
+            registration.auto_activated, None,
+            "the registration is manual"
+        );
+        core.store
+            .update(|store| {
+                store.cloud = Some(CloudWorkspace {
+                    key: Secret::new("rk_live_test"),
+                    base_url: base,
+                    account_workspace_id: Some("workspace".into()),
+                    ..Default::default()
+                });
+                assert!(store.add(registration, Secret::new("at_live_test")));
+            })
+            .unwrap();
+        let uploader = Uploader::new(Arc::new(ProcessRunner::new(
+            root.path().join("must-not-include"),
+        )));
+        uploader.attach(Install::from_json(&serde_json::json!({
+            "site_url":"https://agentrelay.com", "workspace_id":"workspace",
+            "directory":directory.path().to_str().unwrap()
+        })));
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            RelayUploads::default().sync(&core, &uploader),
+        )
+        .await
+        .unwrap();
+        assert!(core.store.read(|store| store.registrations.is_empty()));
+        server.await.unwrap();
+        drop(core);
+        // A fresh core reloads registrations from disk and loses all in-memory
+        // requested history. New local activity must not undo Upload Off.
+        let (restarted, _) = Core::new(config);
+        conn.execute(
+            "UPDATE sessions SET last_activity_ms=99 WHERE session_id=?",
+            [id],
+        )
+        .unwrap();
+        RelayUploads::default().sync(&restarted, &uploader).await;
+        assert!(restarted.store.read(|store| store.registrations.is_empty()));
+        assert!(delivery::is_explicitly_excluded(&conn, &identity).unwrap());
+        assert!(!delivery::job_session_included(&conn, job, &identity).unwrap());
+        assert_eq!(
+            SessionTarget::new(SessionKind::Codex, id)
+                .upload_key()
+                .unwrap(),
+            key
+        );
     }
 
     #[test]

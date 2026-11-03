@@ -354,11 +354,13 @@ impl SocketCommands {
 pub fn preamble(
     name: &str,
     address: &str,
+    link_address: &str,
     access: McpAccess,
     socket: &Path,
     probe: Option<&Path>,
 ) -> String {
     let address = argument(address);
+    let link_address = argument(link_address);
     let shown = shell_quote(&socket.display().to_string());
     let head = format!(
         "This session is on Agent Relay as @{} ({address}).",
@@ -366,7 +368,7 @@ pub fn preamble(
     );
     let tools = format!(
         "With the {MCP} MCP tools: link them to this identity once with join_relay \
-         desktop_address=\"{address}\", find peers with list_relay_agents, DM with \
+         desktop_address=\"{link_address}\", find peers with list_relay_agents, DM with \
          send_relay_message to=\"<name or address>\", get a channel's posts with \
          subscribe_relay_channel channel=\"<name>\", and post with post_relay_channel."
     );
@@ -792,7 +794,14 @@ mod tests {
     #[test]
     fn the_preamble_names_the_identity_and_follows_the_access() {
         let socket = PathBuf::from("/tmp/relay.sock");
-        let declared = preamble("api", "api@mac-1", McpAccess::Declared, &socket, None);
+        let declared = preamble(
+            "api",
+            "api@mac-1",
+            "api@mac-1",
+            McpAccess::Declared,
+            &socket,
+            None,
+        );
         assert!(declared.starts_with("This session is on Agent Relay as @api (api@mac-1)."));
         assert!(declared.contains("join_relay desktop_address=\"api@mac-1\""));
         assert!(declared.contains("subscribe_relay_channel"));
@@ -814,21 +823,43 @@ mod tests {
         }
 
         // Without a known probe: curl.
-        let unknown = preamble("api", "api@mac-1", McpAccess::Unknown, &socket, None);
+        let unknown = preamble(
+            "api",
+            "api@mac-1",
+            "api@mac-1",
+            McpAccess::Unknown,
+            &socket,
+            None,
+        );
         assert!(unknown.contains("list_relay_agents"));
         assert_eq!(unknown.matches("curl").count(), 1);
-        let socket_only = preamble("api", "api@mac-1", McpAccess::SocketOnly, &socket, None);
+        let socket_only = preamble(
+            "api",
+            "api@mac-1",
+            "api@mac-1",
+            McpAccess::SocketOnly,
+            &socket,
+            None,
+        );
         assert!(socket_only.contains("http://relay/agents"));
         assert!(socket_only.contains("/channels/subscribe?channel=<name>"));
 
         // With the probe: its self-limiting commands, never curl.
         let probe = Path::new("/tmp/arc/bin/agent-relay-probe");
-        let unknown = preamble("api", "api@mac-1", McpAccess::Unknown, &socket, Some(probe));
+        let unknown = preamble(
+            "api",
+            "api@mac-1",
+            "api@mac-1",
+            McpAccess::Unknown,
+            &socket,
+            Some(probe),
+        );
         assert!(unknown.contains("list_relay_agents"));
         assert!(!unknown.contains("curl"));
         assert_eq!(unknown.matches(" relay send ").count(), 1);
         let socket_only = preamble(
             "api",
+            "api@mac-1",
             "api@mac-1",
             McpAccess::SocketOnly,
             &socket,
@@ -884,7 +915,7 @@ mod tests {
         }
         let joining = crate::relay::claude::session_hook::joining(socket, Some(probe));
         for access in [McpAccess::Unknown, McpAccess::SocketOnly] {
-            let text = preamble("api", "api@mac-1", access, socket, Some(probe));
+            let text = preamble("api", "api@mac-1", "api@mac-1", access, socket, Some(probe));
             // Each mention of the probe begins one of those commands.
             let named = commands
                 .all()

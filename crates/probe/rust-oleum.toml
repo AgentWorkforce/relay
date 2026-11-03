@@ -74,6 +74,7 @@ rust_roots = ["src"]
 "src/relay/store.rs" = 1916
 "src/relay/telemetry.rs" = 823
 "src/relay/uploader.rs" = 1090
+"src/session_model/uploads.rs" = 546
 
 [baseline.cyclomatic]
 "src/delivery.rs::prepare" = 38
@@ -370,6 +371,7 @@ rust_roots = ["src"]
 "src/relay/daemon.rs::Core::workspace" = 1
 "src/relay/daemon.rs::watch_connect_idle" = 1
 "src/relay/daemon.rs::watch_stdin" = 1
+"src/relay/daemon/plugins.rs::Plugins::extension_method_names" = 1
 "src/relay/daemon/workspace_verification.rs::Core::verify_workspace" = 2
 "src/relay/delivery.rs::Core::activity_list" = 1
 "src/relay/delivery.rs::Core::agent_credential" = 1

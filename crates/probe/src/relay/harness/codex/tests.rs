@@ -1,7 +1,7 @@
 use super::*;
 use crate::relay::codex::app_server::tests::{server_frame, FakeAppServer};
 use crate::relay::codex::runner::tests::FakeRunner;
-use crate::relay::process::FakeProcesses;
+use crate::relay::process::{FakeProcess, FakeProcesses};
 
 const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bdb7b";
 
@@ -60,6 +60,136 @@ fn codex_is_offered_only_where_its_daemon_can_run() {
         codex.home = codex_home.path().to_path_buf();
         assert_eq!(system(codex).detect(), Installed::Yes, "{layout}");
     }
+}
+
+fn install_codex(home: &Path, relative: &str) -> PathBuf {
+    let path = home.join(relative);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    path
+}
+
+/// codex-cli 0.154, installed through a version manager, exits `daemon start`
+/// when the home has `packages/app-server-daemon` and no `packages/standalone`.
+/// The proxy then closes and the spawn reports `spawn_harness_unavailable`.
+#[test]
+fn spawn_starts_the_managed_package_not_the_older_cli() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path();
+    let (package_rel, standalone_rel, cli, tui) = if cfg!(windows) {
+        (
+            "packages/app-server-daemon/current/bin/codex.exe",
+            "packages/standalone/current/codex.exe",
+            PathBuf::from(r"C:\cli\codex.exe"),
+            PathBuf::from(r"C:\tui\codex.exe"),
+        )
+    } else {
+        (
+            "packages/app-server-daemon/current/bin/codex",
+            "packages/standalone/current/codex",
+            PathBuf::from("/usr/local/bin/codex"),
+            PathBuf::from("/opt/tui/codex"),
+        )
+    };
+    let package = install_codex(home, package_rel);
+    let standalone = install_codex(home, standalone_rel);
+    assert_eq!(managed_daemon_executable(home), Some(package.clone()));
+    // The standalone installer is used when it is the only managed package.
+    std::fs::remove_file(&package).unwrap();
+    assert_eq!(managed_daemon_executable(home), Some(standalone.clone()));
+    let package = install_codex(home, package_rel);
+
+    let mut codex = config(home);
+    codex.home = home.to_path_buf();
+    codex.executable = Some(cli.clone());
+    let table = Arc::new(FakeProcesses::default());
+    table.trust(tui.clone());
+    table.insert(
+        7,
+        FakeProcess {
+            uid: 501,
+            executable: Some(tui.clone()),
+            arguments: vec!["codex".into()],
+            ..FakeProcess::default()
+        },
+    );
+    let runner = Arc::new(FakeRunner::default());
+    let launched = CodexAdapter {
+        codex: codex.clone(),
+        table: table.clone(),
+        uid: 501,
+        runner: runner.clone(),
+        systemd_run: None,
+    }
+    .launch(&launch(home), &|_, _| {});
+    assert!(launched.is_err(), "no app-server was scripted");
+    let runs = runner.runs.lock().unwrap();
+    assert_eq!(runs[0].0, package);
+    assert_eq!(
+        runs[0].1,
+        vec!["app-server".to_string(), "daemon".into(), "start".into()]
+    );
+    assert_eq!(
+        runner.proxies.lock().unwrap().as_slice(),
+        &[package.clone()]
+    );
+    assert_ne!(&runs[0].0, &cli);
+    assert_ne!(runner.proxies.lock().unwrap()[0], tui);
+
+    let live = PathBuf::from(if cfg!(windows) {
+        r"C:\live\codex.exe"
+    } else {
+        "/live/codex"
+    });
+    table.trust(live.clone());
+    table.insert(
+        8,
+        FakeProcess {
+            uid: 501,
+            executable: Some(live.clone()),
+            arguments: vec![
+                "codex".into(),
+                "app-server".into(),
+                "--listen".into(),
+                "unix://".into(),
+            ],
+            ..FakeProcess::default()
+        },
+    );
+    let runner = Arc::new(FakeRunner::default());
+    let systemd = PathBuf::from(if cfg!(windows) {
+        r"C:\Windows\systemd-run.exe"
+    } else {
+        "/usr/bin/systemd-run"
+    });
+    let _ = CodexAdapter {
+        codex,
+        table,
+        uid: 501,
+        runner: runner.clone(),
+        systemd_run: Some(systemd.clone()),
+    }
+    .launch(&launch(home), &|_, _| {});
+    let runs = runner.runs.lock().unwrap();
+    assert_eq!(runs[0].0, systemd);
+    assert!(
+        runs[0]
+            .1
+            .iter()
+            .any(|argument| argument == &package.to_string_lossy()),
+        "the scope must start the package, not the CLI: {:?}",
+        runs[0].1
+    );
+    assert!(runs[0]
+        .1
+        .iter()
+        .all(|argument| argument != &cli.to_string_lossy()));
+    assert_eq!(runner.proxies.lock().unwrap().as_slice(), &[live]);
 }
 
 #[test]

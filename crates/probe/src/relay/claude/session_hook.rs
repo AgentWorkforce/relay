@@ -18,7 +18,8 @@
 //! not offer a command that would be refused. It never registers the
 //! session, and it prints nothing when the status cannot be read.
 //!
-//! The setting is off unless turned on. It is installed only into shared
+//! The hook is on by default after sign-in, preserving a saved Off choice.
+//! Its join prompt is active only with selected-session sharing. It is installed only into shared
 //! logins (`login_settings`). Turning it off, and a refresh while it is on,
 //! also clear it from a watched login that has since been unshared
 //! (`watched_logins`). A directory the desktop does not watch is left alone.
@@ -625,6 +626,14 @@ impl ClaudeSessionHookSettings {
 }
 
 impl SettingsExtension for ClaudeSessionHookSettings {
+    fn default_on(&self) -> Vec<&'static str> {
+        if self.applies() && !self.hook_enabled() {
+            vec![SETTING]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn get(&self) -> Map<String, Value> {
         let _guard = self.lock();
         let mut values = Map::new();
@@ -846,6 +855,36 @@ mod tests {
     }
 
     #[test]
+    fn join_prompt_respects_sharing_policy_but_registered_preamble_remains() {
+        let socket = Path::new("/tmp/relay.sock");
+        for mode in ["selected", "all", "new"] {
+            let body = json!({"data": {"sharing_mode": mode,
+                "allow_self_registration": true, "session": {"registered": false}}});
+            let status = read_status(200, &serde_json::to_vec(&body).unwrap());
+            let output = hook_output(Some(status), socket, true, None);
+            assert_eq!(output != json!({}), mode == "selected", "{mode}");
+            let registered = json!({"data": {"sharing_mode": mode,
+                "claude_prompt_to_join_allowed": false,
+                "session": {"registered": true, "name":"api", "address":"api@desk"}}});
+            let status = read_status(200, &serde_json::to_vec(&registered).unwrap());
+            assert!(
+                hook_output(Some(status), socket, true, None)["hookSpecificOutput"].is_object()
+            );
+        }
+        let pending = json!({"data": {"sharing_mode":"selected",
+            "claude_prompt_to_join_allowed":false, "session":{"registered":false}}});
+        assert_eq!(
+            hook_output(
+                Some(read_status(200, &serde_json::to_vec(&pending).unwrap())),
+                socket,
+                true,
+                None
+            ),
+            json!({})
+        );
+    }
+
+    #[test]
     fn nudge_has_claude_ask_the_person_before_registering() {
         let socket = Path::new("/run/user/1000/agent-relay/relay.sock");
         let out = hook_output(Some(open(false)), socket, true, None);
@@ -931,6 +970,7 @@ mod tests {
                 StatusRead::OnRelay {
                     name: "api".into(),
                     address: "api@mac-1".into(),
+                    link_address: "api@mac-1".into(),
                     mcp: access
                 }
             );
@@ -940,7 +980,7 @@ mod tests {
                 assert!(out.get("systemMessage").is_none());
                 assert_eq!(
                     out["hookSpecificOutput"]["additionalContext"],
-                    hosted_mcp::preamble("api", "api@mac-1", access, socket, None)
+                    hosted_mcp::preamble("api", "api@mac-1", "api@mac-1", access, socket, None)
                 );
             }
         }
@@ -990,7 +1030,7 @@ mod tests {
     }
 
     #[test]
-    fn off_until_turned_on_then_idempotent_and_removed_cleanly() {
+    fn offered_by_default_then_idempotent_and_removed_cleanly() {
         let root = tempfile::tempdir().unwrap();
         login(root.path(), ".claude");
         login(root.path(), ".claude-work");
@@ -1009,7 +1049,7 @@ mod tests {
         .unwrap();
         let settings = settings(root.path());
         assert_eq!(settings.get()[SETTING], false);
-        assert!(SettingsExtension::default_on(&settings).is_empty());
+        assert_eq!(SettingsExtension::default_on(&settings), [SETTING]);
         assert_eq!(settings.set(SETTING, &json!(true)), Some(Ok(())));
 
         let installed = read(&primary);
@@ -1481,6 +1521,94 @@ mod tests {
 #[cfg(test)]
 mod probe_tests {
     use super::*;
+
+    #[test]
+    fn a_renamed_session_is_named_as_it_is_now_but_links_its_registered_address() {
+        let body = br#"{"ok":true,"data":{"session":{"registered":true,"name":"tan-man","address":"tan-man@mac-2","link_address":"claude-first@mac-1","mcp":"unknown"}}}"#;
+        let socket = Path::new("/run/user/1000/agent-relay/relay.sock");
+        let out = hook_output(Some(read_status(200, body)), socket, true, None);
+        let text = out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(text.contains("@tan-man (tan-man@mac-2)"), "{text}");
+        assert!(
+            text.contains("join_relay desktop_address=\"claude-first@mac-1\""),
+            "{text}"
+        );
+        // An older core sends no link_address: its address is the registered one.
+        let old = br#"{"ok":true,"data":{"session":{"registered":true,"name":"api","address":"api@mac-1"}}}"#;
+        let out = hook_output(Some(read_status(200, old)), socket, true, None);
+        let text = out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(
+            text.contains("join_relay desktop_address=\"api@mac-1\""),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn registration_off_also_rechecks_whoami_but_the_person_does_not_read_it() {
+        let probe = Path::new("/Users/me/.agentworkforce/desktop/bin/agent-relay-probe");
+        let socket = Path::new("/Users/me/Library/Application Support/x/run/relay.sock");
+        let off = StatusRead::Registered {
+            on_relay: false,
+            self_registration: false,
+        };
+        let out = hook_output(Some(off), socket, true, Some(probe));
+        let text = out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        let whoami = format!(
+            "{} relay whoami --socket '{}'",
+            probe.display(),
+            socket.display()
+        );
+        assert!(text.contains(&whoami), "{text}");
+        assert!(
+            text.contains("Do not try to put this session on the relay"),
+            "{text}"
+        );
+        assert!(
+            !out["systemMessage"].as_str().unwrap().contains("whoami"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn nudge_checks_whoami_with_the_allowed_command_before_asking_again() {
+        // The nudge is read once at SessionStart; another agent or Agent
+        // Relay can register the session afterwards (2026-11-02).
+        let probe = Path::new("/Users/me/.agentworkforce/desktop/bin/agent-relay-probe");
+        let socket = Path::new("/Users/me/Library/Application Support/x/run/relay.sock");
+        let rules = PermissionRules {
+            probe: probe.into(),
+            socket: socket.into(),
+        }
+        .rules();
+        let unregistered = StatusRead::Registered {
+            on_relay: false,
+            self_registration: true,
+        };
+        let out = hook_output(Some(unregistered), socket, true, Some(probe));
+        let text = out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        let whoami = format!(
+            "{} relay whoami --socket '{}'",
+            probe.display(),
+            socket.display()
+        );
+        assert!(text.contains(&whoami), "{text}");
+        assert!(rules.iter().any(|rule| covers(rule, &whoami)));
+        assert!(
+            text.contains("do not ask and do not register it again"),
+            "{text}"
+        );
+        let asked = text.find("ask the person").unwrap();
+        let later = text.find(&whoami).unwrap();
+        assert!(asked < later, "{text}");
+    }
 
     // The coordinator's skill e2e: the SessionStart text named curl, which
     // Claude's rules do not allow. The core reports the probe its rules

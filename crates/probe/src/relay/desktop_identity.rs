@@ -286,9 +286,10 @@ impl Core {
     }
 
     /// Reads which of this desktop's synced identities a hosted MCP session
-    /// has linked to since the last sync. The identity `PUT` runs only when
-    /// the agents change, so a `join_relay` made after it is learned here,
-    /// on the refresh pass: a read of Cloud's stored links, no tokens sent.
+    /// has linked to since the last sync, and which native identity proofs
+    /// Cloud accepts. Capability discovery also runs before the first agent
+    /// joins: Claude needs that confirmation to attest its first chat. The
+    /// read sends no agent tokens.
     pub async fn refresh_mcp_links(&self) {
         let Some(account) = self.plugins.cloud.account() else {
             return;
@@ -298,15 +299,10 @@ impl Core {
         // set, and `apply_mcp_links` then drops the response.
         let _one = self.desktop_identity_sync.lock.lock().await;
         let source_id = self.store.read(|store| {
-            let present = store
-                .registrations
-                .iter()
-                .any(|registration| registration.missing_since.is_none());
             let cloud = store.cloud.as_ref()?;
-            (present
-                && cloud.account_workspace_id.as_deref() == Some(account.workspace_id.as_str()))
-            .then(|| store.desktop_sync_source_id.clone())
-            .flatten()
+            (cloud.account_workspace_id.as_deref() == Some(account.workspace_id.as_str()))
+                .then(|| store.desktop_sync_source_id.clone())
+                .flatten()
         });
         let Some(source_id) = source_id else { return };
         let path = format!(
@@ -1567,9 +1563,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_link_read_waits_for_a_present_agent_in_the_account_workspace() {
+    async fn capability_discovery_does_not_wait_for_the_first_agent_to_join() {
         let (_temp, core, cloud) = core();
         core.refresh_mcp_links().await;
+        assert!(cloud.calls.lock().unwrap().is_empty());
+        *cloud.response.lock().unwrap() = Some(json!({
+            "identities": [],
+            "capabilities": {"claude_session_attestation": 1}
+        }));
+        core.store.update(account_cloud).unwrap();
+        assert!(core.store.read(|store| store.registrations.is_empty()));
+        assert!(!core.claude_attestation_verified());
+
+        core.refresh_mcp_links().await;
+
+        assert!(core.claude_attestation_verified());
+        let calls = cloud.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "GET");
+        assert!(calls[0].2.is_none(), "discovery sends no agent tokens");
+    }
+
+    #[tokio::test]
+    async fn capability_discovery_continues_when_all_agents_are_missing() {
+        let (_temp, core, cloud) = core();
         core.store
             .update(|store| {
                 account_cloud(store);
@@ -1579,7 +1596,32 @@ mod tests {
             })
             .unwrap();
         core.refresh_mcp_links().await;
-        assert!(cloud.calls.lock().unwrap().is_empty());
+        assert_eq!(cloud.calls.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn capability_discovery_discards_a_response_after_sign_in_changes() {
+        let (_temp, core, cloud) = core();
+        core.store.update(account_cloud).unwrap();
+        *cloud.response.lock().unwrap() = Some(json!({
+            "identities": [],
+            "capabilities": {"claude_session_attestation": 1}
+        }));
+        let weak = Arc::downgrade(&cloud);
+        *cloud.on_request.lock().unwrap() = Some(Box::new(move || {
+            weak.upgrade()
+                .unwrap()
+                .identity_sync_generation
+                .fetch_add(1, Ordering::SeqCst);
+        }));
+
+        core.refresh_mcp_links().await;
+
+        assert!(!core.claude_attestation_verified());
+        let account = cloud.account().unwrap();
+        assert!(!core
+            .desktop_identity_sync
+            .claude_attestation_supported(&account, 0));
     }
 
     #[tokio::test]

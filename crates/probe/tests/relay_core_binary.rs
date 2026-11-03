@@ -203,7 +203,9 @@ fn the_headless_service_removes_the_apps_login_entry_and_stops_on_sigterm() {
         }
         assert_eq!(!entry.exists(), removed, "{text}");
         unsafe { libc::kill(daemon.id() as i32, libc::SIGTERM) };
-        let deadline = std::time::Instant::now() + WAIT;
+        // Match the stdin-close test: settling delivery can take ten seconds,
+        // followed by worker and runtime shutdown.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let status = loop {
             if let Some(status) = daemon.try_wait().unwrap() {
                 break status;

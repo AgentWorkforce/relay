@@ -513,10 +513,20 @@ pub struct SignInRequest {
     #[serde(default)]
     pub acknowledge_uninspected_schedules: bool,
     pub flow: Option<Flow>,
+    /// The browser identity provider; absent preserves the default login flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<SignInProvider>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SignInProvider {
+    Google,
+    Microsoft,
 }
 
 impl Flow {
-    /// Desktop sign-in uses Google and a PKCE loopback handoff on both platforms.
+    /// Desktop sign-in uses the browser and a PKCE loopback handoff on both platforms.
     /// Remote/headless callers can explicitly request the device flow.
     pub fn platform() -> Flow {
         Flow::Browser

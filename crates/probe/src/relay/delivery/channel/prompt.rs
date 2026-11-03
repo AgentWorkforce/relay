@@ -77,8 +77,11 @@ impl Core {
             }
         };
         let (reply, unsubscribe) = (command(None), command(Some(false)));
-        let web_address = (kind == SessionKind::ClaudeCloud && socket.is_none())
-            .then(|| registration.current_address(&self.machine_prefix));
+        // Only join_relay reads it.
+        let web_address = (kind == SessionKind::ClaudeCloud && socket.is_none()).then(|| {
+            self.store
+                .read(|store| store.link_address_for(registration, &self.machine_prefix))
+        });
         let lines = ChannelReply {
             access: self.relay_mcp_access(&registration.target),
             channel,
@@ -125,7 +128,10 @@ impl Core {
         } else {
             self.relay_mcp_access(&registration.target)
         };
-        let address = registration.current_address(&self.machine_prefix);
+        // The hints use it only for join_relay.
+        let address = self
+            .store
+            .read(|store| store.link_address_for(registration, &self.machine_prefix));
         if registration.target.kind == SessionKind::ClaudeCloud && socket.is_none() {
             return hosted_mcp::web_reply_hint(access, &recipient, &delivery.message_id, &address);
         }

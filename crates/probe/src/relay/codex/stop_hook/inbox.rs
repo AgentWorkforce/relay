@@ -5,7 +5,7 @@
 use super::super::turn_hook::TurnInbox;
 use crate::relay::conductor;
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -29,6 +29,8 @@ pub(super) struct Unseen {
 
 #[derive(Default)]
 pub(super) struct State {
+    /// Registration guidance is context, not a reason to keep a turn open.
+    registration_guidance: HashSet<String>,
     /// By lowercase thread id.
     held: HashMap<String, VecDeque<Held>>,
     /// Handed over by the hook, by message id, with when.
@@ -51,6 +53,20 @@ pub struct StopHookInbox {
 }
 
 impl StopHookInbox {
+    pub(crate) fn needs_registration_guidance(&self, thread: &str) -> bool {
+        !self
+            .state()
+            .registration_guidance
+            .contains(&thread.to_lowercase())
+    }
+
+    /// Called only after the kernel-backed thread check succeeds.
+    pub(crate) fn take_registration_guidance(&self, thread: &str) -> bool {
+        self.state()
+            .registration_guidance
+            .insert(thread.to_lowercase())
+    }
+
     /// The inbox whose running-turn claims are kept by `turns`.
     pub fn with_turns(turns: TurnInbox) -> StopHookInbox {
         StopHookInbox {

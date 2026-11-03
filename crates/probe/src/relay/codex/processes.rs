@@ -328,6 +328,27 @@ pub fn running_executable(table: &dyn ProcessTable, uid: u32) -> Option<PathBuf>
     first
 }
 
+/// The executable of a trusted live app-server of this user, when one is
+/// running. A terminal Codex is not one: its binary may be an older
+/// command-line install that cannot speak the managed daemon's protocol.
+pub fn running_app_server_executable(table: &dyn ProcessTable, uid: u32) -> Option<PathBuf> {
+    let mut trust = Trust::default();
+    for pid in table.all_pids() {
+        if table.process(pid).filter(|p| p.uid == uid).is_none() {
+            continue;
+        }
+        let Some(executable) = table.executable(pid) else {
+            continue;
+        };
+        if trust.trusted(table, &executable)
+            && table.arguments(pid).iter().any(|a| a == "app-server")
+        {
+            return Some(executable);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -795,7 +816,15 @@ pub(crate) mod tests {
             running_executable(&table, UID),
             Some(PathBuf::from("/daemon/codex"))
         );
+        assert_eq!(
+            running_app_server_executable(&table, UID),
+            Some(PathBuf::from("/daemon/codex"))
+        );
         assert_eq!(running_executable(&table, UID + 1), None);
+        assert_eq!(running_app_server_executable(&table, UID + 1), None);
+        table.remove(601);
+        assert_eq!(running_app_server_executable(&table, UID), None);
+        assert_eq!(running_executable(&table, UID), Some(codex()));
     }
 
     // Review (local.rs reply hint): only a Codex that can vouch for its

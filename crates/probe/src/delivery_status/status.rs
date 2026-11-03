@@ -487,15 +487,21 @@ pub(crate) mod tests {
             vec![
                 crate::delivery_status::Inclusion {
                     selectable: true,
-                    included: true
+                    included: true,
+                    explicitly_excluded: false,
+                    deleted_from_cloud: false
                 },
                 crate::delivery_status::Inclusion {
                     selectable: true,
-                    included: false
+                    included: false,
+                    explicitly_excluded: true,
+                    deleted_from_cloud: false
                 },
                 crate::delivery_status::Inclusion {
                     selectable: false,
-                    included: true
+                    included: true,
+                    explicitly_excluded: false,
+                    deleted_from_cloud: false
                 },
             ]
         );

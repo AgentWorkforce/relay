@@ -50,6 +50,13 @@ impl Registration {
         self.alias.as_ref().map_or(own, |alias| alias.token.clone())
     }
 
+    /// The address `join_relay` links the hosted MCP tools to: the registered
+    /// one, which Desktop's identity sync uploads to Cloud, even once renamed.
+    /// Every hint naming `join_relay` uses it, so a session gets one address.
+    pub fn link_address(&self, current_prefix: &str) -> String {
+        self.direct_address(current_prefix)
+    }
+
     /// The direct address of its one current name: the alias's once renamed.
     pub fn current_address(&self, current_prefix: &str) -> String {
         match self.alias_credential() {
@@ -150,6 +157,15 @@ impl Registration {
 }
 
 impl Store {
+    /// [`Registration::link_address`] of the session `registration` delivers
+    /// to: its owning registration's, so an alias view (as delivery reads a
+    /// renamed session) still links the registered address.
+    pub fn link_address_for(&self, registration: &Registration, current_prefix: &str) -> String {
+        self.registration_for(&registration.target)
+            .unwrap_or(registration)
+            .link_address(current_prefix)
+    }
+
     pub fn registration_for(&self, target: &Target) -> Option<&Registration> {
         self.registrations.iter().find(|r| &r.target == target)
     }

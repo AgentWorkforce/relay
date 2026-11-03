@@ -20,7 +20,9 @@ use fs2::FileExt;
 use rusqlite::Connection;
 #[cfg(test)]
 use selection_validation::validate_identities;
-use selection_validation::{parse_key, validate_mutation_identities};
+use selection_validation::{
+    cloud_selection, deleted_uploads, parse_key, validate_mutation_identities,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 #[cfg(test)]
@@ -691,52 +693,6 @@ struct CloudSelection {
     sessions: Vec<SessionIdentity>,
     deleted: HashMap<String, Vec<SessionIdentity>>,
 }
-fn deleted_uploads(directory: &Path) -> Result<HashMap<String, Vec<SessionIdentity>>> {
-    saved(&directory.join("deleted-uploads.json"))
-}
-fn cloud_selection(
-    directory: &Path,
-    keys: &[String],
-    include: bool,
-    delete: bool,
-) -> Result<Option<CloudSelection>> {
-    let mut deleted = deleted_uploads(directory)?;
-    let mut sessions = Vec::new();
-    for key in keys {
-        if include {
-            if let Some(family) = deleted.remove(key) {
-                sessions.extend(family);
-            }
-        } else if delete {
-            let root = parse_key(key)?;
-            let store = super::history::open_read(&directory.join("history.db"))?;
-            let children = store.delegated_descendants(&[ai_hist::SessionIdentity::new(
-                root.source.as_str(),
-                root.session_id.as_str(),
-            )])?;
-            let mut family = vec![root];
-            family.extend(children.into_iter().map(|id| SessionIdentity {
-                source: id.source_name,
-                session_id: id.session_id,
-            }));
-            // A retry also deletes children discovered before a partial failure.
-            if let Some(previous) = deleted.get(key) {
-                family.extend(previous.clone());
-            }
-            let mut seen = HashSet::new();
-            family.retain(|identity| seen.insert(identity.clone()));
-            sessions.extend(family.clone());
-            deleted.insert(key.clone(), family);
-        }
-    }
-    let mut seen = HashSet::new();
-    sessions.retain(|identity| seen.insert(identity.clone()));
-    Ok((!sessions.is_empty()).then_some(CloudSelection {
-        enabled: include,
-        sessions,
-        deleted,
-    }))
-}
 fn change(
     directory: &Path,
     requested: Option<SharingMode>,
@@ -782,28 +738,22 @@ fn change_with_cloud(
     if !delete
         && !keys.iter().any(|key| deleted.contains_key(key))
         && requested.is_none()
-        && mode(&config) == SharingMode::Selected
         && !directory.join("sharing-change.json").exists()
     {
         let conn = read_db(directory)?;
-        if delivery::is_session_job(&conn, &config.job_id)? {
-            validate_mutation_identities(&conn, &identities_requested, include)?;
-            let unchanged = identities_requested
-                .iter()
-                .map(|id| {
-                    selection_validation::mutation_unchanged(&conn, &config.job_id, id, include)
-                })
-                .collect::<Result<Vec<_>>>()?
-                .into_iter()
-                .all(|v| v);
-            if unchanged {
-                if include {
-                    emit(json!({"included":keys,"regenerated":false}));
-                } else {
-                    emit(json!({"excluded":keys,"regenerated":false}));
-                }
-                return Ok(());
+        if selection_validation::mutations_unchanged(
+            &conn,
+            directory,
+            &config,
+            &identities_requested,
+            include,
+        )? {
+            if include {
+                emit(json!({"included":keys,"regenerated":false}));
+            } else {
+                emit(json!({"excluded":keys,"regenerated":false}));
             }
+            return Ok(());
         }
     }
     selection_validation::preflight_plan(
@@ -815,10 +765,16 @@ fn change_with_cloud(
         delete,
     )?;
     if delete {
+        // Upload credentials are scoped to this attached install. The desktop
+        // command starts without the collector's RELAYHISTORY_HOME, and must
+        // never fall back to another install's or the CLI's stored session.
+        std::env::set_var("RELAYHISTORY_HOME", directory);
         crate::destination::require_session_deletion(
             &config.history_url,
             &config.delivery_account,
-        )?;
+        ).map_err(|_| user_error(
+            "Could not verify Cloud session deletion. Check your connection and try again. Upload was left on."
+        ))?;
     }
     let changed = (|| -> Result<()> {
         if was_running {
@@ -963,6 +919,9 @@ pub fn recover(directory: &Path) -> Result<()> {
 }
 fn apply_plan(directory: &Path, plan: ChangePlan) -> Result<()> {
     apply_plan_with_cloud(directory, plan, |config, origin, selection| {
+        // Recovery and re-inclusion also run as standalone desktop commands.
+        // Reuse the install's credential store for every Cloud consent change.
+        std::env::set_var("RELAYHISTORY_HOME", directory);
         crate::destination::set_session_uploads(
             &config.history_url,
             &config.delivery_account,
@@ -971,6 +930,11 @@ fn apply_plan(directory: &Path, plan: ChangePlan) -> Result<()> {
             &selection.sessions,
             selection.enabled,
         )
+        .map_err(|_| {
+            user_error(
+                "Could not confirm the Cloud upload change. Check your connection and try again.",
+            )
+        })
     })
 }
 fn apply_plan_with_cloud(
@@ -1575,6 +1539,117 @@ mod tests {
         };
         save_json(&dir.path().join("config.json"), &config).unwrap();
         (dir, config)
+    }
+
+    #[test]
+    fn cloud_deletion_uses_the_attached_installs_auth_for_preflight_and_replay() {
+        let Some(_home) = crate::probe::live::tests::isolated_home(
+            "probe::bridge::tests::cloud_deletion_uses_the_attached_installs_auth_for_preflight_and_replay"
+        ) else { return };
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let site = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for (response, enabled) in [
+                (r#"{"sessionDeletion":true}"#, None),
+                (r#"{"updated":true}"#, Some(false)),
+                (r#"{"updated":true}"#, Some(true)),
+            ] {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error)
+                            if error.kind() == std::io::ErrorKind::WouldBlock
+                                && Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(Duration::from_millis(5))
+                        }
+                        Err(error) => panic!("missing history request: {error}"),
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                requests.push(line);
+                let mut authorized = false;
+                let mut length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if line.to_ascii_lowercase().starts_with("authorization:") {
+                        authorized = line
+                            .split_once(':')
+                            .is_some_and(|(_, value)| value.trim() == "Bearer install-token");
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            length = value.trim().parse().unwrap();
+                        }
+                    }
+                }
+                assert!(authorized, "use only this install's token");
+                let mut body = vec![0; length];
+                reader.read_exact(&mut body).unwrap();
+                if !body.is_empty() {
+                    let body: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(body["enabled"], json!(enabled.unwrap()));
+                    assert_eq!(body["sessions"][0]["session_id"], "recent");
+                }
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+            }
+            requests
+        });
+        let (dir, mut config) = fixture(SharingMode::Selected);
+        config.history_url = site.clone();
+        config.site_url = site.clone();
+        save_json(&dir.path().join("config.json"), &config).unwrap();
+        let identity = parse_key("codex:recent").unwrap();
+        let conn = db(dir.path()).unwrap();
+        delivery::adopt_session_job(&conn, &config.job_id, &[]).unwrap();
+        delivery::include_job_session(&conn, &config.job_id, &identity).unwrap();
+        save_json(&dir.path().join("selected.json"), &vec![identity.clone()]).unwrap();
+        std::env::set_var("RELAYHISTORY_HOME", dir.path());
+        crate::cloud::save_auth(&crate::cloud::StoredAuth {
+            base_url: site,
+            access_token: "install-token".into(),
+            access_token_expires_at: Some("2100-01-01T00:00:00Z".into()),
+            org_id: Some("org".into()),
+            workspace_id: Some("workspace".into()),
+            ..Default::default()
+        })
+        .unwrap();
+        let unrelated = tempfile::tempdir().unwrap();
+        std::env::set_var("RELAYHISTORY_HOME", unrelated.path());
+        change_with_cloud(dir.path(), None, &["codex:recent".into()], false, true).unwrap();
+        assert!(!delivery::job_session_included(&conn, &config.job_id, &identity).unwrap());
+        assert!(delivery::is_explicitly_excluded(&conn, &identity).unwrap());
+        assert!(
+            delivery::has_session(&conn, &identity).unwrap(),
+            "keep local history"
+        );
+        assert_eq!(
+            read_config(dir.path()).unwrap().sharing_mode,
+            Some(SharingMode::Selected)
+        );
+        // Re-enabling a previously deleted upload has no deletion preflight;
+        // its Cloud consent write must choose the install's auth independently.
+        std::env::set_var("RELAYHISTORY_HOME", unrelated.path());
+        change(dir.path(), None, &["codex:recent".into()], true).unwrap();
+        assert!(delivery::job_session_included(&conn, &config.job_id, &identity).unwrap());
+        let requests = server.join().unwrap();
+        assert!(requests[0].starts_with("GET /v1/delivery/limits "));
+        assert!(requests[1].starts_with("POST /v1/delivery/sessions/selection "));
+        assert!(requests[2].starts_with("POST /v1/delivery/sessions/selection "));
     }
 
     #[test]

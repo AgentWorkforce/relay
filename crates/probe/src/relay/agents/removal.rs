@@ -14,6 +14,8 @@ use crate::relay::workspace::Secret;
 enum RemovalMode {
     /// An ordinary Receive messages change. Integrations must be removed first.
     User,
+    /// Confirmed Upload Off also removes integrations belonging to the session.
+    UploadExcluded,
     /// Automatic cleanup after an archived session has settled its refusals.
     Archived,
     /// The explicit End Agent action: stop the owned spawn, then remove all
@@ -33,6 +35,14 @@ impl Core {
     /// followed by the local registration.
     pub async fn unregister(&self, name: &str) -> Result<(), RpcError> {
         self.unregister_with_integrations(name, RemovalMode::User)
+            .await
+    }
+
+    /// The person confirmed taking this session off the relay while deleting
+    /// its Cloud copy. Use the existing cleanup locks and resource removal,
+    /// including integrations, for both manual and automatic registrations.
+    pub(crate) async fn unregister_upload_excluded(&self, name: &str) -> Result<(), RpcError> {
+        self.unregister_with_integrations(name, RemovalMode::UploadExcluded)
             .await
     }
 
