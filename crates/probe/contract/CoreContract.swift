@@ -8621,7 +8621,9 @@ public struct SignInReport: Codable, Equatable, Hashable, Sendable {
 public struct SignInRequest: Codable, Equatable, Hashable, Sendable {
     public let acknowledgeUninspectedSchedules: Bool
     public let flow: Flow?
-    /// The browser identity provider; absent preserves the default login flow.
+    /// The browser identity provider; absent preserves the default login
+    /// flow. Read by a core built with an account (the desktop's browser
+    /// sign-in); this core's own device sign-in ignores it.
     public let provider: SignInProvider?
     public let sharing: SharingMode
     public let siteUrl: String?
