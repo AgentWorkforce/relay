@@ -31,9 +31,18 @@ try {
     fs.closeSync(fd);
   }
 } catch (error) {
-  // ELOOP: a symlink, which is never ours to replace.
-  if (error.code === 'ELOOP') current = '';
-  else if (error.code !== 'ENOENT') throw error;
+  if (error.code !== 'ENOENT') {
+    // A symlink (ELOOP), or a socket or device that will not open as a
+    // file (ENXIO, EOPNOTSUPP, ...): never ours to replace.
+    let stat;
+    try {
+      stat = fs.lstatSync(path);
+    } catch {
+      throw error;
+    }
+    if (stat.isFile()) throw error;
+    current = '';
+  }
 }
 if (current !== null) {
   if (!current.startsWith('// AGENT_RELAY_PI_EXTENSION='))

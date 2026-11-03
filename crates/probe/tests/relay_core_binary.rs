@@ -37,12 +37,42 @@ fn keep_system_environment(command: &mut Command) {
 fn the_binary_serves_answers_calls_and_stops_with_its_host() {
     let temp = tempfile::tempdir().unwrap();
     let socket = temp.path().join("core.sock");
+    let mut startup_env = std::collections::BTreeMap::new();
+    startup_env.insert(
+        "XDG_CONFIG_HOME".into(),
+        temp.path().join("config").display().to_string(),
+    );
+    startup_env.insert(
+        agent_relay_probe::relay::login_item::RUN_VALUE_ENV.into(),
+        format!(
+            "AgentRelay-test-{}",
+            temp.path().file_name().unwrap().to_string_lossy()
+        ),
+    );
+    #[cfg(not(target_os = "macos"))]
+    agent_relay_probe::relay::login_item::set(temp.path(), &startup_env, true).unwrap();
+    struct StartupCleanup<'a> {
+        // Read only in `Drop`, and only off macOS.
+        _path: &'a std::path::Path,
+        _env: &'a std::collections::BTreeMap<String, String>,
+    }
+    impl Drop for StartupCleanup<'_> {
+        fn drop(&mut self) {
+            #[cfg(not(target_os = "macos"))]
+            let _ = agent_relay_probe::relay::login_item::set(self._path, self._env, false);
+        }
+    }
+    let _cleanup = StartupCleanup {
+        _path: temp.path(),
+        _env: &startup_env,
+    };
     let command = |args: &[&str]| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_agent-relay-probe"));
         command
             .env_clear()
             .env("HOME", temp.path())
             .env("PATH", "/usr/bin:/bin")
+            .envs(&startup_env)
             .args(args);
         keep_system_environment(&mut command);
         command
@@ -59,6 +89,7 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
         // A development site: no telemetry, no command-line copy.
         "--site-url",
         "http://127.0.0.1:9",
+        "--headless",
     ];
     let mut daemon = command(&serve_args)
         .stdin(Stdio::piped())
@@ -80,6 +111,11 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
         std::thread::sleep(Duration::from_millis(10));
     }
 
+    #[cfg(not(target_os = "macos"))]
+    assert!(
+        agent_relay_probe::relay::login_item::enabled(temp.path(), &startup_env),
+        "starting the headless service must preserve the GUI startup entry"
+    );
     let second = command(&serve_args[..4]).output().unwrap();
     assert!(!second.status.success());
     assert_eq!(
@@ -157,13 +193,12 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
     assert!(String::from_utf8_lossy(&gone.stderr).contains("is not running"));
 }
 
-/// `relay serve --headless`, as the systemd user unit runs it: it removes
-/// the app's own login entry (systemd starts Agent Relay, so the entry
-/// would start a second copy), keeps any other file at that path, serves,
-/// and stops on SIGTERM. Linux's XDG autostart and signals only.
+/// Headless uploads and the GUI start together: starting the service
+/// preserves the person's GUI entry, then the isolated test core stops on
+/// SIGTERM. Linux's XDG autostart and signals only.
 #[cfg(unix)]
 #[test]
-fn the_headless_service_removes_the_apps_login_entry_and_stops_on_sigterm() {
+fn the_headless_service_preserves_the_apps_login_entry_and_stops_on_sigterm() {
     let temp = tempfile::tempdir().unwrap();
     let socket = temp.path().join("core.sock");
     let entry = temp.path().join("config/autostart/agent-relay.desktop");
@@ -172,7 +207,7 @@ fn the_headless_service_removes_the_apps_login_entry_and_stops_on_sigterm() {
                  Exec=/usr/bin/agent-relay --background\nIcon=agent-relay\n";
     let foreign = "[Desktop Entry]\nType=Application\nName=Agent Relay\n\
                    Exec=/opt/mine --background\nIcon=agent-relay\n";
-    for (text, removed) in [(owned, true), (foreign, false)] {
+    for text in [owned, foreign] {
         std::fs::write(&entry, text).unwrap();
         let mut daemon = Command::new(env!("CARGO_BIN_EXE_agent-relay-probe"))
             .env_clear()
@@ -201,7 +236,7 @@ fn the_headless_service_removes_the_apps_login_entry_and_stops_on_sigterm() {
             assert!(std::time::Instant::now() < deadline, "the daemon listens");
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(!entry.exists(), removed, "{text}");
+        assert_eq!(std::fs::read_to_string(&entry).unwrap(), text);
         unsafe { libc::kill(daemon.id() as i32, libc::SIGTERM) };
         // Match the stdin-close test: settling delivery can take ten seconds,
         // followed by worker and runtime shutdown.

@@ -212,7 +212,7 @@ jobs:
       - name: Test live Oh My Pi sessions
         run: bash scripts/test-omp-live.sh
       - name: Test the native Claude mobile bridge and OpenCode managed replies
-        run: node --test scripts/test-claude-mobile-plugin.mjs scripts/test-opencode-managed-replies.mjs
+        run: node --test scripts/test-claude-mobile-plugin.mjs scripts/test-opencode-managed-replies.mjs scripts/install-pi-extension.test.mjs
 
   windows:
     name: Windows x64 build

@@ -715,7 +715,9 @@ agent_relay_probe::install;`. In `linux_app/models.rs`, delete the six
    relay release binary is built without it). That is `scripts/build-probe.sh`,
    `build-linux.sh`, `build-windows.sh`, `package-{linux,macos}-probe.sh`
    and the Desktop Release workflow. Keep passing `AGENT_RELAY_PROBE_VERSION`
-   and add `AGENT_RELAY_PROBE_BASE_VERSION` for development builds.
+   for releases, and for development builds set `AGENT_RELAY_PROBE_CHANGELOG`
+   and `AGENT_RELAY_PROBE_GIT_DIR` in `.cargo/config.toml` (an explicit
+   `AGENT_RELAY_PROBE_BASE_VERSION` would take precedence over the changelog).
 4. Get `CoreContract.swift` either by copying relay's
    `crates/probe/contract/CoreContract.swift` or by running
    `crates/probe/scripts/generate-contract.sh --app-root <relay-desktop>`.

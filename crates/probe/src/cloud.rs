@@ -1250,6 +1250,7 @@ fn field(v: &serde_json::Value, key: &str) -> Result<String> {
         .with_context(|| format!("response missing `{key}`"))
 }
 
+#[cfg(feature = "history")]
 /// Whether the refresh endpoint refused the refresh token (`map_http_err`'s
 /// `HTTP 400/401/403`), as opposed to failing to answer.
 fn refresh_refused(error: &anyhow::Error) -> bool {
@@ -2686,7 +2687,7 @@ pub(crate) mod tests {
     // ----- conversation turns on the push path -----
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "history"))]
 mod refresh_refused_tests {
     use super::refresh_refused;
     use anyhow::Context;

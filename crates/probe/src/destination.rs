@@ -2373,3 +2373,27 @@ mod tests {
         assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }
+
+#[cfg(test)]
+mod consent_error_tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_consent_request_names_what_to_fix() {
+        let status = |code: u16| {
+            ureq::Error::Status(code, ureq::Response::new(code, "refused", "").unwrap())
+        };
+        let mapped = consent_error("Try again.");
+        assert_eq!(
+            failure_of(&mapped(status(401))),
+            Some(DeliveryFailure::AuthenticationRequired)
+        );
+        assert_eq!(
+            failure_of(&mapped(status(403))),
+            Some(DeliveryFailure::PermissionDenied)
+        );
+        let other = mapped(status(503));
+        assert_eq!(failure_of(&other), None);
+        assert_eq!(other.to_string(), "Try again.");
+    }
+}
