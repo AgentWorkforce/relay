@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On macOS and Linux, `relay init` starts the Agent Relay desktop app's own core when the app is installed and no core is running on the default socket, and starts the public core only if that one does not come up, with a warning saying how to switch to the desktop app's core.
 - The core has no account sign-in of its own: methods that need an account answer `method_not_found`, and spawn approvals are off, unless the core is built with an account. `agent-relay cloud login` keeps device sign-in for Relay Connect hosts.
 
+### Removed
+
+- `@agent-relay/policy` and `@agent-relay/brand` are no longer published; existing versions stay installable on npm.
+
 ### Fixed
 
 - `relay serve` delivers messages to agents more reliably and finds their sessions more consistently.

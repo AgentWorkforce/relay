@@ -29,13 +29,11 @@
   "ignore": ["**/*.test.ts", "scripts/**", "plugins/**", "tests/**", "packages/openclaw/bridge/**"],
   "ignoreDependencies": ["turbo"],
   "ignoreWorkspaces": [
-    "packages/brand",
     "packages/broker-darwin-arm64",
     "packages/broker-darwin-x64",
     "packages/broker-linux-arm64",
     "packages/broker-linux-x64",
     "packages/broker-win32-x64",
-    "packages/cloud",
-    "packages/policy"
+    "packages/cloud"
   ]
 }
