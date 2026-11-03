@@ -40,6 +40,8 @@ pub(super) fn acquire_apply(
 /// that fence — `unchanged` is intake's verdict on the evidence itself,
 /// never a stamp the host guesses at. `Ok(Some(false))` for an unchanged
 /// apply. `Ok(None)` when no ready connector enumerated this session.
+/// Selected capture downloads only through here, so its outcome is kept for
+/// Settings' sync health ([`note_download`]).
 pub fn hydrate(
     store: &SessionStore,
     home: &Path,
@@ -49,14 +51,18 @@ pub fn hydrate(
 ) -> Result<Option<bool>> {
     let host = Host::system(home, store.db_path());
     let ready = ready(&host, Some(store.db_path()));
-    hydrate_with(
+    let result = hydrate_with(
         &Pass::new(&host),
         &ready,
         store,
         source,
         session_id,
-        stopped,
-    )
+        &stopped,
+    );
+    if !stopped() {
+        super::sweep::note_download(store.db_path(), &ready, source, session_id, &result);
+    }
+    result
 }
 
 pub(super) fn hydrate_with(
@@ -123,6 +129,13 @@ pub fn hydrate_reader(
     hydrate_reader_with(&host, store, source, session_id, stopped)
 }
 
+/// Whether `connector` can own `session_id` at all. Cursor Cloud Agents are
+/// `bc-` ids; a local Cursor transcript's UUID must never become a remote
+/// placeholder.
+fn names_session(connector: &str, session_id: &str) -> bool {
+    connector != CURSOR_CLOUD_CONNECTOR || session_id.starts_with("bc-")
+}
+
 pub(super) fn hydrate_reader_with(
     host: &Host,
     store: &SessionStore,
@@ -130,9 +143,12 @@ pub(super) fn hydrate_reader_with(
     session_id: &str,
     stopped: impl Fn() -> bool,
 ) -> Result<Option<bool>> {
-    let Some((connector, connector_source)) = ready(host, None)
-        .into_iter()
-        .find(|(_, connector_source)| *connector_source == source)
+    let Some((connector, connector_source)) =
+        ready(host, None)
+            .into_iter()
+            .find(|(connector, connector_source)| {
+                *connector_source == source && names_session(connector, session_id)
+            })
     else {
         return Ok(None);
     };

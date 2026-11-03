@@ -43,7 +43,7 @@ use watching::{Noticed, Owed, Watching};
 
 use super::collector::stopping;
 use super::{collector, history, inventory};
-use agent_relay_probe::delivery;
+use crate::delivery;
 use ai_hist::{SessionRef, Source};
 use serde_json::json;
 use std::{
@@ -1198,7 +1198,11 @@ pub(super) mod tests {
         }
         let home = tempfile::tempdir().unwrap();
         let path = home.path();
-        const CONNECTOR_KEYS: [&str; 8] = [
+        const CONNECTOR_KEYS: [&str; 12] = [
+            "CURSOR_API_KEY",
+            "RELAYHISTORY_CURSOR_API_KEY",
+            "RELAYHISTORY_CURSOR_API_KEY_FILE",
+            "RELAYHISTORY_CURSOR_API_BASE_URL",
             "RELAYHISTORY_DEVIN_API_KEY",
             "RELAYHISTORY_DEVIN_ORG_ID",
             "RELAYHISTORY_DEVIN_CREDENTIALS",
@@ -1231,16 +1235,24 @@ pub(super) mod tests {
             .env_remove("GROK_BOT_USER_DATA")
             .env_remove("XDG_DATA_HOME")
             .env_remove("AGENT_RELAY_HOME")
-            .env_remove(agent_relay_probe::relay::claude_dirs::DIRS_ENV)
+            .env_remove(crate::relay::claude_dirs::DIRS_ENV)
             .env_remove(FS_EVENTS_ENV)
             .output()
             .unwrap();
+        // A child that matched no test would pass here without running it.
         assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
+            "{name} matched no test"
         );
+        if !output.status.success() {
+            let preserved = home.keep();
+            panic!(
+                "isolated fixture preserved at {}\n{}\n{}",
+                preserved.display(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         None
     }
 
@@ -1276,6 +1288,7 @@ pub(super) mod tests {
             org_id: "org".into(),
             workspace_id: "workspace".into(),
             history_url: "https://history.agentrelay.com".into(),
+            cloud_history_origin: None,
             delivery_account: job.config.account_id.clone(),
             job_id: job.job_id.clone(),
             include_existing: true,
@@ -1292,8 +1305,8 @@ pub(super) mod tests {
         delivery::DeliveryJobConfig {
             destination_id: "relayhistory".into(),
             instance_id: "teams-probe".into(),
-            account_id: agent_relay_probe::destination::account_id("org", Some("workspace")),
-            mapping_version: agent_relay_probe::destination::MAPPING_VERSION.into(),
+            account_id: crate::destination::account_id("org", Some("workspace")),
+            mapping_version: crate::destination::MAPPING_VERSION.into(),
             selection: collector::selection(true),
             limits: Default::default(),
         }
@@ -1373,7 +1386,7 @@ pub(super) mod tests {
     #[test]
     fn a_tick_that_writes_wakes_delivery_and_a_stop_ends_the_watch() {
         let Some(home) = isolated_home(
-            "live::tests::a_tick_that_writes_wakes_delivery_and_a_stop_ends_the_watch",
+            "probe::live::tests::a_tick_that_writes_wakes_delivery_and_a_stop_ends_the_watch",
         ) else {
             return;
         };
@@ -1471,9 +1484,9 @@ pub(super) mod tests {
     /// walks local history once the lock is free.
     #[test]
     fn the_startup_sweep_waits_for_a_sweep_that_holds_the_lock() {
-        let Some(home) =
-            isolated_home("live::tests::the_startup_sweep_waits_for_a_sweep_that_holds_the_lock")
-        else {
+        let Some(home) = isolated_home(
+            "probe::live::tests::the_startup_sweep_waits_for_a_sweep_that_holds_the_lock",
+        ) else {
             return;
         };
         let directory = home.join("probe");
@@ -1523,7 +1536,7 @@ pub(super) mod tests {
     #[test]
     fn writes_while_the_lock_is_held_are_read_once_it_is_released() {
         let Some(home) = isolated_home(
-            "live::tests::writes_while_the_lock_is_held_are_read_once_it_is_released",
+            "probe::live::tests::writes_while_the_lock_is_held_are_read_once_it_is_released",
         ) else {
             return;
         };
@@ -1597,9 +1610,9 @@ pub(super) mod tests {
     /// been started to walk the rest of the history.
     #[test]
     fn a_stop_during_the_startup_sweep_ends_capture_promptly() {
-        let Some(home) =
-            isolated_home("live::tests::a_stop_during_the_startup_sweep_ends_capture_promptly")
-        else {
+        let Some(home) = isolated_home(
+            "probe::live::tests::a_stop_during_the_startup_sweep_ends_capture_promptly",
+        ) else {
             return;
         };
         let directory = home.join("probe");
@@ -1649,9 +1662,9 @@ pub(super) mod tests {
     /// step by the scheduler tests in `live::broad`.)
     #[test]
     fn a_write_during_the_startup_sweep_is_caught_up_at_once() {
-        let Some(home) =
-            isolated_home("live::tests::a_write_during_the_startup_sweep_is_caught_up_at_once")
-        else {
+        let Some(home) = isolated_home(
+            "probe::live::tests::a_write_during_the_startup_sweep_is_caught_up_at_once",
+        ) else {
             return;
         };
         let directory = home.join("probe");
@@ -1723,9 +1736,9 @@ pub(super) mod tests {
     /// the capture timer did, and the report says why.
     #[test]
     fn without_filesystem_events_capture_polls_and_says_why() {
-        let Some(home) =
-            isolated_home("live::tests::without_filesystem_events_capture_polls_and_says_why")
-        else {
+        let Some(home) = isolated_home(
+            "probe::live::tests::without_filesystem_events_capture_polls_and_says_why",
+        ) else {
             return;
         };
         let directory = home.join("probe");
@@ -1775,7 +1788,7 @@ pub(super) mod tests {
     #[test]
     fn fallback_recent_append_does_not_wait_for_an_unfinished_archive_round() {
         let Some(home) = isolated_home(
-            "live::tests::fallback_recent_append_does_not_wait_for_an_unfinished_archive_round",
+            "probe::live::tests::fallback_recent_append_does_not_wait_for_an_unfinished_archive_round",
         ) else {
             return;
         };
@@ -1865,7 +1878,8 @@ pub(super) mod tests {
     /// last line is still captured within about that gap.
     #[test]
     fn sustained_writes_are_swept_at_the_pace() {
-        let Some(home) = isolated_home("live::tests::sustained_writes_are_swept_at_the_pace")
+        let Some(home) =
+            isolated_home("probe::live::tests::sustained_writes_are_swept_at_the_pace")
         else {
             return;
         };
@@ -1954,7 +1968,8 @@ pub(super) mod tests {
     /// that is not running, owe nothing.
     #[test]
     fn a_sweep_reads_what_was_queued_as_an_event() {
-        let Some(home) = isolated_home("live::tests::a_sweep_reads_what_was_queued_as_an_event")
+        let Some(home) =
+            isolated_home("probe::live::tests::a_sweep_reads_what_was_queued_as_an_event")
         else {
             return;
         };
@@ -2006,7 +2021,8 @@ pub(super) mod tests {
 
     #[test]
     fn fallback_full_pass_refreshes_provider_roots() {
-        let Some(home) = isolated_home("live::tests::fallback_full_pass_refreshes_provider_roots")
+        let Some(home) =
+            isolated_home("probe::live::tests::fallback_full_pass_refreshes_provider_roots")
         else {
             return;
         };
@@ -2061,7 +2077,7 @@ pub(super) mod tests {
     #[test]
     fn a_burst_retains_provider_scope_and_loss_requests_full_reconciliation() {
         let Some(home) = isolated_home(
-            "live::tests::a_burst_retains_provider_scope_and_loss_requests_full_reconciliation",
+            "probe::live::tests::a_burst_retains_provider_scope_and_loss_requests_full_reconciliation",
         ) else {
             return;
         };
@@ -2104,9 +2120,9 @@ pub(super) mod tests {
 
     #[test]
     fn sustained_scoped_events_do_not_starve_the_full_backstop() {
-        let Some(home) =
-            isolated_home("live::tests::sustained_scoped_events_do_not_starve_the_full_backstop")
-        else {
+        let Some(home) = isolated_home(
+            "probe::live::tests::sustained_scoped_events_do_not_starve_the_full_backstop",
+        ) else {
             return;
         };
         let directory = home.join("probe");
@@ -2181,7 +2197,7 @@ pub(super) mod tests {
     /// With nothing written, the watch runs no sweep between backstops.
     #[test]
     fn an_idle_history_is_not_swept() {
-        let Some(home) = isolated_home("live::tests::an_idle_history_is_not_swept") else {
+        let Some(home) = isolated_home("probe::live::tests::an_idle_history_is_not_swept") else {
             return;
         };
         let directory = home.join("probe");
@@ -2241,7 +2257,7 @@ pub(super) mod tests {
     #[test]
     fn a_provider_that_appears_after_start_is_captured() {
         let Some(home) =
-            isolated_home("live::tests::a_provider_that_appears_after_start_is_captured")
+            isolated_home("probe::live::tests::a_provider_that_appears_after_start_is_captured")
         else {
             return;
         };
@@ -2366,7 +2382,7 @@ pub(super) mod tests {
     #[test]
     fn selected_mode_hydrates_only_the_members_whose_transcript_moved() {
         let Some(home) = isolated_home(
-            "live::tests::selected_mode_hydrates_only_the_members_whose_transcript_moved",
+            "probe::live::tests::selected_mode_hydrates_only_the_members_whose_transcript_moved",
         ) else {
             return;
         };
@@ -2498,9 +2514,9 @@ pub(super) mod tests {
     /// before the next membership read would have stat'ed it.
     #[test]
     fn an_event_hydrates_a_member_without_waiting_for_a_poll() {
-        let Some(home) =
-            isolated_home("live::tests::an_event_hydrates_a_member_without_waiting_for_a_poll")
-        else {
+        let Some(home) = isolated_home(
+            "probe::live::tests::an_event_hydrates_a_member_without_waiting_for_a_poll",
+        ) else {
             return;
         };
         let (directory, db, project, job) = selected_job(&home, &["moving"], &["private"]);
@@ -2549,7 +2565,8 @@ pub(super) mod tests {
     /// one round and one hydration.
     #[test]
     fn a_burst_of_writes_is_one_hydration() {
-        let Some(home) = isolated_home("live::tests::a_burst_of_writes_is_one_hydration") else {
+        let Some(home) = isolated_home("probe::live::tests::a_burst_of_writes_is_one_hydration")
+        else {
             return;
         };
         let (directory, db, project, job) = selected_job(&home, &["busy"], &[]);
@@ -2616,7 +2633,7 @@ pub(super) mod tests {
     #[test]
     fn the_backstop_hydrates_every_member_without_events() {
         let Some(home) =
-            isolated_home("live::tests::the_backstop_hydrates_every_member_without_events")
+            isolated_home("probe::live::tests::the_backstop_hydrates_every_member_without_events")
         else {
             return;
         };
@@ -2646,9 +2663,9 @@ pub(super) mod tests {
     /// round, and the report says why.
     #[test]
     fn without_filesystem_events_members_are_polled_and_say_why() {
-        let Some(home) =
-            isolated_home("live::tests::without_filesystem_events_members_are_polled_and_say_why")
-        else {
+        let Some(home) = isolated_home(
+            "probe::live::tests::without_filesystem_events_members_are_polled_and_say_why",
+        ) else {
             return;
         };
         let (directory, db, project, job) = selected_job(&home, &["polled"], &[]);
@@ -2685,7 +2702,7 @@ pub(super) mod tests {
     #[test]
     fn native_events_work_before_due_safety_poll_and_due_poll_needs_no_event() {
         let Some(home) = isolated_home(
-            "live::tests::native_events_work_before_due_safety_poll_and_due_poll_needs_no_event",
+            "probe::live::tests::native_events_work_before_due_safety_poll_and_due_poll_needs_no_event",
         ) else {
             return;
         };
@@ -2765,9 +2782,9 @@ pub(super) mod tests {
     /// an inventory pass, and not before.
     #[test]
     fn an_inventory_pass_compares_members_in_a_shared_database() {
-        let Some(home) =
-            isolated_home("live::tests::an_inventory_pass_compares_members_in_a_shared_database")
-        else {
+        let Some(home) = isolated_home(
+            "probe::live::tests::an_inventory_pass_compares_members_in_a_shared_database",
+        ) else {
             return;
         };
         let directory = home.join("probe");
@@ -2819,7 +2836,8 @@ pub(super) mod tests {
     /// named its transcript while it was out of the job.
     #[test]
     fn a_member_included_again_is_hydrated_at_once() {
-        let Some(home) = isolated_home("live::tests::a_member_included_again_is_hydrated_at_once")
+        let Some(home) =
+            isolated_home("probe::live::tests::a_member_included_again_is_hydrated_at_once")
         else {
             return;
         };
@@ -2889,9 +2907,9 @@ pub(super) mod tests {
     /// event was dropped is hydrated then rather than at the backstop.
     #[test]
     fn a_lost_event_has_the_next_round_compare_every_member() {
-        let Some(home) =
-            isolated_home("live::tests::a_lost_event_has_the_next_round_compare_every_member")
-        else {
+        let Some(home) = isolated_home(
+            "probe::live::tests::a_lost_event_has_the_next_round_compare_every_member",
+        ) else {
             return;
         };
         let (directory, db, project, job) = selected_job(&home, &["one", "two"], &[]);
@@ -2940,7 +2958,7 @@ pub(super) mod tests {
     #[test]
     fn a_watch_that_covers_no_transcript_reports_polling() {
         let Some(home) =
-            isolated_home("live::tests::a_watch_that_covers_no_transcript_reports_polling")
+            isolated_home("probe::live::tests::a_watch_that_covers_no_transcript_reports_polling")
         else {
             return;
         };
@@ -2999,7 +3017,7 @@ pub(super) mod tests {
     #[test]
     fn pruning_passes_over_members_of_retired_sources() {
         let Some(home) =
-            isolated_home("live::tests::pruning_passes_over_members_of_retired_sources")
+            isolated_home("probe::live::tests::pruning_passes_over_members_of_retired_sources")
         else {
             return;
         };
@@ -3051,7 +3069,7 @@ pub(super) mod tests {
     #[test]
     fn selected_mode_keeps_only_its_members_evidence() {
         let Some(home) =
-            isolated_home("live::tests::selected_mode_keeps_only_its_members_evidence")
+            isolated_home("probe::live::tests::selected_mode_keeps_only_its_members_evidence")
         else {
             return;
         };

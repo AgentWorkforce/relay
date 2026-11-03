@@ -349,7 +349,7 @@ impl<'a> InventoryLoop<'a> {
             "failures": usize::from(result.is_err()),
             "error_class": result.as_ref().err().map(collector::capture_error_class),
         });
-        let _ = crate::save_status_json(
+        let _ = crate::probe::save_status_json(
             &self.context.directory.join("inventory-diagnostic.json"),
             &diagnostic,
         );
@@ -434,7 +434,7 @@ mod tests {
     use super::*;
     #[test]
     fn cached_settings_failure_does_not_rewrite_diagnostics_between_retries() {
-        let Some(home) = crate::live::tests::isolated_home("inventory::follow::tests::cached_settings_failure_does_not_rewrite_diagnostics_between_retries") else { return; };
+        let Some(home) = crate::probe::live::tests::isolated_home("probe::inventory::follow::tests::cached_settings_failure_does_not_rewrite_diagnostics_between_retries") else { return; };
         let directory = home.join("probe");
         let (events, received) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -449,8 +449,8 @@ mod tests {
         })
         .unwrap();
         let env = |key: &str| std::env::var(key).ok();
-        let file = agent_relay_probe::relay::workspace::relay_home(&env, &home)
-            .join(agent_relay_probe::relay::claude_dirs::FILE);
+        let file =
+            crate::relay::workspace::relay_home(&env, &home).join(crate::relay::claude_dirs::FILE);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(file, b"{").unwrap();
         assert!(!inventory.refresh_roots(Instant::now()));
@@ -468,8 +468,8 @@ mod tests {
 
     #[test]
     fn failed_round_creation_retains_loss_and_retries_after_pacing() {
-        let Some(home) = crate::live::tests::isolated_home(
-            "inventory::follow::tests::failed_round_creation_retains_loss_and_retries_after_pacing",
+        let Some(home) = crate::probe::live::tests::isolated_home(
+            "probe::inventory::follow::tests::failed_round_creation_retains_loss_and_retries_after_pacing",
         ) else {
             return;
         };
@@ -505,14 +505,14 @@ mod tests {
 
     #[test]
     fn complete_watch_keeps_recent_polling_and_duplicate_paths_do_not_overflow() {
-        let Some(home) = crate::live::tests::isolated_home("inventory::follow::tests::complete_watch_keeps_recent_polling_and_duplicate_paths_do_not_overflow") else { return; };
+        let Some(home) = crate::probe::live::tests::isolated_home("probe::inventory::follow::tests::complete_watch_keeps_recent_polling_and_duplicate_paths_do_not_overflow") else { return; };
         let directory = home.join("probe");
         let project = home.join(".claude/projects/partial");
         std::fs::create_dir_all(&project).unwrap();
         let transcript = project.join("partial.jsonl");
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &transcript,
-            &crate::live::tests::transcript_line("partial", "one"),
+            &crate::probe::live::tests::transcript_line("partial", "one"),
         );
         let (events, received) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -553,7 +553,7 @@ mod tests {
 
     #[test]
     fn directory_notices_require_provider_admission_before_requesting_a_round() {
-        let Some(home)=crate::live::tests::isolated_home("inventory::follow::tests::directory_notices_require_provider_admission_before_requesting_a_round") else {return};
+        let Some(home)=crate::probe::live::tests::isolated_home("probe::inventory::follow::tests::directory_notices_require_provider_admission_before_requesting_a_round") else {return};
         let directory = home.join("probe");
         std::fs::create_dir_all(&directory).unwrap();
         let project = home.join(".claude/projects/p");
@@ -585,7 +585,7 @@ mod tests {
     }
     #[test]
     fn periodic_round_rests_after_completion_but_actual_loss_keeps_followup() {
-        let Some(home) = crate::live::tests::isolated_home("inventory::follow::tests::periodic_round_rests_after_completion_but_actual_loss_keeps_followup") else {return};
+        let Some(home) = crate::probe::live::tests::isolated_home("probe::inventory::follow::tests::periodic_round_rests_after_completion_but_actual_loss_keeps_followup") else {return};
         let directory = home.join("probe");
         let (events, received) = mpsc::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -651,10 +651,10 @@ mod tests {
 
     #[test]
     fn partial_inventory_revisits_healthy_roots_at_poll_and_loss_deadlines() {
-        let Some(home) = crate::live::tests::isolated_home(
-            "inventory::follow::tests::partial_inventory_revisits_healthy_roots_at_poll_and_loss_deadlines",
+        let Some(home) = crate::probe::live::tests::isolated_home(
+            "probe::inventory::follow::tests::partial_inventory_revisits_healthy_roots_at_poll_and_loss_deadlines",
         ) else { return; };
-        use agent_relay_probe::relay::{
+        use crate::relay::{
             claude_dirs::ClaudeDirs, process::FakeProcesses, workspace::relay_home,
         };
         let env = |key: &str| std::env::var(key).ok();
@@ -704,9 +704,9 @@ mod tests {
                 .any(|row| row.unwrap().session_id == id)
         };
         let new = project.join("periodic-inventory.jsonl");
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &new,
-            &crate::live::tests::transcript_line("periodic-inventory", "one"),
+            &crate::probe::live::tests::transcript_line("periodic-inventory", "one"),
         );
         inventory.refresh(next);
         for _ in 0..120 {
@@ -729,9 +729,9 @@ mod tests {
             "partial inventory must remain shallow"
         );
         let new = project.join("lost-inventory.jsonl");
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &new,
-            &crate::live::tests::transcript_line("lost-inventory", "one"),
+            &crate::probe::live::tests::transcript_line("lost-inventory", "one"),
         );
         inventory.signal(Signal::Lost);
         inventory.refresh(Instant::now());

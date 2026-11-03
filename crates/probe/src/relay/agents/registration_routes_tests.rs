@@ -326,14 +326,11 @@ async fn a_saved_sign_in_owns_its_session_after_a_restart() {
 }
 
 // `agent-relay cloud login` alone: the CLI's file does not make `CloudAccess`
-// report a signed-in account.
+// report a signed-in account, and an open Grok session still joins without it.
 #[cfg(feature = "relay-cli")]
 mod cli_login {
     use super::*;
-    use crate::relay::account::Account;
     use crate::relay::cloud_session::{cli_session, SignedOut};
-    use crate::relay::store::CloudSession;
-    use crate::relay::uploader::{NoHistoryRunner, Uploader};
     use std::path::Path;
 
     const SITE: &str = "https://agentrelay.com";
@@ -353,18 +350,6 @@ mod cli_login {
         .to_string()
     }
 
-    /// Account as a release build makes it: no history, so no install.
-    fn account(home: &Path) -> Arc<Account> {
-        let env = Default::default();
-        Arc::new(Account::new(
-            Some(SITE),
-            home,
-            &env,
-            &home.join("app-data"),
-            Arc::new(Uploader::new(Arc::new(NoHistoryRunner))),
-        ))
-    }
-
     async fn assert_signed_out(cloud: &dyn CloudAccess) {
         assert!(cloud.account().is_none());
         assert!(cloud.agent_owner().is_none());
@@ -377,85 +362,48 @@ mod cli_login {
 
     #[tokio::test]
     async fn a_cli_login_alone_leaves_cloud_access_signed_out() {
-        let mut attached = None;
-        let (_directory, failures, _fake, core, temp) = activate_with(|home, plugins| {
-            write_cli_login(home, &fresh_login());
-            let account = account(home);
-            plugins.cloud = account.clone();
-            plugins.account = Some(account.clone());
-            attached = Some(account);
-        })
-        .await;
+        let (_directory, failures, _fake, core, temp) =
+            activate_with(|home, _| write_cli_login(home, &fresh_login())).await;
         assert!(failures.is_empty(), "{failures:?}");
         // The login is valid, so nothing here passes because it was ignored.
         let relay_home = temp.path().join(".agentworkforce/relay");
         let now = crate::relay::state::now_ms();
         assert!(cli_session(&relay_home, SITE, now).is_some());
 
-        let account = attached.unwrap();
-        assert_signed_out(account.as_ref()).await;
+        assert_signed_out(core.plugins.cloud.as_ref()).await;
         assert_signed_out(&SignedOut).await;
-        // Unlike `SignedOut`'s default, but the sync stops at `account()` first.
-        assert!(!account.may_sync_identities());
-        assert_eq!(
-            account.identity_sync_generation(),
-            SignedOut.identity_sync_generation()
-        );
-
-        // The same Account does sign in from a session the core holds itself.
-        core.store
-            .update(|store| {
-                store.cloud_session = Some(CloudSession {
-                    access_token: Secret::new("fake-kept-token"),
-                    access_token_expires_at: Some("2099-01-01T00:00:00Z".into()),
-                    refresh_token: None,
-                    refresh_token_expires_at: None,
-                    site_url: SITE.into(),
-                });
-                store.cloud.as_mut().unwrap().account_workspace_id = Some("workspace".into());
-            })
-            .unwrap();
-        assert_eq!(account.account().unwrap().site_url, SITE);
     }
 
     #[tokio::test]
-    async fn an_open_grok_session_is_owned_the_same_without_account() {
-        let (with_account, ..) = activate_with(|home, plugins| {
-            write_cli_login(home, &fresh_login());
-            let account = account(home);
-            plugins.cloud = account.clone();
-            plugins.account = Some(account);
-        })
-        .await;
-        let (without_account, ..) =
+    async fn an_open_grok_session_is_owned_the_same_with_or_without_a_cli_login() {
+        let (with_login, failures, fake, _core, _temp) =
             activate_with(|home, _| write_cli_login(home, &fresh_login())).await;
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(fake.calls("POST", "/v1/agents").len(), 1);
+        let (without_login, failures, ..) = activate_with(|_, _| {}).await;
+        assert!(failures.is_empty(), "{failures:?}");
 
         let owner = |directory: &OpenGrok| directory.bound.lock().unwrap().clone().unwrap();
-        let (kept, replaced) = (owner(&with_account), owner(&without_account));
+        let (kept, plain) = (owner(&with_login), owner(&without_login));
         let uid = crate::relay::peer::current_uid();
         assert_eq!(kept.owner_id, format!("local-user:{uid}"));
-        assert_eq!(kept.owner_id, replaced.owner_id);
-        assert_eq!(kept.owner_uid, replaced.owner_uid);
+        assert_eq!(kept.owner_id, plain.owner_id);
+        assert_eq!(kept.owner_uid, plain.owner_uid);
     }
 
     #[tokio::test]
     async fn a_broken_or_missing_cli_login_is_signed_out_too() {
         for contents in [None, Some("not json"), Some("{}")] {
-            let mut attached = None;
-            let (_directory, failures, _fake, _core, temp) = activate_with(|home, plugins| {
+            let (_directory, failures, _fake, core, temp) = activate_with(|home, _| {
                 if let Some(contents) = contents {
                     write_cli_login(home, contents);
                 }
-                let account = account(home);
-                plugins.cloud = account.clone();
-                plugins.account = Some(account.clone());
-                attached = Some(account);
             })
             .await;
             assert!(failures.is_empty(), "{failures:?}");
             let relay_home = temp.path().join(".agentworkforce/relay");
             assert!(cli_session(&relay_home, SITE, crate::relay::state::now_ms()).is_none());
-            assert_signed_out(attached.unwrap().as_ref()).await;
+            assert_signed_out(core.plugins.cloud.as_ref()).await;
         }
     }
 }

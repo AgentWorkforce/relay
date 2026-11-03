@@ -25,11 +25,13 @@ pub mod cursor_cloud;
 pub mod directory;
 pub mod incoming;
 pub mod openclaw;
+pub mod plan;
 pub mod platform;
 pub mod reader;
 pub mod replicas;
 pub mod spawn_control;
 pub mod spawned;
+pub mod tool_integrations;
 pub mod transcript;
 
 use crate::relay::protocol::{ErrorKind, RpcError, Topic};
@@ -65,7 +67,7 @@ pub struct MethodSpec {
 }
 
 impl MethodSpec {
-    const fn of<M: Method>(availability: Availability) -> MethodSpec {
+    pub const fn of<M: Method>(availability: Availability) -> MethodSpec {
         MethodSpec {
             name: M::NAME,
             availability,
@@ -127,6 +129,7 @@ use openclaw::*;
 use platform::*;
 use replicas::*;
 use spawned::*;
+use tool_integrations::*;
 
 methods! {
     // Core.
@@ -141,7 +144,8 @@ methods! {
 
     // Workspace and account.
     AccountStatus = "account.status", Account, NoParams => SignInReport;
-    AccountSignIn = "account.sign_in", Account, crate::relay::account::SignInRequest => SignInReport;
+    AccountMcpHeaders = "account.mcp_headers", Account, McpHeadersParams => McpHeaders;
+    AccountSignIn = "account.sign_in", Account, account::SignInRequest => SignInReport;
     AccountSelectWorkspace = "account.select_workspace", Account, ConnectWorkspaceParams => Done;
     AccountSignInCancel = "account.sign_in.cancel", Account, NoParams => Done;
     AccountSignOut = "account.sign_out", Account, NoParams => Done;
@@ -180,6 +184,7 @@ methods! {
     AgentsList = "agents.list", Always, NoParams => Agents;
     AgentsRegister = "agents.register", Always, RegisterParams => crate::relay::agents::Registered;
     AgentsUnregister = "agents.unregister", Always, NameParams => Done;
+    AgentsEnd = "agents.end", Always, NameParams => Done;
     AgentsRename = "agents.rename", Always, RenameParams => Renamed;
     AgentsTestMessage = "agents.test_message", Always, TestMessageParams => TestMessageSent;
     AgentsReplySetting = "agents.reply_setting", Always, ReplySettingParams => Done;
@@ -191,6 +196,10 @@ methods! {
     AgentsIntegrationsUnsubscribe = "agents.integrations.unsubscribe", Always, IntegrationParams => IntegrationChange;
     AgentsIntegrationsCleanUp = "agents.integrations.clean_up", Always, IntegrationParams => IntegrationChange;
     SettingsGet = "settings.get", Always, NoParams => SettingsValues;
+    ToolsStatus = "tools.status", Account, NoParams => ToolsReport;
+    ToolsCheck = "tools.check", Account, NoParams => ToolsReport;
+    ToolsSelect = "tools.select", Account, ToolsSelectParams => ToolsReport;
+    ToolsManage = "tools.manage", Account, ToolsManageParams => ToolsReport;
     SettingsSet = "settings.set", Always, SettingsChange => SettingsValues;
     ActivityList = "activity.list", Always, LimitParams => ActivityLog;
     ClaudeDeliveryStatus = "claude_delivery.status", Always, NoParams => claude_delivery::ClaudeDeliveryStatus;
@@ -213,6 +222,7 @@ methods! {
     CursorCloudAgentsList = "cursor_cloud.agents.list", Account, CursorCloudAgentsListParams => CursorCloudAgents;
     CursorCloudAgentsSpawn = "cursor_cloud.agents.spawn", Account, CursorCloudAgentSpawnParams => CursorCloudAgent;
     CursorCloudAgentsGet = "cursor_cloud.agents.get", Account, CursorCloudAgentParams => CursorCloudAgent;
+    CursorCloudAgentsAttach = "cursor_cloud.agents.attach", Account, CursorCloudAgentParams => CursorCloudAgent;
     CursorCloudRunsCreate = "cursor_cloud.runs.create", Account, CursorCloudRunCreateParams => CursorCloudRun;
     CursorCloudRunsList = "cursor_cloud.runs.list", Account, CursorCloudRunsListParams => CursorCloudRuns;
     CursorCloudRunsGet = "cursor_cloud.runs.get", Account, CursorCloudRunParams => CursorCloudRun;

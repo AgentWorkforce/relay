@@ -1,6 +1,6 @@
 //! Content-free, best-effort progress. A slow/offline status endpoint never blocks capture.
-use agent_relay_probe::cloud;
-use agent_relay_probe::delivery;
+use crate::cloud;
+use crate::delivery;
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -553,7 +553,7 @@ fn heartbeat(url: &str, progress: &Progress) -> bool {
         }
         auth.access_token
     };
-    let result = ureq::AgentBuilder::new()
+    let result = cloud::history_agent()
         .redirects(0)
         .timeout(HEARTBEAT_TIMEOUT)
         .build()
@@ -687,7 +687,7 @@ mod tests {
         if std::env::var("PROBE_HEARTBEAT_TEST_CHILD").as_deref() != Ok("1") {
             let directory = tempfile::tempdir().unwrap();
             let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "progress::tests::idle_heartbeat_renews_expired_credentials_without_a_closing_report"])
+                .args(["--exact", "probe::progress::tests::idle_heartbeat_renews_expired_credentials_without_a_closing_report"])
                 .env("PROBE_HEARTBEAT_TEST_CHILD", "1")
                 .env("RELAYHISTORY_HOME", directory.path())
                 .status().unwrap();

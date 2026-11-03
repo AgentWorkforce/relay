@@ -511,7 +511,8 @@ pub fn live(
 }
 
 /// Every live editor conversation, by id. A record whose host is gone, or
-/// whose pid another process now has, is removed.
+/// whose pid another process now has, is left out, and removed unless a claim
+/// holds its lock (`remove_stale`), which leaves it for the next discovery.
 pub fn sessions(config: &CursorConfig, table: &dyn ProcessTable, uid: u32) -> Vec<EditorSession> {
     if !platform::SUPPORTED {
         return Vec::new();

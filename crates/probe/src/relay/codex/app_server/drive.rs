@@ -1,8 +1,10 @@
 //! Pending server-to-client requests for headless spawned Codex turns.
 //! Only this process's live proxy connection may answer a request. Losing
 //! the connection drops its pending refs; a reply cannot approve a new one.
-//! Every request is answered by the verified machine owner only
-//! (`spawn::drive`); no other agent, the spawn's requester included, can.
+//! Every request is answered by the verified machine owner (`spawn::drive`),
+//! or by the spawning agent when approvals from it are on
+//! (`spawn_requester_approvals`, with native input from it); no other agent
+//! can.
 
 use super::{Client, ClientState};
 use crate::relay::codex::runner::ProxyStream;
@@ -13,6 +15,21 @@ use std::time::{Duration, Instant};
 
 const REQUEST_TTL: Duration = Duration::from_secs(300);
 const POLL: Duration = Duration::from_secs(1);
+/// How often a driven turn asks whether it ended without this connection
+/// hearing `turn/completed`.
+const ENDED_CHECK: Duration = Duration::from_millis(if cfg!(test) { 200 } else { 5_000 });
+
+/// Whether the turn a connection drives has ended, read from outside the
+/// connection (the thread's rollout). Codex can finish or abort a turn
+/// without `turn/completed` reaching the connection that started it; the
+/// thread's claim must not outlive the turn then, or every later message
+/// waits for a turn that is over.
+pub type Ended = Box<dyn Fn() -> bool + Send>;
+
+/// A turn that ends only when its connection hears so.
+pub fn never() -> Ended {
+    Box::new(|| false)
+}
 
 fn progress_times() -> MutexGuard<'static, HashMap<String, i64>> {
     static PROGRESS: OnceLock<Mutex<HashMap<String, i64>>> = OnceLock::new();
@@ -257,6 +274,13 @@ pub fn unforwarded(thread: &str) -> Vec<Notice> {
         .collect()
 }
 
+/// Whether `thread` has `reference` open: not answered, not expired.
+pub fn has_pending(thread: &str, reference: &str) -> bool {
+    pending().get(reference).is_some_and(|entry| {
+        entry.notice.thread == thread && entry.answer.is_none() && Instant::now() < entry.deadline
+    })
+}
+
 pub fn mark_forwarded(reference: &str) {
     if let Some(entry) = pending().get_mut(reference) {
         entry.forwarded = true;
@@ -286,8 +310,10 @@ pub enum ReplyResult {
 }
 
 /// Records `answer` for the open request `reference` of `thread` when the
-/// sender is the verified owner: the immutable Relaycast agent id from the
-/// delivery, never the text's claimed author.
+/// sender is the one allowed to answer (`owner_id`: the verified owner, or
+/// the spawning agent when it may answer): the immutable Relaycast agent id
+/// from the delivery, never the text's claimed author. The first answer
+/// counts; a later one finds the request answered.
 fn answer_with(
     thread: &str,
     reference: &str,
@@ -410,10 +436,11 @@ fn holds_requests(connection: &str) -> bool {
         .any(|entry| entry.connection == connection)
 }
 
-/// Drives one connection until its turn completed and its requests are
-/// settled, or it closes.
-fn drive(client: &mut Client<'_>, thread: &str, connection: &str) {
+/// Drives one connection until its turn completed (or `ended` says so) and
+/// its requests are settled, or it closes.
+fn drive(client: &mut Client<'_>, thread: &str, connection: &str, ended: &Ended) {
     let mut completed = false;
+    let mut checked = Instant::now();
     loop {
         // A completed turn can leave after all approvals have been answered;
         // the next turn has its own connection. Checked before each wait:
@@ -448,6 +475,10 @@ fn drive(client: &mut Client<'_>, thread: &str, connection: &str) {
         match client.read(Instant::now() + POLL) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::TimedOut => {
+                if !completed && checked.elapsed() >= ENDED_CHECK {
+                    checked = Instant::now();
+                    completed = ended();
+                }
                 std::thread::sleep(Duration::from_millis(100));
             }
             Err(_) => return,
@@ -456,7 +487,12 @@ fn drive(client: &mut Client<'_>, thread: &str, connection: &str) {
 }
 
 /// Keeps the proxy that started the turn alive to answer its requests.
-pub(super) fn start(mut stream: Box<dyn ProxyStream>, state: ClientState, claim: Claim) {
+pub(super) fn start(
+    mut stream: Box<dyn ProxyStream>,
+    state: ClientState,
+    claim: Claim,
+    ended: Ended,
+) {
     std::thread::spawn(move || {
         let thread = claim.thread().to_string();
         let connection = reference().unwrap_or_default();
@@ -467,7 +503,7 @@ pub(super) fn start(mut stream: Box<dyn ProxyStream>, state: ClientState, claim:
             requests: state.requests,
             notifications: state.notifications,
         };
-        drive(&mut client, &thread, &connection);
+        drive(&mut client, &thread, &connection, &ended);
         drop(client);
         drop(stream);
         // A closed connection invalidates every reference it created.
@@ -561,6 +597,7 @@ mod tests {
             Box::new(Idle(closed.clone())),
             state,
             claim("thread-fast").unwrap(),
+            never(),
         );
         let deadline = Instant::now() + Duration::from_secs(5);
         while !closed.load(std::sync::atomic::Ordering::SeqCst) || driving("thread-fast") {

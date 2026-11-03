@@ -3,7 +3,7 @@
 use super::*;
 
 impl Core {
-    pub(crate) fn observe_relaycast_write_result<T>(
+    pub fn observe_relaycast_write_result<T>(
         &self,
         workspace: &WorkspaceScope,
         result: &relaycast::Result<T>,

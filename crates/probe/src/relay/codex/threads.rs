@@ -6,8 +6,9 @@
 
 use super::CodexConfig;
 use rusqlite::{Connection, OpenFlags};
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 /// A thread Codex knows about.
@@ -34,20 +35,97 @@ fn database(config: &CodexConfig) -> PathBuf {
     config.sqlite_home.join("state_5.sqlite")
 }
 
-fn open(config: &CodexConfig, busy: Duration) -> Option<Connection> {
-    let connection = Connection::open_with_flags(
-        database(config),
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
+/// Codex's database, kept open between reads so a discovery pass reuses the
+/// connection's page cache and parsed statements instead of reopening the
+/// file and parsing its schema again. A file replaced at the path (another
+/// inode) is opened anew; one idle for `KEPT_IDLE`, or whose file is gone,
+/// is closed.
+struct Kept {
+    file: (u64, u64),
+    connection: Connection,
+    idle_since: std::time::Instant,
+}
+
+/// How long an unused connection stays open: a database no longer read is
+/// closed.
+const KEPT_IDLE: Duration = Duration::from_secs(5 * 60);
+
+/// Idle connections by database. A read takes its connection out for the
+/// read's length, so concurrent reads (a discovery pass waiting out Codex's
+/// write lock, a caller check with a short timeout) never wait for each
+/// other: a read that finds none idle opens its own.
+static KEPT: std::sync::LazyLock<Mutex<HashMap<PathBuf, Kept>>> =
+    std::sync::LazyLock::new(Mutex::default);
+
+#[cfg(unix)]
+fn file_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.dev(), metadata.ino()))
+}
+
+/// Without a stable file identity every read opens the file.
+#[cfg(not(unix))]
+fn file_identity(_: &Path) -> Option<(u64, u64)> {
+    None
+}
+
+fn kept() -> MutexGuard<'static, HashMap<PathBuf, Kept>> {
+    let mut kept = KEPT.lock().unwrap_or_else(|error| error.into_inner());
+    sweep(&mut kept, KEPT_IDLE);
+    kept
+}
+
+/// Closes connections idle for `idle` and those whose file is gone or
+/// replaced.
+fn sweep(kept: &mut HashMap<PathBuf, Kept>, idle: Duration) {
+    kept.retain(|path, kept| {
+        kept.idle_since.elapsed() < idle && file_identity(path) == Some(kept.file)
+    });
+}
+
+/// `read` over Codex's database, waiting out a write for up to `busy`.
+fn with_connection<T>(
+    config: &CodexConfig,
+    busy: Duration,
+    read: impl FnOnce(&Connection) -> Option<T>,
+) -> Option<T> {
+    let path = database(config);
+    let file = file_identity(&path);
+    let idle = kept()
+        .remove(&path)
+        .filter(|kept| Some(kept.file) == file)
+        .map(|kept| kept.connection);
+    let connection = match idle {
+        Some(connection) => connection,
+        None => Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .ok()?,
+    };
     // Codex writes this database while it runs; a write is waited out
     // rather than read as "no threads".
     connection.busy_timeout(busy).ok()?;
-    Some(connection)
+    let found = read(&connection);
+    if let Some(file) = file {
+        let idle_since = std::time::Instant::now();
+        kept().insert(
+            path,
+            Kept {
+                file,
+                connection,
+                idle_since,
+            },
+        );
+    }
+    found
 }
 
 fn columns(connection: &Connection) -> Option<HashSet<String>> {
-    let mut statement = connection.prepare("pragma table_info(threads)").ok()?;
+    let mut statement = connection
+        .prepare_cached("pragma table_info(threads)")
+        .ok()?;
     let names = statement
         .query_map([], |row| row.get::<_, String>(1))
         .ok()?
@@ -122,34 +200,35 @@ fn thread((id, title, cwd, created, updated): Row) -> CodexThread {
 /// which is not the same as having no threads. Archived and sub-agent
 /// threads are left out, and so are the threads relay-spawned workers run.
 pub fn read_recent(config: &CodexConfig, limit: usize) -> Option<Vec<CodexThread>> {
-    let connection = open(config, Duration::from_secs(8))?;
-    let columns = columns(&connection)?;
-    let sql = format!(
-        "select {} from threads where archived = 0 and source in ('cli', 'vscode') {} limit ?1",
-        select_list(&columns)?,
-        ORDER
-    );
-    let mut statement = connection.prepare(&sql).ok()?;
-    // Read past relay-spawned rows so skipping them cannot crowd out the
-    // requested number of the person's own threads.
-    let scan = i64::try_from(limit.max(1).saturating_mul(4)).unwrap_or(i64::MAX);
-    let mut rows = statement.query([scan]).ok()?;
-    let mut threads = Vec::new();
-    while threads.len() < limit {
-        let Some(found) = rows.next().ok()? else {
-            break;
-        };
-        let Ok(found) = row(found) else {
-            continue;
-        };
-        if !crate::relay::store::is_uuid(&found.0)
-            || is_relay_spawned_title(found.1.as_deref().unwrap_or_default())
-        {
-            continue;
+    with_connection(config, Duration::from_secs(8), |connection| {
+        let columns = columns(connection)?;
+        let sql = format!(
+            "select {} from threads where archived = 0 and source in ('cli', 'vscode') {} limit ?1",
+            select_list(&columns)?,
+            ORDER
+        );
+        let mut statement = connection.prepare_cached(&sql).ok()?;
+        // Read past relay-spawned rows so skipping them cannot crowd out the
+        // requested number of the person's own threads.
+        let scan = i64::try_from(limit.max(1).saturating_mul(4)).unwrap_or(i64::MAX);
+        let mut rows = statement.query([scan]).ok()?;
+        let mut threads = Vec::new();
+        while threads.len() < limit {
+            let Some(found) = rows.next().ok()? else {
+                break;
+            };
+            let Ok(found) = row(found) else {
+                continue;
+            };
+            if !crate::relay::store::is_uuid(&found.0)
+                || is_relay_spawned_title(found.1.as_deref().unwrap_or_default())
+            {
+                continue;
+            }
+            threads.push(thread(found));
         }
-        threads.push(thread(found));
-    }
-    Some(threads)
+        Some(threads)
+    })
 }
 
 /// The ids of Codex's unarchived threads of any source created at or after
@@ -157,26 +236,27 @@ pub fn read_recent(config: &CodexConfig, limit: usize) -> Option<Vec<CodexThread
 /// database cannot be read: where a thread Agent Relay started is looked
 /// for when only its first message is known.
 pub fn created_since(config: &CodexConfig, since_ms: i64, scan: usize) -> Option<Vec<String>> {
-    let connection = open(config, Duration::from_secs(8))?;
-    let columns = columns(&connection)?;
-    let sql = format!(
-        "select {} from threads where archived = 0 {} limit ?1",
-        select_list(&columns)?,
-        ORDER
-    );
-    let mut statement = connection.prepare(&sql).ok()?;
-    let scan = i64::try_from(scan).unwrap_or(i64::MAX);
-    let ids = statement
-        .query_map([scan], row)
-        .ok()?
-        .flatten()
-        .map(thread)
-        // A thread with no recorded creation time is kept: it may be it.
-        .filter(|found| found.created_at_ms.is_none_or(|ms| ms >= since_ms))
-        .map(|found| found.id)
-        .filter(|id| crate::relay::store::is_uuid(id))
-        .collect();
-    Some(ids)
+    with_connection(config, Duration::from_secs(8), |connection| {
+        let columns = columns(connection)?;
+        let sql = format!(
+            "select {} from threads where archived = 0 {} limit ?1",
+            select_list(&columns)?,
+            ORDER
+        );
+        let mut statement = connection.prepare_cached(&sql).ok()?;
+        let scan = i64::try_from(scan).unwrap_or(i64::MAX);
+        let ids = statement
+            .query_map([scan], row)
+            .ok()?
+            .flatten()
+            .map(thread)
+            // A thread with no recorded creation time is kept: it may be it.
+            .filter(|found| found.created_at_ms.is_none_or(|ms| ms >= since_ms))
+            .map(|found| found.id)
+            .filter(|id| crate::relay::store::is_uuid(id))
+            .collect();
+        Some(ids)
+    })
 }
 
 /// One thread by id, for a session that identified itself, outside the
@@ -186,39 +266,41 @@ pub fn read_one(config: &CodexConfig, id: &str) -> Option<CodexThread> {
     if !crate::relay::store::is_uuid(id) {
         return None;
     }
-    let connection = open(config, Duration::from_secs(2))?;
-    let columns = columns(&connection)?;
-    let sql = format!(
-        "select {} from threads where id = ?1 collate nocase and archived = 0 and source in ('cli', 'vscode', 'exec') limit 1",
-        select_list(&columns)?
-    );
-    let found = connection.query_row(&sql, [id], row).ok()?;
-    Some(thread(found))
+    with_connection(config, Duration::from_secs(2), |connection| {
+        let columns = columns(connection)?;
+        let sql = format!(
+            "select {} from threads where id = ?1 collate nocase and archived = 0 and source in ('cli', 'vscode', 'exec') limit 1",
+            select_list(&columns)?
+        );
+        let found = connection.query_row(&sql, [id], row).ok()?;
+        Some(thread(found))
+    })
 }
 
 /// Whether this exact thread has a live catalog row, regardless of Codex's
-/// source label. Used for isolated fleet bindings and before resuming a
-/// registered native spawn; it must not broaden the
+/// source label. Used before resuming a registered native spawn; it must
+/// not broaden the
 /// person's injectable-session catalog exposed by [`read_one`].
 pub fn contains_unarchived(config: &CodexConfig, id: &str) -> Option<bool> {
     if !crate::relay::store::is_uuid(id) {
         return Some(false);
     }
-    let connection = open(config, Duration::from_secs(2))?;
-    let columns = columns(&connection)?;
-    if !["id", "archived"]
-        .iter()
-        .all(|column| columns.contains(*column))
-    {
-        return None;
-    }
-    connection
-        .query_row(
-            "select exists(select 1 from threads where id = ?1 collate nocase and archived = 0)",
-            [id],
-            |row| row.get(0),
-        )
-        .ok()
+    with_connection(config, Duration::from_secs(2), |connection| {
+        let columns = columns(connection)?;
+        if !["id", "archived"]
+            .iter()
+            .all(|column| columns.contains(*column))
+        {
+            return None;
+        }
+        connection
+            .query_row(
+                "select exists(select 1 from threads where id = ?1 collate nocase and archived = 0)",
+                [id],
+                |row| row.get(0),
+            )
+            .ok()
+    })
 }
 
 /// Those of `ids` whose catalog row says the thread is archived, read over
@@ -235,44 +317,46 @@ pub fn archived_ids<'a>(
     if ids.is_empty() {
         return HashSet::new();
     }
-    let Some(connection) = open(config, Duration::from_secs(2)) else {
-        return HashSet::new();
-    };
-    let has_columns = columns(&connection).is_some_and(|columns| {
-        ["id", "archived"]
+    with_connection(config, Duration::from_secs(2), |connection| {
+        let columns = columns(connection)?;
+        if !["id", "archived"]
             .iter()
             .all(|column| columns.contains(*column))
-    });
-    if !has_columns {
-        return HashSet::new();
-    }
-    let Ok(mut statement) = connection.prepare(
-        "select exists(select 1 from threads where id = ?1 collate nocase and archived != 0)",
-    ) else {
-        return HashSet::new();
-    };
-    ids.into_iter()
-        .filter(|id| statement.query_row([id], |row| row.get(0)).unwrap_or(false))
-        .map(str::to_string)
-        .collect()
+        {
+            return None;
+        }
+        let mut statement = connection
+            .prepare_cached(
+                "select exists(select 1 from threads where id = ?1 collate nocase and archived != 0)",
+            )
+            .ok()?;
+        Some(
+            ids.into_iter()
+                .filter(|id| statement.query_row([id], |row| row.get(0)).unwrap_or(false))
+                .map(str::to_string)
+                .collect(),
+        )
+    })
+    .unwrap_or_default()
 }
 
 /// The thread's recorded rollout path.
 pub fn rollout_column(config: &CodexConfig, id: &str) -> Option<String> {
-    let connection = open(config, Duration::from_secs(2))?;
-    connection
-        .query_row(
-            "select rollout_path from threads where id = ?1 collate nocase",
-            [id],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .ok()
-        .flatten()
-        .filter(|path| !path.is_empty())
+    with_connection(config, Duration::from_secs(2), |connection| {
+        connection
+            .query_row(
+                "select rollout_path from threads where id = ?1 collate nocase",
+                [id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+            .filter(|path| !path.is_empty())
+    })
 }
 
 /// Threads a relay-spawned worker runs open with the injected relay
-/// reminder; they belong in fleet views, not the person's session list.
+/// reminder; they belong to their spawn, not the person's session list.
 pub fn is_relay_spawned_title(title: &str) -> bool {
     title.trim().starts_with("<system-reminder>")
 }
@@ -363,6 +447,60 @@ pub(crate) mod tests {
         assert_eq!(read_recent(&config(home.path()), 40), None);
     }
 
+    /// A discovery read waiting out Codex's write lock on one database
+    /// delays no read of another.
+    #[test]
+    fn a_read_waiting_on_a_write_lock_delays_no_other_read() {
+        let held = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let db = seed(held.path(), "delete");
+        let _other = seed(other.path(), "delete");
+        // Both connections are kept before the lock is taken.
+        assert!(read_recent(&config(held.path()), 40).is_some());
+        assert!(read_one(&config(other.path()), THREAD).is_some());
+        db.execute_batch("begin exclusive").unwrap();
+        let blocked = config(held.path());
+        let waiting = std::thread::spawn(move || read_recent(&blocked, 40));
+        std::thread::sleep(Duration::from_millis(200));
+        let started = std::time::Instant::now();
+        assert!(read_one(&config(other.path()), THREAD).is_some());
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
+        db.execute_batch("commit").unwrap();
+        assert!(waiting.join().unwrap().is_some());
+    }
+
+    /// Without a file identity (Windows) nothing is kept between reads.
+    #[cfg(not(unix))]
+    #[test]
+    fn a_database_without_a_file_identity_is_not_kept() {
+        let home = tempfile::tempdir().unwrap();
+        let _db = seed(home.path(), "delete");
+        assert!(read_recent(&config(home.path()), 40).is_some());
+        assert!(!kept().contains_key(&database(&config(home.path()))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn idle_and_deleted_databases_are_closed() {
+        let gone = tempfile::tempdir().unwrap();
+        let idle = tempfile::tempdir().unwrap();
+        let _gone = seed(gone.path(), "delete");
+        let _idle = seed(idle.path(), "delete");
+        assert!(read_recent(&config(gone.path()), 40).is_some());
+        assert!(read_recent(&config(idle.path()), 40).is_some());
+        let kept_for = |home: &Path| kept().contains_key(&database(&config(home)));
+        assert!(kept_for(gone.path()) && kept_for(idle.path()));
+        std::fs::remove_file(database(&config(gone.path()))).unwrap();
+        assert!(!kept_for(gone.path()), "a deleted database is closed");
+        assert!(kept_for(idle.path()));
+        sweep(&mut kept(), Duration::ZERO);
+        assert!(!kept_for(idle.path()), "an idle connection is closed");
+    }
+
     // CodexDiscoveryTests.testWaitsOutAWriteLock.
     #[test]
     fn waits_out_a_write_lock() {
@@ -432,12 +570,12 @@ pub(crate) mod tests {
         assert_eq!(
             contains_unarchived(&config, "10000000-0000-0000-0000-000000000003"),
             Some(true),
-            "fleet binding recognizes an exact unarchived row with any source"
+            "an exact unarchived row is recognized with any source"
         );
         assert_eq!(
             contains_unarchived(&config, "10000000-0000-0000-0000-000000000002"),
             Some(false),
-            "archived rows are never live fleet evidence"
+            "archived rows are never live"
         );
         assert_eq!(
             archived_ids(

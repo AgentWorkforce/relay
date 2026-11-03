@@ -167,6 +167,7 @@ impl Core {
         &self,
         session: &ConnectSession,
     ) -> Result<Vec<RosterEntry>, OutboundError> {
+        self.wake_connect_inbox(session);
         let client = self.plugins.connect_cloud.clone();
         let connect_id = session.connect_id.clone();
         let token = session.token.clone();

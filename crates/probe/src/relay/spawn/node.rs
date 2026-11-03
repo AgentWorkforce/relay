@@ -34,6 +34,7 @@ use enrollment::{alternate, fingerprint, node_file, read, save};
 use enrollment::{load, Enrollment};
 
 use super::wire::{self, Advertisement, HarnessId, InventoryAgent, Invoke, NodeIdentity};
+use crate::relay::contract::plan::PlanLimitExceeded;
 use crate::relay::push::{backoff, random_jitter};
 use crate::relay::sdk_gaps;
 use crate::relay::state::{SpawnState, SpawnStatus};
@@ -226,6 +227,8 @@ enum Ended {
     Closed(String),
     /// Trying again cannot help: the node stops and says why.
     GaveUp(String),
+    /// Agent Relay refused to enroll this computer: the plan's device cap.
+    Refused(PlanLimitExceeded),
 }
 
 async fn run(
@@ -236,7 +239,9 @@ async fn run(
 ) {
     // The name the node is enrolled under, once it is: an alternate of the
     // configured one when another node holds that.
-    let status = |state: SpawnState, error: Option<String>| SpawnStatus {
+    let status = |state: SpawnState,
+                  error: Option<String>,
+                  plan_limit: Option<PlanLimitExceeded>| SpawnStatus {
         state,
         node_name: Some(load(&config).map_or_else(|| config.node_name.clone(), |e| e.node_name)),
         harnesses: config
@@ -249,11 +254,12 @@ async fn run(
         // The host adds what it knows of every harness.
         harness_descriptors: None,
         claim: None,
+        plan_limit,
     };
     let mut attempt = 0u32;
     loop {
-        host.state(status(SpawnState::Connecting, None));
-        let reason = match connect_once(
+        host.state(status(SpawnState::Connecting, None, None));
+        let (reason, plan_limit) = match connect_once(
             &config,
             host.as_ref(),
             &mut stopped,
@@ -263,9 +269,10 @@ async fn run(
         .await
         {
             Ended::Stopped => break,
-            Ended::Closed(reason) => reason,
+            Ended::Closed(reason) => (reason, None),
+            Ended::Refused(limit) => (limit.message(), Some(limit)),
             Ended::GaveUp(reason) => {
-                host.state(status(SpawnState::Off, Some(reason)));
+                host.state(status(SpawnState::Off, Some(reason), None));
                 let _ = stopped.changed().await;
                 break;
             }
@@ -275,7 +282,7 @@ async fn run(
         }
         attempt += 1;
         let delay = Duration::from_secs_f64(backoff(attempt, random_jitter()));
-        host.state(status(SpawnState::Waiting, Some(reason)));
+        host.state(status(SpawnState::Waiting, Some(reason), plan_limit));
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
             _ = stopped.changed() => break,
@@ -294,7 +301,8 @@ async fn open(
         .parse()
         .map_err(|_| tungstenite::Error::Url(tungstenite::error::UrlError::NoHostName))?;
     request.headers_mut().insert("Authorization", bearer);
-    match tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(request)).await {
+    let connect = crate::relay::websocket_tls::connect(request, None);
+    match tokio::time::timeout(CONNECT_TIMEOUT, connect).await {
         Ok(connected) => connected.map(|(socket, _)| socket),
         Err(_) => Err(tungstenite::Error::Io(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
@@ -319,6 +327,7 @@ async fn connect_once(
         Ok(Some(enrollment)) => enrollment,
         Ok(None) => match enroll_named(config, None).await {
             Ok(enrollment) => enrollment,
+            Err(Refused::PlanLimit(limit)) => return Ended::Refused(limit),
             Err(Refused::NoName(reason)) => return Ended::GaveUp(reason),
             Err(refused) => return Ended::Closed(refused.reason()),
         },
@@ -330,6 +339,7 @@ async fn connect_once(
             let refused = "Agent Relay refused this computer's spawn node.";
             return match rotate(config, &enrollment).await {
                 Ok(_) => Ended::Closed(refused.into()),
+                Err(Refused::PlanLimit(limit)) => Ended::Refused(limit),
                 Err(Refused::NoName(reason)) => Ended::GaveUp(format!("{refused} {reason}")),
                 Err(reason) => Ended::Closed(format!("{refused} {}", reason.reason())),
             };
@@ -392,6 +402,7 @@ async fn connect_once(
         slots: None,
         harness_descriptors: None,
         claim: None,
+        plan_limit: None,
     });
     let (outgoing, mut queued) = mpsc::unbounded_channel();
     let link = NodeLink {
@@ -800,6 +811,47 @@ mod tests {
         assert!(requests[0].contains("x-relaycast-node-token: nt_live_x"));
         assert!(requests[0].contains("\"node_id\":\"node_desktop_1\""));
         assert_eq!(load(&config).unwrap().node_id, "node_desktop_1");
+    }
+
+    #[tokio::test]
+    async fn a_new_node_past_the_plans_device_cap_is_refused_with_the_cap() {
+        use crate::relay::contract::plan::PlanLimitKind;
+        use std::io::{Read, Write};
+        let folder = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            while !String::from_utf8_lossy(&request).contains("\r\n\r\n{") {
+                let read = stream.read(&mut buffer).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let body = r#"{"ok":false,"error":{"code":"plan_limit_exceeded","message":"Device limit reached","limit":"devices","max":5,"current":5,"plan":"intro","upgrade_url":"https://agentrelay.com/cloud/dashboard/settings#billing"}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            String::from_utf8_lossy(&request).into_owned()
+        });
+        let config = NodeConfig {
+            base_url,
+            ..config(folder.path())
+        };
+        let Err(Refused::PlanLimit(limit)) = enroll_named(&config, None).await else {
+            panic!("the device cap is the refusal");
+        };
+        assert_eq!(limit.limit, PlanLimitKind::Devices);
+        assert_eq!((limit.max, limit.current), (5, 5));
+        // Not retried under another name, and nothing is saved.
+        assert!(server.join().unwrap().starts_with("POST /v1/nodes "));
+        assert_eq!(read(&config), None);
     }
 
     #[tokio::test]

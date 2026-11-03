@@ -305,7 +305,7 @@ pub(crate) struct Results {
 
 impl Results {
     #[cfg(test)]
-    pub(crate) fn new(timing: Timing) -> Results {
+    pub fn new(timing: Timing) -> Results {
         Results {
             timing,
             ..Results::default()

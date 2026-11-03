@@ -11,7 +11,21 @@ const LABEL: &str = "com.ai-hist.push";
 const CRON_MARKER: &str = "# ai-hist push (managed)";
 const OUTPUT_CAP: u64 = 1024 * 1024;
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+/// Every label `MigrationStatus::jobs` can carry: a closed vocabulary, so the
+/// labels may cross into status and telemetry. Keep it in step with
+/// `relay::contract::account::LegacyScheduleJob`.
+pub const JOB_CODES: [&str; 8] = [
+    "launchd-plist",
+    "launchd-loaded",
+    "managed-cron",
+    "launchd-plist-status-unknown",
+    "launchd-status-unknown",
+    "cron-status-unknown",
+    "home-unavailable",
+    "legacy-installer-unsupported",
+];
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationStatus {
     pub state: &'static str,
@@ -222,6 +236,65 @@ mod tests {
             stderr: stderr.into(),
         })
     }
+    /// Every label `inspect` can push, on every OS path and outcome, is in
+    /// the closed vocabulary.
+    #[test]
+    fn every_job_label_is_in_the_vocabulary() {
+        let mut seen = std::collections::BTreeSet::new();
+        let home = tempfile::tempdir().unwrap();
+        let unreadable = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let agents = unreadable.path().join("Library/LaunchAgents");
+            fs::create_dir_all(&agents).unwrap();
+            fs::set_permissions(&agents, fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let plist = tempfile::tempdir().unwrap();
+        let agents = plist.path().join("Library/LaunchAgents");
+        fs::create_dir_all(&agents).unwrap();
+        fs::write(agents.join("com.ai-hist.push.plist"), "").unwrap();
+        let loaded = || output(true, "- 0 com.ai-hist.push\n", "");
+        let cron = || output(true, "* * * * * ai-hist push # ai-hist push (managed)", "");
+        for os in ["macos", "linux", "windows"] {
+            for root in [home.path(), unreadable.path(), plist.path()] {
+                for (launchctl, crontab) in [
+                    (loaded(), cron()),
+                    (CommandInspection::Failed, CommandInspection::Failed),
+                ] {
+                    let (mut launchctl, mut crontab) = (Some(launchctl), Some(crontab));
+                    let status = inspect(root, os, |program, _| {
+                        if program.contains("launchctl") {
+                            launchctl.take().unwrap()
+                        } else {
+                            crontab.take().unwrap()
+                        }
+                    });
+                    seen.extend(status.jobs);
+                }
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let agents = unreadable.path().join("Library/LaunchAgents");
+            fs::set_permissions(&agents, fs::Permissions::from_mode(0o755)).unwrap();
+            // Root reads a 0o000 directory anyway, so only a non-root run
+            // exercises the unreadable case; there it must answer it.
+            if crate::relay::peer::current_uid() != 0 {
+                assert!(
+                    seen.contains("launchd-plist-status-unknown"),
+                    "the unreadable LaunchAgents fixture was not reported: {seen:?}"
+                );
+            }
+        }
+        // `status`'s own early answers.
+        seen.extend(["legacy-installer-unsupported", "home-unavailable"]);
+        for job in &seen {
+            assert!(JOB_CODES.contains(job), "{job} is not in JOB_CODES");
+        }
+    }
+
     #[test]
     fn clear_when_no_plist_loaded_label_or_active_managed_cron() {
         let home = tempfile::tempdir().unwrap();

@@ -239,7 +239,12 @@ fn upload_keys_match_the_uploaders_session_keys() {
             Some(format!("devin:{id}"))
         );
     }
-    for kind in [SessionKind::OpenClaw, SessionKind::Hermes, SessionKind::Pi] {
+    for kind in [
+        SessionKind::OpenClaw,
+        SessionKind::Hermes,
+        SessionKind::Pi,
+        SessionKind::Omp,
+    ] {
         assert_eq!(Target::new(kind, "agent").upload_key(), None);
     }
 }
@@ -422,6 +427,11 @@ fn settings_default_to_self_registration_on_and_auto_activation_off() {
     assert_eq!(store.agent_led_defaults_applied, Some(true));
     let restored = Store::decode(&store.encode(), PREFIX).unwrap().store;
     assert_eq!(restored, store);
+    let mut opted_out = restored;
+    opted_out.auto_activate = Some(false);
+    let restored = Store::decode(&opted_out.encode(), PREFIX).unwrap().store;
+    assert!(!restored.auto_activates());
+    assert_eq!(restored, opted_out);
 }
 
 #[test]
@@ -793,11 +803,15 @@ fn a_store_saved_by_the_first_macos_build_still_loads() {
 #[test]
 fn a_sign_in_key_stored_by_2026_09_5_moves_to_the_account() {
     let decoded = Store::decode(
-        br#"{"registrations":[],"tokens":{},"injectedDeliveryIDs":[],"workspaceKey":"rk_live_signin","workspaceKeySource":"your Agent Relay sign-in","workspaceBaseURL":"https://cast.agentrelay.com"}"#,
+        br#"{"registrations":[],"tokens":{},"injectedDeliveryIDs":[],"workspaceKey":"rk_live_signin","workspaceKeySource":"your Agent Relay sign-in","workspaceBaseURL":"https://cast.agentrelay.com","archivedSessionKeys":["claude-cloud:session_019a7SvoqfvBg4Z6zbjanBat"]}"#,
         PREFIX,
     )
     .unwrap();
     assert!(decoded.migrated);
+    assert!(decoded
+        .store
+        .complete_archived_keys()
+        .contains("claude:cse_019a7SvoqfvBg4Z6zbjanBat"));
     let cloud = decoded.store.cloud.unwrap();
     assert_eq!(cloud.key, token("rk_live_signin"));
     assert_eq!(cloud.base_url, "https://cast.agentrelay.com");
@@ -1561,6 +1575,36 @@ fn an_archived_registration_is_marked_and_recorded_once() {
         round_trip.registrations[0].archived_at,
         registration.archived_at
     );
+}
+
+#[test]
+fn an_archived_claude_cloud_session_keeps_app_and_web_row_keys() {
+    let id = "session_019a7SvoqfvBg4Z6zbjanBat";
+    let web_id = "cse_019a7SvoqfvBg4Z6zbjanBat";
+    let mut store = Store {
+        registrations: vec![registration(
+            "claude-web",
+            Target::new(SessionKind::ClaudeCloud, id),
+        )],
+        ..Store::default()
+    };
+    assert!(store.mark_archived("claude-web", PREFIX, "2026-10-10T12:00:00Z"));
+    let keys = store.complete_archived_keys();
+    assert!(keys.contains(&format!("claude-cloud:{id}")));
+    assert!(keys.contains(&format!("claude:{web_id}")));
+    let decoded = decode(&String::from_utf8(store.encode()).unwrap());
+    assert_eq!(decoded.complete_archived_keys(), keys);
+
+    let legacy = serde_json::json!({
+        "archivedSessionKeys": [format!("claude-cloud:{id}")]
+    });
+    let legacy = Store::decode(legacy.to_string().as_bytes(), PREFIX)
+        .unwrap()
+        .store;
+    let first = legacy.complete_archived_keys();
+    let second = legacy.complete_archived_keys();
+    assert!(first.contains(&format!("claude:{web_id}")));
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
 }
 
 #[test]

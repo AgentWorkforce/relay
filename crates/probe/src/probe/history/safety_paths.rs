@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn unchanged_native_safety_paths_do_not_rehydrate_or_publish() {
-        let Some(home)=crate::live::tests::isolated_home("history::safety_paths::tests::unchanged_native_safety_paths_do_not_rehydrate_or_publish") else{return};
+        let Some(home)=crate::probe::live::tests::isolated_home("probe::history::safety_paths::tests::unchanged_native_safety_paths_do_not_rehydrate_or_publish") else{return};
         let store = open(&home.join("probe/history.db")).unwrap();
         let project = home.join(".claude/projects/native");
         std::fs::create_dir_all(&project).unwrap();
@@ -108,9 +108,9 @@ mod tests {
             .map(|n| {
                 let id = format!("native-{n}");
                 let path = project.join(format!("{id}.jsonl"));
-                crate::live::tests::append(
+                crate::probe::live::tests::append(
                     &path,
-                    &crate::live::tests::transcript_line(&id, "first"),
+                    &crate::probe::live::tests::transcript_line(&id, "first"),
                 );
                 path
             })
@@ -241,7 +241,7 @@ mod tests {
             .open(&paths[0])
             .unwrap();
         writer
-            .write_all(crate::live::tests::transcript_line("native-0", "second").as_bytes())
+            .write_all(crate::probe::live::tests::transcript_line("native-0", "second").as_bytes())
             .unwrap();
         writer.flush().unwrap();
         let report = safety
@@ -269,7 +269,7 @@ mod tests {
         assert_eq!(events(), 2);
         assert_eq!(checkpoints(), 1);
         writer
-            .write_all(crate::live::tests::transcript_line("native-0", "third").as_bytes())
+            .write_all(crate::probe::live::tests::transcript_line("native-0", "third").as_bytes())
             .unwrap();
         writer.flush().unwrap();
         safety

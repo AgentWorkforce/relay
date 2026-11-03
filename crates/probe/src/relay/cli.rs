@@ -15,6 +15,12 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::time::Duration;
 
+mod socket_request;
+
+pub use socket_request::socket_request;
+#[cfg(test)]
+use socket_request::socket_request_allowed;
+
 /// Sends `hello` then `method` with `params`, and returns the result.
 pub fn call(
     socket: Option<&Path>,
@@ -77,71 +83,6 @@ pub fn call(
         request(1, "hello", json!({"bridge_version": BRIDGE_VERSION}))?;
     }
     request(2, method, params)
-}
-
-/// A small socket client for session-scoped requests, for people and
-/// debugging. Apple's /usr/bin/curl does not expose CODEX_THREAD_ID to
-/// KERN_PROCARGS2; this executable does, so the core can identify its
-/// calling thread. No sandbox or permission rule allows it: it can reach
-/// setting and registration routes, so the hints a session is handed name
-/// the self-limiting commands in `session_cli` instead.
-fn socket_request_allowed(method: &str, path: &str) -> bool {
-    if path.bytes().any(|byte| byte <= b' ' || byte == 0x7f) {
-        return false;
-    }
-    match method {
-        "POST" => {
-            path == "/send"
-                || path.starts_with("/send?")
-                || path.starts_with("/attachments/fetch?file_id=")
-                || path == "/connect/send"
-                || path.starts_with("/connect/send?")
-                || path.starts_with("/channels/subscribe?channel=")
-                || matches!(
-                    path,
-                    "/register" | "/connect/leave" | "/integrations/subscribe"
-                )
-        }
-        "GET" => {
-            path.starts_with("/messages?ref=")
-                || matches!(
-                    path,
-                    "/agents" | "/setup/status" | "/whoami" | "/connect/status" | "/settings"
-                )
-        }
-        "PATCH" => path == "/settings",
-        "DELETE" => {
-            path.starts_with("/channels/subscribe?channel=")
-                || matches!(
-                    path,
-                    "/register" | "/integrations/subscribe" | "/connect/join"
-                )
-        }
-        _ => false,
-    }
-}
-
-/// `relay socket-request`: `body` is the request body (`--body`); without
-/// it a POST, DELETE or PATCH reads its body from standard input.
-pub fn socket_request(socket: &Path, method: &str, path: &str, body: Option<&str>) -> Result<()> {
-    if !socket_request_allowed(method, path) {
-        return Err(SafeError("Unsupported relay socket request.".into()).into());
-    }
-    let sends_body = matches!(method, "POST" | "DELETE" | "PATCH");
-    let body = match body {
-        Some(_) if !sends_body => {
-            return Err(SafeError(format!("A {method} request takes no --body.")).into());
-        }
-        Some(body) => body.as_bytes().to_vec(),
-        None => {
-            let mut body = Vec::new();
-            if sends_body {
-                std::io::stdin().read_to_end(&mut body)?;
-            }
-            body
-        }
-    };
-    socket_exchange(socket, method, path, &body, socket_request_timeout(path))
 }
 
 /// `relay read <ref>`: prints a relayed message this session was handed as a
@@ -499,7 +440,7 @@ pub fn cursor_hook(development: bool, wait: bool) -> Result<()> {
     Ok(())
 }
 
-fn session_hook_socket(socket: Option<&Path>, development: bool) -> Option<std::path::PathBuf> {
+pub fn session_hook_socket(socket: Option<&Path>, development: bool) -> Option<std::path::PathBuf> {
     match socket {
         Some(socket) => Some(socket.to_path_buf()),
         None => pointed_socket(&paths::home().ok()?, development).ok(),
@@ -832,6 +773,12 @@ mod tests {
             ("POST", "/connect/leave"),
             ("POST", "/integrations/subscribe"),
             ("DELETE", "/integrations/subscribe"),
+            ("POST", "/setup/sign-in"),
+            ("POST", "/setup/sharing"),
+            ("POST", "/setup/auto-activate"),
+            ("POST", "/setup/direct-delivery"),
+            ("POST", "/webhooks"),
+            ("DELETE", "/webhooks"),
             ("GET", "/agents"),
             ("GET", "/setup/status"),
             ("GET", "/whoami"),
@@ -846,6 +793,11 @@ mod tests {
         }
         for (method, path) in [
             ("GET", "/setup/sign-in"),
+            ("GET", "/setup/sharing"),
+            ("POST", "/setup/sign-in?extra=1"),
+            ("POST", "/setup/status"),
+            ("GET", "/webhooks"),
+            ("PATCH", "/webhooks"),
             ("POST", "/attachments/fetch"),
             ("GET", "/messages"),
             ("POST", "/messages?ref=0123456789ab"),

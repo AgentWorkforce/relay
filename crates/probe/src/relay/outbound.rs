@@ -25,8 +25,8 @@
 //! a sender, a process outside every supported session and another user are
 //! refused, and each session may make 30 requests a minute. No key or token
 //! appears in a route's answer, except a webhook's secret, once, to the
-//! session that created it. See docs/injectable-agents.md ("Sending from a
-//! session") and docs/agent-driven-setup.md.
+//! session that created it. See "The relay-send socket" in
+//! docs/relay-core.md.
 
 use crate::relay::activity::publication::roster_rows;
 use crate::relay::client;
@@ -37,7 +37,6 @@ use crate::relay::links::Endpoint;
 use crate::relay::peer::current_uid;
 use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::sdk_gaps;
-use crate::relay::session_cli::{Recipient, SessionCommand};
 use crate::relay::sessions::{CallerMiss, DiscoveredSession, UnreadableSessionFile};
 use crate::relay::setup::{DirectDelivery, Setup};
 use crate::relay::state::now_ms;
@@ -57,18 +56,32 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub mod channels;
-mod codex_hook;
 mod connect_send;
 pub(crate) mod fetch;
+mod hints;
+mod hooks;
 mod http;
 mod mobile_handoff;
 mod mobile_handoff_permission;
 mod mobile_handoff_result;
 mod send_files;
+mod session_routes;
 mod settings;
+mod socket_path;
 use connect_send::ConnectSendKey;
-use http::{connection, payload};
+pub use hints::shell_quote;
+pub use hints::{fetch_hint, reply_hint};
+pub(crate) use hints::{
+    probe_session_command, probe_socket_command, probe_socket_command_with_body, query_encode,
+};
+use http::connection;
+pub use http::payload;
 use send_files::{requested_files, upload_files};
+pub use session_routes::SESSION_ROUTES;
+pub(crate) use socket_path::is_development;
+#[cfg(test)]
+use socket_path::socket_for;
+pub use socket_path::{default_socket, pointer_path};
 
 pub const SOCKET_NAME: &str = "relay.sock";
 /// The largest request body.
@@ -118,74 +131,6 @@ pub fn prefers_probe_client(kind: SessionKind) -> bool {
     matches!(kind, SessionKind::ClaudeTerminal | SessionKind::ClaudeCloud)
 }
 
-/// Where the relay-send socket lives.
-///
-/// Linux: `$XDG_RUNTIME_DIR/agent-relay/relay.sock`, private to this user
-/// and cleared at logout; without a runtime directory, `<app data>/run`.
-/// macOS: `<app data>/run/relay.sock`, else a short per-user directory under
-/// `$TMPDIR` (then `/tmp`) when that path is too long for a Unix socket.
-/// Windows: `<app data>/run/relay.sock`, the key of its named pipe.
-/// Agent Relay Dev (an app data directory ending `.dev`) has its own socket
-/// in every location.
-pub fn default_socket(
-    env: &dyn Fn(&str) -> Option<String>,
-    app_data_dir: &Path,
-    uid: u32,
-) -> PathBuf {
-    socket_for(cfg!(target_os = "linux"), env, app_data_dir, uid)
-}
-
-fn socket_for(
-    linux: bool,
-    env: &dyn Fn(&str) -> Option<String>,
-    app_data_dir: &Path,
-    uid: u32,
-) -> PathBuf {
-    let directory = if is_development(app_data_dir) {
-        "agent-relay-dev"
-    } else {
-        "agent-relay"
-    };
-    let preferred = app_data_dir.join("run").join(SOCKET_NAME);
-    if linux {
-        return match env("XDG_RUNTIME_DIR").filter(|value| !value.trim().is_empty()) {
-            Some(runtime) => Path::new(runtime.trim()).join(directory).join(SOCKET_NAME),
-            None => preferred,
-        };
-    }
-    if fits_unix_socket(&preferred) {
-        return preferred;
-    }
-    let short = format!("{directory}-{uid}");
-    let temporary = env("TMPDIR")
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| Path::new(value.trim()).join(&short).join(SOCKET_NAME));
-    match temporary {
-        Some(path) if fits_unix_socket(&path) => path,
-        _ => Path::new("/tmp").join(short).join(SOCKET_NAME),
-    }
-}
-
-/// `~/.agentworkforce/desktop/relay-socket`: the socket's path plus a
-/// newline, for clients outside the core. Agent Relay Dev (an app data
-/// directory ending `.dev`) writes `relay-socket.dev`, so the two builds
-/// never point sessions at each other.
-pub fn pointer_path(home: &Path, app_data_dir: &Path) -> PathBuf {
-    let name = if is_development(app_data_dir) {
-        "relay-socket.dev"
-    } else {
-        "relay-socket"
-    };
-    home.join(".agentworkforce/desktop").join(name)
-}
-
-fn is_development(app_data_dir: &Path) -> bool {
-    app_data_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.ends_with(".dev"))
-}
-
 /// How the core serves the relay-send socket.
 pub struct RelaySend {
     pub socket: PathBuf,
@@ -211,194 +156,6 @@ impl ServingPath {
 
     fn set(&self, path: Option<PathBuf>) {
         *self.0.lock().unwrap() = path;
-    }
-}
-
-/// The line an injected message carries so the session can answer beneath
-/// it, and find other participants. The recipient comes from the sender,
-/// so it is percent-encoded and every argument shell-quoted: a name cannot
-/// break out of the suggested command.
-pub fn reply_hint(
-    socket: &Path,
-    to: Option<&str>,
-    address: Option<&str>,
-    reply_to: &str,
-    kind: SessionKind,
-    needs_probe: bool,
-) -> Option<String> {
-    let (key, recipient) = match (to, address) {
-        (Some(to), None) => ("to", to),
-        (None, Some(address)) => ("address", address),
-        _ => return None,
-    };
-    if reply_to.is_empty() {
-        return None;
-    }
-    let path = socket.to_str()?;
-    let request_path = format!(
-        "/send?{key}={}&reply_to={}",
-        query_encode(recipient),
-        query_encode(reply_to)
-    );
-    if probe_client(needs_probe) || prefers_probe_client(kind) {
-        let probe = (|| {
-            let recipient = match key {
-                "to" => Recipient::To(recipient.to_string()),
-                _ => Recipient::Address(recipient.to_string()),
-            };
-            let reply = SessionCommand::Send {
-                recipient,
-                reply_to: Some(reply_to.to_string()),
-                thread: None,
-            };
-            let send = probe_session_command(socket, &reply, Some("your reply"))?;
-            let agents = probe_session_command(socket, &SessionCommand::Agents, None)?;
-            Some(format!("[reply: {send}]\n[agents: {agents}]"))
-        })();
-        // Only where curl cannot reach the socket is there no fallback.
-        if probe.is_some() || probe_client(needs_probe) {
-            return probe;
-        }
-    }
-    let url = format!("http://relay{request_path}");
-    let send = [
-        "curl",
-        "-s",
-        "--unix-socket",
-        path,
-        &url,
-        "--data-binary",
-        "your reply",
-    ];
-    let agents = ["curl", "-s", "--unix-socket", path, "http://relay/agents"];
-    let quoted = |parts: &[&str]| {
-        parts
-            .iter()
-            .map(|p| shell_quote(p))
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    Some(format!(
-        "[reply: {}]\n[agents: {}]",
-        quoted(&send),
-        quoted(&agents)
-    ))
-}
-
-/// The command a session runs to fetch an attachment it could not get in
-/// time, through `POST /attachments/fetch` on the session socket. Built like
-/// [`reply_hint`]: the probe on macOS where Apple's curl hides the session's
-/// environment, curl elsewhere; the id was checked to be a plain token.
-pub fn fetch_hint(
-    socket: &Path,
-    file_id: &str,
-    kind: SessionKind,
-    needs_probe: bool,
-) -> Option<String> {
-    let path = socket.to_str()?;
-    let request_path = format!("/attachments/fetch?file_id={}", query_encode(file_id));
-    if probe_client(needs_probe) || prefers_probe_client(kind) {
-        let fetch = SessionCommand::FetchAttachment {
-            file_id: file_id.to_string(),
-        };
-        let probe = probe_session_command(socket, &fetch, None);
-        if probe.is_some() || probe_client(needs_probe) {
-            return probe;
-        }
-    }
-    let url = format!("http://relay{request_path}");
-    Some(
-        ["curl", "-s", "-X", "POST", "--unix-socket", path, &url]
-            .iter()
-            .map(|p| shell_quote(p))
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
-}
-
-/// `command` through the current probe executable, as a hint names it: one
-/// of the self-limiting session commands (`session_cli`) that Codex's
-/// sandbox rules and Claude Code's permission rules allow.
-pub(crate) fn probe_session_command(
-    socket: &Path,
-    command: &SessionCommand,
-    body: Option<&str>,
-) -> Option<String> {
-    command.command_line(&fetch::probe_executable()?, socket, body)
-}
-
-/// `relay socket-request` through the current probe executable, whose
-/// environment remains inspectable on macOS when Apple's system curl does
-/// not expose CODEX_THREAD_ID or AGENT_RELAY_OPENCODE_SESSION. For a route
-/// no session command serves (`/register`, `/whoami`, a channel
-/// subscription); no rule allows it, so it asks.
-pub(crate) fn probe_socket_command(socket: &Path, method: &str, path: &str) -> Option<String> {
-    probe_command(socket, method, path, None)
-}
-
-/// [`probe_socket_command`] with its request body as `--body`.
-pub(crate) fn probe_socket_command_with_body(
-    socket: &Path,
-    method: &str,
-    path: &str,
-    body: &str,
-) -> Option<String> {
-    probe_command(socket, method, path, Some(body))
-}
-
-fn probe_command(socket: &Path, method: &str, path: &str, body: Option<&str>) -> Option<String> {
-    probe_command_for(&fetch::probe_executable()?, socket, method, path, body)
-}
-
-/// [`probe_command`] through `executable`.
-pub(crate) fn probe_command_for(
-    executable: &Path,
-    socket: &Path,
-    method: &str,
-    path: &str,
-    body: Option<&str>,
-) -> Option<String> {
-    let mut parts = vec![
-        executable.to_str()?,
-        "relay",
-        "socket-request",
-        "--socket",
-        socket.to_str()?,
-        "--method",
-        method,
-        "--path",
-        path,
-    ];
-    if let Some(body) = body {
-        parts.extend(["--body", body]);
-    }
-    Some(
-        parts
-            .iter()
-            .map(|part| shell_quote(part))
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
-}
-
-pub(crate) fn query_encode(value: &str) -> String {
-    let mut encoded = String::new();
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || b"-._~@".contains(&byte) {
-            encoded.push(byte as char);
-        } else {
-            encoded.push_str(&format!("%{byte:02X}"));
-        }
-    }
-    encoded
-}
-
-pub(crate) fn shell_quote(value: &str) -> String {
-    let safe = |c: char| c.is_ascii_alphanumeric() || "%+,-./:=@_".contains(c);
-    if !value.is_empty() && value.chars().all(safe) {
-        value.to_string()
-    } else {
-        format!("'{}'", value.replace('\'', "'\\''"))
     }
 }
 
@@ -428,7 +185,7 @@ impl OutboundError {
         )
     }
 
-    fn not_a_session() -> OutboundError {
+    pub fn not_a_session() -> OutboundError {
         OutboundError::new(
             403,
             "not_a_relay_session",
@@ -452,7 +209,7 @@ impl OutboundError {
         )
     }
 
-    fn not_registered() -> OutboundError {
+    pub fn not_registered() -> OutboundError {
         OutboundError::new(
             403,
             "not_a_relay_session",
@@ -538,7 +295,7 @@ fn transient(error: &OutboundError) -> bool {
 /// The routes' rules, apart from the socket, so they are tested without
 /// one: caller identification, admission, rate limits and the roster cache.
 pub struct Outbound {
-    pub(crate) core: Arc<Core>,
+    pub core: Arc<Core>,
     setup: Arc<Setup>,
     uid: u32,
     clock: Clock,
@@ -564,7 +321,7 @@ impl Request {
     }
 }
 
-enum Purpose {
+pub enum Purpose {
     Send,
     Register,
     Json,
@@ -586,43 +343,6 @@ fn connect_gone_error(code: &str, message: String) -> OutboundError {
         message,
     )
 }
-
-/// Every route the session socket serves ([`Outbound::handle`] and
-/// `mobile_handoff_route`), by method. A test reads the router's source and
-/// fails while this list and the router differ, so a new route is never left
-/// out of the sandbox-rule enumeration (`session_cli::ALLOWED_SUBCOMMANDS`
-/// and the probe's `codex_rules_reach_only_their_own_routes`).
-pub const SESSION_ROUTES: &[(&str, &str)] = &[
-    ("POST", "/connect/join"),
-    ("POST", "/connect/send"),
-    ("GET", "/connect/status"),
-    ("POST", "/connect/leave"),
-    ("GET", "/whoami"),
-    ("GET", "/agents"),
-    ("POST", "/attachments/fetch"),
-    ("GET", "/messages"),
-    ("POST", "/send"),
-    ("POST", "/register"),
-    ("POST", "/channels/subscribe"),
-    ("DELETE", "/channels/subscribe"),
-    ("DELETE", "/register"),
-    ("GET", "/settings"),
-    ("PATCH", "/settings"),
-    ("POST", "/codex/stop-hook"),
-    ("GET", "/setup/status"),
-    ("POST", "/setup/sign-in"),
-    ("POST", "/setup/sharing"),
-    ("POST", "/setup/auto-activate"),
-    ("POST", "/setup/direct-delivery"),
-    ("POST", "/webhooks"),
-    ("DELETE", "/webhooks"),
-    ("POST", "/integrations/subscribe"),
-    ("DELETE", "/integrations/subscribe"),
-    ("POST", "/claude/mobile-handoff/poll"),
-    ("POST", "/claude/mobile-handoff/ack"),
-    ("POST", "/claude/mobile-handoff/result"),
-    ("POST", "/claude/mobile-handoff/permission"),
-];
 
 impl Outbound {
     pub fn new(core: Arc<Core>, direct_delivery: Arc<dyn DirectDelivery>) -> Outbound {
@@ -683,9 +403,8 @@ impl Outbound {
             }
             ("DELETE", "/register") => self.unregister(pid, uid).await,
             ("GET" | "PATCH", "/settings") => self.settings_route(pid, uid, request).await,
-            ("POST", "/codex/stop-hook") => {
-                let fields = payload(request, Purpose::Json)?;
-                self.codex_stop_hook(pid, uid, &fields).await
+            ("POST", "/codex/stop-hook" | "/claude/attestation") => {
+                self.hook_route(pid, uid, request).await
             }
             ("GET", "/setup/status") => {
                 // The SessionStart hook only reads. Applying the agent-led
@@ -717,8 +436,8 @@ impl Outbound {
     }
 
     /// The supported live session the caller runs inside, registered or
-    /// not, fleet-owned or not.
-    async fn identify(&self, pid: i32, uid: u32) -> Result<DiscoveredSession, OutboundError> {
+    /// not.
+    pub async fn identify(&self, pid: i32, uid: u32) -> Result<DiscoveredSession, OutboundError> {
         if uid != self.uid {
             return Err(OutboundError::not_this_user());
         }
@@ -1076,6 +795,12 @@ impl Outbound {
                 message.message_id.as_deref(),
                 online,
             ));
+        }
+        // A reply can follow only once the message is out: wake the inbox
+        // again now, so a pass that ran between the roster read and the
+        // send does not leave the reply to the slow cadence.
+        if !sent.is_empty() {
+            self.core.wake_connect_inbox(&joined);
         }
         let offline: Vec<&str> = sent
             .iter()
@@ -1586,8 +1311,8 @@ impl Outbound {
         // This computer's agents are the registrations whose sessions the
         // delivery pass last found running (`missing_since` unset), and the
         // caller itself. Discovering every session here instead waited on
-        // the Codex app's owner discovery and the fleet's brokers, tens of
-        // seconds on a busy computer, on every request.
+        // the Codex app's owner discovery, tens of seconds on a busy
+        // computer, on every request.
         let local: HashMap<String, bool> = self.core.store.read(|store| {
             store
                 .registrations
@@ -2258,9 +1983,13 @@ mod tests {
             if !path.starts_with("\"/") {
                 continue;
             }
-            let path = path.trim_matches('"').to_string();
-            for method in methods.split('|') {
-                routes.push((method.trim().trim_matches('"').to_string(), path.clone()));
+            // An arm can match several paths (`"/a" | "/b"`), as it can
+            // several methods.
+            for path in path.split('|') {
+                let path = path.trim().trim_matches('"').to_string();
+                for method in methods.split('|') {
+                    routes.push((method.trim().trim_matches('"').to_string(), path.clone()));
+                }
             }
         }
         routes
@@ -2284,7 +2013,7 @@ mod tests {
             .collect();
         listed.sort();
         assert_eq!(served, listed);
-        assert!(listed.len() >= 29, "{listed:?}");
+        assert!(listed.len() >= 30, "{listed:?}");
     }
 
     #[tokio::test]
@@ -2322,6 +2051,17 @@ mod tests {
             socket_for(true, &|_| None, app, 1000),
             app.join("run/relay.sock")
         );
+        // A runtime directory too long for a Unix socket is not used. Windows
+        // names a pipe, so every path fits there.
+        #[cfg(not(windows))]
+        {
+            let long =
+                |key: &str| (key == "XDG_RUNTIME_DIR").then(|| format!("/{}", "r".repeat(120)));
+            assert_eq!(
+                socket_for(true, &long, app, 1000),
+                app.join("run/relay.sock")
+            );
+        }
     }
 
     // OutboundTests.testLongSupportPathFallsBackToTemporaryDirectory.

@@ -53,7 +53,7 @@ pub(super) fn session_rows_selected_cached_within(
     // Positions first: a batch prepared after this is among the pending
     // batches read next, or its changes are still ahead of these positions.
     let positions = delivery::upload_positions(&conn, &config.job_id)?;
-    let store = crate::history::open_read(&directory.join("history.db"))?;
+    let store = crate::probe::history::open_read(&directory.join("history.db"))?;
     let sessions = candidate_sessions(directory, &store, limit, keys)?;
     let mut listed = Vec::new();
     for ranked in rank_sessions(sessions, limit, &store) {
@@ -252,7 +252,7 @@ fn candidate_sessions(
                 Ok(ai_hist::SessionRef::id(source, &key.session_id))
             })
             .collect::<Result<Vec<_>>>()?;
-        let forgotten = crate::session_reset::baseline()?;
+        let forgotten = crate::probe::session_reset::baseline()?;
         // include_text retains the catalog's bounded title excerpts; kinds=[]
         // prevents reading transcript/evidence tables for this metadata lookup.
         let mut query = ai_hist::SessionQuery::default();
@@ -275,7 +275,7 @@ fn candidate_sessions(
             })
             .collect()
     } else {
-        crate::history::catalog(
+        crate::probe::history::catalog(
             &store,
             ai_hist::SessionScope::All,
             recency_candidate_limit(limit),

@@ -43,7 +43,7 @@ pub(crate) struct Permission {
 }
 
 impl Permission {
-    pub(crate) fn new(
+    pub fn new(
         binding: Binding,
         target: Target,
         runtime: Runtime,

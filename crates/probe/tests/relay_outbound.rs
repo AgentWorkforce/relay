@@ -2,683 +2,17 @@
 //! sessions identified by (fake) kernel evidence send as themselves, list
 //! the workspace, put themselves on the relay and run agent-led setup. No
 //! broker, PTY runtime or agent harness is ever started.
-
+use agent_relay_probe::relay::test_account::TestAccount;
 mod support {
     pub mod bridge;
     pub mod fake_relaycast;
 }
 
-use agent_relay_probe::relay::account::Account;
-use agent_relay_probe::relay::cloud_session::CloudAccess;
-use agent_relay_probe::relay::codex::stop_hook::StopHookInbox;
-use agent_relay_probe::relay::connect::{
-    ConnectAvailability, ConnectHost, ConnectJoinClient, JoinResponse, JoinedParticipant,
-    Participant,
-};
-use agent_relay_probe::relay::connect_presence::RosterEntry;
-use agent_relay_probe::relay::daemon::{self, BoundSocket, Config, Core, Plugins};
-use agent_relay_probe::relay::delivery::DeliveryTiming;
-use agent_relay_probe::relay::inject::InjectOutcome;
-use agent_relay_probe::relay::outbound::{
-    self, Outbound, OutboundError, RelaySend, RelaySocket, Request, ServingPath,
-};
-use agent_relay_probe::relay::paths::{self, CorePaths};
-use agent_relay_probe::relay::push::PushTiming;
-use agent_relay_probe::relay::sessions::UnreadableSessionFile;
-use agent_relay_probe::relay::setup::DirectDelivery;
-use agent_relay_probe::relay::state::{SignInState, Verification};
-use agent_relay_probe::relay::store::{SessionKind, Target};
-use agent_relay_probe::relay::uploader::{InstallRun, ProbeRunner, Uploader, UploaderError};
-use agent_relay_probe::relay::workspace::{validated_base_url, Secret};
-use futures_util::future::BoxFuture;
-use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-use support::bridge::{eventually, eventually_for, session, FakeInjector, FakeSessions};
-use support::fake_relaycast::{Behaviour, FakeRelaycast, WORKSPACE_KEY};
-
-const CODEX: &str = "01a0c221-6806-7210-af25-97e104b15049";
-const CLAUDE: &str = "727cce8d-8074-4ea3-94a0-dea144bf8747";
-const CLOUD: &str = "session_01ABCDEFGHJKMNPQRSTVWXYZ01";
-/// Pids the fake kernel places inside sessions.
-const IN_CODEX: i32 = 4100;
-const IN_CLAUDE: i32 = 4200;
-const IN_CLOUD: i32 = 4300;
-const OUTSIDE: i32 = 4900;
-
-/// Claude Code's `crossSessionInbound`, in memory.
-#[derive(Default)]
-struct FakeDirect {
-    user: Mutex<Option<String>>,
-    managed: Mutex<Option<String>>,
-    fail: Mutex<bool>,
+fn account(_config: &Config, probe: &Arc<dyn ProbeRunner>) -> TestAccount {
+    TestAccount::new(Arc::new(Uploader::new(probe.clone())))
 }
 
-impl DirectDelivery for FakeDirect {
-    fn delivers_directly(&self) -> bool {
-        let managed = self.managed.lock().unwrap().clone();
-        managed
-            .or_else(|| self.user.lock().unwrap().clone())
-            .as_deref()
-            == Some("accept")
-    }
-
-    fn managed_value(&self) -> Option<String> {
-        self.managed.lock().unwrap().clone()
-    }
-
-    fn user_choice(&self) -> Option<String> {
-        self.user.lock().unwrap().clone()
-    }
-
-    fn set_direct_delivery(&self, enabled: bool) -> Result<(), String> {
-        if *self.fail.lock().unwrap() {
-            return Err(
-                "Your Claude settings file is not valid JSON, so it was left unchanged.".into(),
-            );
-        }
-        *self.user.lock().unwrap() = enabled.then(|| "accept".to_string());
-        Ok(())
-    }
-}
-
-/// A controllable clock for the rate limit and the roster cache.
-#[derive(Clone)]
-struct Clock(Arc<Mutex<Instant>>);
-
-impl Clock {
-    fn new() -> Clock {
-        Clock(Arc::new(Mutex::new(Instant::now())))
-    }
-
-    fn advance(&self, by: Duration) {
-        *self.0.lock().unwrap() += by;
-    }
-}
-
-type JoinCall = (String, Option<String>, Option<String>, String);
-
-struct FakeJoin {
-    response: Mutex<Result<JoinResponse, OutboundError>>,
-    availability: Mutex<Result<ConnectAvailability, OutboundError>>,
-    /// Cloud's participant roster, as each participant token reads it.
-    roster: Mutex<Result<Vec<RosterEntry>, OutboundError>>,
-    roster_tokens: Mutex<Vec<String>>,
-    calls: Mutex<Vec<JoinCall>>,
-}
-
-/// One participant of Cloud's roster.
-fn roster_entry(name: &str, role: &str, online: bool) -> RosterEntry {
-    RosterEntry {
-        agent_name: name.into(),
-        role: Some(role.into()),
-        available: true,
-        online,
-    }
-}
-
-impl FakeJoin {
-    fn new(response: JoinResponse) -> FakeJoin {
-        let roster = response
-            .participants
-            .iter()
-            .map(|participant| roster_entry(&participant.agent_name, &participant.role, true))
-            .collect();
-        FakeJoin {
-            response: Mutex::new(Ok(response)),
-            availability: Mutex::new(Ok(ConnectAvailability::Active)),
-            roster: Mutex::new(Ok(roster)),
-            roster_tokens: Mutex::default(),
-            calls: Mutex::default(),
-        }
-    }
-
-    fn set_roster(&self, roster: Vec<RosterEntry>) {
-        *self.roster.lock().unwrap() = Ok(roster);
-    }
-
-    fn set_roster_error(&self, error: OutboundError) {
-        *self.roster.lock().unwrap() = Err(error);
-    }
-
-    fn set_response(&self, response: JoinResponse) {
-        *self.response.lock().unwrap() = Ok(response);
-    }
-
-    fn set_error(&self, error: OutboundError) {
-        *self.response.lock().unwrap() = Err(error);
-    }
-
-    fn calls(&self) -> usize {
-        self.calls.lock().unwrap().len()
-    }
-
-    fn idempotency_keys(&self) -> Vec<String> {
-        self.calls
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|call| call.3.clone())
-            .collect()
-    }
-
-    fn set_availability(&self, availability: ConnectAvailability) {
-        *self.availability.lock().unwrap() = Ok(availability);
-    }
-
-    fn set_availability_error(&self, error: OutboundError) {
-        *self.availability.lock().unwrap() = Err(error);
-    }
-}
-
-impl ConnectJoinClient for FakeJoin {
-    fn join(
-        &self,
-        link: &str,
-        name: Option<&str>,
-        host_claim: Option<&str>,
-        idempotency_key: &str,
-    ) -> Result<JoinResponse, OutboundError> {
-        self.calls.lock().unwrap().push((
-            link.to_string(),
-            name.map(str::to_string),
-            host_claim.map(str::to_string),
-            idempotency_key.to_string(),
-        ));
-        self.response.lock().unwrap().clone()
-    }
-
-    fn availability(&self, _: &str) -> Result<ConnectAvailability, OutboundError> {
-        self.availability.lock().unwrap().clone()
-    }
-
-    /// Like Cloud, a roster read of an ended Connect answers its gone code.
-    fn roster(&self, _: &str, token: &Secret) -> Result<Vec<RosterEntry>, OutboundError> {
-        self.roster_tokens
-            .lock()
-            .unwrap()
-            .push(token.expose().to_string());
-        if let Ok(ConnectAvailability::Gone { code, message }) = &*self.availability.lock().unwrap()
-        {
-            let status = if code == "connect_not_found" {
-                404
-            } else {
-                410
-            };
-            return Err(OutboundError::new(status, code, message.clone()));
-        }
-        self.roster.lock().unwrap().clone()
-    }
-}
-
-struct Harness {
-    fake: FakeRelaycast,
-    connect_fake: FakeRelaycast,
-    _temp: tempfile::TempDir,
-    home: PathBuf,
-    relay_socket: PathBuf,
-    core: Arc<Core>,
-    sessions: Arc<FakeSessions>,
-    injector: Arc<FakeInjector>,
-    direct: Arc<FakeDirect>,
-    serving: ServingPath,
-    clock: Clock,
-    join: Arc<FakeJoin>,
-    outbound: Outbound,
-    me: u32,
-    config: Config,
-    serve: bool,
-    agent_led_defaults_at_start: bool,
-    /// The probe an account's uploader runs; without one the core has no
-    /// account methods.
-    probe: Option<Arc<dyn ProbeRunner>>,
-    task: Option<tokio::task::JoinHandle<anyhow::Result<()>>>,
-}
-
-/// A signed-in account whose uploader runs `probe`, signed in to the closed
-/// local port no Cloud answers on.
-fn account(config: &Config, probe: &Arc<dyn ProbeRunner>) -> Arc<Account> {
-    Arc::new(Account::new(
-        Some(CLOUD_SITE),
-        &config.home,
-        &config.env,
-        &config.app_data_dir,
-        Arc::new(Uploader::new(probe.clone())),
-    ))
-}
-
-const CLOUD_SITE: &str = "http://127.0.0.1:9";
-
-/// A probe whose install is found at once but whose uploader never
-/// answers: `status` and `sharing set` wait forever, as a collector stuck on
-/// the network leaves them. Only the uploader tests (session history) use it.
-#[cfg_attr(not(feature = "history"), allow(dead_code))]
-#[derive(Default)]
-struct StalledProbe {
-    calls: Mutex<Vec<String>>,
-}
-
-#[cfg_attr(not(feature = "history"), allow(dead_code))]
-impl StalledProbe {
-    fn called(&self, command: &str) -> bool {
-        self.calls.lock().unwrap().iter().any(|c| c == command)
-    }
-}
-
-/// The stalled install's answer to `installs`.
-fn stalled_install() -> Value {
-    json!({"installs": [{
-        "directory": "/tmp/x", "site_url": validated_base_url(CLOUD_SITE).unwrap(),
-        "account_id": "user-1", "workspace_id": "rw_fake", "sharing_mode": "all",
-        "running": true, "paused": false, "upgrade_required": false,
-    }]})
-}
-
-/// A probe whose uploader holds `status` until released, then answers with
-/// `mode` as its install's sharing mode, and counts `sharing set` calls.
-struct HeldStatusProbe {
-    release: tokio::sync::watch::Receiver<bool>,
-    /// The mode `status` reports.
-    mode: &'static str,
-    /// `status` reads asked for, and `sharing set` calls.
-    reads: Mutex<u32>,
-    sharing: Mutex<u32>,
-    /// A held `status` has answered.
-    answered: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl ProbeRunner for HeldStatusProbe {
-    fn run(
-        &self,
-        args: Vec<String>,
-        _: Option<Duration>,
-    ) -> BoxFuture<'_, Result<Value, UploaderError>> {
-        match args[0].as_str() {
-            "installs" => Box::pin(async { Ok(stalled_install()) }),
-            "status" => {
-                *self.reads.lock().unwrap() += 1;
-                let status = json!({"running": true, "paused": false, "sharing_mode": self.mode});
-                let mut release = self.release.clone();
-                let answered = self.answered.clone();
-                Box::pin(async move {
-                    let _ = release.wait_for(|released| *released).await;
-                    answered.store(true, std::sync::atomic::Ordering::SeqCst);
-                    Ok(status)
-                })
-            }
-            "sharing" => {
-                *self.sharing.lock().unwrap() += 1;
-                Box::pin(async { Ok(json!({"sharing_mode": "selected", "regenerated": false})) })
-            }
-            _ => Box::pin(std::future::pending()),
-        }
-    }
-
-    fn install(&self, _: Vec<String>, _: Option<Secret>) -> Result<InstallRun, UploaderError> {
-        Err(UploaderError::new("No sign-in in this harness."))
-    }
-
-    fn cancel_all(&self) -> BoxFuture<'_, Result<(), UploaderError>> {
-        Box::pin(async { Ok(()) })
-    }
-}
-
-impl ProbeRunner for StalledProbe {
-    fn run(
-        &self,
-        args: Vec<String>,
-        _: Option<Duration>,
-    ) -> BoxFuture<'_, Result<Value, UploaderError>> {
-        self.calls.lock().unwrap().push(args[0].clone());
-        if args[0] == "installs" {
-            return Box::pin(async { Ok(stalled_install()) });
-        }
-        Box::pin(std::future::pending())
-    }
-
-    fn install(&self, _: Vec<String>, _: Option<Secret>) -> Result<InstallRun, UploaderError> {
-        Err(UploaderError::new("No sign-in in this harness."))
-    }
-
-    fn cancel_all(&self) -> BoxFuture<'_, Result<(), UploaderError>> {
-        Box::pin(async { Ok(()) })
-    }
-}
-
-impl Harness {
-    async fn start() -> Harness {
-        Harness::start_with(true).await
-    }
-
-    async fn start_with(serve: bool) -> Harness {
-        Harness::start_full(serve, false).await
-    }
-
-    async fn start_full(serve: bool, agent_led_defaults_at_start: bool) -> Harness {
-        Harness::start_complete(serve, agent_led_defaults_at_start, None).await
-    }
-
-    async fn start_complete(
-        serve: bool,
-        agent_led_defaults_at_start: bool,
-        probe: Option<Arc<dyn ProbeRunner>>,
-    ) -> Harness {
-        let fake = FakeRelaycast::start(Behaviour::default()).await;
-        let connect_fake = FakeRelaycast::start(Behaviour::default()).await;
-        let connect_guest = connect_fake.seed_agent("connect-guest", "agent", json!({}));
-        let connect_host = connect_fake.seed_agent("connect-host", "agent", json!({}));
-        let join = Arc::new(FakeJoin::new(JoinResponse {
-            connect_id: "connect-1".into(),
-            task: "Review the release".into(),
-            expires_at: "2099-10-01T12:00:00Z".into(),
-            host: ConnectHost {
-                person: "Alice".into(),
-                agent_name: connect_host.name.clone(),
-            },
-            participant: JoinedParticipant {
-                agent_name: connect_guest.name.clone(),
-                agent_id: connect_guest.id.clone(),
-                role: "guest".into(),
-                token: Secret::new(connect_guest.token.clone()),
-                relay_base_url: connect_fake.base_url.clone(),
-            },
-            participants: vec![
-                Participant {
-                    agent_name: connect_host.name.clone(),
-                    role: "host".into(),
-                },
-                Participant {
-                    agent_name: connect_guest.name.clone(),
-                    role: "guest".into(),
-                },
-            ],
-        }));
-        let temp = tempfile::tempdir().unwrap();
-        // Short, so the socket path fits sun_path on macOS.
-        let home = temp.path().to_path_buf();
-        let relay = home.join(".agentworkforce/relay");
-        std::fs::create_dir_all(&relay).unwrap();
-        support::fake_relaycast::sign_in_store(
-            &home.join("app-data"),
-            WORKSPACE_KEY,
-            &fake.base_url,
-        );
-        let socket = home.join("run/core.sock");
-        let mut env = BTreeMap::new();
-        env.insert("RELAYCAST_URL".to_string(), fake.base_url.clone());
-        env.insert("AGENT_RELAY_HOME".to_string(), relay.display().to_string());
-        let config = Config {
-            paths: CorePaths::for_socket(socket.clone()).unwrap(),
-            home: home.clone(),
-            app_data_dir: home.join("app-data"),
-            env,
-            version: "0.0.0-test".into(),
-            host_name: "Test Desk.local".into(),
-            rediscover_every: Duration::from_secs(3600),
-            push_timing: PushTiming {
-                heartbeat: Duration::from_millis(50),
-                backoff_unit: Duration::from_millis(10),
-                jitter: || 1.0,
-                mint_gap: Duration::ZERO,
-            },
-            delivery_timing: DeliveryTiming {
-                safety_poll: Duration::from_millis(150),
-                fast_poll: Duration::from_millis(100),
-                heartbeat: Duration::from_secs(3600),
-                retry_unit: Duration::from_millis(20),
-                replies: Duration::from_millis(50),
-                ..DeliveryTiming::default()
-            },
-        };
-        paths::socket_directory(config.paths.directory()).unwrap();
-        let bound = BoundSocket::bind(&config.paths).unwrap();
-        let codex = session(
-            SessionKind::Codex,
-            CODEX,
-            "/Users/me/Projects/Relay Desktop",
-        );
-        let claude = session(
-            SessionKind::ClaudeTerminal,
-            CLAUDE,
-            "/Users/me/Projects/api",
-        );
-        let cloud = session(SessionKind::ClaudeCloud, CLOUD, "/Users/me/Projects/web");
-        let sessions = Arc::new(FakeSessions::with(vec![
-            codex.clone(),
-            claude.clone(),
-            cloud.clone(),
-        ]));
-        sessions.call_from(IN_CODEX, codex);
-        sessions.call_from(IN_CLAUDE, claude);
-        sessions.call_from(IN_CLOUD, cloud);
-        let direct = Arc::new(FakeDirect::default());
-        let serving = ServingPath::default();
-        // Exercise shell quoting even when the host's temporary path has no spaces.
-        let relay_socket = home.join("r s/relay.sock");
-        let injector = Arc::new(FakeInjector::default());
-        let mut plugins = Plugins {
-            injector: injector.clone(),
-            sessions: sessions.clone(),
-            connect_cloud: join.clone(),
-            codex_stop_hook: Some(Arc::new(StopHookInbox::default())),
-            relay_send: serve.then(|| RelaySend {
-                socket: relay_socket.clone(),
-                pointer: outbound::pointer_path(&home, &home.join("app-data")),
-                direct_delivery: direct.clone(),
-                serving: serving.clone(),
-                agent_led_defaults_at_start,
-            }),
-            ..Plugins::default()
-        };
-        if let Some(probe) = &probe {
-            let account = account(&config, probe);
-            plugins.cloud = account.clone() as Arc<dyn CloudAccess>;
-            plugins.account = Some(account);
-        }
-        let (core, signals) = Core::with_plugins(config.clone(), plugins);
-        let task = tokio::spawn(daemon::run(core.clone(), bound, signals));
-        let clock = Clock::new();
-        let ticking = clock.clone();
-        let outbound = Outbound::with_clock(
-            core.clone(),
-            direct.clone(),
-            Arc::new(move || *ticking.0.lock().unwrap()),
-        );
-        let h = Harness {
-            fake,
-            connect_fake,
-            _temp: temp,
-            home,
-            relay_socket,
-            core,
-            sessions,
-            injector,
-            direct,
-            serving,
-            clock,
-            join,
-            outbound,
-            me: agent_relay_probe::relay::peer::current_uid(),
-            config,
-            serve,
-            agent_led_defaults_at_start,
-            probe,
-            task: Some(task),
-        };
-        if serve {
-            eventually("the relay-send socket", || socket_up(&h.relay_socket)).await;
-        }
-        h
-    }
-
-    async fn call(
-        &self,
-        pid: i32,
-        method: &str,
-        path: &str,
-        body: Value,
-    ) -> Result<Value, OutboundError> {
-        self.call_as(pid, self.me, method, path, body).await
-    }
-
-    async fn call_as(
-        &self,
-        pid: i32,
-        uid: u32,
-        method: &str,
-        path: &str,
-        body: Value,
-    ) -> Result<Value, OutboundError> {
-        let (path, query) = match path.split_once('?') {
-            Some((path, query)) => (path, query),
-            None => (path, ""),
-        };
-        let request = Request {
-            method: method.into(),
-            path: path.into(),
-            query: url::form_urlencoded::parse(query.as_bytes())
-                .into_owned()
-                .collect(),
-            headers: Default::default(),
-            body: if body.is_null() {
-                Vec::new()
-            } else {
-                body.to_string().into_bytes()
-            },
-        };
-        self.outbound.handle(pid, uid, &request).await
-    }
-
-    async fn register(&self, pid: i32, body: Value) -> Value {
-        self.call(pid, "POST", "/register", body).await.unwrap()
-    }
-
-    async fn call_text(
-        &self,
-        pid: i32,
-        method: &str,
-        path: &str,
-        body: &str,
-    ) -> Result<Value, OutboundError> {
-        let (path, query) = match path.split_once('?') {
-            Some((path, query)) => (path, query),
-            None => (path, ""),
-        };
-        self.outbound
-            .handle(
-                pid,
-                self.me,
-                &Request {
-                    method: method.into(),
-                    path: path.into(),
-                    query: url::form_urlencoded::parse(query.as_bytes())
-                        .into_owned()
-                        .collect(),
-                    headers: Default::default(),
-                    body: body.as_bytes().to_vec(),
-                },
-            )
-            .await
-    }
-
-    async fn restart_after(&mut self, edit_stopped_state: impl FnOnce(&Path)) {
-        self.core.request_shutdown();
-        if let Some(task) = self.task.take() {
-            let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
-        }
-        edit_stopped_state(&self.config.app_data_dir);
-        paths::socket_directory(self.config.paths.directory()).unwrap();
-        let bound = BoundSocket::bind(&self.config.paths).unwrap();
-        let mut plugins = Plugins {
-            injector: self.injector.clone(),
-            sessions: self.sessions.clone(),
-            connect_cloud: self.join.clone(),
-            codex_stop_hook: Some(Arc::new(StopHookInbox::default())),
-            relay_send: self.serve.then(|| RelaySend {
-                socket: self.relay_socket.clone(),
-                pointer: outbound::pointer_path(&self.home, &self.home.join("app-data")),
-                direct_delivery: self.direct.clone(),
-                serving: self.serving.clone(),
-                agent_led_defaults_at_start: self.agent_led_defaults_at_start,
-            }),
-            ..Plugins::default()
-        };
-        if let Some(probe) = &self.probe {
-            let account = account(&self.config, probe);
-            plugins.cloud = account.clone() as Arc<dyn CloudAccess>;
-            plugins.account = Some(account);
-        }
-        let (core, signals) = Core::with_plugins(self.config.clone(), plugins);
-        self.task = Some(tokio::spawn(daemon::run(core.clone(), bound, signals)));
-        self.core = core.clone();
-        let ticking = self.clock.clone();
-        self.outbound = Outbound::with_clock(
-            core,
-            self.direct.clone(),
-            Arc::new(move || *ticking.0.lock().unwrap()),
-        );
-        if self.serve {
-            eventually("the restarted relay-send socket", || {
-                socket_up(&self.relay_socket)
-            })
-            .await;
-        }
-    }
-
-    async fn stop(mut self) {
-        self.core.request_shutdown();
-        if let Some(task) = self.task.take() {
-            let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
-        }
-    }
-}
-
-/// Whether the relay-send socket is up: its file on Unix; on Windows, where
-/// no file stands for the pipe, whether it answers.
-fn socket_up(path: &Path) -> bool {
-    if cfg!(windows) {
-        agent_relay_probe::relay::transport::is_served(path)
-    } else {
-        path.exists()
-    }
-}
-
-fn code(result: Result<Value, OutboundError>) -> (u16, String) {
-    let error = result.expect_err("a refusal");
-    (error.status, error.code)
-}
-
-/// One raw HTTP exchange over the socket, as `curl --unix-socket` makes it.
-async fn http(socket: &Path, raw: &[u8]) -> (u16, Value) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut stream = agent_relay_probe::relay::transport::CoreStream::connect(socket)
-        .await
-        .unwrap();
-    stream.write_all(raw).await.unwrap();
-    let mut response = Vec::new();
-    tokio::time::timeout(Duration::from_secs(10), stream.read_to_end(&mut response))
-        .await
-        .expect("an answer")
-        .unwrap();
-    let text = String::from_utf8(response).unwrap();
-    let status: u16 = text.split_whitespace().nth(1).unwrap().parse().unwrap();
-    let body = text.split("\r\n\r\n").nth(1).unwrap();
-    (status, serde_json::from_str(body).unwrap())
-}
-
-fn get(path: &str) -> Vec<u8> {
-    format!("GET {path} HTTP/1.1\r\nHost: relay\r\n\r\n").into_bytes()
-}
-
-fn post(path: &str, body: &str) -> Vec<u8> {
-    format!(
-        "POST {path} HTTP/1.1\r\nHost: relay\r\nContent-Length: {}\r\n\r\n{body}",
-        body.len()
-    )
-    .into_bytes()
-}
+include!("support/outbound_harness.rs");
 
 #[tokio::test]
 async fn connect_routes_join_send_report_presence_and_leave_without_an_account() {
@@ -1151,16 +485,6 @@ async fn a_send_to_an_offline_participant_reports_it_queued_not_sent() {
     h.stop().await;
 }
 
-/// Requests made with `token` to `method path` on the Connect's Relaycast.
-fn connect_calls(h: &Harness, method: &str, path: &str, token: &str) -> usize {
-    let bearer = format!("Bearer {token}");
-    h.connect_fake
-        .calls(method, path)
-        .iter()
-        .filter(|call| call.authorization.as_deref() == Some(bearer.as_str()))
-        .count()
-}
-
 #[tokio::test]
 async fn a_connect_whose_session_stopped_is_not_kept_online_and_resumes_when_it_runs() {
     let h = Harness::start().await;
@@ -1187,7 +511,9 @@ async fn a_connect_whose_session_stopped_is_not_kept_online_and_resumes_when_it_
         .lock()
         .unwrap()
         .retain(|session| session.target != codex);
-    // Several discovery and delivery passes observe the stopped session.
+    // Discovery publishes the stopped session, and several delivery passes
+    // observe it.
+    discovery_published(&h.core, &codex, false).await;
     tokio::time::sleep(Duration::from_millis(600)).await;
     let (stopped_reads, stopped_heartbeats) = (reads(), heartbeats());
     let (delivery, message) =
@@ -1223,7 +549,7 @@ async fn a_connect_whose_session_stopped_is_not_kept_online_and_resumes_when_it_
 }
 
 #[tokio::test]
-async fn a_fleet_workers_connect_session_left_out_of_discovery_keeps_receiving() {
+async fn an_idle_connect_inbox_backs_off_and_a_delivery_or_send_makes_it_fast_again() {
     let h = Harness::start().await;
     h.call(
         IN_CODEX,
@@ -1233,24 +559,93 @@ async fn a_fleet_workers_connect_session_left_out_of_discovery_keeps_receiving()
     )
     .await
     .unwrap();
-    let codex = Target::new(SessionKind::Codex, CODEX);
-    // Discovery leaves out the sessions fleet workers own.
-    *h.sessions.2.lock().unwrap() = Ok(vec![codex.clone()]);
-    h.sessions
-        .0
-        .lock()
-        .unwrap()
-        .retain(|session| session.target != codex);
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    let (delivery, _) = h
-        .connect_fake
-        .send_dm("connect-host", "connect-guest", "For the worker.");
-    eventually("the fleet worker's Connect delivery", || {
+    let token = h.connect_fake.agent("connect-guest").unwrap().token;
+    let reads = || connect_calls(&h, "GET", "/v1/deliveries", &token);
+    eventually("the first Connect inbox read", || reads() > 0).await;
+
+    // At 100 ms passes an idle inbox waits 0.2, 0.4, 0.8, then 1 s between
+    // reads: about 5 reads in 3 s, not 30.
+    let idle_from = reads();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let idle = reads() - idle_from;
+    assert!(
+        idle <= 12,
+        "an idle Connect inbox was read {idle} times in 3 s"
+    );
+
+    let (delivery, message) =
         h.connect_fake
-            .delivery_state(&delivery)
-            .is_some_and(|item| item.state == "acked")
+            .send_dm("connect-host", "connect-guest", "Still there?");
+    eventually("the Connect delivery after an idle backoff", || {
+        h.injector
+            .injected()
+            .iter()
+            .any(|injected| injected.message_id == message)
+            && h.connect_fake
+                .delivery_state(&delivery)
+                .is_some_and(|delivery| delivery.state == "acked")
     })
     .await;
+    let after_delivery = reads();
+    tokio::time::sleep(Duration::from_millis(450)).await;
+    assert!(
+        reads() >= after_delivery + 2,
+        "a delivery puts the inbox back on the fast poll"
+    );
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    h.call_text(IN_CODEX, "POST", "/connect/send?to=connect-host", "Yes.")
+        .await
+        .unwrap();
+    let after_send = reads();
+    eventually_for(
+        "a read soon after a local send",
+        Duration::from_millis(400),
+        || reads() > after_send,
+    )
+    .await;
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_refused_connect_credential_backs_off_until_its_connect_is_gone() {
+    let h = Harness::start().await;
+    h.call(
+        IN_CODEX,
+        "POST",
+        "/connect/join",
+        json!({"link": "connect-1"}),
+    )
+    .await
+    .unwrap();
+    let token = h.connect_fake.agent("connect-guest").unwrap().token;
+    let reads = || connect_calls(&h, "GET", "/v1/deliveries", &token);
+    eventually("the first Connect inbox read", || reads() > 0).await;
+
+    // Relaycast refuses the token while Cloud says the Connect is open.
+    h.connect_fake.forget_agent("connect-guest");
+    let refused_from = reads();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let refused = reads() - refused_from;
+    assert!(
+        refused <= 12,
+        "a refused credential was read {refused} times in 3 s"
+    );
+
+    h.join.set_availability(ConnectAvailability::Gone {
+        code: "connect_ended".into(),
+        message: "This Connect has ended.".into(),
+    });
+    eventually("the gone Connect's removal notice", || {
+        h.injector
+            .injected()
+            .iter()
+            .any(|injected| injected.message_id == "connect-ended-connect-1")
+    })
+    .await;
+    let gone = reads();
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    assert_eq!(reads(), gone, "a gone Connect's inbox is never read again");
     h.stop().await;
 }
 
@@ -1941,7 +1336,7 @@ async fn a_connect_waiting_handoff_stays_pending_with_visible_bounded_backoff() 
     .await
     .unwrap();
     h.injector.then(InjectOutcome::Waiting(
-        "the fleet Codex session is not ready".into(),
+        "the Codex session is not ready".into(),
     ));
     let (delivery, message) =
         h.connect_fake
@@ -1972,7 +1367,7 @@ async fn a_connect_waiting_handoff_stays_pending_with_visible_bounded_backoff() 
                 .unwrap();
             if status["delivery"]["pending"][0]["detail"]
                 .as_str()
-                .is_some_and(|detail| detail.contains("fleet Codex session is not ready"))
+                .is_some_and(|detail| detail.contains("Codex session is not ready"))
             {
                 break status;
             }
@@ -1986,7 +1381,7 @@ async fn a_connect_waiting_handoff_stays_pending_with_visible_bounded_backoff() 
     assert!(status["delivery"]["pending"][0]["detail"]
         .as_str()
         .unwrap()
-        .contains("fleet Codex session is not ready"));
+        .contains("Codex session is not ready"));
     assert_eq!(h.injector.injected().len(), 1);
     assert_eq!(
         h.connect_fake
@@ -2015,7 +1410,7 @@ async fn an_expired_unaccepted_handoff_gets_one_final_poll_attempt() {
     .await
     .unwrap();
     h.injector.then(InjectOutcome::Waiting(
-        "the fleet worker is starting".into(),
+        "the Codex session is starting".into(),
     ));
     let (delivery, _) = h.connect_fake.send_dm(
         "connect-host",
@@ -2027,7 +1422,7 @@ async fn an_expired_unaccepted_handoff_gets_one_final_poll_attempt() {
     })
     .await;
     h.injector.then(InjectOutcome::Waiting(
-        "the fleet worker is still unavailable".into(),
+        "the Codex session is still unavailable".into(),
     ));
 
     h.restart_after(|app_data| {
@@ -2194,9 +1589,6 @@ async fn a_missing_accepted_handoff_settles_in_doubt_without_holding_back_later_
     h.stop().await;
 }
 
-// Issue #238: Connect messages that arrive while the guest's terminal Codex
-// runs a long turn enter its queue at once and in order, report that they
-// wait for the turn, and settle as visible once the session records them.
 #[tokio::test]
 async fn connect_messages_during_a_long_turn_wait_for_it_visibly_then_settle_visible() {
     let h = Harness::start().await;
@@ -2316,7 +1708,7 @@ async fn a_connect_refusal_is_durable_and_failed_again_without_reinjection() {
     .await
     .unwrap();
     h.injector.then(InjectOutcome::Refused(
-        "the fleet process could not be verified".into(),
+        "the Codex process could not be verified".into(),
     ));
     let (delivery, _) = h.connect_fake.send_dm(
         "connect-host",
@@ -2342,7 +1734,7 @@ async fn a_connect_refusal_is_durable_and_failed_again_without_reinjection() {
     assert!(failed
         .error
         .as_deref()
-        .is_some_and(|error| error.contains("fleet process could not be verified")));
+        .is_some_and(|error| error.contains("Codex process could not be verified")));
     assert_eq!(h.injector.injected().len(), 1);
     h.stop().await;
 }
@@ -2715,10 +2107,6 @@ async fn an_unkeyed_server_failure_is_not_retried_or_keyed() {
     h.stop().await;
 }
 
-// OutboundTests.testRejectsNamedSenderRecipientAndTextErrors,
-// test_never_takes_a_sender_from_the_request,
-// test_needs_exactly_one_recipient_and_some_text and
-// test_rejects_malformed_explicit_addresses_before_transport.
 #[tokio::test]
 async fn malformed_sends_are_refused_before_relaycast() {
     let h = Harness::start().await;
@@ -2751,8 +2139,6 @@ async fn malformed_sends_are_refused_before_relaycast() {
     h.stop().await;
 }
 
-// test_refuses_a_session_that_is_not_on_the_relay, test_refuses_another_user,
-// OutboundTests.testRejectsProcessOutsideSession and testRejectsWrongUID.
 #[tokio::test]
 async fn only_this_users_registered_sessions_may_send() {
     let h = Harness::start().await;
@@ -2773,7 +2159,6 @@ async fn only_this_users_registered_sessions_may_send() {
     h.stop().await;
 }
 
-// test_passes_relaycast_refusals_through.
 #[tokio::test]
 async fn relaycast_refusals_keep_their_status_and_code() {
     let h = Harness::start().await;
@@ -2864,15 +2249,6 @@ async fn an_unresolved_recipient_is_explained_from_the_roster() {
     );
     assert!(h.fake.messages().is_empty());
     h.stop().await;
-}
-
-/// A temporary folder an agent may send from: `tempfile::tempdir()` names
-/// its folders `.tmp…`, which are hidden.
-fn sendable_dir() -> tempfile::TempDir {
-    tempfile::Builder::new()
-        .prefix("relay-files-")
-        .tempdir()
-        .unwrap()
 }
 
 #[tokio::test]
@@ -3466,8 +2842,6 @@ async fn bad_files_are_refused_before_anything_is_sent() {
     h.stop().await;
 }
 
-// OutboundTests.testOnlyRepliesToAParentDeliveredToTheCallingSession and
-// test_replies_only_under_a_parent_delivered_to_the_session.
 #[tokio::test]
 async fn a_session_replies_only_beneath_what_it_was_sent() {
     let h = Harness::start().await;
@@ -3524,10 +2898,6 @@ async fn a_session_replies_only_beneath_what_it_was_sent() {
     h.stop().await;
 }
 
-// OutboundTests.testRateLimitsPerSendingAgentAndExpiresWindow,
-// testRateLimitFollowsTheSessionAcrossUnregisterAndRename,
-// test_rate_limits_each_agent and
-// test_rate_limit_follows_the_session_across_unregister_and_rename.
 #[tokio::test]
 async fn each_session_gets_thirty_requests_a_minute() {
     let h = Harness::start().await;
@@ -3561,13 +2931,6 @@ async fn each_session_gets_thirty_requests_a_minute() {
     h.stop().await;
 }
 
-// A hung volume once froze every core worker inside a session folder's
-// project lookup: the session socket stopped answering and SIGTERM could not
-// stop the core. Here the folder's `.git/commondir` is a FIFO with no
-// writer, so the real project lookup blocks in `open` forever, as a read on
-// a dead drive does. The test runtime has one thread, so a lookup on it
-// would stall every assertion below.
-// A FIFO, which only Unix has.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_session_folder_that_never_answers_leaves_the_core_responsive() {
@@ -3604,7 +2967,13 @@ async fn a_session_folder_that_never_answers_leaves_the_core_responsive() {
             started.elapsed() < Duration::from_secs(2),
             "sessions.list answers while a folder hangs"
         );
-        if listed.sessions.iter().any(|row| row.target.id == HUNG) {
+        // Auto-registration can publish a directory-less placeholder before
+        // discovery publishes the live row whose project lookup we exercise.
+        if listed
+            .sessions
+            .iter()
+            .any(|row| row.target.id == HUNG && row.directory.as_deref() == hung.to_str())
+        {
             break listed;
         }
         assert!(
@@ -3658,8 +3027,6 @@ async fn a_session_folder_that_never_answers_leaves_the_core_responsive() {
         .unwrap();
 }
 
-// OutboundTests.testWhoami, testWhoamiAndRegisterWorkBeforeTheSessionIsRegistered,
-// test_whoami and test_whoami_identifies_a_supported_session_before_it_is_registered.
 #[tokio::test]
 async fn whoami_names_the_caller_registered_or_not() {
     let h = Harness::start().await;
@@ -3686,9 +3053,6 @@ async fn whoami_names_the_caller_registered_or_not() {
     h.stop().await;
 }
 
-// OutboundTests.testRegisterIsIdempotentAndSettingCanRefuseIt,
-// test_registers_only_the_calling_session_through_the_switch_path and
-// test_register_respects_the_user_setting_and_validates_the_body.
 #[tokio::test]
 async fn a_session_registers_itself_once() {
     let h = Harness::start().await;
@@ -3747,42 +3111,6 @@ async fn a_session_registers_itself_once() {
     h.stop().await;
 }
 
-// OutboundTests.testRegistrationAdmissionUsesFreshFleetOwnership,
-// testRegistrationAdmissionFailsClosedWhenAnyBrokerCannotBeRead,
-// test_a_fleet_owned_session_cannot_take_a_second_identity and
-// test_a_registered_session_keeps_access_when_fleet_ownership_overlaps.
-#[tokio::test]
-async fn a_fleet_owned_session_takes_no_second_identity() {
-    let h = Harness::start().await;
-    *h.sessions.2.lock().unwrap() = Ok(vec![Target::new(SessionKind::Codex, CODEX)]);
-    assert_eq!(
-        code(h.call(IN_CODEX, "POST", "/register", json!({})).await),
-        (403, "not_a_relay_session".into())
-    );
-    // Status stays available to it.
-    h.call(IN_CODEX, "GET", "/whoami", Value::Null)
-        .await
-        .unwrap();
-    *h.sessions.2.lock().unwrap() = Err("The broker at 127.0.0.1:9 could not be reached.".into());
-    assert_eq!(
-        code(h.call(IN_CLAUDE, "POST", "/register", json!({})).await),
-        (503, "fleet_unavailable".into())
-    );
-    assert!(h.fake.calls("POST", "/v1/agents").is_empty());
-    // A session already registered keeps working when ownership overlaps.
-    *h.sessions.2.lock().unwrap() = Ok(Vec::new());
-    h.register(IN_CLAUDE, json!({})).await;
-    *h.sessions.2.lock().unwrap() = Ok(vec![Target::new(SessionKind::ClaudeTerminal, CLAUDE)]);
-    let again = h.register(IN_CLAUDE, json!({})).await;
-    assert_eq!(again["already_registered"], true);
-    h.call(IN_CLAUDE, "DELETE", "/register", Value::Null)
-        .await
-        .unwrap();
-    h.stop().await;
-}
-
-// OutboundTests.testUnregisterIsIdempotent and
-// test_unregisters_only_the_calling_session_and_is_idempotent.
 #[tokio::test]
 async fn a_session_takes_itself_off_the_relay_idempotently() {
     let h = Harness::start().await;
@@ -3809,8 +3137,6 @@ async fn a_session_takes_itself_off_the_relay_idempotently() {
     h.stop().await;
 }
 
-// test_register_waits_for_an_in_flight_switch_instead_of_failing and
-// test_unregister_waits_for_an_in_flight_registration_and_removes_it.
 #[tokio::test]
 async fn registering_and_removing_one_session_take_turns() {
     let h = Harness::start().await;
@@ -3830,10 +3156,6 @@ async fn registering_and_removing_one_session_take_turns() {
     h.stop().await;
 }
 
-// OutboundTests.testAgentsFiltersCachesAndMarksSelf,
-// test_agents_filters_redacts_and_caches_the_active_roster,
-// test_active_and_all_rosters_have_separate_cache_entries and
-// test_live_local_names_are_scoped_to_the_callers_workspace.
 #[tokio::test]
 async fn agents_lists_the_callers_workspace_and_caches_it() {
     let h = Harness::start().await;
@@ -3918,6 +3240,12 @@ async fn agents_lists_the_callers_workspace_and_caches_it() {
         .lock()
         .unwrap()
         .retain(|s| s.target.id != CLAUDE);
+    discovery_published(
+        &h.core,
+        &Target::new(SessionKind::ClaudeTerminal, CLAUDE),
+        false,
+    )
+    .await;
     let mut claude = Value::Null;
     for _ in 0..15 {
         let ended = h
@@ -3937,20 +3265,24 @@ async fn agents_lists_the_callers_workspace_and_caches_it() {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert_eq!(claude["where"], "other_desktop");
-    // Unregistered callers may not list.
+    // A caller not yet discovered or registered may not list. The fixture
+    // cloud session is eligible for automatic registration now.
+    const UNREGISTERED: i32 = 4500;
+    h.sessions.call_from(
+        UNREGISTERED,
+        session(
+            SessionKind::Codex,
+            "019a0b1c-0000-7000-8000-00000000a557",
+            "/tmp/new",
+        ),
+    );
     assert_eq!(
-        code(h.call(IN_CLOUD, "GET", "/agents", Value::Null).await),
+        code(h.call(UNREGISTERED, "GET", "/agents", Value::Null).await),
         (403, "not_a_relay_session".into())
     );
     h.stop().await;
 }
 
-// Issue #333: on a computer whose session discovery waits on the Codex app
-// and the fleet's brokers, and with Relaycast slow to list the workspace,
-// `GET /agents` and `GET /setup/status` still answer within a bound. The
-// roster answers from the last read, marked stale, while the read finishes
-// in the background; with no roster read yet, the route says Relaycast is
-// slow instead of hanging.
 #[tokio::test]
 async fn agents_and_setup_status_answer_promptly_behind_slow_upstreams() {
     let h = Harness::start().await;
@@ -4039,8 +3371,6 @@ async fn agents_and_setup_status_answer_promptly_behind_slow_upstreams() {
     h.stop().await;
 }
 
-// OutboundTests.testAgentsAddsTheLiveCallerWhenRelaycastSnapshotOmitsIt and
-// test_missing_relaycast_caller_is_synthesized_as_live_and_local.
 #[tokio::test]
 async fn the_caller_is_listed_even_when_the_roster_lags() {
     let h = Harness::start().await;
@@ -4069,9 +3399,6 @@ async fn the_caller_is_listed_even_when_the_roster_lags() {
     h.stop().await;
 }
 
-// The headless service (`relay serve --headless`) applies the agent-led
-// defaults when its socket starts, as the Linux headless service did; a core
-// hosted by an app waits for a setup route.
 #[tokio::test]
 async fn the_headless_service_applies_the_agent_led_defaults_at_start() {
     let h = Harness::start_full(true, true).await;
@@ -4085,16 +3412,13 @@ async fn the_headless_service_applies_the_agent_led_defaults_at_start() {
     .await;
     h.stop().await;
 
-    let hosted = Harness::start().await;
+    let hosted = Harness::start_unchosen().await;
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(hosted.direct.user.lock().unwrap().as_deref(), None);
     assert_eq!(hosted.core.settings()["auto_activate"], json!(false));
     hosted.stop().await;
 }
 
-// OutboundTests.testSetupAdmitsAnIdentifiedSessionBeforeRegistration,
-// testDefaultsAreNewUploadsAutoActivationAndDirectDelivery and
-// test_setup_routes_bootstrap_before_registration_and_cover_the_contract.
 #[tokio::test]
 async fn setup_applies_the_agent_led_defaults_before_registration() {
     let h = Harness::start().await;
@@ -4182,6 +3506,20 @@ async fn setup_applies_the_agent_led_defaults_before_registration() {
 async fn an_observing_status_read_does_not_apply_agent_led_defaults() {
     use agent_relay_probe::relay::claude::session_hook::{OBSERVE_HEADER, OBSERVE_VALUE};
     let h = Harness::start().await;
+    // Observe mode must preserve an existing off choice, even though a
+    // fresh install now enables automatic activation by default.
+    h.core
+        .set_settings(&serde_json::from_value(json!({"auto_activate": false})).unwrap())
+        .unwrap();
+    // This caller has not yet appeared in background discovery.
+    h.sessions.call_from(
+        IN_CLAUDE,
+        session(
+            SessionKind::ClaudeTerminal,
+            "727cce8d-8074-4ea3-94a0-dea144bf8748",
+            "/tmp/new",
+        ),
+    );
     let mut headers = std::collections::HashMap::new();
     headers.insert(OBSERVE_HEADER.into(), OBSERVE_VALUE.into());
     let request = Request {
@@ -4257,23 +3595,6 @@ async fn an_unreadable_session_file_is_named_and_listed_in_setup_status() {
     h.stop().await;
 }
 
-/// `GET /setup/status`, which must answer within `QUICK`.
-async fn status_promptly(h: &Harness) -> Value {
-    tokio::time::timeout(
-        QUICK,
-        h.call(IN_CLAUDE, "GET", "/setup/status", Value::Null),
-    )
-    .await
-    .expect("status answers without waiting on the stalled work")
-    .unwrap()
-}
-
-/// Far below any network timeout: an answer this fast waited on nothing
-/// remote.
-const QUICK: Duration = Duration::from_secs(2);
-
-// A setup route activating sessions waits on Relaycast registration; status
-// and the other setup routes do not wait behind it.
 #[tokio::test]
 async fn setup_answers_while_relaycast_registration_is_stalled() {
     let h = Harness::start().await;
@@ -4314,8 +3635,6 @@ async fn setup_answers_while_relaycast_registration_is_stalled() {
     h.stop().await;
 }
 
-// A workspace key found by a setup request is verified in the background;
-// status reports the verification pending meanwhile, then its answer.
 #[tokio::test]
 async fn status_reports_a_new_key_pending_while_relaycast_is_stalled() {
     let h = Harness::start().await;
@@ -4350,136 +3669,6 @@ async fn status_reports_a_new_key_pending_while_relaycast_is_stalled() {
     })
     .await;
     assert_eq!(status_promptly(&h).await["relaycast"], "verified");
-    h.stop().await;
-}
-
-// The headless service's startup bootstrap waits on an uploader stuck on the
-// network; status reports the uploader and the defaults pending instead of
-// waiting with it.
-// The uploader's status and sharing need session history.
-#[cfg(feature = "history")]
-#[tokio::test]
-async fn status_answers_while_the_uploader_is_stalled() {
-    let probe = Arc::new(StalledProbe::default());
-    let h = Harness::start_complete(true, true, Some(probe.clone() as Arc<dyn ProbeRunner>)).await;
-    eventually("the account signed in", || {
-        h.core.status().account.state == SignInState::SignedIn
-    })
-    .await;
-    let status = status_promptly(&h).await;
-    assert_eq!(status["signed_in"], true);
-    assert_eq!(status["auto_activate"], true);
-    assert_eq!(status["direct_delivery"], true);
-    assert_eq!(status["defaults"], "pending");
-    assert_eq!(status["uploader"]["pending"], true);
-    eventually("the bootstrap asking the stalled uploader", || {
-        probe.called("status")
-    })
-    .await;
-    // Every later read, and an explicit local choice, still answer.
-    let again = status_promptly(&h).await;
-    assert_eq!(again["uploader"]["pending"], true);
-    let choice = tokio::time::timeout(
-        QUICK,
-        h.call(
-            IN_CLAUDE,
-            "POST",
-            "/setup/auto-activate",
-            json!({"enabled": false}),
-        ),
-    )
-    .await
-    .expect("auto-activation answers")
-    .unwrap();
-    assert_eq!(choice, json!({"auto_activate": false}));
-    assert_eq!(status_promptly(&h).await["defaults"], "applied");
-    h.stop().await;
-}
-
-// The bootstrap never changes an install's sharing mode: an owner's `new`
-// or `all` is kept, as is the `selected` a sign-in installs, and the
-// defaults still count as applied once the uploader answers.
-// The uploader's status and sharing need session history.
-#[cfg(feature = "history")]
-#[tokio::test]
-async fn the_bootstrap_keeps_an_installs_own_sharing_mode() {
-    for mode in ["new", "all", "selected"] {
-        let (_release, held) = tokio::sync::watch::channel(true);
-        let probe = Arc::new(HeldStatusProbe {
-            release: held,
-            mode,
-            reads: Mutex::new(0),
-            sharing: Mutex::new(0),
-            answered: Arc::default(),
-        });
-        let h = Harness::start_complete(false, false, Some(probe.clone() as Arc<dyn ProbeRunner>))
-            .await;
-        eventually("the account signed in", || {
-            h.core.status().account.state == SignInState::SignedIn
-        })
-        .await;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let status = loop {
-            let status = status_promptly(&h).await;
-            if status["defaults"] == "applied" && status["uploader"]["pending"].is_null() {
-                break status;
-            }
-            assert!(Instant::now() < deadline, "{mode}: {status}");
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        };
-        assert_eq!(status["sharing_mode"], mode, "{status}");
-        assert_eq!(*probe.sharing.lock().unwrap(), 0, "{mode} was changed");
-        h.stop().await;
-    }
-}
-
-// An activation failure recorded while the bootstrap waits on the uploader
-// outlives that wait finishing.
-#[tokio::test]
-async fn the_bootstrap_keeps_an_activation_failure_it_did_not_record() {
-    let (release, held) = tokio::sync::watch::channel(false);
-    let probe = Arc::new(HeldStatusProbe {
-        release: held,
-        mode: "selected",
-        reads: Mutex::new(0),
-        sharing: Mutex::new(0),
-        answered: Arc::default(),
-    });
-    let h =
-        Harness::start_complete(false, false, Some(probe.clone() as Arc<dyn ProbeRunner>)).await;
-    eventually("the account signed in", || {
-        h.core.status().account.state == SignInState::SignedIn
-    })
-    .await;
-    h.fake.set_failing(&["POST /v1/agents"]);
-    status_promptly(&h).await;
-    eventually("the bootstrap's held uploader read", || {
-        *probe.reads.lock().unwrap() > 0
-    })
-    .await;
-    let failed = tokio::time::timeout(
-        QUICK,
-        h.call(
-            IN_CLAUDE,
-            "POST",
-            "/setup/auto-activate",
-            json!({"enabled": true}),
-        ),
-    )
-    .await
-    .expect("auto-activation answers");
-    assert_eq!(code(failed), (502, "activation_failed".into()));
-    release.send(true).unwrap();
-    eventually("the held uploader read answered", || {
-        probe.answered.load(std::sync::atomic::Ordering::SeqCst)
-    })
-    .await;
-    // The bootstrap's remaining step is local and runs once it is polled.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let status = status_promptly(&h).await;
-    assert_eq!(status["defaults"], "applied");
-    assert_eq!(status["defaults_error"]["code"], "activation_failed");
-    assert_eq!(*probe.sharing.lock().unwrap(), 0);
     h.stop().await;
 }
 
@@ -4557,8 +3746,6 @@ async fn setup_defaults_keep_an_explicit_hold() {
     h.stop().await;
 }
 
-// OutboundTests.testDirectDeliveryReportsManagedPolicyRefusal and
-// test_setup's managed policy cases.
 #[tokio::test]
 async fn managed_claude_settings_refuse_direct_delivery() {
     let h = Harness::start().await;
@@ -4607,8 +3794,6 @@ async fn managed_claude_settings_refuse_direct_delivery() {
     h.stop().await;
 }
 
-// test_setup_routes_keep_same_user_session_admission and the webhook rows
-// of test_setup_routes_bootstrap_before_registration_and_cover_the_contract.
 #[tokio::test]
 async fn webhooks_belong_to_the_registered_caller() {
     let h = Harness::start().await;
@@ -4663,9 +3848,6 @@ async fn webhooks_belong_to_the_registered_caller() {
     h.stop().await;
 }
 
-// The subscribe route reads a pull request's github.com address like the
-// `owner/repo#123` shorthand, and refuses an address it cannot read before
-// anything leaves this computer.
 #[tokio::test]
 async fn a_pull_request_address_names_a_subscription() {
     let h = Harness::start().await;
@@ -4704,10 +3886,6 @@ async fn a_pull_request_address_names_a_subscription() {
     h.stop().await;
 }
 
-// OutboundTests.testSocketRoundTripUsesKernelPeerPID,
-// testWhoamiAndBadRequestDoNotTakeSocketDown, testBodyLimit,
-// test_only_this_user_can_reach_the_socket, test_sends_json, test_bad_requests
-// and test_whoami.
 #[tokio::test]
 async fn the_socket_identifies_callers_by_kernel_pid() {
     let h = Harness::start().await;
@@ -4749,6 +3927,14 @@ async fn the_socket_identifies_callers_by_kernel_pid() {
         (status, body["error"]["code"].as_str()),
         (404, Some("not_found"))
     );
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    for route in [
+        "GET /agents",
+        "POST /connect/leave",
+        "the setup, webhook and integration routes",
+    ] {
+        assert!(message.contains(route), "{route} missing from {message}");
+    }
     let huge = format!(
         "POST /send HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
         outbound::MAX_BODY_BYTES + 1
@@ -4773,9 +3959,6 @@ async fn the_socket_identifies_callers_by_kernel_pid() {
     h.stop().await;
 }
 
-// OutboundTests.testAgentsAndPrivatePointerFile,
-// testPrivateModesAndLiveSocketRefusal, test_agents_and_pointer_file and
-// test_a_second_app_does_not_take_over_a_live_socket.
 #[tokio::test]
 async fn the_socket_and_its_pointer_are_private_and_not_taken_over() {
     let h = Harness::start().await;
@@ -4809,13 +3992,6 @@ async fn the_socket_and_its_pointer_are_private_and_not_taken_over() {
     assert!(!pointer.exists(), "and its pointer");
 }
 
-// OutboundTests.testStaleSocketIsReplaced, testNonSocketEntryIsNotDeleted,
-// testOlderSocketDoesNotRemoveReplacementPointer,
-// testStopDoesNotDeleteReplacementPath, testPointerFailureKeepsTheRuntimeSocketServing,
-// test_a_stale_socket_file_is_replaced,
-// test_an_older_socket_does_not_remove_a_replacement_pointer and
-// test_pointer_failure_keeps_the_runtime_socket_serving.
-// Socket files; a named pipe leaves none behind to replace.
 #[cfg(unix)]
 #[tokio::test]
 async fn startup_replaces_only_its_own_stale_socket_and_cleanup_only_its_own_files() {
@@ -4878,36 +4054,6 @@ async fn a_core_without_the_socket_serves_no_relay_send() {
     h.stop().await;
 }
 
-// Review: the app's switch and auto-activation read fleet ownership fresh
-// too, and fail closed while a broker cannot be read.
-#[tokio::test]
-async fn every_registration_path_reads_fleet_ownership_fresh() {
-    use agent_relay_probe::relay::protocol::ErrorKind;
-    let h = Harness::start().await;
-    let codex = Target::new(SessionKind::Codex, CODEX);
-    *h.sessions.2.lock().unwrap() = Ok(vec![codex.clone()]);
-    let owned = h
-        .core
-        .register_target(&codex, None, None)
-        .await
-        .unwrap_err();
-    assert_eq!(owned.data.kind, ErrorKind::Refused);
-    *h.sessions.2.lock().unwrap() = Err("The broker could not be read.".into());
-    let unknown = h
-        .core
-        .register_target(&codex, None, None)
-        .await
-        .unwrap_err();
-    assert_eq!(unknown.data.kind, ErrorKind::FleetUnavailable);
-    assert!(unknown.data.retryable);
-    assert!(h.fake.calls("POST", "/v1/agents").is_empty());
-    *h.sessions.2.lock().unwrap() = Ok(Vec::new());
-    h.core.register_target(&codex, None, None).await.unwrap();
-    h.stop().await;
-}
-
-// Review: an activation failure clears from /setup/status once the delivery
-// loop has put the sessions on the relay.
 #[tokio::test]
 async fn an_activation_failure_clears_once_activation_recovers() {
     let h = Harness::start().await;
@@ -4919,7 +4065,10 @@ async fn an_activation_failure_clears_once_activation_recovers() {
     )
     .await
     .unwrap();
-    *h.sessions.2.lock().unwrap() = Err("The broker could not be read.".into());
+    // Relaycast paces the first registration; the rest wait out its short
+    // backoff without spending activation admissions.
+    h.fake
+        .set_api_error("POST /v1/agents", Some((429, "rate_limit_exceeded")));
     assert_eq!(
         code(
             h.call(
@@ -4937,7 +4086,9 @@ async fn an_activation_failure_clears_once_activation_recovers() {
         .await
         .unwrap();
     assert_eq!(status["defaults_error"]["code"], "activation_failed");
-    *h.sessions.2.lock().unwrap() = Ok(Vec::new());
+    h.fake.set_api_error("POST /v1/agents", None);
+    // A session changing makes activation due again.
+    h.sessions.0.lock().unwrap()[0].title = "Renamed".into();
     eventually("auto-activation", || h.fake.agent_names().len() >= 3).await;
     // A status read asks for the activation check, which clears the error
     // in the background; a later read reports it cleared.
@@ -4956,8 +4107,6 @@ async fn an_activation_failure_clears_once_activation_recovers() {
     h.stop().await;
 }
 
-// A delivery the session's route refuses for good is failed once, not
-// retryable, never acknowledged and never injected again.
 #[tokio::test]
 async fn a_permanently_refused_delivery_fails_once() {
     use agent_relay_probe::relay::inject::InjectOutcome;
@@ -4982,173 +4131,6 @@ async fn a_permanently_refused_delivery_fails_once() {
         .as_deref()
         .is_some_and(|d| d.starts_with("Refused; not retried"))));
     h.stop().await;
-}
-
-/// A probe whose install is found at once and whose `status` answers what
-/// the test last set.
-struct StatusProbe {
-    status: Mutex<Value>,
-    /// The answer to `installs`.
-    installs: Value,
-}
-
-impl ProbeRunner for StatusProbe {
-    fn run(
-        &self,
-        args: Vec<String>,
-        _: Option<Duration>,
-    ) -> BoxFuture<'_, Result<Value, UploaderError>> {
-        let answer = match args[0].as_str() {
-            "installs" => Ok(self.installs.clone()),
-            "status" => Ok(self.status.lock().unwrap().clone()),
-            "sharing" => Ok(json!({"sharing_mode": "new", "regenerated": false})),
-            _ => Ok(json!({})),
-        };
-        Box::pin(async move { answer })
-    }
-
-    fn install(&self, _: Vec<String>, _: Option<Secret>) -> Result<InstallRun, UploaderError> {
-        Err(UploaderError::new("No sign-in in this harness."))
-    }
-
-    fn cancel_all(&self) -> BoxFuture<'_, Result<(), UploaderError>> {
-        Box::pin(async { Ok(()) })
-    }
-}
-
-/// `/setup/status` once its uploader summary satisfies `done`. The daemon
-/// refreshes the shared snapshot every five seconds; pace this caller below
-/// the real 30-requests-per-minute limit across all three stage transitions.
-#[cfg(feature = "history")]
-async fn uploader_status(h: &Harness, done: impl Fn(&Value) -> bool) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let status = status_promptly(h).await;
-        if done(&status["uploader"]) {
-            return status["uploader"].clone();
-        }
-        assert!(Instant::now() < deadline, "uploader status: {status}");
-        tokio::time::sleep(Duration::from_secs(1)).await;
-    }
-}
-
-// The uploader summary carries the stage, why delivery fails, why the
-// upload sign-in could not be renewed, and when an upload was last
-// acknowledged. Records waiting too long with no acknowledgement degrade
-// health whatever the failure, even with none reported.
-// The uploader's status and sharing need session history.
-#[cfg(feature = "history")]
-#[tokio::test]
-async fn setup_status_reports_the_upload_stage_failure_and_last_acknowledgement() {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64;
-    let acknowledged = now - 10 * 60 * 1_000;
-    let probe = Arc::new(StatusProbe {
-        status: Mutex::new(
-            json!({"running": true, "paused": false, "sharing_mode": "new",
-            "delivery": {"bootstrap_complete": true, "pending_records": 4, "acknowledged_records": 9,
-                "last_acknowledged_ms": now - 1_000, "oldest_pending_ms": now - 1_000,
-                "failure": null},
-            "sessions": {"shared": 1, "total": 1}}),
-        ),
-        installs: stalled_install(),
-    });
-    let h = Harness::start_complete(true, false, Some(probe.clone() as Arc<dyn ProbeRunner>)).await;
-    let uploader = uploader_status(&h, |u| u["stage"] == "uploading").await;
-    assert_eq!(uploader["healthy"], true);
-    assert_eq!(uploader["stalled"], false);
-    assert_eq!(uploader["failure_code"], Value::Null);
-    assert_eq!(uploader["last_acknowledged_ms"], now - 1_000);
-
-    // The same queue, unacknowledged for ten minutes.
-    {
-        let mut status = probe.status.lock().unwrap();
-        status["delivery"]["last_acknowledged_ms"] = json!(acknowledged);
-        status["delivery"]["oldest_pending_ms"] = json!(acknowledged);
-    }
-    let uploader = uploader_status(&h, |u| u["stalled"] == true).await;
-    assert_eq!(uploader["stage"], "needs_attention");
-    assert_eq!(uploader["healthy"], false);
-    assert_eq!(uploader["last_acknowledged_ms"], acknowledged);
-
-    // Blocked on sign-in that Cloud refused to renew.
-    {
-        let mut status = probe.status.lock().unwrap();
-        status["delivery"]["failure"] =
-            json!("Agent Relay Cloud refused to renew the upload sign-in.");
-        status["delivery"]["failure_code"] = json!("authentication_required");
-        status["delivery"]["renewal_failure"] = json!("cloud_refused");
-    }
-    let uploader = uploader_status(&h, |u| !u["failure_code"].is_null()).await;
-    assert_eq!(uploader["failure_code"], "authentication_required");
-    assert_eq!(uploader["renewal_failure"], "cloud_refused");
-    assert_eq!(uploader["stage"], "needs_attention");
-    assert_eq!(uploader["healthy"], false);
-    assert_eq!(uploader["pending_records"], 4);
-    h.stop().await;
-}
-
-// Status names the signed-in person as `account.status` reports them; with
-// no account on this computer there is no one to name.
-#[tokio::test]
-async fn setup_status_names_the_signed_in_account() {
-    let mut installs = stalled_install();
-    installs["installs"][0]["account_name"] = json!("Ada Lovelace");
-    installs["installs"][0]["account_email"] = json!("ada@example.com");
-    let probe = Arc::new(StatusProbe {
-        status: Mutex::new(json!({"running": true, "paused": false, "sharing_mode": "new"})),
-        installs,
-    });
-    let h = Harness::start_complete(true, false, Some(probe as Arc<dyn ProbeRunner>)).await;
-    eventually("the account signed in", || {
-        h.core.status().account.state == SignInState::SignedIn
-    })
-    .await;
-    let status = status_promptly(&h).await;
-    assert_eq!(
-        status["account"],
-        json!({"name": "Ada Lovelace", "email": "ada@example.com"})
-    );
-    h.stop().await;
-
-    let h = Harness::start().await;
-    assert_eq!(status_promptly(&h).await["account"], Value::Null);
-    h.stop().await;
-}
-
-/// Queues posts while the agent's queue read is parked, so one pass reads
-/// them all; returns `(delivery id, message id)` for each.
-async fn queue_in_one_pass(
-    h: &Harness,
-    agent: &str,
-    items: &[(&str, &str, Option<&str>, &str)],
-) -> Vec<(String, String)> {
-    // Park a read first: reads of one agent's queue are serial, so none
-    // already under way can see only some of the items.
-    let release = h.fake.hold("GET /v1/deliveries");
-    let parked = h.fake.held("GET /v1/deliveries");
-    h.core.request_drain(agent);
-    eventually("a queue read parked", || {
-        h.fake.held("GET /v1/deliveries") > parked
-    })
-    .await;
-    let queued = items
-        .iter()
-        .map(|(reason, sender, channel, text)| h.fake.queue(agent, reason, *channel, sender, text))
-        .collect();
-    release.send(true).unwrap();
-    queued
-}
-
-fn channel_injections(h: &Harness) -> Vec<String> {
-    h.injector
-        .injected()
-        .into_iter()
-        .map(|i| i.text)
-        .filter(|text| text.contains("a channel you subscribed to"))
-        .collect()
 }
 
 #[tokio::test]
@@ -5256,6 +4238,52 @@ async fn subscribed_channel_posts_in_one_pass_become_one_turn_with_reply_instruc
             "{channel} {thread}"
         );
     }
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn channel_posts_that_keep_waiting_are_reported_once() {
+    let h = Harness::start().await;
+    let mut client = Client::connect(&h.home.join("run/core.sock")).await;
+    client
+        .ok("subscribe", json!({"topics": ["activity"]}))
+        .await;
+    h.register(IN_CODEX, json!({"name": "codex-api"})).await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    h.fake.seed_channel("swarm", &["codex-api", "alice"]);
+    for _ in 0..200 {
+        h.injector
+            .then(InjectOutcome::Waiting("Waiting — session busy".into()));
+    }
+    queue_in_one_pass(
+        &h,
+        "codex-api",
+        &[("message", "alice", Some("ch_swarm"), "one")],
+    )
+    .await;
+    let warning = "@codex-api: 1 message has not gone into the session";
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !client
+        .events
+        .iter()
+        .any(|e| e.to_string().contains(warning))
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no warning: {:?}",
+            client.events
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        client.ok("activity.list", json!({})).await;
+    }
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    client.ok("activity.list", json!({})).await;
+    let warnings = client
+        .events
+        .iter()
+        .filter(|e| e.to_string().contains("has not gone into the session"))
+        .count();
+    assert_eq!(warnings, 1);
     h.stop().await;
 }
 
@@ -5438,10 +4466,6 @@ async fn a_connect_guest_only_ever_gets_socket_commands() {
     let target = Target::new(SessionKind::Codex, CODEX);
     assert_eq!(h.core.relay_mcp_access(&target), McpAccess::SocketOnly);
     h.stop().await;
-}
-
-fn acked(h: &Harness, delivery: &str) -> bool {
-    h.fake.delivery_state(delivery).map(|d| d.state).as_deref() == Some("acked")
 }
 
 #[tokio::test]
@@ -5730,6 +4754,10 @@ async fn an_agent_reads_and_changes_settings_and_each_change_is_recorded() {
 #[tokio::test]
 async fn an_agent_cannot_widen_trust_but_may_narrow_it() {
     let h = Harness::start().await;
+    // Re-enabling a person's explicit opt-out widens access.
+    h.core
+        .set_settings(&serde_json::from_value(json!({"auto_activate": false})).unwrap())
+        .unwrap();
     h.register(IN_CODEX, json!({"name": "codex-api"})).await;
     let listed = h
         .call(IN_CODEX, "GET", "/settings", Value::Null)
@@ -5916,6 +4944,109 @@ async fn settings_requests_share_the_sessions_rate_limit() {
 }
 
 #[tokio::test]
+async fn an_unread_dm_to_a_claude_session_is_reported_stalled() {
+    let h = Harness::start().await;
+    *h.injector.transcript.lock().unwrap() = Some(idle_transcript());
+    h.register(IN_CLAUDE, json!({"name": "claude-api"})).await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let (delivery, _) = h.fake.send_dm("alice", "claude-api", "Are you there?");
+    eventually("delivered", || acked(&h, &delivery)).await;
+    eventually("the stall", || inbox_stall(&h, "claude-api") == Some(1)).await;
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn an_unread_channel_post_to_a_claude_session_is_reported_stalled() {
+    let h = Harness::start().await;
+    *h.injector.transcript.lock().unwrap() = Some(idle_transcript());
+    h.register(IN_CLAUDE, json!({"name": "claude-api"})).await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    h.fake.seed_channel("swarm", &["claude-api", "alice"]);
+    let posts = queue_in_one_pass(
+        &h,
+        "claude-api",
+        &[("message", "alice", Some("ch_swarm"), "Schema is merged.")],
+    )
+    .await;
+    eventually("delivered", || posts.iter().all(|(id, _)| acked(&h, id))).await;
+    assert_eq!(channel_injections(&h).len(), 1);
+    eventually("the stall", || inbox_stall(&h, "claude-api") == Some(1)).await;
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn an_unread_message_to_a_renamed_claude_session_is_reported_stalled() {
+    let h = Harness::start().await;
+    *h.injector.transcript.lock().unwrap() = Some(idle_transcript());
+    h.register(IN_CLAUDE, json!({"name": "claude-api"})).await;
+    h.call(IN_CLAUDE, "POST", "/register", json!({"name": "reviewer"}))
+        .await
+        .unwrap();
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let (delivery, _) = h.fake.send_dm("alice", "reviewer", "Under your new name?");
+    eventually("delivered", || acked(&h, &delivery)).await;
+    // Watched under the registration, which every listing names.
+    eventually("the stall", || inbox_stall(&h, "claude-api") == Some(1)).await;
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_message_left_unread_before_the_core_started_is_reported_stalled() {
+    // The core that delivered it is gone; the transcript still shows it
+    // enqueued and never read.
+    let h = Harness::start().await;
+    let enqueued = json!({
+        "type": "queue-operation",
+        "operation": "enqueue",
+        "timestamp": iso_minutes_ago(30),
+        "sessionId": CLAUDE,
+        "content": "[via Agent Relay — from @alice to @claude-api · message m-1 · ref 0123456789ab]\nhello",
+    });
+    let mut transcript = idle_transcript();
+    transcript.extend(claude_transcript(&[enqueued]));
+    *h.injector.transcript.lock().unwrap() = Some(transcript);
+    h.register(IN_CLAUDE, json!({"name": "claude-api"})).await;
+    eventually("the stall", || inbox_stall(&h, "claude-api") == Some(1)).await;
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_transcript_unreadable_when_the_core_starts_is_recovered_later() {
+    let h = Harness::start().await;
+    h.register(IN_CLAUDE, json!({"name": "claude-api"})).await;
+    // The first passes cannot read the transcript.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let enqueued = json!({
+        "type": "queue-operation",
+        "operation": "enqueue",
+        "timestamp": iso_minutes_ago(30),
+        "sessionId": CLAUDE,
+        "content": "[via Agent Relay — from @alice to @claude-api · message m-1 · ref 0123456789ab]\nhello",
+    });
+    let mut transcript = idle_transcript();
+    transcript.extend(claude_transcript(&[enqueued]));
+    *h.injector.transcript.lock().unwrap() = Some(transcript);
+    eventually("the stall", || inbox_stall(&h, "claude-api") == Some(1)).await;
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn an_unreadable_transcript_keeps_an_established_stall() {
+    let h = Harness::start().await;
+    *h.injector.transcript.lock().unwrap() = Some(idle_transcript());
+    h.register(IN_CLAUDE, json!({"name": "claude-api"})).await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    let (delivery, _) = h.fake.send_dm("alice", "claude-api", "Are you there?");
+    eventually("delivered", || acked(&h, &delivery)).await;
+    eventually("the stall", || inbox_stall(&h, "claude-api") == Some(1)).await;
+    // The transcript cannot be read for a while: nothing was seen read.
+    *h.injector.transcript.lock().unwrap() = None;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(inbox_stall(&h, "claude-api"), Some(1));
+    h.stop().await;
+}
+
+#[tokio::test]
 async fn a_session_can_keep_messaging_one_peer_until_its_rate_limit() {
     let h = Harness::start().await;
     h.register(IN_CODEX, json!({"name": "codex-api"})).await;
@@ -5958,5 +5089,112 @@ async fn a_session_can_keep_messaging_one_peer_until_its_rate_limit() {
     )
     .await
     .unwrap();
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn a_fleet_workers_connect_session_left_out_of_discovery_keeps_receiving() {
+    let h = Harness::start().await;
+    h.call(
+        IN_CODEX,
+        "POST",
+        "/connect/join",
+        json!({"link": "connect-1"}),
+    )
+    .await
+    .unwrap();
+    let codex = Target::new(SessionKind::Codex, CODEX);
+    // Discovery leaves out the sessions fleet workers own.
+    *h.sessions.2.lock().unwrap() = Ok(vec![codex.clone()]);
+    h.sessions
+        .0
+        .lock()
+        .unwrap()
+        .retain(|session| session.target != codex);
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let (delivery, _) = h
+        .connect_fake
+        .send_dm("connect-host", "connect-guest", "For the worker.");
+    eventually("the fleet worker's Connect delivery", || {
+        h.connect_fake
+            .delivery_state(&delivery)
+            .is_some_and(|item| item.state == "acked")
+    })
+    .await;
+    h.stop().await;
+}
+
+// OutboundTests.testRegistrationAdmissionUsesFreshFleetOwnership,
+// testRegistrationAdmissionFailsClosedWhenAnyBrokerCannotBeRead,
+// test_a_fleet_owned_session_cannot_take_a_second_identity and
+// test_a_registered_session_keeps_access_when_fleet_ownership_overlaps.
+#[tokio::test]
+async fn a_fleet_owned_session_takes_no_second_identity() {
+    let h = Harness::start().await;
+    *h.sessions.2.lock().unwrap() = Ok(vec![Target::new(SessionKind::Codex, CODEX)]);
+    assert_eq!(
+        code(h.call(IN_CODEX, "POST", "/register", json!({})).await),
+        (403, "not_a_relay_session".into())
+    );
+    // Status stays available to it.
+    h.call(IN_CODEX, "GET", "/whoami", Value::Null)
+        .await
+        .unwrap();
+    *h.sessions.2.lock().unwrap() = Err("The broker at 127.0.0.1:9 could not be reached.".into());
+    assert_eq!(
+        code(h.call(IN_CLAUDE, "POST", "/register", json!({})).await),
+        (503, "fleet_unavailable".into())
+    );
+    assert!(h.fake.calls("POST", "/v1/agents").is_empty());
+    // A session already registered keeps working when ownership overlaps.
+    *h.sessions.2.lock().unwrap() = Ok(Vec::new());
+    h.register(IN_CLAUDE, json!({})).await;
+    *h.sessions.2.lock().unwrap() = Ok(vec![Target::new(SessionKind::ClaudeTerminal, CLAUDE)]);
+    let again = h.register(IN_CLAUDE, json!({})).await;
+    assert_eq!(again["already_registered"], true);
+    h.call(IN_CLAUDE, "DELETE", "/register", Value::Null)
+        .await
+        .unwrap();
+    h.stop().await;
+}
+
+// Review: the app's switch and auto-activation read fleet ownership fresh
+// too, and fail closed while a broker cannot be read.
+#[tokio::test]
+async fn every_registration_path_reads_fleet_ownership_fresh() {
+    use agent_relay_probe::relay::protocol::ErrorKind;
+    let h = Harness::start().await;
+    let codex = Target::new(SessionKind::Codex, CODEX);
+    *h.sessions.2.lock().unwrap() = Ok(vec![codex.clone()]);
+    let owned = h
+        .core
+        .register_target(&codex, None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(owned.data.kind, ErrorKind::Refused);
+    *h.sessions.2.lock().unwrap() = Err("The broker could not be read.".into());
+    let unknown = h
+        .core
+        .register_target(&codex, None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(unknown.data.kind, ErrorKind::FleetUnavailable);
+    assert!(unknown.data.retryable);
+    assert!(h.fake.calls("POST", "/v1/agents").is_empty());
+    *h.sessions.2.lock().unwrap() = Ok(Vec::new());
+    h.core.register_target(&codex, None, None).await.unwrap();
+    h.stop().await;
+}
+
+/// A core with no account reports its workspace key as connected, and no
+/// Cloud person, account health or identity sync, without waiting on anything.
+#[tokio::test]
+async fn setup_status_answers_with_no_account() {
+    let h = Harness::start().await;
+    let status = status_promptly(&h).await;
+    assert_eq!(status["signed_in"], true, "{status}");
+    assert_eq!(status["account"], Value::Null, "{status}");
+    assert_eq!(status["auth_health"], Value::Null, "{status}");
+    assert_eq!(status["cloud_identity_sync"], Value::Null, "{status}");
     h.stop().await;
 }

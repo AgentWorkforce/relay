@@ -264,12 +264,12 @@ impl CodexOutbox {
     }
 
     fn run(&self, sql: &str, values: impl rusqlite::Params) -> Result<usize> {
-        self.with(|connection| connection.execute(sql, values))
+        self.with(|connection| connection.prepare_cached(sql)?.execute(values))
     }
 
     fn query(&self, sql: &str, values: impl rusqlite::Params) -> Result<Vec<CodexOutboxMessage>> {
         self.with(|connection| {
-            let mut statement = connection.prepare(sql)?;
+            let mut statement = connection.prepare_cached(sql)?;
             let rows = statement.query_map(values, read_message)?;
             rows.collect()
         })
@@ -598,7 +598,7 @@ impl CodexOutbox {
                     [],
                 )?;
                 let rows = {
-                    let mut statement = transaction.prepare(
+                    let mut statement = transaction.prepare_cached(
                         "select seq, id, state, reply, error, at from inbound_acks
                         where acknowledged = 0 and seq <= (select through from inbound_batch where slot = 1)
                         order by seq",

@@ -2,7 +2,7 @@
 //! Original provider files are never modified. Cloud resets suppress rediscovery;
 //! local development resets clear that suppression and never contact Cloud.
 use super::{bridge, collector, history, read_config, save_json, Config};
-use agent_relay_probe::delivery::{self, SessionIdentity};
+use crate::delivery::{self, SessionIdentity};
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fs, path::Path};
@@ -24,24 +24,24 @@ fn root() -> Result<std::path::PathBuf> {
 }
 
 /// Readers and reset share a process-independent lock, including the private caches.
-pub fn reader_lock() -> Result<agent_relay_probe::history_access::Access> {
+pub fn reader_lock() -> Result<crate::history_access::Access> {
     reader_lock_at(&root()?)
 }
-fn reader_lock_at(root: &Path) -> Result<agent_relay_probe::history_access::Access> {
-    match agent_relay_probe::history_access::try_reader(root) {
+fn reader_lock_at(root: &Path) -> Result<crate::history_access::Access> {
+    match crate::history_access::try_reader(root) {
         Ok(reader) => Ok(reader),
-        Err(error) if agent_relay_probe::platform::fs::lock_held(&error) => Err(super::user_error(
-            agent_relay_probe::history_access::RESET_BUSY,
-        )),
+        Err(error) if crate::platform::fs::lock_held(&error) => {
+            Err(super::user_error(crate::history_access::RESET_BUSY))
+        }
         Err(error) => Err(error.into()),
     }
 }
-fn access_lock(exclusive: bool) -> Result<agent_relay_probe::history_access::Access> {
+fn access_lock(exclusive: bool) -> Result<crate::history_access::Access> {
     let root = root()?;
     Ok(if exclusive {
-        agent_relay_probe::history_access::writer(&root)?
+        crate::history_access::writer(&root)?
     } else {
-        agent_relay_probe::history_access::reader(&root)?
+        crate::history_access::reader(&root)?
     })
 }
 
@@ -187,7 +187,7 @@ pub fn recover(directory: &Path) -> Result<()> {
 fn recover_locked(directory: &Path) -> Result<()> {
     recover_with(directory, |plan| {
         std::env::set_var("RELAYHISTORY_HOME", directory);
-        agent_relay_probe::destination::reset_sessions(
+        crate::destination::reset_sessions(
             &plan.config.history_url,
             &plan.config.delivery_account,
             &plan.request_id,
@@ -238,7 +238,7 @@ fn recover_with(directory: &Path, cloud: impl FnOnce(&ResetPlan) -> Result<()>) 
             destination_id: "relayhistory".into(),
             instance_id: "teams-probe".into(),
             account_id: plan.config.delivery_account.clone(),
-            mapping_version: agent_relay_probe::destination::MAPPING_VERSION.into(),
+            mapping_version: crate::destination::MAPPING_VERSION.into(),
             selection: collector::selection(false),
             limits: Default::default(),
         },
@@ -280,13 +280,13 @@ mod tests {
     fn listing_reader_fails_fast_when_reset_intent_waits_for_its_daemon() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().to_owned();
-        let daemon = agent_relay_probe::history_access::reader(&root).unwrap();
+        let daemon = crate::history_access::reader(&root).unwrap();
         let reset_root = root.clone();
         let reset = std::thread::spawn(move || {
-            let _reset = agent_relay_probe::history_access::writer(&reset_root).unwrap();
+            let _reset = crate::history_access::writer(&reset_root).unwrap();
         });
         let started = std::time::Instant::now();
-        while !agent_relay_probe::history_access::reset_requested(&root).unwrap() {
+        while !crate::history_access::reset_requested(&root).unwrap() {
             assert!(started.elapsed() < std::time::Duration::from_secs(5));
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
@@ -309,7 +309,7 @@ mod tests {
         helper.join().unwrap();
         assert_eq!(
             fast.unwrap(),
-            Some(agent_relay_probe::history_access::RESET_BUSY.into())
+            Some(crate::history_access::RESET_BUSY.into())
         );
     }
 
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn local_reset_cli_requires_an_explicit_target_and_confirmation() {
         use clap::Parser;
-        let cli = crate::Cli::try_parse_from([
+        let cli = crate::probe::Cli::try_parse_from([
             "probe",
             "sessions",
             "reset",
@@ -388,7 +388,9 @@ mod tests {
             LOCAL_CONFIRMATION,
         ]);
         assert!(cli.is_ok());
-        assert!(crate::Cli::try_parse_from(["probe", "sessions", "reset", "--local"]).is_err());
+        assert!(
+            crate::probe::Cli::try_parse_from(["probe", "sessions", "reset", "--local"]).is_err()
+        );
     }
 
     #[test]
@@ -407,16 +409,16 @@ mod tests {
 
     #[test]
     fn local_reset_rediscovers_sessions_without_cloud_or_losing_sign_in() {
-        let Some(home) = crate::live::tests::isolated_home("session_reset::tests::local_reset_rediscovers_sessions_without_cloud_or_losing_sign_in") else { return; };
+        let Some(home) = crate::probe::live::tests::isolated_home("probe::session_reset::tests::local_reset_rediscovers_sessions_without_cloud_or_losing_sign_in") else { return; };
         let directory = home.join("install");
         fs::create_dir_all(&directory).unwrap();
         let source = home.join(".claude/projects/example/old.jsonl");
         fs::create_dir_all(source.parent().unwrap()).unwrap();
-        let original = crate::live::tests::transcript_line("old", "preserved conversation");
+        let original = crate::probe::live::tests::transcript_line("old", "preserved conversation");
         fs::write(&source, &original).unwrap();
         let config: Config = serde_json::from_value(serde_json::json!({
             "version":1,"site_url":"https://agentrelay.com","account_id":"user","org_id":"org",
-            "workspace_id":"workspace","history_url":"https://history.agentrelay.com","delivery_account":agent_relay_probe::destination::account_id("org", Some("workspace")),
+            "workspace_id":"workspace","history_url":"https://history.agentrelay.com","delivery_account":crate::destination::account_id("org", Some("workspace")),
             "job_id":"old-job","include_existing":true,"sharing_mode":"all"
         })).unwrap();
         save_json(&directory.join("config.json"), &config).unwrap();
@@ -494,14 +496,14 @@ mod tests {
 
     #[test]
     fn reset_recovery_erases_caches_preserves_sources_and_suppresses_rediscovery() {
-        let Some(home) = crate::live::tests::isolated_home("session_reset::tests::reset_recovery_erases_caches_preserves_sources_and_suppresses_rediscovery") else { return; };
+        let Some(home) = crate::probe::live::tests::isolated_home("probe::session_reset::tests::reset_recovery_erases_caches_preserves_sources_and_suppresses_rediscovery") else { return; };
         let directory = home.join("install");
         fs::create_dir_all(&directory).unwrap();
         let source = home.join(".claude/projects/example/old.jsonl");
         fs::create_dir_all(source.parent().unwrap()).unwrap();
         fs::write(
             &source,
-            crate::live::tests::transcript_line("old", "private-text"),
+            crate::probe::live::tests::transcript_line("old", "private-text"),
         )
         .unwrap();
         let db_path = directory.join("history.db");
@@ -509,7 +511,7 @@ mod tests {
         history::hydrate(&db_path, "claude", "old", || false).unwrap();
         let config: Config = serde_json::from_value(serde_json::json!({
             "version":1,"site_url":"https://agentrelay.com","account_id":"user","org_id":"org",
-            "workspace_id":"workspace","history_url":"https://history.agentrelay.com","delivery_account":agent_relay_probe::destination::account_id("org", Some("workspace")),
+            "workspace_id":"workspace","history_url":"https://history.agentrelay.com","delivery_account":crate::destination::account_id("org", Some("workspace")),
             "job_id":"old-job","include_existing":true,"sharing_mode":"all"
         })).unwrap();
         save_json(&directory.join("config.json"), &config).unwrap();
@@ -557,7 +559,7 @@ mod tests {
         drop(store);
         fs::write(
             source.parent().unwrap().join("new.jsonl"),
-            crate::live::tests::transcript_line("new", "fresh"),
+            crate::probe::live::tests::transcript_line("new", "fresh"),
         )
         .unwrap();
         history::discover(&db_path, None, || false).unwrap();

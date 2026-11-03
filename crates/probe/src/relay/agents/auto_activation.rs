@@ -33,13 +33,14 @@ impl ActivationSettings {
 }
 
 /// Kinds that join only with their own opt-in on top of `auto_activate`: an
-/// open Pi or OpenCode session is reached through an extension or plugin
-/// the desktop installs by default, so turning `auto_activate` on alone
-/// never puts one on the relay; `pi_auto_activate` / `opencode_auto_activate`
-/// (which `relay init` turns on for a person who chose that tool) do.
+/// open Pi, Oh My Pi or OpenCode session is reached through an extension or
+/// plugin the desktop installs by default, so turning `auto_activate` on
+/// alone never puts one on the relay; `pi_auto_activate` (Pi and Oh My Pi,
+/// which share Pi's extension) / `opencode_auto_activate` (which `relay
+/// init` turns on for a person who chose that tool) do.
 fn own_opt_in(settings: &ActivationSettings, kind: SessionKind) -> Option<bool> {
     match kind {
-        SessionKind::Pi => Some(settings.pi),
+        SessionKind::Pi | SessionKind::Omp => Some(settings.pi),
         SessionKind::OpenCodeOpen => Some(settings.opencode),
         _ => None,
     }
@@ -109,7 +110,7 @@ mod tests {
     // other kind or overrides `auto_activate` off or unset.
     #[test]
     fn pi_and_opencode_need_their_own_opt_in_on_top_of_auto_activate() {
-        for kind in [SessionKind::Pi, SessionKind::OpenCodeOpen] {
+        for kind in [SessionKind::Pi, SessionKind::Omp, SessionKind::OpenCodeOpen] {
             assert!(!activation_applies(&setting(Some(true)), kind), "{kind:?}");
             assert!(!activation_applies(&setting(None), kind), "{kind:?}");
         }
@@ -119,12 +120,14 @@ mod tests {
             opencode: true,
         };
         assert!(activation_applies(&both, SessionKind::Pi));
+        assert!(activation_applies(&both, SessionKind::Omp));
         assert!(activation_applies(&both, SessionKind::OpenCodeOpen));
         let pi_only = ActivationSettings {
             opencode: false,
             ..both
         };
         assert!(activation_applies(&pi_only, SessionKind::Pi));
+        assert!(activation_applies(&pi_only, SessionKind::Omp));
         assert!(!activation_applies(&pi_only, SessionKind::OpenCodeOpen));
         for auto_activate in [Some(false), None] {
             let opted_in = ActivationSettings {

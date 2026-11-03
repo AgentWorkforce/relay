@@ -5,6 +5,7 @@
 //! notification, and the error model. Error messages are fixed, user-safe
 //! sentences; provider bodies, keys and tokens never reach them.
 
+use crate::relay::contract::plan::PlanLimitExceeded;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -114,6 +115,10 @@ pub struct ErrorData {
     pub kind: ErrorKind,
     /// Whether repeating the same request later can succeed.
     pub retryable: bool,
+    /// With `plan_limit_exceeded`: which cap was reached and how full it
+    /// is, when Relaycast's refusal said. Absent on every other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_limit: Option<PlanLimitExceeded>,
 }
 
 /// Every error a method can return.
@@ -139,6 +144,10 @@ pub enum ErrorKind {
     RelaycastRefused,
     /// Relaycast rejected the credential.
     Unauthorized,
+    /// The workspace's plan cap (devices, agents or humans) is reached;
+    /// repeating the request cannot succeed until the plan changes.
+    /// `data.plan_limit` carries the counters when Relaycast sent them.
+    PlanLimitExceeded,
     RateLimited,
     /// Relaycast, or this computer, has no such resource.
     NotFound,
@@ -205,8 +214,20 @@ impl RpcError {
             data: ErrorData {
                 kind,
                 retryable: kind.retryable(),
+                plan_limit: None,
             },
         }
+    }
+
+    /// A plan cap reached, with Relaycast's counters when it sent them.
+    pub fn plan_limit(details: Option<PlanLimitExceeded>) -> RpcError {
+        let message = match &details {
+            Some(details) => details.message(),
+            None => "This Agent Relay workspace has reached its plan limit. Upgrade its plan or wait for the quota to reset, then try again.".to_string(),
+        };
+        let mut error = RpcError::new(ErrorKind::PlanLimitExceeded, message);
+        error.data.plan_limit = details;
+        error
     }
 
     /// A history-only method (or setting) in a core built without session
@@ -252,10 +273,7 @@ impl RpcError {
             // A billing-period quota is also HTTP 429, but immediate retries
             // cannot recover it like a short-lived request-rate limit.
             relaycast::RelayError::Api { code, .. } if code == "plan_limit_exceeded" => {
-                RpcError::new(
-                    ErrorKind::RelaycastRefused,
-                    "This Agent Relay workspace has reached its plan limit. Upgrade its plan or wait for the quota to reset, then try again.",
-                )
+                RpcError::plan_limit(PlanLimitExceeded::from_relaycast(error))
             }
             error if error.is_auth_rejection() => RpcError::new(
                 ErrorKind::Unauthorized,
@@ -303,6 +321,7 @@ impl RpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::relay::contract::plan::PlanLimitKind;
     use serde_json::json;
 
     #[test]
@@ -371,10 +390,53 @@ mod tests {
         let error =
             relaycast::RelayError::api("plan_limit_exceeded", "private body rk_live_secret", 429);
         let mapped = RpcError::from_relaycast(&error);
-        assert_eq!(mapped.data.kind, ErrorKind::RelaycastRefused);
+        assert_eq!(mapped.data.kind, ErrorKind::PlanLimitExceeded);
         assert!(!mapped.data.retryable);
+        assert_eq!(
+            mapped.data.plan_limit, None,
+            "a body without counters is not typed"
+        );
         assert_eq!(mapped.message, "This Agent Relay workspace has reached its plan limit. Upgrade its plan or wait for the quota to reset, then try again.");
         assert!(!mapped.message.contains("rk_live_secret"));
+        let wire = serde_json::to_value(&mapped).unwrap();
+        assert!(wire["data"].get("plan_limit").is_none(), "{wire}");
+
+        let structured = relaycast::RelayError::Api {
+            code: "plan_limit_exceeded".into(),
+            message: "private body rk_live_secret".into(),
+            status: 429,
+            request_id: None,
+            attempts: 1,
+            retry_after_ms: None,
+            details: Some(
+                json!({"ok": false, "error": {"code": "plan_limit_exceeded", "message": "rk_live_secret", "limit": "agents", "max": 15, "current": 15, "plan": "intro"}}),
+            ),
+        };
+        let mapped = RpcError::from_relaycast(&structured);
+        assert_eq!(mapped.data.kind, ErrorKind::PlanLimitExceeded);
+        assert!(!mapped.data.retryable);
+        let details = mapped.data.plan_limit.clone().unwrap();
+        assert_eq!(
+            (
+                details.limit,
+                details.max,
+                details.current,
+                details.plan.as_str()
+            ),
+            (PlanLimitKind::Agents, 15, 15, "intro")
+        );
+        assert_eq!(mapped.message, "This workspace is using 15 of 15 agents on the Intro plan. Upgrade the plan to add more.");
+        let wire = serde_json::to_value(&mapped).unwrap();
+        assert_eq!(
+            wire["data"]["plan_limit"],
+            json!({"limit": "agents", "max": 15, "current": 15, "plan": "intro"})
+        );
+        assert!(!wire.to_string().contains("rk_live_secret"));
+        // A client of an older contract reads the data without the field.
+        let older: ErrorData =
+            serde_json::from_value(json!({"kind": "plan_limit_exceeded", "retryable": false}))
+                .unwrap();
+        assert_eq!(older.plan_limit, None);
 
         let transient = RpcError::from_relaycast(&relaycast::RelayError::api(
             "rate_limit_exceeded",

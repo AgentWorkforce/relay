@@ -7,7 +7,7 @@
 //! setting, and the relay-send socket.
 
 use crate::relay::claude::{self, ClaudeConfig};
-use crate::relay::claude_settings::{ClaudeSettings, DirectDeliveryError};
+use crate::relay::claude_settings::ClaudeSettings;
 use crate::relay::codex::app_server::TurnError;
 use crate::relay::codex::rollout::{self, RolloutSummary};
 use crate::relay::codex::router::{CodexRoutes, QueueError};
@@ -32,17 +32,16 @@ use crate::relay::opencode_existing;
 use crate::relay::outbound::{self, RelaySend, ServingPath};
 use crate::relay::outbox::effects;
 use crate::relay::process::{
-    claude_start_matches, codex_caller_thread, codex_locked_threads, resume_argument, ProcessTable,
-    SystemProcesses, MAX_ANCESTRY,
+    claude_start_matches, codex_caller_thread, codex_locked_threads, resume_argument,
+    ProcessSnapshot, ProcessTable, SystemProcesses, MAX_ANCESTRY,
 };
 use crate::relay::sessions::{
     CallerMiss, DiscoveredSession, SessionDirectory, SessionPartition, UnreadableSessionFile,
 };
-use crate::relay::setup::DirectDelivery;
 use crate::relay::store::{is_uuid, SessionKind, Target};
 use crate::relay::workspace;
 use std::collections::{HashMap, HashSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -50,6 +49,8 @@ use std::time::Duration;
 mod codex_router;
 mod directory_trait;
 mod native_continuation;
+mod paths;
+use paths::{expand_path, is_under};
 mod registered;
 mod session_directory;
 use session_directory::fleet_key;
@@ -60,6 +61,7 @@ mod terminal;
 #[derive(Clone, Debug)]
 pub struct LocalConfig {
     pub pi: crate::relay::pi::PiConfig,
+    pub omp: crate::relay::pi::PiConfig,
     /// Private records of leaders this core spawned; independent of existing-session discovery.
     pub spawned_grok: Option<PathBuf>,
     pub codex: CodexConfig,
@@ -116,7 +118,7 @@ impl LocalConfig {
                     // every drive path.
                     .split(if cfg!(windows) { ';' } else { ':' })
                     .filter(|part| !part.is_empty())
-                    .map(|part| expand_path(part, home))
+                    .filter_map(|part| expand_path(part, home))
                     .collect()
             })
             .unwrap_or_else(|| {
@@ -128,6 +130,7 @@ impl LocalConfig {
             });
         LocalConfig {
             pi: crate::relay::pi::PiConfig::from_env(env, home),
+            omp: crate::relay::pi::PiConfig::omp_from_env(env, home),
             spawned_grok: None,
             codex: CodexConfig::from_env(env, home),
             claude: ClaudeConfig::from_env(env, home),
@@ -151,66 +154,22 @@ impl LocalConfig {
     }
 }
 
-fn expand_path(value: &str, home: &Path) -> PathBuf {
-    value
-        .strip_prefix("~/")
-        .map(|rest| home.join(rest))
-        .unwrap_or_else(|| {
-            if value == "~" {
-                home.to_path_buf()
-            } else {
-                PathBuf::from(value)
-            }
-        })
-}
-
-/// A lexical absolute spelling, so a missing path cannot bypass a temporary
-/// root merely because `canonicalize` needs it to exist.
-fn normalized(path: &Path) -> PathBuf {
-    let mut result = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => result.push(prefix.as_os_str()),
-            Component::RootDir => result.push(Path::new("/")),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                result.pop();
-            }
-            Component::Normal(part) => result.push(part),
-        }
-    }
-    result
-}
-
-fn path_variants(path: &Path) -> Vec<PathBuf> {
-    let lexical = normalized(path);
-    let mut paths = vec![lexical.clone()];
-    if let Ok(resolved) = std::fs::canonicalize(path) {
-        let resolved = normalized(&resolved);
-        if resolved != lexical {
-            paths.push(resolved);
-        }
-    }
-    paths
-}
-
-fn is_under(path: &Path, roots: &[PathBuf]) -> bool {
-    let paths = path_variants(path);
-    let roots: Vec<PathBuf> = roots.iter().flat_map(|root| path_variants(root)).collect();
-    paths
-        .iter()
-        .any(|candidate| roots.iter().any(|root| candidate.starts_with(root)))
-}
-
 /// The sessions on this computer, found from their own state.
 pub struct LocalSessions {
     config: LocalConfig,
+    /// The kernel's process table, read directly: caller identification,
+    /// lock and incarnation proofs, and anything acted on at once.
     table: Arc<dyn ProcessTable>,
+    /// What discovery scans read: a time-bounded snapshot in the daemon
+    /// (`process::ProcessSnapshot`), never used to prove a caller.
+    scans: Arc<dyn ProcessTable>,
     /// The fleet's sessions as last read, kept out of the listing while
     /// a broker cannot be read.
     fleet_owned: std::sync::Mutex<HashSet<Target>>,
     /// Codex's threads as last read, kept while Codex holds its database.
     codex_threads: std::sync::Mutex<session_directory::CodexDiscoveryCache>,
+    /// The app-server's loaded threads as last read.
+    codex_loaded: codex::LoadedThreads,
     managed: Option<Arc<ManagedSessions>>,
     /// The Gateway's agents as last listed.
     openclaw: crate::relay::openclaw::Listing,
@@ -259,18 +218,6 @@ impl LocalSessions {
         }
     }
 
-    pub fn new(config: LocalConfig, table: Arc<dyn ProcessTable>) -> LocalSessions {
-        LocalSessions {
-            config,
-            table,
-            fleet_owned: Default::default(),
-            codex_threads: Default::default(),
-            managed: None,
-            openclaw: Default::default(),
-            hermes: Default::default(),
-        }
-    }
-
     pub fn with_managed(mut self, managed: Arc<ManagedSessions>) -> Self {
         self.managed = Some(managed);
         self
@@ -298,11 +245,11 @@ impl LocalSessions {
             .map(|binding| binding.session_id.as_str())
             .collect();
         let leader =
-            !crate::relay::existing_session::grok::open_leader_pids(&*self.table, self.config.uid)
+            !crate::relay::existing_session::grok::open_leader_pids(&*self.scans, self.config.uid)
                 .is_empty();
         crate::relay::grok::discover(
             &self.config.grok,
-            &*self.table,
+            &*self.scans,
             self.config.uid,
             leader,
             &|session| bound.contains(session) || claims.sessions.contains(session),
@@ -1229,7 +1176,9 @@ impl LocalInjector {
             }
             // OpenClaw's tools never run under this core's socket: its
             // answer is read back from the Gateway (`final_answer`).
-            SessionKind::OpenClaw | SessionKind::Hermes | SessionKind::Pi => false,
+            SessionKind::OpenClaw | SessionKind::Hermes | SessionKind::Pi | SessionKind::Omp => {
+                false
+            }
         }
     }
 
@@ -1700,7 +1649,7 @@ impl Injector for LocalInjector {
                 lock_held::inject(&self.config, &*self.table, target, message_id, text)
             }
             // Each sender has a session of its own (`inject_routed`).
-            SessionKind::OpenClaw | SessionKind::Hermes | SessionKind::Pi => {
+            SessionKind::OpenClaw | SessionKind::Hermes | SessionKind::Pi | SessionKind::Omp => {
                 InjectOutcome::Refused(
                     "This agent takes messages only through its registered agent.".into(),
                 )
@@ -1721,19 +1670,7 @@ impl Injector for LocalInjector {
     }
 
     fn inject_connect(&self, target: &Target, message_id: &str, text: &str) -> InjectOutcome {
-        match target.kind {
-            SessionKind::Codex => match self.fleet_codex_router(target) {
-                FleetCodexResolutionRouter::NotManaged => {
-                    self.codex.inject(&target.id, message_id, text)
-                }
-                FleetCodexResolutionRouter::Bound(router) => {
-                    router.inject(&target.id, message_id, text)
-                }
-                FleetCodexResolutionRouter::Unavailable(reason) => InjectOutcome::Retry(reason),
-                FleetCodexResolutionRouter::Refused(reason) => InjectOutcome::Refused(reason),
-            },
-            _ => self.inject(target, message_id, text),
-        }
+        self.connect_inject(target, message_id, text)
     }
 
     fn waiting_codex_turn(
@@ -1768,43 +1705,11 @@ impl Injector for LocalInjector {
     }
 
     fn observe_connect(&self, target: &Target, message_id: &str, text: &str) -> InjectOutcome {
-        match target.kind {
-            SessionKind::Codex => match self.fleet_codex_router(target) {
-                FleetCodexResolutionRouter::Bound(router) => router.observe(&target.id, message_id),
-                FleetCodexResolutionRouter::NotManaged => {
-                    // This may be an ordinary Codex handoff, or a fleet
-                    // handoff after restart with no live process from which
-                    // to recover the isolated SQLite home. Either way only
-                    // observe the shared rollout/default queue; never resend.
-                    self.codex.observe(&target.id, message_id)
-                }
-                FleetCodexResolutionRouter::Unavailable(reason) => {
-                    if let Some(cached) = self.fleet_codex.lock().unwrap().get(&target.key()) {
-                        cached.router.observe(&target.id, message_id)
-                    } else {
-                        InjectOutcome::Accepted(reason)
-                    }
-                }
-                FleetCodexResolutionRouter::Refused(reason) => {
-                    let cached = self
-                        .fleet_codex
-                        .lock()
-                        .unwrap()
-                        .get(&target.key())
-                        .map(|cached| cached.router.clone());
-                    if cached.as_ref().is_some_and(|router| {
-                        router.observe(&target.id, message_id) == InjectOutcome::Delivered
-                    }) {
-                        InjectOutcome::Delivered
-                    } else {
-                        InjectOutcome::InDoubt(format!(
-                            "Codex accepted this handoff before its fleet binding was lost — {reason}"
-                        ))
-                    }
-                }
-            },
-            _ => self.inject_connect(target, message_id, text),
-        }
+        self.connect_observe(target, message_id, text)
+    }
+
+    fn cancel_connect(&self, target: &Target, message_id: &str) {
+        self.connect_cancel(target, message_id);
     }
 
     fn inject_registered(
@@ -1816,6 +1721,12 @@ impl Injector for LocalInjector {
     ) -> InjectOutcome {
         self.deliver_registered(registration, delivery_id, message_id, text)
     }
+    fn note_pending(&self, target: &Target, from: &str, all: &[String], ids: Option<&[String]>) {
+        if target.kind == SessionKind::Codex {
+            self.codex.note_pending(&target.id, from, all, ids);
+        }
+    }
+
     fn cancel(&self, target: &Target, message_id: &str) {
         if target.kind == SessionKind::Codex {
             self.codex.cancel(&target.id, message_id);
@@ -1827,25 +1738,6 @@ impl Injector for LocalInjector {
             if let Some(cancelled) = self.managed_cancellations.lock().unwrap().get(&key) {
                 cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
             }
-        }
-    }
-
-    fn cancel_connect(&self, target: &Target, message_id: &str) {
-        if target.kind == SessionKind::Codex {
-            match self.fleet_codex_router(target) {
-                FleetCodexResolutionRouter::Bound(router) => router.cancel(&target.id, message_id),
-                FleetCodexResolutionRouter::NotManaged => {
-                    self.codex.cancel(&target.id, message_id);
-                }
-                FleetCodexResolutionRouter::Unavailable(_)
-                | FleetCodexResolutionRouter::Refused(_) => {
-                    if let Some(cached) = self.fleet_codex.lock().unwrap().get(&target.key()) {
-                        cached.router.cancel(&target.id, message_id);
-                    }
-                }
-            }
-        } else {
-            self.cancel(target, message_id);
         }
     }
 
@@ -1868,11 +1760,15 @@ impl Injector for LocalInjector {
         self.claude_host_note(target)
     }
 
+    fn native_pointer(&self, target: &Target, message_id: &str, text: &str) -> Option<String> {
+        self.claude_native_pointer(target, message_id, text)
+    }
+
     fn held_for_approval(&self, target: &Target) -> Option<String> {
         self.claude_held(target)
     }
 
-    fn inbox_transcript_tail(&self, target: &Target, max: u64) -> Option<(Vec<u8>, bool)> {
+    fn inbox_transcript_tail(&self, target: &Target, max: u64) -> Option<claude::inbox::Tail> {
         self.claude_inbox_tail(target, max)
     }
 
@@ -1925,9 +1821,9 @@ impl Injector for LocalInjector {
         registration: &crate::relay::store::Registration,
         message_ref: &str,
     ) -> Option<String> {
-        if registration.target.kind == SessionKind::Pi {
+        if let Some(extension) = self.config.extension(registration.target.kind) {
             return crate::relay::pi::final_answer(
-                &self.config.pi,
+                extension,
                 self.config.uid,
                 registration,
                 message_ref,
@@ -1956,36 +1852,17 @@ impl Injector for LocalInjector {
     }
 }
 
-impl DirectDelivery for ClaudeSettings {
-    fn delivers_directly(&self) -> bool {
-        ClaudeSettings::delivers_directly(self)
-    }
-
-    fn managed_value(&self) -> Option<String> {
-        ClaudeSettings::managed_value(self)
-    }
-
-    fn user_choice(&self) -> Option<String> {
-        ClaudeSettings::user_choice(self)
-    }
-
-    fn set_direct_delivery(&self, enabled: bool) -> Result<(), String> {
-        ClaudeSettings::set_direct_delivery(self, enabled).map_err(|error| match error {
-            DirectDeliveryError::ManagedPolicy => {
-                "Managed Claude settings do not allow direct delivery.".to_string()
-            }
-            other => other.to_string(),
-        })
-    }
-}
-
+mod connect_codex;
 mod gateways;
 mod grok_caller;
 mod lock_held;
 mod nearest;
 mod opencode_reply;
 mod plugins;
-pub use plugins::{plugins, plugins_with, plugins_with_options};
+pub use plugins::{
+    is_development, local_config, plugins, plugins_for, plugins_with, plugins_with_options,
+    ClientProfile,
+};
 
 /// The Codex side of the desktop mailbox's delivery passes: the same routes
 /// injection uses, over this computer's Codex.
@@ -2381,7 +2258,7 @@ mod tests {
         )
         .unwrap();
         db.execute(
-            "insert into threads values (?1, 'Fleet worker', 0, ?2)",
+            "insert into threads values (?1, 'Codex thread', 0, ?2)",
             [thread, source],
         )
         .unwrap();
@@ -2417,6 +2294,7 @@ mod tests {
         table.insert(320, process(310, 120));
         let config = LocalConfig {
             pi: crate::relay::pi::PiConfig::from_env(&|_| None, home),
+            omp: crate::relay::pi::PiConfig::omp_from_env(&|_| None, home),
             spawned_grok: None,
             codex: CodexConfig {
                 home: home.join(".codex"),
@@ -2772,7 +2650,6 @@ mod tests {
             }
         }
     }
-
     /// A managed OpenCode session `ses_exact` on a verified server, and the
     /// HTTP fake that records its prompts.
     fn managed_opencode(temp: &Path) -> (LocalInjector, Arc<CompletingOpenCode>) {
@@ -3188,6 +3065,7 @@ mod tests {
                 SessionKind::GrokOpen,
                 SessionKind::MuseOpen,
                 SessionKind::Pi,
+                SessionKind::Omp,
                 SessionKind::OpenCode,
                 SessionKind::OpenCodeOpen,
             ] {
@@ -3414,6 +3292,79 @@ mod tests {
             },
         );
         assert_eq!(target_of(&world, 320), None);
+    }
+
+    /// Caller identification and lock proofs read the kernel, never the
+    /// snapshot discovery scans share: a lock released or a pid reused
+    /// inside the snapshot's window proves nothing.
+    #[test]
+    fn caller_proofs_never_read_the_discovery_snapshot() {
+        use crate::relay::process::ProcessSnapshot;
+        let world = world();
+        let lock = PathBuf::from(format!(
+            "/Users/me/.codex/thread-writer-locks/{THREAD}.lock"
+        ));
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                open_files: vec![lock.clone()],
+                ..process(310, 130)
+            },
+        );
+        let tool = FakeProcess {
+            environment: [("CODEX_THREAD_ID".to_string(), THREAD.to_string())].into(),
+            ..process(400, 140)
+        };
+        world.table.insert(410, tool.clone());
+        let snapshot = Arc::new(ProcessSnapshot::with_window(
+            world.table.clone(),
+            std::time::Duration::from_secs(3600),
+        ));
+        let sessions = LocalSessions::new(world.sessions.config.clone(), world.table.clone())
+            .with_scans(snapshot.clone());
+        let codex = Some(Target::new(SessionKind::Codex, THREAD));
+        let target = |pid| sessions.caller(pid).ok().map(|found| found.target);
+        assert_eq!(target(410), codex);
+        assert!(sessions.holds_codex_thread(410, THREAD));
+        // Discovery's snapshot has seen both processes.
+        assert_eq!(snapshot.open_files(400), vec![lock]);
+        assert!(snapshot.environment_var(410, "CODEX_THREAD_ID").is_some());
+
+        // Codex released the thread's lock.
+        world.table.insert(
+            400,
+            FakeProcess {
+                executable: Some(codex_exe()),
+                ..process(310, 130)
+            },
+        );
+        assert!(!snapshot.open_files(400).is_empty(), "kept for the window");
+        assert!(!sessions.holds_codex_thread(410, THREAD));
+        assert_ne!(target(410), codex);
+
+        // The lock is back, but the tool exited and its pid now names
+        // another process.
+        world.table.insert(
+            400,
+            FakeProcess {
+                open_files: vec![PathBuf::from(format!(
+                    "/Users/me/.codex/thread-writer-locks/{THREAD}.lock"
+                ))],
+                executable: Some(codex_exe()),
+                ..process(310, 130)
+            },
+        );
+        world.table.insert(
+            410,
+            FakeProcess {
+                start: 150,
+                environment: Default::default(),
+                ..tool
+            },
+        );
+        assert!(snapshot.environment_var(410, "CODEX_THREAD_ID").is_some());
+        assert_ne!(target(410), codex);
     }
 
     // testDirectCodexResolutionUsesThePeerThreadEnvironment and
@@ -6732,10 +6683,7 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
         fn is_trusted_codex(&self, _: &Path) -> bool {
             panic!("process read")
         }
-        fn arguments(&self, _: i32) -> Vec<String> {
-            panic!("process read")
-        }
-        fn environment_var(&self, _: i32, _: &str) -> Option<String> {
+        fn command_line(&self, _: i32) -> crate::relay::process::CommandLine {
             panic!("process read")
         }
         fn open_files(&self, _: i32) -> Vec<PathBuf> {
@@ -6773,6 +6721,5 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
                 router: Arc::new(CodexRouter::new(Arc::new(UnusedCodexRoutes))),
             },
         );
-        assert!(injector.codex_inbox_stall(&target).is_none());
     }
 }

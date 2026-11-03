@@ -69,6 +69,10 @@ impl Outbound {
         request: &Request,
         stream: &mut CoreStream,
     ) -> Option<Result<Value, OutboundError>> {
+        if request.method == "GET" && request.path == super::mobile_handoff::WATCH {
+            self.mobile_handoff_watch(pid, uid, stream).await;
+            return None;
+        }
         if request.method != "POST" || request.path != PATH {
             return Some(self.handle(pid, uid, request).await);
         }

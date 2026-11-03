@@ -21,10 +21,10 @@ pub use incremental::{discover_paths, sweep_once, sweep_paths_once, sweep_source
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use agent_relay_probe::delivery::UpgradePending;
-use agent_relay_probe::relay::claude_dirs::{self, ClaudeDirs};
-use agent_relay_probe::relay::process::SystemProcesses;
-use agent_relay_probe::relay::workspace::relay_home;
+use crate::delivery::UpgradePending;
+use crate::relay::claude_dirs::{self, ClaudeDirs};
+use crate::relay::process::SystemProcesses;
+use crate::relay::workspace::relay_home;
 use ai_hist::{
     CaptureProgress, CatalogQuery, CatalogSession, CompactOptions, CompactReport, DiscoveryOptions,
     DiscoveryState, ForgetOptions, ForgetReport, ForgetScope, HydrateOptions, ProgressObserver,
@@ -370,6 +370,7 @@ pub struct Watched {
 
 /// Every path the store's own watch covers. A path two sources share is
 /// listed for each.
+#[cfg(test)]
 pub fn watched_paths(db: &Path) -> Result<Vec<Watched>> {
     let store = open_read(db)?;
     Ok(watched_paths_for(&store, extra_claude_roots(store.roots())))
@@ -427,7 +428,20 @@ pub fn catalog_rows(
 pub fn raw_paths(store: &SessionStore, sessions: &[SessionRef]) -> Result<Vec<Option<PathBuf>>> {
     Ok(catalog_rows(store, sessions)?
         .into_iter()
-        .map(|row| row.and_then(|row| row.raw_path))
+        .map(|row| {
+            row.and_then(|row| {
+                // Remote connectors may expose an opaque session ID as their
+                // raw locator. Remote-only provenance must not become a file
+                // path, or selected capture can cache a false folder denial.
+                let remote = !row.locations.is_empty()
+                    && row.locations.iter().all(|location| location == "remote");
+                if remote {
+                    None
+                } else {
+                    row.raw_path
+                }
+            })
+        })
         .collect())
 }
 
@@ -560,7 +574,7 @@ pub fn catalog(
     Ok(store
         .sessions(query)
         .filter(|row| match row {
-            Ok(row) => !forgotten.contains(&agent_relay_probe::delivery::SessionIdentity {
+            Ok(row) => !forgotten.contains(&crate::delivery::SessionIdentity {
                 source: row.source.as_str().into(),
                 session_id: row.session_id.clone(),
             }),
@@ -593,8 +607,8 @@ mod tests {
 
     #[test]
     fn grok_subagent_summary_stays_in_history_but_leaves_the_desktop_catalog() {
-        let Some(home) = crate::live::tests::isolated_home(
-            "history::tests::grok_subagent_summary_stays_in_history_but_leaves_the_desktop_catalog",
+        let Some(home) = crate::probe::live::tests::isolated_home(
+            "probe::history::tests::grok_subagent_summary_stays_in_history_but_leaves_the_desktop_catalog",
         ) else {
             return;
         };
@@ -681,9 +695,9 @@ mod tests {
 
     #[test]
     fn failed_extra_discovery_still_prunes_reset_catalog_rows() {
-        let Some(home) =
-            isolated_home("history::tests::failed_extra_discovery_still_prunes_reset_catalog_rows")
-        else {
+        let Some(home) = isolated_home(
+            "probe::history::tests::failed_extra_discovery_still_prunes_reset_catalog_rows",
+        ) else {
             return;
         };
         let folder = home.join(".claude/projects/one");
@@ -698,7 +712,7 @@ mod tests {
         );
         super::super::save_json(
             &home.join(".agentworkforce/session-reset-baseline.json"),
-            &vec![agent_relay_probe::delivery::SessionIdentity {
+            &vec![crate::delivery::SessionIdentity {
                 source: "claude".into(),
                 session_id: "old".into(),
             }],
@@ -749,16 +763,13 @@ mod tests {
     #[test]
     fn first_capture_indexes_recent_sessions_before_older_history_and_resumes() {
         let Some(home) = isolated_home(
-            "history::tests::first_capture_indexes_recent_sessions_before_older_history_and_resumes",
+            "probe::history::tests::first_capture_indexes_recent_sessions_before_older_history_and_resumes",
         ) else { return; };
         let default = home.join(".claude/projects/one");
         let other = home.join(".seclaude/projects/two");
         fs::create_dir_all(&default).unwrap();
         fs::create_dir_all(&other).unwrap();
-        std::env::set_var(
-            agent_relay_probe::relay::claude_dirs::DIRS_ENV,
-            "~/.seclaude",
-        );
+        std::env::set_var(crate::relay::claude_dirs::DIRS_ENV, "~/.seclaude");
         // Deliberately reverse filename/creation order and span config roots.
         let now = chrono::Utc::now();
         for (directory, id, hours) in [
@@ -971,7 +982,7 @@ mod tests {
     #[test]
     fn a_scoped_append_reports_the_changed_session() {
         let Some(home) =
-            isolated_home("history::tests::a_scoped_append_reports_the_changed_session")
+            isolated_home("probe::history::tests::a_scoped_append_reports_the_changed_session")
         else {
             return;
         };
@@ -1014,9 +1025,9 @@ mod tests {
     /// bounded, synthetic before/after capture workload. Never reads live roots.
     #[test]
     fn scoped_capture_workload_skips_unrelated_provider_files() {
-        let Some(home) =
-            isolated_home("history::tests::scoped_capture_workload_skips_unrelated_provider_files")
-        else {
+        let Some(home) = isolated_home(
+            "probe::history::tests::scoped_capture_workload_skips_unrelated_provider_files",
+        ) else {
             return;
         };
         let files = std::env::var("AGENT_RELAY_SCOPE_WORKLOAD_FILES")
@@ -1072,9 +1083,9 @@ mod tests {
     /// is swept, watched and hydrated into the same store as the default.
     #[test]
     fn every_claude_config_folder_is_swept_and_hydrated() {
-        let Some(home) =
-            isolated_home("history::tests::every_claude_config_folder_is_swept_and_hydrated")
-        else {
+        let Some(home) = isolated_home(
+            "probe::history::tests::every_claude_config_folder_is_swept_and_hydrated",
+        ) else {
             return;
         };
         let default = home.join(".claude/projects/one");
@@ -1100,10 +1111,7 @@ mod tests {
         assert!(sync(&db, Duration::ZERO, true, |_| {}, || false).unwrap());
         assert_eq!(listed(&db), ["mine"]);
 
-        std::env::set_var(
-            agent_relay_probe::relay::claude_dirs::DIRS_ENV,
-            "~/.seclaude",
-        );
+        std::env::set_var(crate::relay::claude_dirs::DIRS_ENV, "~/.seclaude");
         let store = open(&db).unwrap();
         assert_eq!(
             extra_claude_roots(store.roots())
@@ -1147,11 +1155,11 @@ mod tests {
             &home.join(".claude"),
         )
         .unwrap();
-        let conn = agent_relay_probe::delivery::open_db(&db).unwrap();
+        let conn = crate::delivery::open_db(&db).unwrap();
         let shareable = |session: &str| {
-            agent_relay_probe::delivery::is_shareable(
+            crate::delivery::is_shareable(
                 &conn,
-                &agent_relay_probe::delivery::SessionIdentity {
+                &crate::delivery::SessionIdentity {
                     source: "claude".into(),
                     session_id: session.into(),
                 },
@@ -1168,7 +1176,8 @@ mod tests {
     /// hydrated, while a shared extra folder still is.
     #[test]
     fn an_unshared_default_folder_is_not_read() {
-        let Some(home) = isolated_home("history::tests::an_unshared_default_folder_is_not_read")
+        let Some(home) =
+            isolated_home("probe::history::tests::an_unshared_default_folder_is_not_read")
         else {
             return;
         };
@@ -1178,10 +1187,7 @@ mod tests {
         std::fs::create_dir_all(&other).unwrap();
         append(&default.join("mine.jsonl"), &transcript_line("mine", "a"));
         append(&other.join("theirs.jsonl"), &transcript_line("theirs", "b"));
-        std::env::set_var(
-            agent_relay_probe::relay::claude_dirs::DIRS_ENV,
-            "~/.seclaude",
-        );
+        std::env::set_var(crate::relay::claude_dirs::DIRS_ENV, "~/.seclaude");
         let dirs = ClaudeDirs::from_env(
             &|key: &str| std::env::var(key).ok(),
             &home,
@@ -1214,7 +1220,8 @@ mod tests {
     /// An unshared extra folder is not swept.
     #[test]
     fn an_unshared_claude_folder_is_not_swept() {
-        let Some(home) = isolated_home("history::tests::an_unshared_claude_folder_is_not_swept")
+        let Some(home) =
+            isolated_home("probe::history::tests::an_unshared_claude_folder_is_not_swept")
         else {
             return;
         };

@@ -90,6 +90,14 @@ impl Core {
         }
     }
 
+    /// Records the workspace discovery found now, keeping the plan Cloud
+    /// reported when it is still this workspace's.
+    pub(crate) fn publish_rediscovered_workspace(&self, found: Option<&Workspace>) {
+        self.hub.update(|status| {
+            status.workspace = WorkspaceStatus::discovered(found).keeping_plan_of(&status.workspace)
+        });
+    }
+
     /// When Relaycast refuses the current workspace key (a read or a
     /// write), marks it for a safe verification on the next refresh pass,
     /// which recovers a rotated account key. Never replays the failed call

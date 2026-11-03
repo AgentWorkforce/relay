@@ -15,8 +15,13 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 const ENTRY_FILE: &str = "agent-relay.desktop";
+/// The Linux app's name; `agent-relay` is the npm CLI's.
 #[cfg_attr(windows, allow(dead_code))]
-const LAUNCHER: &str = "agent-relay";
+const LAUNCHER: &str = "agent-relay-desktop";
+/// Launchers an entry this module wrote may run: the app, and the
+/// `agent-relay` name releases up to v2026.10.57 installed it under.
+#[cfg_attr(windows, allow(dead_code))]
+const OWNED_LAUNCHERS: [&str; 2] = [LAUNCHER, "agent-relay"];
 
 /// Windows: the environment variable naming another Run value than the
 /// app's, so tests never touch the person's own login item.
@@ -104,26 +109,33 @@ fn apply(
             _ => Ok(()),
         };
     }
-    let mut launch = launcher.display().to_string();
-    if launch.chars().any(char::is_whitespace) {
-        launch = format!("\"{}\"", launch.replace('\\', "\\\\").replace('"', "\\\""));
-    }
+    let exec = exec_line(launcher);
     std::fs::create_dir_all(path.parent().expect("autostart directory"))?;
     std::fs::write(
         &path,
         format!(
             "[Desktop Entry]\nType=Application\nName=Agent Relay\n\
-             Comment=Upload coding sessions to Agent Relay\nExec={launch} --background\n\
+             Comment=Upload coding sessions to Agent Relay\n{exec}\n\
              Icon=agent-relay\nTerminal=false\nStartupNotify=false\nX-GNOME-Autostart-enabled=true\n"
         ),
     )
 }
 
-/// The desktop's `agent-relay` app: the one in this probe's install tree
-/// (`/usr/bin/agent-relay` beside `/usr/lib/agent-relay/agent-relay-probe`),
-/// else the first executable on `PATH`, else the bare name. The tree's comes
-/// first: the npm `agent-relay` CLI has the same name and does not take
+/// The entry's `Exec=` line: `launcher`, quoted when it has whitespace, with
 /// `--background`.
+#[cfg_attr(windows, allow(dead_code))]
+fn exec_line(launcher: &Path) -> String {
+    let mut launch = launcher.display().to_string();
+    if launch.chars().any(char::is_whitespace) {
+        launch = format!("\"{}\"", launch.replace('\\', "\\\\").replace('"', "\\\""));
+    }
+    format!("Exec={launch} --background")
+}
+
+/// The desktop's `agent-relay-desktop` app: the one in this probe's install
+/// tree (`/usr/bin/agent-relay-desktop` beside
+/// `/usr/lib/agent-relay/agent-relay-probe`), else the first executable on
+/// `PATH`, else the bare name.
 #[cfg(not(windows))]
 fn resolve_launcher(env: &BTreeMap<String, String>, probe: Option<&Path>) -> PathBuf {
     let on_path = env.get("PATH").into_iter().flat_map(|path| {
@@ -172,31 +184,84 @@ fn is_executable(path: &Path) -> bool {
     crate::platform::exe::is_executable(path)
 }
 
-/// Windows: after an update, an app-owned launch-at-login value follows the
-/// new `launcher`, so the next sign-in starts the new version; a value that
-/// is off or someone else's is left alone. True when it moved. Nothing on
-/// Unix, where the autostart entry names the launcher by name.
-pub fn follow_update(env: &BTreeMap<String, String>, launcher: &Path) -> std::io::Result<bool> {
+/// An app-owned launch-at-login entry follows `launcher`, the running or
+/// newly installed app, so the next sign-in starts it: after an update, and
+/// on Linux after a package upgrade moved the app. An entry that is off or
+/// someone else's is left alone. True when it moved.
+pub fn follow_update(
+    home: &Path,
+    env: &BTreeMap<String, String>,
+    launcher: &Path,
+) -> std::io::Result<bool> {
     #[cfg(windows)]
     {
+        let _ = home;
         windows::follow(env, launcher)
     }
     #[cfg(not(windows))]
     {
-        let _ = (env, launcher);
-        Ok(false)
+        follow_autostart_entry(home, env, launcher)
     }
 }
 
-/// Removes the GUI's autostart entry when the headless service owns startup.
-///
-/// systemd's XDG generator turns the entry into
-/// `app-agent-relay@autostart.service`; running it beside the headless unit is
-/// redundant and can strand a `--background` app on a machine without a
-/// display. Only an entry this module writes is removed; any other file at
-/// the path is kept. True when an entry was removed. On Windows the headless
-/// logon task owns startup the same way, and the Run value is removed when
-/// it is this module's (`agent-relay.exe … --background`).
+/// `follow_update` for `launcher` when it runs from an install (the system
+/// package or a per-user one); a source build never takes the entry over.
+#[cfg(not(windows))]
+pub fn follow_installed_app(
+    home: &Path,
+    env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+    launcher: &Path,
+) -> std::io::Result<bool> {
+    if install::install_kind(launcher) == install::InstallKind::Source {
+        return Ok(false);
+    }
+    let env = env("XDG_CONFIG_HOME")
+        .map(|value| {
+            (
+                "XDG_CONFIG_HOME".to_owned(),
+                value.to_string_lossy().into_owned(),
+            )
+        })
+        .into_iter()
+        .collect();
+    follow_autostart_entry(home, &env, launcher)
+}
+
+/// `follow_update` for the XDG entry.
+#[cfg_attr(windows, allow(dead_code))]
+fn follow_autostart_entry(
+    home: &Path,
+    env: &BTreeMap<String, String>,
+    launcher: &Path,
+) -> std::io::Result<bool> {
+    let Some((text, program)) = owned_autostart_entry(home, env)? else {
+        return Ok(false);
+    };
+    if text.contains("Hidden=true") || Path::new(&program) == launcher {
+        return Ok(false);
+    }
+    // Only the command changes: the rest of the entry, such as a desktop's
+    // `X-GNOME-Autostart-enabled=false`, is the person's choice and stays.
+    let exec = exec_line(launcher);
+    let mut moved = text
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("Exec=") {
+                exec.as_str()
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    moved.push('\n');
+    std::fs::write(entry_path(home, env), moved)?;
+    Ok(true)
+}
+
+/// Removes an app-owned GUI startup entry during explicit cleanup.
+/// Starting the headless service must never call this: the GUI and uploads
+/// share the person's Open at login choice. Foreign entries are preserved.
 pub fn remove_gui_autostart(home: &Path, env: &BTreeMap<String, String>) -> std::io::Result<bool> {
     #[cfg(windows)]
     {
@@ -212,10 +277,22 @@ pub fn remove_gui_autostart(home: &Path, env: &BTreeMap<String, String>) -> std:
 /// `remove_gui_autostart` for the XDG entry.
 #[cfg_attr(windows, allow(dead_code))]
 fn remove_autostart_entry(home: &Path, env: &BTreeMap<String, String>) -> std::io::Result<bool> {
-    let path = entry_path(home, env);
-    let text = match std::fs::read(&path) {
+    if owned_autostart_entry(home, env)?.is_none() {
+        return Ok(false);
+    }
+    std::fs::remove_file(entry_path(home, env))?;
+    Ok(true)
+}
+
+/// The XDG entry's text and the program it runs, when this module wrote it.
+#[cfg_attr(windows, allow(dead_code))]
+fn owned_autostart_entry(
+    home: &Path,
+    env: &BTreeMap<String, String>,
+) -> std::io::Result<Option<(String, String)>> {
+    let text = match std::fs::read(entry_path(home, env)) {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
     let fields: BTreeMap<&str, &str> = text
@@ -225,22 +302,21 @@ fn remove_autostart_entry(home: &Path, env: &BTreeMap<String, String>) -> std::i
         .map(|(key, value)| (key.trim(), value.trim()))
         .collect();
     let Some(command) = split_command(fields.get("Exec").copied().unwrap_or_default()) else {
-        return Ok(false);
+        return Ok(None);
     };
     let owned = fields.get("Type") == Some(&"Application")
         && fields.get("Name") == Some(&"Agent Relay")
         && fields.get("Icon") == Some(&"agent-relay")
-        && command
-            .first()
-            .is_some_and(|program| Path::new(program).file_name() == Some(LAUNCHER.as_ref()))
+        && command.first().is_some_and(|program| {
+            OWNED_LAUNCHERS
+                .iter()
+                .any(|name| Path::new(program).file_name() == Some(name.as_ref()))
+        })
         && command[1..]
             .iter()
             .any(|argument| argument == "--background");
-    if !owned {
-        return Ok(false);
-    }
-    std::fs::remove_file(&path)?;
-    Ok(true)
+    let program = command.into_iter().next().unwrap_or_default();
+    Ok(owned.then_some((text, program)))
 }
 
 /// POSIX shell word splitting (quotes and backslashes, no expansion); `None`
@@ -441,7 +517,7 @@ mod tests {
             dir.path(),
             &env,
             true,
-            Path::new("/opt/agent relay/bin/agent-relay"),
+            Path::new("/opt/agent relay/bin/agent-relay-desktop"),
         )
         .unwrap();
         assert!(autostart_enabled(dir.path(), &env));
@@ -451,7 +527,7 @@ mod tests {
             dir.path().join("config/autostart/agent-relay.desktop")
         );
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("Exec=\"/opt/agent relay/bin/agent-relay\" --background\n"));
+        assert!(text.contains("Exec=\"/opt/agent relay/bin/agent-relay-desktop\" --background\n"));
         apply(dir.path(), &env, false, Path::new("")).unwrap();
         assert!(!path.exists());
         apply(dir.path(), &env, false, Path::new("")).unwrap();
@@ -484,7 +560,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         let probe = root.join("usr/lib/agent-relay/agent-relay-probe");
-        let launcher = root.join("usr/bin/agent-relay");
+        let launcher = root.join("usr/bin/agent-relay-desktop");
         for file in [&probe, &launcher] {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(file, "").unwrap();
@@ -496,17 +572,79 @@ mod tests {
 
         let on_path = root.join("bin");
         std::fs::create_dir_all(&on_path).unwrap();
-        let first = on_path.join("agent-relay");
+        let first = on_path.join("agent-relay-desktop");
         std::fs::write(&first, "").unwrap();
         std::fs::set_permissions(&first, std::fs::Permissions::from_mode(0o755)).unwrap();
         let path = BTreeMap::from([("PATH".into(), on_path.display().to_string())]);
-        // The package's launcher wins over another `agent-relay` on PATH.
+        // The package's launcher wins over another `agent-relay-desktop` on PATH.
         assert_eq!(resolve_launcher(&path, Some(&probe)), launcher);
         assert_eq!(resolve_launcher(&path, None), first);
         assert_eq!(
             resolve_launcher(&BTreeMap::new(), None),
-            PathBuf::from("agent-relay")
+            PathBuf::from("agent-relay-desktop")
         );
+        // The npm `agent-relay` CLI on PATH is never taken for the app.
+        let cli = root.join("cli");
+        std::fs::create_dir_all(&cli).unwrap();
+        std::fs::write(cli.join("agent-relay"), "").unwrap();
+        std::fs::set_permissions(
+            cli.join("agent-relay"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let cli_path = BTreeMap::from([("PATH".into(), cli.display().to_string())]);
+        assert_eq!(
+            resolve_launcher(&cli_path, None),
+            PathBuf::from("agent-relay-desktop")
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_owned_entry_follows_the_app_when_it_moves() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = env(dir.path());
+        let path = entry_path(dir.path(), &env);
+        let app = Path::new("/usr/bin/agent-relay-desktop");
+        assert!(!follow_update(dir.path(), &env, app).unwrap());
+        // An entry an earlier release wrote, naming the app `agent-relay`.
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[Desktop Entry]\nType=Application\nName=Agent Relay\n\
+             Exec=/usr/bin/agent-relay --background\nIcon=agent-relay\n",
+        )
+        .unwrap();
+        assert!(follow_update(dir.path(), &env, app).unwrap());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("Exec=/usr/bin/agent-relay-desktop --background\n"));
+        assert!(!follow_update(dir.path(), &env, app).unwrap());
+
+        // An entry the desktop turned off moves, and stays off.
+        let disabled = format!(
+            "{}X-GNOME-Autostart-enabled=false\n",
+            text.replace("X-GNOME-Autostart-enabled=true\n", "")
+                .replace("agent-relay-desktop", "agent-relay")
+        );
+        std::fs::write(&path, &disabled).unwrap();
+        assert!(follow_update(dir.path(), &env, app).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            disabled.replace("/usr/bin/agent-relay ", "/usr/bin/agent-relay-desktop ")
+        );
+
+        // An entry that is off, or someone else's, stays as it is.
+        let hidden = format!("{text}Hidden=true\n");
+        std::fs::write(&path, &hidden).unwrap();
+        assert!(
+            !follow_update(dir.path(), &env, Path::new("/opt/new/agent-relay-desktop")).unwrap()
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), hidden);
+        let theirs = "[Desktop Entry]\nType=Application\nName=Agent Relay\n\
+                      Exec=/opt/custom-launcher --background\nIcon=agent-relay\n";
+        std::fs::write(&path, theirs).unwrap();
+        assert!(!follow_update(dir.path(), &env, app).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), theirs);
     }
 
     #[test]
@@ -518,11 +656,21 @@ mod tests {
             dir.path(),
             &env,
             true,
-            Path::new("/opt/agent relay/bin/agent-relay"),
+            Path::new("/opt/agent relay/bin/agent-relay-desktop"),
         )
         .unwrap();
         assert!(remove_autostart_entry(dir.path(), &env).unwrap());
         let path = entry_path(dir.path(), &env);
+        assert!(!path.exists());
+        // An entry an earlier release wrote, naming the app `agent-relay`.
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[Desktop Entry]\nType=Application\nName=Agent Relay\n\
+             Exec=/usr/bin/agent-relay --background\nIcon=agent-relay\n",
+        )
+        .unwrap();
+        assert!(remove_autostart_entry(dir.path(), &env).unwrap());
         assert!(!path.exists());
 
         std::fs::write(

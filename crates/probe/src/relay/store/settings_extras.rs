@@ -1,7 +1,8 @@
 //! Settings the store keeps beside its older flat fields: whether agents
-//! registered from now on join #general, and the record of the settings
-//! agents changed on the session socket (`PATCH /settings`). Flattened into
-//! the store's JSON, so both keys sit at its top level.
+//! registered from now on join #general, whether the tools found on this
+//! computer are connected once the person signs in, and the record of the
+//! settings agents changed on the session socket (`PATCH /settings`).
+//! Flattened into the store's JSON, so the keys sit at its top level.
 
 use super::*;
 use crate::relay::contract::agents::AgentSettingsChange;
@@ -18,6 +19,15 @@ pub struct SettingsExtras {
         skip_serializing_if = "Option::is_none"
     )]
     pub spawn_native_input: Option<bool>,
+    /// Missing means on in Agent Relay Dev and off in the release build: the
+    /// spawning agent may answer its session's approvals
+    /// (`spawn::settings::requester_approvals`).
+    #[serde(
+        rename = "spawnRequesterApprovals",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub spawn_requester_approvals: Option<bool>,
     /// Missing means true: a teammate's direct message to a Claude Code
     /// session with Agent Relay's plugin starts a user turn.
     #[serde(
@@ -33,6 +43,14 @@ pub struct SettingsExtras {
         skip_serializing_if = "Option::is_none"
     )]
     pub auto_join_general: Option<bool>,
+    /// Missing means true: once signed in, the tools found here are
+    /// connected (`Core::apply_integration_defaults`).
+    #[serde(
+        rename = "connectDetectedTools",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub connect_detected_tools: Option<bool>,
     /// Missing means false: an open Pi session joins only when added. On,
     /// it joins by itself while `auto_activate` is on (`pi_auto_activate`).
     #[serde(
@@ -68,14 +86,16 @@ impl SettingsExtras {
         self.agent_changes.truncate(AGENT_CHANGES_KEPT);
     }
 
-    /// Each side's new records kept, newest first by time; the flag takes
+    /// Each side's new records kept, newest first by time; each flag takes
     /// the side that changed it.
     pub fn merged(base: &Self, ours: &Self, theirs: &Self) -> Self {
-        let flag = if ours.auto_join_general != base.auto_join_general {
-            ours.auto_join_general
-        } else {
-            theirs.auto_join_general
-        };
+        fn changed(base: Option<bool>, ours: Option<bool>, theirs: Option<bool>) -> Option<bool> {
+            if ours != base {
+                ours
+            } else {
+                theirs
+            }
+        }
         let mut changes = ours.agent_changes.clone();
         for change in &theirs.agent_changes {
             if !changes.contains(change) {
@@ -85,27 +105,41 @@ impl SettingsExtras {
         changes.sort_by(|a, b| b.at.cmp(&a.at));
         changes.truncate(AGENT_CHANGES_KEPT);
         SettingsExtras {
-            auto_join_general: flag,
-            spawn_native_input: if ours.spawn_native_input != base.spawn_native_input {
-                ours.spawn_native_input
-            } else {
-                theirs.spawn_native_input
-            },
-            teammate_native_input: if ours.teammate_native_input != base.teammate_native_input {
-                ours.teammate_native_input
-            } else {
-                theirs.teammate_native_input
-            },
-            pi_auto_activate: if ours.pi_auto_activate != base.pi_auto_activate {
-                ours.pi_auto_activate
-            } else {
-                theirs.pi_auto_activate
-            },
-            opencode_auto_activate: if ours.opencode_auto_activate != base.opencode_auto_activate {
-                ours.opencode_auto_activate
-            } else {
-                theirs.opencode_auto_activate
-            },
+            auto_join_general: changed(
+                base.auto_join_general,
+                ours.auto_join_general,
+                theirs.auto_join_general,
+            ),
+            connect_detected_tools: changed(
+                base.connect_detected_tools,
+                ours.connect_detected_tools,
+                theirs.connect_detected_tools,
+            ),
+            spawn_native_input: changed(
+                base.spawn_native_input,
+                ours.spawn_native_input,
+                theirs.spawn_native_input,
+            ),
+            spawn_requester_approvals: changed(
+                base.spawn_requester_approvals,
+                ours.spawn_requester_approvals,
+                theirs.spawn_requester_approvals,
+            ),
+            teammate_native_input: changed(
+                base.teammate_native_input,
+                ours.teammate_native_input,
+                theirs.teammate_native_input,
+            ),
+            pi_auto_activate: changed(
+                base.pi_auto_activate,
+                ours.pi_auto_activate,
+                theirs.pi_auto_activate,
+            ),
+            opencode_auto_activate: changed(
+                base.opencode_auto_activate,
+                ours.opencode_auto_activate,
+                theirs.opencode_auto_activate,
+            ),
             agent_changes: changes,
         }
     }
@@ -142,6 +176,7 @@ mod tests {
         let ours = SettingsExtras {
             auto_join_general: Some(true),
             spawn_native_input: None,
+            spawn_requester_approvals: Some(true),
             teammate_native_input: Some(false),
             pi_auto_activate: Some(true),
             agent_changes: vec![change("2026-10-16T00:00:02Z", "auto_join_general")],
@@ -150,14 +185,18 @@ mod tests {
         let theirs = SettingsExtras {
             auto_join_general: None,
             spawn_native_input: Some(true),
+            spawn_requester_approvals: None,
             teammate_native_input: None,
+            connect_detected_tools: Some(false),
             opencode_auto_activate: Some(true),
             agent_changes: vec![change("2026-10-16T00:00:03Z", "auto_activate")],
             ..SettingsExtras::default()
         };
         let merged = SettingsExtras::merged(&base, &ours, &theirs);
         assert_eq!(merged.auto_join_general, Some(true));
+        assert_eq!(merged.connect_detected_tools, Some(false));
         assert_eq!(merged.spawn_native_input, Some(true));
+        assert_eq!(merged.spawn_requester_approvals, Some(true));
         assert_eq!(merged.teammate_native_input, Some(false));
         assert_eq!(merged.pi_auto_activate, Some(true));
         assert_eq!(merged.opencode_auto_activate, Some(true));

@@ -60,10 +60,7 @@ pub(super) async fn connection(outbound: Arc<Outbound>, mut stream: CoreStream) 
     }
 }
 
-pub(super) fn payload(
-    request: &Request,
-    purpose: Purpose,
-) -> Result<Map<String, Value>, OutboundError> {
+pub fn payload(request: &Request, purpose: Purpose) -> Result<Map<String, Value>, OutboundError> {
     if matches!(purpose, Purpose::Send) && !request.query.is_empty() {
         let mut fields: Map<String, Value> = request
             .query

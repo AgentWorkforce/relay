@@ -173,3 +173,27 @@ fn build_record_failure_rolls_back_job_and_batch_retry() {
         .unwrap();
     assert_eq!(batch_state, "pending");
 }
+
+#[test]
+fn a_permission_refusal_is_retried_once_at_a_start_then_stays_blocked() {
+    let (_directory, conn, id) = blocked_job();
+    delivery::retry_job_for_build(&conn, &id, "0.26.1", None).unwrap();
+    let block = || {
+        conn.execute(
+            "UPDATE delivery_jobs SET state='blocked',failure='permission_denied' WHERE id=?",
+            [&id],
+        )
+        .unwrap();
+    };
+    // A block from an earlier build's uploader check: retried at a start.
+    block();
+    delivery::retry_job_for_build(&conn, &id, "0.26.1", None).unwrap();
+    assert_eq!(delivery::status(&conn, &id).unwrap().state, "active");
+    // A refusal that stands is not retried at every start.
+    block();
+    delivery::retry_job_for_build(&conn, &id, "0.26.1", None).unwrap();
+    assert_eq!(delivery::status(&conn, &id).unwrap().state, "blocked");
+    // A new build retries it, as any blocked job.
+    delivery::retry_job_for_build(&conn, &id, "0.26.2", None).unwrap();
+    assert_eq!(delivery::status(&conn, &id).unwrap().state, "active");
+}

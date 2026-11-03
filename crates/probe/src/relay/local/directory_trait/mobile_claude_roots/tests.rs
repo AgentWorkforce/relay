@@ -12,6 +12,7 @@ fn config(root: &Path, other: &Path) -> ClaudeConfig {
         executable: None,
         app_sessions: None,
         dirs: crate::relay::claude_dirs::ClaudeDirs {
+            private_root: None,
             environment: vec![other.into()],
             file: None,
         },

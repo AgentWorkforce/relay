@@ -8,11 +8,10 @@
 //!
 //! The session is kept in the agent store's `cloudSession`, on both
 //! platforms; the probe's own RelayHistory renewal reads it there too
-//! (`crate::cloud`). The official `agent-relay` CLI's session is read,
-//! never written: refreshing it would rotate that CLI's tokens out from
-//! under it.
+//! (`crate::cloud`).
 
 use crate::relay::cloud_http::{self, Answer};
+use crate::relay::contract::plan::{parse_workspace_plan, WorkspacePlan};
 use crate::relay::store::{CloudSession, CloudWorkspace};
 use crate::relay::workspace::{is_workspace_key, validated_base_url, Secret, DEFAULT_BASE_URL};
 use futures_util::future::BoxFuture;
@@ -364,6 +363,9 @@ pub struct Identity {
     pub current_workspace_name: Option<String>,
     pub workspace_count: Option<u64>,
     pub current_workspace_avatar_url: Option<String>,
+    /// The workspace's Agent Relay plan; `None` when the organization has
+    /// none, and on a Cloud that does not report one.
+    pub current_workspace_plan: Option<WorkspacePlan>,
 }
 
 /// `GET /auth/whoami`.
@@ -402,7 +404,11 @@ pub async fn whoami_with_analytics(
     if !answer.ok() {
         return Err(status_error(&answer));
     }
-    let value = answer.body;
+    identity_from_whoami(answer.body)
+}
+
+/// A whoami body as an identity; `data` may wrap it.
+pub fn identity_from_whoami(value: Value) -> Result<Identity, CloudError> {
     let value = match value.get("data") {
         Some(data) if data.is_object() => data.clone(),
         _ => value,
@@ -424,6 +430,7 @@ pub async fn whoami_with_analytics(
         avatar_url: string(user, "avatarUrl").or(string(user, "avatar_url")),
         current_workspace_id: string(current, "id"),
         current_workspace_name: string(current, "name"),
+        current_workspace_plan: parse_workspace_plan(&current["plan"]),
         workspace_count: value["workspaceCount"].as_u64(),
         current_workspace_avatar_url: string(&value["currentOrganization"], "avatarUrl").or_else(
             || {
@@ -593,6 +600,68 @@ impl SessionFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn whoami_reads_the_workspace_plan_and_tolerates_a_cloud_without_one() {
+        // Cloud's route keys the workspace `currentWorkspace` (camelCase) with
+        // snake_case fields inside; the plan hangs off that same object.
+        let plan_value = json!({
+            "key": "intro", "name": "Intro",
+            "limits": {"devices": 5, "agents": 15, "humans": 2, "session_retention_days": 7},
+            "upgrade_url": "https://agentrelay.com/cloud/dashboard/settings#billing"
+        });
+        let identity = identity_from_whoami(json!({
+            "user": {"id": "user_1", "email": "ada@example.com"},
+            "currentWorkspace": {
+                "id": "0f8fad5b-d9cb-469f-a165-70867728950e", "name": "Acme",
+                "plan": plan_value
+            }
+        }))
+        .unwrap();
+        let plan = identity.current_workspace_plan.unwrap();
+        assert_eq!(plan.key, "intro");
+        assert_eq!(plan.limits.agents, Some(15));
+        assert_eq!(plan.limits.session_retention_days, Some(7));
+        assert_eq!(
+            plan.upgrade_url.as_deref(),
+            Some("https://agentrelay.com/cloud/dashboard/settings#billing")
+        );
+        assert_eq!(identity.current_workspace_name.as_deref(), Some("Acme"));
+        // The snake_case spelling reads the same.
+        let snake = identity_from_whoami(json!({
+            "user": {"id": "user_1"},
+            "current_workspace": {"id": "ws", "name": "Acme", "plan": plan_value}
+        }))
+        .unwrap();
+        assert_eq!(snake.current_workspace_plan.as_ref(), Some(&plan));
+
+        // `plan: null` (no active plan) and an older Cloud without the field,
+        // under either key.
+        for (key, current) in [
+            (
+                "currentWorkspace",
+                json!({"id": "ws", "name": "Acme", "plan": null}),
+            ),
+            ("currentWorkspace", json!({"id": "ws", "name": "Acme"})),
+            (
+                "current_workspace",
+                json!({"id": "ws", "name": "Acme", "plan": null}),
+            ),
+        ] {
+            let identity =
+                identity_from_whoami(json!({"user": {"id": "user_1"}, key: current})).unwrap();
+            assert_eq!(identity.current_workspace_plan, None);
+            assert_eq!(identity.current_workspace_id.as_deref(), Some("ws"));
+        }
+        // Wrapped in `data`, and without a current workspace at all.
+        let identity = identity_from_whoami(json!({"data": {"user": {"id": "user_1"}}})).unwrap();
+        assert_eq!(identity.current_workspace_plan, None);
+        assert_eq!(identity.current_workspace_id, None);
+        assert!(matches!(
+            identity_from_whoami(json!({"user": {}})),
+            Err(CloudError::Status { status: 200, .. })
+        ));
+    }
 
     #[test]
     fn an_owner_without_a_workspace_clears_the_previous_one() {

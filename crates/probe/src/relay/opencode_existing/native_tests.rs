@@ -546,7 +546,7 @@ fn native_choice_lookup_keeps_unreadable_and_corrupt_records_without_provider_io
     ));
     fs::write(&path, b"corrupt").unwrap();
     assert!(engine.has_native_choice(request.delivery_id));
-    fs::set_permissions(&path, fs::Permissions::from_mode(0)).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o0)).unwrap();
     assert!(engine.has_native_choice(request.delivery_id));
     fs::remove_file(&path).unwrap();
     std::os::unix::fs::symlink(temp.path().join("missing"), &path).unwrap();

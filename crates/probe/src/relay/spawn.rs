@@ -347,7 +347,9 @@ mod tests {
     mod owner_turns;
     mod release_inventory;
     mod report_back;
+    mod requester_approvals;
     mod restart_reasons;
+    mod session_end;
     mod unanswered_register;
 
     #[tokio::test]
@@ -432,6 +434,30 @@ mod tests {
         cloud: Arc<dyn crate::relay::cloud_session::CloudAccess>,
         relaycast: &str,
     ) -> Arc<Core> {
+        core_built(home, spawner, cloud, relaycast, None)
+    }
+
+    /// A core built with an account, which approvals from the spawning agent need.
+    fn core_with_account(home: &std::path::Path, spawner: Arc<FakeSpawner>) -> Arc<Core> {
+        let uploader = crate::relay::uploader::Uploader::new(Arc::new(
+            crate::relay::uploader::ProcessRunner::new(home.join("no-probe")),
+        ));
+        core_built(
+            home,
+            spawner,
+            Arc::new(crate::relay::cloud_session::SignedOut),
+            "http://localhost:9",
+            Some(crate::relay::test_account::TestAccount::new(Arc::new(uploader)).into_plugin()),
+        )
+    }
+
+    fn core_built(
+        home: &std::path::Path,
+        spawner: Arc<FakeSpawner>,
+        cloud: Arc<dyn crate::relay::cloud_session::CloudAccess>,
+        relaycast: &str,
+        account: Option<Arc<dyn crate::relay::daemon::AccountPlugin>>,
+    ) -> Arc<Core> {
         let config = crate::relay::daemon::Config {
             paths: crate::relay::paths::CorePaths::for_socket(home.join("core.sock")).unwrap(),
             home: home.into(),
@@ -444,6 +470,7 @@ mod tests {
             delivery_timing: crate::relay::delivery::DeliveryTiming::default(),
         };
         let plugins = crate::relay::daemon::Plugins {
+            account,
             spawner,
             cloud,
             ..crate::relay::daemon::Plugins::default()

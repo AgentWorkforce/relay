@@ -460,13 +460,6 @@ impl HistoryEvent {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct HistoryEventsPage {
-    pub events: Vec<HistoryEvent>,
-    pub next_cursor: Option<String>,
-}
-
 // ---------------------------------------------------------------------------
 // What Skip is told about this computer.
 
@@ -1087,6 +1080,7 @@ impl Chat {
             .collect();
         Ok(HistoryPage {
             events,
+            retention: page.retention(),
             next_cursor: page.next_cursor,
         })
     }
@@ -1508,6 +1502,9 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
         _ => return None,
     })
 }
+
+mod history_page;
+pub use history_page::HistoryEventsPage;
 
 #[cfg(test)]
 mod tests;

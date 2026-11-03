@@ -1,7 +1,7 @@
 //! Native Connect entry point. Host credentials belong only to this command;
 //! the desktop account and other CLI refresh tokens are never read or changed.
-use agent_relay_probe::platform;
-use agent_relay_probe::relay::{
+use crate::platform;
+use crate::relay::{
     cli, cloud_http, cloud_login::DeviceLogin, cloud_session, daemon::SafeError, paths,
     store::CloudSession,
 };
@@ -66,7 +66,7 @@ struct HostState {
     link: Option<String>,
     expires_at: Option<String>,
     #[serde(default)]
-    host_claim: Option<agent_relay_probe::relay::workspace::Secret>,
+    host_claim: Option<crate::relay::workspace::Secret>,
 }
 
 /// A bounded protocol code, and whether the failed command was a send.
@@ -89,7 +89,7 @@ impl std::fmt::Display for SocketError {
 }
 impl std::error::Error for SocketError {}
 fn valid_name(name: &str) -> bool {
-    agent_relay_probe::relay::agents::normalize_name(name).as_deref() == Some(name)
+    crate::relay::agents::normalize_name(name).as_deref() == Some(name)
 }
 fn error(message: impl Into<String>) -> anyhow::Error {
     SafeError(message.into()).into()
@@ -300,11 +300,11 @@ fn login(path: &Path, state: &mut HostState) -> Result<()> {
         if cloud_session::access_is_fresh(
             session,
             Duration::from_secs(120),
-            agent_relay_probe::relay::state::now_ms(),
+            crate::relay::state::now_ms(),
         ) {
             return Ok(());
         }
-        if cloud_session::can_refresh(session, agent_relay_probe::relay::state::now_ms()) {
+        if cloud_session::can_refresh(session, crate::relay::state::now_ms()) {
             state.auth = Some(rt.block_on(cloud_session::refresh(session)).map_err(|_| error("Host sign-in could not be refreshed. Retry, or sign in again after the room expires."))?);
             return save(path, state);
         }
@@ -384,7 +384,7 @@ fn complete_create(
                 .ok_or_else(|| error("Cloud returned no invite link."))?
                 .to_owned(),
         );
-        state.host_claim = Some(agent_relay_probe::relay::workspace::Secret::new(
+        state.host_claim = Some(crate::relay::workspace::Secret::new(
             created["host_claim"]
                 .as_str()
                 .ok_or_else(|| error("Cloud returned no private host claim."))?,
@@ -409,7 +409,7 @@ fn complete_create(
             // A definitive invalid-claim response clears the probe's pending
             // join. Unlike a timeout, it is safe to rotate and retry once.
             let fresh = services.call(state, "connect_status", json!({}))?;
-            state.host_claim = Some(agent_relay_probe::relay::workspace::Secret::new(
+            state.host_claim = Some(crate::relay::workspace::Secret::new(
                 fresh["host_claim"]
                     .as_str()
                     .ok_or_else(|| error("Cloud returned no replacement host claim."))?,

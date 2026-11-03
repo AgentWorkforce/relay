@@ -13,8 +13,8 @@
 //! still pass consent and remove the old copies from the cloud. Hydration
 //! passes over them (see [`hydratable`]): nothing local is left to read.
 use super::{deleted_uploads, mode, saved, selected, SharingMode};
-use crate::{save_json, Config};
-use agent_relay_probe::delivery::{self, SessionIdentity};
+use crate::delivery::{self, SessionIdentity};
+use crate::probe::{save_json, Config};
 use ai_hist::{Source, SyncOptions};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -73,7 +73,7 @@ pub(crate) fn hydratable(directory: &Path, members: Vec<SessionIdentity>) -> Vec
 
 fn migrate(directory: &Path, selected_mode: bool) -> Result<()> {
     migrate_with(directory, selected_mode, || {
-        let store = crate::history::open(&directory.join("history.db"))?;
+        let store = crate::probe::history::open(&directory.join("history.db"))?;
         let mut options = SyncOptions::default();
         options.sources = Some(vec![Source::OpenClaw]);
         options.lock_timeout_ms = LOCK_WAIT_MS;

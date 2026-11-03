@@ -11,7 +11,7 @@
 //! the deadline; 2 a session refused locally or by the receiver; 4 the
 //! generation is blocked or conflicts; 64 invalid arguments; 1 anything else.
 use super::{collector, history, private_directory};
-use agent_relay_probe::{
+use crate::{
     cloud,
     delivery::{self, worker},
     destination,
@@ -447,7 +447,7 @@ fn lock_state_directory(state: &Path) -> Result<StateLock> {
     validate_private_owner(&metadata, false)?;
     match fs2::FileExt::try_lock_exclusive(&file) {
         Ok(()) => Ok(StateLock { _file: file }),
-        Err(error) if agent_relay_probe::platform::fs::lock_held(&error) => Err(refused(
+        Err(error) if crate::platform::fs::lock_held(&error) => Err(refused(
             Exit::Failed,
             "Another history flush holds the state directory.",
         )),
@@ -508,7 +508,7 @@ fn flush(options: &Flush, deadline: Instant, counts: &Counts) -> Result<Exit> {
     // On Windows, where HOME is usually unset, the profile (USERPROFILE) is
     // the usable home and is named as HOME for the provider roots.
     if std::env::var_os("HOME").is_none_or(|home| home.is_empty()) {
-        let home = agent_relay_probe::platform::home_dir().unwrap_or_else(|| state.join("home"));
+        let home = crate::platform::home_dir().unwrap_or_else(|| state.join("home"));
         std::env::set_var("HOME", home);
     }
     std::env::set_var("RELAYHISTORY_HOME", state);

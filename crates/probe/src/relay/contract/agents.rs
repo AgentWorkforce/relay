@@ -73,6 +73,22 @@ pub struct LocalSession {
     pub suggested_name: String,
 }
 
+impl LocalSession {
+    /// The uploader row this discovered session belongs to. Claude Code on
+    /// the web has a remote transcript under Claude's history source; a
+    /// Claude app cloud session still has no transcript to join.
+    pub fn upload_key(&self) -> Option<String> {
+        if self.target.kind == crate::relay::store::SessionKind::ClaudeCloud
+            && self.host.as_deref() == Some(crate::relay::claude_web::HOST)
+        {
+            let id = crate::relay::claude_web::web_session_id(&self.target)
+                .unwrap_or_else(|| self.target.id.clone());
+            return Some(format!("{}:{id}", self.target.kind.source()));
+        }
+        self.target.upload_key()
+    }
+}
+
 /// Launches a provider endpoint owned by the probe. Endpoint, process,
 /// socket and credentials are intentionally not accepted from the caller.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]

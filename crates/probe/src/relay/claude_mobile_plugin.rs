@@ -73,6 +73,11 @@ impl Core {
         {
             self.mobile_handoff_changed(registration);
         }
+        // A plugin that opened its doorbell before its session was
+        // registered had its polls refused; now it can prove it loaded.
+        for registration in &registrations {
+            self.mobile_claude_plugins.prompt(&registration.target);
+        }
     }
 
     /// Refresh every affected roster row even when cleanup fails: the stored

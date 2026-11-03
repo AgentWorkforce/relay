@@ -3,20 +3,40 @@
 //! either way; a session that holds one without progress past the threshold
 //! is reported stalled in `agents.list`, the session socket's `GET /agents`
 //! and the activity log, and the report clears once it reads them.
+//!
+//! Watches are kept in memory and by registered name, whichever of the
+//! agent's names a message came in under. A core that starts recovers them
+//! from each running session's transcript (`inbox::recover`).
 
 use super::{DeliverySettlement, DeliveryState};
-use crate::relay::claude::inbox::{self, InboxStall, Injection};
+use crate::relay::claude::inbox::{self, InboxStall, Injection, Watch};
 use crate::relay::daemon::Core;
 use crate::relay::delivery::policy::Delivery;
 use crate::relay::delivery::policy::MessageRef;
 use crate::relay::people::MessageState;
 use crate::relay::state::{now_ms, Level, Listing};
-use crate::relay::store::{Registration, SessionKind};
+use crate::relay::store::{Registration, SessionKind, Target};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, MutexGuard, PoisonError};
 use std::time::Instant;
 
+/// The watched inboxes, by registered name.
+#[derive(Default)]
+pub(super) struct Inboxes {
+    watches: HashMap<String, Watch>,
+    /// Sessions whose transcript this core has recovered watches from.
+    recovered: HashSet<String>,
+    /// Sessions whose transcript could not be read for recovery, and when:
+    /// tried again once `inbox_check` has passed.
+    unrecovered: HashMap<String, Instant>,
+}
+
+impl Inboxes {
+    pub(super) fn remove(&mut self, name: &str) -> Option<Watch> {
+        self.watches.remove(name)
+    }
+}
 /// How many held messages are remembered for their senders.
 const HELD_KEPT: usize = 1_000;
 
@@ -115,14 +135,19 @@ impl Core {
     }
 
     /// Records a message just written to a terminal Claude Code session's
-    /// inbox, to be checked on the next pass.
+    /// inbox, to be checked on the next pass. `registration` may be one of
+    /// a renamed agent's aliases: the watch is the registration's.
     pub(super) fn watch_inbox(&self, registration: &Registration, message_id: &str) {
         if registration.target.kind != SessionKind::ClaudeTerminal {
             return;
         }
+        let name = self
+            .store
+            .read(|s| s.reply_owner(registration).name.clone());
         self.inbox_state()
             .inbox
-            .entry(registration.name.clone())
+            .watches
+            .entry(name)
             .or_default()
             .injected(
                 &registration.target.id,
@@ -139,6 +164,7 @@ impl Core {
         let state = self.inbox_state();
         state
             .inbox
+            .watches
             .iter()
             .filter_map(|(name, watch)| Some((name.clone(), watch.report(now)?)))
             .chain(
@@ -153,6 +179,7 @@ impl Core {
     /// One pass over the watched inboxes that are due: each reads the end of
     /// its session's transcript, off the async runtime.
     pub(super) async fn check_inboxes(self: &Arc<Core>) {
+        self.recover_inboxes().await;
         self.check_codex_inboxes().await;
         let every = self.config.delivery_timing.inbox_check;
         let threshold = self.config.delivery_timing.inbox_stall;
@@ -160,6 +187,7 @@ impl Core {
             let mut state = self.inbox_state();
             state
                 .inbox
+                .watches
                 .iter_mut()
                 .filter(|(_, w)| w.due || w.checked_at.is_none_or(|at| at.elapsed() >= every))
                 .map(|(name, w)| {
@@ -185,40 +213,80 @@ impl Core {
                 }
                 continue;
             };
-            let injector = self.plugins.injector.clone();
-            let tail = tokio::task::spawn_blocking(move || {
-                injector.inbox_transcript_tail(&target, inbox::TAIL_BYTES)
-            })
-            .await
-            .ok()
-            .flatten();
+            let tail = self.inbox_tail(target).await;
+            if let Some(tail) = &tail {
+                self.approved(&name, &tail.bytes, tail.truncated);
+            }
             let now = now_ms();
-            // A transcript that cannot be read says nothing: not stalled,
-            // and nothing is dropped.
-            let (undrained, stall) = match tail {
-                Some((bytes, truncated)) => {
-                    self.approved(&name, &bytes, truncated);
-                    let assessment = inbox::assess(&bytes, truncated, &pending);
-                    let stall = inbox::evaluate(&assessment, now, threshold);
-                    (assessment.undrained, stall)
-                }
-                None => (pending.clone(), None),
-            };
             let (before, after) = {
                 let mut state = self.inbox_state();
-                let Some(watch) = state.inbox.get_mut(&name) else {
+                let Some(watch) = state.inbox.watches.get_mut(&name) else {
                     continue;
                 };
                 if watch.session_id != session_id {
                     continue;
                 }
-                let changed = watch.settle(&pending, &undrained, stall, now);
+                // A transcript that cannot be read, or says nothing, leaves
+                // the watch as it was.
+                let changed = watch.check(&pending, tail.as_ref(), now, threshold);
                 if watch.pending.is_empty() && watch.stall.is_none() {
                     state.inbox.remove(&name);
                 }
                 changed
             };
             self.report_inbox(&name, before, after);
+        }
+    }
+
+    /// The end of a session's transcript, read off the async runtime.
+    async fn inbox_tail(&self, target: Target) -> Option<inbox::Tail> {
+        let injector = self.plugins.injector.clone();
+        tokio::task::spawn_blocking(move || {
+            injector.inbox_transcript_tail(&target, inbox::TAIL_BYTES)
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// Once per running terminal Claude Code session this core delivers
+    /// to, watches the relay messages its transcript shows still queued: a
+    /// core that just started did not see them injected. A transcript that
+    /// cannot be read is tried again on a later pass.
+    async fn recover_inboxes(&self) {
+        let every = self.config.delivery_timing.inbox_check;
+        let (known, waiting): (HashSet<String>, HashSet<String>) = {
+            let state = self.inbox_state();
+            let waiting = (state.inbox.unrecovered.iter())
+                .filter(|(_, at)| at.elapsed() < every)
+                .map(|(id, _)| id.clone())
+                .collect();
+            (state.inbox.recovered.clone(), waiting)
+        };
+        let sessions: Vec<(String, Target)> = self.store.read(|s| {
+            s.registrations
+                .iter()
+                .filter(|r| r.target.kind == SessionKind::ClaudeTerminal)
+                .filter(|r| r.missing_since.is_none())
+                .filter(|r| !known.contains(&r.target.id) && !waiting.contains(&r.target.id))
+                .map(|r| (r.name.clone(), r.target.clone()))
+                .collect()
+        });
+        for (name, target) in sessions {
+            let session_id = target.id.clone();
+            let Some(tail) = self.inbox_tail(target).await else {
+                let mut state = self.inbox_state();
+                state.inbox.unrecovered.insert(session_id, Instant::now());
+                continue;
+            };
+            let found = inbox::recover(&tail);
+            let mut state = self.inbox_state();
+            state.inbox.unrecovered.remove(&session_id);
+            state.inbox.recovered.insert(session_id.clone());
+            if !found.is_empty() {
+                let watch = state.inbox.watches.entry(name).or_default();
+                watch.recovered(&session_id, found);
+            }
         }
     }
 

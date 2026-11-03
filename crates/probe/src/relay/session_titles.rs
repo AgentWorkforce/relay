@@ -119,6 +119,22 @@ pub async fn set_native_title(
     core: &Arc<Core>,
     params: SessionTitleSetParams,
 ) -> Result<SessionTitleUpdated, RpcError> {
+    set_native_title_checked(core, params, None).await
+}
+
+pub(crate) async fn set_native_title_if_current(
+    core: &Arc<Core>,
+    params: SessionTitleSetParams,
+    expected: crate::relay::session_naming::AutomaticEdit,
+) -> Result<SessionTitleUpdated, RpcError> {
+    set_native_title_checked(core, params, Some(expected)).await
+}
+
+async fn set_native_title_checked(
+    core: &Arc<Core>,
+    params: SessionTitleSetParams,
+    expected: Option<crate::relay::session_naming::AutomaticEdit>,
+) -> Result<SessionTitleUpdated, RpcError> {
     validate_identity(&params.source, &params.session_id)?;
     let title = validate_title(&params.title)?;
     let key = format!("title:{}:{}", params.source, params.session_id);
@@ -131,6 +147,12 @@ pub async fn set_native_title(
     let published = core.clone();
     let title = tokio::task::spawn_blocking(move || {
         let _guard = guard;
+        if expected
+            .as_ref()
+            .is_some_and(|expected| !expected.current(&published))
+        {
+            return Err("Session changed while automatic naming was pending.".to_owned());
+        }
         let title = sessions.set_title(&source, &id, &title)?;
         publish_title(&published, &source, &id, &title);
         Ok::<_, String>(title)

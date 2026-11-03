@@ -638,13 +638,13 @@ fn latest_session(
     directory: &str,
 ) -> Option<(String, String, i64)> {
     database
-        .query_row(
+        .prepare_cached(
             "SELECT id, title, time_updated FROM session \
              WHERE directory = ?1 AND parent_id IS NULL AND time_archived IS NULL \
              ORDER BY time_updated DESC LIMIT 1",
-            [directory],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
+        .ok()?
+        .query_row([directory], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .ok()
 }
 

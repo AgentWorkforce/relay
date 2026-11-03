@@ -15,7 +15,7 @@ pub(crate) struct Gate {
     consumed: BTreeSet<String>,
 }
 impl Gate {
-    pub(crate) fn new(session: &str, alias: &str) -> Self {
+    pub fn new(session: &str, alias: &str) -> Self {
         Self {
             session: session.into(),
             tool: format!("mcp__{alias}__{}", super::TOOL),

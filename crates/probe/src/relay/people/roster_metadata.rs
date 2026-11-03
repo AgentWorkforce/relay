@@ -53,8 +53,8 @@ pub(super) fn history_session_id(metadata: &Value) -> Option<String> {
 pub(super) const REMOTE_SESSION_KINDS: [&str; 3] = ["capy", "cursor-cloud", "replicas"];
 
 /// The harness a roster entry runs on. A desktop registration records its
-/// `session_kind`, as does Agent Relay Cloud for a Capy thread; a fleet broker records
-/// the worker's `cli`; other registrars are read from the conventional
+/// `session_kind`, as does Agent Relay Cloud for a Capy thread; a spawned
+/// worker records its `cli`; other registrars are read from the conventional
 /// `<harness>-` name prefix.
 pub(super) fn provider_of(name: &str, metadata: &Value) -> Option<String> {
     const KNOWN: [&str; 9] = [
@@ -84,7 +84,7 @@ pub(super) fn provider_of(name: &str, metadata: &Value) -> Option<String> {
         // A command, a path or `cursor-agent`: its executable names the harness.
         let executable = cli.split_whitespace().next()?.rsplit('/').next()?;
         let harness = match executable.strip_suffix("-agent").unwrap_or(executable) {
-            // The fleet list's own spellings of Claude Code.
+            // Spawners' own spellings of Claude Code.
             "claude-code" | "claude_code" | "claudecode" => "claude",
             harness => harness,
         };

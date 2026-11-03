@@ -96,6 +96,7 @@ pub(crate) enum Action {
 
 impl Journal {
     /// Queues the owner's own message (`enqueue_from` with `teammate` off).
+    #[cfg(test)]
     pub fn enqueue(
         &mut self,
         binding: Binding,
@@ -294,7 +295,56 @@ impl Journal {
         self.entries.retain(|entry| !handled(&entry.delivery_id));
     }
 
+    /// Keeps an unsent message waiting, as a poll would, while the
+    /// session's plugin holds its doorbell open: a busy session may run
+    /// longer than one lease without its plugin asking.
+    pub fn keep_waiting(&mut self, scope: &str, id: &str, now: i64) {
+        for entry in self
+            .entries
+            .iter_mut()
+            .filter(|entry| entry.binding.scope == scope && entry.delivery_id == id)
+        {
+            expire(entry, now);
+            if let State::Queued { until } = &mut entry.state {
+                if *until - now < LEASE_MS / 2 {
+                    *until = now + LEASE_MS;
+                }
+            }
+        }
+    }
+
+    /// Moves every queued message's lease `by` milliseconds closer to its
+    /// end, as if that much time had passed with nobody asking.
+    #[cfg(test)]
+    pub fn age_queued(&mut self, by: i64) {
+        for entry in &mut self.entries {
+            if let State::Queued { until } = &mut entry.state {
+                *until -= by;
+            }
+        }
+    }
+
+    /// Whether message `id` waits for a plugin to collect it.
+    pub fn uncollected(&self, scope: &str, id: &str) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.binding.scope == scope
+                && entry.delivery_id == id
+                && matches!(entry.state, State::Queued { .. })
+        })
+    }
+
+    /// Whether the binding has a message no plugin has collected yet whose
+    /// lease has not passed at `now` (expiry is lazy, so a lapsed one may
+    /// still read `Queued`).
+    pub fn queued(&self, binding: &Binding, now: i64) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.binding == *binding
+                && matches!(entry.state, State::Queued { until } if until > now)
+        })
+    }
+
     /// `poll_allowing` with teammates' messages allowed.
+    #[cfg(test)]
     pub fn poll(&mut self, binding: &Binding, runtime: &Runtime, now: i64) -> Option<Action> {
         self.poll_allowing(binding, runtime, true, now)
     }

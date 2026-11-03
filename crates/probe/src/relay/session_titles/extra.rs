@@ -18,6 +18,7 @@ pub fn capability(
     match source {
         "pi" if crate::relay::pi::can_set_title(&config.pi, table, config.uid, id) => supported(),
         "pi" => unsupported("Open this Pi session and run /reload to enable title editing."),
+        "omp" if crate::relay::pi::can_set_title(&config.omp, table, config.uid, id) => supported(),
         "grok" if grok_binding(config, table, id).is_some() => supported(),
         "grok" => unsupported("Connect this Grok session to Agent Relay with its leader running to edit its title."),
         "openclaw" if openclaw_identity(config, id).is_some() && config.openclaw.as_ref().is_some_and(|c| crate::relay::openclaw::gateway(c).is_ok()) => supported(),
@@ -28,7 +29,7 @@ pub fn capability(
         "devin" if devin_title(&config.devin.cli().join("sessions.db"), id).is_some() => supported(),
         "devin" => unsupported("This Devin Cloud session has no local title record. Rename it in Devin."),
         "cursor" => unsupported("Cursor does not expose a title-editing API to Agent Relay. Rename this session in Cursor."),
-        "omp" => unsupported("Oh My Pi does not expose a title-editing route to Agent Relay yet. Rename this session in Oh My Pi."),
+        "omp" => unsupported("Exit this Oh My Pi session and run omp --continue in its folder to enable title editing."),
         "antigravity" => unsupported("Antigravity does not expose a title-editing route to Agent Relay yet. Rename this session in Antigravity."),
         "capy" => unsupported("Capy does not expose a title-editing route to Agent Relay yet. Rename this thread in Capy."),
         "replicas" => unsupported("Replicas does not expose a title-editing route to Agent Relay yet."),
@@ -50,6 +51,7 @@ pub fn set(
     }
     match source {
         "pi" => crate::relay::pi::set_title(&config.pi, table, config.uid, id, title),
+        "omp" => crate::relay::pi::set_title(&config.omp, table, config.uid, id, title),
         "grok" => grok_set(config, table, id, title),
         "openclaw" => openclaw_set(config, id, title),
         "hermes" => hermes_set(config, id, title),

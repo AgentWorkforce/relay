@@ -66,6 +66,19 @@ impl Core {
             .collect()
     }
 
+    /// The spawned agents this core has seen end (a Codex thread ends when
+    /// it is archived), by name.
+    pub(crate) fn spawned_seen_ended(&self) -> HashSet<String> {
+        let ledger = self.ledger();
+        let state = ledger.lock();
+        state
+            .agents
+            .iter()
+            .filter(|(_, record)| !record.holds_slot())
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
     /// Starts an observation pass in the background when one is due (or
     /// `now`) and none runs.
     pub(super) fn schedule_spawn_observation(&self, now: bool) {

@@ -21,6 +21,8 @@ pub struct DeliveryTiming {
     /// How long such a session may hold one without progress before it is
     /// reported stalled.
     pub inbox_stall: Duration,
+    /// A message waiting this long is reported, once (`stuck`).
+    pub stuck_after: Duration,
 }
 
 impl Default for DeliveryTiming {
@@ -33,6 +35,7 @@ impl Default for DeliveryTiming {
             replies: Duration::from_secs(3),
             inbox_check: Duration::from_secs(30),
             inbox_stall: crate::relay::claude::inbox::DEFAULT_THRESHOLD,
+            stuck_after: Duration::from_secs(10 * 60),
         }
     }
 }

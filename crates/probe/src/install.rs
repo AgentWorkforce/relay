@@ -4,7 +4,7 @@
 //!
 //! | Path | Is |
 //! |---|---|
-//! | [`APP`] `usr/bin/agent-relay` | The app |
+//! | [`APP`] `usr/bin/agent-relay-desktop` | The app (the npm `agent-relay` CLI owns `agent-relay`) |
 //! | [`DESKTOP_APP`] `usr/bin/agent-relay-desktop` | The app, by the name its launcher entry runs |
 //! | [`PROBE`] `usr/lib/agent-relay/agent-relay-probe` | The relay core |
 //! | [`LAUNCHER_ENTRY`] `usr/share/applications/agent-relay.desktop` | The launcher entry |
@@ -35,14 +35,22 @@ pub const PROBE_NAME: &str = "agent-relay-probe";
 #[cfg(windows)]
 pub const PROBE_NAME: &str = "agent-relay-probe.exe";
 
-/// The app, in a tree.
+/// The app, in a tree. On Linux it is never `agent-relay`, the npm CLI's
+/// name, so installing the package beside the CLI changes neither.
 #[cfg(not(windows))]
-pub const APP: &str = "usr/bin/agent-relay";
+pub const APP: &str = "usr/bin/agent-relay-desktop";
 #[cfg(windows)]
 pub const APP: &str = windows::APP;
-/// The app by the name its launcher entry runs (the npm `agent-relay` CLI
-/// shares the other).
+/// The app by the name its launcher entry runs: on Linux the same path as
+/// [`APP`]. Kept apart because on Windows [`APP`] is the `.exe` in the
+/// MSYS2 prefix, while the launcher entry is Linux's alone.
 pub const DESKTOP_APP: &str = "usr/bin/agent-relay-desktop";
+/// A link to [`APP`] in the tarball only: updaters in releases up to
+/// v2026.10.57 look for this name in the tree they download and relaunch it.
+/// The `.deb` leaves it out, so the system package never takes
+/// `/usr/bin/agent-relay`.
+#[cfg(not(windows))]
+pub const TARBALL_UPDATER_LINK: &str = "usr/bin/agent-relay";
 /// The relay core, in a tree.
 #[cfg(not(windows))]
 pub const PROBE: &str = "usr/lib/agent-relay/agent-relay-probe";
@@ -192,7 +200,7 @@ mod tests {
     use std::fs;
 
     const TARBALL_EXE: &str =
-        "/home/a/.local/lib/agent-relay/2026.10.7/AgentRelay-linux-x64/usr/bin/agent-relay";
+        "/home/a/.local/lib/agent-relay/2026.10.7/AgentRelay-linux-x64/usr/bin/agent-relay-desktop";
 
     fn no_env(_: &str) -> Option<OsString> {
         None
@@ -207,7 +215,7 @@ mod tests {
     #[test]
     fn install_kinds() {
         assert_eq!(
-            install_kind(Path::new("/usr/bin/agent-relay")),
+            install_kind(Path::new("/usr/bin/agent-relay-desktop")),
             InstallKind::Deb
         );
         assert_eq!(install_kind(Path::new(TARBALL_EXE)), InstallKind::Tarball);
@@ -222,7 +230,10 @@ mod tests {
             PathBuf::from("/home/a/.local/lib/agent-relay")
         );
         assert_eq!(
-            install_root(Path::new("/usr/bin/agent-relay"), Path::new("/home/b")),
+            install_root(
+                Path::new("/usr/bin/agent-relay-desktop"),
+                Path::new("/home/b")
+            ),
             PathBuf::from("/home/b/.local/lib/agent-relay")
         );
         assert_eq!(
@@ -247,7 +258,7 @@ mod tests {
     fn the_probe_is_configured_beside_the_build_or_in_the_tree() {
         let directory = tempfile::tempdir().unwrap();
         let tree = directory.path().join("AgentRelay-linux-x64");
-        let exe = tree.join("usr/bin/agent-relay");
+        let exe = tree.join(APP);
         executable(&exe);
         assert_eq!(bundled_probe(&exe, &no_env), None);
 

@@ -275,7 +275,7 @@ impl Incoming {
     }
 
     /// Activates the mailbox with this app's own Cloud session: the one a
-    /// sign-in got or kept, never the official CLI's or a probe's. Only
+    /// sign-in got or kept, never a probe's. Only
     /// when it `needs_activation`, checked and claimed in one step: of two
     /// callers (a sign-in's and supervision's), one mints the room session
     /// and the other stands down with `Unneeded`.

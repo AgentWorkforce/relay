@@ -17,10 +17,41 @@ pub(crate) struct Installations {
     /// that a running session has loaded the plugin, as against the files
     /// merely being installed.
     polls: Mutex<BTreeMap<Target, Instant>>,
+    /// Each session's open doorbell connections (see `Doorbell`).
+    doorbells: Mutex<BTreeMap<Target, Bell>>,
 }
 
-/// How recently a session's plugin must have polled to count as loaded. It
-/// polls every two seconds; this leaves room for a slow tick.
+/// One session's doorbell: how many plugin connections listen, and a
+/// counter each ring advances, so a listener busy writing misses none.
+struct Bell {
+    listeners: usize,
+    rings: tokio::sync::watch::Sender<u64>,
+    /// Rung once already to ask an unproven plugin to poll (`prompt`).
+    prompted: bool,
+}
+
+/// A plugin's open doorbell connection for one session. While it lives the
+/// session counts as having a loaded plugin; dropping it closes the door.
+pub(crate) struct Doorbell<'a> {
+    installations: &'a Installations,
+    target: Target,
+    pub(crate) rings: tokio::sync::watch::Receiver<u64>,
+}
+
+impl Drop for Doorbell<'_> {
+    fn drop(&mut self) {
+        let mut doorbells = self.installations.doorbells();
+        if let Some(bell) = doorbells.get_mut(&self.target) {
+            bell.listeners = bell.listeners.saturating_sub(1);
+            if bell.listeners == 0 {
+                doorbells.remove(&self.target);
+            }
+        }
+    }
+}
+
+/// How recently a plugin from before the doorbell must have polled to count
+/// as loaded. It polls every two seconds; this leaves room for a slow tick.
 pub(crate) const PLUGIN_SEEN: Duration = Duration::from_secs(30);
 #[derive(Clone, Default)]
 struct State {
@@ -69,7 +100,7 @@ impl Installations {
         if polls.len() > MAX_TARGETS {
             let stale: Vec<_> = polls
                 .iter()
-                .filter(|(_, at)| at.elapsed() > PLUGIN_SEEN)
+                .filter(|(target, at)| at.elapsed() > PLUGIN_SEEN && !self.listening(target))
                 .map(|(target, _)| target.clone())
                 .collect();
             for target in stale {
@@ -78,14 +109,80 @@ impl Installations {
         }
     }
 
-    /// Whether the session for `target` has a loaded plugin: it polled
-    /// within `PLUGIN_SEEN`.
+    /// Whether the session for `target` has a loaded plugin: Claude's own
+    /// process has polled, and its doorbell is open or (a plugin from before
+    /// the doorbell) the poll was within `PLUGIN_SEEN`. Any process in the
+    /// session can open a doorbell, so one alone proves nothing.
     pub(crate) fn plugin_seen(&self, target: &Target) -> bool {
-        self.polls
+        let polled = self
+            .polls
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(target)
-            .is_some_and(|at| at.elapsed() <= PLUGIN_SEEN)
+            .copied();
+        polled.is_some_and(|at| at.elapsed() <= PLUGIN_SEEN || self.listening(target))
+    }
+
+    fn doorbells(&self) -> MutexGuard<'_, BTreeMap<Target, Bell>> {
+        self.doorbells.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Opens a doorbell for the session's plugin, or `None` when too many
+    /// sessions already hold one.
+    pub(crate) fn listen(&self, target: &Target) -> Option<Doorbell<'_>> {
+        let mut doorbells = self.doorbells();
+        if !doorbells.contains_key(target) && doorbells.len() >= MAX_TARGETS {
+            return None;
+        }
+        let bell = doorbells.entry(target.clone()).or_insert_with(|| Bell {
+            listeners: 0,
+            rings: tokio::sync::watch::channel(0).0,
+            prompted: false,
+        });
+        bell.listeners += 1;
+        let rings = bell.rings.subscribe();
+        Some(Doorbell {
+            installations: self,
+            target: target.clone(),
+            rings,
+        })
+    }
+
+    /// Whether the session's plugin holds its doorbell open now.
+    pub(crate) fn listening(&self, target: &Target) -> bool {
+        self.doorbells().contains_key(target)
+    }
+
+    /// Rings once for a session whose doorbell is open but whose plugin has
+    /// not polled successfully (it was not registered yet when it tried):
+    /// its poll then proves the plugin loaded. True when it rang.
+    pub(crate) fn prompt(&self, target: &Target) -> bool {
+        let polled = self
+            .polls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(target);
+        let mut doorbells = self.doorbells();
+        let Some(bell) = doorbells
+            .get_mut(target)
+            .filter(|bell| !polled && !bell.prompted)
+        else {
+            return false;
+        };
+        bell.prompted = true;
+        bell.rings
+            .send_modify(|count| *count = count.wrapping_add(1));
+        true
+    }
+
+    /// Tells the session's plugin, if it listens, that it has something to
+    /// collect. The ring carries nothing: the plugin collects over the
+    /// routes that verify Claude's own process.
+    pub(crate) fn ring(&self, target: &Target) {
+        if let Some(bell) = self.doorbells().get(target) {
+            bell.rings
+                .send_modify(|count| *count = count.wrapping_add(1));
+        }
     }
 
     pub(super) fn initialized(&self) -> bool {
@@ -336,6 +433,45 @@ fn evict_missing(state: &mut State, targets: &BTreeMap<Target, PathBuf>) {
 mod tests {
     use super::*;
     use crate::relay::store::SessionKind;
+
+    #[test]
+    fn a_doorbell_rings_only_its_session_and_closes_with_its_last_listener() {
+        let cache = Installations::default();
+        let target = Target::new(SessionKind::ClaudeTerminal, "session");
+        let other = Target::new(SessionKind::ClaudeTerminal, "other");
+        cache.ring(&target); // nobody listens: nothing to keep
+        assert!(!cache.listening(&target));
+        let mut first = cache.listen(&target).unwrap();
+        let mut second = cache.listen(&target).unwrap();
+        assert!(
+            !cache.plugin_seen(&target),
+            "a doorbell alone proves nothing"
+        );
+        assert!(cache.prompt(&target), "an unproven plugin is asked to poll");
+        assert!(!cache.prompt(&target), "once");
+        first.rings.borrow_and_update();
+        second.rings.borrow_and_update();
+        cache.note_poll(&target);
+        assert!(cache.plugin_seen(&target));
+        assert!(!first.rings.has_changed().unwrap());
+        cache.ring(&other);
+        assert!(!first.rings.has_changed().unwrap());
+        cache.ring(&target);
+        cache.ring(&target);
+        assert!(
+            first.rings.has_changed().unwrap(),
+            "rings coalesce, none is lost"
+        );
+        first.rings.borrow_and_update();
+        assert!(second.rings.has_changed().unwrap());
+        drop(first);
+        assert!(cache.listening(&target));
+        drop(second);
+        assert!(!cache.listening(&target));
+        // The poll alone still counts within `PLUGIN_SEEN`, as for a plugin
+        // from before the doorbell.
+        assert!(cache.plugin_seen(&target));
+    }
 
     #[test]
     fn mobile_installation_suspension_requires_prior_proof_without_revocation() {

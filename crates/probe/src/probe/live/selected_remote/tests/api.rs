@@ -1,5 +1,5 @@
 use super::*;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::AtomicUsize;
 
@@ -49,13 +49,9 @@ impl Api {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
                     .unwrap();
-                let mut buf = [0; 8192];
-                let n = stream.read(&mut buf).unwrap_or(0);
-                let request = String::from_utf8_lossy(&buf[..n]);
-                let line = request.lines().next().unwrap_or("").to_owned();
-                if line.is_empty() {
+                let Ok(line) = request_line(&mut stream) else {
                     continue;
-                }
+                };
                 logged.lock().unwrap().push(line.clone());
                 let download = line.contains("/messages") || line.contains("teleport-events");
                 let profile = line.contains("/api/oauth/profile");
@@ -134,4 +130,61 @@ impl Drop for Api {
             t.join().unwrap();
         }
     }
+}
+
+// A TCP read is not an HTTP request boundary. Wait for the complete request
+// headers before replying, or a split path is misrouted and closing the socket
+// with unread headers can reset the client's connection on Linux.
+fn request_line(stream: &mut TcpStream) -> std::io::Result<String> {
+    let mut reader = BufReader::new(stream).take(16 * 1024);
+    let mut first = String::new();
+    reader.read_line(&mut first)?;
+    let mut header = String::new();
+    loop {
+        header.clear();
+        if reader.read_line(&mut header)? == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "incomplete test HTTP request headers",
+            ));
+        }
+        if header == "\r\n" || header == "\n" {
+            return Ok(first.trim_end().to_owned());
+        }
+    }
+}
+
+#[test]
+fn fragmented_request_waits_for_complete_headers() {
+    let api = Api::start(true);
+    let mut stream = TcpStream::connect(api.address).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_millis(250)))
+        .unwrap();
+    stream.write_all(b"GET /api/oauth/").unwrap();
+    let mut byte = [0];
+    let pending = stream.read(&mut byte).unwrap_err();
+    assert!(matches!(
+        pending.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ));
+    // The path and headers may arrive in different TCP reads. The fixture
+    // must not answer a truncated path or close with unread header bytes.
+    stream
+        .write_all(b"profile HTTP/1.1\r\nHost: localhost\r\n")
+        .unwrap();
+    let pending = stream.read(&mut byte).unwrap_err();
+    assert!(matches!(
+        pending.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ));
+    stream.write_all(b"\r\n").unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.contains("\"organization\":{\"uuid\":\"org-test\"}"));
+    assert_eq!(api.lines(), ["GET /api/oauth/profile HTTP/1.1"]);
+    assert_eq!(api.lists(), 0);
 }

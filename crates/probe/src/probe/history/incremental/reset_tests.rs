@@ -1,11 +1,11 @@
 use super::*;
-use crate::live::tests::{append, isolated_home, transcript_line};
+use crate::probe::live::tests::{append, isolated_home, transcript_line};
 
 fn baseline(home: &Path, ids: &[&str]) {
-    crate::save_json(
+    crate::probe::save_json(
         &home.join(".agentworkforce/session-reset-baseline.json"),
         &ids.iter()
-            .map(|id| agent_relay_probe::delivery::SessionIdentity {
+            .map(|id| crate::delivery::SessionIdentity {
                 source: "claude".into(),
                 session_id: (*id).into(),
             })
@@ -25,9 +25,9 @@ fn rows(db: &Path) -> Vec<String> {
 }
 fn assert_shallow(db: &Path, expected: &[&str]) {
     assert_eq!(rows(db), expected);
-    let conn = agent_relay_probe::delivery::open_db(db).unwrap();
+    let conn = crate::delivery::open_db(db).unwrap();
     assert_eq!(
-        agent_relay_probe::delivery::selectable_session_identities(&conn)
+        crate::delivery::selectable_session_identities(&conn)
             .unwrap()
             .len(),
         expected.len()
@@ -54,7 +54,7 @@ fn files(home: &Path) -> Vec<PathBuf> {
 #[test]
 fn cold_inventory_never_restores_reset_metadata_or_counts() {
     let Some(home) = isolated_home(
-        "history::incremental::reset_tests::cold_inventory_never_restores_reset_metadata_or_counts",
+        "probe::history::incremental::reset_tests::cold_inventory_never_restores_reset_metadata_or_counts",
     ) else {
         return;
     };
@@ -87,7 +87,7 @@ fn cold_inventory_never_restores_reset_metadata_or_counts() {
 #[test]
 fn hot_inventory_prunes_after_base_and_all_extra_roots() {
     let Some(home) = isolated_home(
-        "history::incremental::reset_tests::hot_inventory_prunes_after_base_and_all_extra_roots",
+        "probe::history::incremental::reset_tests::hot_inventory_prunes_after_base_and_all_extra_roots",
     ) else {
         return;
     };
@@ -110,7 +110,7 @@ fn hot_inventory_prunes_after_base_and_all_extra_roots() {
 
 #[test]
 fn incremental_partial_error_still_prunes_and_preserves_original_error() {
-    let Some(home)=isolated_home("history::incremental::reset_tests::incremental_partial_error_still_prunes_and_preserves_original_error") else{return};
+    let Some(home)=isolated_home("probe::history::incremental::reset_tests::incremental_partial_error_still_prunes_and_preserves_original_error") else{return};
     files(&home);
     baseline(&home, &["old"]);
     let db = home.join("probe/history.db");
@@ -130,7 +130,7 @@ fn incremental_partial_error_still_prunes_and_preserves_original_error() {
 #[test]
 fn enumeration_only_cold_step_never_reads_reset_baseline() {
     let Some(home) = isolated_home(
-        "history::incremental::reset_tests::enumeration_only_cold_step_never_reads_reset_baseline",
+        "probe::history::incremental::reset_tests::enumeration_only_cold_step_never_reads_reset_baseline",
     ) else {
         return;
     };
@@ -153,7 +153,7 @@ fn enumeration_only_cold_step_never_reads_reset_baseline() {
 #[test]
 fn empty_baseline_cleanup_never_opens_a_missing_database() {
     let Some(home) = isolated_home(
-        "history::incremental::reset_tests::empty_baseline_cleanup_never_opens_a_missing_database",
+        "probe::history::incremental::reset_tests::empty_baseline_cleanup_never_opens_a_missing_database",
     ) else {
         return;
     };

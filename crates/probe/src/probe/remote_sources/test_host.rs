@@ -131,7 +131,7 @@ pub(super) fn keychain(home: &Path, db: &Path) -> Option<claude_cloud::Keychain>
 
 /// Unmatched test databases still use the production Instant clock.
 pub(crate) fn clock_for_current_home(db: &Path) -> Option<Arc<VirtualClock>> {
-    let home = crate::home().ok()?;
+    let home = crate::probe::home().ok()?;
     hosts()
         .lock()
         .unwrap_or_else(|p| p.into_inner())

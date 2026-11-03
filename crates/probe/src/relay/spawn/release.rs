@@ -87,7 +87,7 @@ impl Core {
 
     /// Ends the agent and waits for its harness to confirm it. A session
     /// taken over runs in the person's own client: left alone.
-    async fn end_spawned(&self, registration: &Registration) -> Result<(), String> {
+    pub(crate) async fn end_spawned(&self, registration: &Registration) -> Result<(), String> {
         let Some(spawn) = registration.spawn.as_ref() else {
             return Ok(());
         };

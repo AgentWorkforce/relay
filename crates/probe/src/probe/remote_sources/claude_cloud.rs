@@ -34,13 +34,12 @@
 //! wait on it again. A refusal is never reused: the next caller reads
 //! again, so access granted in Settings reaches the next listing.
 //!
-//! [`claude_keychain`]: agent_relay_probe::relay::claude_keychain
+//! [`claude_keychain`]: crate::relay::claude_keychain
 //!
 //! Claude Code's credential is never refreshed, rewritten or otherwise
 //! changed, and neither the token nor the file's contents are logged.
-use agent_relay_probe::platform::fs as private_fs;
-#[cfg(target_os = "macos")]
-use agent_relay_probe::relay::claude_keychain;
+use crate::platform::fs as private_fs;
+use crate::relay::claude_keychain;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::io::Write;
@@ -54,12 +53,35 @@ pub const CREDENTIALS_ENV: &str = "RELAYHISTORY_CLAUDE_CREDENTIALS";
 /// The plain reasons a Claude login cannot be used, as the remote
 /// diagnostic records them.
 pub const EXPIRED: &str = "Claude Code's sign-in has expired; open Claude Code to refresh it";
-pub const UNREADABLE: &str = "Claude Code's sign-in could not be read";
-pub const NOT_SIGNED_IN: &str = "Claude Code is not signed in";
-pub const KEYCHAIN_DENIED: &str =
-    "Agent Relay may not read Claude Code's sign-in from the Keychain. Turn Claude Code cloud sessions on again in Settings and choose Always Allow";
-pub const PREPARE_FAILED: &str = "Agent Relay could not prepare Claude Code's sign-in";
+pub const UNREADABLE: &str =
+    "Claude Code's sign-in could not be read. Open Claude Code and sign in again";
+pub const NOT_SIGNED_IN: &str =
+    "Claude Code is not signed in. Open Claude Code and sign in to resume cloud sessions";
+pub const FOLDER_NOT_SHARED: &str = "Claude Code cloud sessions are on, but ~/.claude is not shared. Share that folder in Settings to resume them";
+pub const KEYCHAIN_DENIED: &str = "Agent Relay is blocked from reading Claude Code's credential (Keychain error -25337). Turn Claude Code cloud sessions off and on again in Settings, then choose Always Allow";
+pub const PREPARE_FAILED: &str =
+    "Agent Relay could not prepare Claude Code's sign-in. Check local storage permissions, then try again";
 pub const KEYCHAIN_WAITING: &str = "Waiting for Keychain access to Claude Code's sign-in";
+
+/// The safe, actionable sentence retained for a Keychain failure. OSStatus
+/// -25337 (`errSecInteractionNotAllowed`) is the common case when the helper
+/// lost access to Claude Code's item. Other codes remain visible instead of
+/// being collapsed into the same denial.
+fn keychain_failure(error: claude_keychain::ReadError) -> String {
+    match error.code {
+        Some(-25337) => KEYCHAIN_DENIED.to_string(),
+        Some(code) => format!(
+            "Agent Relay could not read Claude Code's credential (Keychain error {code}). Turn Claude Code cloud sessions off and on again in Settings, then choose Always Allow"
+        ),
+        None => "Agent Relay could not read Claude Code's credential from the Keychain. Turn Claude Code cloud sessions off and on again in Settings, then choose Always Allow".to_string(),
+    }
+}
+
+pub fn keychain_not_ready(reason: &str) -> bool {
+    reason == KEYCHAIN_WAITING
+        || reason.contains("Keychain error")
+        || reason.contains("credential from the Keychain")
+}
 
 /// How long a capture pass waits for the Keychain. A quiet read answers in
 /// milliseconds; three seconds covers a busy `securityd` (just after wake
@@ -85,7 +107,7 @@ pub trait KeychainSource: Send + Sync {
     fn present(&self) -> bool;
     /// The item's secret: Claude Code's credentials JSON. Only an
     /// `interactive` read may show macOS's prompt.
-    fn read(&self, interactive: bool) -> Option<Vec<u8>>;
+    fn read(&self, interactive: bool) -> Result<Vec<u8>, claude_keychain::ReadError>;
 }
 
 /// No Keychain: Linux, where Claude Code keeps its login in the file.
@@ -96,8 +118,8 @@ impl KeychainSource for NoKeychain {
     fn present(&self) -> bool {
         false
     }
-    fn read(&self, _interactive: bool) -> Option<Vec<u8>> {
-        None
+    fn read(&self, _interactive: bool) -> Result<Vec<u8>, claude_keychain::ReadError> {
+        Err(claude_keychain::ReadError::unknown())
     }
 }
 
@@ -111,7 +133,7 @@ impl KeychainSource for LoginKeychain {
         claude_keychain::present()
     }
 
-    fn read(&self, interactive: bool) -> Option<Vec<u8>> {
+    fn read(&self, interactive: bool) -> Result<Vec<u8>, claude_keychain::ReadError> {
         claude_keychain::read(interactive)
     }
 }
@@ -158,21 +180,21 @@ struct SlotState {
 /// failed. Zeroed when dropped.
 struct Answer {
     generation: u64,
-    secret: Option<Vec<u8>>,
+    secret: Result<Vec<u8>, claude_keychain::ReadError>,
     /// The read could show macOS's prompt: its refusal is the person's.
     interactive: bool,
     at: Instant,
 }
 
 impl Answer {
-    fn result(&self) -> Result<Vec<u8>, &'static str> {
-        self.secret.clone().ok_or(KEYCHAIN_DENIED)
+    fn result(&self) -> Result<Vec<u8>, String> {
+        self.secret.clone().map_err(keychain_failure)
     }
 }
 
 impl Drop for Answer {
     fn drop(&mut self) {
-        if let Some(secret) = &mut self.secret {
+        if let Ok(secret) = &mut self.secret {
             secret.fill(0);
         }
     }
@@ -223,18 +245,18 @@ impl Keychain {
     /// plain reason there is none for now: [`KEYCHAIN_WAITING`] while the
     /// read is still unanswered (it stays pending for the next caller),
     /// [`KEYCHAIN_DENIED`] when it was refused.
-    pub fn read(&self, ask: Ask) -> Result<Vec<u8>, &'static str> {
+    pub fn read(&self, ask: Ask) -> Result<Vec<u8>, String> {
         match ask {
             Ask::Pass => self.read_within(PASS_WAIT, false),
             Ask::Person => self.read_within(PERSON_WAIT, true),
         }
     }
 
-    fn read_within(&self, wait: Duration, person: bool) -> Result<Vec<u8>, &'static str> {
+    fn read_within(&self, wait: Duration, person: bool) -> Result<Vec<u8>, String> {
         let mut state = self.slot.lock();
         state.expire(self.ttl);
         // A refusal is read again: access may have been granted since.
-        if state.answer.as_ref().is_some_and(|a| a.secret.is_none()) {
+        if state.answer.as_ref().is_some_and(|a| a.secret.is_err()) {
             state.answer = None;
         }
         let mut deadline = None;
@@ -242,7 +264,7 @@ impl Keychain {
             match &state.answer {
                 // A person is never answered by a quiet read's refusal (one
                 // already in flight when they asked): they are asked.
-                Some(answer) if person && answer.secret.is_none() && !answer.interactive => {
+                Some(answer) if person && answer.secret.is_err() && !answer.interactive => {
                     state.answer = None
                 }
                 Some(answer) => return answer.result(),
@@ -254,7 +276,7 @@ impl Keychain {
                 state.reading = Some(Instant::now());
                 if self.spawn(generation, person).is_err() {
                     state.reading = None;
-                    return Err(PREPARE_FAILED);
+                    return Err(PREPARE_FAILED.to_string());
                 }
             }
             // A pass waits out the read's own bound, so once one pass
@@ -265,7 +287,7 @@ impl Keychain {
             });
             let now = Instant::now();
             if now >= deadline {
-                return Err(KEYCHAIN_WAITING);
+                return Err(KEYCHAIN_WAITING.to_string());
             }
             state = self
                 .slot
@@ -288,8 +310,7 @@ impl Keychain {
                 let secret = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     source.read(interactive)
                 }))
-                .ok()
-                .flatten();
+                .unwrap_or_else(|_| Err(claude_keychain::ReadError::unknown()));
                 {
                     let mut state = slot.lock();
                     state.reading = None;
@@ -435,7 +456,7 @@ pub fn prepare(
     keychain: &Keychain,
     now_ms: i64,
     ask: Ask,
-) -> Result<CredentialHome, &'static str> {
+) -> Result<CredentialHome, String> {
     let login = choose(home, keychain.source(), now_ms);
     if login != Login::Keychain {
         keychain.forget();
@@ -445,16 +466,18 @@ pub fn prepare(
             home: home.to_path_buf(),
             private: None,
         }),
-        Login::Expired => Err(EXPIRED),
-        Login::Unreadable => Err(UNREADABLE),
-        Login::Missing => Err(NOT_SIGNED_IN),
+        Login::Expired => Err(EXPIRED.to_string()),
+        Login::Unreadable => Err(UNREADABLE.to_string()),
+        Login::Missing => Err(NOT_SIGNED_IN.to_string()),
         Login::Keychain => {
             let mut secret = keychain.read(ask)?;
             let verdict = fresh(&secret, now_ms);
             let prepared = match verdict {
-                Some(true) => private_home(data_dir, &secret).map_err(|_| PREPARE_FAILED),
-                Some(false) => Err(EXPIRED),
-                None => Err(UNREADABLE),
+                Some(true) => {
+                    private_home(data_dir, &secret).map_err(|_| PREPARE_FAILED.to_string())
+                }
+                Some(false) => Err(EXPIRED.to_string()),
+                None => Err(UNREADABLE.to_string()),
             };
             secret.fill(0);
             prepared
@@ -520,7 +543,7 @@ fn remove_abandoned(root: &Path) {
 fn alive(pid: i32) -> bool {
     // No signal: only whether the process exists (one of another user's
     // answers EPERM; on Windows, whether it opens and has not exited).
-    agent_relay_probe::platform::process::exists(pid)
+    crate::platform::process::exists(pid)
 }
 
 #[cfg(test)]
@@ -588,15 +611,16 @@ pub(crate) mod tests {
         fn present(&self) -> bool {
             self.present
         }
-        fn read(&self, interactive: bool) -> Option<Vec<u8>> {
+        fn read(&self, interactive: bool) -> Result<Vec<u8>, claude_keychain::ReadError> {
             self.reads.fetch_add(1, Ordering::SeqCst);
             if interactive {
                 self.interactive_reads.fetch_add(1, Ordering::SeqCst);
             }
-            match &self.answers {
+            let secret = match &self.answers {
                 Some(answers) => answers.lock().unwrap().recv().ok().flatten(),
                 None => self.secret.clone(),
-            }
+            };
+            secret.ok_or(claude_keychain::ReadError { code: Some(-25337) })
         }
     }
 
@@ -609,6 +633,17 @@ pub(crate) mod tests {
     fn write_file(home: &Path, contents: &str) {
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         std::fs::write(home.join(".claude/.credentials.json"), contents).unwrap();
+    }
+
+    #[test]
+    fn keychain_osstatus_codes_are_preserved_with_actionable_guidance() {
+        assert_eq!(
+            keychain_failure(claude_keychain::ReadError { code: Some(-25337) }),
+            KEYCHAIN_DENIED
+        );
+        let other = keychain_failure(claude_keychain::ReadError { code: Some(-25293) });
+        assert!(other.contains("Keychain error -25293"));
+        assert!(other.contains("choose Always Allow"));
     }
 
     #[test]
@@ -715,7 +750,7 @@ pub(crate) mod tests {
                 Ask::Pass
             )
             .err(),
-            Some(EXPIRED)
+            Some(EXPIRED.to_string())
         );
         // Expired Keychain item: read once, refused, nothing left behind.
         let keychain = FakeKeychain::holding(Some(&credentials(NOW - 1)));
@@ -728,7 +763,7 @@ pub(crate) mod tests {
                 Ask::Pass
             )
             .err(),
-            Some(EXPIRED)
+            Some(EXPIRED.to_string())
         );
         assert!(std::fs::read_dir(data.path().join("claude-cloud"))
             .map(|mut entries| entries.next().is_none())
@@ -776,21 +811,30 @@ pub(crate) mod tests {
         let keychain = fake.keychain();
         let wait = Duration::from_millis(200);
         let started = Instant::now();
-        assert_eq!(keychain.read_within(wait, false), Err(KEYCHAIN_WAITING));
+        assert_eq!(
+            keychain.read_within(wait, false),
+            Err(KEYCHAIN_WAITING.to_string())
+        );
         let waited = started.elapsed();
         assert!(waited >= wait && waited < wait + Duration::from_secs(2));
         read_started(&fake, 1);
         // A later pass, or a clone, joins the read still waiting, and does
         // not wait on it again once its bound has passed.
         let started = Instant::now();
-        assert_eq!(keychain.read_within(wait, false), Err(KEYCHAIN_WAITING));
+        assert_eq!(
+            keychain.read_within(wait, false),
+            Err(KEYCHAIN_WAITING.to_string())
+        );
         assert_eq!(
             keychain.clone().read_within(wait, false),
-            Err(KEYCHAIN_WAITING)
+            Err(KEYCHAIN_WAITING.to_string())
         );
         assert!(started.elapsed() < wait, "a later pass waited again");
         // A person asking waits their own time on the same read.
-        assert_eq!(keychain.read_within(wait, true), Err(KEYCHAIN_WAITING));
+        assert_eq!(
+            keychain.read_within(wait, true),
+            Err(KEYCHAIN_WAITING.to_string())
+        );
         assert_eq!(
             fake.reads.load(Ordering::SeqCst),
             1,
@@ -849,7 +893,7 @@ pub(crate) mod tests {
         };
         assert_eq!(
             keychain.read_within(Duration::from_millis(10), false),
-            Err(KEYCHAIN_WAITING)
+            Err(KEYCHAIN_WAITING.to_string())
         );
         read_started(&fake, 1);
         // Answered after its pass gave up, and no pass comes.
@@ -868,7 +912,7 @@ pub(crate) mod tests {
         // The next pass reads again.
         assert_eq!(
             keychain.read_within(Duration::from_millis(10), false),
-            Err(KEYCHAIN_WAITING)
+            Err(KEYCHAIN_WAITING.to_string())
         );
         read_started(&fake, 2);
     }
@@ -908,7 +952,7 @@ pub(crate) mod tests {
         let started = Instant::now();
         assert_eq!(
             prepare(home.path(), data.path(), &keychain, NOW, Ask::Pass).err(),
-            Some(KEYCHAIN_WAITING)
+            Some(KEYCHAIN_WAITING.to_string())
         );
         assert!(started.elapsed() < PASS_WAIT + Duration::from_secs(2));
         read_started(&fake, 1);
@@ -943,7 +987,7 @@ pub(crate) mod tests {
                 Ask::Pass
             )
             .err(),
-            Some(KEYCHAIN_DENIED)
+            Some(KEYCHAIN_DENIED.to_string())
         );
         assert_eq!(keychain.reads.load(Ordering::SeqCst), 1);
         assert_eq!(keychain.interactive_reads.load(Ordering::SeqCst), 0);
@@ -956,7 +1000,7 @@ pub(crate) mod tests {
         // A pass's quiet read is still unanswered.
         assert_eq!(
             keychain.read_within(Duration::from_millis(10), false),
-            Err(KEYCHAIN_WAITING)
+            Err(KEYCHAIN_WAITING.to_string())
         );
         let person = {
             let keychain = keychain.clone();
@@ -985,7 +1029,10 @@ pub(crate) mod tests {
         // A pass reads quietly, and its refusal is not kept: the next pass
         // reads again, so access granted since is used.
         answer.send(None).unwrap();
-        assert_eq!(keychain.read_within(wait, false), Err(KEYCHAIN_DENIED));
+        assert_eq!(
+            keychain.read_within(wait, false),
+            Err(KEYCHAIN_DENIED.to_string())
+        );
         allow();
         assert!(keychain.read_within(wait, false).is_ok());
         assert_eq!(fake.reads.load(Ordering::SeqCst), 2);

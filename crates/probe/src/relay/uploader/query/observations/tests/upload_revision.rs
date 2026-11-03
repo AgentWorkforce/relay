@@ -18,6 +18,13 @@ struct DeliveryProbe {
 }
 
 impl ProbeRunner for DeliveryProbe {
+    fn status(
+        &self,
+        _: Option<std::path::PathBuf>,
+        _: crate::relay::uploader::HistoryReader,
+    ) -> BoxFuture<'_, Result<Value, UploaderError>> {
+        self.run(vec!["status".into()], None)
+    }
     fn history_access_root(&self) -> Option<PathBuf> {
         Some(self.home.clone())
     }

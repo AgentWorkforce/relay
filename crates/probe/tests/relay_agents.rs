@@ -13,19 +13,24 @@ mod support {
 use agent_relay_probe::relay::cloud_session::CloudAccess;
 use agent_relay_probe::relay::daemon::{self, BoundSocket, Config, Core, Plugins};
 use agent_relay_probe::relay::delivery::DeliveryTiming;
+use agent_relay_probe::relay::harness::HarnessId;
 use agent_relay_probe::relay::inject::InjectOutcome;
 use agent_relay_probe::relay::managed_sessions::ManagedAuthority;
 use agent_relay_probe::relay::paths::{self, CorePaths};
 use agent_relay_probe::relay::push::PushTiming;
+use agent_relay_probe::relay::spawn::launch::{
+    Launch, LaunchError, Launched, SpawnedProcess, Spawner, Started,
+};
 use agent_relay_probe::relay::store::{SessionKind, Target};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use support::bridge::{
-    eventually, eventually_for, session, Client, FakeCloud, FakeInjector, FakeSessions,
+    discovery_published, eventually, eventually_for, session, Client, FakeCloud, FakeInjector,
+    FakeSessions,
 };
 use support::fake_relaycast::{Behaviour, FakeRelaycast, WORKSPACE_KEY};
 
@@ -213,6 +218,20 @@ impl Harness {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().to_path_buf();
         prepare(&home, &fake);
+        // These fixtures exercise manual registration; an explicit opt-out
+        // prevents default automatic agents from changing their exact counts.
+        let store_path = home.join("app-data/injectable-agents.json");
+        let fixture = match std::fs::read(&store_path) {
+            Ok(bytes) => serde_json::from_slice::<Value>(&bytes).ok(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(json!({})),
+            Err(_) => None,
+        };
+        if let Some(Value::Object(mut fixture)) = fixture {
+            fixture.entry("autoActivate").or_insert(json!(false));
+            std::fs::create_dir_all(store_path.parent().unwrap()).unwrap();
+            std::fs::write(&store_path, serde_json::to_vec(&fixture).unwrap()).unwrap();
+        }
+
         support::fake_relaycast::sign_in_store(
             &home.join("app-data"),
             WORKSPACE_KEY,
@@ -265,8 +284,8 @@ impl Harness {
         }
         if let Some(sender) = usage {
             use agent_relay_probe::relay::{
-                account::Account,
                 telemetry::{PostHogProject, Telemetry, TelemetryConfig},
+                test_account::TestAccount,
                 uploader::{ProcessRunner, Uploader},
             };
             let mut telemetry_config = TelemetryConfig::new(
@@ -277,17 +296,11 @@ impl Harness {
             );
             telemetry_config.project =
                 PostHogProject::new("phc_test", "https://analytics.example.com");
-            let mut account = Account::new(
-                None,
-                &home,
-                &BTreeMap::new(),
-                &config.app_data_dir,
-                Arc::new(Uploader::new(Arc::new(ProcessRunner::new(
-                    home.join("nonexistent-test-probe"),
-                )))),
-            );
+            let mut account = TestAccount::new(Arc::new(Uploader::new(Arc::new(
+                ProcessRunner::new(home.join("nonexistent-test-probe")),
+            ))));
             account.telemetry = Some(Telemetry::new(telemetry_config, sender));
-            plugins.account = Some(Arc::new(account));
+            plugins.account = Some(account.into_plugin());
         }
         let (core, signals) = Core::with_plugins(config, plugins);
         let task = tokio::spawn(daemon::run(core.clone(), bound, signals));
@@ -770,6 +783,15 @@ async fn heartbeat_completion_does_not_add_a_full_connect_poll_sleep() {
             .await;
     eventually("team heartbeat parked", || {
         h.fake.held("POST /v1/agents/heartbeat") == 1
+    })
+    .await;
+    // A delivery waiting on a busy session keeps the Connect inbox on the
+    // fast poll, so every pass reads it.
+    h.injector
+        .then(InjectOutcome::Waiting("Waiting — session busy".into()));
+    connect.send_dm("host", "connect-guest", "Keep the inbox busy.");
+    eventually("the waiting Connect delivery", || {
+        !h.injector.injected().is_empty()
     })
     .await;
     release.send(true).unwrap();
@@ -1435,15 +1457,185 @@ async fn a_failed_injection_backs_off_then_retries_and_waiting_does_not_count() 
     assert!(attempts
         .iter()
         .all(|a| a.message_id == attempts[0].message_id));
-    let outcomes: Vec<Value> = client.ok("activity.list", json!({})).await["activity"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|a| a["outcome"].clone())
-        .collect();
+    // The ack can reach Relaycast before the delivered attempt is logged,
+    // so wait for all three entries rather than reading once.
+    let mut outcomes: Vec<Value> = Vec::new();
+    for _ in 0..500 {
+        outcomes = client.ok("activity.list", json!({})).await["activity"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["outcome"].clone())
+            .collect();
+        if outcomes.len() >= 3 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
     assert_eq!(
         outcomes,
         [json!("injected"), json!("waiting"), json!("failed")]
+    );
+    h.stop().await;
+}
+
+// The route learns from every queue read which messages are still pending,
+// so only those can hold later ones back (Codex's hidden order): a message
+// already acknowledged never wedges a session, whatever its transcript says.
+#[tokio::test]
+async fn each_queue_read_tells_the_route_which_messages_still_wait() {
+    let h = Harness::start(|_| {}).await;
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    h.injector
+        .then(InjectOutcome::Waiting("Waiting — session busy".into()));
+    let (first, _) = h.fake.send_dm("alice", "codex-api", "one");
+    eventually("acked", || {
+        delivered(&h.fake, &first).as_deref() == Some("acked")
+    })
+    .await;
+    let message = h.injector.injected()[0].message_id.clone();
+    let pending = h.injector.pending.lock().unwrap().clone();
+    assert!(
+        pending.iter().any(|(target, ids)| target.id == CODEX
+            && ids.as_ref().is_some_and(|ids| ids.contains(&message))),
+        "the waiting message was reported pending: {pending:?}"
+    );
+    eventually("a later read reports it gone", || {
+        h.injector
+            .pending
+            .lock()
+            .unwrap()
+            .last()
+            .is_some_and(|(_, ids)| ids.as_ref().is_some_and(|ids| !ids.contains(&message)))
+    })
+    .await;
+    h.stop().await;
+}
+
+// A message that keeps waiting is reported in the activity log once it has
+// waited `stuck_after`, with the agent's count of waiting messages: a
+// wedged session (one whose DMs waited for hours) cannot hide.
+#[tokio::test]
+async fn a_message_that_keeps_waiting_is_reported_once() {
+    let h = Harness::start_with_timing(
+        |_| None,
+        |_, _| {},
+        DeliveryTiming {
+            safety_poll: Duration::from_millis(150),
+            fast_poll: Duration::from_millis(100),
+            heartbeat: Duration::from_secs(30),
+            retry_unit: Duration::from_millis(20),
+            replies: Duration::from_millis(50),
+            stuck_after: Duration::from_millis(300),
+            ..DeliveryTiming::default()
+        },
+    )
+    .await;
+    let mut client = h.client().await;
+    client
+        .ok("subscribe", json!({"topics": ["activity"]}))
+        .await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    for _ in 0..200 {
+        h.injector.then(InjectOutcome::Waiting(
+            "Waiting — behind an earlier relay message the session holds".into(),
+        ));
+    }
+    let (delivery, _) = h.fake.send_dm("alice", "codex-api", "stuck");
+    let warning = "@codex-api: 1 message has not gone into the session";
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !client
+        .events
+        .iter()
+        .any(|e| e.to_string().contains(warning))
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no warning: {:?}",
+            client.events
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        client.ok("activity.list", json!({})).await;
+    }
+    // Once: more waiting passes add no second warning.
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    client.ok("activity.list", json!({})).await;
+    let warnings = client
+        .events
+        .iter()
+        .filter(|e| e.to_string().contains(warning))
+        .count();
+    assert_eq!(warnings, 1);
+    assert_ne!(delivered(&h.fake, &delivery).as_deref(), Some("acked"));
+    h.stop().await;
+}
+
+// Review on #572: a message handed over to the session (accepted, waiting
+// for its turn) no longer waits for the session to take it, so another's
+// warning does not count it, however long its turn takes.
+#[tokio::test]
+async fn a_message_handed_over_after_waiting_is_not_counted() {
+    let h = Harness::start_with_timing(
+        |_| None,
+        |_, _| {},
+        DeliveryTiming {
+            safety_poll: Duration::from_millis(150),
+            fast_poll: Duration::from_millis(100),
+            heartbeat: Duration::from_secs(30),
+            retry_unit: Duration::from_millis(20),
+            replies: Duration::from_millis(50),
+            stuck_after: Duration::from_millis(300),
+            ..DeliveryTiming::default()
+        },
+    )
+    .await;
+    let mut client = h.client().await;
+    client
+        .ok("subscribe", json!({"topics": ["activity"]}))
+        .await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    h.fake.seed_agent("alice", "agent", json!({}));
+    // First one, then the other, each pass: the first is handed over after
+    // its first try, the second keeps waiting.
+    let busy = || InjectOutcome::Waiting("Waiting — session busy".into());
+    h.injector.then(busy());
+    h.injector.then(busy());
+    for _ in 0..200 {
+        h.injector.then(InjectOutcome::WaitingForTurn(
+            "Waiting — queued behind the session's active turn".into(),
+        ));
+        h.injector.then(busy());
+    }
+    h.fake.send_dm("alice", "codex-api", "long turn");
+    h.fake.send_dm("alice", "codex-api", "stuck");
+    let warning = "@codex-api: 1 message has not gone into the session";
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !client
+        .events
+        .iter()
+        .any(|e| e.to_string().contains("not gone into the session"))
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no warning: {:?}",
+            client.events
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        client.ok("activity.list", json!({})).await;
+    }
+    assert!(
+        client
+            .events
+            .iter()
+            .any(|e| e.to_string().contains(warning)),
+        "only the waiting one counts: {:?}",
+        client.events
     );
     h.stop().await;
 }
@@ -2007,6 +2199,7 @@ async fn title_refresh_finishes_before_a_newer_idle_presence_write() {
     })
     .await;
     h.sessions.0.lock().unwrap()[0].live = false;
+    discovery_published(&h.core, &Target::new(SessionKind::Codex, CODEX), false).await;
     let core = h.core.clone();
     let new_poll = tokio::spawn(async move { core.poll_once().await });
     eventually("session absence recorded", || {
@@ -2756,9 +2949,10 @@ async fn settings_round_trip_and_refuse_unknown_keys() {
         json!({
             "allow_self_registration": true, "auto_activate": false, "show_relay_messages": false,
             "auto_join_general": false, "mobile_claude_handoff": false, "mobile_claude_handoff_supported": cfg!(unix), "mobile_native_continuation": false, "mobile_native_continuation_supported": cfg!(unix), "teammate_native_input": true, "pi_auto_activate": false, "opencode_auto_activate": false, "agent_changes": [],
+            "connect_detected_tools": true, "detected_tools": [],
             "accept_spawns": true, "spawn_max_agents": 0,
             "spawn_full_access_codex": true, "spawn_full_access_claude": true,
-            "spawn_allow_teammates": false, "spawn_native_input": true,
+            "spawn_allow_teammates": false, "spawn_native_input": true, "spawn_requester_approvals": false,
             "spawn_billing_codex": "unspecified", "spawn_billing_claude": "unspecified",
             "spawn_repositories": [],
             "spawn_harnesses": {
@@ -2915,10 +3109,20 @@ async fn auto_activation_puts_new_live_sessions_on_the_relay() {
 
 #[tokio::test]
 async fn a_devin_session_joins_without_the_auto_activate_setting() {
-    let h = Harness::start(|_| {}).await;
-    // auto_activate stays off (the default): the Codex and Claude fixtures
-    // never register, but a discovered Devin session does — its live lock
-    // holder is already the caller proof the other kinds opt in for.
+    let h = Harness::start(|home| {
+        let data = home.join("app-data");
+        std::fs::create_dir_all(&data).unwrap();
+        // Null represents an unchosen setting, instead of the harness's
+        // explicit opt-out for manual-registration tests.
+        std::fs::write(
+            data.join("injectable-agents.json"),
+            "{\"autoActivate\":null}",
+        )
+        .unwrap();
+    })
+    .await;
+    // Devin's discovered live lock holder joins without an explicit choice.
+    // Other provider defaults are covered by the automatic-activation test.
     h.sessions.0.lock().unwrap().push(session(
         SessionKind::Devin,
         "real-gallium",
@@ -2933,12 +3137,6 @@ async fn a_devin_session_joins_without_the_auto_activate_setting() {
     assert_eq!(
         names.iter().filter(|n| n.contains("devin")).count(),
         1,
-        "{names:?}"
-    );
-    assert!(
-        !names
-            .iter()
-            .any(|n| n.contains("codex") || n.contains("claude")),
         "{names:?}"
     );
     // An explicit off still wins, even for Devin: the setting write queues
@@ -4656,8 +4854,10 @@ async fn registration_plan_quota_keeps_the_actionable_reason_and_can_recover() {
         .set_api_error("POST /v1/agents", Some((429, "plan_limit_exceeded")));
     let params = json!({"target": {"kind": "codex", "id": CODEX}, "name": "quota-test"});
     let response = client.call("agents.register", params.clone()).await;
-    assert_eq!(response["error"]["data"]["kind"], "relaycast_refused");
+    assert_eq!(response["error"]["data"]["kind"], "plan_limit_exceeded");
     assert_eq!(response["error"]["data"]["retryable"], false);
+    // A refusal without the structured counters carries no `plan_limit`.
+    assert!(response["error"]["data"].get("plan_limit").is_none());
     assert_eq!(response["error"]["message"], "Could not register @quota-test on Agent Relay. This Agent Relay workspace has reached its plan limit. Upgrade its plan or wait for the quota to reset, then try again.");
     assert!(h.store()["registrations"].as_array().unwrap().is_empty());
     assert!(h.fake.agent("quota-test").is_none());
@@ -4786,6 +4986,105 @@ async fn removing_a_spawned_agent_saves_its_spawn_receipt_first() {
     assert_eq!(receipt["output"]["name"], "spawned-w1");
     assert_eq!(receipt["output"]["warning"]["verification"], "interrupted");
     assert!(!receipts[0].contains(WORKSPACE_KEY));
+    h.stop().await;
+}
+
+struct EndingSpawner {
+    fail: AtomicBool,
+    releases: AtomicUsize,
+}
+
+impl Spawner for EndingSpawner {
+    fn available(&self) -> Vec<HarnessId> {
+        Vec::new()
+    }
+
+    fn launch(&self, _: &Launch, _: Started) -> Result<Launched, LaunchError> {
+        unreachable!("this test only ends an existing spawn")
+    }
+
+    fn alive(&self, _: &Target, _: Option<&SpawnedProcess>) -> bool {
+        true
+    }
+
+    fn stop(&self, _: &Target, _: Option<&SpawnedProcess>) {}
+
+    fn release(&self, _: &Target, _: Option<&SpawnedProcess>) -> Result<(), String> {
+        self.releases.fetch_add(1, Ordering::SeqCst);
+        if self.fail.load(Ordering::SeqCst) {
+            Err("its process is still running".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[tokio::test]
+async fn ending_a_spawned_agent_confirms_the_harness_before_removing_it() {
+    let spawner = Arc::new(EndingSpawner {
+        fail: AtomicBool::new(true),
+        releases: AtomicUsize::new(0),
+    });
+    let h = Harness::start_with_plugins(
+        |_| None,
+        |home, relaycast| {
+            let data = home.join("app-data");
+            std::fs::create_dir_all(&data).unwrap();
+            std::fs::write(
+                data.join("injectable-agents.json"),
+                json!({
+                    "registrations": [
+                        {"name": "spawned-w1", "agentID": "agent_w1",
+                            "target": {"kind": "codex", "id": CODEX}, "title": "Fix CI",
+                            "baseURL": relaycast.base_url, "registeredAt": "2026-10-15T00:00:00Z",
+                            "workspaceKey": WORKSPACE_KEY, "machinePrefix": "test-desk",
+                            "spawn": {"nodeID": "node_desktop_1", "nodeName": "test-desk-desktop",
+                                "invocationID": "inv_spawned_w1", "harness": "codex"}},
+                        {"name": "taken-w2", "agentID": "agent_w2",
+                            "target": {"kind": "codex", "id": CLAUDE}, "title": "Owned by person",
+                            "baseURL": relaycast.base_url, "registeredAt": "2026-10-15T00:00:00Z",
+                            "workspaceKey": WORKSPACE_KEY, "machinePrefix": "test-desk",
+                            "spawn": {"nodeID": "node_desktop_1", "nodeName": "test-desk-desktop",
+                                "invocationID": "inv_taken_w2", "harness": "codex",
+                                "takenOverAt": "2026-10-15T00:01:00Z"}}
+                    ],
+                    "tokens": {"spawned-w1": "at_live_w1", "taken-w2": "at_live_w2"},
+                    "acceptSpawns": false,
+                })
+                .to_string(),
+            )
+            .unwrap();
+        },
+        DeliveryTiming::default(),
+        None,
+        Some(spawner.clone()),
+    )
+    .await;
+    h.fake.seed_agent("spawned-w1", "agent", json!({}));
+    h.fake.seed_agent("taken-w2", "agent", json!({}));
+    let mut client = h.client().await;
+
+    let (kind, message) = client
+        .error("agents.end", json!({"name": "taken-w2"}))
+        .await;
+    assert_eq!(kind, "refused");
+    assert!(message.contains("no longer runs"), "{message}");
+    assert_eq!(spawner.releases.load(Ordering::SeqCst), 0);
+
+    let (kind, message) = client
+        .error("agents.end", json!({"name": "spawned-w1"}))
+        .await;
+    assert_eq!(kind, "internal");
+    assert!(message.contains("still running"), "{message}");
+    assert!(h.fake.agent("spawned-w1").is_some());
+    assert_eq!(h.store()["registrations"].as_array().unwrap().len(), 2);
+
+    spawner.fail.store(false, Ordering::SeqCst);
+    client.ok("agents.end", json!({"name": "spawned-w1"})).await;
+    assert_eq!(spawner.releases.load(Ordering::SeqCst), 2);
+    assert!(h.fake.agent("spawned-w1").is_none());
+    assert!(h.fake.agent("taken-w2").is_some());
+    assert_eq!(h.store()["registrations"].as_array().unwrap().len(), 1);
     h.stop().await;
 }
 

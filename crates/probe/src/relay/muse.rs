@@ -26,7 +26,7 @@
 //!   (`exact_profile_match`), so the courier's model forwards the relay text
 //!   with `send_session_message` and the turn renders in the person's
 //!   session. The probe never types into the person's session; it drives only
-//!   its own courier, exactly as the fleet drives broker-spawned PTY workers.
+//!   its own courier.
 //!
 //! Processes are read through a `ProcessTable`, so tests never start Muse.
 

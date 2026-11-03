@@ -49,6 +49,12 @@ pub struct SettingsValues {
     /// Allow verified spawning agents to send native input; on by default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_native_input: Option<bool>,
+    /// The agent that spawned a session may answer its permission and
+    /// approval requests by direct message, as the machine owner may; the
+    /// first answer counts. Needs `spawn_native_input`. On in Agent Relay Dev
+    /// and off in the release build unless set. Absent in older cores.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_requester_approvals: Option<bool>,
     /// A teammate's direct message to a Claude Code session with Agent
     /// Relay's plugin starts a user turn, labelled with the sender; on by
     /// default. Absent in older cores.
@@ -198,6 +204,13 @@ pub struct SettingsValues {
     /// Absent in older cores.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history_retention_days: Option<u32>,
+    /// Whether the tools found here are connected once the person is signed
+    /// in; nothing is written to a tool before. On unless turned off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connect_detected_tools: Option<bool>,
+    /// Read-only: the tools signing in connects, by name (`Claude Code`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detected_tools: Option<Vec<String>>,
     /// The latest settings changes agents made on the session socket
     /// (`PATCH /settings`), newest first. Read-only: a record, not a
     /// setting. Absent in older cores.
@@ -329,6 +342,13 @@ pub struct SettingsChange {
     )]
     #[schemars(with = "bool")]
     pub spawn_native_input: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "given",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "bool")]
+    pub spawn_requester_approvals: Option<bool>,
     #[serde(
         default,
         deserialize_with = "given",
@@ -561,6 +581,14 @@ pub struct SettingsChange {
     )]
     #[schemars(with = "u32")]
     pub history_retention_days: Option<u32>,
+    /// Whether the tools found here are connected once signed in.
+    #[serde(
+        default,
+        deserialize_with = "given",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "bool")]
+    pub connect_detected_tools: Option<bool>,
 }
 
 /// A value that may be absent but is never `null`.

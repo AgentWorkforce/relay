@@ -35,6 +35,21 @@ pub struct ConnectWorkspaceParams {
     pub workspace_id: String,
 }
 
+/// Pinned destination for the credential-only hosted MCP header helper.
+#[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
+pub struct McpHeadersParams {
+    pub site_url: String,
+    pub workspace_id: String,
+    pub account_id: String,
+}
+
+/// Sensitive response available only through the same-user local core socket.
+/// Never included in status, subscriptions, diagnostics or telemetry.
+#[derive(Clone, Deserialize, JsonSchema, Serialize)]
+pub struct McpHeaders {
+    pub headers: std::collections::BTreeMap<String, String>,
+}
+
 /// `uploader.status`: the probe's status plus the stage the core derives.
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema, Deserialize)]
 pub struct UploaderStatus {
@@ -69,6 +84,38 @@ pub struct UploaderStatus {
     /// `needs_attention`, except that a receiver conflict keeps `conflict`
     /// and a failed cycle with no delivery failure keeps `offline`.
     pub stalled: bool,
+    /// The last Claude Code cloud-session listing. Absent before one has
+    /// run or with an older probe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_cloud: Option<ClaudeCloudHealth>,
+}
+
+/// Health of the Claude Code cloud-session source, credential-free.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ClaudeCloudHealth {
+    pub state: ClaudeCloudHealthState,
+    /// Plain-language cause and next step when not working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// When this source was last checked, in Unix milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_ms: Option<i64>,
+    /// Its most recent successful listing, retained across later failures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success_ms: Option<i64>,
+    /// The macOS OSStatus from a failed Keychain read, when one caused it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keychain_error_code: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(extend("x-fallback" = "checking"))]
+pub enum ClaudeCloudHealthState {
+    Working,
+    Checking,
+    Blocked,
+    NeedsAttention,
 }
 
 /// The upload job's delivery counters.
@@ -94,6 +141,12 @@ pub struct UploadDelivery {
     /// for `uploader.retry`, a sign-in or an update.
     #[serde(default)]
     pub stopped: bool,
+    /// What the collector's last inspection of older ai-hist upload
+    /// schedules found, when it was not clear: why `legacy_uploader_active`
+    /// holds uploads, or why the inspection could not finish. Left out
+    /// when empty, so an app reads its absence from an older core as none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub legacy_schedule_jobs: Vec<LegacyScheduleJob>,
 }
 
 /// The allowlisted classes of a delivery failure.
@@ -109,6 +162,54 @@ pub enum DeliveryFailureCode {
     UnsupportedEvidence,
     MappingVersionMismatch,
     DeliveryConflict,
+    /// An older managed ai-hist uploader is scheduled on this computer.
+    /// Retried: uploads resume by themselves once it is removed.
+    LegacyUploaderActive,
+}
+
+/// What the last inspection of older ai-hist upload schedules found, as
+/// fixed labels (`migration::JOB_CODES`); never a path or scheduler output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum LegacyScheduleJob {
+    /// `~/Library/LaunchAgents/com.ai-hist.push.plist` exists.
+    LaunchdPlist,
+    /// launchd has `com.ai-hist.push` loaded.
+    LaunchdLoaded,
+    /// The crontab has the `# ai-hist push (managed)` line.
+    ManagedCron,
+    LaunchdPlistStatusUnknown,
+    LaunchdStatusUnknown,
+    CronStatusUnknown,
+    HomeUnavailable,
+    LegacyInstallerUnsupported,
+}
+
+impl LegacyScheduleJob {
+    /// The fixed label, as `migration::JOB_CODES` spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LegacyScheduleJob::LaunchdPlist => "launchd-plist",
+            LegacyScheduleJob::LaunchdLoaded => "launchd-loaded",
+            LegacyScheduleJob::ManagedCron => "managed-cron",
+            LegacyScheduleJob::LaunchdPlistStatusUnknown => "launchd-plist-status-unknown",
+            LegacyScheduleJob::LaunchdStatusUnknown => "launchd-status-unknown",
+            LegacyScheduleJob::CronStatusUnknown => "cron-status-unknown",
+            LegacyScheduleJob::HomeUnavailable => "home-unavailable",
+            LegacyScheduleJob::LegacyInstallerUnsupported => "legacy-installer-unsupported",
+        }
+    }
+
+    /// The labels a probe status reports under
+    /// `last_cycle.legacy_schedules.jobs`, unknown ones dropped.
+    pub fn from_probe(status: &Value) -> Vec<LegacyScheduleJob> {
+        status["last_cycle"]["legacy_schedules"]["jobs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|job| serde_json::from_value(job.clone()).ok())
+            .collect()
+    }
 }
 
 /// Why the probe could not renew the upload sign-in.
@@ -163,6 +264,7 @@ impl UploaderStatus {
                 failure_code: serde_json::from_value(delivery["failure_code"].clone()).ok(),
                 renewal_failure: serde_json::from_value(delivery["renewal_failure"].clone()).ok(),
                 stopped: delivery["state"] == "blocked",
+                legacy_schedule_jobs: LegacyScheduleJob::from_probe(status),
             },
             sessions: SessionCounts {
                 total: count(&sessions["total"]),
@@ -175,6 +277,7 @@ impl UploaderStatus {
             journal_full: flag(&status["journal_full"]),
             upgrading: flag(&status["upgrading"]),
             stalled: flag(&status["stalled"]),
+            claude_cloud: serde_json::from_value(status["claude_cloud"].clone()).ok(),
         }
     }
 }
@@ -388,5 +491,34 @@ impl SessionQueryParams {
         self.presentation
             .as_ref()
             .is_some_and(|p| p.preparing.iter().any(|id| id == key))
+    }
+}
+
+/// How a sign-in gets its session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Flow {
+    /// The browser through Cloud's login page, back to a loopback receiver.
+    Browser,
+    /// A device approval; a kept session is reused first.
+    Device,
+}
+
+/// `account.sign_in`'s parameters.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
+pub struct SignInRequest {
+    pub site_url: Option<String>,
+    pub workspace: Option<String>,
+    pub sharing: SharingMode,
+    #[serde(default)]
+    pub acknowledge_uninspected_schedules: bool,
+    pub flow: Option<Flow>,
+}
+
+impl Flow {
+    /// Desktop sign-in uses Google and a PKCE loopback handoff on both platforms.
+    /// Remote/headless callers can explicitly request the device flow.
+    pub fn platform() -> Flow {
+        Flow::Browser
     }
 }

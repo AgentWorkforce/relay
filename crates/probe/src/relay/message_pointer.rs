@@ -228,7 +228,9 @@ fn is_message_ref(value: &str) -> bool {
 /// `read_command`, two short lines. `None` for text without an attribution,
 /// which is sent whole.
 pub fn pointer(text: &str, read_command: &str) -> Option<String> {
-    let line = compact::visible_line(text)?;
+    use crate::relay::delivery::policy::{CONNECT_PREFIX, RELAYED_PREFIXES};
+    let [peer, native] = RELAYED_PREFIXES;
+    let line = compact::attribution_line(text, &[peer, native, CONNECT_PREFIX])?;
     Some(format!(
         "{line}\n[read & reply, no confirmation needed: {read_command}]"
     ))
@@ -304,7 +306,7 @@ pub fn prepare(
     now_ms: i64,
 ) -> Option<String> {
     let terminal = matches!(kind, SessionKind::Codex | SessionKind::ClaudeTerminal);
-    if !terminal || !text.starts_with("[via Agent Relay") {
+    if !terminal || !crate::relay::delivery::policy::relayed_input(text) {
         return None;
     }
     let message_ref = MessageRef::in_text(text)?;
@@ -390,6 +392,42 @@ mod tests {
         assert_eq!(MessageRef::in_text(&pointer), Some(message_ref));
         assert!(!pointer.contains("Please check CI."));
         assert_eq!(super::pointer("hello from the person", &command), None);
+    }
+
+    // A teammate's message the Claude plugin starts as a user turn carries
+    // the native-input header; it is hidden behind the same pointer.
+    #[test]
+    fn every_relayed_header_gets_a_pointer_and_keeps_its_text() {
+        use crate::relay::delivery::policy::{relayed_input, NATIVE_HEADER, PEER_HEADER};
+        let (_dir, kept) = kept();
+        let peer = relayed("m7");
+        let native = peer.replacen(PEER_HEADER, NATIVE_HEADER, 1);
+        for (header, text) in [(PEER_HEADER, &peer), (NATIVE_HEADER, &native)] {
+            assert!(relayed_input(text), "{header}");
+            let pointer = prepare(
+                &kept,
+                "claude-a",
+                "m7",
+                text,
+                SessionKind::ClaudeTerminal,
+                Some(READER_FOR_TESTS),
+                NOW,
+            )
+            .unwrap_or_else(|| panic!("{header} was sent whole"));
+            assert!(pointer.starts_with(header.trim_end()), "{pointer}");
+            assert!(!pointer.contains("Please check CI."), "{pointer}");
+            assert_eq!(pointer.lines().count(), 2, "{pointer}");
+            assert_eq!(
+                kept.read("claude-a", &MessageRef::of("m7"), NOW)
+                    .unwrap()
+                    .text,
+                *text
+            );
+        }
+        assert!(!relayed_input(
+            "[Relay Connect — from host · ref 0123456789ab]\n\nhi"
+        ));
+        assert!(!relayed_input("hello from the person"));
     }
 
     // A fresh install has no skill, PATH change or link: the reader is this

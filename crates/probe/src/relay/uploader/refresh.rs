@@ -50,6 +50,9 @@ pub(super) struct Background {
     after_open: Option<Arc<dyn Fn() + Send + Sync>>,
     status: Option<(Token, Instant)>,
     sessions: Option<(Token, usize, Instant)>,
+    /// Where the catalog a session list shows was last looked at.
+    #[cfg(feature = "history")]
+    catalog: Option<ai_hist::Watermark>,
 }
 #[cfg(feature = "history")]
 struct Database {
@@ -75,7 +78,7 @@ impl Background {
         _directory: &Path,
         _generation: u64,
         _attachment: u64,
-    ) -> anyhow::Result<Token> {
+    ) -> anyhow::Result<(Token, bool)> {
         anyhow::bail!("session history is not built into this core")
     }
 
@@ -85,7 +88,7 @@ impl Background {
         directory: &Path,
         generation: u64,
         attachment: u64,
-    ) -> anyhow::Result<Token> {
+    ) -> anyhow::Result<(Token, bool)> {
         anyhow::ensure!(attachment == self.attachment, "attachment changed");
         if directory.join("session-reset-pending.json").exists() {
             self.database = None;
@@ -104,6 +107,7 @@ impl Background {
             self.database = None;
             self.status = None;
             self.sessions = None;
+            self.catalog = None;
             let conn = crate::delivery::open_db_readonly(&path)?;
             anyhow::ensure!(
                 identity == crate::delivery::DatabaseIdentity::read(&path)?,
@@ -123,12 +127,21 @@ impl Background {
             self.status = None;
             self.sessions = None;
         }
-        let database = self
+        let conn = &self
             .database
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("history monitor unavailable"))?
-            .conn
-            .pragma_query_value(None, "data_version", |r| r.get(0))?;
+            .conn;
+        let database = conn.pragma_query_value(None, "data_version", |r| r.get(0))?;
+        // Session rows can change while nothing status shows does: a title,
+        // an activity time. The catalog's own changes say so.
+        let catalog = match crate::delivery::catalog_changed(conn, self.catalog) {
+            Ok((changed, head)) => {
+                self.catalog = Some(head);
+                changed
+            }
+            Err(_) => false,
+        };
         let mut files: Vec<Value> = [
             "config.json",
             "selected.json",
@@ -159,12 +172,15 @@ impl Background {
             .and_then(|value| value["pid"].as_u64())
             .and_then(|pid| i32::try_from(pid).ok())
             .is_some_and(crate::platform::process::exists);
-        Ok(Token {
-            generation,
-            database,
-            files,
-            running,
-        })
+        Ok((
+            Token {
+                generation,
+                database,
+                files,
+                running,
+            },
+            catalog,
+        ))
     }
 }
 
@@ -239,13 +255,17 @@ impl Uploader {
                         .ok()
                 })
             };
+            let (token, catalog) = match token {
+                Some((token, catalog)) => (Some(token), catalog),
+                None => (None, false),
+            };
             // If the caller was cancelled/dropped, close the last monitor
             // handle before releasing its process-independent access lease.
             drop(monitor);
-            (token, reader)
+            (token, catalog, reader)
         })
         .await;
-        let Ok((token, _reader)) = token else {
+        let Ok((token, catalog, _reader)) = token else {
             return false;
         };
         // A pending reset must not spawn a helper that reopens history either.
@@ -256,11 +276,16 @@ impl Uploader {
         {
             return false;
         }
+        // Apps read status and their session page on the same event: one
+        // for the catalog alone is enough when status shows no change.
         let (status, sessions) = tokio::join!(
             self.refresh_background_status(token.clone(), attachment, notify),
             self.refresh_background_sessions(token, attachment, notify),
         );
-        status || sessions
+        if catalog && !status && !sessions {
+            notify();
+        }
+        status || sessions || catalog
     }
 
     async fn refresh_background_status(
@@ -404,6 +429,13 @@ mod tests {
         sessions_gate: Mutex<Option<Arc<tokio::sync::Semaphore>>>,
     }
     impl ProbeRunner for Probe {
+        fn status(
+            &self,
+            _: Option<std::path::PathBuf>,
+            _: crate::relay::uploader::HistoryReader,
+        ) -> BoxFuture<'_, Result<Value, UploaderError>> {
+            self.run(vec!["status".into()], None)
+        }
         fn run(
             &self,
             args: Vec<String>,
@@ -414,7 +446,8 @@ mod tests {
                     let run = self.statuses.fetch_add(1, Ordering::SeqCst);
                     if self.failed.load(Ordering::SeqCst) { return Err(UploaderError::new("retry")); }
                     if let Some(value) = self.status_value.lock().unwrap().clone() { return Ok(value); }
-                    return Ok(json!({"running":true,"run":run}));
+                    // Each read shows a different queue.
+                    return Ok(json!({"running":true,"run":run,"delivery":{"pending_records":run}}));
                 }
                 let catalog = args.iter().any(|arg| arg == "--catalog-only");
                 if !catalog {
@@ -500,6 +533,56 @@ mod tests {
             (2, 0),
             "Unchanged policy must reuse status without querying sessions"
         );
+    }
+
+    #[tokio::test]
+    async fn a_catalog_change_alone_invalidates_and_a_status_only_write_does_not() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::delivery::open_db(&directory.path().join("history.db")).unwrap();
+        store
+            .execute(
+                "INSERT INTO sessions(source,session_id,title) VALUES ('codex','a','First')",
+                [],
+            )
+            .unwrap();
+        let probe = Arc::new(Probe::default());
+        // Status shows the same thing throughout.
+        *probe.status_value.lock().unwrap() = Some(json!({"running":true,"sessions":{"total":1}}));
+        let uploader = Uploader::new(probe.clone());
+        uploader.attach(Install::from_json(
+            &json!({"site_url":"https://example.test", "directory":directory.path()}),
+        ));
+        let notifications = AtomicU64::new(0);
+        let notify = || {
+            notifications.fetch_add(1, Ordering::SeqCst);
+        };
+        uploader.refresh_background_snapshots_with(&notify).await;
+        let first = notifications.load(Ordering::SeqCst);
+        // A write status reads but shows nothing new from.
+        store
+            .execute_batch("CREATE TABLE timing(at INTEGER); INSERT INTO timing VALUES (1);")
+            .unwrap();
+        uploader.refresh_background_snapshots_with(&notify).await;
+        assert_eq!(
+            notifications.load(Ordering::SeqCst),
+            first,
+            "status-only churn invalidates nothing"
+        );
+        // A session's title changes; no count does.
+        store
+            .execute(
+                "UPDATE sessions SET title='Renamed' WHERE source='codex' AND session_id='a'",
+                [],
+            )
+            .unwrap();
+        uploader.refresh_background_snapshots_with(&notify).await;
+        assert_eq!(
+            notifications.load(Ordering::SeqCst),
+            first + 1,
+            "a session row change invalidates the uploader"
+        );
+        uploader.refresh_background_snapshots_with(&notify).await;
+        assert_eq!(notifications.load(Ordering::SeqCst), first + 1);
     }
 
     #[tokio::test]

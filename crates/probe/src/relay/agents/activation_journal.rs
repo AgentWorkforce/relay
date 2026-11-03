@@ -242,16 +242,18 @@ impl Core {
             }
             // An absent registration stays idle through the update.
             let status = Some(self.roster_status(&registration, &name));
-            let result = client::update_agent_metadata(
-                &registration.base_url,
-                &key,
-                &registration.name,
-                metadata.clone(),
-                status,
-            )
-            .await;
-            self.observe_relaycast_write_result(&workspace, &result);
-            if let Err(error) = result {
+            // A rotated saved key is replaced; an agent out of reach has
+            // no roster here to publish to.
+            let (base, agent) = (registration.base_url.as_str(), registration.name.as_str());
+            let (result, unreachable) = self
+                .write_with_saved_key(&registration, &key, |key| {
+                    let metadata = metadata.clone();
+                    async move {
+                        client::update_agent_metadata(base, &key, agent, metadata, status).await
+                    }
+                })
+                .await;
+            if let (Err(error), false) = (result, unreachable) {
                 published = false;
                 failures.push(format!(
                     "{}: could not publish blocked sessions: {error}",

@@ -73,6 +73,30 @@ impl Core {
         let integration = registration.integration_channel_id.as_deref();
         let queued: HashSet<&str> = deliveries.iter().map(|d| d.id.as_str()).collect();
         let _ = self.with_pins(|pins| pins.retain_queued(&registration.agent_id, &queued));
+        // What is still queued, by message id (a recorded batch by the id it
+        // was handed over with), unless the read stopped at a full page.
+        let mut pending: Vec<String> = deliveries
+            .iter()
+            .filter(|d| d.is_pending())
+            .map(|d| d.message_id.clone())
+            .collect();
+        pending.extend(self.with_pins(|pins| pins.keys_for(&registration.agent_id)));
+        let whole = deliveries.len() < crate::relay::client::QUEUE_PAGE as usize;
+        // Every queue feeding the session: its own and its aliases'.
+        let queues = self
+            .store
+            .read(|store| {
+                store
+                    .registration_for(&registration.target)
+                    .map(|r| r.agent_ids())
+            })
+            .unwrap_or_else(|| vec![registration.agent_id.clone()]);
+        self.plugins.injector.note_pending(
+            &registration.target,
+            &registration.agent_id,
+            &queues,
+            whole.then_some(pending.as_slice()),
+        );
         let mut groups = Vec::new();
         for delivery in deliveries.iter().filter(|d| d.is_pending()) {
             // Sent under either of the session's names: acknowledged, not injected.
@@ -285,6 +309,11 @@ impl Core {
             }
             Err(reason) => (None, InjectOutcome::InDoubt(reason)),
         };
+        if matches!(outcome, InjectOutcome::Delivered) {
+            // Delivered stays delivered; this only watches whether a
+            // terminal Claude Code session reads it.
+            self.watch_inbox(registration, &pin.key);
+        }
         let workspace = self.relaycast_registration_scope(registration, token);
         let settle = Settle {
             answer_post: reply_post.as_ref(),

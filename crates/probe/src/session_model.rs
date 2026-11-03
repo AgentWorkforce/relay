@@ -1,11 +1,7 @@
-//! The session catalog's view model: the local session rows, the session
-//! search language and the upload states the core's catalog query
+//! The session catalog's view model: the local session rows, harness names,
+//! the session search language and the upload states the core's catalog query
 //! (`relay::session_query`) filters and sorts by. Pure: nothing here reads a
-//! file, the network or the core's state.
-//!
-//! These modules came from the desktop GTK app's `linux_app::models`, which
-//! the core's catalog query depended on. They moved into the core so the core
-//! builds without the GUI; the apps import them from here.
+//! file, the network or the core's state. The apps import them from here.
 
 mod agent_kind;
 mod agent_names;
@@ -14,7 +10,7 @@ mod session_project;
 mod session_query;
 mod uploads;
 
-pub use agent_kind::{claude_cloud_place, hosted_kind_label, kind_label, source_name};
+pub use agent_kind::*;
 pub use agent_names::*;
 pub use local_sessions::*;
 pub use session_project::*;

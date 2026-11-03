@@ -28,9 +28,9 @@
 //! link again (`active`), so one deleted or replaced since is never handed
 //! out.
 //!
-//! When neither hook is on any more (turned off, or `relay init
-//! --uninstall`), the link goes, with its folder once empty, and hints name
-//! the probe's own path again. A hint handed out while a hook was on that
+//! When neither hook is on any more (turned off in Settings, or by the
+//! `agent-relay` CLI's `relay init --uninstall`), the link goes, with its
+//! folder once empty, and hints name the probe's own path again. A hint handed out while a hook was on that
 //! still names the link then no longer runs; without the hook's rules it
 //! would have asked for approval anyway, and the session's next message has
 //! a working one. Keeping the link for those would leave it after the person
@@ -375,40 +375,45 @@ mod tests {
         apps: PathBuf,
     }
 
-    fn fixture() -> Fixture {
-        let temp = tempfile::tempdir().unwrap();
+    fn fixture() -> std::io::Result<Fixture> {
+        let temp = tempfile::tempdir()?;
         // A temp folder can itself be under a path the link would need to
         // quote; the tests need a plain one.
-        let root = temp.path().canonicalize().unwrap();
-        assert!(is_plain(&root), "{}", root.display());
+        let root = temp.path().canonicalize()?;
+        if !is_plain(&root) {
+            return Err(std::io::Error::other(format!(
+                "{} needs quoting",
+                root.display()
+            )));
+        }
         let home = root.join("home");
         let data = root.join("data");
         let apps = root.join("Apps");
         for dir in [&home, &data, &apps] {
-            std::fs::create_dir_all(dir).unwrap();
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::create_dir_all(dir)?;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
         }
-        std::fs::create_dir_all(home.join(".agentworkforce/desktop")).unwrap();
-        Fixture {
+        std::fs::create_dir_all(home.join(".agentworkforce/desktop"))?;
+        Ok(Fixture {
             _temp: temp,
             home,
             data,
             apps,
-        }
+        })
     }
 
-    fn probe_at(fixture: &Fixture, app: &str) -> PathBuf {
+    fn probe_at(fixture: &Fixture, app: &str) -> std::io::Result<PathBuf> {
         let helpers = fixture.apps.join(app).join("Contents/Helpers");
-        std::fs::create_dir_all(&helpers).unwrap();
+        std::fs::create_dir_all(&helpers)?;
         let probe = helpers.join("Agent Relay Helper");
-        std::fs::write(&probe, b"#!/bin/sh\n").unwrap();
-        probe
+        std::fs::write(&probe, b"#!/bin/sh\n")?;
+        Ok(probe)
     }
 
     #[test]
     fn a_probe_path_with_a_space_gets_a_private_link() {
-        let fixture = fixture();
-        let real = probe_at(&fixture, "Agent Relay.app");
+        let fixture = fixture().unwrap();
+        let real = probe_at(&fixture, "Agent Relay.app").unwrap();
         let alias = ProbeAlias::new(real.clone(), &fixture.home, &fixture.data, false);
         assert_eq!(alias.probe(), real);
         let probe = alias.acquire(User::Codex);
@@ -428,7 +433,7 @@ mod tests {
 
     #[test]
     fn a_plain_probe_path_needs_no_link() {
-        let fixture = fixture();
+        let fixture = fixture().unwrap();
         let real = fixture.apps.join("agent-relay-probe");
         std::fs::write(&real, b"").unwrap();
         let alias = ProbeAlias::new(real.clone(), &fixture.home, &fixture.data, false);
@@ -438,13 +443,13 @@ mod tests {
 
     #[test]
     fn a_moved_probe_moves_the_link() {
-        let fixture = fixture();
-        let old = probe_at(&fixture, "Agent Relay.app");
+        let fixture = fixture().unwrap();
+        let old = probe_at(&fixture, "Agent Relay.app").unwrap();
         let first = ProbeAlias::new(old.clone(), &fixture.home, &fixture.data, false);
         let link = first.acquire(User::Codex);
         assert_eq!(std::fs::read_link(&link).unwrap(), old);
         // The app moved: the next core start points the same link at it.
-        let new = probe_at(&fixture, "Agent Relay 2.app");
+        let new = probe_at(&fixture, "Agent Relay 2.app").unwrap();
         let second = ProbeAlias::new(new.clone(), &fixture.home, &fixture.data, false);
         // Until then, the old link is not this probe's: it is not named.
         assert_eq!(second.probe(), new);
@@ -460,8 +465,8 @@ mod tests {
 
     #[test]
     fn anything_this_core_did_not_make_is_refused() {
-        let fixture = fixture();
-        let real = probe_at(&fixture, "Agent Relay.app");
+        let fixture = fixture().unwrap();
+        let real = probe_at(&fixture, "Agent Relay.app").unwrap();
         let folder = fixture.home.join(DIR);
         let link = folder.join("agent-relay-probe");
         let elsewhere = fixture.apps.join("evil");
@@ -528,8 +533,8 @@ mod tests {
     // the same probe, is someone else's.
     #[test]
     fn a_link_put_in_place_of_ours_is_never_overwritten_or_removed() {
-        let fixture = fixture();
-        let real = probe_at(&fixture, "Agent Relay.app");
+        let fixture = fixture().unwrap();
+        let real = probe_at(&fixture, "Agent Relay.app").unwrap();
         let alias = ProbeAlias::new(real.clone(), &fixture.home, &fixture.data, false);
         let link = alias.acquire(User::Codex);
         let script = fixture.apps.join("mine.sh");
@@ -539,7 +544,7 @@ mod tests {
             std::os::unix::fs::symlink(target, &link).unwrap();
             assert_eq!(alias.published(), None);
             // A core start (or the hook turned on again) leaves it alone.
-            let moved = probe_at(&fixture, "Agent Relay 2.app");
+            let moved = probe_at(&fixture, "Agent Relay 2.app").unwrap();
             let next = ProbeAlias::new(moved.clone(), &fixture.home, &fixture.data, false);
             assert_eq!(next.acquire(User::Codex), moved);
             assert_eq!(&std::fs::read_link(&link).unwrap(), target);
@@ -553,13 +558,13 @@ mod tests {
     // before renaming it into place still knows the old link as its own.
     #[test]
     fn an_interrupted_move_is_finished_by_the_next_start() {
-        let fixture = fixture();
-        let old = probe_at(&fixture, "Agent Relay.app");
+        let fixture = fixture().unwrap();
+        let old = probe_at(&fixture, "Agent Relay.app").unwrap();
         let first = ProbeAlias::new(old.clone(), &fixture.home, &fixture.data, false);
         let link = first.acquire(User::Codex);
         let made = first.made().unwrap();
         // The move's record went down, its rename did not.
-        let new = probe_at(&fixture, "Agent Relay 2.app");
+        let new = probe_at(&fixture, "Agent Relay 2.app").unwrap();
         let record = fixture.data.join(RECORD);
         std::fs::write(
             &record,
@@ -582,8 +587,8 @@ mod tests {
 
     #[test]
     fn the_link_goes_once_no_rules_need_it() {
-        let fixture = fixture();
-        let real = probe_at(&fixture, "Agent Relay.app");
+        let fixture = fixture().unwrap();
+        let real = probe_at(&fixture, "Agent Relay.app").unwrap();
         let alias = ProbeAlias::new(real, &fixture.home, &fixture.data, false);
         let link = alias.acquire(User::Codex);
         alias.acquire(User::Claude);

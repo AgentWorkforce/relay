@@ -278,7 +278,7 @@ impl Index {
         self.archived = archived;
         let mut live = HashMap::new();
         for row in rows {
-            let key = row.target.upload_key().unwrap_or_else(|| row.target.key());
+            let key = row.upload_key().unwrap_or_else(|| row.target.key());
             let kept = live.entry(key).or_insert(row.clone());
             if row.live {
                 *kept = row;

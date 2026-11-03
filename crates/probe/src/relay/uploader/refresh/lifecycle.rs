@@ -29,6 +29,7 @@ impl Uploader {
             starting: tokio::sync::Mutex::new(()),
             status_read: Mutex::new(None),
             status_snapshot: Mutex::new(None),
+            claude_health_logged: Mutex::new(None),
             sessions_snapshot: Mutex::new(None),
             sessions_read: Mutex::new(None),
             sessions_refresh: tokio::sync::Mutex::new(()),
@@ -49,7 +50,6 @@ impl Uploader {
         self.admit_history_reader(guard)
     }
 
-    #[cfg(feature = "history")]
     /// Short synchronous store operations refuse reset rather than waiting
     /// while holding an unrelated settings or SQLite lock.
     pub(crate) fn try_history_reader(&self) -> Result<HistoryReader, RpcError> {
@@ -186,6 +186,13 @@ mod tests {
         fail: AtomicBool,
     }
     impl ProbeRunner for ResetProbe {
+        fn status(
+            &self,
+            _: Option<std::path::PathBuf>,
+            _: crate::relay::uploader::HistoryReader,
+        ) -> BoxFuture<'_, Result<Value, UploaderError>> {
+            self.run(vec!["status".into()], None)
+        }
         fn history_access_root(&self) -> Option<PathBuf> {
             Some(self.root.clone())
         }

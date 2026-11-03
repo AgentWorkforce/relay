@@ -198,6 +198,15 @@ pub struct BlockingCoreStream {
 }
 
 impl BlockingCoreStream {
+    /// Connects to an external application's Windows pipe without hashing
+    /// its name. Callers must check the server's credentials before use.
+    #[cfg(windows)]
+    pub(crate) fn connect_named(name: &str) -> io::Result<Self> {
+        Ok(Self {
+            inner: imp::BlockingStream::connect_named(name)?,
+        })
+    }
+
     pub fn connect(path: &Path) -> io::Result<BlockingCoreStream> {
         Ok(BlockingCoreStream {
             inner: imp::BlockingStream::connect(path)?,

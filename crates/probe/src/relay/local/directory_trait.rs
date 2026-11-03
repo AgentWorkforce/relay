@@ -62,6 +62,19 @@ impl SessionDirectory for LocalSessions {
         })
     }
 
+    fn mobile_claude_idle(&self, target: &Target) -> Option<bool> {
+        if target.kind != SessionKind::ClaudeTerminal {
+            return None;
+        }
+        let registry = claude::registry(&self.config.claude, &*self.table);
+        let mut matches = registry
+            .sessions
+            .iter()
+            .filter(|session| session.session_id == target.id);
+        let session = matches.next()?;
+        matches.next().is_none().then(|| session.is_idle())
+    }
+
     fn title_capability(
         &self,
         source: &str,
@@ -166,7 +179,7 @@ impl SessionDirectory for LocalSessions {
             .iter()
             .filter(|target| target.kind == SessionKind::ClaudeTerminal)
             .filter_map(|target| {
-                let cleared = claude::cleared(&self.config.claude, &*self.table, &target.id)?;
+                let cleared = claude::cleared(&self.config.claude, &*self.scans, &target.id)?;
                 Some((
                     target.clone(),
                     Target::new(SessionKind::ClaudeTerminal, cleared.session_id),
@@ -251,25 +264,13 @@ impl SessionDirectory for LocalSessions {
             | SessionKind::OpenCode
             | SessionKind::OpenClaw
             | SessionKind::Hermes
-            | SessionKind::Pi => None,
+            | SessionKind::Pi
+            | SessionKind::Omp => None,
         };
         Ok(found
             .map(|s| DiscoveredSession { live: true, ..s })
             .unwrap_or_else(|| DiscoveredSession {
-                title: match target.kind {
-                    SessionKind::Codex => "Codex session".into(),
-                    SessionKind::ClaudeTerminal | SessionKind::ClaudeCloud => {
-                        "Claude Code session".into()
-                    }
-                    SessionKind::Grok | SessionKind::GrokOpen => "Grok session".into(),
-                    SessionKind::OpenCode | SessionKind::OpenCodeOpen => "OpenCode session".into(),
-                    SessionKind::MuseOpen => "Muse session".into(),
-                    SessionKind::Devin => "Devin session".into(),
-                    SessionKind::CursorCli => "Cursor CLI session".into(),
-                    SessionKind::OpenClaw => "OpenClaw agent".into(),
-                    SessionKind::Hermes => "Hermes".into(),
-                    SessionKind::Pi => "Pi session".into(),
-                },
+                title: fallback_title(target.kind).into(),
                 target,
                 directory: None,
                 updated_at_ms: None,
@@ -343,13 +344,30 @@ impl SessionDirectory for LocalSessions {
     }
 }
 
+/// A caller's title when its session's own state names none.
+fn fallback_title(kind: SessionKind) -> &'static str {
+    match kind {
+        SessionKind::Codex => "Codex session",
+        SessionKind::ClaudeTerminal | SessionKind::ClaudeCloud => "Claude Code session",
+        SessionKind::Grok | SessionKind::GrokOpen => "Grok session",
+        SessionKind::OpenCode | SessionKind::OpenCodeOpen => "OpenCode session",
+        SessionKind::MuseOpen => "Muse session",
+        SessionKind::Devin => "Devin session",
+        SessionKind::CursorCli => "Cursor CLI session",
+        SessionKind::OpenClaw => "OpenClaw agent",
+        SessionKind::Hermes => "Hermes",
+        SessionKind::Pi => "Pi session",
+        SessionKind::Omp => "Oh My Pi session",
+    }
+}
+
 impl LocalSessions {
     /// Whether automatic activation puts `session` on the relay: one
     /// predicate for activation itself and for `/setup/status`'s
     /// `auto_activates`, so the SessionStart hook never promises a join
     /// activation would not make.
     fn activation_check(&self) -> impl Fn(&DiscoveredSession) -> bool + '_ {
-        let claude_registry = claude::registry(&self.config.claude, &*self.table);
+        let claude_registry = claude::registry(&self.config.claude, &*self.scans);
         let grok_reachable = move |session_id: &str| self.grok_open_reachable(session_id);
         let automated = std::cell::OnceCell::new();
         let started_by_automation = move |session_id: &str| {
@@ -370,13 +388,18 @@ impl LocalSessions {
             // A Devin Cloud row's `live` already proved this machine's
             // sign-in can reach it — the caller proof a local lock
             // proves for a local row — so it activates the same way,
-            // and a remote directory has nothing local to exclude. One
-            // an automation started (a Devin review) has nobody in it
-            // to talk to, so it never joins.
+            // and a remote directory has nothing local to exclude, but
+            // only while it was active in the last day: an untouched
+            // cloud session has nobody to talk to and would only
+            // heartbeat Relaycast. Leaving this set is what takes an
+            // automatic one off the relay after the grace period. One an
+            // automation started (a Devin review) has nobody in it to talk
+            // to, so it never joins.
             if session.target.kind == SessionKind::Devin
                 && session.host.as_deref() == Some(crate::relay::devin_cloud::CLOUD_HOST)
             {
-                return !started_by_automation(&session.target.id);
+                return !started_by_automation(&session.target.id)
+                    && crate::relay::devin_cloud::recent_enough_to_join(session);
             }
             if let Some(admitted) = self.gateway_admits(session.target.kind) {
                 return admitted;
@@ -389,17 +412,17 @@ impl LocalSessions {
             }
             match session.target.kind {
                 SessionKind::ClaudeTerminal => {
-                    claude::terminal_session(&self.config.claude, &*self.table, &session.target.id)
+                    claude::terminal_session(&self.config.claude, &*self.scans, &session.target.id)
                         .is_some_and(|terminal| {
-                            claude::is_interactive_terminal(&*self.table, &terminal)
+                            claude::is_interactive_terminal(&*self.scans, &terminal)
                                 || claude::is_conductor_chat(
-                                    &*self.table,
+                                    &*self.scans,
                                     self.config.uid,
                                     &terminal,
                                     &claude_registry.sessions,
                                 )
                                 || claude::is_app_hosted_chat(
-                                    &*self.table,
+                                    &*self.scans,
                                     &terminal,
                                     &claude_registry,
                                 )
@@ -427,7 +450,7 @@ impl LocalSessions {
                 // send. Whether either joins by itself is the store's
                 // per-provider opt-in (`activation_applies`), so it is
                 // eligible here like a Codex thread.
-                SessionKind::OpenCodeOpen | SessionKind::Pi => true,
+                SessionKind::OpenCodeOpen | SessionKind::Pi | SessionKind::Omp => true,
                 // A Devin row exists only while a `devin` process holds
                 // the session's lock open, which is also its caller
                 // proof. Devin Cloud rows return early above; any other

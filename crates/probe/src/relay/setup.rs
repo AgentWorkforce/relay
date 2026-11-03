@@ -26,7 +26,11 @@
 //! No route waits on work it does not report. The local defaults are applied
 //! in place; the uploader's sharing mode and Relaycast's verification of a
 //! newly found workspace key continue in the background, and `/setup/status`
-//! answers from the last state they left. See docs/agent-driven-setup.md.
+//! answers from the last state they left. See "The relay-send socket"
+//! in docs/relay-core.md.
+
+mod account_status;
+mod uploader_cache;
 
 use crate::relay::daemon::Core;
 use crate::relay::delivery::policy::relayfile_glob;
@@ -38,6 +42,8 @@ use crate::relay::store::{is_uuid, Registration, SessionKind};
 use serde_json::{json, Map, Value};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+mod sign_in_state;
 
 /// Claude Code's `crossSessionInbound` setting, as setup changes it.
 pub trait DirectDelivery: Send + Sync {
@@ -100,9 +106,8 @@ pub struct Setup {
     defaults_error: Mutex<Option<DefaultsError>>,
     /// The bootstrap's uploader step is running.
     bootstrapping: AtomicBool,
-    /// The last `uploader.status` answer: `None` before the first arrives,
-    /// `Some(None)` when it failed.
-    uploader: Mutex<Option<Option<Value>>>,
+    /// The last `uploader.status` answer, kept for `/setup/status`.
+    uploader: uploader_cache::UploaderCache,
     /// An `uploader.status` read is running.
     reading_uploader: AtomicBool,
     /// A check for live sessions still waiting to be activated is running.
@@ -121,7 +126,7 @@ impl Setup {
             sharing: tokio::sync::Mutex::new(()),
             defaults_error: Mutex::new(None),
             bootstrapping: AtomicBool::new(false),
-            uploader: Mutex::new(None),
+            uploader: uploader_cache::UploaderCache::new(),
             reading_uploader: AtomicBool::new(false),
             checking_activation: AtomicBool::new(false),
             errors_set: AtomicU64::new(0),
@@ -168,28 +173,11 @@ impl Setup {
         server::call(&self.core, method, params).await
     }
 
-    /// The account as `account.status` reports it; without the account
-    /// methods, signed in exactly when a workspace is known.
-    async fn account(&self) -> Value {
-        match self.method("account.status", json!({})).await {
-            Ok(account) => account,
-            Err(_) => {
-                let workspace = self.core.status().workspace;
-                let signed_in = self.core.workspace().is_some();
-                json!({
-                    "state": if signed_in { "signed_in" } else { "signed_out" },
-                    "workspace_id": workspace.workspace_id,
-                    "workspace_name": workspace.workspace_name,
-                })
-            }
-        }
-    }
-
     /// Reads `uploader.status` and keeps the answer for `/setup/status`.
-    async fn read_uploader(&self) -> Option<Value> {
+    async fn read_uploader(&self) {
+        let generation = self.uploader.begin();
         let answer = self.method("uploader.status", json!({})).await.ok();
-        *self.uploader.lock().unwrap() = Some(answer.clone());
-        answer
+        self.uploader.store(generation, answer);
     }
 
     /// Starts an `uploader.status` read unless one is running; status
@@ -209,9 +197,7 @@ impl Setup {
     async fn set_sharing(&self, mode: &str) -> Result<(), RpcError> {
         self.method("uploader.sharing.set", json!({ "mode": mode }))
             .await?;
-        if let Some(Some(answer)) = self.uploader.lock().unwrap().as_mut() {
-            answer["sharing_mode"] = json!(mode);
-        }
+        self.uploader.patch_sharing(mode);
         Ok(())
     }
 
@@ -319,7 +305,7 @@ impl Setup {
     /// Clears a reported activation failure once no live session waits to
     /// be activated, checked in the background unless a check is running.
     /// The check discovers every session on this computer, which can wait
-    /// on the Codex app and the fleet's brokers for many seconds, so no
+    /// on the Codex app for many seconds, so no
     /// route waits on it; status reports what the last check left.
     fn recheck_activation(self: &Arc<Self>) {
         if self.checking_activation.swap(true, Ordering::SeqCst) {
@@ -435,7 +421,7 @@ impl Setup {
         }
         let mut failure = None;
         let read = self.method("uploader.status", json!({})).await;
-        *self.uploader.lock().unwrap() = Some(read.as_ref().ok().cloned());
+        self.uploader.replace(read.as_ref().ok().cloned());
         // An explicit choice may have closed the bootstrap while the
         // uploader answered.
         if self.defaults_applied() {
@@ -688,15 +674,9 @@ impl Setup {
     /// network call, uploader command or setup change in progress.
     pub async fn status(self: &Arc<Self>, session: &DiscoveredSession) -> Value {
         let account = self.account().await;
-        let signed_in = self.signed_in(&account);
-        let state = match signed_in {
-            true => "signed_in",
-            false => account["state"].as_str().unwrap_or("signed_out"),
-        }
-        .to_string();
+        let (signed_in, state) = sign_in_state::reported(self.signed_in(&account), &account);
         self.refresh_uploader();
-        let read = self.uploader.lock().unwrap().clone();
-        let uploader = read.clone().flatten();
+        let read = self.uploader.snapshot();
         let uploader_summary = match &read {
             None => json!({"running": false, "healthy": false, "pending": true}),
             Some(Some(raw)) => {
@@ -741,18 +721,18 @@ impl Setup {
             "version": self.core.config().version,
             "sign_in": state,
             "signed_in": signed_in,
+            "auth_health": account["auth_health"],
+            "auth_error": account["auth_error"],
+            "auth_checked_at": account["auth_checked_at"],
             "account": person,
             "workspace": workspace,
-            "cloud_identity_sync": crate::relay::account::cloud_identity_sync(&self.core),
+            "cloud_identity_sync": self.core.plugins.account.as_ref().map(|account| account.cloud_identity_sync(&self.core)),
             "relaycast": self
                 .core
                 .workspace()
                 .map(|_| self.core.status().workspace.verification),
             "defaults": if self.defaults_applied() { "applied" } else { "pending" },
-            "sharing_mode": uploader
-                .as_ref()
-                .and_then(|u| u["sharing_mode"].as_str())
-                .unwrap_or("selected"),
+            "sharing_mode": self.uploader.sharing_mode().unwrap_or_else(|| "selected".to_string()),
             "auto_activate": self.core.store.read(|s| s.auto_activates()),
             "allow_self_registration": self.core.store.read(|s| s.allows_self_registration()),
             "direct_delivery": self.direct.delivers_directly(),
@@ -839,16 +819,9 @@ impl Setup {
             }
         };
         let account = self.account().await;
-        if self.signed_in(&account) {
-            let current = account["workspace_id"].as_str().map(str::to_lowercase);
-            if workspace.is_some() && current.is_some() && workspace != current {
-                return Err(OutboundError::new(
-                    409,
-                    "workspace_mismatch",
-                    "This computer is signed in to another workspace. Disconnect it before switching workspaces.",
-                ));
-            }
-            return Ok(signed_in_response(&account));
+        let attached = self.signed_in(&account);
+        if let Some(answer) = sign_in_state::answer(attached, &account, workspace.as_deref()) {
+            return answer.map(|()| signed_in_response(&account));
         }
         let mut params = json!({
             "sharing": "selected",

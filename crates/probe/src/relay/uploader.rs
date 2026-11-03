@@ -30,9 +30,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::sync::mpsc;
 
+mod process_io;
 mod query;
+use process_io::{wait_bounded, Capture};
 mod refresh;
+mod retrying;
 mod session_mutations;
+mod status_read;
 use refresh::{session_page, Changing};
 pub use refresh::{with_derived, HistoryReader};
 mod supervision;
@@ -43,6 +47,10 @@ mod supervision;
 /// uploads stopped with nobody to restart them; `reclaim` may be migrating
 /// a store, which commits only at the end.
 pub mod timeouts;
+#[cfg(test)]
+use status_read::read_holding;
+#[cfg(all(test, feature = "history"))]
+use status_read::STATUS_FAILED;
 
 /// How often the attached collector is checked and restarted.
 pub const SUPERVISE_EVERY: Duration = Duration::from_secs(60);
@@ -104,6 +112,12 @@ impl From<UploaderError> for RpcError {
 pub const MISSING: &str = "Agent Relay could not find its helper program.";
 const BAD_OUTPUT: &str = "Agent Relay could not read the helper's answer.";
 const FAILED: &str = "Agent Relay's helper reported a problem.";
+
+pub(crate) fn log_helper_failure(command: &str, cause: &str) {
+    crate::relay::diagnostics::write(format_args!(
+        "relay uploader helper failed command={command} cause={cause}"
+    ));
+}
 
 /// A command's answer as the bridge type it stands for.
 pub fn read_answer<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, RpcError> {
@@ -170,6 +184,15 @@ pub trait ProbeRunner: Send + Sync + 'static {
         timeout: Option<Duration>,
     ) -> BoxFuture<'_, Result<Value, UploaderError>>;
 
+    /// The install's status (`crate::delivery_status::status`), read from its
+    /// directory while `lease` holds off a session reset. Not a command: the
+    /// core answers it in process.
+    fn status(
+        &self,
+        directory: Option<PathBuf>,
+        lease: HistoryReader,
+    ) -> BoxFuture<'_, Result<Value, UploaderError>>;
+
     /// Starts `cloud install`, with the person's Cloud bearer when one is
     /// already at hand (otherwise the probe runs its own device sign-in).
     fn install(
@@ -204,6 +227,18 @@ impl ProbeRunner for NoHistoryRunner {
                     crate::relay::protocol::HISTORY_UNAVAILABLE,
                 )),
             }
+        })
+    }
+
+    fn status(
+        &self,
+        _directory: Option<PathBuf>,
+        _lease: HistoryReader,
+    ) -> BoxFuture<'_, Result<Value, UploaderError>> {
+        Box::pin(async {
+            Err(UploaderError::new(
+                crate::relay::protocol::HISTORY_UNAVAILABLE,
+            ))
         })
     }
 
@@ -321,70 +356,6 @@ pub(crate) fn signal(pid: u32, signal: libc::c_int) {
     crate::platform::process::terminate(pid);
 }
 
-/// A pipe being read in the background: at most `limit` bytes are kept,
-/// the rest discarded so the writer never blocks.
-struct Capture {
-    kept: Arc<Mutex<Vec<u8>>>,
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl Capture {
-    fn start(reader: Option<impl AsyncRead + Unpin + Send + 'static>, limit: usize) -> Capture {
-        let kept = Arc::new(Mutex::new(Vec::new()));
-        let sink = kept.clone();
-        let task = tokio::spawn(async move {
-            let Some(mut reader) = reader else { return };
-            let mut buffer = [0u8; 8192];
-            loop {
-                match reader.read(&mut buffer).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(count) => {
-                        let mut kept = sink.lock().unwrap();
-                        let room = limit.saturating_sub(kept.len());
-                        kept.extend_from_slice(&buffer[..count.min(room)]);
-                    }
-                }
-            }
-        });
-        Capture { kept, task }
-    }
-
-    /// What was read, once the pipe closed or a second passed: a
-    /// descendant that inherited the pipe (the detached collector) can keep
-    /// it open long after the command itself exited.
-    async fn finish(self) -> String {
-        let mut task = self.task;
-        let _ = tokio::time::timeout(Duration::from_secs(1), &mut task).await;
-        task.abort();
-        let kept = self.kept.lock().unwrap();
-        String::from_utf8_lossy(&kept).into_owned()
-    }
-}
-
-/// Waits for `child`; past `timeout`, asks it to stop, then kills it.
-async fn wait_bounded(
-    child: &mut tokio::process::Child,
-    timeout: Option<Duration>,
-) -> Option<std::process::ExitStatus> {
-    let waited = match timeout {
-        Some(timeout) => tokio::time::timeout(timeout, child.wait()).await.ok(),
-        None => Some(child.wait().await),
-    };
-    if let Some(status) = waited {
-        return status.ok();
-    }
-    if let Some(pid) = child.id() {
-        signal(pid, libc::SIGTERM);
-    }
-    if tokio::time::timeout(Duration::from_secs(1), child.wait())
-        .await
-        .is_err()
-    {
-        let _ = child.kill().await;
-    }
-    None
-}
-
 impl ProbeRunner for ProcessRunner {
     fn history_access_root(&self) -> Option<PathBuf> {
         refresh::history_access_root(&self.env)
@@ -397,7 +368,16 @@ impl ProbeRunner for ProcessRunner {
     ) -> BoxFuture<'_, Result<Value, UploaderError>> {
         Box::pin(async move {
             let generation = self.generation.load(Ordering::SeqCst);
-            let (mut child, registration) = self.spawn(self.command(&args), generation)?;
+            let command_name = args.first().map(String::as_str).unwrap_or("unknown");
+            let (mut child, registration) = match self.spawn(self.command(&args), generation) {
+                Ok(spawned) => spawned,
+                Err(error) => {
+                    if !error.cancelled {
+                        log_helper_failure(command_name, &error.message);
+                    }
+                    return Err(error);
+                }
+            };
             let stdout = Capture::start(child.stdout.take(), 16 * 1024 * 1024);
             let stderr = Capture::start(child.stderr.take(), 64 * 1024);
             let status = wait_bounded(&mut child, timeout).await;
@@ -408,13 +388,32 @@ impl ProbeRunner for ProcessRunner {
             }
             let Some(status) = status else {
                 let command = args.first().map(String::as_str).unwrap_or_default();
-                return Err(UploaderError::new(timeout_message(command)));
+                let error = UploaderError::new(timeout_message(command));
+                log_helper_failure(command_name, &error.message);
+                return Err(error);
             };
             if !status.success() {
-                return Err(UploaderError::new(stderr_message(&stderr, FAILED)));
+                let message = stderr_message(&stderr, FAILED);
+                let outcome = status
+                    .code()
+                    .map(|code| format!("exit_{code}"))
+                    .unwrap_or_else(|| "signal".to_string());
+                log_helper_failure(command_name, &format!("{outcome}: {message}"));
+                return Err(UploaderError::new(message));
             }
-            decode_output(&stdout).ok_or_else(|| UploaderError::new(BAD_OUTPUT))
+            decode_output(&stdout).ok_or_else(|| {
+                log_helper_failure(command_name, BAD_OUTPUT);
+                UploaderError::new(BAD_OUTPUT)
+            })
         })
+    }
+
+    fn status(
+        &self,
+        directory: Option<PathBuf>,
+        lease: HistoryReader,
+    ) -> BoxFuture<'_, Result<Value, UploaderError>> {
+        status_read::read(directory, lease)
     }
 
     fn install(
@@ -422,12 +421,21 @@ impl ProbeRunner for ProcessRunner {
         args: Vec<String>,
         bearer: Option<Secret>,
     ) -> Result<InstallRun, UploaderError> {
+        let command_name = args.first().cloned().unwrap_or_else(|| "cloud".into());
         let mut command = self.command(&args);
         if let Some(bearer) = bearer {
             command.env("CLOUD_API_ACCESS_TOKEN", bearer.expose());
         }
         let generation = self.generation.load(Ordering::SeqCst);
-        let (mut child, registration) = self.spawn(command, generation)?;
+        let (mut child, registration) = match self.spawn(command, generation) {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                if !error.cancelled {
+                    log_helper_failure(&command_name, &error.message);
+                }
+                return Err(error);
+            }
+        };
         let pid = child.id();
         let stdout = child.stdout.take();
         let stderr = Capture::start(child.stderr.take(), 64 * 1024);
@@ -474,6 +482,11 @@ impl ProbeRunner for ProcessRunner {
                     "Agent Relay could not finish signing in. Please try again.",
                 ))),
             };
+            if let Err(error) = &outcome {
+                if !error.cancelled {
+                    log_helper_failure(&command_name, &error.message);
+                }
+            }
             let _ = done.send(outcome);
         });
         Ok(InstallRun {
@@ -546,6 +559,7 @@ impl Target {
 /// Which local sessions are uploaded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
+#[derive(clap::ValueEnum)]
 #[schemars(extend("x-fallback" = "selected"))]
 pub enum SharingMode {
     All,
@@ -757,13 +771,9 @@ fn derive_at(status: &Value, now_ms: i64) -> Value {
         && !paused
         && !replacing
         && !upgrading
-        && crate::delivery_status::delivery_is_stalled(
-            pending,
-            delivery["last_acknowledged_ms"].as_i64(),
-            delivery["oldest_pending_ms"].as_i64(),
-            now_ms,
-        );
-    let transient_progress = failure_code == "transient"
+        && retrying::stopped_trying(delivery, pending, now_ms);
+    let retrying = retrying::retried(failure_code);
+    let transient_progress = retrying
         && !stalled
         && !crate::delivery_status::retry_failure_is_sustained(
             delivery["attempts"].as_i64().unwrap_or_default(),
@@ -788,7 +798,7 @@ fn derive_at(status: &Value, now_ms: i64) -> Value {
                 "History delivery conflict: the receiver detail could not be validated. Records remain queued for repair.".into()
             }),
         )
-    } else if failure_code != "transient" && failure.is_some() {
+    } else if !retrying && failure.is_some() {
         (Stage::NeedsAttention, failure.clone())
     } else if journal_full {
         (
@@ -805,15 +815,9 @@ fn derive_at(status: &Value, now_ms: i64) -> Value {
             })),
         )
     } else if transient_progress {
-        let sent = delivery["acknowledged_records"]
-            .as_i64()
-            .unwrap_or(0)
-            .max(0);
         (
             Stage::Uploading,
-            Some(format!(
-                "Server is slow; retrying. {sent} sent, {pending} queued."
-            )),
+            Some(retrying::message(delivery, failure_code, pending)),
         )
     } else if let Some(failure) = failure {
         (Stage::NeedsAttention, Some(failure))
@@ -909,13 +913,14 @@ pub struct Uploader {
     /// One start at a time.
     starting: tokio::sync::Mutex<()>,
     /// The `status` read in flight, with the `changes` count it began at.
-    /// Concurrent callers share it instead of each spawning `status --json`
-    /// (the Mac app reads status on every uploader event and every 5 s,
-    /// and one read can wait out SQLite's busy timeout while the first
-    /// sync writes the history store). Never a cache: a finished read is
-    /// not reused.
+    /// Concurrent callers share it instead of each reading the store (one
+    /// read can wait out SQLite's busy timeout while the first sync writes
+    /// the history store). Never a cache: a finished read is not reused.
     status_read: Mutex<Option<(u64, StatusRead)>>,
     status_snapshot: Mutex<Option<(u64, Value)>>,
+    /// The last Claude health report logged; its pass timestamp changes for
+    /// every new failure, while repeated status reads stay quiet.
+    claude_health_logged: Mutex<Option<Value>>,
     sessions_snapshot: Mutex<Option<SessionsSnapshot>>,
     sessions_read: Mutex<Option<(u64, usize, StatusRead)>>,
     sessions_refresh: tokio::sync::Mutex<()>,
@@ -970,6 +975,10 @@ impl Uploader {
         let mut current = self.install.lock().unwrap();
         if *current != install {
             let _ = self.clear_query_index();
+            *self
+                .claude_health_logged
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = None;
             self.revision.fetch_add(1, Ordering::SeqCst);
             self.changes.fetch_add(1, Ordering::SeqCst);
             self.invalidate_history_readers();
@@ -1012,71 +1021,6 @@ impl Uploader {
 
     fn attached(&self) -> Result<Target, RpcError> {
         self.target().ok_or_else(not_connected)
-    }
-
-    /// `status` with `needs_start`, `stage` and the install's `directory`.
-    pub async fn status(&self) -> Result<Value, RpcError> {
-        // The generation is taken before the target: an attach in between
-        // then labels this read with the older generation, so no caller
-        // asking after the attach joins a read of the old install.
-        let changes = self.changes.load(Ordering::SeqCst);
-        let target = self.attached()?;
-        let directory = self.install().and_then(|install| install.directory);
-        let read = {
-            let mut slot = self.status_read.lock().unwrap();
-            match slot.as_ref() {
-                Some((began, read)) if *began == changes && read.peek().is_none() => read.clone(),
-                _ => {
-                    let runner = self.runner.clone();
-                    let read = async move {
-                        runner
-                            .run(command::simple("status", &target), Some(timeouts::STATUS))
-                            .await
-                            .map_err(RpcError::from)
-                    }
-                    .boxed()
-                    .shared();
-                    *slot = Some((changes, read.clone()));
-                    read
-                }
-            }
-        };
-        let mut status = with_derived(read.await?);
-        if let Value::Object(fields) = &mut status {
-            fields.insert("directory".into(), json!(directory));
-        }
-        Ok(status)
-    }
-
-    /// Presentation reads the last completed status. Supervision continues
-    /// to use `status()` so a cached process state never authorizes a restart.
-    pub async fn cached_status(&self) -> Result<Value, RpcError> {
-        let generation = self.changes.load(Ordering::SeqCst);
-        self.attached()?;
-        if let Some((began, value)) = self.status_snapshot.lock().unwrap().as_ref() {
-            if *began == generation && self.changes.load(Ordering::SeqCst) == generation {
-                return Ok(with_derived(value.clone()));
-            }
-        }
-        let (_, value) = self.refresh_status_snapshot().await?;
-        Ok(value)
-    }
-
-    pub async fn refresh_status_snapshot(&self) -> Result<(bool, Value), RpcError> {
-        let generation = self.changes.load(Ordering::SeqCst);
-        let value = self.status().await?;
-        let mut slot = self.status_snapshot.lock().unwrap();
-        if self.changes.load(Ordering::SeqCst) != generation {
-            return Err(RpcError::new(
-                ErrorKind::Busy,
-                "Session settings changed. Please try again.",
-            ));
-        }
-        let changed = slot
-            .as_ref()
-            .is_none_or(|(began, previous)| *began != generation || *previous != value);
-        *slot = Some((generation, value.clone()));
-        Ok((changed, value))
     }
 
     /// Starts the collector, or replaces one running an older build.
@@ -1474,6 +1418,52 @@ mod tests {
         );
     }
 
+    /// A rate limit is the receiver pacing uploads: a calm upload until it
+    /// is sustained, then it needs attention like a transient failure.
+    #[test]
+    fn a_rate_limit_is_a_calm_upload_until_sustained() {
+        let now = 1_000_000;
+        let limited = |attempts: i64, last_ack: i64| {
+            derive_at(
+                &status(json!({"delivery": {
+                    "failure": "The server asked uploads to slow down. Agent Relay will retry.",
+                    "failure_code": "rate_limited",
+                    "attempts": attempts,
+                    "last_acknowledged_ms": now - last_ack,
+                    "last_attempt_ms": now - 5_000,
+                    "pending_records": 17,
+                    "acknowledged_records": 42
+                }})),
+                now,
+            )
+        };
+        let calm = limited(9, 30_000);
+        assert_eq!(calm["stage"], "uploading");
+        assert_eq!(
+            calm["stage_message"],
+            "Server is busy; retrying. 42 sent, 17 queued."
+        );
+        assert_eq!(limited(9, 600_000)["stage"], "needs_attention");
+    }
+
+    /// A job still sending is not stalled however long since its last
+    /// confirmed batch; one that has not tried for as long is.
+    #[test]
+    fn only_an_uploader_that_stopped_trying_is_stalled() {
+        let now = 10_000_000;
+        let derived = |last_attempt: i64| {
+            derive_at(
+                &status(json!({"delivery": {"pending_records": 5, "attempts": 1,
+                    "last_acknowledged_ms": now - 600_000, "oldest_pending_ms": now - 600_000,
+                    "last_attempt_ms": now - last_attempt}})),
+                now,
+            )
+        };
+        assert_eq!(derived(10_000)["stalled"], false);
+        assert_eq!(derived(10_000)["stage"], "uploading");
+        assert_eq!(derived(600_000)["stalled"], true);
+    }
+
     #[test]
     fn a_sustained_transient_failure_needs_attention() {
         let now = 1_000_000;
@@ -1561,12 +1551,43 @@ mod tests {
         assert_eq!(upgrading["stage"], "preparing");
     }
 
+    /// An active older ai-hist uploader the job found needs the person and
+    /// says how to remove it, though it is retried; an inconclusive check is
+    /// a retried, offline pass. Status lists the check's fixed labels.
+    #[test]
+    fn an_older_uploader_needs_attention_and_an_unfinished_check_retries() {
+        let active = status(json!({
+            "delivery": {"failure": "Remove the older uploader.", "failure_code": "legacy_uploader_active"},
+            "last_cycle": {"ok": true, "legacy_schedules": {"state": "active", "jobs": ["launchd-plist"]}},
+        }));
+        let derived = derive(&active);
+        assert_eq!(derived["stage"], "needs_attention");
+        assert_eq!(derived["stage_message"], "Remove the older uploader.");
+        let mut merged = active.clone();
+        merge(&mut merged, derived);
+        let reported = crate::relay::contract::account::UploaderStatus::from_probe(&merged);
+        assert_eq!(
+            reported.delivery.failure_code,
+            Some(crate::relay::contract::account::DeliveryFailureCode::LegacyUploaderActive)
+        );
+        assert!(!reported.delivery.stopped);
+        assert_eq!(
+            reported.delivery.legacy_schedule_jobs,
+            [crate::relay::contract::account::LegacyScheduleJob::LaunchdPlist]
+        );
+        let (phase, message) = stage(json!({"last_cycle": {"ok": false,
+            "error_class": "legacy_schedules_unknown", "message": "Checking again."}}));
+        assert_eq!(
+            (phase.as_str(), message.as_deref()),
+            ("offline", Some("Checking again."))
+        );
+    }
+
     #[test]
     fn specific_delivery_failures_still_need_attention_immediately() {
         for code in [
             "authentication_required",
             "permission_denied",
-            "rate_limited",
             "receiver_rejected",
             "invalid_payload",
             "unsupported_evidence",
@@ -1830,6 +1851,13 @@ mod tests {
     }
 
     impl ProbeRunner for CountingProbe {
+        fn status(
+            &self,
+            _: Option<std::path::PathBuf>,
+            _: crate::relay::uploader::HistoryReader,
+        ) -> BoxFuture<'_, Result<Value, UploaderError>> {
+            self.run(vec!["status".into()], None)
+        }
         fn run(
             &self,
             args: Vec<String>,
@@ -1856,6 +1884,75 @@ mod tests {
         fn cancel_all(&self) -> BoxFuture<'_, Result<(), UploaderError>> {
             Box::pin(async { Ok(()) })
         }
+    }
+
+    #[cfg(feature = "history")]
+    #[tokio::test]
+    async fn the_process_runner_reads_status_in_process_without_a_helper() {
+        let directory = crate::delivery_status::status_tests::install(&["codex:a"]);
+        let conn = crate::delivery::open_db(&directory.path().join("history.db")).unwrap();
+        crate::delivery::refresh_session_census(&conn).unwrap();
+        // A helper that does not exist: any spawned command would fail.
+        let runner = ProcessRunner::new(PathBuf::from("/nonexistent/agent-relay-helper"));
+        let leases = Uploader::new(Arc::new(ProcessRunner::new(PathBuf::from(
+            "/nonexistent/agent-relay-helper",
+        ))));
+        let status = runner
+            .status(
+                Some(directory.path().to_path_buf()),
+                leases.try_history_reader().unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status["sessions"]["total"], 1);
+        assert_eq!(status["running"], false);
+        assert_eq!(
+            runner
+                .status(None, leases.try_history_reader().unwrap())
+                .await
+                .unwrap_err()
+                .message,
+            STATUS_FAILED
+        );
+    }
+
+    #[tokio::test]
+    async fn a_status_read_past_its_deadline_holds_off_a_reset_until_it_ends() {
+        let uploader = Arc::new(Uploader::new(Arc::new(ProcessRunner::new(PathBuf::from(
+            "/nonexistent/agent-relay-helper",
+        )))));
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let (closed, finished) = tokio::sync::oneshot::channel();
+        let answer = read_holding(
+            uploader.try_history_reader().unwrap(),
+            Duration::from_millis(20),
+            move || {
+                held.recv().ok();
+                let _ = closed.send(());
+                Ok(())
+            },
+        )
+        .await;
+        assert_eq!(
+            answer.unwrap_err().message,
+            timeout_message("status"),
+            "the caller is answered at the deadline"
+        );
+        // The store is still open: a reset waits for it.
+        let reset = {
+            let uploader = uploader.clone();
+            tokio::spawn(async move {
+                let _readers = uploader.suspend_background_readers().await;
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!reset.is_finished(), "a reset must wait for the open store");
+        release.send(()).unwrap();
+        finished.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), reset)
+            .await
+            .expect("the reset proceeds once the read ends")
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1911,7 +2008,10 @@ mod tests {
             assert_eq!(uploader.cached_status().await.unwrap()["run"], 1);
         }
         assert_eq!(probe.statuses.load(Ordering::SeqCst), 1);
-        assert!(uploader.refresh_status_snapshot().await.unwrap().0);
+        assert!(
+            !uploader.refresh_status_snapshot().await.unwrap().0,
+            "a read that changes nothing an app shows is no change"
+        );
         assert_eq!(uploader.cached_status().await.unwrap()["run"], 2);
         uploader.pause(true).await.unwrap();
         assert_eq!(uploader.cached_status().await.unwrap()["run"], 3);
@@ -1927,6 +2027,13 @@ mod tests {
     }
 
     impl ProbeRunner for SnapshotProbe {
+        fn status(
+            &self,
+            _: Option<std::path::PathBuf>,
+            _: crate::relay::uploader::HistoryReader,
+        ) -> BoxFuture<'_, Result<Value, UploaderError>> {
+            self.run(vec!["status".into()], None)
+        }
         fn run(
             &self,
             args: Vec<String>,

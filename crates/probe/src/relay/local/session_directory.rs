@@ -1,17 +1,49 @@
 //! Native title operations and the fleet-filtered session listing.
 use super::*;
 
+/// How long rows from the last Codex read still count as running while its
+/// database cannot be read: a lock held through a long write is a brief
+/// miss, but past this the sessions are not known to run, so their agents
+/// stop heartbeating and, by themselves, leave after the grace period.
+pub(super) const RETAINED_LIVE_FOR: Duration = Duration::from_secs(5 * 60);
+
 /// Native renames fence older reads, including the fallback used while the
 /// Codex database is unavailable. Do not hold this mutex across provider I/O.
 #[derive(Default)]
 pub(super) struct CodexDiscoveryCache {
     revision: u64,
     threads: Vec<DiscoveredSession>,
+    /// When `threads` was last read from Codex: on the monotonic clock, so
+    /// a clock set back cannot stretch the cap, and on the wall clock, so a
+    /// sleep counts toward it as it does toward the grace period.
+    read_at: Option<(std::time::Instant, chrono::DateTime<chrono::Utc>)>,
+}
+
+/// Whether rows read `awake` ago on the monotonic clock and `slept` ago on
+/// the wall clock still stand: the longer of the two is held to the cap, so
+/// neither a sleep nor a clock set back stretches it.
+fn still_fresh(awake: Duration, slept: Duration) -> bool {
+    awake.max(slept) < RETAINED_LIVE_FOR
 }
 
 impl CodexDiscoveryCache {
+    /// The rows as last read, live only within `RETAINED_LIVE_FOR` of it.
     pub(super) fn retained(&self) -> Vec<DiscoveredSession> {
-        self.threads.clone()
+        let fresh = self.read_at.is_some_and(|(awake, wall)| {
+            let slept = chrono::Utc::now()
+                .signed_duration_since(wall)
+                .to_std()
+                .unwrap_or_default();
+            still_fresh(awake.elapsed(), slept)
+        });
+        self.threads
+            .iter()
+            .cloned()
+            .map(|row| DiscoveredSession {
+                live: row.live && fresh,
+                ..row
+            })
+            .collect()
     }
 
     /// Retained rows describe presentation, never a successful fresh proof.
@@ -36,6 +68,7 @@ impl CodexDiscoveryCache {
         if revision == self.revision {
             if let Some(threads) = threads {
                 self.threads = threads;
+                self.read_at = Some((std::time::Instant::now(), chrono::Utc::now()));
             }
         }
         self.threads.clone()
@@ -52,6 +85,26 @@ impl CodexDiscoveryCache {
 }
 
 impl LocalSessions {
+    pub fn new(config: LocalConfig, table: Arc<dyn ProcessTable>) -> LocalSessions {
+        LocalSessions {
+            config,
+            scans: table.clone(),
+            table,
+            fleet_owned: Default::default(),
+            codex_threads: Default::default(),
+            codex_loaded: Default::default(),
+            managed: None,
+            openclaw: Default::default(),
+            hermes: Default::default(),
+        }
+    }
+
+    /// Discovery scans read `scans` instead of the direct table.
+    pub fn with_scans(mut self, scans: Arc<dyn ProcessTable>) -> Self {
+        self.scans = scans;
+        self
+    }
+
     fn all(&self) -> Vec<DiscoveredSession> {
         self.collect_partitions(|partition| {
             self.provider_sessions(partition).unwrap_or_else(|| {
@@ -225,7 +278,7 @@ impl LocalSessions {
             SessionPartition::All => self.all(),
             SessionPartition::Codex => return self.codex_sessions(),
             SessionPartition::Claude => {
-                let mut found = claude::discover(&self.config.claude, &*self.table);
+                let mut found = claude::discover(&self.config.claude, &*self.scans);
                 // Claude Code on the web sessions the history catalogs list.
                 crate::relay::claude_web::extend(&self.config, &mut found);
                 found
@@ -236,7 +289,7 @@ impl LocalSessions {
             SessionPartition::OpenCode => self.opencode_sessions(),
             SessionPartition::Devin => self.devin_sessions(),
             SessionPartition::CursorCli => {
-                cursor_cli::discover(&self.config.cursor, &*self.table, self.config.uid)
+                cursor_cli::discover(&self.config.cursor, &*self.scans, self.config.uid)
             }
             SessionPartition::OpenClaw => self
                 .config
@@ -262,7 +315,12 @@ impl LocalSessions {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .revision;
-        let threads = codex::try_discover(&self.config.codex, &*self.table, self.config.uid);
+        let threads = codex::try_discover(
+            &self.config.codex,
+            &*self.scans,
+            self.config.uid,
+            &self.codex_loaded,
+        );
         self.codex_threads
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -282,7 +340,7 @@ impl LocalSessions {
                     || matches!(
                         existing_grok_claim(
                             &self.config,
-                            &self.table,
+                            &self.scans,
                             self.managed.as_deref(),
                             &session.target.id,
                         ),
@@ -297,7 +355,7 @@ impl LocalSessions {
             );
         }
         if let Ok(existing) =
-            existing_grok_bindings(&self.config, &self.table, self.managed.as_deref())
+            existing_grok_bindings(&self.config, &self.scans, self.managed.as_deref())
         {
             // A proved binding says the leader runs, not that the client
             // does: the shared leader outlives a closed TUI. The row is live
@@ -305,9 +363,9 @@ impl LocalSessions {
             // lists it, or the Paseo stdio client is attached to a leader
             // that is running.
             let open =
-                crate::relay::grok::open_sessions(&self.config.grok, &*self.table, self.config.uid);
+                crate::relay::grok::open_sessions(&self.config.grok, &*self.scans, self.config.uid);
             let hosted: HashSet<String> =
-                crate::relay::grok::paseo_sessions(&*self.table, self.config.uid)
+                crate::relay::grok::paseo_sessions(&*self.scans, self.config.uid)
                     .into_iter()
                     .map(|session| session.session_id)
                     .collect();
@@ -321,7 +379,7 @@ impl LocalSessions {
                         })
                 });
                 DiscoveredSession {
-                    title: crate::relay::grok::binding_title(binding, &*self.table)
+                    title: crate::relay::grok::binding_title(binding, &*self.scans)
                         .unwrap_or_else(|| format!("Grok {}", binding.model_id)),
                     live,
                     host: hosted
@@ -346,7 +404,7 @@ impl LocalSessions {
         if self.config.muse_open {
             found.extend(crate::relay::muse::discover(
                 &self.config.muse,
-                &*self.table,
+                &*self.scans,
                 self.config.uid,
                 true,
                 &|_| false,
@@ -357,11 +415,13 @@ impl LocalSessions {
 
     fn pi_sessions(&self) -> Vec<DiscoveredSession> {
         let mut found = Vec::new();
-        found.extend(crate::relay::pi::discover(
-            &self.config.pi,
-            &*self.table,
-            self.config.uid,
-        ));
+        for extension in [&self.config.pi, &self.config.omp] {
+            found.extend(crate::relay::pi::discover(
+                extension,
+                &*self.scans,
+                self.config.uid,
+            ));
+        }
         found
     }
 
@@ -375,14 +435,14 @@ impl LocalSessions {
         if self.config.opencode_open && self.config.opencode.installed() {
             found.extend(crate::relay::opencode::discover(
                 &self.config.opencode,
-                &*self.table,
+                &*self.scans,
                 self.config.uid,
             ));
             // OpenCode windows opened before the plugin was on: listed, not
             // live, until OpenCode restarts.
             found.extend(crate::relay::opencode::needing_restart(
                 &self.config.opencode,
-                &*self.table,
+                &*self.scans,
                 self.config.uid,
             ));
         }
@@ -391,7 +451,7 @@ impl LocalSessions {
 
     fn devin_sessions(&self) -> Vec<DiscoveredSession> {
         let mut found = Vec::new();
-        lock_held::discover_devin(&self.config, &*self.table, &mut found);
+        lock_held::discover_devin(&self.config, &*self.scans, &mut found);
         found
     }
 }
@@ -470,5 +530,35 @@ mod tests {
             .unwrap();
         assert_eq!(fresh[0].title, "External title");
         assert_eq!(cache.retained()[0].title, "External title");
+    }
+
+    #[test]
+    fn rows_kept_while_codex_cannot_be_read_stop_counting_as_running() {
+        let mut cache = CodexDiscoveryCache::default();
+        let mut running = thread("Running");
+        running.live = true;
+        cache.finish(0, Some(vec![running]));
+        // A brief miss: the last read still stands for its sessions.
+        assert!(cache.finish(0, None)[0].live);
+        assert!(cache.retained()[0].live);
+        // Past the cap, a session that may have ended is not taken as
+        // running, so its agent stops heartbeating; it is still listed.
+        let read = cache.read_at.unwrap();
+        cache.read_at = Some((read.0, chrono::Utc::now() - RETAINED_LIVE_FOR));
+        let stale = cache.retained();
+        assert_eq!(stale.len(), 1);
+        assert!(!stale[0].live);
+        // A clock set back cannot keep them running past the cap either.
+        assert!(!still_fresh(RETAINED_LIVE_FOR, Duration::ZERO));
+        assert!(!still_fresh(Duration::ZERO, RETAINED_LIVE_FOR));
+        assert!(still_fresh(
+            RETAINED_LIVE_FOR - Duration::from_secs(1),
+            Duration::ZERO
+        ));
+        // A fresh read is believed again.
+        let mut again = thread("Running");
+        again.live = true;
+        cache.finish(0, Some(vec![again]));
+        assert!(cache.retained()[0].live);
     }
 }

@@ -480,7 +480,7 @@ impl MailboxNetwork for HttpMailbox {
             };
             let connected = tokio::time::timeout(
                 Duration::from_secs(20),
-                tokio_tungstenite::connect_async_with_config(request, Some(config), false),
+                crate::relay::websocket_tls::connect(request, Some(config)),
             )
             .await
             .map_err(|_| MailboxError::Unreachable)?;

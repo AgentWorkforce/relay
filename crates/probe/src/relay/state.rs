@@ -9,6 +9,7 @@ use crate::relay::contract::account::SignInReport;
 use crate::relay::contract::connection::{
     ActivityLine, CoreNotification, Invalidation, ShutdownNotice,
 };
+use crate::relay::contract::plan::{PlanLimitExceeded, WorkspacePlan, WorkspaceUsage};
 use crate::relay::contract::EventData;
 use crate::relay::protocol::{Event, Topic};
 use crate::relay::push::PushState;
@@ -76,6 +77,10 @@ pub struct SpawnStatus {
     /// Absent in older cores and while spawning is off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim: Option<SpawnClaim>,
+    /// Agent Relay refused to enroll this computer because the plan's
+    /// device cap is reached; `error` says so in words. Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_limit: Option<PlanLimitExceeded>,
 }
 
 /// The node's owner in Agent Relay, recorded from its token and the
@@ -290,6 +295,14 @@ pub struct WorkspaceChoice {
 #[derive(Clone, Debug, Serialize, PartialEq, Default, JsonSchema, Deserialize)]
 pub struct AccountStatus {
     pub state: SignInState,
+    /// Live Cloud authentication and Relaycast verification, independently of uploader installation.
+    #[serde(default)]
+    pub auth_health: Option<String>,
+    #[serde(default)]
+    pub auth_error: Option<String>,
+    /// Last completed authentication check, milliseconds since the Unix epoch.
+    #[serde(default)]
+    pub auth_checked_at: Option<i64>,
     /// What the attempt is doing: `checking_existing_login`,
     /// `reusing_existing_login`, `waiting_for_browser`,
     /// `waiting_for_device_approval`, `selecting_workspace`, `connecting_workspace`,
@@ -308,6 +321,11 @@ pub struct AccountStatus {
     pub workspace_choices: Option<Vec<WorkspaceChoice>>,
     pub workspace_avatar_url: Option<String>,
     pub person: Option<AccountPerson>,
+    /// Signed in, but this computer holds no Cloud session it may use: Cloud
+    /// refused the kept one even after a refresh. Cloud calls answer
+    /// `not_signed_in` until the person signs in again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub needs_sign_in: bool,
     /// Local capture progress while sessions are prepared.
     pub progress: Option<CaptureProgress>,
 }
@@ -319,6 +337,9 @@ pub enum AccountAction {
     /// `account.sign_in` with `acknowledge_uninspected_schedules` retries
     /// past an older uploader's schedules that could not be checked.
     AcknowledgeUninspectedSchedules,
+    /// The account has no workspace: the person creates one in the Cloud
+    /// dashboard's Workspace settings, then signs in again.
+    CreateWorkspace,
 }
 
 /// Local capture progress while sessions are prepared for upload.
@@ -379,6 +400,13 @@ pub struct WorkspaceStatus {
     pub workspace_plan: Option<String>,
     pub verification: Verification,
     pub checked_at_ms: Option<i64>,
+    /// The Agent Relay plan Cloud reports for the account's workspace, with
+    /// its caps; absent until read, and when the organization has no plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<WorkspacePlan>,
+    /// How much of the plan is used, as far as this core has read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<WorkspaceUsage>,
 }
 
 /// Whether a workspace key was found.
@@ -418,8 +446,23 @@ impl WorkspaceStatus {
                 workspace_plan: None,
                 verification: Verification::Pending,
                 checked_at_ms: None,
+                plan: None,
+                usage: None,
             },
         }
+    }
+
+    /// This status with the plan and usage `previous` read, when they can
+    /// still be this workspace's: the plan is the account's, read from
+    /// Cloud, so a rediscovery of the same key, or the key found after the
+    /// sign-in read the plan, must not hide it until Cloud is asked again.
+    /// Another key's workspace, or no key after one, starts over.
+    pub fn keeping_plan_of(mut self, previous: &WorkspaceStatus) -> WorkspaceStatus {
+        if previous.workspace_id.is_none() || self.workspace_id == previous.workspace_id {
+            self.plan = previous.plan.clone();
+            self.usage = previous.usage.clone();
+        }
+        self
     }
 }
 
@@ -583,6 +626,53 @@ pub fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_plan_survives_rediscovery_of_the_same_workspace_and_the_first_key() {
+        use crate::relay::contract::plan::{PlanLimits, WorkspacePlan, WorkspaceUsage};
+        let plan = WorkspacePlan {
+            key: "intro".into(),
+            name: "Intro".into(),
+            limits: PlanLimits::default(),
+            upgrade_url: None,
+        };
+        let usage = WorkspaceUsage {
+            agents: Some(3),
+            humans: None,
+        };
+        let found = |id: &str| WorkspaceStatus {
+            state: WorkspaceState::Found,
+            workspace_id: Some(id.into()),
+            ..WorkspaceStatus::default()
+        };
+        let mut before = found("rw_1");
+        before.plan = Some(plan.clone());
+        before.usage = Some(usage.clone());
+        // The same key again, and the key found after a sign-in read the plan.
+        let same = found("rw_1").keeping_plan_of(&before);
+        assert_eq!(
+            (same.plan.as_ref(), same.usage.as_ref()),
+            (Some(&plan), Some(&usage))
+        );
+        let mut missing_with_plan = WorkspaceStatus::default();
+        missing_with_plan.plan = Some(plan.clone());
+        let first_key = found("rw_1").keeping_plan_of(&missing_with_plan);
+        assert_eq!(first_key.plan.as_ref(), Some(&plan));
+        // Another workspace's key, and no key after one, start over.
+        let other = found("rw_2").keeping_plan_of(&before);
+        assert_eq!((other.plan, other.usage), (None, None));
+        let signed_out = WorkspaceStatus::default().keeping_plan_of(&before);
+        assert_eq!((signed_out.plan, signed_out.usage), (None, None));
+        // Older clients read a status without the fields.
+        let older: WorkspaceStatus = serde_json::from_value(serde_json::json!({
+            "state": "found", "base_url": null, "workspace_id": "rw_1", "workspace_name": null,
+            "workspace_plan": null, "verification": "verified", "checked_at_ms": null
+        }))
+        .unwrap();
+        assert_eq!((older.plan, older.usage), (None, None));
+        let wire = serde_json::to_value(&found("rw_1")).unwrap();
+        assert!(wire.get("plan").is_none() && wire.get("usage").is_none());
+    }
     use crate::relay::protocol::BRIDGE_VERSION;
 
     fn hub() -> Hub {

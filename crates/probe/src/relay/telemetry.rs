@@ -45,8 +45,8 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
-pub(crate) use usage::UploadObservations;
-pub use usage::{action, record_for, TelemetryEvent};
+pub use usage::{action, record_for, LegacyScheduleJobs, TelemetryEvent};
+pub use usage::{upload_health, upload_legacy_schedule_jobs, UploadObservations};
 
 /// The `settings.get`/`settings.set` key for the opt-out.
 pub const SETTING: &str = "analytics_enabled";
@@ -152,23 +152,8 @@ vocabulary!(
     }
 );
 
-vocabulary!(
-    /// A fixed UI destination. Never a title, search query, endpoint or path.
-    TelemetrySurface {
-        Sessions = "sessions",
-        Agents = "agents",
-        Team = "team",
-        Messages = "messages",
-        Projects = "projects",
-        SettingsGeneral = "settings_general",
-        SettingsOpening = "settings_opening",
-        SettingsRelay = "settings_relay",
-        SettingsSharing = "settings_sharing",
-        SettingsAccount = "settings_account",
-        SettingsAbout = "settings_about",
-        SettingsDiagnostics = "settings_diagnostics",
-    }
-);
+mod surface;
+pub use surface::TelemetrySurface;
 
 vocabulary!(
     TelemetryOutcome {
@@ -201,6 +186,7 @@ vocabulary!(
         UploadUnsupportedEvidence = "upload_unsupported_evidence",
         UploadMappingVersionMismatch = "upload_mapping_version_mismatch",
         UploadDeliveryConflict = "upload_delivery_conflict",
+        UploadLegacyUploaderActive = "upload_legacy_uploader_active",
         UploadStalled = "upload_stalled",
         UploadCycle = "upload_cycle",
         ConnectionMissing = "connection_missing",
@@ -211,21 +197,6 @@ vocabulary!(
         UpdateFailed = "update_failed",
     }
 );
-
-impl TelemetryOperation {
-    /// Background polls: a repeated failure of one of these is dropped
-    /// entirely while its exception is deduplicated, so polling never floods
-    /// product analytics. Explicit attempts always count.
-    fn is_polling(self) -> bool {
-        matches!(
-            self,
-            TelemetryOperation::RefreshStatus
-                | TelemetryOperation::RefreshSessions
-                | TelemetryOperation::StartUploader
-                | TelemetryOperation::UploadHealth
-        )
-    }
-}
 
 /// The attached install's Cloud identity: `users.id`, with the organization
 /// and workspace as PostHog groups.
@@ -1178,6 +1149,76 @@ mod tests {
         let distinct = events[0]["distinct_id"].as_str().unwrap();
         assert!(parse_uuid(distinct.strip_prefix("desktop:").unwrap()).is_some());
         assert_eq!(events[0]["timestamp"], "1970-01-01T00:01:40Z");
+    }
+
+    /// An `upload_health` failure carries what the older-uploader check
+    /// found as fixed labels, read from the status the probe reported, and
+    /// nothing else from it: no path, command or scheduler output.
+    #[test]
+    fn upload_health_failures_carry_the_legacy_schedule_labels() {
+        let fixture = Fixture::new();
+        let telemetry = fixture.telemetry();
+        let status = json!({
+            "running": true,
+            "paused": false,
+            "delivery": {
+                "failure": "An older ai-hist uploader is still scheduled.",
+                "failure_code": "legacy_uploader_active",
+            },
+            "last_cycle": {"ok": true, "legacy_schedules": {
+                "state": "active",
+                "jobs": ["managed-cron", "launchd-loaded", "/Users/private/x.plist", 7],
+            }},
+        });
+        let failure = upload_health(&status).unwrap().unwrap();
+        assert_eq!(failure, TelemetryFailure::UploadLegacyUploaderActive);
+        telemetry.record(
+            TelemetryEvent::new(TelemetryOperation::UploadHealth, TelemetryOutcome::Failed)
+                .failure(failure)
+                .legacy_schedule_jobs(upload_legacy_schedule_jobs(&status)),
+        );
+        let events = fixture.events(&telemetry);
+        for event in &events {
+            let properties = &event["properties"];
+            assert_eq!(properties["error_code"], "upload_legacy_uploader_active");
+            assert_eq!(
+                properties["legacy_schedule_jobs"],
+                json!(["launchd-loaded", "managed-cron"])
+            );
+            assert!(!event.to_string().contains("private"));
+        }
+        // An inconclusive check held the pass: named for the check, with
+        // the labels saying which read failed.
+        let unknown = json!({
+            "running": true,
+            "last_cycle": {"ok": false, "error_class": "legacy_schedules_unknown",
+                "legacy_schedules": {"state": "unknown", "jobs": ["launchd-status-unknown"]}},
+        });
+        assert_eq!(
+            upload_health(&unknown),
+            Some(Some(TelemetryFailure::ScheduleInspection))
+        );
+        assert_eq!(
+            upload_legacy_schedule_jobs(&unknown).labels(),
+            ["launchd-status-unknown"]
+        );
+        // Without labels, the event has no such property.
+        let before = events.len();
+        telemetry.record(
+            TelemetryEvent::new(TelemetryOperation::UploadHealth, TelemetryOutcome::Failed)
+                .failure(TelemetryFailure::UploadTransient),
+        );
+        let events = fixture.events(&telemetry);
+        assert!(events.len() > before);
+        assert!(events[before..]
+            .iter()
+            .all(|event| event["properties"].get("legacy_schedule_jobs").is_none()));
+        // Every label the inspection can emit is in the vocabulary.
+        for code in crate::migration::JOB_CODES {
+            let job: crate::relay::contract::account::LegacyScheduleJob =
+                serde_json::from_value(json!(code)).unwrap();
+            assert_eq!(job.as_str(), code);
+        }
     }
 
     #[test]

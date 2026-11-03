@@ -1,6 +1,5 @@
 //! The Codex desktop app's window-to-window IPC router, at
-//! `<Codex home>/ipc/ipc.sock` while the app runs (macOS only today; the
-//! socket is simply absent elsewhere).
+//! `<Codex home>/ipc/ipc.sock` on Unix, or `\\.\pipe\codex-ipc` on Windows.
 //!
 //! Wire framing: a 4-byte little-endian length, then that many bytes of
 //! UTF-8 JSON. A client registers with `initialize`, asks which window owns
@@ -13,16 +12,15 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
 
-/// The router connection: the app's Unix socket. On Windows the Codex app
-/// would expose a named pipe whose name is not documented, so no connection
-/// is attempted there (`Session::connect` reports the app not running, and
-/// every route falls through to the app-server and queue routes); a
-/// loopback TCP stream stands in so the framing and its tests still build.
+/// The router connection: a Unix socket or the Codex Windows named pipe.
 #[cfg(unix)]
 pub type IpcStream = std::os::unix::net::UnixStream;
 #[cfg(windows)]
-pub type IpcStream = std::net::TcpStream;
+#[path = "ipc_windows.rs"]
+mod windows;
 use std::time::{Duration, Instant};
+#[cfg(windows)]
+pub use windows::IpcStream;
 
 /// The Codex app refuses frames larger than this.
 pub const MAX_FRAME_BYTES: usize = 268_435_456;
@@ -245,6 +243,13 @@ fn io(error: std::io::Error) -> IpcError {
     IpcError::Io(error.to_string())
 }
 
+fn connection_error(error: std::io::Error) -> IpcError {
+    match error.kind() {
+        ErrorKind::NotFound | ErrorKind::ConnectionRefused => IpcError::NotRunning,
+        _ => io(error),
+    }
+}
+
 /// One blocking, registered connection to the router.
 pub struct Session {
     stream: IpcStream,
@@ -259,20 +264,14 @@ impl Session {
     /// Connects to the router at `socket` and registers.
     #[cfg(unix)]
     pub fn connect(socket: &Path) -> Result<Session, IpcError> {
-        let stream = IpcStream::connect(socket).map_err(|error| match error.kind() {
-            ErrorKind::NotFound | ErrorKind::ConnectionRefused => IpcError::NotRunning,
-            _ => io(error),
-        })?;
+        let stream = IpcStream::connect(socket).map_err(connection_error)?;
         Session::register(stream)
     }
 
-    /// No router is reachable on Windows (see `IpcStream`): the app counts
-    /// as not running, which every caller already treats as "try the next
-    /// route".
     #[cfg(windows)]
-    pub fn connect(socket: &Path) -> Result<Session, IpcError> {
-        let _ = socket;
-        Err(IpcError::NotRunning)
+    pub fn connect(_socket: &Path) -> Result<Session, IpcError> {
+        let stream = IpcStream::connect_named(r"\\.\pipe\codex-ipc").map_err(connection_error)?;
+        Session::register(stream)
     }
 
     /// Registers over an already-connected stream.
@@ -518,9 +517,9 @@ pub(crate) mod tests {
     #[cfg(windows)]
     pub fn pair() -> (IpcStream, IpcStream) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let ours = IpcStream::connect(listener.local_addr().unwrap()).unwrap();
+        let ours = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (theirs, _) = listener.accept().unwrap();
-        (ours, theirs)
+        (IpcStream::Tcp(ours), IpcStream::Tcp(theirs))
     }
 
     // CodexIPCTests.testEncodesLittleEndianLengthPrefix.
@@ -887,6 +886,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn an_absent_socket_is_not_running() {
         let home = tempfile::tempdir().unwrap();
         assert_eq!(

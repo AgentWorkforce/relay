@@ -532,10 +532,10 @@ mod scheduling_tests {
     use super::*;
     #[test]
     fn a_notice_after_ready_survives_the_first_scheduler_handoff() {
-        let Some(home) = crate::live::tests::isolated_home(
-            "live::broad::scheduling_tests::a_notice_after_ready_survives_the_first_scheduler_handoff",
+        let Some(home) = crate::probe::live::tests::isolated_home(
+            "probe::live::broad::scheduling_tests::a_notice_after_ready_survives_the_first_scheduler_handoff",
         ) else { return; };
-        use agent_relay_probe::relay::{
+        use crate::relay::{
             claude_dirs::ClaudeDirs, process::FakeProcesses, workspace::relay_home,
         };
         let env = |key: &str| std::env::var(key).ok();
@@ -562,9 +562,9 @@ mod scheduling_tests {
         // readiness is published, and explicitly enqueues the exact notice.
         // Neither OS callback timing nor a cold scan can make this pass.
         let active = project.join("active.jsonl");
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &active,
-            &crate::live::tests::transcript_line("active", "handoff-one"),
+            &crate::probe::live::tests::transcript_line("active", "handoff-one"),
         );
         events.send((Instant::now(), Some(active.clone()))).unwrap();
         let mut scheduler = Scheduler::new(
@@ -595,7 +595,7 @@ mod scheduling_tests {
         assert!(scheduler.rounds.is_empty());
         scheduler.hot();
         assert_eq!(
-            crate::live::tests::events(&db, "active"),
+            crate::probe::live::tests::events(&db, "active"),
             1,
             "the active write must use the hot path before any archive slice"
         );
@@ -603,9 +603,9 @@ mod scheduling_tests {
 
         // A real consent change still discards old-generation work, even for
         // an explicitly queued path, and cannot acquire its next event.
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &active,
-            &crate::live::tests::transcript_line("active", "handoff-denied"),
+            &crate::probe::live::tests::transcript_line("active", "handoff-denied"),
         );
         events.send((Instant::now(), Some(active.clone()))).unwrap();
         ClaudeDirs::from_env(&env, &home, &relay_home(&env, &home))
@@ -630,15 +630,15 @@ mod scheduling_tests {
             scheduler.owed.is_none(),
             "revoked paths cannot be readmitted"
         );
-        assert_eq!(crate::live::tests::events(&db, "active"), 1);
+        assert_eq!(crate::probe::live::tests::events(&db, "active"), 1);
     }
 
     #[test]
     fn malformed_startup_settings_retry_before_publishing_a_watch() {
-        let Some(home) = crate::live::tests::isolated_home(
-            "live::broad::scheduling_tests::malformed_startup_settings_retry_before_publishing_a_watch",
+        let Some(home) = crate::probe::live::tests::isolated_home(
+            "probe::live::broad::scheduling_tests::malformed_startup_settings_retry_before_publishing_a_watch",
         ) else { return; };
-        use agent_relay_probe::relay::{
+        use crate::relay::{
             claude_dirs::{ClaudeDirs, FILE},
             process::FakeProcesses,
             workspace::relay_home,
@@ -689,10 +689,10 @@ mod scheduling_tests {
         use_events: bool,
         check: impl FnOnce(&mut Scheduler<'_>, &Path, &[PathBuf]),
     ) {
-        let Some(home) = crate::live::tests::isolated_home(label) else {
+        let Some(home) = crate::probe::live::tests::isolated_home(label) else {
             return;
         };
-        use agent_relay_probe::relay::{
+        use crate::relay::{
             claude_dirs::ClaudeDirs, process::FakeProcesses, workspace::relay_home,
         };
         let env = |key: &str| std::env::var(key).ok();
@@ -706,7 +706,10 @@ mod scheduling_tests {
             .into_iter()
             .map(|id| {
                 let path = project.join(format!("{id}.jsonl"));
-                crate::live::tests::append(&path, &crate::live::tests::transcript_line(id, "one"));
+                crate::probe::live::tests::append(
+                    &path,
+                    &crate::probe::live::tests::transcript_line(id, "one"),
+                );
                 path
             })
             .collect();
@@ -746,7 +749,7 @@ mod scheduling_tests {
     #[test]
     fn full_request_keeps_exact_paths_during_reconciliation_backoff() {
         with_native_scheduler(
-            "live::broad::scheduling_tests::full_request_keeps_exact_paths_during_reconciliation_backoff",
+            "probe::live::broad::scheduling_tests::full_request_keeps_exact_paths_during_reconciliation_backoff",
             false,
             |scheduler, _, paths| {
                 let db = scheduler.context.store.db_path().to_path_buf();
@@ -764,13 +767,13 @@ mod scheduling_tests {
                 assert!(scheduler.refresh_after > now);
                 scheduler.context.store = history::open(&db).unwrap();
                 for (path, id) in paths.iter().zip(["first", "second"]) {
-                    crate::live::tests::append(path, &crate::live::tests::transcript_line(id, "two"));
+                    crate::probe::live::tests::append(path, &crate::probe::live::tests::transcript_line(id, "two"));
                 }
                 scheduler.refresh(now);
                 assert!(scheduler.rounds.is_empty(), "reconciliation retry remains deferred");
                 scheduler.hot();
                 for id in ["first", "second"] {
-                    assert_eq!(crate::live::tests::events(&db, id), 2, "a full request must retain exact appended evidence during retry backoff");
+                    assert_eq!(crate::probe::live::tests::events(&db, id), 2, "a full request must retain exact appended evidence during retry backoff");
                 }
                 let pending = scheduler.owed.as_ref().expect("the full rescan remains owed after exact work drains");
                 assert!(pending.full && pending.paths.is_empty());
@@ -785,7 +788,7 @@ mod scheduling_tests {
     #[test]
     fn full_request_from_recent_overflow_keeps_bounded_hot_work() {
         with_native_scheduler(
-            "live::broad::scheduling_tests::full_request_from_recent_overflow_keeps_bounded_hot_work",
+            "probe::live::broad::scheduling_tests::full_request_from_recent_overflow_keeps_bounded_hot_work",
             false,
             |scheduler, _, paths| {
                 let now = Instant::now();
@@ -795,9 +798,9 @@ mod scheduling_tests {
                 let mut queued: HashSet<_> = (0..4094).map(|n| project.join(format!("queued-{n}.jsonl"))).collect();
                 queued.extend(paths.iter().cloned());
                 let selected = queued.iter().take(8).find(|path| !paths.contains(path)).unwrap().clone();
-                crate::live::tests::append(&selected, &crate::live::tests::transcript_line("queued", "one"));
+                crate::probe::live::tests::append(&selected, &crate::probe::live::tests::transcript_line("queued", "one"));
                 let overflow = project.join("overflow.jsonl");
-                crate::live::tests::append(&overflow, &crate::live::tests::transcript_line("overflow", "one"));
+                crate::probe::live::tests::append(&overflow, &crate::probe::live::tests::transcript_line("overflow", "one"));
                 let mut discovery = ai_hist::DiscoveryOptions::default().sources([Source::Claude]);
                 discovery.paths = Some(vec![overflow]);
                 scheduler.context.store.discover(discovery).unwrap();
@@ -812,8 +815,8 @@ mod scheduling_tests {
                 assert!(scheduler.owed.as_ref().unwrap().full, "exercise actual recent-poll overflow after refresh");
                 scheduler.hot();
                 let db = scheduler.context.store.db_path();
-                assert_eq!(crate::live::tests::events(db, "queued"), 1, "queued exact work must survive a later full notice");
-                assert_eq!(crate::live::tests::events(db, "overflow"), 0, "overflowed paths belong to reconciliation, outside the bounded exact batch");
+                assert_eq!(crate::probe::live::tests::events(db, "queued"), 1, "queued exact work must survive a later full notice");
+                assert_eq!(crate::probe::live::tests::events(db, "overflow"), 0, "overflowed paths belong to reconciliation, outside the bounded exact batch");
                 let pending = scheduler.owed.as_ref().unwrap();
                 assert!(pending.full);
                 assert_eq!(pending.paths.len(), 4088, "one hot turn acquires at most eight queued paths");
@@ -827,7 +830,7 @@ mod scheduling_tests {
     #[test]
     fn full_request_preserves_exact_provider_scope() {
         with_native_scheduler(
-            "live::broad::scheduling_tests::full_request_preserves_exact_provider_scope",
+            "probe::live::broad::scheduling_tests::full_request_preserves_exact_provider_scope",
             false,
             |scheduler, _, paths| {
                 let db = scheduler.context.store.db_path().to_path_buf();
@@ -842,9 +845,9 @@ mod scheduling_tests {
                     serde_json::json!({"timestamp":"2026-10-25T00:00:00Z","type":"session_meta","payload":{"id":"scoped-codex","cwd":"/tmp/project","source":"cli"}}),
                     serde_json::json!({"timestamp":"2026-10-25T00:00:01Z","type":"event_msg","payload":{"type":"agent_message","message":"codex scope control"}}),
                 )).unwrap();
-                crate::live::tests::append(
+                crate::probe::live::tests::append(
                     &paths[0],
-                    &crate::live::tests::transcript_line("first", "two"),
+                    &crate::probe::live::tests::transcript_line("first", "two"),
                 );
                 scheduler.owed = Some(Owed {
                     first: Instant::now(),
@@ -854,9 +857,9 @@ mod scheduling_tests {
                     paths: HashSet::from([paths[0].clone(), codex.clone()]),
                 });
                 scheduler.hot();
-                assert_eq!(crate::live::tests::events(&db, "first"), 2);
+                assert_eq!(crate::probe::live::tests::events(&db, "first"), 2);
                 assert_eq!(
-                    crate::live::tests::events(&db, "scoped-codex"),
+                    crate::probe::live::tests::events(&db, "scoped-codex"),
                     0,
                     "a full-rescan request must not widen the exact batch's provider allowlist"
                 );
@@ -872,7 +875,7 @@ mod scheduling_tests {
                     )
                     .unwrap();
                 assert_eq!(
-                    crate::live::tests::events(&db, "scoped-codex"),
+                    crate::probe::live::tests::events(&db, "scoped-codex"),
                     1,
                     "the excluded provider fixture must contain real capturable evidence"
                 );
@@ -883,7 +886,7 @@ mod scheduling_tests {
     #[test]
     fn full_request_without_exact_paths_has_no_hot_deadline() {
         with_native_scheduler(
-            "live::broad::scheduling_tests::full_request_without_exact_paths_has_no_hot_deadline",
+            "probe::live::broad::scheduling_tests::full_request_without_exact_paths_has_no_hot_deadline",
             false,
             |scheduler, _, _| {
                 scheduler.owed = Some(Owed {
@@ -904,7 +907,7 @@ mod scheduling_tests {
     #[test]
     fn mixed_native_and_safety_paths_keep_forced_acquisition() {
         with_native_scheduler(
-            "live::broad::scheduling_tests::mixed_native_and_safety_paths_keep_forced_acquisition",
+            "probe::live::broad::scheduling_tests::mixed_native_and_safety_paths_keep_forced_acquisition",
             true,
             |scheduler, _, paths| {
                 scheduler.owed = Some(Owed {
@@ -937,7 +940,7 @@ mod scheduling_tests {
 
     #[test]
     fn safety_context_is_dropped_after_global_audit_and_root_revocation() {
-        with_native_scheduler("live::broad::scheduling_tests::safety_context_is_dropped_after_global_audit_and_root_revocation",false,|scheduler,home,paths| {
+        with_native_scheduler("probe::live::broad::scheduling_tests::safety_context_is_dropped_after_global_audit_and_root_revocation",false,|scheduler,home,paths| {
             scheduler.recent.poll(&scheduler.context.store).unwrap();
             scheduler.safety.sweep(&scheduler.context.store,vec![],Some(vec![Source::Claude]),paths.to_vec(),||false).unwrap().unwrap();
             assert_eq!(scheduler.safety.context_count(),1);
@@ -946,14 +949,14 @@ mod scheduling_tests {
             assert_eq!(scheduler.safety.context_count(),0,"the old native proof snapshot must not survive a global audit");
             scheduler.safety.sweep(&scheduler.context.store,vec![],Some(vec![Source::Claude]),paths.to_vec(),||false).unwrap().unwrap();
             assert_eq!(scheduler.safety.context_count(),1);
-            use agent_relay_probe::relay::{claude_dirs::ClaudeDirs,workspace::relay_home};
+            use crate::relay::{claude_dirs::ClaudeDirs,workspace::relay_home};
             let env=|key:&str|std::env::var(key).ok();
             ClaudeDirs::from_env(&env,home,&relay_home(&env,home)).set_shared(home.join(".claude").to_str().unwrap(),false,&home.join(".claude")).unwrap();
             scheduler.roots.invalidate();
             assert!(scheduler.roots.refresh(&mut scheduler.context.store).unwrap());
             scheduler.reset_roots(Instant::now());
             assert_eq!(scheduler.safety.context_count(),0);
-            crate::live::tests::append(&paths[0],&crate::live::tests::transcript_line("first","denied-two"));
+            crate::probe::live::tests::append(&paths[0],&crate::probe::live::tests::transcript_line("first","denied-two"));
             let _=scheduler.safety.sweep(&scheduler.context.store,vec![],Some(vec![Source::Claude]),paths.to_vec(),||false);
             let count:i64=rusqlite::Connection::open(scheduler.context.store.db_path()).unwrap()
                 .query_row("SELECT COUNT(*) FROM session_events WHERE session_id='first'",[],|row|row.get(0)).unwrap();
@@ -963,13 +966,16 @@ mod scheduling_tests {
 
     #[test]
     fn a_queued_write_skips_audit_and_invalidates_cached_consent() {
-        let Some(home) = crate::live::tests::isolated_home("live::broad::scheduling_tests::a_queued_write_skips_audit_and_invalidates_cached_consent") else { return; };
+        let Some(home) = crate::probe::live::tests::isolated_home("probe::live::broad::scheduling_tests::a_queued_write_skips_audit_and_invalidates_cached_consent") else { return; };
         let directory = home.join("probe");
         let db = directory.join("history.db");
         let store = history::open(&db).unwrap();
         let path = home.join(".claude/projects/queued/queued.jsonl");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        crate::live::tests::append(&path, &crate::live::tests::transcript_line("queued", "one"));
+        crate::probe::live::tests::append(
+            &path,
+            &crate::probe::live::tests::transcript_line("queued", "one"),
+        );
         let (events, received) = mpsc::channel();
         let watch = Watching::start(&db, events.clone(), true);
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -1017,7 +1023,7 @@ mod scheduling_tests {
 
     #[test]
     fn periodic_deadline_waits_after_completion_but_real_loss_retries_immediately() {
-        let Some(home) = crate::live::tests::isolated_home("live::broad::scheduling_tests::periodic_deadline_waits_after_completion_but_real_loss_retries_immediately") else { return; };
+        let Some(home) = crate::probe::live::tests::isolated_home("probe::live::broad::scheduling_tests::periodic_deadline_waits_after_completion_but_real_loss_retries_immediately") else { return; };
         let directory = home.join("probe");
         let db = directory.join("history.db");
         let store = history::open(&db).unwrap();
@@ -1094,12 +1100,15 @@ mod scheduling_tests {
     }
     #[test]
     fn complete_watch_still_stats_a_held_open_recent_transcript() {
-        let Some(home) = crate::live::tests::isolated_home("live::broad::scheduling_tests::complete_watch_still_stats_a_held_open_recent_transcript") else {return};
+        let Some(home) = crate::probe::live::tests::isolated_home("probe::live::broad::scheduling_tests::complete_watch_still_stats_a_held_open_recent_transcript") else {return};
         let directory = home.join("probe");
         let db = directory.join("history.db");
         let path = home.join(".claude/projects/recent/recent.jsonl");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        crate::live::tests::append(&path, &crate::live::tests::transcript_line("recent", "one"));
+        crate::probe::live::tests::append(
+            &path,
+            &crate::probe::live::tests::transcript_line("recent", "one"),
+        );
         let store = history::open(&db).unwrap();
         history::sweep_paths_once(
             &store,
@@ -1149,7 +1158,7 @@ mod scheduling_tests {
             .unwrap();
         use std::io::Write;
         writer
-            .write_all(crate::live::tests::transcript_line("recent", "two").as_bytes())
+            .write_all(crate::probe::live::tests::transcript_line("recent", "two").as_bytes())
             .unwrap();
         writer.flush().unwrap();
         scheduler.poll_recent(scheduler.poll_at);
@@ -1185,7 +1194,7 @@ mod scheduling_tests {
     #[test]
     fn partial_reconciliation_revisits_healthy_roots_without_completing_failed_work() {
         with_native_scheduler(
-            "live::broad::scheduling_tests::partial_reconciliation_revisits_healthy_roots_without_completing_failed_work",
+            "probe::live::broad::scheduling_tests::partial_reconciliation_revisits_healthy_roots_without_completing_failed_work",
             false,
             |scheduler, home, paths| {
                 let bad = home.join(".codex/archived_sessions");
@@ -1201,12 +1210,12 @@ mod scheduling_tests {
                 assert_eq!(scheduler.backstop, partial_deadline, "retry-only turns must not slide the next healthy pass forever");
                 assert!(scheduler.audit_at <= Instant::now(), "partial coverage must not run successful maintenance");
                 let new = paths[0].parent().unwrap().join("periodic-new.jsonl");
-                crate::live::tests::append(&new, &crate::live::tests::transcript_line("periodic-new", "one"));
+                crate::probe::live::tests::append(&new, &crate::probe::live::tests::transcript_line("periodic-new", "one"));
                 let retry_due = scheduler.cold_due;
                 scheduler.refresh(scheduler.backstop);
                 assert_eq!(scheduler.cold_due, retry_due, "fresh coverage must not postpone the existing failed retry deadline");
                 for _ in 0..120 { scheduler.cold(); }
-                assert_eq!(crate::live::tests::events(&db, "periodic-new"), 1,
+                assert_eq!(crate::probe::live::tests::events(&db, "periodic-new"), 1,
                     "periodic coverage must revisit healthy roots while failed work stays queued");
                 assert!(!scheduler.rounds.is_empty());
                 assert_eq!(scheduler.context.shared.state().metrics.sweeps, 0);
@@ -1219,11 +1228,11 @@ mod scheduling_tests {
                 for _ in 0..120 { scheduler.cold(); }
                 assert!(scheduler.lost, "partial exhaustion must release the real-loss successor");
                 let lost = new.with_file_name("loss-new.jsonl");
-                crate::live::tests::append(&lost, &crate::live::tests::transcript_line("loss-new", "one"));
+                crate::probe::live::tests::append(&lost, &crate::probe::live::tests::transcript_line("loss-new", "one"));
                 scheduler.lost = true;
                 scheduler.refresh(Instant::now());
                 for _ in 0..120 { scheduler.cold(); }
-                assert_eq!(crate::live::tests::events(&db, "loss-new"), 1,
+                assert_eq!(crate::probe::live::tests::events(&db, "loss-new"), 1,
                     "loss recovery must not wait for unresolved failure to disappear");
                 // Repair the same retained obligation; only then may completion succeed.
                 std::fs::remove_file(&bad).unwrap();
@@ -1241,7 +1250,7 @@ mod scheduling_tests {
     #[test]
     fn partial_reconciliation_keeps_exact_new_thread_capture_on_the_hot_lane() {
         with_native_scheduler(
-            "live::broad::scheduling_tests::partial_reconciliation_keeps_exact_new_thread_capture_on_the_hot_lane",
+            "probe::live::broad::scheduling_tests::partial_reconciliation_keeps_exact_new_thread_capture_on_the_hot_lane",
             true,
             |scheduler, home, paths| {
                 let bad = home.join(".codex/archived_sessions");
@@ -1250,13 +1259,13 @@ mod scheduling_tests {
                 scheduler.refresh(Instant::now());
                 for _ in 0..120 { scheduler.cold(); }
                 let new = paths[0].parent().unwrap().join("hot-new.jsonl");
-                crate::live::tests::append(&new, &crate::live::tests::transcript_line("hot-new", "one"));
+                crate::probe::live::tests::append(&new, &crate::probe::live::tests::transcript_line("hot-new", "one"));
                 scheduler.context.watch.fold((Instant::now(), Some(new.clone())), &mut scheduler.owed, &mut scheduler.lost);
                 assert!(scheduler.hot_due().is_some(), "the exact admitted event must be independently runnable");
                 let slices = scheduler.context.shared.state().metrics.cold_slices;
                 let retry_due = scheduler.cold_due;
                 scheduler.hot();
-                assert_eq!(crate::live::tests::events(scheduler.context.store.db_path(), "hot-new"), 1);
+                assert_eq!(crate::probe::live::tests::events(scheduler.context.store.db_path(), "hot-new"), 1);
                 assert_eq!(scheduler.context.shared.state().metrics.cold_slices, slices,
                     "a hot write must not need a fresh cold coverage pass");
                 assert_eq!(scheduler.cold_due, retry_due, "hot capture cannot defer failed cold obligations");

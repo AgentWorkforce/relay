@@ -10,7 +10,7 @@
 //!
 //! Output is deterministic: definitions sort by name and fields by wire name.
 
-use super::{Availability, CONNECTION_METHODS, EVENTS, METHODS};
+use super::{Availability, MethodSpec, CONNECTION_METHODS, EVENTS, METHODS};
 use crate::relay::protocol::{ErrorKind, RpcError, Topic, BRIDGE_VERSION, EVENT_METHOD};
 use schemars::generate::{SchemaGenerator, SchemaSettings};
 use serde_json::{Map, Value};
@@ -115,12 +115,12 @@ fn topic_name(topic: Topic) -> String {
 }
 
 impl Contract {
-    /// Reads every registered method and event.
-    pub fn collect() -> Contract {
+    /// Reads every registered method and event, and a build's extensions.
+    pub fn collect(extensions: &[MethodSpec]) -> Contract {
         let mut results = generator(true);
         let mut params = generator(false);
         let mut methods = Vec::new();
-        for spec in METHODS {
+        for spec in METHODS.iter().chain(extensions) {
             let params_schema = (spec.params)(&mut params);
             let result_schema = (spec.result)(&mut results);
             methods.push(MethodRef {
@@ -1109,7 +1109,7 @@ mod tests {
 
     #[test]
     fn the_checked_in_client_matches_the_registry() {
-        let generated = Contract::collect().swift();
+        let generated = Contract::collect(&[]).swift();
         // A Windows checkout may hold the file with CRLF line endings.
         let checked_in = std::fs::read_to_string(crate_dir().join(CONTRACT_PATH))
             .unwrap()
@@ -1124,7 +1124,7 @@ mod tests {
     /// build does not know; every enum a client decodes must still read it.
     #[test]
     fn every_enum_a_client_decodes_reads_unknown_values() {
-        let contract = Contract::collect();
+        let contract = Contract::collect(&[]);
         for name in &contract.decoded {
             let mut out = String::new();
             match &contract.defs[name] {
@@ -1159,7 +1159,7 @@ mod tests {
 
     #[test]
     fn generation_is_deterministic() {
-        let (a, b) = (Contract::collect(), Contract::collect());
+        let (a, b) = (Contract::collect(&[]), Contract::collect(&[]));
         assert_eq!(a.swift(), b.swift());
     }
 

@@ -19,7 +19,7 @@ pub(super) fn captured_sessions(db: &Path, fresh: bool) -> i64 {
             }
         }
     }
-    let Ok(count) = crate::history::captured_sessions(db) else {
+    let Ok(count) = crate::probe::history::captured_sessions(db) else {
         return 0;
     };
     counts

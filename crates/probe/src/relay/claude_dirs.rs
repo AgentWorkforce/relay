@@ -145,7 +145,14 @@ pub struct ClaudeDirs {
     pub environment: Vec<PathBuf>,
     /// `claude-config-dirs.json`; `None` keeps nothing (tests).
     pub file: Option<PathBuf>,
+    /// A Dev-only private settings root; normal discovery uses no restriction.
+    pub private_root: Option<PathBuf>,
 }
+
+mod development;
+mod process;
+pub use process::running_config_dirs;
+pub(crate) use process::{is_claude_code, is_claude_name};
 
 impl ClaudeDirs {
     /// Reads `AGENT_RELAY_CLAUDE_CONFIG_DIRS`; the file is in `relay_home`.
@@ -159,11 +166,15 @@ impl ClaudeDirs {
                 .map(|value| parse_list(&value, home))
                 .unwrap_or_default(),
             file: Some(relay_home.join(FILE)),
+            private_root: None,
         }
     }
 
     /// The added and seen folders; an absent or unreadable file is none.
     pub fn recorded(&self) -> Recorded {
+        if !self.valid_private_state() {
+            return Recorded::default();
+        }
         self.file
             .as_deref()
             .and_then(|file| std::fs::read(file).ok())
@@ -248,6 +259,9 @@ impl ClaudeDirs {
     /// Records the `CLAUDE_CONFIG_DIR` of each running Claude Code process
     /// of this user, at most once every `SCAN_INTERVAL` in this process.
     pub fn remember_running(&self, table: &dyn ProcessTable) -> bool {
+        if self.private_root.is_some() {
+            return false;
+        }
         static LAST: Mutex<Option<Instant>> = Mutex::new(None);
         {
             let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
@@ -262,6 +276,9 @@ impl ClaudeDirs {
     /// Adds `seen` to the running folders, dropping those gone from disk.
     /// The file is rewritten only when that changes it; true when it was.
     pub fn record_running(&self, seen: &[PathBuf]) -> bool {
+        if self.private_root.is_some() {
+            return false;
+        }
         let mut wrote = false;
         let _ = self.update(|recorded| {
             let mut running: Vec<PathBuf> = recorded
@@ -287,6 +304,12 @@ impl ClaudeDirs {
     /// folder must never come back shared). `change` says whether it
     /// changed anything; nothing is written when it did not.
     fn update(&self, change: impl FnOnce(&mut Recorded) -> bool) -> Result<(), String> {
+        if !self.valid_private_state() {
+            return Err(
+                "Development Claude settings must use a private owned file without symbolic links."
+                    .into(),
+            );
+        }
         let Some(file) = self.file.as_deref() else {
             return Ok(());
         };
@@ -432,18 +455,20 @@ pub fn cloud_sessions_shared(env: &dyn Fn(&str) -> Option<String>, home: &Path) 
             .any(|dir| dir.shared && real(&dir.path) == login)
 }
 
+/// Whether the person turned Claude Code cloud sessions on, for an explicit
+/// home. Unlike [`cloud_sessions_shared`], this does not fold in the
+/// `~/.claude` folder's Shared switch, so diagnostics can explain which
+/// choice is blocking the source.
+pub fn cloud_sessions_on(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> bool {
+    ClaudeDirs::from_env(env, home, &crate::relay::workspace::relay_home(env, home))
+        .cloud_sessions()
+}
+
 /// Whether the person turned Claude Code cloud sessions on, in this
 /// process's environment, whatever the `~/.claude` folder's Shared switch.
 pub fn cloud_sessions_on_here() -> bool {
     let env = |key: &str| std::env::var(key).ok();
-    crate::relay::paths::home().is_ok_and(|home| {
-        ClaudeDirs::from_env(
-            &env,
-            &home,
-            &crate::relay::workspace::relay_home(&env, &home),
-        )
-        .cloud_sessions()
-    })
+    crate::relay::paths::home().is_ok_and(|home| cloud_sessions_on(&env, &home))
 }
 
 /// [`cloud_sessions_shared`] for this process's environment.
@@ -481,63 +506,6 @@ pub fn siblings(default: &Path) -> Vec<PathBuf> {
         .collect();
     found.sort();
     found
-}
-
-/// `CLAUDE_CONFIG_DIR` of each running Claude Code process of this user.
-pub fn running_config_dirs(table: &dyn ProcessTable) -> Vec<PathBuf> {
-    let uid = crate::relay::peer::current_uid();
-    let mut found = Vec::new();
-    for pid in table.all_pids() {
-        if table.process(pid).is_none_or(|p| p.uid != uid) {
-            continue;
-        }
-        if !is_claude_code(table, pid) {
-            continue;
-        }
-        let Some(dir) = table
-            .environment_var(pid, "CLAUDE_CONFIG_DIR")
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-        else {
-            continue;
-        };
-        let path = PathBuf::from(dir);
-        if path.is_absolute() && !found.contains(&path) {
-            found.push(path);
-        }
-    }
-    found
-}
-
-/// Whether a file name is Claude Code's program: `claude`, and on Windows
-/// the native `claude.exe` or npm's `claude.cmd` shim, in any letter case.
-pub(crate) fn is_claude_name(name: &str) -> bool {
-    if cfg!(windows) {
-        matches!(
-            name.to_ascii_lowercase().as_str(),
-            "claude" | "claude.exe" | "claude.cmd"
-        )
-    } else {
-        name == "claude"
-    }
-}
-
-/// A Claude Code process: `claude` by its first or second argument (the
-/// native binary, or `node …/claude`), or Anthropic's Node package.
-/// Whether `pid` runs Claude Code: its first or second argument is named
-/// `claude`, or is Anthropic's npm package path (`node .../claude-code/cli.js`,
-/// with either separator on Windows).
-pub(crate) fn is_claude_code(table: &dyn ProcessTable, pid: i32) -> bool {
-    let arguments = table.arguments(pid);
-    arguments.iter().take(2).any(|argument| {
-        let name = Path::new(argument)
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        is_claude_name(&name)
-            || argument.contains("@anthropic-ai/claude-code/")
-            || (cfg!(windows) && argument.contains("@anthropic-ai\\claude-code\\"))
-    })
 }
 
 /// A colon-separated list of folders (semicolons on Windows, where a drive
@@ -606,7 +574,10 @@ fn file_stamp(file: &Path) -> Option<(u64, i64, i64, u64)> {
 }
 
 /// An exclusive `flock` held until dropped (closing the file releases it).
-struct FileLock(std::fs::File);
+struct FileLock {
+    // Never read: holding the file open is what keeps the lock.
+    _file: std::fs::File,
+}
 
 impl FileLock {
     fn exclusive(path: &Path) -> std::io::Result<FileLock> {
@@ -629,7 +600,7 @@ impl FileLock {
     #[cfg(windows)]
     fn lock(file: std::fs::File) -> std::io::Result<FileLock> {
         fs2::FileExt::lock_exclusive(&file)?;
-        Ok(FileLock(file))
+        Ok(FileLock { _file: file })
     }
 
     #[cfg(unix)]
@@ -638,7 +609,7 @@ impl FileLock {
         loop {
             // SAFETY: `flock` takes the descriptor of a file this owns.
             if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
-                return Ok(FileLock(file));
+                return Ok(FileLock { _file: file });
             }
             let error = std::io::Error::last_os_error();
             if error.kind() != std::io::ErrorKind::Interrupted {
@@ -680,6 +651,7 @@ mod tests {
 
     fn dirs(root: &Path) -> ClaudeDirs {
         ClaudeDirs {
+            private_root: None,
             environment: Vec::new(),
             file: Some(root.join("relay").join(FILE)),
         }

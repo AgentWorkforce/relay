@@ -303,6 +303,31 @@ impl Delivery {
     }
 }
 
+/// How a peer's relayed message starts.
+pub const PEER_HEADER: &str = "[via Agent Relay — from ";
+/// How a relayed message starts when a session takes it as a user turn
+/// (`InputSource::Teammate`, opted-in spawn requesters): the same
+/// attribution, without the peer framing.
+pub const NATIVE_HEADER: &str = "[Agent Relay native input — from ";
+
+/// Whether `text` is a relayed message from someone other than the person:
+/// a peer's or one taken as native input. Every route that hides relayed
+/// text behind a pointer (`message_pointer`) asks this, so a new header
+/// cannot slip past the pointer unnoticed.
+pub fn relayed_input(text: &str) -> bool {
+    RELAYED_PREFIXES
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
+}
+
+/// The first words of every relayed header [`relayed_input`] accepts; the
+/// pointer (`message_pointer::pointer`) reads the same list.
+/// Each is also the pointer's header word for word, so none ends in a space.
+pub const RELAYED_PREFIXES: [&str; 2] = ["[via Agent Relay", "[Agent Relay native input"];
+
+/// A Relay Connect room message's header, pointed to as relayed input is.
+pub const CONNECT_PREFIX: &str = "[Relay Connect";
+
 /// Twelve hex digits derived from a message id, carried in the injected
 /// attribution line so a transcript turn can be tied back to its message.
 pub struct MessageRef;
@@ -317,10 +342,7 @@ impl MessageRef {
 
     /// The reference carried by `text`, if its first line is an attribution.
     pub fn in_text(text: &str) -> Option<String> {
-        if !(text.starts_with("[via Agent Relay")
-            || text.starts_with("[Agent Relay native input ")
-            || text.starts_with("[Relay Connect "))
-        {
+        if !(relayed_input(text) || text.starts_with("[Relay Connect ")) {
             return None;
         }
         let first = text.lines().next()?;

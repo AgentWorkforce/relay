@@ -36,6 +36,7 @@
 //! claimed in the store before it is sent, so a concurrent socket send or a
 //! lost response can never produce a second answer.
 
+mod activation;
 mod cadence;
 mod channel;
 pub mod channel_text;
@@ -43,6 +44,7 @@ pub mod final_answer;
 mod inbox_watch;
 pub mod policy;
 pub(crate) mod session_text;
+mod stuck;
 mod timing;
 pub use timing::DeliveryTiming;
 
@@ -227,6 +229,8 @@ pub struct DeliveryState {
     /// Deliveries tried and not yet settled, by delivery id. Dropped once
     /// a delivery settles, leaves its queue, or its agent is removed.
     retries: HashMap<String, Retry>,
+    /// Deliveries waiting to go into their session (`stuck`).
+    waiting: HashMap<String, stuck::Waited>,
     /// The last queue read's problem, per agent.
     pub(crate) queue_errors: BTreeMap<String, String>,
     activity: VecDeque<DeliveryActivity>,
@@ -239,6 +243,8 @@ pub struct DeliveryState {
     /// socket presence update. Failed reads never postpone a heartbeat.
     last_heartbeat: HashMap<String, Instant>,
     last_integration_cleanup: Option<Instant>,
+    /// When automatic activation last reconciled, and what it saw.
+    last_activation: Option<(Instant, activation::ActivationInputs)>,
     last_activation_failures: Vec<String>,
     /// Channel injections handed over and not yet settled, loaded from
     /// disk on first use (`channel::pins`).
@@ -247,7 +253,7 @@ pub struct DeliveryState {
     channel_names: HashMap<String, String>,
     /// Terminal Claude Code sessions holding relay messages not yet seen
     /// read, by agent name (`inbox_watch`).
-    inbox: HashMap<String, crate::relay::claude::inbox::Watch>,
+    inbox: inbox_watch::Inboxes,
     codex_inbox: HashMap<String, crate::relay::claude::inbox::InboxStall>,
     /// Messages Claude Code holds for approval, by agent and message id,
     /// oldest first (`inbox_watch`).
@@ -578,6 +584,106 @@ mod interval_tests {
         ));
     }
 
+    #[tokio::test]
+    async fn a_delivery_pass_discovers_sessions_only_when_its_inputs_changed() {
+        use crate::relay::sessions::{DiscoveredSession, SessionDirectory};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Default)]
+        struct CountingDirectory(AtomicUsize);
+        impl SessionDirectory for CountingDirectory {
+            fn sessions(&self) -> Vec<DiscoveredSession> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Vec::new()
+            }
+            fn auto_activation_sessions(&self) -> Vec<DiscoveredSession> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Vec::new()
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let config = Config {
+            paths: CorePaths::for_socket(temp.path().join("core.sock")).unwrap(),
+            home: temp.path().into(),
+            app_data_dir: temp.path().join("app-data"),
+            env: Default::default(),
+            version: "0.0.0-test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: PushTiming::default(),
+            delivery_timing: DeliveryTiming::default(),
+        };
+        let directory = Arc::new(CountingDirectory::default());
+        let plugins = crate::relay::daemon::Plugins {
+            sessions: directory.clone(),
+            ..Default::default()
+        };
+        let (core, _signals) = Core::with_plugins(config, plugins);
+        let discoveries = || directory.0.load(Ordering::SeqCst);
+
+        core.poll_once().await;
+        let first = discoveries();
+        assert!(first > 0, "the first pass reconciles");
+        core.poll_once().await;
+        core.poll_once().await;
+        assert_eq!(discoveries(), first, "unchanged passes read no process");
+
+        // Discovery published a session: the next pass reconciles once.
+        core.session_snapshot
+            .lock()
+            .unwrap()
+            .1
+            .push(DiscoveredSession {
+                target: Target::new(SessionKind::Codex, "11111111-2222-3333-4444-555555555555"),
+                title: "Thread".into(),
+                directory: None,
+                updated_at_ms: None,
+                host: None,
+                live: false,
+                holder: None,
+            });
+        core.poll_once().await;
+        let second = discoveries();
+        assert!(second > first);
+        core.poll_once().await;
+        assert_eq!(discoveries(), second);
+
+        // So does a registration change.
+        let registration: Registration = serde_json::from_value(serde_json::json!({
+            "name": "quiet", "agentID": "agent-id",
+            "target": {"kind": "codex", "id": "other-session"},
+            "baseURL": "https://cast.example", "registeredAt": 1790683200.0
+        }))
+        .unwrap();
+        core.store
+            .update(|s| s.registrations.push(registration))
+            .unwrap();
+        core.poll_once().await;
+        assert!(discoveries() > second);
+
+        // A published session that only moved to another folder.
+        core.poll_once().await;
+        let moved = discoveries();
+        core.poll_once().await;
+        assert_eq!(discoveries(), moved, "settled");
+        core.session_snapshot.lock().unwrap().1[0].directory = Some("/Users/me/other".into());
+        core.poll_once().await;
+        assert!(discoveries() > moved, "a folder change reconciles");
+        let settled = discoveries();
+        core.session_snapshot.lock().unwrap().1[0].updated_at_ms = Some(42);
+        core.poll_once().await;
+        assert_eq!(discoveries(), settled, "a newer write time alone does not");
+
+        // Activity keeps its own cadence while nothing activation reads
+        // changed.
+        core.poll_once().await;
+        let third = discoveries();
+        let aged = core.age_activity(Duration::from_secs(60)).unwrap();
+        core.poll_once().await;
+        assert_eq!(discoveries(), third, "no reconciliation");
+        assert!(core.age_activity(Duration::ZERO).unwrap() > aged);
+    }
+
     #[test]
     fn stale_queue_read_does_not_credit_the_replacement() {
         let temp = tempfile::tempdir().unwrap();
@@ -749,6 +855,7 @@ impl Core {
             let mut state = self.delivery.lock().unwrap();
             state.queue_errors.remove(name);
             state.retries.retain(|_, retry| retry.agent != name);
+            state.waiting.retain(|_, waited| waited.agent != name);
             state.inbox.remove(name);
             state.queue_errors.values().next().cloned()
         };
@@ -919,11 +1026,11 @@ impl Core {
                         )),
                     ),
                 }
-                self.delivery
-                    .lock()
-                    .unwrap()
-                    .retries
-                    .retain(|id, retry| retry.agent != name || queued.contains(id.as_str()));
+                self.keep_queued(
+                    name,
+                    &queued,
+                    deliveries.len() < client::QUEUE_PAGE as usize,
+                );
                 self.handle_pending(&deliveries, &registration).await;
             }
             // An agent removed while its queue was read reports nothing.
@@ -1170,10 +1277,7 @@ impl Core {
         let prefix = self.machine_prefix.clone();
         match outcome {
             InjectOutcome::Delivered => {
-                {
-                    let mut state = self.delivery.lock().unwrap();
-                    state.retries.remove(&delivery.id);
-                }
+                self.settled(&delivery.id);
                 if registration.target.kind == SessionKind::ClaudeTerminal {
                     let _ = self.claude_delivery.consume(
                         &delivery.id,
@@ -1202,7 +1306,7 @@ impl Core {
                 self.record_handed_over(registration, delivery).await;
             }
             InjectOutcome::InDoubt(reason) => {
-                self.delivery.lock().unwrap().retries.remove(&delivery.id);
+                self.settled(&delivery.id);
                 // The prompt, and its reply command, may already be in the
                 // session: keep the reply paths as for a confirmed injection.
                 // Reported only once the in-doubt record is on disk; until
@@ -1276,7 +1380,7 @@ impl Core {
             }
             InjectOutcome::Refused(reason) => {
                 self.revoke_reply_parent(registration, &delivery.message_id);
-                self.delivery.lock().unwrap().retries.remove(&delivery.id);
+                self.settled(&delivery.id);
                 // A terminal event is not disposable even when its text cannot
                 // enter the session. Save the retirement marker before making
                 // Relaycast's non-retryable settlement durable.
@@ -1331,6 +1435,7 @@ impl Core {
                 if matches!(outcome, InjectOutcome::Waiting(_)) {
                     self.revoke_reply_parent(registration, &delivery.message_id);
                 }
+                self.note_waiting(registration, delivery, &outcome);
                 {
                     let mut state = self.delivery.lock().unwrap();
                     let delay = self.config.delivery_timing.retry_unit.mul_f64(5.0);
@@ -1550,25 +1655,11 @@ impl Core {
         }
     }
 
-    /// One pass: auto-activation, failed removals, the presence heartbeat,
-    /// and every agent queue whose own safety-net interval is due.
+    /// One pass: auto-activation when its inputs changed, failed removals,
+    /// the presence heartbeat, and every agent queue whose own safety-net
+    /// interval is due.
     pub async fn poll_once(self: &Arc<Core>) {
-        let failures = self.activate_new_sessions().await;
-        let report = {
-            let mut state = self.delivery.lock().unwrap();
-            let changed = state.last_activation_failures != failures;
-            state.last_activation_failures = failures.clone();
-            changed && !failures.is_empty()
-        };
-        if report {
-            self.hub.activity(
-                Level::Warning,
-                format!(
-                    "Could not put new sessions on the relay: {}",
-                    failures.join("; ")
-                ),
-            );
-        }
+        self.reconcile_sessions_if_due().await;
         self.retry_pending_cleanups().await;
         let clean_integrations = {
             let mut state = self.delivery.lock().unwrap();

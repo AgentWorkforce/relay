@@ -4,6 +4,22 @@
 
 use super::StatusView;
 
+impl StatusView {
+    /// Records sent plus records waiting.
+    pub fn total(&self) -> u64 {
+        self.acknowledged + self.pending
+    }
+
+    /// The share of records sent: `0` with none, `1` with none waiting.
+    pub fn progress(&self) -> f64 {
+        match (self.total(), self.pending) {
+            (0, _) => 0.0,
+            (_, 0) => 1.0,
+            (total, _) => self.acknowledged as f64 / total as f64,
+        }
+    }
+}
+
 /// Where one upload stage stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StageState {
@@ -207,5 +223,10 @@ mod tests {
         let calm = view(json!({"stage": "uploading",
             "delivery": {"stopped": false, "failure_code": "transient"}}));
         assert!(!calm.can_retry);
+        // An older ai-hist uploader's hold offers Retry for after its removal.
+        let held = view(json!({"stage": "needs_attention",
+            "stage_message": "An older ai-hist uploader is still scheduled.",
+            "delivery": {"stopped": false, "failure_code": "legacy_uploader_active"}}));
+        assert!(held.can_retry);
     }
 }

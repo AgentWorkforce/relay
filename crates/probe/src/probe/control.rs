@@ -3,7 +3,7 @@
 //! it is safe while the collector runs.
 use super::bridge::{control_db, control_lock, emit, open_control};
 use super::{read_config, user_error, Target};
-use agent_relay_probe::delivery;
+use crate::delivery;
 use anyhow::{ensure, Result};
 use clap::Subcommand;
 use serde_json::{json, Value};

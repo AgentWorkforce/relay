@@ -178,6 +178,14 @@ impl CodexAdapter {
             .map(|id| Target::new(SessionKind::Codex, id.to_lowercase()))
     }
 
+    /// Whether the turn `message_id` started in `thread` is over by its
+    /// rollout: the claim on a driven turn ends with it.
+    fn turn_ended(&self, thread: &str, message_id: &str) -> app_server::drive::Ended {
+        let codex = self.codex.clone();
+        let (thread, message_id) = (thread.to_string(), message_id.to_string());
+        Box::new(move || crate::relay::codex::rollout::turn_ended(&codex, &thread, &message_id))
+    }
+
     fn work(&self, thread: &str) -> (WorkState, bool) {
         match rollout_path(&self.codex, thread).map(|path| RolloutSummary::load(&path)) {
             Some(Ok(summary)) if summary.active_turn.is_some() => (WorkState::Working, true),
@@ -280,7 +288,7 @@ impl SpawnFacet for CodexAdapter {
         Some(
             match app_server::send_spawned(
                 stream,
-                claim,
+                (claim, self.turn_ended(&target.id, message.message_id)),
                 (message.text, message.message_id),
                 // As every Codex delivery: a peer-framed message is hidden
                 // when relay messages are (`show_relay_messages` off); the
@@ -341,6 +349,7 @@ impl SpawnFacet for CodexAdapter {
                             None,
                         )
                     }),
+                    ended: Some(&|thread| self.turn_ended(thread, &launch.message_id)),
                 },
             )
             .map_err(|error| {

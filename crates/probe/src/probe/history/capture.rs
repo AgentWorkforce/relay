@@ -18,7 +18,7 @@ pub(super) fn prioritize(
             "{}",
             serde_json::json!({
                 "operation": "capture", "stage": "recent_history",
-                "error_class": crate::collector::capture_error_class(&error)
+                "error_class": crate::probe::collector::capture_error_class(&error)
             })
         );
     }
@@ -44,7 +44,12 @@ fn capture_uncaptured_newest_first(
     let pending = store
         .sessions(CatalogQuery::default())
         .filter_map(|row| match row {
-            Ok(row) if row.discovery_state == DiscoveryState::Shallow => {
+            // A transcript deleted from disk can never hydrate; retrying it
+            // every cycle held back the sessions still being written.
+            Ok(row)
+                if row.discovery_state == DiscoveryState::Shallow
+                    && !transcript_gone(row.raw_path.as_deref()) =>
+            {
                 Some(Ok((row.source, row.session_id)))
             }
             Ok(_) => None,
@@ -64,7 +69,7 @@ fn capture_uncaptured_newest_first(
                 "{}",
                 serde_json::json!({
                     "operation": "capture", "stage": "recent_history", "source": source.as_str(),
-                    "error_class": crate::collector::capture_error_class(&error)
+                    "error_class": crate::probe::collector::capture_error_class(&error)
                 })
             );
         }
@@ -75,6 +80,38 @@ fn capture_uncaptured_newest_first(
         });
     }
     Ok(())
+}
+
+/// A local transcript path the catalog still lists after the file is gone. A
+/// remote session's `raw_path` is a URL, not an absolute path, so it never
+/// matches. Only a transcript the filesystem says is not there counts: one
+/// that cannot be read (a permission error) is still retried and reported.
+fn transcript_gone(raw_path: Option<&Path>) -> bool {
+    raw_path.is_some_and(|path| {
+        path.is_absolute()
+            && std::fs::symlink_metadata(path)
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_missing_local_transcript_counts_as_gone() {
+        let dir = std::env::temp_dir().join(format!("transcript-gone-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let present = dir.join("present.jsonl");
+        std::fs::write(&present, "").unwrap();
+        assert!(!transcript_gone(Some(&present)));
+        assert!(transcript_gone(Some(&dir.join("deleted.jsonl"))));
+        assert!(!transcript_gone(Some(Path::new(
+            "https://claude.ai/code/cse_01abc"
+        ))));
+        assert!(!transcript_gone(None));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
 
 pub(super) fn hydrate_with_stop(
@@ -104,9 +141,9 @@ pub(super) fn hydrate_store(
     // A session observed only remotely has no local provider to hydrate
     // from; its connector acquires the evidence and lands it through
     // source intake, fenced by the observation's revision.
-    if crate::remote_sources::remote_only(&store, source, session_id)? {
+    if crate::probe::remote_sources::remote_only(&store, source, session_id)? {
         let stop_remote = || stop.stopped();
-        let hydrated = crate::remote_sources::hydrate(
+        let hydrated = crate::probe::remote_sources::hydrate(
             &store,
             store.roots().home.as_path(),
             source.as_str(),

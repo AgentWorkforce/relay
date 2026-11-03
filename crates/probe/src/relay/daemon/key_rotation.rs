@@ -12,7 +12,7 @@ use std::time::Duration;
 /// asks Relaycast about it again. Bounds how long a key revoked after it
 /// verified (a rotation whose grace lapsed) goes unnoticed when nothing else
 /// the core does with it is refused; one workspace GET per interval.
-pub(crate) const REVERIFY_VERIFIED_AFTER: Duration = Duration::from_secs(5 * 60);
+pub const REVERIFY_VERIFIED_AFTER: Duration = Duration::from_secs(5 * 60);
 
 impl Core {
     /// Rediscovers the workspace. A different key or origin replaces the
@@ -40,6 +40,10 @@ impl Core {
             self.record_pending_key_migration(displaced.as_ref(), prior_workspace_id.as_deref());
             if let Ok(status) = self.verify_workspace().await {
                 self.resolve_pending_key_migration(status.workspace_id.as_deref());
+            }
+            if displaced.is_none() {
+                // Signed in: the tools found here are connected now.
+                self.connect_detected_tools_soon();
             }
         } else if matches!(self.status().workspace.verification, Verification::Verified) {
             // An unchanged, already-verified refresh still resolves a

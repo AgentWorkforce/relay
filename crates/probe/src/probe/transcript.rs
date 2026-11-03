@@ -1,5 +1,5 @@
 //! A private local reading cache, isolated from every upload journal.
-use agent_relay_probe::relay::contract::transcript::{
+use crate::relay::contract::transcript::{
     LocalTranscriptCursor, LocalTranscriptEntry, LocalTranscriptPage,
 };
 use ai_hist::{HydrateOptions, SessionRef, Source};
@@ -19,10 +19,115 @@ pub struct ReadSession {
     after_id: Option<i64>,
 }
 
+#[derive(Args)]
+pub struct NamingCheckpoint {
+    #[arg(long)]
+    source: String,
+    #[arg(long)]
+    session_id: String,
+}
+
+pub fn naming_checkpoint(options: NamingCheckpoint) -> Result<()> {
+    ensure!(
+        !super::session_reset::baseline()?.contains(&crate::delivery::SessionIdentity {
+            source: options.source.clone(),
+            session_id: options.session_id.clone(),
+        }),
+        "This session was removed from Relay."
+    );
+    crate::relay::session_titles::validate_identity(&options.source, &options.session_id)
+        .map_err(|e| anyhow::anyhow!(e.message))?;
+    let source = Source::parse(&options.source).context("Unsupported session source.")?;
+    let directory = super::home()?.join(".agentworkforce/session-reader");
+    super::private_directory(&directory)?;
+    let db = directory.join("history.db");
+    let store = super::history::open(&db)?;
+    hydrate_for_naming(&store, source, &options.session_id)?;
+    let conn = Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    super::bridge::emit(checkpoint_response(
+        &conn,
+        source.as_str(),
+        &options.session_id,
+    )?);
+    Ok(())
+}
+
+fn checkpoint_response(conn: &Connection, source: &str, id: &str) -> Result<serde_json::Value> {
+    Ok(serde_json::to_value(
+        crate::relay::session_naming::PromptCheckpointResponse {
+            checkpoint: prompt_checkpoint(conn, source, id)?,
+        },
+    )?)
+}
+
+fn prompt_checkpoint(
+    conn: &Connection,
+    source: &str,
+    id: &str,
+) -> Result<Option<crate::relay::session_naming::PromptCheckpoint>> {
+    use std::collections::HashSet;
+    let readable: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM session_events WHERE source=?1 AND session_id=?2)",
+        [source, id],
+        |row| row.get(0),
+    )?;
+    if !readable {
+        return Ok(None);
+    }
+    let mut query = conn.prepare("SELECT ts_ms, event_uid, message_id, substr(text,1,65536) FROM session_events WHERE source=?1 AND session_id=?2 AND role='user' AND kind='text' AND control_kind IS NULL AND COALESCE(raw_kind,'')!='input_image' ORDER BY ts_ms,id")?;
+    let events = query.query_map([source, id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    })?;
+    let mut identities = HashSet::new();
+    let mut capture = HashSet::new();
+    let mut checkpoint = crate::relay::session_naming::PromptCheckpoint::default();
+    for event in events {
+        let (ts, uid, message, text) = event?;
+        let Some(text) = text.map(|text| super::transcript_display::user_text(&text)) else {
+            continue;
+        };
+        let text = text.trim();
+        if text.is_empty()
+            || [
+                "[via Agent Relay",
+                "<task-notification",
+                "# AGENTS.md instructions",
+                "<environment_context>",
+                "<system-reminder>",
+            ]
+            .iter()
+            .any(|prefix| text.starts_with(prefix))
+        {
+            continue;
+        }
+        // message_id identifies provider replays (notably Devin branches).
+        // Identical copies captured at the same time are one prompt, but
+        // deliberately repeating the request later is another prompt.
+        if !identities.insert(message.unwrap_or(uid))
+            || !capture.insert((ts, {
+                use std::hash::{Hash, Hasher};
+                let mut digest = std::collections::hash_map::DefaultHasher::new();
+                text.hash(&mut digest);
+                digest.finish()
+            }))
+        {
+            continue;
+        }
+        checkpoint.count += 1;
+        checkpoint.latest_prompt_ms = Some(ts);
+    }
+    Ok(Some(checkpoint))
+}
+
 pub fn read(options: ReadSession) -> Result<()> {
     ensure!(
         !super::session_reset::baseline()?.contains(
-            &agent_relay_probe::delivery::SessionIdentity {
+            &crate::delivery::SessionIdentity {
                 source: options.source.clone(),
                 session_id: options.session_id.clone(),
             }
@@ -76,6 +181,24 @@ fn read_from(
 }
 
 fn hydrate(store: &ai_hist::SessionStore, source: Source, session_id: &str) -> Result<()> {
+    hydrate_with_remote(store, source, session_id, true)
+}
+
+/// Background naming never takes the reader's interactive credential/download path.
+pub(super) fn hydrate_for_naming(
+    store: &ai_hist::SessionStore,
+    source: Source,
+    session_id: &str,
+) -> Result<()> {
+    hydrate_with_remote(store, source, session_id, false)
+}
+
+fn hydrate_with_remote(
+    store: &ai_hist::SessionStore,
+    source: Source,
+    session_id: &str,
+    allow_remote: bool,
+) -> Result<()> {
     // A fresh reader cache has no provider locators yet. Discover only
     // this harness's metadata, then hydrate just the requested session.
     let mut query = ai_hist::SessionQuery::default();
@@ -90,9 +213,14 @@ fn hydrate(store: &ai_hist::SessionStore, source: Source, session_id: &str) -> R
         discovery.sources = Some(vec![source]);
         store.discover(discovery)?;
     }
+    let remote_only = super::remote_sources::remote_only(store, source, session_id)?;
+    let missing = store.session(&reference, query.clone())?.is_none();
+    if !allow_remote && (remote_only || missing) {
+        return Ok(());
+    }
     // A row the reader already holds remote-only — from an earlier open —
     // refreshes through the connector again; local hydrate cannot reach it.
-    if super::remote_sources::remote_only(store, source, session_id)? {
+    if remote_only {
         return match super::remote_sources::hydrate_reader(
             store,
             source.as_str(),
@@ -106,7 +234,7 @@ fn hydrate(store: &ai_hist::SessionStore, source: Source, session_id: &str) -> R
             .into()),
         };
     }
-    if store.session(&reference, query)?.is_none() {
+    if missing {
         // A cloud-only session has no local row to discover; its connector
         // lands the placeholder observation plus the evidence itself.
         if super::remote_sources::hydrate_reader(store, source.as_str(), session_id, || false)?
@@ -234,7 +362,9 @@ impl TranscriptEvent {
             ..
         } = self;
         let text = text.as_deref().unwrap_or("");
-        let display = if role == "user" && kind == "text" {
+        let system_context =
+            role == "user" && kind == "text" && super::transcript_display::system_context(text);
+        let display = if role == "user" && kind == "text" && !system_context {
             super::transcript_display::user_text(text)
         } else {
             text.to_string()
@@ -258,7 +388,7 @@ impl TranscriptEvent {
         Ok(Some(LocalTranscriptEntry {
             id: event_uid,
             role,
-            kind: if control_kind.is_some() {
+            kind: if control_kind.is_some() || system_context {
                 "context".into()
             } else {
                 kind
@@ -277,8 +407,8 @@ mod tests {
 
     #[test]
     fn reset_session_reports_safe_reason_without_recreating_reader_cache() {
-        let Some(home) = crate::live::tests::isolated_home(
-            "transcript::tests::reset_session_reports_safe_reason_without_recreating_reader_cache",
+        let Some(home) = crate::probe::live::tests::isolated_home(
+            "probe::transcript::tests::reset_session_reports_safe_reason_without_recreating_reader_cache",
         ) else {
             return;
         };
@@ -301,6 +431,322 @@ mod tests {
             .expect("reset refusal must reach the UI instead of the generic probe error");
         assert_eq!(safe.to_string(), "This session was removed from Relay by Reset all sessions. Its original transcript is unchanged; open it in the source app to read it.");
         assert!(!root.join("session-reader").exists());
+    }
+
+    #[test]
+    fn naming_counts_prompts_not_tools_context_images_or_capture_replays() {
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("history.db");
+        super::super::history::open(&db).unwrap();
+        let conn = Connection::open(db).unwrap();
+        let add = |source: &str,
+                   ts: i64,
+                   uid: &str,
+                   message: Option<&str>,
+                   role: &str,
+                   kind: &str,
+                   text: &str,
+                   control: Option<&str>,
+                   raw: Option<&str>| {
+            conn.execute("INSERT INTO session_events(source,session_id,ts_ms,event_uid,message_id,role,kind,text,control_kind,raw_kind) VALUES(?1,'s',?2,?3,?4,?5,?6,?7,?8,?9)",rusqlite::params![source,ts,uid,message,role,kind,text,control,raw]).unwrap();
+        };
+        add(
+            "codex",
+            1,
+            "p1",
+            Some("first"),
+            "user",
+            "text",
+            "Fix scrolling",
+            None,
+            None,
+        );
+        add(
+            "codex",
+            1,
+            "copy1",
+            Some("first"),
+            "user",
+            "text",
+            "Fix scrolling",
+            None,
+            None,
+        );
+        add(
+            "codex",
+            1,
+            "copy2",
+            None,
+            "user",
+            "text",
+            "Fix scrolling",
+            None,
+            None,
+        );
+        add(
+            "codex",
+            2,
+            "repeat",
+            None,
+            "user",
+            "text",
+            "Fix scrolling",
+            None,
+            None,
+        );
+        add(
+            "codex",
+            3,
+            "tool",
+            None,
+            "user",
+            "tool_result",
+            "Done",
+            None,
+            None,
+        );
+        add(
+            "codex",
+            4,
+            "assistant",
+            None,
+            "assistant",
+            "text",
+            "Working",
+            None,
+            None,
+        );
+        add(
+            "codex",
+            5,
+            "env",
+            None,
+            "user",
+            "text",
+            "# Environment\nYou have been invoked in the following environment:",
+            None,
+            None,
+        );
+        add(
+            "codex",
+            6,
+            "context",
+            None,
+            "user",
+            "text",
+            "Instructions",
+            Some("codex_context_wrapper"),
+            None,
+        );
+        add(
+            "codex",
+            7,
+            "image",
+            None,
+            "user",
+            "text",
+            "![Attached image](data:image/png;base64,AAA)",
+            None,
+            Some("input_image"),
+        );
+        add(
+            "codex",
+            8,
+            "relay",
+            None,
+            "user",
+            "text",
+            "[via Agent Relay from @worker] Done",
+            None,
+            None,
+        );
+        add(
+            "claude",
+            9,
+            "other",
+            None,
+            "user",
+            "text",
+            "Wrong source",
+            None,
+            None,
+        );
+        add(
+            "codex",
+            10,
+            "xml",
+            None,
+            "user",
+            "text",
+            "<external_context>app state</external_context>",
+            None,
+            None,
+        );
+        add(
+            "codex",
+            11,
+            "actual",
+            None,
+            "user",
+            "text",
+            "# Files mentioned by the user:\n## My request:\nCollapse the system prompt",
+            None,
+            None,
+        );
+        assert_eq!(
+            prompt_checkpoint(&conn, "codex", "s").unwrap().unwrap(),
+            crate::relay::session_naming::PromptCheckpoint {
+                count: 3,
+                latest_prompt_ms: Some(11)
+            }
+        );
+        // A branch copied under a new node retains the provider message id.
+        add(
+            "devin",
+            1,
+            "n1:text",
+            Some("human-one"),
+            "user",
+            "text",
+            "First",
+            None,
+            None,
+        );
+        add(
+            "devin",
+            2,
+            "n2:text",
+            Some("human-one"),
+            "user",
+            "text",
+            "First",
+            None,
+            None,
+        );
+        assert_eq!(
+            prompt_checkpoint(&conn, "devin", "s")
+                .unwrap()
+                .unwrap()
+                .count,
+            1
+        );
+    }
+
+    #[test]
+    fn setup_snippets_in_assistant_and_tool_output_keep_their_roles() {
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("history.db");
+        super::super::history::open(&db).unwrap();
+        let conn = Connection::open(db).unwrap();
+        let text =
+            "# Environment\nYou have been invoked in the following environment:\n- Example setup";
+        for (id, role, kind) in [
+            ("answer", "assistant", "text"),
+            ("result", "user", "tool_result"),
+        ] {
+            conn.execute("INSERT INTO session_events(source,session_id,ts_ms,event_uid,role,kind,text) VALUES('claude','s',1,?1,?2,?3,?4)",rusqlite::params![id,role,kind,text]).unwrap();
+        }
+        let page = read_page(&conn, "claude", "s", None).unwrap();
+        assert_eq!(
+            page.entries
+                .iter()
+                .map(|entry| entry.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["text", "tool_result"]
+        );
+        assert!(page.entries.iter().all(|entry| entry.text == text));
+    }
+
+    #[test]
+    fn an_empty_reader_cache_is_not_a_zero_prompt_checkpoint() {
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("history.db");
+        super::super::history::open(&db).unwrap();
+        let conn = Connection::open(db).unwrap();
+        // Evidence from another session or provider must not invent this
+        // session's first prompt baseline.
+        for (source, id) in [("claude", "other"), ("codex", "s")] {
+            conn.execute("INSERT INTO session_events(source,session_id,ts_ms,event_uid,role,kind,text) VALUES(?1,?2,1,'elsewhere','user','text','Other request')", [source,id]).unwrap();
+            assert!(prompt_checkpoint(&conn, "claude", "s").unwrap().is_none());
+        }
+        conn.execute("INSERT INTO session_events(source,session_id,ts_ms,event_uid,role,kind,text) VALUES('claude','s',1,'setup','user','text',?1)", ["# Environment\nYou have been invoked in the following environment:\n- Example setup"]).unwrap();
+        assert_eq!(
+            prompt_checkpoint(&conn, "claude", "s")
+                .unwrap()
+                .unwrap()
+                .count,
+            0,
+            "Readable setup can establish a real zero-prompt baseline"
+        );
+        conn.execute("INSERT INTO session_events(source,session_id,ts_ms,event_uid,role,kind,text) VALUES('claude','s',2,'prompt','user','text','Do the work')", []).unwrap();
+        assert_eq!(
+            prompt_checkpoint(&conn, "claude", "s")
+                .unwrap()
+                .unwrap()
+                .count,
+            1
+        );
+    }
+
+    #[test]
+    fn checkpoint_response_preserves_helper_framing_with_and_without_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("history.db");
+        super::super::history::open(&db).unwrap();
+        let conn = Connection::open(db).unwrap();
+        for expected in [None, Some(1)] {
+            if expected.is_some() {
+                conn.execute("INSERT INTO session_events(source,session_id,ts_ms,event_uid,role,kind,text) VALUES('claude','s',1,'prompt','user','text','Do the work')", []).unwrap();
+            }
+            let wire = format!("{}\n", checkpoint_response(&conn, "claude", "s").unwrap());
+            let value = crate::relay::uploader::decode_output(&wire)
+                .expect("ProcessRunner accepts the real helper's object frame");
+            assert!(
+                value.get("checkpoint").is_some(),
+                "The helper wire key is stable"
+            );
+            let response: crate::relay::session_naming::PromptCheckpointResponse =
+                serde_json::from_value(value).unwrap();
+            assert_eq!(
+                response.checkpoint.map(|checkpoint| checkpoint.count),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn idle_control_nudges_do_not_add_reader_rows_or_prompts() {
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("history.db");
+        super::super::history::open(&db).unwrap();
+        let conn = Connection::open(db).unwrap();
+        let nudge = "The user hasn't heard from you in a while — say in a few words what you're doing, then continue.";
+        conn.execute("INSERT INTO session_events(source,session_id,ts_ms,event_uid,role,kind,text) VALUES('claude','s',1,'nudge','user','text',?1)", [nudge]).unwrap();
+        assert!(read_page(&conn, "claude", "s", None)
+            .unwrap()
+            .entries
+            .is_empty());
+        assert_eq!(
+            prompt_checkpoint(&conn, "claude", "s")
+                .unwrap()
+                .unwrap()
+                .count,
+            0
+        );
+    }
+
+    #[test]
+    fn environment_prompts_keep_their_text_as_inspectable_context() {
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("history.db");
+        super::super::history::open(&db).unwrap();
+        let conn = Connection::open(db).unwrap();
+        let content = "# Environment\nYou have been invoked in the following environment:\n- Working directory: ~/work";
+        conn.execute("INSERT INTO session_events(source,session_id,ts_ms,event_uid,role,kind,text) VALUES('claude','s',1,'setup','user','text',?1)", [content]).unwrap();
+        let page = read_page(&conn, "claude", "s", None).unwrap();
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].kind, "context");
+        assert_eq!(page.entries[0].text, content);
     }
 
     #[test]

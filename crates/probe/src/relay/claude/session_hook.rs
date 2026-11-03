@@ -38,18 +38,24 @@ use crate::relay::claude::ClaudeConfig;
 use crate::relay::claude_settings::{
     claude_settings_edit_lock, resolve_symlinks, write_keeping_file, ClaudeSettings,
 };
-use crate::relay::hosted_mcp::{self, McpAccess};
-use crate::relay::process::ProcessTable;
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+mod output;
 #[cfg(test)]
 mod permission_tests;
 mod permissions;
+mod rollback;
+pub use output::{
+    claude_ancestor, has_person, hook_output, joining, nudge, read_probe, read_status,
+    registration_off, StatusRead, JOINING_FOR_PERSON, NUDGE_FOR_PERSON, OBSERVE_HEADER,
+    OBSERVE_VALUE,
+};
 #[cfg(test)]
 pub use permissions::covers;
 pub use permissions::PermissionRules;
+use rollback::store_planned;
 
 /// Appended to a settings file's name for the one-time copy of the person's
 /// own file.
@@ -60,299 +66,6 @@ pub const SETTING: &str = "claude_session_hook";
 
 /// The subcommand the hook runs; also how the hook is recognized as ours.
 pub const SUBCOMMAND: &str = "relay claude-session-hook";
-
-/// Header on the hook's status read. The core then does not apply the
-/// agent-led defaults. The name is lowercase because the socket parser
-/// stores header names that way.
-pub const OBSERVE_HEADER: &str = "x-agent-relay-observe";
-
-/// The only value of [`OBSERVE_HEADER`] that skips the defaults.
-pub const OBSERVE_VALUE: &str = "1";
-
-/// How `GET /setup/status`'s body is read. `Again` is only the race where
-/// Claude has not written its session file yet.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StatusRead {
-    /// `on_relay` is `session.registered`. `self_registration` is whether
-    /// `POST /register` is allowed; a body that omits it means allowed,
-    /// which is the setting's default.
-    Registered {
-        on_relay: bool,
-        self_registration: bool,
-    },
-    /// Not on the relay yet, but automatic activation is on: the core puts
-    /// the session on the relay by itself within seconds.
-    Joining,
-    /// On the relay, with the name, address and access status reported.
-    OnRelay {
-        name: String,
-        address: String,
-        mcp: McpAccess,
-    },
-    Again,
-    Unknown,
-}
-
-/// The probe the core's rules and hints name (`probe` in its
-/// `GET /setup/status` answer): the space-free link when it is in use.
-/// `None` from an older core, or for anything but an absolute path.
-pub fn read_probe(body: &[u8]) -> Option<std::path::PathBuf> {
-    let value = serde_json::from_slice::<Value>(body).ok()?;
-    let probe = std::path::PathBuf::from(value["data"]["probe"].as_str()?);
-    probe.is_absolute().then_some(probe)
-}
-
-/// `session.registered` from a session-socket response, or why it is not
-/// known. A failure is never treated as a reason to register.
-pub fn read_status(http_status: u16, body: &[u8]) -> StatusRead {
-    let Ok(value) = serde_json::from_slice::<Value>(body) else {
-        return StatusRead::Unknown;
-    };
-    if (200..300).contains(&http_status) {
-        let Some(on_relay) = value["data"]["session"]["registered"].as_bool() else {
-            return StatusRead::Unknown;
-        };
-        let session = &value["data"]["session"];
-        if let (true, Some(name), Some(address)) = (
-            on_relay,
-            session["name"].as_str(),
-            session["address"].as_str(),
-        ) {
-            return StatusRead::OnRelay {
-                name: name.into(),
-                address: address.into(),
-                mcp: McpAccess::parse(session["mcp"].as_str()),
-            };
-        }
-        // Only when the core says this session will join: automatic
-        // activation can be on while there is no workspace yet or the
-        // session's folder is excluded from it.
-        if !on_relay && session["auto_activates"].as_bool() == Some(true) {
-            return StatusRead::Joining;
-        }
-        let self_registration = value["data"]["allow_self_registration"]
-            .as_bool()
-            .unwrap_or(true);
-        return StatusRead::Registered {
-            on_relay,
-            self_registration,
-        };
-    }
-    match value["error"]["code"].as_str() {
-        Some("not_a_relay_session" | "session_file_unreadable") => StatusRead::Again,
-        _ => StatusRead::Unknown,
-    }
-}
-
-/// How many ancestors to climb from the hook looking for its Claude Code
-/// process. Claude runs a hook command through a shell, so it is normally
-/// the parent or grandparent.
-const ANCESTOR_LIMIT: usize = 8;
-
-/// The Claude Code process a hook started at `start` runs in: the nearest
-/// ancestor (inclusive) that is Claude Code, unless another agent comes
-/// first. Cursor CLI runs the hooks in `~/.claude/settings.json` too, and a
-/// Cursor started from a Claude Code terminal inherits that session's
-/// environment, so neither `CLAUDECODE` nor a Claude ancestor further up
-/// says the hook is Claude's: the nearest agent does.
-pub fn claude_ancestor(table: &dyn ProcessTable, start: i32) -> Option<i32> {
-    let mut pid = start;
-    for _ in 0..ANCESTOR_LIMIT {
-        if pid <= 1 {
-            return None;
-        }
-        if crate::relay::hook_agents::is_claude_process(table, pid) {
-            return Some(pid);
-        }
-        if crate::relay::hook_agents::is_other_agent(table, pid) {
-            return None;
-        }
-        pid = table.process(pid)?.parent;
-    }
-    None
-}
-
-/// Whether the session running this hook has a person to answer. A
-/// `claude -p`, Agent SDK or structured pipe run (a flows step, cron, CI)
-/// would spend its one reply on the relay question instead of its task, so
-/// it is told nothing. A run whose Claude process cannot be found is treated
-/// the same way.
-pub fn has_person(table: &dyn ProcessTable, start: i32) -> bool {
-    claude_ancestor(table, start)
-        .is_some_and(|pid| crate::relay::claude::is_interactive_process(table, pid))
-}
-
-/// What the hook prints. A session on the relay gets the preamble alone.
-/// An unregistered session is told how it could join only when a person
-/// is there to ask (`interactive`), and only when self-registration is on
-/// does that include the `POST /register` example. The text does not
-/// register anything. `probe` is the one Claude's permission rules name
-/// (the core reports it: [`read_probe`]), which the commands use.
-pub fn hook_output(
-    status: Option<StatusRead>,
-    socket: &Path,
-    interactive: bool,
-    probe: Option<&Path>,
-) -> Value {
-    if let Some(StatusRead::OnRelay { name, address, mcp }) = &status {
-        let context = hosted_mcp::preamble(name, address, *mcp, socket, probe);
-        return json!({
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context
-            }
-        });
-    }
-    if !interactive {
-        return json!({});
-    }
-    let (person, agent) = match status {
-        Some(StatusRead::Joining) => (JOINING_FOR_PERSON.to_string(), joining(socket, probe)),
-        Some(StatusRead::Registered {
-            on_relay: false,
-            self_registration: true,
-        }) => (NUDGE_FOR_PERSON.to_string(), nudge(socket)),
-        Some(StatusRead::Registered {
-            on_relay: false,
-            self_registration: false,
-        }) => {
-            let text = registration_off(socket);
-            let agent = format!("{text} {DO_NOT_REGISTER_UNASKED}");
-            (text, agent)
-        }
-        _ => return json!({}),
-    };
-    json!({
-        "systemMessage": person,
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": agent
-        }
-    })
-}
-
-/// What the person sees when automatic activation will put the session on
-/// the relay.
-pub const JOINING_FOR_PERSON: &str =
-    "This Claude Code session joins Agent Relay by itself in a few seconds (automatic activation is on).";
-
-/// What Claude reads when automatic activation will put the session on the
-/// relay: nothing to ask or register, and how to reach peers once it is on.
-pub fn joining(socket: &Path, probe: Option<&Path>) -> String {
-    let shown = socket.display().to_string();
-    let quoted = crate::relay::outbound::shell_quote(&shown);
-    let body = "'{\"to\":\"<name>\",\"text\":\"…\"}'";
-    // The probe's self-limiting commands, which Claude's permission rules
-    // allow (`hosted_mcp::SocketCommands`); curl only when it is unknown.
-    let (agents, whoami, send) =
-        match probe.and_then(|probe| hosted_mcp::SocketCommands::through(probe, socket)) {
-            Some(commands) => (commands.agents, commands.whoami, commands.send),
-            None => (
-                format!("curl -s --unix-socket {quoted} http://relay/agents"),
-                format!("curl -s --unix-socket {quoted} http://relay/whoami"),
-                format!("curl -s --unix-socket {quoted} http://relay/send --data-binary {body}"),
-            ),
-        };
-    format!(
-        "This Claude Code session joins Agent Relay by itself within a few seconds: automatic \
-         activation is on. Do not register it and do not ask the person about it. Relayed \
-         messages arrive in this session as messages from another session; each names the \
-         command that reads it and the one that replies. Once on the relay, through the Agent \
-         Relay session socket at {shown}: {whoami} shows this session's name, {agents} lists \
-         the agents it can message, and {send} sends one a message (\"address\" instead of \
-         \"to\" names an exact address)."
-    )
-}
-
-/// What the person sees when the session may register itself. The person
-/// decides; Claude only asks.
-pub const NUDGE_FOR_PERSON: &str = "This Claude Code session is not on Agent Relay. \
-    Claude will ask whether to put it on the relay and under what name. Nothing is \
-    registered unless you say yes.";
-
-/// Added for Claude when the session may not register itself.
-const DO_NOT_REGISTER_UNASKED: &str =
-    "Do not try to put this session on the relay unless the person asks you to.";
-
-/// What to say when the session may not register itself.
-pub fn registration_off(socket: &Path) -> String {
-    let shown = socket.display().to_string();
-    format!(
-        "This Claude Code session is not on Agent Relay. It cannot put itself on the relay \
-         while \"Let sessions put themselves on the relay\" is off. Turn that on in Agent \
-         Relay Settings, then POST /register on the session socket at {shown}. Agent Relay \
-         does not register this session for you."
-    )
-}
-
-/// The nudge Claude reads. Claude must ask first: whether this session goes
-/// on the relay, and the `NAME`, are the person's to choose. The example
-/// uses curl, or the probe's own socket client where curl cannot reach the
-/// socket (`outbound::probe_client`: always on Windows, a named pipe).
-pub fn nudge(socket: &Path) -> String {
-    let shown = socket.display().to_string();
-    let quoted = crate::relay::outbound::shell_quote(&shown);
-    let server = hosted_mcp::SERVER_NAME;
-    let body = format!("'{{\"name\":\"NAME\",\"mcp\":\"{server}\"}}'");
-    let probe = crate::relay::outbound::probe_client(false)
-        .then(|| crate::relay::outbound::probe_socket_command(socket, "POST", "/register"))
-        .flatten();
-    let example = match probe {
-        Some(command) => format!("printf '%s' {body} | {command}"),
-        None => format!(
-            "curl -sS --unix-socket {quoted} -X POST http://relay/register -H \
-             'Content-Type: application/json' --data-binary {body}"
-        ),
-    };
-    format!(
-        "This Claude Code session is not on Agent Relay. Do not put it on the relay on \
-         your own. In your first reply, before any other work, ask the person whether to \
-         put this session on Agent Relay and what name to use. Suggest claude-<repo>-<task>, \
-         where repo is the repository name and task is a one- or two-word summary of your \
-         current work, for example claude-cloud-plan-support. Use lowercase letters, \
-         digits and single dashes, at most 48 characters. Only if they say yes, \
-         POST /register on the Agent Relay session socket at {shown} with the name they \
-         chose; include \"mcp\":\"{server}\" if you have the {server} MCP tools, or \
-         \"mcp\":\"none\" if you do not. For example: {example}. If they say no, leave it \
-         off the relay. Agent Relay does not register this session for you."
-    )
-}
-
-/// Stores each planned file. The snapshot is what to put back. A later
-/// snapshot or store that fails restores every file already stored. A
-/// restore failure is appended to that error.
-fn store_planned(
-    planned: &[(PathBuf, Value)],
-    mut snapshot: impl FnMut(&Path) -> Result<Option<Vec<u8>>, String>,
-    mut store: impl FnMut(&Path, &Value) -> Result<(), String>,
-    mut restore: impl FnMut(&Path, &Option<Vec<u8>>) -> Result<(), String>,
-) -> Result<(), String> {
-    let mut written = Vec::new();
-    for (path, value) in planned {
-        let previous = match snapshot(path) {
-            Ok(previous) => previous,
-            Err(error) => return Err(restore_written(&written, error, &mut restore)),
-        };
-        if let Err(error) = store(path, value) {
-            return Err(restore_written(&written, error, &mut restore));
-        }
-        written.push((path.clone(), previous));
-    }
-    Ok(())
-}
-
-fn restore_written(
-    written: &[(PathBuf, Option<Vec<u8>>)],
-    error: String,
-    restore: &mut impl FnMut(&Path, &Option<Vec<u8>>) -> Result<(), String>,
-) -> String {
-    for (path, previous) in written.iter().rev() {
-        if let Err(restore_error) = restore(path, previous) {
-            return format!("{error} Restoring the other logins failed: {restore_error}");
-        }
-    }
-    error
-}
 
 /// Installs and removes the hook. The files are the source of truth, so the
 /// setting is on when any known login has this build's hook.
@@ -428,6 +141,22 @@ impl ClaudeSessionHookSettings {
         outcome
     }
 
+    /// At an Agent Relay Dev start, which skips [`Self::refresh`]: keeps the
+    /// probe's link while a hook's rules are on disk, so the hints name the
+    /// same program the rules allow, and lets it go when the hook is off.
+    pub fn reconcile_probe_alias(&self) {
+        use crate::relay::probe_alias::User;
+        let Some(alias) = self.alias.as_ref().filter(|_| self.permissions.is_some()) else {
+            return;
+        };
+        let _guard = self.lock();
+        if self.applies() && self.hook_enabled() {
+            alias.acquire(User::Claude);
+        } else {
+            alias.release(User::Claude);
+        }
+    }
+
     /// The rules Agent Relay added, by file.
     fn added(&self) -> permissions::Added {
         self.permissions
@@ -465,18 +194,16 @@ impl ClaudeSessionHookSettings {
     /// login whose directory does not exist.
     fn paths_of(&self, logins: impl IntoIterator<Item = ClaudeSettings>) -> Vec<PathBuf> {
         let mut seen = std::collections::HashSet::new();
-        let mut paths = Vec::new();
-        for login in logins {
-            let path = login.user_settings;
-            if !path.parent().is_some_and(Path::is_dir) {
-                continue;
-            }
-            let key = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-            if seen.insert(key) {
-                paths.push(path);
-            }
-        }
-        paths
+        logins
+            .into_iter()
+            .map(|login| login.user_settings)
+            .filter(|path| {
+                self.claude.dirs.settings_writable(path) && path.parent().is_some_and(Path::is_dir)
+            })
+            .filter(|path| {
+                seen.insert(std::fs::canonicalize(path).unwrap_or_else(|_| path.clone()))
+            })
+            .collect()
     }
 
     /// Shared logins the hook is installed into. An unshared default is
@@ -542,6 +269,7 @@ impl ClaudeSessionHookSettings {
     /// (`.relay-desktop-backup`). A file that already holds the hook is
     /// never the person's own copy.
     fn write(&self, path: &Path, value: &Value) -> Result<(), String> {
+        self.claude.check_write_target(path)?;
         let path = resolve_symlinks(path);
         let existing = match std::fs::read(&path) {
             Ok(bytes) => Some(bytes),
@@ -688,10 +416,13 @@ impl ClaudeSessionHookSettings {
     /// Turning the hook on with nowhere shared to put it does not remove
     /// leftovers. An unshared file that cannot be read is skipped, so it
     /// cannot block the shared logins.
-    fn edit(&self, enable: bool) -> Result<(), String> {
-        let _edit = claude_settings_edit_lock();
-        let install: std::collections::HashSet<PathBuf> =
-            self.install_targets().into_iter().collect();
+    /// The logins an edit touches: every login holding the hook, plus, when
+    /// turning it on, every shared login (`install`).
+    fn edit_targets(
+        &self,
+        enable: bool,
+        install: &std::collections::HashSet<PathBuf>,
+    ) -> Result<Vec<PathBuf>, String> {
         if enable && install.is_empty() {
             return Err(if self.removal_targets().is_empty() {
                 "No Claude Code login was found, so the hook was not changed.".into()
@@ -701,7 +432,7 @@ impl ClaudeSessionHookSettings {
         }
         let mut targets = self.removal_targets();
         if enable {
-            for path in &install {
+            for path in install {
                 if !targets.contains(path) {
                     targets.push(path.clone());
                 }
@@ -710,8 +441,19 @@ impl ClaudeSessionHookSettings {
         if targets.is_empty() {
             return Err("No Claude Code login was found, so the hook was not changed.".into());
         }
+        Ok(targets)
+    }
+
+    /// Each target's settings after the edit, for the files it changes, and
+    /// the rules Agent Relay will then have added to each.
+    fn plan_edit(
+        &self,
+        enable: bool,
+        install: &std::collections::HashSet<PathBuf>,
+        targets: Vec<PathBuf>,
+        added_before: &permissions::Added,
+    ) -> Result<(Vec<(PathBuf, Value)>, permissions::Added), String> {
         let rules = self.rules();
-        let added_before = self.added();
         let mut added = added_before.clone();
         let mut planned = Vec::new();
         for path in targets {
@@ -739,6 +481,16 @@ impl ClaudeSessionHookSettings {
                 planned.push((path, after));
             }
         }
+        Ok((planned, added))
+    }
+
+    fn edit(&self, enable: bool) -> Result<(), String> {
+        let _edit = claude_settings_edit_lock();
+        let install: std::collections::HashSet<PathBuf> =
+            self.install_targets().into_iter().collect();
+        let targets = self.edit_targets(enable, &install)?;
+        let added_before = self.added();
+        let (planned, added) = self.plan_edit(enable, &install, targets, &added_before)?;
         // While the files are written, the record names every rule that may
         // be in them, so none Agent Relay added is ever left unrecorded.
         if added != added_before {
@@ -781,6 +533,7 @@ impl ClaudeSessionHookSettings {
     }
 
     fn restore(&self, path: &Path, previous: &Option<Vec<u8>>) -> Result<(), String> {
+        self.claude.check_write_target(path)?;
         let path = resolve_symlinks(path);
         match previous {
             Some(bytes) => {
@@ -897,6 +650,7 @@ impl SettingsExtension for ClaudeSessionHookSettings {
 mod tests {
     use super::*;
     use crate::relay::claude_dirs::ClaudeDirs;
+    use crate::relay::hosted_mcp::{self, McpAccess};
     use serde_json::json;
     #[cfg(unix)]
     use std::os::unix::fs::{symlink, PermissionsExt};
@@ -912,6 +666,49 @@ mod tests {
             &config,
             ClaudeSessionHookSettings::command_for(Path::new("/Apps/Agent Relay.app/probe"), false),
         )
+    }
+
+    #[test]
+    fn development_hooks_leave_added_normal_login_settings_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let temp_path = std::fs::canonicalize(temp.path()).unwrap();
+        let root = temp_path.join("Agent Relay.dev");
+        let home = root.join("mcp/clients/.claude");
+        let normal = temp_path.join("normal-claude");
+        for dir in [&home, &normal] {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(dir.join(".claude.json"), "{}").unwrap();
+            std::fs::write(dir.join("settings.json"), "{\"sentinel\":true}\n").unwrap();
+        }
+        let dirs = ClaudeDirs::development(&root);
+        dirs.set_added(&[normal.to_string_lossy().into_owned()], &temp_path)
+            .unwrap();
+        let config = ClaudeConfig {
+            home: home.clone(),
+            executable: None,
+            app_sessions: None,
+            dirs,
+        };
+        let hooks = ClaudeSessionHookSettings::new(
+            &config,
+            ClaudeSessionHookSettings::command_for(Path::new("/private/dev/probe"), true),
+        );
+        assert_eq!(hooks.install_targets(), vec![home.join("settings.json")]);
+        assert_eq!(hooks.removal_targets(), vec![home.join("settings.json")]);
+        hooks.edit(true).unwrap();
+        assert!(hooks.hook_enabled());
+        hooks.refresh();
+        hooks.edit(false).unwrap();
+        assert!(!hooks.hook_enabled());
+        assert!(hooks
+            .write(&normal.join("settings.json"), &json!({}))
+            .is_err());
+        assert!(hooks.restore(&normal.join("settings.json"), &None).is_err());
+        assert_eq!(
+            std::fs::read(normal.join("settings.json")).unwrap(),
+            b"{\"sentinel\":true}\n"
+        );
+        assert!(!normal.join("settings.json.relay-desktop-backup").exists());
     }
 
     fn open(on_relay: bool) -> StatusRead {
@@ -1548,6 +1345,7 @@ mod tests {
             executable: None,
             app_sessions: None,
             dirs: ClaudeDirs {
+                private_root: None,
                 environment: Vec::new(),
                 file: Some(record.clone()),
             },
@@ -1600,6 +1398,7 @@ mod tests {
             executable: None,
             app_sessions: None,
             dirs: ClaudeDirs {
+                private_root: None,
                 environment: Vec::new(),
                 file: Some(record.clone()),
             },
@@ -1644,6 +1443,7 @@ mod tests {
             executable: None,
             app_sessions: None,
             dirs: ClaudeDirs {
+                private_root: None,
                 environment: Vec::new(),
                 file: Some(record.clone()),
             },

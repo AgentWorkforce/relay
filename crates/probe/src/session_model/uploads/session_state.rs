@@ -17,8 +17,13 @@ pub(super) fn stopped(status: &UploaderStatus) -> bool {
 /// failure is fixed by signing in, not by retrying.
 pub(super) fn can_retry(status: &UploaderStatus) -> bool {
     let sign_in = Some(DeliveryFailureCode::AuthenticationRequired);
+    // A lasting transient failure, or an older ai-hist uploader's hold: both
+    // wait out a backoff that Retry ends at once. As on the Mac.
     let transient = status.stage == Stage::NeedsAttention
-        && status.delivery.failure_code == Some(DeliveryFailureCode::Transient);
+        && matches!(
+            status.delivery.failure_code,
+            Some(DeliveryFailureCode::Transient | DeliveryFailureCode::LegacyUploaderActive)
+        );
     (stopped(status) && status.delivery.failure_code != sign_in) || transient
 }
 

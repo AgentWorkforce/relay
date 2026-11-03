@@ -428,10 +428,7 @@ struct Backfill {
 const INCOMING_EDGES: i64 = 1;
 
 fn child(record: &HistoryExportRecord) -> Option<&str> {
-    record
-        .payload
-        .get("child_session_id")
-        .and_then(|value| value.as_str())
+    record.payload.get("child_session_id")?.as_str()
 }
 
 /// Which path of a session job sends a relationship.

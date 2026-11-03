@@ -2337,6 +2337,75 @@ mod tests {
         (router, elapsed)
     }
 
+    // A terminal Codex started in plain tmux,
+    // never spawned by the desktop, joined and got DMs mid-turn through its
+    // queue. After a core restart, an idle DM went straight in instead of
+    // waiting "behind an earlier relay message" for each one it already had.
+    #[test]
+    fn an_external_terminal_gets_a_dm_while_idle_after_a_restart() {
+        let _flag = compact::FLAG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        compact::set_enabled(true);
+        let (fake, router) = daemon_terminal();
+        let steered = |n: usize| {
+            let id = format!("steered-{n}");
+            let text = format!(
+                "[via Agent Relay — from @lead to @codex-worker · message {id} · ref {}]\\n\\ngo",
+                MessageRef::of(&id)
+            );
+            [
+                format!(
+                    r#"{{"type":"response_item","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":"{text}"}}]}}}}"#
+                ),
+                format!(
+                    r#"{{"type":"event_msg","payload":{{"type":"item_completed","turn_id":"turn-{n}","item":{{"type":"UserMessage","content":[{{"type":"text","text":"{text}"}}]}}}}}}"#
+                ),
+            ]
+        };
+        let mut lines = Vec::new();
+        for n in 0..3 {
+            lines.push(format!(
+                r#"{{"type":"event_msg","payload":{{"type":"task_started","turn_id":"turn-{n}"}}}}"#
+            ));
+            lines.push(format!(r#"{{"type":"event_msg","payload":{{"type":"item_completed","turn_id":"turn-{n}","item":{{"type":"UserMessage","content":[{{"type":"text","text":"work"}}]}}}}}}"#));
+            lines.push(format!(r#"{{"type":"event_msg","payload":{{"type":"item_completed","turn_id":"turn-{n}","item":{{"type":"AgentMessage"}}}}}}"#));
+            lines.extend(steered(n));
+            lines.push(format!(r#"{{"type":"event_msg","payload":{{"type":"task_complete","turn_id":"turn-{n}"}}}}"#));
+        }
+        let summary = rollout::RolloutSummary::parse(lines.join("\n").as_bytes());
+        assert!(summary.is_idle());
+        *fake.hidden_refs.lock().unwrap() = summary.hidden_refs;
+        let text = "[via Agent Relay — from @ms-lead · ref 0123456789ab]\n\nping";
+        assert_eq!(
+            router.inject_with(THREAD, "after-restart", text, &pointer),
+            InjectOutcome::Delivered
+        );
+        assert_eq!(fake.app_sends.load(Ordering::SeqCst), 1);
+    }
+
+    // After a restart with a large backlog in the transcript (112 in one
+    // session), the queue read says none of it is pending: every new DM
+    // goes in at once, each exactly once, with no two-minute wait per entry.
+    #[test]
+    fn a_restart_with_a_big_backlog_drains_at_once_without_duplicates() {
+        let _flag = compact::FLAG_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        compact::set_enabled(true);
+        let (fake, router) = daemon_terminal();
+        *fake.hidden_refs.lock().unwrap() = (0..120)
+            .map(|n| MessageRef::of(&format!("old-{n}")))
+            .collect();
+        let new: Vec<String> = (0..3).map(|n| format!("new-{n}")).collect();
+        router.note_pending(THREAD, "agent", &["agent".into()], Some(&new));
+        let text = "[via Agent Relay — from @ms-lead · ref 0123456789ab]\n\nping";
+        for id in &new {
+            assert_eq!(
+                router.inject_with(THREAD, id, text, &pointer),
+                InjectOutcome::Delivered,
+                "{id}"
+            );
+        }
+        assert_eq!(fake.app_sends.load(Ordering::SeqCst), new.len());
+    }
+
     // Bugbot on #515: after a restart the router's memory is empty, but the
     // rollout still shows an earlier hidden message waiting for its turn; a
     // later message waits behind it. One nobody offers again stops blocking.

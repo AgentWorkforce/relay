@@ -18,6 +18,31 @@ pub const TRANSIENT_BACKOFF_CEILING_MS: i64 = 5 * 60 * 1_000;
 /// growing to an hour. A receiver `Retry-After` replaces this backoff.
 pub const RATE_LIMITED_BACKOFF_CEILING_MS: i64 = 60 * 60 * 1_000;
 
+/// Which failures wait out a backoff rather than block the job, and the
+/// code each is stored and reported as.
+impl DeliveryFailure {
+    pub(crate) fn retryable(self) -> bool {
+        matches!(
+            self,
+            Self::Transient | Self::RateLimited | Self::LegacyUploaderActive
+        )
+    }
+    pub(super) fn code(self) -> &'static str {
+        match self {
+            Self::Transient => "transient",
+            Self::RateLimited => "rate_limited",
+            Self::AuthenticationRequired => "authentication_required",
+            Self::PermissionDenied => "permission_denied",
+            Self::InvalidPayload => "invalid_payload",
+            Self::ReceiverRejected => "receiver_rejected",
+            Self::UnsupportedEvidence => "unsupported_evidence",
+            Self::MappingVersionMismatch => "mapping_version_mismatch",
+            Self::DeliveryConflict => "delivery_conflict",
+            Self::LegacyUploaderActive => "legacy_uploader_active",
+        }
+    }
+}
+
 /// The wait before the next attempt after `attempts` consecutive claims:
 /// 1 s doubled per attempt up to the failure's ceiling, plus up to a fifth
 /// of jitter, seeded by the batch so concurrent computers spread out.
@@ -73,9 +98,15 @@ pub fn retry_requested(conn: &Connection, job_id: &str, now_ms: i64) -> Result<b
         .optional()?
         .context("delivery job not found")?;
     let receiver_directed = receiver_retry_after_ms == next_attempt_ms;
+    // An older uploader's hold is woken too: the person has just removed it.
     let wakes = !receiver_directed
         && match failure.as_deref() {
-            Some(code) if code == DeliveryFailure::Transient.code() => next_attempt_ms > now_ms,
+            Some(code)
+                if code == DeliveryFailure::Transient.code()
+                    || code == DeliveryFailure::LegacyUploaderActive.code() =>
+            {
+                next_attempt_ms > now_ms
+            }
             Some(code) if code == DeliveryFailure::RateLimited.code() => {
                 next_attempt_ms > now_ms.saturating_add(TRANSIENT_BACKOFF_CEILING_MS)
             }
@@ -124,6 +155,10 @@ pub fn retry_job(conn: &Connection, job_id: &str) -> Result<DeliveryStatus> {
     status(conn, job_id)
 }
 
+/// Recorded among a job's builds once a `permission_denied` block from
+/// before the older-uploader check was retried (`retry_job_for_build`).
+const LEGACY_PERMISSION_RETRY: &str = "legacy-permission-denied-retry";
+
 /// Retry a blocked verdict once per build, atomically recording the build with
 /// the job transition. History retains every build, including after rollbacks.
 /// A legacy file marker may be imported only when it explicitly names this job.
@@ -155,7 +190,26 @@ pub fn retry_job_for_build(
         "INSERT OR IGNORE INTO delivery_job_builds(job_id,build) VALUES (?,?)",
         params![job_id, build],
     )? == 1;
-    if first_run && current.state == "blocked" {
+    // Earlier builds blocked a job as `permission_denied` when one
+    // `launchctl` or `crontab` read failed: the older-uploader check, which
+    // is now retried. Nothing stored tells that apart from an account
+    // mismatch or a server 403, so such a job is retried at a new build's
+    // first start and once more at a later start, recorded with
+    // `LEGACY_PERMISSION_RETRY` among its builds; a refusal that stands after
+    // that stays blocked until a new build.
+    let failure: Option<String> = tx.query_row(
+        "SELECT failure FROM delivery_jobs WHERE id=?",
+        [job_id],
+        |row| row.get(0),
+    )?;
+    let refused = !first_run
+        && current.state == "blocked"
+        && failure.as_deref() == Some(DeliveryFailure::PermissionDenied.code())
+        && tx.execute(
+            "INSERT OR IGNORE INTO delivery_job_builds(job_id,build) VALUES (?,?)",
+            params![job_id, LEGACY_PERMISSION_RETRY],
+        )? == 1;
+    if (first_run || refused) && current.state == "blocked" {
         reset_job_retry(&tx, job_id)?;
     }
     clamp_in(&tx, job_id, chrono::Utc::now().timestamp_millis())?;

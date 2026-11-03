@@ -1,8 +1,23 @@
 // The private core authenticates the mobile sender and the native Claude PID. No peer
 // inbox content, sender label, or model instruction can create a native turn.
-// Native HTTP opens the socket from Claude itself, never a tool subprocess.
+// Native HTTP opens the socket from Claude itself, never a tool subprocess. The
+// one helper process, the doorbell's curl, only learns that something waits.
 const PREFIX = "/claude/mobile-handoff/";
+// Without a doorbell (curl missing), the plugin falls back to asking on a
+// timer, as plugins before the doorbell did.
 const PERIOD_MS = 2000;
+// Reconnecting a closed doorbell: the core restarting, or refusing a
+// session it cannot identify yet.
+const RECONNECT_MS = [1000, 2000, 5000, 15000, 30000, 60000];
+// Claude marks its session idle a moment after a turn completes; a message
+// queued while it worked is collected on these retries, then on the next
+// turn's completion or ring.
+const IDLE_RETRY_MS = [250, 750, 2000, 5000, 15000, 30000];
+// A poll or an answer that failed (the core restarting, the owner lookup
+// briefly unavailable) is retried on these delays, the last repeating while
+// answers remain; nothing is retried while nothing failed. A queued message
+// the plugin still misses is rung again by the core while Claude is idle.
+const FAILURE_RETRY_MS = [1000, 2000, 5000, 15000, 30000, 60000];
 const MAX_RESULTS = 32;
 const PERMISSION_WAIT_MS = 300000;
 // UTF-16 code units use at most three UTF-8 bytes each; keep the payload
@@ -22,6 +37,18 @@ function absolute(path) {
 
 let bridge;
 let polling = false;
+let again = false;
+let running = Promise.resolve();
+let waiting = false;
+let pending = false;
+let pollFailures = 0;
+let pollRetry;
+let resultFailures = 0;
+let resultRetry;
+let retry;
+let doorbell = 0;
+let child;
+let watched;
 let sending = false;
 let confirming = false;
 let session;
@@ -34,7 +61,7 @@ let controlToken;
 let turnTokens = new Map();
 let permissionSequence = 0;
 
-async function request($, route, body) {
+async function configured($) {
   if (!bridge) {
     const config = JSON.parse(await $.fs.read(`${$.plugin.root}/bridge.json`));
     if (!absolute(config.socket)) {
@@ -42,6 +69,11 @@ async function request($, route, body) {
     }
     bridge = config;
   }
+  return bridge;
+}
+
+async function request($, route, body) {
+  if (!bridge) await configured($);
   const response = await $.http.fetch("http://relay" + PREFIX + route, {
     socketPath: bridge.socket, method: "POST",
     headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -73,13 +105,55 @@ async function flush($) {
   } finally {
     sending = false;
   }
+  if (!results.length) {
+    resultFailures = 0;
+  } else if (!confirming && !resultRetry) {
+    const delay = FAILURE_RETRY_MS[Math.min(resultFailures++, FAILURE_RETRY_MS.length - 1)];
+    resultRetry = $.clock.after(delay, () => {
+      resultRetry = undefined;
+      void flush($);
+    });
+  }
+}
+
+// Collects the next message, if any. A ring arriving mid-collection runs
+// one more collection after it, so none is lost.
+function collect($) {
+  if (polling) {
+    again = true;
+    return running;
+  }
+  polling = true;
+  running = collecting($);
+  return running;
+}
+
+async function collecting($) {
+  let failed = false;
+  try {
+    do {
+      again = false;
+      failed = (await tick($)) === "failed";
+    } while (again);
+  } finally {
+    polling = false;
+  }
+  if (pollRetry) pollRetry.cancel();
+  pollRetry = undefined;
+  if (!failed) {
+    pollFailures = 0;
+  } else if (pollFailures < FAILURE_RETRY_MS.length) {
+    pollRetry = $.clock.after(FAILURE_RETRY_MS[pollFailures++], () => {
+      pollRetry = undefined;
+      void collect($);
+    });
+  }
 }
 
 async function tick($) {
-  if (polling) return;
-  polling = true;
   try {
     const current = await $.session.id();
+    if (watched !== undefined && watched !== current) listen($);
     if (session !== current) {
       session = current;
       attempted.clear();
@@ -94,7 +168,17 @@ async function tick($) {
     // A delayed answer must not prevent polling for the next user turn.
     await flush($);
     const version = await $.session.version();
-    const action = await request($, "poll", { version: version.version });
+    let action;
+    try {
+      action = await request($, "poll", { version: version.version });
+    } catch {
+      pending = true;
+      return "failed";
+    }
+    waiting = action.waiting === true;
+    // A message handed over may have others queued behind it; only a poll
+    // with nothing at all says the queue is empty.
+    pending = waiting || Boolean(action.action);
     if (!action.action || !action.lease_id || attempted.has(action.lease_id)) return;
     if (await $.session.id() !== current) return;
     if (action.action !== "submit" || typeof action.control_token !== "string" || !action.control_token) return;
@@ -116,6 +200,8 @@ async function tick($) {
       if (admitted?.drop !== undefined) {
         const at = submitted.findIndex((item) => item.lease === action.lease_id);
         if (at >= 0) submitted.splice(at, 1);
+        // Claude stays idle, so the next queued message may go now.
+        again = true;
       } else if (forward) {
         controlToken = action.control_token;
       }
@@ -130,14 +216,90 @@ async function tick($) {
   } catch {
     // A lost response might follow an accepted native prompt. Never replay
     // it. The durable core journal surfaces uncertainty to the owner.
-  } finally {
-    polling = false;
   }
+}
+
+// After a turn, collects what was queued while Claude worked, retrying
+// briefly until Claude reports itself idle.
+function collectWhenIdle($, attempt = 0) {
+  if (retry) retry.cancel();
+  retry = undefined;
+  void collect($).then(() => {
+    if (!waiting || attempt >= IDLE_RETRY_MS.length) return;
+    retry = $.clock.after(IDLE_RETRY_MS[attempt], () => collectWhenIdle($, attempt + 1));
+  });
+}
+
+// The doorbell: a helper process holds a response from the core open, and
+// the core adds a line whenever this session has a message to collect. The
+// line carries nothing; the message comes over `poll`, from Claude itself.
+// Each call replaces the previous helper (session start, /clear, resume).
+function listen($) {
+  const generation = ++doorbell;
+  if (child) void child.return();
+  child = undefined;
+  if (timer) timer.cancel();
+  timer = undefined;
+  void (async () => {
+    let failures = 0;
+    while (generation === doorbell) {
+      let spawned = false;
+      let started = false;
+      try {
+        const { socket } = await configured($);
+        watched = await $.session.id();
+        const stream = $.process.spawn({
+          argv: ["curl", "-sSfN", "--unix-socket", socket, "http://relay" + PREFIX + "watch"],
+        });
+        child = stream;
+        spawned = true;
+        let line = "";
+        for await (const { stream: from, text } of stream) {
+          started = true;
+          if (generation !== doorbell) break;
+          if (from !== "stdout") continue;
+          line += text;
+          let end;
+          while ((end = line.indexOf("\n")) >= 0) {
+            if (line.slice(0, end).includes('"ring"')) {
+              failures = 0;
+              pending = true;
+              void collect($);
+            }
+            line = line.slice(end + 1);
+          }
+          if (line.length > 4096) line = "";
+        }
+      } catch {
+        // A helper that never started (no curl) cannot ring; ask on a timer.
+        // An unreadable bridge file leaves nothing to ask; reconnecting
+        // retries it.
+        if (spawned && !started && generation === doorbell) {
+          timer = $.clock.every(PERIOD_MS, () => collect($));
+          return;
+        }
+      }
+      if (generation !== doorbell) return;
+      await $.clock.sleep(RECONNECT_MS[Math.min(failures++, RECONNECT_MS.length - 1)]);
+    }
+  })();
 }
 
 export function register(on) {
   bridge = undefined;
   polling = false;
+  again = false;
+  running = Promise.resolve();
+  waiting = false;
+  pending = false;
+  pollFailures = 0;
+  pollRetry = undefined;
+  resultFailures = 0;
+  resultRetry = undefined;
+  retry = undefined;
+  doorbell = 0;
+  child = undefined;
+  watched = undefined;
   sending = false;
   confirming = false;
   session = undefined;
@@ -151,8 +313,15 @@ export function register(on) {
   permissionSequence = 0;
   on("session.start", async ($, event, next) => {
     const result = await next(event);
-    if (timer) timer.cancel();
-    timer = $.clock.every(PERIOD_MS, () => tick($));
+    listen($);
+    return result;
+  });
+
+  // /clear and resume end one session and continue in another: listen for
+  // the new one once it exists. The hook itself must stay fast.
+  on("session.end", async ($, event, next) => {
+    const result = await next(event);
+    $.clock.after(1000, () => listen($));
     return result;
   });
 
@@ -198,6 +367,9 @@ export function register(on) {
   on("turn.complete", async ($, event, next) => {
     const result = await next(event);
     if (event.agentId) return result;
+    // A ring's poll may still be running, or may have handed over one of
+    // several messages: ask again whenever anything may be left.
+    if (pending || waiting) collectWhenIdle($);
     if (event.turnId === mobileTurn?.id) mobileTurn = undefined;
     const token = turnTokens.get(event.turnId);
     turnTokens.delete(event.turnId);

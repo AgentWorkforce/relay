@@ -36,17 +36,27 @@ pub struct State {
     pub refresh_tokens: HashMap<String, u32>,
     pub minted: u32,
     pub resolve_status: u16,
+    pub relaycast_url: Option<String>,
+    pub relaycast_key: String,
+    pub relaycast_status: u16,
+    pub mcp_status: u16,
+    pub provider_grants: HashMap<String, Value>,
+    pub provider_grant_status: u16,
+    pub mcp_native_identity: bool,
     /// The browser handoff exchange answers 500.
     pub exchange_fails: bool,
     /// The refresh answers this status, keeping the refresh token, while set.
     pub refresh_status: Option<u16>,
     /// `whoami` refuses every token while set, as for a suspended person.
     pub whoami_refused: bool,
+    /// `/members` refuses every token while set, even a just-renewed one.
+    pub members_refused: bool,
     /// Hold the whoami response until the test permits it.
     pub whoami_gate: Option<Arc<tokio::sync::Notify>>,
     pub whoami_status: Option<u16>,
     pub refresh_gate: Option<Arc<tokio::sync::Notify>>,
     pub whoami_workspace: String,
+    pub whoami_workspace_name: String,
     pub whoami_workspace_count: u64,
     pub desktop_workspaces: Option<Value>,
     pub resolve_gate: Option<Arc<tokio::sync::Notify>>,
@@ -63,13 +73,22 @@ impl Default for State {
             refresh_tokens: HashMap::new(),
             minted: 0,
             resolve_status: 200,
+            relaycast_url: None,
+            relaycast_key: ACCOUNT_KEY.into(),
+            relaycast_status: 200,
+            mcp_status: 200,
+            provider_grants: HashMap::new(),
+            provider_grant_status: 200,
+            mcp_native_identity: true,
             exchange_fails: false,
             refresh_status: None,
             whoami_refused: false,
+            members_refused: false,
             whoami_gate: None,
             whoami_status: None,
             refresh_gate: None,
             whoami_workspace: WORKSPACE.into(),
+            whoami_workspace_name: "Acme".into(),
             whoami_workspace_count: 1,
             desktop_workspaces: None,
             resolve_gate: None,
@@ -285,7 +304,52 @@ fn route(
             }
             (200, json!({}))
         }
+        ("GET", "/v1/workspace") => {
+            let status = if bearer == Some(state.relaycast_key.as_str()) {
+                state.relaycast_status
+            } else {
+                401
+            };
+            if status != 200 {
+                return (
+                    status,
+                    json!({"ok": false, "error": {"code": "unauthorized", "message": "Workspace unavailable"}}),
+                );
+            }
+            (
+                200,
+                json!({"ok": true, "data": {"id": "rw_acme", "name": "Acme", "system_prompt": null,
+                "plan": "free", "created_at": "2026-09-01T00:00:00Z", "metadata": {},
+                "effective_retention": {}, "usage_classification": "unknown"}}),
+            )
+        }
         _ if !authorized => (401, json!({"error": {"message": "Unauthorized"}})),
+        (method, p) if p.starts_with(&format!("/workspaces/{WORKSPACE}/mcp/shared-sessions-tokens")) => {
+            provider_credentials_route(state,method,p,body)
+        }
+        ("POST", "/mcp/shared-sessions") => {
+            if state.mcp_status != 200 {
+                return (state.mcp_status, json!({"error":"MCP unavailable"}));
+            }
+            let result = match body["method"].as_str() {
+                Some("initialize") => {
+                    json!({"protocolVersion":"2025-06-18", "serverInfo":{"name":"hosted-relay", "version":"1"}, "capabilities":{"tools":{}, "experimental": if state.mcp_native_identity { json!({"com.agentrelay/native-session-identity":{"version":1},"com.agentrelay/desktop-provider-credentials":{"version":1}}) } else { json!({}) }}})
+                }
+                Some("tools/list") => {
+                    json!({"tools":[{"name":"search_shared_sessions"}, {"name":"send_relay_message"}]})
+                }
+                _ => {
+                    return (
+                        400,
+                        json!({"error":"Only read-only discovery is supported in this fake"}),
+                    )
+                }
+            };
+            (
+                200,
+                json!({"jsonrpc":"2.0", "id":body["id"], "result":result}),
+            )
+        }
         ("GET", "/auth/whoami") if state.whoami_status.is_some() => {
             (state.whoami_status.unwrap(), json!({"error": "try later"}))
         }
@@ -315,7 +379,7 @@ fn route(
         ("GET", "/auth/whoami") => (
             200,
             json!({"user": {"id": state.whoami_user, "email": "ada@example.com", "name": "Ada"},
-                   "currentWorkspace": {"id": state.whoami_workspace, "name": "Acme"},
+                   "currentWorkspace": {"id": state.whoami_workspace, "name": state.whoami_workspace_name},
                    "workspaceCount": state.whoami_workspace_count,
                    "currentOrganization": {"avatarUrl": "https://example.com/workspace.png"}}),
         ),
@@ -325,9 +389,9 @@ fn route(
             }
             (
                 200,
-                json!({"data": {"relaycastApiKey": ACCOUNT_KEY, "name": "Acme",
-                       "relaycastWorkspaceId": "rw_acme",
-                       "urls": {"relaycastUrl": "https://cast.agentrelay.com"}}}),
+                json!({"data": {"relaycastApiKey": state.relaycast_key, "name": "Acme",
+                       "relaycastWorkspaceId": "rw_acme", "cloudWorkspaceId": WORKSPACE,
+                       "urls": {"relaycastUrl": state.relaycast_url.as_deref().unwrap_or("https://cast.agentrelay.com")}}}),
             )
         }
         ("PUT", p) if p == format!("/workspaces/{WORKSPACE}/messaging/desktop-identities") => {
@@ -342,6 +406,7 @@ fn route(
                 (400, json!({"error": "invalid desktop identities"}))
             }
         }
+        ("GET", "/members") if state.members_refused => (401, json!({"error": "refused"})),
         ("GET", "/members") => (200, json!({"members": []})),
         ("POST", p) if p == format!("/workspaces/{WORKSPACE}/capy/thread-spawns") => (
             200,
@@ -350,4 +415,27 @@ fn route(
         ),
         _ => (404, json!({"error": "no route"})),
     }
+}
+
+fn provider_credentials_route(state:&mut State,method:&str,path:&str,body:&Value)->(u16,Value) {
+    if state.provider_grant_status != 200 {return (state.provider_grant_status,json!({"error":if state.provider_grant_status==403 {"An Agent Relay app login is required."} else {"Unavailable"}}));}
+    if method == "POST" {
+        let id=format!("grant-{}",body["provider"].as_str().unwrap());
+        if let Some(existing)=state.provider_grants.get(&id) {
+            if existing["accessToken"]!=body["accessToken"] {return (409,json!({"error":"Idempotent credential differs"}));}
+        }
+        let value=json!({"id":id,"provider":body["provider"],"workspaceId":WORKSPACE,"accessToken":body["accessToken"],
+            "leaseExpiresAt":agent_relay_probe::relay::cloud_session::iso(agent_relay_probe::relay::state::now_ms()+900_000)});
+        state.provider_grants.insert(id,value.clone());
+        return (200,value);
+    }
+    let id=path.rsplit('/').next().unwrap();
+    if method=="DELETE" {state.provider_grants.remove(id);return (200,json!({}));}
+    if method=="PUT" {
+        if let Some(value)=state.provider_grants.get_mut(id) {
+            value["leaseExpiresAt"]=json!(agent_relay_probe::relay::cloud_session::iso(agent_relay_probe::relay::state::now_ms()+900_000));
+            return (200,value.clone());
+        }
+    }
+    (404,json!({"error":"Not found"}))
 }

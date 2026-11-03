@@ -222,6 +222,40 @@ fn alternative_fields_and_negative_terms_preserve_shared_query_semantics() {
     keys.sort_by(|a, b| a.1.cmp(&b.1));
     assert_eq!(keys.map(|x| x.0), ["é", "b", "aa", "a"]);
 }
+
+#[test]
+fn claude_web_live_rows_keep_their_history_half_and_archive_key() {
+    let id = "cse_019a7SvoqfvBg4Z6zbjanBat";
+    let key = format!("claude:{id}");
+    let mut history = row(1, "History title");
+    let upload = history.upload.as_mut().unwrap();
+    upload.source = "claude".into();
+    upload.session_id = id.into();
+    let web: LocalSession = serde_json::from_value(serde_json::json!({
+        "target":{"kind":"claude-cloud","id":id},"title":"Raw relay title","project":"relay","directory":"/work/relay",
+        "live":true,"running":true,"updated_at_ms":2,"host":"claude-web","registration":null,"suggested_name":"web"
+    }))
+    .unwrap();
+    let mut index = Index::new().unwrap();
+    index.put(history).unwrap();
+    let mut presentation = crate::relay::contract::account::SessionQueryPresentation::default();
+    presentation.relay_states.insert(key.clone(), true);
+    index
+        .live(
+            vec![web.clone()],
+            std::sync::Arc::new([key.clone()].into_iter().collect()),
+            presentation,
+        )
+        .unwrap();
+    let joined = index.get(&key).unwrap().unwrap();
+    assert_eq!(joined.upload.as_ref().unwrap().title, "History title");
+    assert_eq!(joined.relay, Some(web));
+    let result = page(&index, &request(""));
+    assert_eq!(result.sessions.len(), 1);
+    assert_eq!(result.sessions[0].session_id, id);
+    assert_eq!(result.archived_keys.unwrap(), [key]);
+}
+
 #[test]
 fn sdk_catalog_changes_repair_one_identity_and_reset_settings_invalidate_without_feed_change() {
     use crate::delivery::{self, DeliveryJobConfig, DeliveryLimits, ExportSelection};

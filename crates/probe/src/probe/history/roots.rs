@@ -117,7 +117,7 @@ mod tests {
     use super::*;
     #[test]
     fn candidate_uses_validated_choices_even_if_settings_change_before_open() {
-        let Some(home) = crate::live::tests::isolated_home("history::roots::tests::candidate_uses_validated_choices_even_if_settings_change_before_open") else { return; };
+        let Some(home) = crate::probe::live::tests::isolated_home("probe::history::roots::tests::candidate_uses_validated_choices_even_if_settings_change_before_open") else { return; };
         let store = open(&home.join("probe/history.db")).unwrap();
         let env = |key: &str| std::env::var(key).ok();
         let dirs = ClaudeDirs::from_env(&env, &home, &relay_home(&env, &home));
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn retained_roots_follow_default_folder_consent_and_retry_bad_settings() {
-        let Some(home) = crate::live::tests::isolated_home("history::roots::tests::retained_roots_follow_default_folder_consent_and_retry_bad_settings") else { return; };
+        let Some(home) = crate::probe::live::tests::isolated_home("probe::history::roots::tests::retained_roots_follow_default_folder_consent_and_retry_bad_settings") else { return; };
         let env = |key: &str| std::env::var(key).ok();
         let dirs = ClaudeDirs::from_env(&env, &home, &relay_home(&env, &home));
         let default = claude_dirs::default_home(&env, &home);
@@ -153,9 +153,9 @@ mod tests {
         assert!(settings.refresh(&mut store).unwrap());
         assert_eq!(store.roots().claude, default);
         let transcript = default.join("projects/p/consent.jsonl");
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &transcript,
-            &crate::live::tests::transcript_line("consent", "one"),
+            &crate::probe::live::tests::transcript_line("consent", "one"),
         );
         sweep_paths_once(
             &store,
@@ -181,9 +181,9 @@ mod tests {
             .unwrap();
         settings.checked = None;
         assert!(settings.refresh(&mut store).unwrap());
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &transcript,
-            &crate::live::tests::transcript_line("consent", "two"),
+            &crate::probe::live::tests::transcript_line("consent", "two"),
         );
         sweep_paths_once(
             &store,

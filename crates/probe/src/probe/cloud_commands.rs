@@ -1,12 +1,12 @@
 //! The `agent-relay cloud …` subcommand surface: argument shapes and
-//! dispatch. `install`'s body stays in `main` with the collector plumbing it
-//! drives; `rotate-key` runs entirely here.
+//! dispatch. `install`'s body is `probe::install`, beside the collector
+//! plumbing it drives; `rotate-key` runs entirely here.
 
-use agent_relay_probe::cloud;
+use crate::cloud;
 use anyhow::Result;
 use clap::{Args, Subcommand};
 
-use crate::{bridge, user_error, validate_id};
+use crate::probe::{bridge, user_error, validate_id};
 
 #[derive(Subcommand)]
 pub enum CloudCommands {
@@ -65,7 +65,7 @@ pub struct RotateKey {
 
 pub fn run(command: CloudCommands) -> Result<()> {
     match command {
-        CloudCommands::Install(options) => crate::install(options),
+        CloudCommands::Install(options) => crate::probe::install(options),
         CloudCommands::RotateKey(options) => rotate_key(options),
     }
 }

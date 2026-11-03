@@ -417,10 +417,65 @@ fn send_cloud_workspace(
 }
 
 #[cfg(feature = "history")]
+/// How recently a Devin Cloud session must have been active to join the
+/// relay by itself, or stay on it as an automatically activated agent:
+/// 24 hours. A cloud session nobody has touched in that long has nobody in
+/// it to talk to, and keeping it on the relay costs a Relaycast node
+/// heartbeat every 15 seconds for as long as the catalog remembers it —
+/// weeks-old rows would otherwise re-register forever. A stale row stays
+/// listed and `live` (the send still reaches it, and posting a message is
+/// how a quiet cloud session resumes), so a person can still add it by
+/// hand; only automatic activation passes it over. Activity is the
+/// catalog's, refreshed by the connector's listing: if that listing fails
+/// for a day, automatic agents leave once and rejoin when it recovers —
+/// a frozen catalog is never taken as proof the sessions are in use. That
+/// trade-off is deliberate: one departure and rejoin per outage costs far
+/// less than trusting an unrefreshed catalog, which is how weeks-old
+/// sessions came to heartbeat forever.
+const JOIN_ACTIVITY_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
+
+#[cfg(feature = "history")]
+/// Whether a row last active at `last_activity_ms` was active within
+/// [`JOIN_ACTIVITY_WINDOW_MS`] of `now_ms`. The time is the provider's and
+/// `now_ms` this computer's, so a time up to one window ahead (a local
+/// clock running slow) still counts — rejecting it would take every
+/// automatic cloud agent off the relay whenever the clock lags. A row with
+/// no activity time, or one dated further ahead (a wrong unit, a clock far
+/// off), proves nothing and is not recent.
+fn recently_active(last_activity_ms: Option<i64>, now_ms: i64) -> bool {
+    last_activity_ms.is_some_and(|at| {
+        (-JOIN_ACTIVITY_WINDOW_MS..=JOIN_ACTIVITY_WINDOW_MS).contains(&now_ms.saturating_sub(at))
+    })
+}
+
+#[cfg(feature = "history")]
+/// `last_activity_ms` unless it is dated beyond one window ahead of
+/// `now_ms` — past the bound [`recently_active`] still reads as clock
+/// skew — so a bogus future date ranks below any credible one when
+/// installs' rows for one session are merged.
+fn credible_activity(last_activity_ms: Option<i64>, now_ms: i64) -> Option<i64> {
+    last_activity_ms.filter(|at| at.saturating_sub(now_ms) <= JOIN_ACTIVITY_WINDOW_MS)
+}
+
+#[cfg(feature = "history")]
+/// Whether a discovered Devin Cloud row may join the relay by itself (and
+/// stay as an automatic agent): it was active within
+/// [`JOIN_ACTIVITY_WINDOW_MS`]. Liveness — a send path — is checked
+/// separately.
+pub fn recent_enough_to_join(session: &DiscoveredSession) -> bool {
+    recently_active(
+        session.updated_at_ms,
+        i64::try_from(now_ms()).unwrap_or(i64::MAX),
+    )
+}
+
+#[cfg(feature = "history")]
 /// Devin Cloud sessions the probe installs' history catalogs know as
 /// remote, as discovered rows. A row is `live` — deliverable, and what
-/// keeps a registration present — while the connector's sign-in resolves;
-/// a `devin` process need not run. The catalogs are the only listing a
+/// keeps a hand-added registration present — while a send path exists
+/// (the connector's sign-in, or the install's workspace credential); a
+/// `devin` process need not run. Automatic activation also needs recent
+/// activity ([`recent_enough_to_join`]). The catalogs are the only listing a
 /// never-local cloud session can have, and their absence (no install yet,
 /// or a database pending upgrade) lists nothing rather than holding local
 /// discovery up on it. Every live install is read — the org's sessions do
@@ -437,13 +492,37 @@ pub fn discover(config: &DevinConfig, probe_root: &Path) -> Vec<DiscoveredSessio
         .collect();
     let mut found: std::collections::BTreeMap<String, DiscoveredSession> =
         std::collections::BTreeMap::new();
+    let now = i64::try_from(now_ms()).unwrap_or(i64::MAX);
     for install in installs {
         // A send path exists per install: this machine's own Devin sign-in
         // covers every row, else the install's own workspace credential —
         // another install's workspace says nothing about these rows.
         let live = connector_live || bindings.get(&install).is_some_and(install_credential_ready);
         for session in remote_sessions(&install.join("history.db"), live) {
-            found.entry(session.target.id.clone()).or_insert(session);
+            // A session several installs know is listed once: live if any
+            // install can send to it (the send tries every binding), from
+            // the row with recent activity, else the latest credible time —
+            // so neither a credential on a staler catalog nor a future-dated
+            // time decides. A bogus time is kept only when no row has a
+            // credible one.
+            match found.entry(session.target.id.clone()) {
+                std::collections::btree_map::Entry::Vacant(slot) => {
+                    slot.insert(session);
+                }
+                std::collections::btree_map::Entry::Occupied(mut slot) => {
+                    let live = session.live || slot.get().live;
+                    let rank = |row: &DiscoveredSession| {
+                        (
+                            recently_active(row.updated_at_ms, now),
+                            credible_activity(row.updated_at_ms, now),
+                        )
+                    };
+                    if rank(&session) > rank(slot.get()) {
+                        slot.insert(session);
+                    }
+                    slot.get_mut().live = live;
+                }
+            }
         }
     }
     found.into_values().collect()
@@ -581,7 +660,7 @@ pub(crate) mod tests {
     /// Env-mutating cases serialize: `RELAYHISTORY_DEVIN_*` and `XDG_*` are
     /// process-global, and a parallel test's values cannot leak between
     /// them. Other modules' env-mutating tests lock this same guard.
-    pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+    pub(crate) use crate::TEST_ENV_LOCK as ENV_LOCK;
 
     pub(crate) struct EnvGuard(Vec<(&'static str, Option<std::ffi::OsString>)>);
 
@@ -719,7 +798,8 @@ pub(crate) mod tests {
                 session_id: session_id.into(),
                 title: Some(title.into()),
                 cwd: Some("/work/repo".into()),
-                last_activity_ms: Some(1_700_000_000_000),
+                // Active a minute ago: recent enough to be live.
+                last_activity_ms: Some(now_ms() as i64 - 60_000),
                 source_stamp: Some("cloud:100:active:aa".into()),
                 ..Default::default()
             },
@@ -751,6 +831,232 @@ pub(crate) mod tests {
         env.set("RELAYHISTORY_DEVIN_API_KEY", "cog_test");
         env.set("RELAYHISTORY_DEVIN_ORG_ID", "org-test");
         assert!(discover(&config, &root)[0].live);
+    }
+
+    /// The same row, last active `age_ms` ago, or with no activity time.
+    fn row_active(session_id: &str, age_ms: Option<i64>) -> ai_hist::SourceObservation {
+        let mut row = remote_row(session_id, "Devin session");
+        row.session.last_activity_ms = age_ms.map(|age| now_ms() as i64 - age);
+        row
+    }
+
+    /// A signed-in machine's cloud row joins the relay by itself only while
+    /// the session was active within the window: a weeks-old row — nobody
+    /// in it to talk to, yet a Relaycast heartbeat every 15 s if it joined —
+    /// and a row with no activity time are passed over. Every row stays
+    /// listed and `live`, since the send still reaches it and a person may
+    /// add it by hand.
+    #[test]
+    fn only_recently_active_rows_are_recent_enough_to_join() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = signed_in_env();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("probe");
+        let recent = "11111111111111111111111111111111";
+        let edge = "22222222222222222222222222222222";
+        let stale = "33333333333333333333333333333333";
+        let six_weeks = "44444444444444444444444444444444";
+        let never = "55555555555555555555555555555555";
+        let far_future = "66666666666666666666666666666666";
+        let slow_clock = "77777777777777777777777777777777";
+        const HOUR: i64 = 60 * 60 * 1000;
+        install_with(
+            &root,
+            "a",
+            vec![
+                row_active(recent, Some(HOUR)),
+                row_active(edge, Some(JOIN_ACTIVITY_WINDOW_MS - HOUR)),
+                row_active(stale, Some(JOIN_ACTIVITY_WINDOW_MS + HOUR)),
+                row_active(six_weeks, Some(42 * 24 * HOUR)),
+                row_active(never, None),
+                row_active(far_future, Some(-30 * 24 * HOUR)),
+                row_active(slow_clock, Some(-HOUR)),
+            ],
+        );
+        let found = discover(&config(temp.path()), &root);
+        assert_eq!(found.len(), 7, "stale rows are still listed");
+        assert!(found.iter().all(|row| row.live), "every row is deliverable");
+        let joins =
+            |id: &str| recent_enough_to_join(found.iter().find(|row| row.target.id == id).unwrap());
+        assert!(joins(recent), "active an hour ago");
+        assert!(joins(edge), "active just inside the window");
+        assert!(!joins(stale), "active just outside the window");
+        assert!(!joins(six_weeks), "untouched for six weeks");
+        assert!(!joins(never), "no activity time");
+        assert!(!joins(far_future), "dated a month ahead");
+        assert!(joins(slow_clock), "an hour ahead: this clock runs slow");
+    }
+
+    /// Recent activity alone is not enough: without a send path a recent
+    /// row is not live.
+    #[test]
+    fn a_recent_row_without_a_send_path_is_not_live() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = unsigned_env();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("probe");
+        install_with(&root, "a", vec![row_active(CLOUD_ID, Some(60_000))]);
+        let found = discover(&config(temp.path()), &root);
+        assert!(!found[0].live);
+        assert!(recent_enough_to_join(&found[0]));
+    }
+
+    /// Two installs knowing one session list it once, from the most
+    /// recently active row, whichever install is read first.
+    #[test]
+    fn a_session_two_installs_know_keeps_the_most_recent_row() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = signed_in_env();
+        for (first, second) in [(Some(60_000), None), (None, Some(60_000))] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("probe");
+            install_with(&root, "a", vec![row_active(CLOUD_ID, first)]);
+            install_with(&root, "b", vec![row_active(CLOUD_ID, second)]);
+            let found = discover(&config(temp.path()), &root);
+            assert_eq!(found.len(), 1);
+            assert!(found[0].live);
+            assert!(recent_enough_to_join(&found[0]));
+        }
+    }
+
+    /// Liveness and recency merge across installs: a session one install
+    /// can send to but whose catalog is stale, and another install lists
+    /// as recently active without a send path, is live and recent — the
+    /// pair auto-joins, whichever install is read first.
+    #[test]
+    fn a_session_merges_liveness_and_recency_across_installs() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut env = EnvGuard::remove(ENVS);
+        env.set("CLOUD_API_ACCESS_TOKEN", "ar-session-token");
+        let site = StubApi::start_with_body(
+            200,
+            r#"{"apiKey":"cog_workspace","orgId":"org-workspace"}"#.into(),
+        );
+        const DAY: i64 = 24 * 60 * 60 * 1000;
+        for (bound, unbound) in [("a", "b"), ("b", "a")] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("probe");
+            bound_install(
+                &root,
+                bound,
+                vec![row_active(CLOUD_ID, Some(3 * DAY))],
+                &site.url(),
+                "ws_test",
+            );
+            install_with(&root, unbound, vec![row_active(CLOUD_ID, Some(60_000))]);
+            let found = discover(&config(temp.path()), &root);
+            assert_eq!(found.len(), 1);
+            assert!(found[0].live, "the bound install can send to it");
+            assert!(
+                recent_enough_to_join(&found[0]),
+                "the other install saw it active a minute ago"
+            );
+        }
+    }
+
+    /// A row dated beyond the window ahead never decides a merged
+    /// session's time while another install has a credible one — even when
+    /// the bogus row is the live install's — so a quiet session is listed
+    /// with its credible, stale time rather than one a month ahead. (The
+    /// catalog keeps the bogus time; once the clock reaches it, that row is
+    /// recent and wins, as any recent row would.)
+    #[test]
+    fn a_future_dated_row_never_outranks_a_credible_one() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut env = EnvGuard::remove(ENVS);
+        env.set("CLOUD_API_ACCESS_TOKEN", "ar-session-token");
+        let site = StubApi::start_with_body(
+            200,
+            r#"{"apiKey":"cog_workspace","orgId":"org-workspace"}"#.into(),
+        );
+        const DAY: i64 = 24 * 60 * 60 * 1000;
+        for (bound, unbound) in [("a", "b"), ("b", "a")] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().join("probe");
+            bound_install(
+                &root,
+                bound,
+                vec![row_active(CLOUD_ID, Some(-30 * DAY))],
+                &site.url(),
+                "ws_test",
+            );
+            install_with(&root, unbound, vec![row_active(CLOUD_ID, Some(3 * DAY))]);
+            let found = discover(&config(temp.path()), &root);
+            assert_eq!(found.len(), 1);
+            assert!(found[0].live, "the bound install can send to it");
+            assert!(!recent_enough_to_join(&found[0]));
+            let at = found[0].updated_at_ms.unwrap();
+            assert!(at < now_ms() as i64, "the credible, past time is kept");
+        }
+    }
+
+    #[test]
+    fn credible_activity_drops_only_times_beyond_the_window_ahead() {
+        let now = 10 * JOIN_ACTIVITY_WINDOW_MS;
+        assert_eq!(credible_activity(Some(0), now), Some(0));
+        let ahead = now + JOIN_ACTIVITY_WINDOW_MS;
+        assert_eq!(credible_activity(Some(ahead), now), Some(ahead));
+        assert_eq!(credible_activity(Some(ahead + 1), now), None);
+        assert_eq!(credible_activity(None, now), None);
+    }
+
+    #[test]
+    fn recently_active_honors_the_window_skew_and_missing_times() {
+        let now = 10 * JOIN_ACTIVITY_WINDOW_MS;
+        assert!(recently_active(Some(now), now));
+        assert!(recently_active(Some(now - JOIN_ACTIVITY_WINDOW_MS), now));
+        assert!(!recently_active(
+            Some(now - JOIN_ACTIVITY_WINDOW_MS - 1),
+            now
+        ));
+        assert!(!recently_active(None, now));
+        // A local clock up to a window slow still counts the provider's
+        // fresh time as recent; a time dated further ahead does not.
+        assert!(recently_active(Some(now + 20 * 60 * 1000), now));
+        assert!(recently_active(Some(now + JOIN_ACTIVITY_WINDOW_MS), now));
+        assert!(!recently_active(
+            Some(now + JOIN_ACTIVITY_WINDOW_MS + 1),
+            now
+        ));
+        assert!(!recently_active(Some(i64::MAX), now));
+    }
+
+    /// A session an automation started (a Devin review) stays listed, and
+    /// is named so automatic activation passes it over.
+    #[test]
+    fn sessions_an_automation_started_are_listed_and_named() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _env = signed_in_env();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("probe");
+        let with_originator = |id: &str, originator: &str| {
+            let mut row = remote_row(id, "Devin session");
+            row.session.originator = Some(originator.into());
+            row
+        };
+        let review = "7b26a9f9201f4d3380a655e33b20e887";
+        let person = "d4005cc839f84411aa3df250a51ce5fa";
+        install_with(
+            &root,
+            "a",
+            vec![
+                with_originator(review, "automation"),
+                with_originator(person, "webapp"),
+                remote_row(CLOUD_ID, "No originator"),
+            ],
+        );
+        let mut found: Vec<String> = discover(&config(temp.path()), &root)
+            .into_iter()
+            .map(|session| session.target.id)
+            .collect();
+        found.sort();
+        let mut expected = vec![CLOUD_ID.to_string(), person.to_string(), review.to_string()];
+        expected.sort();
+        assert_eq!(found, expected);
+        assert_eq!(
+            started_by_automation(&root),
+            std::collections::HashSet::from([review.to_string()])
+        );
     }
 
     /// A machine with no probe root — or only an install nothing marks
@@ -906,9 +1212,6 @@ pub(crate) mod tests {
     #[test]
     fn send_falls_back_to_the_workspace_credential() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _cloud_guard = crate::cloud::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let mut env = EnvGuard::remove(ENVS);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("probe");
@@ -951,9 +1254,6 @@ pub(crate) mod tests {
     #[test]
     fn send_stays_waiting_when_no_workspace_credential_exists() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _cloud_guard = crate::cloud::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let mut env = EnvGuard::remove(ENVS);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("probe");
@@ -1006,9 +1306,6 @@ pub(crate) mod tests {
     #[test]
     fn send_refreshes_an_expired_workspace_credential_once() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _cloud_guard = crate::cloud::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let mut env = EnvGuard::remove(ENVS);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("probe");
@@ -1053,9 +1350,6 @@ pub(crate) mod tests {
     #[test]
     fn discover_marks_remote_rows_live_on_a_workspace_credential() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _cloud_guard = crate::cloud::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let mut env = EnvGuard::remove(ENVS);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("probe");
@@ -1083,9 +1377,6 @@ pub(crate) mod tests {
     #[test]
     fn discover_marks_only_the_connected_install_live() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _cloud_guard = crate::cloud::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let mut env = EnvGuard::remove(ENVS);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("probe");
@@ -1117,9 +1408,6 @@ pub(crate) mod tests {
     #[test]
     fn a_rebound_install_never_serves_the_former_workspaces_key() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _cloud_guard = crate::cloud::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let mut env = EnvGuard::remove(ENVS);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("probe");
@@ -1164,9 +1452,6 @@ pub(crate) mod tests {
     #[test]
     fn a_failed_credential_fetch_is_rate_limited() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _cloud_guard = crate::cloud::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let mut env = EnvGuard::remove(ENVS);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("probe");
@@ -1191,9 +1476,6 @@ pub(crate) mod tests {
     #[test]
     fn send_tries_each_workspace_binding() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _cloud_guard = crate::cloud::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let mut env = EnvGuard::remove(ENVS);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("probe");
@@ -1230,9 +1512,6 @@ pub(crate) mod tests {
     #[test]
     fn send_is_refused_when_no_bound_workspace_owns_the_session() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _cloud_guard = crate::cloud::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
         let mut env = EnvGuard::remove(ENVS);
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("probe");
@@ -1363,6 +1642,11 @@ pub fn discover(
     _probe_root: &std::path::Path,
 ) -> Vec<crate::relay::sessions::DiscoveredSession> {
     Vec::new()
+}
+
+#[cfg(not(feature = "history"))]
+pub fn recent_enough_to_join(_session: &crate::relay::sessions::DiscoveredSession) -> bool {
+    false
 }
 
 #[cfg(not(feature = "history"))]

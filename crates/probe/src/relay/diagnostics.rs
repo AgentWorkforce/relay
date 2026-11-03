@@ -38,7 +38,7 @@ fn directory(home: &Path, data: &Path, macos: bool) -> PathBuf {
 
 /// Keep existing stderr consumers (including journald), and persist only the
 /// explicitly emitted diagnostic after the shared credential redactor runs.
-pub(crate) fn write(arguments: std::fmt::Arguments<'_>) {
+pub fn write(arguments: std::fmt::Arguments<'_>) {
     let message = arguments.to_string();
     let _ = writeln!(io::stderr().lock(), "{message}");
     if let Some(log) = LOG.get() {
@@ -183,6 +183,42 @@ mod tests {
             "connect_unreachable",
             "http_503",
         );
+    }
+
+    #[test]
+    fn uploader_helper_failures_survive_discarded_stderr() {
+        use std::process::{Command, Stdio};
+        let temp = tempfile::tempdir().unwrap();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "relay::diagnostics::tests::emit_uploader_helper_failure",
+            ])
+            .env("AGENT_RELAY_TEST_UPLOADER_LOG_HOME", temp.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let directory = directory(
+            temp.path(),
+            &temp.path().join("data"),
+            cfg!(target_os = "macos"),
+        );
+        let saved = fs::read_to_string(directory.join("core.log")).unwrap();
+        assert!(saved.contains(
+            "relay uploader helper failed command=status cause=exit_1: sign-in unavailable"
+        ));
+    }
+
+    #[test]
+    fn emit_uploader_helper_failure() {
+        let Some(home) = std::env::var_os("AGENT_RELAY_TEST_UPLOADER_LOG_HOME") else {
+            return;
+        };
+        let home = PathBuf::from(home);
+        initialize(&home, &home.join("data"));
+        crate::relay::uploader::log_helper_failure("status", "exit_1: sign-in unavailable");
     }
 
     #[test]

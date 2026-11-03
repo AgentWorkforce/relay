@@ -10,16 +10,22 @@
 //! kernel's process and handle tables plus each process's PEB on Windows
 //! (`process/windows.rs`).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
+mod command_line;
+mod fake;
 #[cfg(any(target_os = "macos", test))]
 mod macos_args;
 #[cfg(all(target_os = "macos", test))]
 mod macos_args_bench;
 #[cfg(target_os = "macos")]
 mod macos_signing;
+mod snapshot;
+pub use command_line::CommandLine;
+pub use fake::{FakeProcess, FakeProcesses};
+pub use snapshot::ProcessSnapshot;
 #[cfg(any(target_os = "macos", test))]
 mod signature_cache;
 
@@ -97,13 +103,19 @@ pub trait ProcessTable: Send + Sync {
     fn is_trusted_cursor(&self, _executable: &Path) -> bool {
         false
     }
-    fn arguments(&self, pid: i32) -> Vec<String>;
+    /// The process's arguments and environment, from one read of it.
+    fn command_line(&self, pid: i32) -> CommandLine;
+    fn arguments(&self, pid: i32) -> Vec<String> {
+        self.command_line(pid).arguments
+    }
     /// One variable of the process's environment.
-    fn environment_var(&self, pid: i32, key: &str) -> Option<String>;
+    fn environment_var(&self, pid: i32, key: &str) -> Option<String> {
+        self.command_line(pid).var(key)
+    }
     /// Whether the kernel let this user read the process's environment, so
     /// an absent `environment_var` means absent rather than unreadable.
-    fn environment_readable(&self, _pid: i32) -> bool {
-        false
+    fn environment_readable(&self, pid: i32) -> bool {
+        self.command_line(pid).environment.is_some()
     }
     /// The paths of the files the process has open.
     fn open_files(&self, pid: i32) -> Vec<PathBuf>;
@@ -875,6 +887,20 @@ mod macos {
             self.cursor_signatures.trusted_cursor(executable)
         }
 
+        fn command_line(&self, pid: i32) -> CommandLine {
+            let Some(buffer) = procargs(pid) else {
+                return CommandLine::default();
+            };
+            let (arguments, environment) = super::macos_args::decode(&buffer, true);
+            // A failed `KERN_PROCARGS2` read yields no arguments at all; a
+            // successful one always has argv[0].
+            let readable = !arguments.is_empty();
+            CommandLine {
+                arguments,
+                environment: readable.then_some(environment),
+            }
+        }
+
         fn arguments(&self, pid: i32) -> Vec<String> {
             procargs(pid)
                 .map(|buffer| super::macos_args::decode(&buffer, false).0)
@@ -882,8 +908,6 @@ mod macos {
         }
 
         fn environment_readable(&self, pid: i32) -> bool {
-            // A failed `KERN_PROCARGS2` read yields no arguments at all; a
-            // successful one always has argv[0].
             !self.arguments(pid).is_empty()
         }
 
@@ -1060,11 +1084,8 @@ impl ProcessTable for SystemProcesses {
     fn is_trusted_codex(&self, _: &Path) -> bool {
         false
     }
-    fn arguments(&self, _: i32) -> Vec<String> {
-        Vec::new()
-    }
-    fn environment_var(&self, _: i32, _: &str) -> Option<String> {
-        None
+    fn command_line(&self, _: i32) -> CommandLine {
+        CommandLine::default()
     }
     fn open_files(&self, _: i32) -> Vec<PathBuf> {
         Vec::new()
@@ -1077,146 +1098,6 @@ impl ProcessTable for SystemProcesses {
     }
     fn start_clock(&self) -> StartClock {
         StartClock::Ticks
-    }
-}
-
-/// A process in a `FakeProcesses` table.
-#[derive(Clone, Debug, Default)]
-pub struct FakeProcess {
-    pub parent: i32,
-    pub uid: u32,
-    pub start: u64,
-    pub executable: Option<PathBuf>,
-    pub arguments: Vec<String>,
-    pub environment: HashMap<String, String>,
-    pub open_files: Vec<PathBuf>,
-    /// When set, the held-inode data `opened_files` reports for those paths
-    /// instead of statting them — a descriptor whose inode a later replace
-    /// swapped still lists its old birth here.
-    pub opened_files: Option<Vec<OpenedFile>>,
-    pub cwd: Option<PathBuf>,
-    pub tcp_listeners: Vec<(String, u16)>,
-    pub has_terminal: bool,
-    /// Exited but not reaped.
-    pub zombie: bool,
-}
-
-/// A process table the tests write, so no test starts a real session.
-/// Executables in `trusted_codex` count as trusted Codex, those in
-/// `trusted_cursor` as Cursor's own.
-#[derive(Default)]
-pub struct FakeProcesses {
-    pub processes: std::sync::Mutex<HashMap<i32, FakeProcess>>,
-    pub trusted_codex: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
-    pub trusted_cursor: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
-    pub clock: Option<StartClock>,
-    /// Processes whose environment the kernel would not let this user read.
-    pub unreadable_environment: std::sync::Mutex<std::collections::HashSet<i32>>,
-}
-
-impl FakeProcesses {
-    pub fn insert(&self, pid: i32, process: FakeProcess) {
-        self.processes.lock().unwrap().insert(pid, process);
-    }
-
-    pub fn remove(&self, pid: i32) {
-        self.processes.lock().unwrap().remove(&pid);
-    }
-
-    pub fn trust(&self, executable: impl Into<PathBuf>) {
-        self.trusted_codex.lock().unwrap().insert(executable.into());
-    }
-
-    pub fn trust_cursor(&self, executable: impl Into<PathBuf>) {
-        self.trusted_cursor
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .insert(executable.into());
-    }
-
-    fn with<T>(&self, pid: i32, read: impl FnOnce(&FakeProcess) -> T) -> Option<T> {
-        self.processes.lock().unwrap().get(&pid).map(read)
-    }
-}
-
-impl ProcessTable for FakeProcesses {
-    fn zombie(&self, pid: i32) -> bool {
-        self.with(pid, |p| p.zombie).unwrap_or(false)
-    }
-
-    fn process(&self, pid: i32) -> Option<ProcessInfo> {
-        self.with(pid, |p| ProcessInfo {
-            pid,
-            parent: p.parent,
-            uid: p.uid,
-            start: p.start,
-        })
-    }
-    fn all_pids(&self) -> Vec<i32> {
-        let mut pids: Vec<i32> = self.processes.lock().unwrap().keys().copied().collect();
-        pids.sort_unstable();
-        pids
-    }
-    fn executable(&self, pid: i32) -> Option<PathBuf> {
-        self.with(pid, |p| p.executable.clone()).flatten()
-    }
-    fn is_trusted_codex(&self, executable: &Path) -> bool {
-        executable.file_name().is_some_and(|name| name == "codex")
-            && self.trusted_codex.lock().unwrap().contains(executable)
-    }
-    fn is_trusted_cursor(&self, executable: &Path) -> bool {
-        self.trusted_cursor
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .contains(executable)
-    }
-    fn arguments(&self, pid: i32) -> Vec<String> {
-        self.with(pid, |p| p.arguments.clone()).unwrap_or_default()
-    }
-    fn environment_var(&self, pid: i32, key: &str) -> Option<String> {
-        if !self.environment_readable(pid) {
-            return None;
-        }
-        self.with(pid, |p| p.environment.get(key).cloned())
-            .flatten()
-    }
-    fn environment_readable(&self, pid: i32) -> bool {
-        self.with(pid, |_| ()).is_some()
-            && !self.unreadable_environment.lock().unwrap().contains(&pid)
-    }
-    fn open_files(&self, pid: i32) -> Vec<PathBuf> {
-        self.with(pid, |p| p.open_files.clone()).unwrap_or_default()
-    }
-    fn opened_files(&self, pid: i32) -> Vec<OpenedFile> {
-        self.with(pid, |p| p.opened_files.clone())
-            .flatten()
-            .unwrap_or_else(|| {
-                self.open_files(pid)
-                    .into_iter()
-                    .map(|path| OpenedFile {
-                        birth_ns: file_birth_ns(&path),
-                        path,
-                    })
-                    .collect()
-            })
-    }
-    fn cwd(&self, pid: i32) -> Option<PathBuf> {
-        self.with(pid, |p| p.cwd.clone()).flatten()
-    }
-    fn owns_tcp_listener(&self, pid: i32, host: &str, port: u16) -> bool {
-        self.with(pid, |process| {
-            process
-                .tcp_listeners
-                .iter()
-                .any(|listener| listener == &(host.to_string(), port))
-        })
-        .unwrap_or(false)
-    }
-    fn has_terminal(&self, pid: i32) -> bool {
-        self.with(pid, |p| p.has_terminal).unwrap_or(false)
-    }
-    fn start_clock(&self) -> StartClock {
-        self.clock.unwrap_or(StartClock::Ticks)
     }
 }
 

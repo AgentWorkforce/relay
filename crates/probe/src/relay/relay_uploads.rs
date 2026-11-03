@@ -1,17 +1,22 @@
-//! Sessions on the relay are uploaded.
+//! Sessions a person puts on the relay are uploaded.
 //!
-//! Every registered session the uploader lists but does not upload yet is
-//! included, once: a session whose inclusion was refused, or that someone
+//! Every registered session the uploader holds but does not upload yet is
+//! included unless Agent Relay put it on the relay by itself: an
+//! automatically activated session follows the sharing policy, and is
+//! activated only when that policy shares it ([`admitted`]). The rest are
+//! included once: a session whose inclusion was refused, or that someone
 //! stopped uploading afterwards, is not asked for again until it leaves the
 //! relay and returns. Checked whenever the agents change and on every
 //! uploader supervision tick. With sharing `all` everything uploads already;
 //! an install a newer probe runs is left alone.
 
+use crate::delivery_status::{Inclusion, SessionIdentity};
 use crate::relay::daemon::Core;
 use crate::relay::state::Listing;
-use crate::relay::uploader::{Target, Uploader};
-use serde_json::Value;
-use std::collections::BTreeSet;
+use crate::relay::store::Target as SessionTarget;
+use crate::relay::uploader::{SharingMode, Target, Uploader};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// What has been asked for, per attached install.
@@ -24,59 +29,238 @@ pub struct RelayUploads {
     shared: Mutex<BTreeSet<String>>,
     /// One pass at a time.
     running: tokio::sync::Mutex<()>,
+    /// The account has looked for this computer's install at least once:
+    /// none attached after that means nothing uploads here.
+    looked: std::sync::atomic::AtomicBool,
 }
 
-/// The registered keys `listed` shares with the workspace: those the
-/// uploader includes, and under sharing `all` every one not excluded by
-/// itself.
-pub fn shared(registered: &BTreeSet<String>, listed: &Value) -> BTreeSet<String> {
-    let all = listed["sharing_mode"].as_str() == Some("all");
-    let mut included = BTreeSet::new();
-    let mut excluded = BTreeSet::new();
-    for session in listed["sessions"].as_array().into_iter().flatten() {
-        let (Some(source), Some(id)) = (session["source"].as_str(), session["session_id"].as_str())
-        else {
-            continue;
-        };
-        let key = format!("{source}:{id}");
-        if session["included"] == Value::Bool(true) {
-            included.insert(key);
-        } else if session["included"] == Value::Bool(false) {
-            excluded.insert(key);
-        }
-    }
+/// What the uploader reads for each registered session, by `source:id` key.
+pub type Read = BTreeMap<String, Inclusion>;
+
+/// The registered keys the install shares with the workspace: those it
+/// uploads. Under sharing `all` that is every one not withheld.
+pub fn shared(registered: &BTreeSet<String>, read: &Read) -> BTreeSet<String> {
     registered
         .iter()
-        .filter(|key| included.contains(*key) || (all && !excluded.contains(*key)))
+        .filter(|key| read.get(*key).is_some_and(|session| session.included))
         .cloned()
         .collect()
 }
 
-/// The keys to include now: registered, listed, not uploaded, never asked
-/// for while on the relay. `requested` keeps only keys still registered.
+/// The keys to include now: registered, selectable, not uploaded, never
+/// asked for while on the relay. `requested` keeps only keys still
+/// registered.
 pub fn pending(
     registered: &BTreeSet<String>,
-    listed: &Value,
+    mode: SharingMode,
+    read: &Read,
     requested: &mut BTreeSet<String>,
 ) -> Vec<String> {
     requested.retain(|key| registered.contains(key));
-    if listed["sharing_mode"].as_str() == Some("all") {
+    if mode == SharingMode::All {
         return Vec::new();
     }
-    let mut keys = Vec::new();
-    for session in listed["sessions"].as_array().into_iter().flatten() {
-        let (Some(source), Some(id)) = (session["source"].as_str(), session["session_id"].as_str())
-        else {
+    registered
+        .iter()
+        .filter(|key| {
+            read.get(*key)
+                .is_some_and(|session| session.selectable && !session.included)
+                && !requested.contains(*key)
+        })
+        .cloned()
+        .collect()
+}
+
+/// Which sessions the sharing policy lets Agent Relay put on the relay by
+/// itself.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Admission {
+    /// Every one: nothing uploads here, or the install is not this
+    /// computer's to read (another workspace's, a newer build's).
+    All,
+    /// Only these: those the install uploads, and those it never could.
+    Only(HashSet<SessionTarget>),
+    /// Not known this time, and why when it is worth saying: nothing new
+    /// joins and no one leaves until a later pass reads it.
+    Unknown(Option<String>),
+}
+
+impl Admission {
+    pub fn admits(&self, target: &SessionTarget) -> bool {
+        match self {
+            Admission::All => true,
+            Admission::Only(admitted) => admitted.contains(target),
+            Admission::Unknown(_) => false,
+        }
+    }
+}
+
+/// Keeps in `found` only the sessions the sharing policy lets join the
+/// relay by themselves, and returns those still eligible to stay there.
+/// Why the policy could not be read goes on `failures`. An automatically
+/// activated agent `/clear` just `moved` to a conversation the policy does
+/// not upload is told why it leaves, and how to keep it.
+pub async fn admit<T>(
+    core: &Core,
+    found: &mut std::collections::HashMap<SessionTarget, T>,
+    moved: &[SessionTarget],
+    failures: &mut Vec<String>,
+) -> HashSet<SessionTarget> {
+    if found.is_empty() {
+        return HashSet::new();
+    }
+    let admission = admitted(core, found.keys().cloned().collect()).await;
+    let eligible: HashSet<SessionTarget> = match &admission {
+        Admission::Unknown(why) => {
+            failures.extend(why.clone());
+            found.keys().cloned().collect()
+        }
+        _ => found
+            .keys()
+            .filter(|target| admission.admits(target))
+            .cloned()
+            .collect(),
+    };
+    let leaving: Vec<String> = core.store.read(|store| {
+        moved
+            .iter()
+            .filter(|target| !eligible.contains(*target))
+            .filter_map(|target| store.registration_for(target))
+            .filter(|r| r.auto_activated == Some(true))
+            .map(|r| r.display_name().to_owned())
+            .collect()
+    });
+    if !leaving.is_empty() {
+        core.hub.activity(
+            crate::relay::state::Level::Info,
+            format!(
+                "Conversation cleared: @{} joined the relay by itself, and its new conversation is not uploaded, so it leaves the relay in a few minutes. Turn on Upload session for the new conversation to keep it.",
+                leaving.join(", @")
+            ),
+        );
+    }
+    found.retain(|target, _| admission.admits(target));
+    eligible
+}
+
+/// What the sharing policy admits of `targets`: the sessions the install
+/// uploads (under `selected` those a person chose, under `new` those
+/// started after setup, under `all` those not withheld), and those the
+/// uploader never collects, which are not the policy's to hold back.
+pub async fn admitted(core: &Core, targets: Vec<SessionTarget>) -> Admission {
+    let account = core.plugins.account.as_ref();
+    let uploader = account.map(|a| a.uploader());
+    let looked = account.is_some_and(|a| a.looked_for_install());
+    let workspace = core.store.read(|store| {
+        store
+            .cloud
+            .as_ref()
+            .and_then(|cloud| cloud.account_workspace_id.clone())
+    });
+    admitted_by(uploader, looked, workspace, targets).await
+}
+
+async fn admitted_by(
+    uploader: Option<Arc<Uploader>>,
+    looked: bool,
+    workspace: Option<String>,
+    targets: Vec<SessionTarget>,
+) -> Admission {
+    let Some(uploader) = uploader else {
+        return Admission::All;
+    };
+    let (uncollected, collected): (Vec<_>, Vec<_>) = targets
+        .into_iter()
+        .map(|target| (target.upload_key(), target))
+        .partition(|(key, _)| key.is_none());
+    let Some(install) = uploader.install() else {
+        // Before the account first looks, wait for it. After, nothing
+        // uploads here (never connected, disconnected or signed out), so
+        // no session that could upload joins by itself.
+        return if looked {
+            Admission::Only(uncollected.into_iter().map(|(_, target)| target).collect())
+        } else {
+            Admission::Unknown(None)
+        };
+    };
+    // Another workspace's install does not decide this relay. With the
+    // relay's account workspace unknown, the install here still does.
+    if workspace.is_some() && install.target.workspace_id != workspace {
+        return Admission::All;
+    }
+    let Some(directory) = install.directory.map(PathBuf::from) else {
+        return Admission::All;
+    };
+    // A newer build's claim decides only while its process is live.
+    let live = directory.clone();
+    if tokio::task::spawn_blocking(move || crate::delivery_status::newer_build_live(&live))
+        .await
+        .unwrap_or(install.upgrade_required)
+    {
+        return Admission::Unknown(None);
+    }
+    let identities = collected
+        .iter()
+        .filter_map(|(key, _)| {
+            let (source, session_id) = key.as_deref()?.split_once(':')?;
+            Some(SessionIdentity {
+                source: source.into(),
+                session_id: session_id.into(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let reader = match uploader.try_history_reader() {
+        Ok(reader) => reader,
+        // A collector start or a session reset holds history briefly.
+        Err(error) if error.data.kind == crate::relay::protocol::ErrorKind::Busy => {
+            return Admission::Unknown(None)
+        }
+        Err(error) => return Admission::Unknown(Some(unread(&error.message))),
+    };
+    let read = tokio::task::spawn_blocking(move || {
+        crate::delivery_status::inclusion(&directory, &identities)
+    })
+    .await;
+    drop(reader);
+    match read {
+        Ok(Ok((_, read))) if read.len() == collected.len() => Admission::Only(
+            uncollected
+                .into_iter()
+                .map(|(_, target)| target)
+                .chain(
+                    collected
+                        .into_iter()
+                        .zip(read)
+                        .filter(|(_, inclusion)| inclusion.included)
+                        .map(|((_, target), _)| target),
+                )
+                .collect(),
+        ),
+        Ok(Ok(_)) => Admission::Unknown(Some(unread("the read was incomplete"))),
+        Ok(Err(error)) => Admission::Unknown(Some(unread(&error.to_string()))),
+        Err(error) => Admission::Unknown(Some(unread(&error.to_string()))),
+    }
+}
+
+fn unread(why: &str) -> String {
+    format!("Could not read which sessions upload, so no session joins the relay by itself: {why}")
+}
+
+/// The upload keys of `registrations`, and of those a person (or the
+/// session, asked by its person) put on the relay: an automatically
+/// activated one follows the sharing policy instead.
+fn registered_keys<'a>(
+    registrations: impl Iterator<Item = &'a crate::relay::store::Registration>,
+) -> (BTreeSet<String>, BTreeSet<String>) {
+    let mut keys = (BTreeSet::new(), BTreeSet::new());
+    for r in registrations {
+        let Some(key) = r.target.upload_key() else {
             continue;
         };
-        let key = format!("{source}:{id}");
-        if registered.contains(&key)
-            && session["included"] != Value::Bool(true)
-            && !requested.contains(&key)
-            && !keys.contains(&key)
-        {
-            keys.push(key);
+        if r.auto_activated != Some(true) {
+            keys.1.insert(key.clone());
         }
+        keys.0.insert(key);
     }
     keys
 }
@@ -91,8 +275,17 @@ fn belongs_to_upload_workspace(
 }
 
 impl RelayUploads {
+    /// The account looked for this computer's install (`Account::discover`).
+    pub fn looked_for_install(&self) {
+        self.looked.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// The registered sessions shared with the workspace, as `source:id`
     /// keys, when the last pass looked.
+    pub fn has_looked(&self) -> bool {
+        self.looked.load(std::sync::atomic::Ordering::Acquire)
+    }
+
     pub fn shared(&self) -> BTreeSet<String> {
         self.shared
             .lock()
@@ -115,42 +308,40 @@ impl RelayUploads {
             return;
         };
         // A newer build's claim suppresses inclusion only while its process
-        // is live: a claim left behind by an exited collector, or a cached
-        // one from before the runtime record was corrected, must not stop
-        // every pass. Older probes do not report the live flag; their
-        // installs keep the cached one.
-        let upgrade_live = uploader
-            .status()
+        // is live: a claim left behind by an exited collector must not stop
+        // every pass. An install listed without its directory keeps the
+        // cached flag.
+        let directory = install.directory.clone().map(PathBuf::from);
+        let upgrade_live = match directory.clone() {
+            Some(directory) => tokio::task::spawn_blocking(move || {
+                crate::delivery_status::newer_build_live(&directory)
+            })
             .await
-            .ok()
-            .and_then(|status| status["upgrade_required_live"].as_bool())
-            .unwrap_or(install.upgrade_required);
+            .unwrap_or(install.upgrade_required),
+            None => install.upgrade_required,
+        };
         if upgrade_live {
             return;
         }
         let target = install.target;
-        let registered: BTreeSet<String> = core.store.read(|store| {
+        // `chosen`: the registered keys a person put on the relay.
+        let (registered, chosen): (BTreeSet<String>, BTreeSet<String>) = core.store.read(|store| {
             // Registrations outlive sign-out and retain their original key.
             // Only the authenticated upload workspace may auto-include them.
             let Some(cloud) = store.cloud.as_ref().filter(|cloud| {
                 cloud.account_workspace_id.is_some()
                     && cloud.account_workspace_id == target.workspace_id
             }) else {
-                return BTreeSet::new();
+                return Default::default();
             };
-            store
-                .registrations
-                .iter()
-                .filter(|r| {
-                    belongs_to_upload_workspace(
-                        r.workspace_key.as_ref(),
-                        &r.base_url,
-                        &cloud.key,
-                        &cloud.base_url,
-                    )
-                })
-                .filter_map(|r| r.target.upload_key())
-                .collect()
+            registered_keys(store.registrations.iter().filter(|r| {
+                belongs_to_upload_workspace(
+                    r.workspace_key.as_ref(),
+                    &r.base_url,
+                    &cloud.key,
+                    &cloud.base_url,
+                )
+            }))
         });
         {
             let mut requested = self.requested.lock().unwrap();
@@ -166,19 +357,50 @@ impl RelayUploads {
                 return;
             }
         }
-        let Ok(listed) = uploader.sessions_list(Some(LISTED)).await else {
+        let Some(directory) = directory else {
+            return;
+        };
+        // Only the registered sessions are read, in process: a few indexed
+        // lookups, never the listing.
+        let sessions: Vec<(String, SessionIdentity)> = registered
+            .iter()
+            .filter_map(|key| {
+                let (source, session_id) = key.split_once(':')?;
+                Some((
+                    key.clone(),
+                    SessionIdentity {
+                        source: source.into(),
+                        session_id: session_id.into(),
+                    },
+                ))
+            })
+            .collect();
+        let Ok(reader) = uploader.try_history_reader() else {
+            return;
+        };
+        let identities = sessions
+            .iter()
+            .map(|(_, identity)| identity.clone())
+            .collect::<Vec<_>>();
+        let read = tokio::task::spawn_blocking(move || {
+            crate::delivery_status::inclusion(&directory, &identities)
+        })
+        .await;
+        drop(reader);
+        let Ok(Ok((mode, read))) = read else {
             return;
         };
         if uploader.target().as_ref() != Some(&target) {
             return;
         }
-        *self.shared.lock().unwrap_or_else(|e| e.into_inner()) = shared(&registered, &listed);
+        let read: Read = sessions.into_iter().map(|(key, _)| key).zip(read).collect();
+        *self.shared.lock().unwrap_or_else(|e| e.into_inner()) = shared(&registered, &read);
         let keys = {
             let mut requested = self.requested.lock().unwrap();
             if requested.0.as_ref() != Some(&target) {
                 return;
             }
-            let keys = pending(&registered, &listed, &mut requested.1);
+            let keys = pending(&chosen, mode, &read, &mut requested.1);
             requested.1.extend(keys.iter().cloned());
             keys
         };
@@ -206,10 +428,6 @@ impl RelayUploads {
         }
     }
 }
-
-/// Every session the uploader lists, not one page: a registered session
-/// can be older than the latest few hundred.
-const LISTED: usize = 10_000;
 
 /// Runs a pass whenever the agents change, for the daemon's life; the
 /// supervision tick runs the others.
@@ -265,27 +483,39 @@ mod tests {
     }
 
     use super::*;
-    use serde_json::json;
 
     fn keys(values: &[&str]) -> BTreeSet<String> {
         values.iter().map(|v| v.to_string()).collect()
     }
 
-    fn listed(mode: &str, sessions: Value) -> Value {
-        json!({"sharing_mode": mode, "sessions": sessions})
+    fn read(sessions: &[(&str, bool, bool)]) -> Read {
+        sessions
+            .iter()
+            .map(|(key, selectable, included)| {
+                (
+                    key.to_string(),
+                    Inclusion {
+                        selectable: *selectable,
+                        included: *included,
+                    },
+                )
+            })
+            .collect()
     }
 
     #[test]
-    fn includes_registered_sessions_the_uploader_lists_but_does_not_upload() {
-        let registered = keys(&["codex:a", "claude:b", "codex:c"]);
-        let sessions = json!([
-            {"source": "codex", "session_id": "a", "included": false},
-            {"source": "claude", "session_id": "b", "included": true},
-            {"source": "codex", "session_id": "d", "included": false},
+    fn includes_registered_sessions_the_uploader_holds_but_does_not_upload() {
+        let registered = keys(&["codex:a", "claude:b", "codex:c", "codex:e"]);
+        // `codex:c` is not captured yet; `codex:e` is another session's subagent.
+        let sessions = read(&[
+            ("codex:a", true, false),
+            ("claude:b", true, true),
+            ("codex:c", false, false),
+            ("codex:e", false, false),
         ]);
         let mut requested = BTreeSet::new();
         assert_eq!(
-            pending(&registered, &listed("new", sessions), &mut requested),
+            pending(&registered, SharingMode::New, &sessions, &mut requested),
             vec!["codex:a"]
         );
     }
@@ -293,50 +523,171 @@ mod tests {
     #[test]
     fn only_included_registered_sessions_are_shared() {
         let registered = keys(&["codex:a", "claude:b"]);
-        let sessions = json!([
-            {"source": "codex", "session_id": "a", "included": false},
-            {"source": "claude", "session_id": "b", "included": true},
-            {"source": "codex", "session_id": "d", "included": true},
-        ]);
-        assert_eq!(
-            shared(&registered, &listed("selected", sessions.clone())),
-            keys(&["claude:b"])
-        );
-        // Under `all`, a session someone stopped uploading stays private.
-        assert_eq!(
-            shared(&registered, &listed("all", sessions)),
-            keys(&["claude:b"])
-        );
-        assert_eq!(shared(&registered, &listed("all", json!([]))), registered);
+        let sessions = read(&[("codex:a", true, false), ("claude:b", true, true)]);
+        assert_eq!(shared(&registered, &sessions), keys(&["claude:b"]));
+        // Under `all`, a session nobody withheld is included before capture.
+        let uncaptured = read(&[("codex:a", false, true), ("claude:b", false, true)]);
+        assert_eq!(shared(&registered, &uncaptured), registered);
     }
 
     #[test]
     fn asks_once_until_the_session_leaves_the_relay() {
-        let sessions = json!([{"source": "codex", "session_id": "a", "included": false}]);
+        let sessions = read(&[("codex:a", true, false)]);
         let mut requested = keys(&["codex:a"]);
         let on = keys(&["codex:a"]);
-        assert!(pending(&on, &listed("selected", sessions.clone()), &mut requested).is_empty());
+        assert!(pending(&on, SharingMode::Selected, &sessions, &mut requested).is_empty());
         // Off the relay: forgotten, so returning asks again.
         assert!(pending(
             &BTreeSet::new(),
-            &listed("selected", sessions.clone()),
+            SharingMode::Selected,
+            &sessions,
             &mut requested
         )
         .is_empty());
         assert!(requested.is_empty());
         assert_eq!(
-            pending(&on, &listed("selected", sessions), &mut requested),
+            pending(&on, SharingMode::Selected, &sessions, &mut requested),
             vec!["codex:a"]
         );
     }
 
+    #[cfg(feature = "history")]
+    #[tokio::test]
+    async fn the_installs_sharing_decides_which_sessions_join_by_themselves() {
+        use crate::delivery::{self, SessionIdentity};
+        use crate::relay::store::SessionKind;
+        use crate::relay::uploader::{Install, ProcessRunner};
+        let directory = crate::delivery_status::status_tests::install(&[
+            "codex:chosen",
+            "codex:other",
+            "codex:local",
+        ]);
+        let config_path = directory.path().join("config.json");
+        let config = |change: &dyn Fn(&mut serde_json::Value)| {
+            let mut config: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+            change(&mut config);
+            std::fs::write(&config_path, serde_json::to_vec(&config).unwrap()).unwrap();
+        };
+        let identity = |id: &str| SessionIdentity {
+            source: "codex".into(),
+            session_id: id.into(),
+        };
+        let conn = delivery::open_db(&directory.path().join("history.db")).unwrap();
+        let read: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+        let job_id = read["job_id"].as_str().unwrap().to_string();
+        let target = |id: &str| SessionTarget::new(SessionKind::Codex, id);
+        let (chosen, other, local) = (target("chosen"), target("other"), target("local"));
+        let uncollected = SessionTarget::new(SessionKind::OpenClaw, "agent");
+        let targets = vec![
+            chosen.clone(),
+            other.clone(),
+            local.clone(),
+            uncollected.clone(),
+        ];
+        let workspace = Some("workspace".to_string());
+
+        // Nothing uploads here: the policy has nothing to hold back.
+        assert_eq!(
+            admitted_by(None, false, workspace.clone(), targets.clone()).await,
+            Admission::All
+        );
+        let root = tempfile::tempdir().unwrap();
+        let uploader = Arc::new(Uploader::new(Arc::new(
+            ProcessRunner::new(root.path().join("must-not-run")).with_env("HOME", root.path()),
+        )));
+        let admitted = |looked: bool, workspace: Option<String>| {
+            admitted_by(Some(uploader.clone()), looked, workspace, targets.clone())
+        };
+        // Not attached before the account looked: wait, quietly. Still
+        // none once it looked: nothing uploads here, so only what never
+        // could upload joins.
+        assert_eq!(
+            admitted(false, workspace.clone()).await,
+            Admission::Unknown(None)
+        );
+        assert_eq!(
+            admitted(true, workspace.clone()).await,
+            Admission::Only(HashSet::from([uncollected.clone()]))
+        );
+        let attach = |workspace_id: &str| {
+            uploader.attach(Install::from_json(&serde_json::json!({
+                "site_url": "https://agentrelay.com",
+                "workspace_id": workspace_id,
+                "directory": directory.path().to_str().unwrap(),
+            })));
+        };
+        attach("workspace");
+
+        // `selected`: only the session a person chose; one never chosen,
+        // though captured and not withheld, stays local.
+        config(&|c| c["sharing_mode"] = "selected".into());
+        delivery::adopt_session_job(&conn, &job_id, &[identity("chosen")]).unwrap();
+        assert_eq!(
+            admitted(true, workspace.clone()).await,
+            Admission::Only(HashSet::from([chosen.clone(), uncollected.clone()]))
+        );
+        // A session someone stopped uploading leaves under any policy.
+        delivery::include_job_session(&conn, &job_id, &identity("other")).unwrap();
+        delivery::set_session_excluded(&conn, &identity("other"), true).unwrap();
+        assert_eq!(
+            admitted(true, workspace.clone()).await,
+            Admission::Only(HashSet::from([chosen.clone(), uncollected.clone()]))
+        );
+
+        // Another workspace's install does not decide this relay; with the
+        // relay's workspace unknown, the install here does.
+        assert_eq!(
+            admitted(true, None).await,
+            Admission::Only(HashSet::from([chosen.clone(), uncollected.clone()]))
+        );
+        attach("other");
+        assert_eq!(admitted(true, workspace.clone()).await, Admission::All);
+        attach("workspace");
+        // Unreadable: nothing new joins, no one leaves, and it says why.
+        std::fs::write(&config_path, b"not json").unwrap();
+        assert!(matches!(
+            admitted(true, workspace).await,
+            Admission::Unknown(Some(_))
+        ));
+        assert!(!Admission::Unknown(None).admits(&chosen));
+        assert!(!Admission::Unknown(None).admits(&local));
+    }
+
+    #[test]
+    fn automatically_activated_sessions_are_not_asked_to_upload() {
+        use crate::relay::store::{Registration, SessionKind};
+        let registration = |id: &str, automatic: bool| {
+            let mut r: Registration = serde_json::from_value(serde_json::json!({
+                "name": id, "agentID": id, "baseURL": "https://cast.agentrelay.com",
+                "target": {"kind": "codex", "id": id}, "title": id,
+                "registeredAt": "2026-10-29T00:00:00Z",
+            }))
+            .unwrap();
+            r.auto_activated = automatic.then_some(true);
+            r
+        };
+        let added = registration("added", false);
+        let automatic = registration("automatic", true);
+        let (registered, chosen) = registered_keys([&added, &automatic].into_iter());
+        let key = |id| {
+            SessionTarget::new(SessionKind::Codex, id)
+                .upload_key()
+                .unwrap()
+        };
+        assert_eq!(registered, BTreeSet::from([key("added"), key("automatic")]));
+        assert_eq!(chosen, BTreeSet::from([key("added")]));
+    }
+
     #[test]
     fn sharing_everything_needs_nothing() {
-        let sessions = json!([{"source": "codex", "session_id": "a", "included": false}]);
+        let sessions = read(&[("codex:a", true, false)]);
         let mut requested = BTreeSet::new();
         assert!(pending(
             &keys(&["codex:a"]),
-            &listed("all", sessions),
+            SharingMode::All,
+            &sessions,
             &mut requested
         )
         .is_empty());

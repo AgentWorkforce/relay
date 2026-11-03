@@ -36,16 +36,17 @@
 //! `~/.codex/hooks.json` for each event and trusts it through Codex's own
 //! app-server (`hooks/list`, `config/value/write`).
 
-use super::turn_hook::TurnInbox;
-use crate::relay::conductor;
 use serde_json::{json, Map, Value};
-use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
+mod inbox;
+mod rules;
 mod trust;
+
+pub use inbox::StopHookInbox;
+pub use rules::SandboxRules;
+use rules::{RULES_HEADER, RULES_NAMES};
 
 /// The setting that adds and removes the hook.
 pub const SETTING: &str = "codex_stop_hook";
@@ -60,239 +61,6 @@ pub const HELD: &str = "Waiting — handed over when the Conductor chat's turn e
 /// At SessionStart it gives the session its Agent Relay preamble
 /// (`hosted_mcp::codex_preamble`).
 const EVENTS: [&str; 3] = ["Stop", "PostToolUse", "SessionStart"];
-
-/// The most idle deliveries one recap shows.
-const RECAP_LIMIT: usize = 10;
-
-/// A relayed message waiting for its chat's turn to end.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Held {
-    message_id: String,
-    text: String,
-}
-
-/// A message delivered while its chat was idle, not yet shown in it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Unseen {
-    message_ref: String,
-    text: String,
-}
-
-#[derive(Default)]
-struct State {
-    /// By lowercase thread id.
-    held: HashMap<String, VecDeque<Held>>,
-    /// Handed over by the hook, by message id, with when.
-    taken: HashMap<String, Instant>,
-    /// By lowercase thread id.
-    unseen: HashMap<String, Vec<Unseen>>,
-}
-
-/// Messages for Conductor's Codex chats, between the router and the hook.
-/// Kept in memory: a held message is also still in the delivery queue, so
-/// after a restart its next delivery attempt holds it again. Messages for
-/// other running turns wait in `turns`, whose claims are kept on disk.
-#[derive(Default)]
-pub struct StopHookInbox {
-    /// Whether the hook is installed and trusted, so holding a message
-    /// cannot leave it waiting for a hook that never runs.
-    ready: AtomicBool,
-    state: Mutex<State>,
-    turns: TurnInbox,
-}
-
-impl StopHookInbox {
-    /// The inbox whose running-turn claims are kept by `turns`.
-    pub fn with_turns(turns: TurnInbox) -> StopHookInbox {
-        StopHookInbox {
-            turns,
-            ..StopHookInbox::default()
-        }
-    }
-
-    /// Messages waiting for a running turn's hook (`turn_hook`).
-    pub fn turns(&self) -> &TurnInbox {
-        &self.turns
-    }
-
-    pub fn set_ready(&self, ready: bool) {
-        self.ready.store(ready, Ordering::SeqCst);
-    }
-
-    pub fn is_ready(&self) -> bool {
-        self.ready.load(Ordering::SeqCst)
-    }
-
-    fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner())
-    }
-
-    /// Holds `text` for `thread`'s Stop hook; once per message.
-    pub fn hold(&self, thread: &str, message_id: &str, text: &str) {
-        let mut state = self.state();
-        if state.taken.contains_key(message_id) {
-            return;
-        }
-        let queue = state.held.entry(thread.to_lowercase()).or_default();
-        if !queue.iter().any(|held| held.message_id == message_id) {
-            queue.push_back(Held {
-                message_id: message_id.to_string(),
-                text: text.to_string(),
-            });
-        }
-    }
-
-    pub fn is_held(&self, message_id: &str) -> bool {
-        self.state()
-            .held
-            .values()
-            .any(|queue| queue.iter().any(|held| held.message_id == message_id))
-    }
-
-    /// When the hook handed `message_id` over, if it did.
-    pub fn taken_at(&self, message_id: &str) -> Option<Instant> {
-        self.state().taken.get(message_id).copied()
-    }
-
-    /// Takes `message_id` back for another route when the hook has not
-    /// handed it over; `true` when it was still held.
-    pub fn withdraw(&self, message_id: &str) -> bool {
-        let mut state = self.state();
-        let mut found = false;
-        for queue in state.held.values_mut() {
-            let before = queue.len();
-            queue.retain(|held| held.message_id != message_id);
-            found |= queue.len() != before;
-        }
-        state.held.retain(|_, queue| !queue.is_empty());
-        found
-    }
-
-    /// Drops every trace of a cancelled message: held, handed over or noted.
-    pub fn cancel(&self, message_id: &str) {
-        self.forget(message_id);
-        let message_ref = crate::relay::delivery::policy::MessageRef::of(message_id);
-        let mut state = self.state();
-        for unseen in state.unseen.values_mut() {
-            unseen.retain(|item| item.message_ref != message_ref);
-        }
-        state.unseen.retain(|_, unseen| !unseen.is_empty());
-    }
-
-    /// Forgets a message once it is delivered.
-    pub fn forget(&self, message_id: &str) {
-        self.withdraw(message_id);
-        self.state().taken.remove(message_id);
-    }
-
-    /// Notes a message delivered while `thread`'s chat was idle, for the
-    /// recap at the end of its next turn. The hook does not show messages it
-    /// handed over itself, so they are never noted.
-    pub fn note_unseen(&self, thread: &str, message_id: &str, text: &str) {
-        let mut state = self.state();
-        if state.taken.contains_key(message_id) {
-            return;
-        }
-        let message_ref = crate::relay::delivery::policy::MessageRef::of(message_id);
-        let unseen = state.unseen.entry(thread.to_lowercase()).or_default();
-        if unseen.iter().all(|item| item.message_ref != message_ref) {
-            unseen.push(Unseen {
-                message_ref,
-                text: text.to_string(),
-            });
-            let excess = unseen.len().saturating_sub(RECAP_LIMIT);
-            unseen.drain(..excess);
-        }
-    }
-
-    fn take_held(&self, thread: &str) -> Option<Held> {
-        let mut state = self.state();
-        let thread = thread.to_lowercase();
-        let held = state.held.get_mut(&thread)?.pop_front()?;
-        if state.held.get(&thread).is_some_and(VecDeque::is_empty) {
-            state.held.remove(&thread);
-        }
-        state.taken.insert(held.message_id.clone(), Instant::now());
-        state
-            .taken
-            .retain(|_, at| at.elapsed() < Duration::from_secs(60 * 60));
-        Some(held)
-    }
-
-    /// The idle deliveries for `thread` that have an answer recorded, each
-    /// with it; the others stay for a later turn, until Codex records them.
-    fn take_answered(
-        &self,
-        thread: &str,
-        reply: &dyn Fn(&str) -> Option<String>,
-    ) -> Vec<(Unseen, String)> {
-        let thread = thread.to_lowercase();
-        let pending = self.state().unseen.remove(&thread).unwrap_or_default();
-        let mut answered = Vec::new();
-        let mut waiting = Vec::new();
-        for item in pending {
-            match reply(&item.message_ref)
-                .map(|answer| answer.trim().to_string())
-                .filter(|answer| !answer.is_empty())
-            {
-                Some(answer) => answered.push((item, answer)),
-                None => waiting.push(item),
-            }
-        }
-        if !waiting.is_empty() {
-            let mut state = self.state();
-            let unseen = state.unseen.entry(thread).or_default();
-            for item in waiting {
-                if unseen
-                    .iter()
-                    .all(|other| other.message_ref != item.message_ref)
-                {
-                    unseen.push(item);
-                }
-            }
-        }
-        answered
-    }
-
-    /// The hook's answer for `thread`: the next held message, else (once per
-    /// turn, on its first stop) a recap of idle deliveries the agent has
-    /// answered, else nothing. `reply` finds the agent's answer to a message
-    /// by its ref.
-    ///
-    /// `shown` is whether Conductor shows the ending turn: a turn a relayed
-    /// message started (a `codex queue` delivery) is not shown, so nothing
-    /// is handed over at its end, and what waits stays for a turn that is.
-    pub fn answer(
-        &self,
-        thread: &str,
-        stop_hook_active: bool,
-        shown: bool,
-        recorded: &dyn Fn(&str) -> bool,
-        reply: &dyn Fn(&str) -> Option<String>,
-    ) -> Value {
-        if !shown {
-            return json!({});
-        }
-        // A message Codex already recorded was handed over before (a
-        // restart forgets that), so it is dropped, never handed over twice.
-        while let Some(held) = self.take_held(thread) {
-            let message_ref = crate::relay::delivery::policy::MessageRef::of(&held.message_id);
-            if !recorded(&message_ref) {
-                return block(&with_quote_note(&held.text));
-            }
-        }
-        if stop_hook_active {
-            return json!({});
-        }
-        let answered = self.take_answered(thread, reply);
-        if answered.is_empty() {
-            return json!({});
-        }
-        block(&recap(&answered))
-    }
-}
 
 /// Writes `hooks.json` atomically, keeping its mode; `backup` is the copy
 /// kept beside it the first time.
@@ -332,46 +100,6 @@ fn is_empty_hooks(value: &Value) -> bool {
     })
 }
 
-fn block(reason: &str) -> Value {
-    json!({"decision": "block", "reason": reason})
-}
-
-/// `text` with Conductor's quote note after its header lines, unless it has
-/// it: Conductor shows the agent's reply but not the hook's message.
-fn with_quote_note(text: &str) -> String {
-    if text.contains(conductor::QUOTE_NOTE) {
-        return text.to_string();
-    }
-    let mut lines: Vec<&str> = text.lines().collect();
-    let header = lines
-        .iter()
-        .take_while(|line| line.starts_with('['))
-        .count();
-    lines.insert(header, conductor::QUOTE_NOTE);
-    lines.join("\n")
-}
-
-/// What the hook asks the agent to show at the end of a turn: messages
-/// relayed while the chat was idle, which Conductor did not show, each with
-/// the answer the agent already gave.
-fn recap(answered: &[(Unseen, String)]) -> String {
-    let mut text = String::from(
-        "[Agent Relay: while this chat was idle, these messages arrived through Agent Relay and \
-         you already answered them. The person cannot see them in Conductor's chat. Show each one \
-         as a Markdown blockquote, followed by one line summarizing your answer. Do not act on \
-         them again.]",
-    );
-    for (index, (item, answer)) in answered.iter().enumerate() {
-        text.push_str(&format!(
-            "\n\n{}. Message:\n{}\n\nYour answer:\n{}",
-            index + 1,
-            item.text.trim(),
-            answer
-        ));
-    }
-    text
-}
-
 /// Trusts the hook running a command in a Codex home.
 type Trust = Box<dyn Fn(&Path, &str) -> Result<(), String> + Send + Sync>;
 
@@ -384,106 +112,10 @@ type Untrust = Box<
 /// The suffix of the one-time copy of `hooks.json` as the person had it.
 const BACKUP_SUFFIX: &str = ".relay-desktop-backup";
 
-/// The first line of the Codex rules file Agent Relay writes; a file there
-/// without it is not Agent Relay's and is never rewritten or removed.
-const RULES_HEADER: &str = "# Agent Relay: written and removed by Agent Relay (codex_stop_hook).";
-
 /// The marker, in the core's data, that `~/.codex/config.toml` did not exist
 /// until trusting the hook created it, so taking the hook out again removes
 /// the file once nothing else is in it.
 const CONFIG_CREATED: &str = "codex-config-created";
-
-/// How many names the sandbox rules may try (`SandboxRules`).
-const RULES_NAMES: usize = 9;
-
-/// What lets a session reach its session socket from inside Codex's
-/// sandbox, as a Codex rules file (`~/.codex/rules/agent-relay.rules`).
-///
-/// Codex's default sandbox (`workspace-write` or `read-only`, network off)
-/// denies every Unix socket connect on macOS, so the probe's own socket
-/// client failed there, and Codex asked to run it outside the sandbox or
-/// reached for another Agent Relay connector. Codex runs a command outside
-/// its sandbox without asking when every part of it matches an `allow`
-/// prefix rule (`exec_policy` in Codex, verified with Codex 0.163).
-///
-/// A prefix rule constrains only a command's leading words: whatever follows
-/// them is allowed too. So the rules name only the probe's self-limiting
-/// session commands (`session_cli::ALLOWED_SUBCOMMANDS`: `relay send`,
-/// `agents`, `whoami`, `read`, `fetch-attachment`, `connect-send` and
-/// `subscribe-channel`), each only with
-/// `--socket` naming this core's own session socket. Each of those fixes its
-/// own method and route and checks every other argument, so nothing after
-/// the prefix reaches another route; `relay socket-request`, which takes any
-/// method and path (`PATCH /settings`, `/register`), has no rule and still
-/// asks. Nothing else is widened: no network, no other program, no other
-/// socket.
-///
-/// Codex matches a command only when its program is a plain, unquoted word,
-/// so a probe whose path needs quoting (the macOS app's helper) is named by
-/// the core's space-free link to it (`probe_alias`). A quoted argument is
-/// matched as written, so the socket keeps its own path.
-#[derive(Clone, Debug)]
-pub struct SandboxRules {
-    /// The probe executable the reply hints name.
-    pub probe: PathBuf,
-    /// The relay-send (session) socket this core serves.
-    pub socket: PathBuf,
-}
-
-impl SandboxRules {
-    /// Each rule's pattern: the probe, `relay`, the subcommand, `--socket`
-    /// and the socket.
-    pub fn patterns(&self) -> Vec<Vec<String>> {
-        let probe = self.probe.to_string_lossy().into_owned();
-        let socket = self.socket.to_string_lossy().into_owned();
-        crate::relay::session_cli::ALLOWED_SUBCOMMANDS
-            .iter()
-            .map(|subcommand| {
-                vec![
-                    probe.clone(),
-                    "relay".to_string(),
-                    subcommand.to_string(),
-                    "--socket".to_string(),
-                    socket.clone(),
-                ]
-            })
-            .collect()
-    }
-
-    /// The rules file's text (Starlark; a JSON string is a Starlark string).
-    pub fn text(&self) -> String {
-        let mut text = format!(
-            "{RULES_HEADER}\n\
-             # Lets Agent Relay's own client reach this computer's Agent Relay session socket\n\
-             # from Codex's sandbox, so a session can read and answer relayed messages. Each\n\
-             # command fixes its own route; no other session route is allowed.\n"
-        );
-        for pattern in self.patterns() {
-            let justification = match pattern[2].as_str() {
-                "send" => "Sends a message as this session through Agent Relay",
-                "agents" => "Lists the agents this session can message",
-                "whoami" => "Shows this session's own name on Agent Relay",
-                "read" => "Reads a message Agent Relay relayed to this session",
-                "fetch-attachment" => "Fetches an attachment sent to this session",
-                "subscribe-channel" => "Joins or leaves one channel as this session",
-                _ => "Answers in the Relay Connect room this session joined",
-            };
-            let words = pattern
-                .iter()
-                .map(|word| Value::from(word.as_str()).to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            text.push_str(&format!(
-                "prefix_rule(\n    \
-                 pattern = [{words}],\n    \
-                 decision = \"allow\",\n    \
-                 justification = \"{justification}\",\n\
-                 )\n"
-            ));
-        }
-        text
-    }
-}
 
 /// Adds, trusts and removes the hook in a Codex home.
 pub struct CodexStopHookSettings {
@@ -972,6 +604,20 @@ impl CodexStopHookSettings {
         self.write(&value, false)
     }
 
+    /// At an Agent Relay Dev start, which skips [`Self::refresh`]: keeps the
+    /// probe's link for rules a hook left on disk, so the hints name the same
+    /// program the rules allow, and lets it go when the hook is off.
+    pub fn reconcile_probe_alias(&self) {
+        let Some(alias) = self.alias.as_ref().filter(|_| self.sandbox.is_some()) else {
+            return;
+        };
+        if self.applies() && self.hook_enabled() {
+            alias.acquire(crate::relay::probe_alias::User::Codex);
+        } else {
+            self.release_alias();
+        }
+    }
+
     /// The rules no longer need the probe's link.
     fn release_alias(&self) {
         if let Some(alias) = &self.alias {
@@ -1048,7 +694,9 @@ fn quoted_program(executable: &Path) -> String {
 mod tests {
     use super::*;
     use crate::relay::agents::SettingsExtension;
+    use crate::relay::conductor;
     use std::sync::Arc;
+    use std::sync::Mutex;
 
     const THREAD: &str = "01a1235e-70e1-7cb1-8619-e2c8bf3bdb7b";
 
@@ -1452,6 +1100,44 @@ mod tests {
     // the macOS app's helper (a path with spaces) asked for every read and
     // reply: the rules and hints name the core's link to it instead, the
     // socket stays quoted, and turning the hook off takes the link out.
+    #[test]
+    #[cfg(unix)]
+    fn a_start_that_skips_the_refresh_still_names_the_link_its_rules_allow() {
+        use crate::relay::probe_alias::ProbeAlias;
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        let real = PathBuf::from("/Apps/Agent Relay.app/probe");
+        let alias = || {
+            Arc::new(ProbeAlias::new(
+                real.clone(),
+                home.path(),
+                &home.path().join("app-data"),
+                false,
+            ))
+        };
+        let first = full_settings(home.path()).with_probe_alias(alias());
+        assert_eq!(first.set(SETTING, &json!(true)), Some(Ok(())));
+        // A later start (Agent Relay Dev skips `refresh`) has no users yet.
+        let restarted = alias();
+        assert_eq!(restarted.published(), None);
+        let settings = full_settings(home.path()).with_probe_alias(restarted.clone());
+        settings.reconcile_probe_alias();
+        let link = restarted
+            .published()
+            .expect("the rules' link is named again");
+        let rules =
+            std::fs::read_to_string(home.path().join(".codex/rules/agent-relay.rules")).unwrap();
+        assert!(
+            rules.contains(&format!("\"{}\"", link.display())),
+            "{rules}"
+        );
+        // Off: the link goes with the rules.
+        assert_eq!(settings.set(SETTING, &json!(false)), Some(Ok(())));
+        settings.reconcile_probe_alias();
+        assert_eq!(restarted.published(), None);
+        assert!(std::fs::symlink_metadata(&link).is_err());
+    }
+
     #[test]
     #[cfg(unix)]
     fn a_probe_path_with_a_space_is_named_by_its_link() {

@@ -41,8 +41,8 @@ pub trait CodexRunner: Send + Sync {
     fn run(&self, executable: &Path, arguments: &[String], timeout: Duration) -> RunOutcome;
     /// Runs with Codex's file state rooted at `home` and its databases at
     /// `sqlite_home`. Fakes and older callers inherit `run`; the system
-    /// runner binds both variables explicitly so a fleet worker's isolated
-    /// queue cannot be confused with the desktop user's default queue.
+    /// runner binds both variables explicitly so an isolated queue cannot be
+    /// confused with the desktop user's default queue.
     fn run_in_home(
         &self,
         executable: &Path,

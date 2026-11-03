@@ -1178,6 +1178,7 @@ fn a_login_seen_later_follows_direct_delivery() {
         executable: None,
         app_sessions: None,
         dirs: crate::relay::claude_dirs::ClaudeDirs {
+            private_root: None,
             environment: Vec::new(),
             file: Some(dir.path().join("relay/claude-config-dirs.json")),
         },
@@ -1227,6 +1228,7 @@ fn a_config_folder_under_any_name_is_read_once_it_is_watched() {
         executable: None,
         app_sessions: None,
         dirs: crate::relay::claude_dirs::ClaudeDirs {
+            private_root: None,
             environment: Vec::new(),
             file: Some(dir.path().join("relay/claude-config-dirs.json")),
         },

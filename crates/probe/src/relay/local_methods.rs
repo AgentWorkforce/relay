@@ -270,8 +270,34 @@ async fn cached_sessions_list(core: &Arc<Core>) -> LocalSessions {
         .filter(|session| !archived.contains(&&session.target))
         .map(|session| row(session, true))
         .collect();
+    // Only Devin sessions are hidden this way (automation sessions), so the
+    // directory is asked only when a Devin registration was not found, and
+    // only its Devin answers count. A failed read hides those registrations
+    // rather than showing them.
+    let devin = |target: &Target| target.kind == crate::relay::store::SessionKind::Devin;
+    let hidden: std::collections::HashSet<Target> =
+        if store.registrations.iter().any(|registration| {
+            devin(&registration.target)
+                && !found
+                    .iter()
+                    .any(|session| session.target == registration.target)
+        }) {
+            let sessions = core.plugins.sessions.clone();
+            match tokio::task::spawn_blocking(move || sessions.hidden_sessions()).await {
+                Ok(hidden) => hidden.into_iter().filter(|target| devin(target)).collect(),
+                Err(_) => store
+                    .registrations
+                    .iter()
+                    .map(|registration| registration.target.clone())
+                    .filter(|target| devin(target))
+                    .collect(),
+            }
+        } else {
+            Default::default()
+        };
     for registration in &store.registrations {
-        if registration.archived_at.is_some()
+        if hidden.contains(&registration.target)
+            || registration.archived_at.is_some()
             || found.iter().any(|s| s.target == registration.target)
         {
             continue;
@@ -306,7 +332,7 @@ pub async fn watch_uploads(core: Arc<Core>) {
     let Some(account) = &core.plugins.account else {
         return;
     };
-    let uploader = account.uploader.clone();
+    let uploader = account.uploader();
     let mut refreshes = tokio::task::JoinSet::new();
     let mut ticks = tokio::time::interval(WATCH_EVERY);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

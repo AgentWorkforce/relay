@@ -307,10 +307,10 @@ mod retained_round_tests {
 
     #[test]
     fn partial_refresh_keeps_completed_siblings_and_deduplicates_extra_roots() {
-        let Some(home) = crate::live::tests::isolated_home(
-            "history::incremental::retained_round_tests::partial_refresh_keeps_completed_siblings_and_deduplicates_extra_roots",
+        let Some(home) = crate::probe::live::tests::isolated_home(
+            "probe::history::incremental::retained_round_tests::partial_refresh_keeps_completed_siblings_and_deduplicates_extra_roots",
         ) else { return; };
-        use agent_relay_probe::relay::process::FakeProcesses;
+        use crate::relay::process::FakeProcesses;
         let env = |key: &str| std::env::var(key).ok();
         ClaudeDirs::from_env(&env, &home, &relay_home(&env, &home))
             .remember_running(&FakeProcesses::default());
@@ -319,9 +319,9 @@ mod retained_round_tests {
         std::fs::write(&bad, b"not a directory").unwrap();
         let extra = home.join(".claude-work/projects/p");
         std::fs::create_dir_all(&extra).unwrap();
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &extra.join("old.jsonl"),
-            &crate::live::tests::transcript_line("extra-old", "one"),
+            &crate::probe::live::tests::transcript_line("extra-old", "one"),
         );
         let mut store = open(&home.join("probe/history.db")).unwrap();
         let mut settings = RootSettings::default();
@@ -346,15 +346,15 @@ mod retained_round_tests {
         drain(&mut rounds);
         assert_eq!((rounds.active.len(), rounds.completed.len()), (1, 1));
         assert!(rounds.healthy_pass_exhausted());
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &extra.join("new.jsonl"),
-            &crate::live::tests::transcript_line("extra-new", "one"),
+            &crate::probe::live::tests::transcript_line("extra-new", "one"),
         );
         let newly_added = home.join(".claude-personal/projects/p");
         std::fs::create_dir_all(&newly_added).unwrap();
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &newly_added.join("new.jsonl"),
-            &crate::live::tests::transcript_line("extra-added", "one"),
+            &crate::probe::live::tests::transcript_line("extra-added", "one"),
         );
         #[cfg(unix)]
         std::os::unix::fs::symlink(home.join(".claude-work"), home.join(".claude-alias")).unwrap();
@@ -407,9 +407,9 @@ mod retained_round_tests {
         assert_eq!((rounds.active.len(), rounds.completed.len()), (1, 2));
         let primary = home.join(".claude/projects/base/base-new.jsonl");
         std::fs::create_dir_all(primary.parent().unwrap()).unwrap();
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &primary,
-            &crate::live::tests::transcript_line("base-new", "one"),
+            &crate::probe::live::tests::transcript_line("base-new", "one"),
         );
         assert!(rounds.refresh(&store, &settings).unwrap());
         assert_eq!(
@@ -427,10 +427,10 @@ mod retained_round_tests {
 
     #[test]
     fn refresh_refusal_keeps_retained_and_new_roots_owed() {
-        let Some(home) = crate::live::tests::isolated_home(
-            "history::incremental::retained_round_tests::refresh_refusal_keeps_retained_and_new_roots_owed",
+        let Some(home) = crate::probe::live::tests::isolated_home(
+            "probe::history::incremental::retained_round_tests::refresh_refusal_keeps_retained_and_new_roots_owed",
         ) else { return; };
-        use agent_relay_probe::relay::process::FakeProcesses;
+        use crate::relay::process::FakeProcesses;
         let env = |key: &str| std::env::var(key).ok();
         ClaudeDirs::from_env(&env, &home, &relay_home(&env, &home))
             .remember_running(&FakeProcesses::default());
@@ -439,9 +439,9 @@ mod retained_round_tests {
         std::fs::write(&bad, b"not a directory").unwrap();
         let extra = home.join(".claude-work/projects/p");
         std::fs::create_dir_all(&extra).unwrap();
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &extra.join("existing.jsonl"),
-            &crate::live::tests::transcript_line("refusal-existing", "one"),
+            &crate::probe::live::tests::transcript_line("refusal-existing", "one"),
         );
         let mut store = open(&home.join("probe/history.db")).unwrap();
         let mut settings = RootSettings::default();
@@ -462,9 +462,9 @@ mod retained_round_tests {
         drain(&mut rounds);
         assert_eq!((rounds.active.len(), rounds.completed.len()), (1, 1));
         assert!(rounds.healthy_pass_exhausted());
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &extra.join("refused.jsonl"),
-            &crate::live::tests::transcript_line("refusal-retained", "one"),
+            &crate::probe::live::tests::transcript_line("refusal-retained", "one"),
         );
         // A fresh SDK round in the completed slot deterministically violates
         // the drained-round invariant without a production hook or SDK edit.
@@ -477,9 +477,9 @@ mod retained_round_tests {
         rounds.completed[0] = fresh.active.remove(index).unwrap();
         let added = home.join(".claude-personal/projects/p");
         std::fs::create_dir_all(&added).unwrap();
-        crate::live::tests::append(
+        crate::probe::live::tests::append(
             &added.join("added.jsonl"),
-            &crate::live::tests::transcript_line("refusal-added", "one"),
+            &crate::probe::live::tests::transcript_line("refusal-added", "one"),
         );
         let error = rounds.refresh(&store, &settings).unwrap_err();
         assert!(error.to_string().contains("SDK round refused refresh"));

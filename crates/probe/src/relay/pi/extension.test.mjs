@@ -9,11 +9,12 @@ const id = '12345678-1234-4234-8234-123456789abc';
 const hash = text => createHash('sha256').update(text).digest('hex');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-async function fixture(t, { autoJoin = false } = {}) {
+async function fixture(t, { autoJoin = false, harness = 'pi' } = {}) {
   const root = fs.mkdtempSync(join(tmpdir(), 'relay-pi-test-'));
   const runtime = join(root, 'runtime');
   const source = fs.readFileSync(new URL('./agent-relay.mjs', import.meta.url), 'utf8')
-    .replace('__RUNTIME__', JSON.stringify(runtime));
+    .replace('__RUNTIME__', JSON.stringify(runtime))
+    .replace('__HARNESS__', JSON.stringify(harness));
   const path = join(root, 'extension.mjs');
   fs.writeFileSync(path, source);
   if (autoJoin) fs.writeFileSync(join(root, 'pi-auto-join'), 'on\n');
@@ -22,9 +23,10 @@ async function fixture(t, { autoJoin = false } = {}) {
   const branch = [];
   const sent = [];
   let idle = true;
+  let sessionId = id;
   const ctx = { hasUI: true, cwd: root, ui: { notify: text => notices.push(text) }, isIdle: () => idle,
     sessionManager: { getSessionFile: () => join(root, 'session.jsonl'),
-      getSessionId: () => id, getBranch: () => branch } };
+      getSessionId: () => sessionId, getBranch: () => branch } };
   let title = 'Old title';
   const pi = { getSessionName: () => title, setSessionName: value => { title = value; }, on: (name, fn) => handlers.set(name, fn), sendUserMessage: (text, options) => {
     sent.push({ text, options }); idle = false;
@@ -39,7 +41,8 @@ async function fixture(t, { autoJoin = false } = {}) {
     fs.writeFileSync(path, JSON.stringify({ version, sessionId: id, messageId, sequence,
       text, state: 'pending' }), { mode: 0o600 });
   }
-  return { root, dir, file, ctx, branch, sent, handlers, enqueue, pi, notices,
+  return { root, dir, file, ctx, branch, sent, handlers, enqueue, pi, runtime, notices,
+    switchTo: value => { sessionId = value; },
     setIdle: value => { idle = value; }, record: () => JSON.parse(fs.readFileSync(file)) };
 }
 
@@ -197,6 +200,52 @@ test('a null title command cannot block message delivery', async t => {
   f.handlers.get('message_end')();
   assert.equal(f.sent.length, 1);
   assert.equal(f.pi.getSessionName(), 'Old title');
+});
+
+test('omp starts an idle delivery as a turn instead of queueing a follow-up', async t => {
+  const f = await fixture(t, { harness: 'omp' });
+  f.enqueue();
+  await sleep(300);
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.sent[0].options, undefined, 'omp only queues an explicit deliverAs, even when idle');
+  assert.equal(f.record().state, 'claimed');
+});
+
+test('omp titles settle after its asynchronous save, once', async t => {
+  const f = await fixture(t, { harness: 'omp' });
+  let saves = 0;
+  let finish;
+  const set = f.pi.setSessionName;
+  f.pi.setSessionName = value => { saves++; return new Promise(resolve => { finish = () => { set(value); resolve(); }; }); };
+  const requestId = 'b'.repeat(32);
+  const path = join(f.dir, `title-${requestId}.json`);
+  fs.writeFileSync(path, JSON.stringify({ version: 1, sessionId: id, requestId,
+    title: 'Saved later', state: 'pending', expiresAt: Date.now() + 4000 }), { mode: 0o600 });
+  f.handlers.get('message_end')();
+  f.handlers.get('message_end')();
+  assert.equal(saves, 1);
+  assert.equal(JSON.parse(fs.readFileSync(path)).state, 'pending');
+  finish();
+  await sleep(10);
+  assert.equal(JSON.parse(fs.readFileSync(path)).state, 'done');
+  assert.equal(JSON.parse(fs.readFileSync(path)).title, 'Saved later');
+});
+
+test('a switch to another session moves the live registry; a same-session switch keeps it', async t => {
+  const f = await fixture(t, { harness: 'omp' });
+  const registry = dir => JSON.parse(fs.readFileSync(join(dir, 'session.json')));
+  f.handlers.get('session_switch')({}, f.ctx);
+  assert.equal(fs.readdirSync(f.runtime).length, 1, 'same session: no new runtime');
+  const other = '01a1765c-3483-7639-ac01-aeef6d55e556';
+  f.switchTo(other);
+  f.handlers.get('session_switch')({}, f.ctx);
+  const dirs = fs.readdirSync(f.runtime).map(name => join(f.runtime, name));
+  assert.equal(dirs.length, 2);
+  assert.deepEqual(dirs.map(registry).map(r => r.sessionId).sort(), [id, other].sort());
+  // The old session's inbox is no longer pumped.
+  f.enqueue();
+  await sleep(300);
+  assert.equal(f.sent.length, 0);
 });
 
 test('native capability submits a user turn without peer attribution and retains exact answer correlation', async t => {

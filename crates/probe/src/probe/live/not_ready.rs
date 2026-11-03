@@ -4,7 +4,7 @@
 //! hydrated again shortly, whatever its stamp shows, until a hydration
 //! captures it or fails.
 use super::{Members, Stamp};
-use agent_relay_probe::delivery::SessionIdentity;
+use crate::delivery::SessionIdentity;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};

@@ -284,6 +284,25 @@ async fn mutation_call(
             })
             .await
         }
+        // Puts a Cloud Agent started in Cursor on the relay, so messages to
+        // its hosted participant become follow-ups; Cloud binds only agents
+        // it created unless asked.
+        method::CursorCloudAgentsAttach::NAME => {
+            answer::<method::CursorCloudAgentsAttach, _>(raw.clone(), |params| async move {
+                request::<CursorCloudAgent>(
+                    core,
+                    "POST",
+                    &format!(
+                        "agents/{}/attach",
+                        identifier(&params.agent_id, "agent id")?
+                    ),
+                    None,
+                    "Cursor Cloud agent",
+                )
+                .await
+            })
+            .await
+        }
         method::CursorCloudRunsCreate::NAME => {
             answer::<method::CursorCloudRunsCreate, _>(raw.clone(), |params| async move {
                 let agent = identifier(&params.agent_id, "agent id")?;
@@ -763,6 +782,37 @@ mod tests {
                 "/workspaces/ws-cursor/cursor-cloud/agents/bc-agent/unarchive",
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn attach_binds_an_existing_agent_through_its_own_route() {
+        let cloud = FakeCloud::new(true, vec![Ok(agent("bc-started-in-cursor", "ACTIVE"))]);
+        let (_temp, core) = core(cloud.clone());
+        let attached = invoke(
+            &core,
+            "cursor_cloud.agents.attach",
+            json!({"agent_id": "bc-started-in-cursor"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(attached["binding"]["state"], "bound");
+        assert_eq!(
+            cloud.calls(),
+            [(
+                "POST".to_string(),
+                "/workspaces/ws-cursor/cursor-cloud/agents/bc-started-in-cursor/attach".to_string(),
+                None
+            )]
+        );
+        let error = invoke(
+            &core,
+            "cursor_cloud.agents.attach",
+            json!({"agent_id": "../x"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.data.kind, ErrorKind::InvalidParams);
+        assert_eq!(cloud.calls().len(), 1);
     }
 
     #[tokio::test]
