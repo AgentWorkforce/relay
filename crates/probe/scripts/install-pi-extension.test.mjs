@@ -6,8 +6,9 @@ import * as net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-const script = new URL('./install-pi-extension.mjs', import.meta.url).pathname;
+const script = fileURLToPath(new URL('./install-pi-extension.mjs', import.meta.url));
 
 function run(home) {
   const agent = join(home, 'agent');
