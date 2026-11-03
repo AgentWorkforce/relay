@@ -682,7 +682,6 @@ describe('complete Daytona Fleet board', () => {
       'install-dependencies',
       'build-current-cli',
       'install-candidate-npm',
-      'stage-current-platform-broker',
       'prepare-clean-installed-candidate',
       'verify-candidate-cli-inventory',
       'run-daytona-board-attempt-a',
@@ -699,19 +698,14 @@ describe('complete Daytona Fleet board', () => {
     expect(steps.get('install-dependencies')!.command).toBe('npm ci --ignore-scripts');
     expect(steps.get('build-current-cli')!.dependsOn).toEqual(['install-dependencies']);
     expect(steps.get('install-candidate-npm')!.dependsOn).toEqual(['build-current-cli']);
-    expect(steps.get('stage-current-platform-broker')!.dependsOn).toEqual(['install-candidate-npm']);
-    expect(steps.get('prepare-clean-installed-candidate')!.dependsOn).toEqual([
-      'stage-current-platform-broker',
-    ]);
+    expect(steps.get('stage-current-platform-broker')).toBeUndefined();
+    expect(steps.get('prepare-clean-installed-candidate')!.dependsOn).toEqual(['install-candidate-npm']);
     expect(steps.get('verify-candidate-cli-inventory')!.dependsOn).toEqual([
       'prepare-clean-installed-candidate',
     ]);
     expect(steps.get('run-daytona-board-attempt-a')!.dependsOn).toEqual(['seal-trusted-fleet-inputs']);
     expect(steps.get('install-candidate-npm')!.command).toMatch(/npm install --global npm@\d/);
     expect(steps.get('install-candidate-npm')!.command).toMatch(/test "\$\(npm --version\)" = "/);
-    expect(steps.get('stage-current-platform-broker')!.command).toContain(
-      'relay-candidate-install.mjs stage-source-broker'
-    );
     expect(steps.get('run-daytona-board-attempt-a')!.command).toContain(
       'VERIFY_FLEET_CANDIDATE_ATTESTATION='
     );
@@ -2059,10 +2053,11 @@ describe('complete Daytona Fleet board', () => {
     const actual = await collectFleetCliInventory('packages/cli/dist/cli/index.js');
     // The trusted verifier runs from current main while the candidate CLI is
     // hydrated separately. Keep this assertion pinned to main's known
-    // 32-executable-leaf/39-record surface; candidate inventory equality is checked in
-    // the qualification job against the hydrated artifact.
-    expect(actual.commands).toHaveLength(39);
-    expect(actual.commands.filter(({ leaf }: { leaf: boolean }) => leaf)).toHaveLength(32);
+    // 24-executable-leaf/29-record surface (the broker verbs survive only as
+    // hidden removal notices); candidate inventory equality is checked in the
+    // qualification job against the hydrated artifact.
+    expect(actual.commands).toHaveLength(29);
+    expect(actual.commands.filter(({ leaf }: { leaf: boolean }) => leaf)).toHaveLength(24);
     expect(inventorySha256(actual)).toMatch(/^[a-f0-9]{64}$/);
     for (const verb of ['config', 'enable', 'disable', 'inherit']) {
       expect(actual.commands.find(({ path }: { path: string }) => path === `fleet ${verb}`)).toMatchObject({
@@ -2091,11 +2086,13 @@ describe('complete Daytona Fleet board', () => {
         leaf: true,
       }
     );
-    expect(
-      actual.commands
-        .find(({ path }: { path: string }) => path === 'node up')
-        ?.options.find(({ flags }: { flags: string }) => flags === '--background-child')
-    ).toMatchObject({ hidden: true });
+    // The retired broker verbs remain routable only as hidden removal notices.
+    for (const path of ['node up', 'node agent', 'fleet status']) {
+      expect(actual.commands.find((command: { path: string }) => command.path === path)).toMatchObject({
+        hidden: true,
+        leaf: true,
+      });
+    }
 
     const missingCommand = structuredClone(actual);
     missingCommand.commands = missingCommand.commands.filter(

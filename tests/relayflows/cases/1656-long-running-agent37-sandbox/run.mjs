@@ -108,9 +108,6 @@ const probeConfigSource = `import path from 'node:path';
 const workspacePackages = [
   'cloud',
   'config',
-  'fleet',
-  'harness-driver',
-  'harnesses',
   'policy',
   'sdk',
   'session',
@@ -153,37 +150,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock('./auth.js', () => ({
   ensureCloudSession: mocks.ensureCloudSession,
   authorizedApiFetch: mocks.authorizedApiFetch,
-}));
-
-// 'fleet' commands read a local broker session at import/dispatch time. Neither
-// is part of the claim under test and neither exists in a Cloud sandbox.
-vi.mock('../../cli/src/cli/lib/broker-lifecycle.js', () => ({
-  readBrokerConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1', api_key: 'k', pid: 1, port: 1 })),
-}));
-
-vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({
-  ...(await importOriginal()),
-  HarnessDriverClient: class {
-    async getSession() {
-      return {
-        workspace_key: 'rk_probe_secret',
-        node_token: 'nt_probe_secret',
-        node_id: 'node_1',
-        node_name: 'live-node',
-        broker_version: '9.2.3',
-        protocol_version: 2,
-        mode: 'persist',
-        uptime_secs: 1,
-      };
-    }
-    async listAgents() {
-      return [];
-    }
-    async listFleetInventory() {
-      return { nodeName: 'live-node', agents: [] };
-    }
-    disconnect() {}
-  },
 }));
 
 // The REAL Cloud client and the REAL CLI command registration, both from

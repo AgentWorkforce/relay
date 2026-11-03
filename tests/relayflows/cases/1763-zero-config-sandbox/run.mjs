@@ -25,7 +25,7 @@ const observationPath = path.join(targetDir, '.relayflow-1763-zero-config-sandbo
 const excludePath = path.join(path.dirname(resultPath), `${CASE_ID}-${arm}.exclude`);
 const revision = expectedSha;
 const configSource = `import path from 'node:path';
-const names = ['cloud','config','fleet','harness-driver','harnesses','policy','sdk','session','utils'];
+const names = ['cloud','config','policy','sdk','session','utils'];
 export default { resolve: { alias: names.flatMap((name) => { const root = path.resolve(process.cwd(), 'packages', name, 'src'); return [{ find: new RegExp('^@agent-relay/' + name + '/(.+)$'), replacement: root + '/$1' }, { find: '@agent-relay/' + name, replacement: path.join(root, 'index.ts') }]; }) }, test: { environment: 'node', include: ['packages/cloud/src/.relayflow-1763-zero-config-sandbox.test.ts'], setupFiles: [] } };
 `;
 const probeSource = String.raw`import { expect, test, vi } from 'vitest';
@@ -33,8 +33,6 @@ import { writeFile } from 'node:fs/promises';
 import { Command } from 'commander';
 const mocks = vi.hoisted(() => ({ ensureCloudSession: vi.fn(), authorizedApiFetch: vi.fn() }));
 vi.mock('./auth.js', () => ({ ensureCloudSession: mocks.ensureCloudSession, authorizedApiFetch: mocks.authorizedApiFetch }));
-vi.mock('../../cli/src/cli/lib/broker-lifecycle.js', () => ({ readBrokerConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1', api_key: 'probe', pid: 1, port: 1 })) }));
-vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({ ...(await importOriginal()), HarnessDriverClient: class { async getSession() { return { workspace_key: 'probe', node_token: 'probe', node_id: 'node', node_name: 'node', broker_version: '1', protocol_version: 2, mode: 'persist', uptime_secs: 1 }; } async listAgents() { return []; } async listFleetInventory() { return { nodeName: 'node', agents: [] }; } disconnect() {} } }));
 import { registerFleetCommands } from '../../cli/src/cli/commands/fleet.js';
 const revision = '${revision}';
 const auth = { accessToken: 'probe', refreshToken: 'probe', accessTokenExpiresAt: '2099-01-01T00:00:00Z', apiUrl: 'https://relayflow.invalid' };

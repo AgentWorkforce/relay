@@ -51,6 +51,10 @@ The wrapper supplies:
 - `RELAY_PR_PROOF_RESULT_PATH`: destination for the observation JSON
 - `RELAY_PR_PROOF_BASE_SHA` and `RELAY_PR_PROOF_HEAD_SHA`
 
+> The Rust broker was retired. The contract below still parses the
+> `broker-linux-x64` requirement, but no current case declares it and the
+> broker artifact producer workflow was removed; a new case must not use it.
+
 Rust broker behavior cases can declare `"requirements": ["broker-linux-x64"]`.
 The trusted dispatcher then resolves Linux broker artifacts built from the exact
 base and head SHAs, verifies their source-SHA manifests and SHA-256 digests,

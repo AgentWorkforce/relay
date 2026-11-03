@@ -47,9 +47,6 @@ const probeConfigSource = `import path from 'node:path';
 const workspacePackages = [
   'cloud',
   'config',
-  'fleet',
-  'harness-driver',
-  'harnesses',
   'policy',
   'sdk',
   'session',
@@ -78,35 +75,6 @@ const probeSource = String.raw`import { expect, test, vi } from 'vitest';
 import { writeFile } from 'node:fs/promises';
 import { Command } from 'commander';
 import { createHash } from 'node:crypto';
-
-vi.mock('./cli/lib/broker-lifecycle.js', () => ({
-  readBrokerConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1', api_key: 'k', pid: 1, port: 1 })),
-}));
-
-vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({
-  ...(await importOriginal()),
-  HarnessDriverClient: class {
-    async getSession() {
-      return {
-        workspace_key: 'rk_probe_secret',
-        node_token: 'nt_probe_secret',
-        node_id: 'node_1',
-        node_name: 'live-node',
-        broker_version: '12.0.0',
-        protocol_version: 2,
-        mode: 'persist',
-        uptime_secs: 1,
-      };
-    }
-    async listAgents() {
-      return [];
-    }
-    async listFleetInventory() {
-      return { nodeName: 'live-node', agents: [] };
-    }
-    disconnect() {}
-  },
-}));
 
 import { registerFleetCommands } from './cli/commands/fleet.js';
 import { createAgentRelay as createRealAgentRelay } from './cli/lib/sdk-client.js';

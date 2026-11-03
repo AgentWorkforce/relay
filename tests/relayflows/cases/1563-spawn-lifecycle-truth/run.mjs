@@ -266,9 +266,6 @@ try {
     'build:utils',
     'build:policy',
     'build:sdk',
-    'build:harness-driver',
-    'build:harnesses',
-    'build:fleet',
     'build:cli',
   ]) {
     run('npm', ['run', step], targetDir, `${step} build`);
@@ -542,16 +539,9 @@ try {
             capabilities: [],
             activeAgents: 1,
           },
-          isLocal: true,
-          liveAgents: [
-            {
-              name: 'worker-1',
-              current_state: 'busy',
-              pending_messages: 0,
-              last_activity_at: now.toISOString(),
-            },
-          ],
-          inventoryAgents: [],
+          // A node whose control plane went offline while its heartbeat still
+          // named a hosted worker: the two axes must stay separate.
+          remoteAgents: [{ name: 'worker-1' }],
         },
       ],
       roster: [],
@@ -563,7 +553,6 @@ try {
     { log: (text) => (jsonText = text) },
     {
       generatedAt: now.toISOString(),
-      localNode: null,
       perNode: output.perNode,
       unplacedRoster: output.unplacedRoster,
       errors: output.errors,
@@ -572,7 +561,7 @@ try {
   const emitted = JSON.parse(jsonText);
   assertEqual(
     Object.keys(emitted).sort().join(','),
-    'errors,generatedAt,localNode,perNode,unplacedRoster',
+    'errors,generatedAt,perNode,unplacedRoster',
     'fleet agent list JSON top-level contract'
   );
   const degradedRow = emitted.perNode.find((row) => row.name === 'worker-1');
@@ -741,7 +730,7 @@ try {
     // both outcomes.
 
     assertEqual(degradedRow?.controlPlane, 'offline', 'CLI head: controlPlane axis in JSON');
-    assertEqual(degradedRow?.workerLiveness, 'live', 'CLI head: workerLiveness axis in JSON');
+    assertEqual(degradedRow?.workerLiveness, 'unknown', 'CLI head: workerLiveness axis in JSON');
     assertEqual(
       automaticUnprovenReceipt.state,
       'failed',

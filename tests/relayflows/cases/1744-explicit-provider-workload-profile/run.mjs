@@ -52,9 +52,6 @@ const probeConfigSource = `import path from 'node:path';
 const workspacePackages = [
   'cloud',
   'config',
-  'fleet',
-  'harness-driver',
-  'harnesses',
   'policy',
   'sdk',
   'session',
@@ -91,35 +88,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock('./auth.js', () => ({
   ensureCloudSession: mocks.ensureCloudSession,
   authorizedApiFetch: mocks.authorizedApiFetch,
-}));
-
-vi.mock('../../cli/src/cli/lib/broker-lifecycle.js', () => ({
-  readBrokerConnection: vi.fn(() => ({ url: 'http://127.0.0.1:1', api_key: 'k', pid: 1, port: 1 })),
-}));
-
-vi.mock('@agent-relay/harness-driver', async (importOriginal) => ({
-  ...(await importOriginal()),
-  HarnessDriverClient: class {
-    async getSession() {
-      return {
-        workspace_key: 'rk_probe_secret',
-        node_token: 'nt_probe_secret',
-        node_id: 'node_1',
-        node_name: 'live-node',
-        broker_version: '12.0.0',
-        protocol_version: 2,
-        mode: 'persist',
-        uptime_secs: 1,
-      };
-    }
-    async listAgents() {
-      return [];
-    }
-    async listFleetInventory() {
-      return { nodeName: 'live-node', agents: [] };
-    }
-    disconnect() {}
-  },
 }));
 
 import { ensureCloudFleetSandbox } from './fleet-sandbox.js';

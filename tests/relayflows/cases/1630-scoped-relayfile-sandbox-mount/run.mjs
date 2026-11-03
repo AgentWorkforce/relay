@@ -132,9 +132,6 @@ try {
   run('npm', ['run', 'build:utils'], targetDir, 'utilities package build');
   run('npm', ['run', 'build:policy'], targetDir, 'policy package build');
   run('npm', ['run', 'build:sdk'], targetDir, 'SDK package build');
-  run('npm', ['run', 'build:harness-driver'], targetDir, 'harness driver package build');
-  run('npm', ['run', 'build:harnesses'], targetDir, 'harnesses package build');
-  run('npm', ['run', 'build:fleet'], targetDir, 'fleet package build');
   run('npm', ['run', 'build:cli'], targetDir, 'CLI package build');
 
   await writeGeneratedFile(probePath, probeSource);
