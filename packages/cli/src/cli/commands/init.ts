@@ -1097,7 +1097,9 @@ function relayNodeCommand(): string {
 }
 
 /** The core binary: `AGENT_RELAY_NODE_PATH`, else the pinned release in the canonical bin slot. */
-async function installRelayNode(deps: InitCommandDependencies): Promise<{ binary: string } | { reason: string }> {
+async function installRelayNode(
+  deps: InitCommandDependencies
+): Promise<{ binary: string } | { reason: string }> {
   const explicit = process.env[RELAY_NODE_PATH_ENV]?.trim();
   if (explicit) {
     return isUsableBinary(explicit)
@@ -1120,7 +1122,8 @@ async function installRelayNode(deps: InitCommandDependencies): Promise<{ binary
     readVersion: deps.relayNodeVersion,
     progress: (line) => deps.log(line),
   });
-  if (result.status === 'installed') deps.log(`Installed agent-relay-node v${RELAY_NODE_VERSION} to ${target}.`);
+  if (result.status === 'installed')
+    deps.log(`Installed agent-relay-node v${RELAY_NODE_VERSION} to ${target}.`);
   if (result.status !== 'failed') return { binary: target };
   if (isUsableBinary(target)) {
     deps.log(`Could not update the Agent Relay core (${result.reason}); using the one at ${target}.`);

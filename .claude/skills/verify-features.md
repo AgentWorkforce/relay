@@ -105,7 +105,7 @@ Start with the `Fast Health Triage` sequence in `critical-paths.md`; use the hos
 
 | Changed code area                                                                 | Verify these feature categories         |
 | --------------------------------------------------------------------------------- | --------------------------------------- |
-| `crates/relay-node/`                                                                   | core, core-delivery, init               |
+| `crates/relay-node/`                                                              | core, core-delivery, init               |
 | `packages/cli/src/cli/commands/init.ts`, `packages/cli/src/cli/lib/relay-node.ts` | init, core                              |
 | `crates/broker/`                                                                  | broker, messaging-\*, local-agents, mcp |
 | `crates/relay-pty/`                                                               | local-agents (spawn/attach)             |

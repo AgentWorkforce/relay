@@ -119,7 +119,7 @@ export class Sandbox {
       CI: '1',
     };
     const core = builtCore();
-    if (core) this.env.AGENT_RELAY_PROBE_PATH = core;
+    if (core) this.env.AGENT_RELAY_NODE_PATH = core;
   }
 
   path(...segments) {

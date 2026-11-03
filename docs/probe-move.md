@@ -22,8 +22,8 @@ the desktop GUI. relay 15.0.0 is held until injection works through the probe.
 
 ## Phase 1: what moved
 
-| relay-desktop                                                                                                                                                                                                           | relay                                                                                           |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| relay-desktop                                                                                                                                                                                                           | relay                                                                                                |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `probe/` (crate `agent-relay-probe`): `src/` minus `src/linux_app*`, `build.rs`, `build_version.rs`, `Cargo.toml`, `Cargo.lock`, `examples/`, `tests/` minus the GTK/app tests, `resources/sign-in/`, `rust-oleum.toml` | `crates/relay-node/`                                                                                 |
 | `probe/src/linux_app/install.rs`, `install/windows.rs` (pure std, no GTK)                                                                                                                                               | `crates/relay-node/src/install.rs`, `src/install/windows.rs`                                         |
 | six GTK-free view-model modules of `probe/src/linux_app/models`                                                                                                                                                         | `crates/relay-node/src/session_model/`                                                               |
@@ -308,12 +308,12 @@ relay 15.0.0 ships, or `relay init` falls back to the MCP server.
 
 **Install.** The CLI downloads the pinned asset into the canonical bin
 directory (`$AGENT_RELAY_INSTALL_DIR/bin`, else `$AGENT_RELAY_HOME/bin`, else
-`~/.agentworkforce/relay/bin`; `getCanonicalProbePath` in
+`~/.agentworkforce/relay/bin`; `getCanonicalRelayNodePath` in
 `@agent-relay/harness-driver/install-paths`) exactly as it installs
 `relaycast-engine` (`ensureReleaseBinary`): checksum first, SHA-256 verified,
 written to a temp file beside the target, run with `--version`, then renamed
 into place atomically. A binary that already reports the pinned version or a
-newer one is kept; `AGENT_RELAY_PROBE_PATH` names a binary to use instead.
+newer one is kept; `AGENT_RELAY_NODE_PATH` names a binary to use instead.
 There is no musl, arm64 Windows or 32-bit build. When a download or update
 fails, init uses the binary already in the bin slot if there is one; the MCP
 server is the fallback only when no core answers and no usable core binary

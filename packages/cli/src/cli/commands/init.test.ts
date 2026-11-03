@@ -1653,7 +1653,9 @@ describe('relay init message injection', () => {
       { auto_activate: true },
     ]);
     const output = logs.join('\n');
-    expect(output).toContain(`Started the Agent Relay core (agent-relay-node ${RELAY_NODE_VERSION}, pid 5151)`);
+    expect(output).toContain(
+      `Started the Agent Relay core (agent-relay-node ${RELAY_NODE_VERSION}, pid 5151)`
+    );
     expect(output).toMatch(/Claude Code\s+injected through Claude Code's session inbox/);
     expect(output).toMatch(/Codex\s+injected through PostToolUse, Stop and SessionStart hooks/);
     expect(output).toContain('apply in every project on this machine');
@@ -2737,7 +2739,9 @@ describe('relay init message injection', () => {
       throw new DownloadHttpError(requested, 404);
     });
     const core = fakeCore();
-    const relayNodeVersion = vi.fn((binary: string) => (binary.endsWith('.tmp') ? RELAY_NODE_VERSION : undefined));
+    const relayNodeVersion = vi.fn((binary: string) =>
+      binary.endsWith('.tmp') ? RELAY_NODE_VERSION : undefined
+    );
     const { run, logs } = setup({ ...core.deps, downloadRelayNode, relayNodeVersion });
     await run('--tools', 'claude');
     expect(downloadRelayNode).toHaveBeenCalledWith(url, expect.anything());

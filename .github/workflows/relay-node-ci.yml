@@ -209,4 +209,4 @@ jobs:
         run: 'cargo test --locked --lib platform::'
       - name: Test where the install lives
         shell: bash
-        run: cargo test --locked --lib -- install::
+        run: 'cargo test --locked --lib -- install::'

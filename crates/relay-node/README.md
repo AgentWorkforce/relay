@@ -27,29 +27,29 @@ This crate is its **own Cargo workspace** with its own `Cargo.lock`. It is not
 a member of the repository's root workspace (the broker): the two pin
 different `relaycast`, `nix` and `portable-pty` versions.
 
-| Path                                | Owns                                                                                                                                                                                 |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/cli/`                          | The `agent-relay-node` command line: `relay …` and `connect …`                                                                                                                       |
-| `src/relay/`                        | The daemon (`relay serve`): workspace, Relaycast, delivery and injection per harness, harness setup (hooks/plugins), spawning, the bridge and its contract (`relay::contract`)     |
-| `src/install*`                      | Where a packaged desktop install keeps its executables; the core's launch-at-login entry uses it                                                                                    |
-| `src/bin/relay-contract-codegen.rs` | Generates the Swift bridge contract the apps consume                                                                                                                                 |
-| `contract/CoreContract.swift`       | The checked-in generated contract; CI fails on drift                                                                                                                                 |
-| `scripts/`                          | `generate-contract.sh`, `check-open-source.sh`                                                                                                                                       |
-| `tests/`                            | Integration tests, with in-process fakes of Cloud and Relaycast (`tests/support`)                                                                                                    |
+| Path                                | Owns                                                                                                                                                                           |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/cli/`                          | The `agent-relay-node` command line: `relay …` and `connect …`                                                                                                                 |
+| `src/relay/`                        | The daemon (`relay serve`): workspace, Relaycast, delivery and injection per harness, harness setup (hooks/plugins), spawning, the bridge and its contract (`relay::contract`) |
+| `src/install*`                      | Where a packaged desktop install keeps its executables; the core's launch-at-login entry uses it                                                                               |
+| `src/bin/relay-contract-codegen.rs` | Generates the Swift bridge contract the apps consume                                                                                                                           |
+| `contract/CoreContract.swift`       | The checked-in generated contract; CI fails on drift                                                                                                                           |
+| `scripts/`                          | `generate-contract.sh`, `check-open-source.sh`                                                                                                                                 |
+| `tests/`                            | Integration tests, with in-process fakes of Cloud and Relaycast (`tests/support`)                                                                                              |
 
 ## What a build adds
 
 The core runs with `daemon::Plugins`, each of which defaults to doing
 nothing. A build such as relay-desktop's `desktop-core` adds:
 
-| Seam                                      | What it is                                                                                                                                 |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| `Plugins.account` (`AccountPlugin`)       | Sign-in and Cloud maintenance; it answers the `Availability::Account` methods (`account.*`, `uploader.*`, `sessions.transcript`)            |
-| `Plugins.session_policy` (`SessionPolicy`) | Which sessions join the relay by themselves, may be asked to join, and publish their activity                                              |
-| `Plugins.settings` (`SettingsExtension`)  | Extra settings, such as `history_retention_days`                                                                                           |
-| `Plugins.extensions` (`MethodExtension`)  | Extra bridge methods                                                                                                                       |
-| `Plugins.history_version`                 | The session-history library release `status.get` reports                                                                                  |
-| `PluginBuilder.session_sources`           | `session_sources::SessionSources`: remote sessions (Devin Cloud, Claude Code on the web) it lists and delivers into, and Hermes's homes |
+| Seam                                       | What it is                                                                                                                              |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `Plugins.account` (`AccountPlugin`)        | Sign-in and Cloud maintenance; it answers the `Availability::Account` methods (`account.*`, `uploader.*`, `sessions.transcript`)        |
+| `Plugins.session_policy` (`SessionPolicy`) | Which sessions join the relay by themselves, may be asked to join, and publish their activity                                           |
+| `Plugins.settings` (`SettingsExtension`)   | Extra settings, such as `history_retention_days`                                                                                        |
+| `Plugins.extensions` (`MethodExtension`)   | Extra bridge methods                                                                                                                    |
+| `Plugins.history_version`                  | The session-history library release `status.get` reports                                                                                |
+| `PluginBuilder.session_sources`            | `session_sources::SessionSources`: remote sessions (Devin Cloud, Claude Code on the web) it lists and delivers into, and Hermes's homes |
 
 Without them the core is the whole messaging runtime: `relay serve`
 (discovery, native delivery and injection into running sessions, harness
