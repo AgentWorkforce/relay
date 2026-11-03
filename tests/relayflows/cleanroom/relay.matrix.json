@@ -22,18 +22,13 @@
   },
   "profiles": {
     "smoke": {
-      "lanes": [
-        "workspace-bootstrap",
-        "broker-agents",
-        "messaging-mcp",
-        "workflow-cloud",
-        "regression-corpus"
-      ],
+      "lanes": ["core"],
       "defaultRepeats": 1,
       "requireFreshSandbox": false
     },
     "full": {
       "lanes": [
+        "core",
         "workspace-bootstrap",
         "broker-agents",
         "messaging-mcp",
@@ -48,6 +43,7 @@
     },
     "soak": {
       "lanes": [
+        "core",
         "workspace-bootstrap",
         "broker-agents",
         "messaging-mcp",
@@ -59,6 +55,17 @@
       ],
       "defaultRepeats": 10,
       "requireFreshSandbox": true
+    },
+    "manual-smoke": {
+      "lanes": [
+        "workspace-bootstrap",
+        "broker-agents",
+        "messaging-mcp",
+        "workflow-cloud",
+        "regression-corpus"
+      ],
+      "defaultRepeats": 1,
+      "requireFreshSandbox": false
     }
   },
   "commonSetup": [
@@ -70,6 +77,68 @@
     }
   ],
   "lanes": [
+    {
+      "id": "core",
+      "title": "relay init, the core and delivery into running sessions",
+      "requiredArtifacts": ["cli-entrypoint"],
+      "routingPriority": 100,
+      "issueNumbers": [],
+      "featureCategories": ["init", "core", "core-delivery"],
+      "issueMatch": [
+        "relay init",
+        "core",
+        "agent-relay-probe",
+        "injection",
+        "cursor",
+        "grok",
+        "codex hook",
+        "session inbox",
+        "leader"
+      ],
+      "setup": [
+        {
+          "id": "build-cli",
+          "command": ["npm", "run", "build:core"],
+          "timeoutSeconds": 600
+        },
+        {
+          "id": "build-core-from-source",
+          "command": ["node", "tests/relayflows/core/prepare-core.mjs"],
+          "timeoutSeconds": 540,
+          "requiredCommands": ["cargo"],
+          "whenChanged": ["crates/probe/"]
+        }
+      ],
+      "scenarios": [
+        {
+          "id": "init-parity",
+          "title": "relay init sets up and removes each agent tool",
+          "command": ["node", "tests/relayflows/core/init-parity.mjs"],
+          "timeoutSeconds": 180,
+          "requiredCommands": ["node"],
+          "evidence": "integration",
+          "coversCategories": ["init"]
+        },
+        {
+          "id": "cursor-delivery",
+          "title": "A message reaches a running Cursor session through its hook",
+          "command": ["node", "tests/relayflows/core/delivery.mjs"],
+          "timeoutSeconds": 120,
+          "requiredCommands": ["node"],
+          "evidence": "integration",
+          "coversCategories": ["core", "core-delivery"]
+        },
+        {
+          "id": "grok-join",
+          "title": "A Grok session joins through a proved leader and receives a message",
+          "command": ["node", "tests/relayflows/core/grok-join.mjs"],
+          "timeoutSeconds": 120,
+          "requiredCommands": ["node"],
+          "evidence": "integration",
+          "coversCategories": ["core", "core-delivery"]
+        }
+      ]
+    },
     {
       "id": "workspace-bootstrap",
       "title": "Fresh install, CLI, workspace and state isolation",
@@ -137,7 +206,8 @@
           "coversCategories": ["workspace"],
           "issues": [1424, 1440, 1442, 1587]
         }
-      ]
+      ],
+      "manualOnly": true
     },
     {
       "id": "broker-agents",
@@ -211,7 +281,8 @@
           "coversCategories": ["local-agents"],
           "issues": [1114, 1125, 1374, 1510, 1563, 1603, 1604]
         }
-      ]
+      ],
+      "manualOnly": true
     },
     {
       "id": "messaging-mcp",
@@ -325,7 +396,8 @@
           "coversCategories": ["messaging-messages", "messaging-dm", "messaging-inbox", "mcp"],
           "issues": [1255, 1262, 1263, 1294, 1298, 1299, 1300, 1309, 1463, 1543, 1559, 1607]
         }
-      ]
+      ],
+      "manualOnly": true
     },
     {
       "id": "fleet-injection-attach",
@@ -503,7 +575,8 @@
           "coversCategories": ["fleet"],
           "issues": [1609, 1630]
         }
-      ]
+      ],
+      "manualOnly": true
     },
     {
       "id": "workflow-cloud",
@@ -599,7 +672,8 @@
           "evidence": "contract",
           "coversCategories": ["product-surfaces"]
         }
-      ]
+      ],
+      "manualOnly": true
     },
     {
       "id": "sdk-harness",
@@ -642,7 +716,8 @@
           "evidence": "integration",
           "coversCategories": ["harnesses"]
         }
-      ]
+      ],
+      "manualOnly": true
     },
     {
       "id": "polyglot-plugins",
@@ -731,7 +806,8 @@
           "coversCategories": ["swift-sdk"],
           "issues": [1509]
         }
-      ]
+      ],
+      "manualOnly": true
     },
     {
       "id": "regression-corpus",
@@ -821,7 +897,8 @@
           "evidence": "integration",
           "issues": [1122, 1301, 1302, 1304, 1305, 1306, 1307, 1308, 1512]
         }
-      ]
+      ],
+      "manualOnly": true
     }
   ]
 }

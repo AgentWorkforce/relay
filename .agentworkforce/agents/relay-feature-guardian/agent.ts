@@ -565,7 +565,7 @@ async function generateCheckEvidence(ctx: WorkforceCtx, feature: Feature): Promi
   const tierLabel =
     {
       1: 'isolated local CLI/filesystem',
-      2: 'local broker required',
+      2: 'local Relay from relay init (legacy features: local broker)',
       3: 'hosted workspace + agent token',
       4: 'hosted workspace + two agents',
       5: 'authenticated disposable external service',
