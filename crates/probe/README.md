@@ -125,8 +125,12 @@ bridge handshake, telemetry and Relaycast `origin_version`):
 | Build                                         | `VERSION`                                                                                                              |
 | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `AGENT_RELAY_PROBE_VERSION=X` set             | `X` exactly: a relay release passes the relay version, relay-desktop passes its CalVer (`2026.10.58`)                  |
-| unset, `AGENT_RELAY_PROBE_BASE_VERSION=B` set | `B-dev+<git revision>`: relay-desktop passes its newest CalVer so development cores still order below the next release |
-| neither                                       | `<crate version>-dev+<git revision>`                                                                                   |
+| unset, `AGENT_RELAY_PROBE_BASE_VERSION=B` set | `B-dev+<git revision>`: development cores still order below the builder's next release |
+| unset, no `B`, `AGENT_RELAY_PROBE_CHANGELOG=P` (absolute path) set | `<newest non-empty "## v" heading of P>-dev+<git revision>`: relay-desktop sets this from `.cargo/config.toml`; an unreadable `P`, or one with no release heading, fails the build |
+| none of these                                 | `<crate version>-dev+<git revision>`                                                                                   |
+
+The revision is the builder's checkout's when `AGENT_RELAY_PROBE_GIT_DIR`
+names one (relay-desktop's, from `.cargo/config.toml`), else this crate's.
 
 The internal Cargo package version is never reported as a release on its
 own. On Windows, `AGENT_RELAY_WINDOWS_ICON` additionally embeds an icon and

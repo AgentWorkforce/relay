@@ -82,9 +82,11 @@ pub const CODEX_NO_DAEMON: &str = "Codex here cannot start its app-server daemon
 /// an older command-line install cannot start the app-server package.
 /// On Windows the same packages hold `codex.exe`.
 pub fn codex_daemon_possible(home: &Path) -> bool {
-    std::iter::once("app-server-control/app-server-control.sock")
-        .chain(managed_binaries())
-        .any(|path| std::fs::symlink_metadata(home.join(path)).is_ok())
+    // A daemon already set up, or a managed binary the starter would run:
+    // the same predicate as `managed_daemon_executable`, so a dangling link
+    // or a file that is not executable is not offered.
+    std::fs::symlink_metadata(home.join("app-server-control/app-server-control.sock")).is_ok()
+        || managed_daemon_executable(home).is_some()
 }
 
 /// The managed packages' binaries under Codex home, the app-server package

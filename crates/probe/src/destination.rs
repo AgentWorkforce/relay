@@ -76,6 +76,16 @@ impl TransportFailure {
         }
     }
 }
+/// Maps a refused consent request: 401 needs a new sign-in and 403 is
+/// another account's install; anything else is `message`.
+fn consent_error(message: &'static str) -> impl Fn(ureq::Error) -> anyhow::Error {
+    move |error| match error {
+        ureq::Error::Status(401, _) => fail(DeliveryFailure::AuthenticationRequired),
+        ureq::Error::Status(403, _) => fail(DeliveryFailure::PermissionDenied),
+        _ => anyhow::anyhow!(message),
+    }
+}
+
 /// The delivery failure an error carries, whether the client decided it
 /// (no sign-in, another account) or the server answered with it.
 pub fn failure_of(error: &anyhow::Error) -> Option<DeliveryFailure> {
@@ -160,7 +170,7 @@ pub fn require_session_deletion(base_url: &str, expected_account: &str) -> Resul
                 .call()
                 .map_err(Box::new)
         },
-        |_| anyhow::anyhow!("Could not check cloud deletion support. Try again."),
+        consent_error("Could not check cloud deletion support. Try again."),
         |current| check_account(current, expected_account),
         None,
     )?;
@@ -204,7 +214,7 @@ pub fn set_session_uploads(
                 .send_string(&body)
                 .map_err(Box::new)
         },
-        |_| anyhow::anyhow!("Cloud session deletion could not be completed. Try again."),
+        consent_error("Cloud session deletion could not be completed. Try again."),
         |current| check_account(current, expected_account),
         None,
     )?;

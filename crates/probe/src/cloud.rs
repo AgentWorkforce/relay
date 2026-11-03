@@ -505,11 +505,22 @@ pub(crate) fn send_with_auth_refresh_checked_with_budget(
     }
     let refreshed = if let Some(timeout) = remaining()? {
         let agent = history_agent().redirects(0).timeout(timeout).build();
-        let refreshed = refresh_auth_with_agent(&current, &agent)?;
-        save_auth(&refreshed).context("persisting refreshed relayhistory session")?;
-        refreshed
+        match refresh_auth_with_agent(&current, &agent) {
+            Ok(refreshed) => {
+                save_auth(&refreshed).context("persisting refreshed relayhistory session")?;
+                refreshed
+            }
+            // A refused refresh leaves the request unauthorized: answer as
+            // the 401 did, so callers can ask the person to sign in again.
+            Err(error) if refresh_refused(&error) => return Err(mapped(unauthorized)),
+            Err(error) => return Err(error),
+        }
     } else {
-        refresh_and_save_auth(&current)?
+        match refresh_and_save_auth(&current) {
+            Ok(refreshed) => refreshed,
+            Err(error) if refresh_refused(&error) => return Err(mapped(unauthorized)),
+            Err(error) => return Err(error),
+        }
     };
     check(&refreshed)?;
     send(&refreshed).map_err(mapped)
@@ -1237,6 +1248,18 @@ fn field(v: &serde_json::Value, key: &str) -> Result<String> {
         .and_then(|x| x.as_str())
         .map(String::from)
         .with_context(|| format!("response missing `{key}`"))
+}
+
+/// Whether the refresh endpoint refused the refresh token (`map_http_err`'s
+/// `HTTP 400/401/403`), as opposed to failing to answer.
+fn refresh_refused(error: &anyhow::Error) -> bool {
+    // Through any context added on the way up.
+    error.chain().any(|cause| {
+        let message = cause.to_string();
+        ["HTTP 400:", "HTTP 401:", "HTTP 403:"]
+            .iter()
+            .any(|status| message.starts_with(status))
+    })
 }
 
 fn map_http_err(e: ureq::Error) -> anyhow::Error {
@@ -2661,4 +2684,20 @@ pub(crate) mod tests {
     }
 
     // ----- conversation turns on the push path -----
+}
+
+#[cfg(test)]
+mod refresh_refused_tests {
+    use super::refresh_refused;
+    use anyhow::Context;
+
+    #[test]
+    fn a_refused_refresh_is_told_apart_from_a_failed_one() {
+        let refused: anyhow::Result<()> =
+            Err(anyhow::anyhow!("HTTP 401: expired")).context("refreshing relayhistory session");
+        assert!(refresh_refused(&refused.unwrap_err()));
+        assert!(refresh_refused(&anyhow::anyhow!("HTTP 400: bad token")));
+        assert!(!refresh_refused(&anyhow::anyhow!("HTTP 503: down")));
+        assert!(!refresh_refused(&anyhow::anyhow!("connection reset")));
+    }
 }

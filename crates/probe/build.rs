@@ -17,6 +17,24 @@ fn git(args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+/// A Git file's absolute path, which Cargo needs for its watch: relative
+/// answers are relative to the directory git ran in, not this crate. Git
+/// before 2.31 has no `--path-format`, so its answer is made absolute here.
+fn git_path(name: &str) -> Option<PathBuf> {
+    if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", name]) {
+        return Some(PathBuf::from(path));
+    }
+    let path = PathBuf::from(git(&["rev-parse", "--git-path", name])?);
+    if path.is_absolute() {
+        return Some(path);
+    }
+    let base = env::var_os("AGENT_RELAY_PROBE_GIT_DIR")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| env::current_dir().ok())?;
+    Some(base.join(path))
+}
+
 fn main() {
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_PROBE_VERSION");
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_PROBE_BASE_VERSION");
@@ -28,18 +46,13 @@ fn main() {
     println!("cargo:rerun-if-changed=build_version.rs");
     // Resolve through git so linked worktrees also track their own HEAD.
     for name in ["HEAD", "index"] {
-        if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", name]) {
-            println!("cargo:rerun-if-changed={path}");
+        if let Some(path) = git_path(name) {
+            println!("cargo:rerun-if-changed={}", path.display());
         }
     }
     if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
-        if let Some(path) = git(&[
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-path",
-            &reference,
-        ]) {
-            println!("cargo:rerun-if-changed={path}");
+        if let Some(path) = git_path(&reference) {
+            println!("cargo:rerun-if-changed={}", path.display());
         }
     }
     let revision = git(&["rev-parse", "--short=12", "HEAD"]).unwrap_or_else(|| "unknown".into());
@@ -50,19 +63,31 @@ fn main() {
     // AGENT_RELAY_PROBE_CHANGELOG, when the builder orders its own builds,
     // else the crate version. The Git revision is build metadata only: hashes have no
     // chronological ordering.
-    // AGENT_RELAY_PROBE_CHANGELOG names a changelog whose newest `## v`
-    // heading is that base, read on every build that changes it, so a
-    // builder whose own builds are ordered by its releases (relay-desktop's
-    // CalVer) need not keep a version in step by hand.
+    // AGENT_RELAY_PROBE_CHANGELOG names, by absolute path, a changelog whose
+    // newest non-empty `## v` heading is that base, read on every build that
+    // changes it, so a builder whose own builds are ordered by its releases
+    // (relay-desktop's CalVer) need not keep a version in step by hand. A
+    // configured changelog that cannot be read, or names no release, fails
+    // the build rather than stamping a version that orders below them all.
     let changelog_base = env::var_os("AGENT_RELAY_PROBE_CHANGELOG")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
-        .and_then(|path| {
+        .map(|path| {
             println!("cargo:rerun-if-changed={}", path.display());
-            let text = fs::read_to_string(&path).ok()?;
+            let text = fs::read_to_string(&path).unwrap_or_else(|error| {
+                panic!("AGENT_RELAY_PROBE_CHANGELOG {}: {error}", path.display())
+            });
             text.lines()
-                .find_map(|line| line.strip_prefix("## v"))
-                .map(|heading| heading.trim().to_owned())
+                .filter_map(|line| line.strip_prefix("## v"))
+                .map(str::trim)
+                .find(|heading| !heading.is_empty())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "AGENT_RELAY_PROBE_CHANGELOG {} has no `## v<version>` release heading",
+                        path.display()
+                    )
+                })
+                .to_owned()
         });
     let base = env::var("AGENT_RELAY_PROBE_BASE_VERSION")
         .ok()

@@ -53,12 +53,28 @@ fn codex_is_offered_only_where_its_daemon_can_run() {
         "packages/standalone/current/codex",
     ] {
         let codex_home = tempfile::tempdir().unwrap();
-        let file = codex_home.path().join(layout);
+        // A managed binary counts once it can run, as the starter needs.
+        install_codex(codex_home.path(), layout);
+        let mut codex = codex.clone();
+        codex.home = codex_home.path().to_path_buf();
+        assert_eq!(system(codex).detect(), Installed::Yes, "{layout}");
+    }
+    // A managed package file that cannot run is not offered: the starter
+    // would skip it and fall back to the older command-line Codex.
+    #[cfg(unix)]
+    {
+        let codex_home = tempfile::tempdir().unwrap();
+        let file = codex_home
+            .path()
+            .join("packages/app-server-daemon/current/bin/codex");
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, "").unwrap();
         let mut codex = codex.clone();
         codex.home = codex_home.path().to_path_buf();
-        assert_eq!(system(codex).detect(), Installed::Yes, "{layout}");
+        assert_eq!(
+            system(codex).detect(),
+            Installed::Unusable(CODEX_NO_DAEMON.into())
+        );
     }
 }
 

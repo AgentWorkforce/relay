@@ -87,10 +87,13 @@ client (`linux_app::bridge`), so it stays with that client.
   `build-windows.sh` and `desktop-release.yml` pass the desktop CalVer, and
   a relay release would pass the relay version.
 - Otherwise, a development build is `<base>-dev+<git revision>`. The base is
-  `AGENT_RELAY_PROBE_BASE_VERSION` when set: relay-desktop should pass its
-  newest CalVer, which it used to read from its changelog, so development
-  cores still order below the next desktop release. Without it, the base is
-  the crate version (`0.1.0`).
+  `AGENT_RELAY_PROBE_BASE_VERSION` when set; else the newest non-empty `## v`
+  heading of the changelog `AGENT_RELAY_PROBE_CHANGELOG` names (an absolute
+  path; an unreadable one, or one with no release, fails the build); else the
+  crate version (`0.1.0`). relay-desktop sets `AGENT_RELAY_PROBE_CHANGELOG`
+  and `AGENT_RELAY_PROBE_GIT_DIR` (the checkout the revision is read from) in
+  its `.cargo/config.toml`, so its development cores carry its CalVer and
+  revision and still order below the next desktop release.
 
 ## CI
 
