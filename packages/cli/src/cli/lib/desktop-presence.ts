@@ -11,6 +11,7 @@ import {
   type CoreStatus,
 } from './probe-core.js';
 import { originBindingsPath } from './relaycast-origin-binding.js';
+import { isUsableBinary } from '@agent-relay/harness-driver/install-paths';
 
 function subdirectories(dir: string): string[] {
   try {
@@ -93,7 +94,8 @@ export interface DesktopStartEffects {
   run: (command: string, args: string[]) => number | null;
   /** Start a command detached, without waiting for it. */
   launch: (command: string, args: string[]) => void;
-  exists: (file: string) => boolean;
+  /** Whether a file is there and can be run. */
+  executable: (file: string) => boolean;
 }
 
 const defaultDesktopStartEffects: DesktopStartEffects = {
@@ -103,7 +105,7 @@ const defaultDesktopStartEffects: DesktopStartEffects = {
     child.on('error', () => undefined);
     child.unref();
   },
-  exists: fs.existsSync,
+  executable: isUsableBinary,
 };
 
 /** The Linux app launchers on this machine: the package's, then per-user trees, newest first. */
@@ -127,8 +129,11 @@ function startLinuxDesktopCore(home: string, env: NodeJS.ProcessEnv, effects: De
     if (status !== 0) throw new Error(`${shown('systemctl', args)} exited with ${status ?? 'no status'}`);
     return shown('systemctl', args);
   }
-  const launcher = linuxLaunchers(home, env).find((file) => effects.exists(file));
-  if (!launcher) throw new Error(`${DESKTOP_LINUX_UNIT} is not enabled and no ${LINUX_LAUNCHER} was found`);
+  // Only a launcher that can run: one that cannot is passed over, not started and waited on.
+  const launcher = linuxLaunchers(home, env).find((file) => effects.executable(file));
+  if (!launcher) {
+    throw new Error(`${DESKTOP_LINUX_UNIT} is not enabled and no runnable ${LINUX_LAUNCHER} was found`);
+  }
   const display = Boolean(env.DISPLAY?.trim() || env.WAYLAND_DISPLAY?.trim());
   const args = [display ? '--background' : '--headless'];
   effects.launch(launcher, args);

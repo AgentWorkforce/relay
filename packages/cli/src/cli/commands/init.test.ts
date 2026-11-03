@@ -1714,7 +1714,7 @@ describe('relay init message injection', () => {
       expect(fs.existsSync(corePath())).toBe(false);
       const output = logs.join('\n');
       expect(output).toContain(
-        `Started the Agent Relay desktop app's core (agent-relay-probe ${PROBE_VERSION}, pid 777)`
+        `Asked the Agent Relay desktop app to start its core; using the core now running on this machine (agent-relay-probe ${PROBE_VERSION}, pid 777)`
       );
       expect(output).not.toContain('could not be started');
       expect(core.sets()).toContainEqual({ codex_stop_hook: true });
@@ -1787,7 +1787,33 @@ describe('relay init message injection', () => {
       expect(core.calls.map(([method]) => method)).toContain('daemon.shutdown');
       expect(startDesktopCore).toHaveBeenCalledTimes(1);
       expect(core.deps.startCore).toHaveBeenCalledTimes(1);
-      expect(logs.join('\n')).toContain("Started the Agent Relay desktop app's core");
+      expect(logs.join('\n')).toContain('Asked the Agent Relay desktop app to start its core');
+    });
+
+    it('gives up on the desktop core by the clock when each attempt stalls', async () => {
+      installedProbe();
+      const core = fakeCore();
+      let now = Date.now();
+      const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+      // Every connection attempt hangs for 15 seconds before giving up.
+      const connectCore = vi.fn(async (socket: string) => {
+        now += 15_000;
+        return core.deps.connectCore(socket);
+      });
+      try {
+        const { run, logs } = setup({
+          ...core.deps,
+          connectCore,
+          desktopInstalled: () => true,
+          startDesktopCore: vi.fn(() => 'open -g -j -b com.agentrelay.desktop'),
+        });
+        await run('--tools', 'codex');
+        expect(core.deps.startCore).toHaveBeenCalledTimes(1);
+        expect(connectCore.mock.calls.length).toBeLessThan(10);
+        expect(logs.join('\n')).toContain('no core answered on');
+      } finally {
+        clock.mockRestore();
+      }
     });
 
     it('never tries the desktop app when it is not installed', async () => {

@@ -1186,7 +1186,9 @@ async function startDesktopAppCore(
   }
   if (!command) return undefined;
   deps.log("Starting the Agent Relay desktop app's core…");
-  for (let i = 0; i < CORE_START_TIMEOUT_MS / 250; i += 1) {
+  // Bounded by the clock (a stalled socket can hold one attempt for seconds) and by attempts.
+  const deadline = Date.now() + CORE_START_TIMEOUT_MS;
+  for (let i = 0; i < CORE_START_TIMEOUT_MS / 250 && Date.now() < deadline; i += 1) {
     const up = await connectTo(deps, socket).catch(() => undefined);
     if (up) return { ...up, origin: 'desktop' };
     await deps.sleep(250);
@@ -1320,7 +1322,10 @@ function describeCore(session: CoreSession): string {
         `the desktop app's or a service's. relay init does not start a second one.`
       );
     case 'desktop':
-      return `Started the Agent Relay desktop app's core (agent-relay-probe ${version}, pid ${pid}); relay init uses it.`;
+      return (
+        `Asked the Agent Relay desktop app to start its core; using the core now running on this machine ` +
+        `(agent-relay-probe ${version}, pid ${pid}).`
+      );
   }
 }
 
@@ -1642,7 +1647,8 @@ async function setupInjection(
     return { core: describeCore(session), notice: session.notice, results, workspaceNote, moved };
   } catch (error) {
     if (error instanceof InjectionStuckError) throw error;
-    return { reason: `the Agent Relay core could not be set up (${(error as Error).message})` };
+    const notice = session.notice ? `. ${session.notice}` : '';
+    return { reason: `the Agent Relay core could not be set up (${(error as Error).message})${notice}` };
   } finally {
     session.client.close();
   }

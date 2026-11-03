@@ -121,7 +121,7 @@ describe('startDesktopCore', () => {
         launch: (command: string, args: string[]) => {
           launched.push([command, ...args].join(' '));
         },
-        exists: (file: string) => files.includes(file),
+        executable: (file: string) => files.includes(file),
       },
     };
   }
@@ -172,7 +172,7 @@ describe('startDesktopCore', () => {
   it('throws on Linux when neither the unit nor a launcher is there', () => {
     const fake = effects({ [IS_ENABLED]: 1 });
     expect(() => startDesktopCore('linux', home, {}, fake.effects)).toThrow(
-      'no agent-relay-desktop was found'
+      'no runnable agent-relay-desktop was found'
     );
     expect(fake.launched).toEqual([]);
   });
