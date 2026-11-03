@@ -577,7 +577,7 @@ fn newer_sharing_entry(directory: &Path) -> Option<Value> {
 }
 /// The sharing of every install under `root` matching `options`. With an
 /// account and workspace it names exactly that install (on `--site-url`, or
-/// agentrelay.com) and fails when it is not set up here.
+/// the site this build is made for) and fails when it is not set up here.
 fn sharing_status_value(root: &Path, options: &SharingStatus) -> Result<Value> {
     let site = options
         .site_url
@@ -587,7 +587,7 @@ fn sharing_status_value(root: &Path, options: &SharingStatus) -> Result<Value> {
     let target = options.account.as_deref().zip(options.workspace.as_deref());
     let target_site = site
         .clone()
-        .unwrap_or_else(|| "https://agentrelay.com".into());
+        .unwrap_or_else(|| crate::relay::links::built_in_site_url().into());
     let mut installs = Vec::new();
     if root.exists() {
         for entry in fs::read_dir(root)? {
@@ -1366,7 +1366,8 @@ mod tests {
             workspace_name: None,
             org_id: "org".into(),
             workspace_id: "workspace".into(),
-            history_url: if site.starts_with("http://127.0.0.1") {
+            // A local site's history is local too (`read_config` holds it to that).
+            history_url: if site.starts_with("http://") {
                 "http://127.0.0.1:8788".into()
             } else {
                 "https://history.agentrelay.com".into()
@@ -1424,13 +1425,10 @@ mod tests {
     #[test]
     fn sharing_status_filters_by_site_and_names_one_target() {
         let root = tempfile::tempdir().unwrap();
-        sharing_install(
-            root.path(),
-            "a",
-            "https://agentrelay.com",
-            "one",
-            SharingMode::All,
-        );
+        // The install a target names without a site is on the site this
+        // build is made for.
+        let site = crate::relay::links::built_in_site_url();
+        sharing_install(root.path(), "a", site, "one", SharingMode::All);
         sharing_install(
             root.path(),
             "b",
@@ -1453,7 +1451,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(value["installs"].as_array().unwrap().len(), 1);
-        assert_eq!(value["installs"][0]["site_url"], "https://agentrelay.com");
+        assert_eq!(value["installs"][0]["site_url"], site);
 
         let value = sharing_status_value(
             root.path(),
@@ -1471,7 +1469,7 @@ mod tests {
         fs::write(
             directory.join("config.json"),
             json!({"version": u64::from(super::super::CONFIG_VERSION) + 1,
-                "site_url": "https://agentrelay.com", "account_id": "one",
+                "site_url": crate::relay::links::built_in_site_url(), "account_id": "one",
                 "workspace_id": "workspace"})
             .to_string(),
         )

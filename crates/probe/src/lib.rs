@@ -9,6 +9,11 @@ pub const BUILD_REVISION: &str = env!("RELAY_DESKTOP_REVISION");
 #[cfg(feature = "history")]
 pub const HISTORY_VERSION: &str = env!("RELAY_HISTORY_VERSION");
 
+/// The build-time check of `AGENT_RELAY_SITE_URL` and `AGENT_RELAY_URL_SCHEME`
+/// (`build.rs`), tested here.
+#[cfg(test)]
+#[path = "../build_site.rs"]
+mod build_site;
 /// Held by every test that changes this process's environment.
 #[cfg(test)]
 pub(crate) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

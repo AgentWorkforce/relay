@@ -1,3 +1,4 @@
+mod build_site;
 mod build_version;
 
 use std::{env, fs, path::PathBuf, process::Command};
@@ -42,6 +43,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_PROBE_GIT_DIR");
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_POSTHOG_API_KEY");
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_POSTHOG_HOST");
+    println!("cargo:rerun-if-env-changed=AGENT_RELAY_SITE_URL");
+    println!("cargo:rerun-if-env-changed=AGENT_RELAY_URL_SCHEME");
+    println!("cargo:rerun-if-changed=build_site.rs");
     println!("cargo:rerun-if-changed=Cargo.lock");
     println!("cargo:rerun-if-changed=build_version.rs");
     // Resolve through git so linked worktrees also track their own HEAD.
@@ -108,6 +112,7 @@ fn main() {
         .unwrap_or_else(|| build_version::development_version(&base, &revision));
     println!("cargo:rustc-env=RELAY_DESKTOP_VERSION={version}");
     println!("cargo:rustc-env=RELAY_DESKTOP_REVISION={revision}");
+    built_in_site();
     windows_resources(&version);
 
     // Only the `history` feature links RelayHistory, so only it reports a
@@ -137,6 +142,41 @@ fn main() {
         })
         .expect("Cargo.lock must include the resolved ai-hist version");
     println!("cargo:rustc-env=RELAY_HISTORY_VERSION={history}");
+}
+
+/// The Cloud site and link scheme this build is made for, fixed here and
+/// nowhere at run time: `AGENT_RELAY_SITE_URL` (`links::built_in_site_url`,
+/// `https://agentrelay.com` when unset) and `AGENT_RELAY_URL_SCHEME`
+/// (`links::built_in_url_scheme`, `agentrelay` when unset). Each is checked
+/// (`build_site.rs`) so a build for a wrong site or scheme fails here, with
+/// the reason, and the checked, normalized value is what `option_env!` reads.
+fn built_in_site() {
+    let read = |key: &str| {
+        env::var(key)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    };
+    if let Some(value) = read("AGENT_RELAY_SITE_URL") {
+        let origin = build_site::site_origin(&value).unwrap_or_else(|reason| {
+            panic!(
+                "AGENT_RELAY_SITE_URL `{value}` is not a site this build can talk to: {reason}. \
+                 Set it to https://<host>, or to http://localhost:<port> or \
+                 http://127.0.0.1:<port> for a site served on this computer, with no \
+                 user info, path, query or fragment; or leave it unset for https://agentrelay.com."
+            )
+        });
+        println!("cargo:rustc-env=AGENT_RELAY_SITE_URL={origin}");
+    }
+    if let Some(value) = read("AGENT_RELAY_URL_SCHEME") {
+        let scheme = build_site::url_scheme(&value).unwrap_or_else(|reason| {
+            panic!(
+                "AGENT_RELAY_URL_SCHEME `{value}` is not a URL scheme: {reason}. \
+                 Leave it unset for agentrelay."
+            )
+        });
+        println!("cargo:rustc-env=AGENT_RELAY_URL_SCHEME={scheme}");
+    }
 }
 
 /// On Windows, embeds the Agent Relay icon and the release version in the

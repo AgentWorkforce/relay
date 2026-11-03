@@ -17,6 +17,16 @@ A relative `--socket` lives beside the default socket and a relative
 `--app-data-dir` beside the default data directory, so a launchd property
 list names them without `~`.
 
+The Agent Relay site a core talks to is fixed when it is built, from
+`AGENT_RELAY_SITE_URL` (`https://agentrelay.com` when unset; an https origin,
+or `http://localhost:<port>` or `http://127.0.0.1:<port>` for a site served on
+this computer), and the scheme of the links it opens from
+`AGENT_RELAY_URL_SCHEME` (`agentrelay` when unset). No option, request or
+environment variable changes either at run time, in any build; a build for
+another site is another build. The site a build is made for is trusted beside
+production and loopback, so it needs no
+`RELAYHISTORY_ALLOW_UNTRUSTED_CLOUD_BASE_URL`.
+
 The macOS app (SwiftUI) and the GTK app, which serves Linux and Windows
 (the same `agent-relay` program built for each), are thin native UIs. They
 render the core's state and send it commands over one bridge contract; they
@@ -586,7 +596,7 @@ dropped in the core. `identity_hash` joins a person to `roster.list`'s
 
 | Method                      | Params                                                                                                           | Result                                                                                                                                                                                                                                                                                              | Lands in |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| `links.parse`               | `{"url","site_url"?}`                                                                                            | `{"kind":"connect","site_url","account_id","workspace_id"}` or `{"kind":"message","endpoint","address"}`, else `invalid_params`; `site_url` is the site the app is built for (default: the signed-in site, else `https://agentrelay.com`)                                                           | 2a       |
+| `links.parse`               | `{"url"}`                                                                                                        | `{"kind":"connect","site_url","account_id","workspace_id"}` or `{"kind":"message","endpoint","address"}`, else `invalid_params` (a connect link for another site says which); the link's scheme and site are the build's own (`AGENT_RELAY_URL_SCHEME`, `AGENT_RELAY_SITE_URL` when the core was built)       | 2a       |
 | `telemetry.record`          | `{"operation","outcome","failure"?,"count"?,"mode"?,"surface"?,"agent_kind"?,"already_registered"?,"is_reply"?}` | `{}`; an unknown value is `invalid_params`. `update_install` success waits up to two seconds for the telemetry sender before replying, so a hosted core can be released after the reply. Desktop update callers bound each awaited telemetry RPC to three seconds; GTK awaits it off the UI thread. | 2c       |
 | `login_item.set` (Linux)    | `{"enabled"}`                                                                                                    | `{}`; `refused` on macOS, where `SMAppService` is the app's                                                                                                                                                                                                                                         | 2c       |
 | `login_item.status` (Linux) | —                                                                                                                | `{"enabled"}`; `refused` on macOS                                                                                                                                                                                                                                                                   | 3        |

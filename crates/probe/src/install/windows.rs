@@ -33,8 +33,14 @@ pub const SHARE: &str = "share";
 pub const ROOT: &str = r"Programs\AgentRelay";
 /// The Start menu shortcut, under `%APPDATA%`.
 pub const SHORTCUT: &str = r"Microsoft\Windows\Start Menu\Programs\Agent Relay.lnk";
-/// The `agentrelay://` link handler, under `HKEY_CURRENT_USER`.
-pub const PROTOCOL_KEY: &str = r"Software\Classes\agentrelay";
+/// The link handler for this build's scheme (`agentrelay://`,
+/// `links::built_in_url_scheme`), under `HKEY_CURRENT_USER`.
+pub fn protocol_key() -> String {
+    format!(
+        r"Software\Classes\{}",
+        crate::relay::links::built_in_url_scheme()
+    )
+}
 /// The identity Windows files the app's notifications under.
 pub const APP_USER_MODEL_ID: &str = "AgentWorkforce.AgentRelay";
 /// Where that identity's name and icon are registered, under `HKEY_CURRENT_USER`.
@@ -125,15 +131,17 @@ pub fn quote_argument(value: &str) -> String {
     quoted
 }
 
-/// The `HKEY_CURRENT_USER` values that make `agentrelay://` links open
-/// `exe`: `(key, value name, data)`, an empty name being the key's default.
+/// The `HKEY_CURRENT_USER` values that make this build's links
+/// (`agentrelay://…`) open `exe`: `(key, value name, data)`, an empty name
+/// being the key's default.
 pub fn protocol_entries(exe: &Path) -> Vec<(String, String, String)> {
     let exe = exe.display().to_string();
+    let protocol_key = protocol_key();
     let key = |path: &str| {
         if path.is_empty() {
-            PROTOCOL_KEY.to_owned()
+            protocol_key.clone()
         } else {
-            format!(r"{PROTOCOL_KEY}\{path}")
+            format!(r"{protocol_key}\{path}")
         }
     };
     vec![
@@ -379,18 +387,20 @@ mod tests {
             r"C:\Users\a b\AppData\Local\Programs\AgentRelay\1.0.0\AgentRelay-Windows-x64\bin\agent-relay.exe",
         );
         let entries = protocol_entries(exe);
+        let scheme = crate::relay::links::built_in_url_scheme();
+        assert_eq!(protocol_key(), format!(r"Software\Classes\{scheme}"));
         assert_eq!(
             entries[0],
-            (PROTOCOL_KEY.into(), String::new(), "URL:Agent Relay".into())
+            (protocol_key(), String::new(), "URL:Agent Relay".into())
         );
         assert_eq!(
             entries[1],
-            (PROTOCOL_KEY.into(), "URL Protocol".into(), String::new())
+            (protocol_key(), "URL Protocol".into(), String::new())
         );
         assert_eq!(
             entries[3],
             (
-                r"Software\Classes\agentrelay\shell\open\command".into(),
+                format!(r"Software\Classes\{scheme}\shell\open\command"),
                 String::new(),
                 format!("\"{}\" \"%1\"", exe.display())
             )

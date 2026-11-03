@@ -20,7 +20,8 @@ pub enum CloudCommands {
 
 #[derive(Args)]
 pub struct Install {
-    #[arg(long, default_value = "https://agentrelay.com")]
+    /// The Agent Relay site; default the one this build is made for.
+    #[arg(long, default_value = crate::relay::links::built_in_site_url())]
     pub site_url: String,
     #[arg(long)]
     pub account: Option<String>,
@@ -50,7 +51,8 @@ pub struct Install {
 
 #[derive(Args)]
 pub struct RotateKey {
-    #[arg(long, default_value = "https://agentrelay.com")]
+    /// The Agent Relay site; default the one this build is made for.
+    #[arg(long, default_value = crate::relay::links::built_in_site_url())]
     pub site_url: String,
     /// Milliseconds the superseded key keeps authenticating, up to Cloud's
     /// one-hour bound; 0 revokes it at once — the compromise path.

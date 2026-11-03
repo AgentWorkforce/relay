@@ -105,7 +105,7 @@ impl AccountPlugin for TestAccount {
     }
 
     fn site_url(&self) -> String {
-        crate::relay::links::DEFAULT_SITE_URL.into()
+        crate::relay::links::built_in_site_url().into()
     }
 
     fn record_usage(&self, event: TelemetryEvent) {

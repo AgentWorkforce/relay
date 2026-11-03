@@ -4036,29 +4036,46 @@ async fn signed_out_messaging_and_people_ask_for_a_sign_in() {
 async fn links_parse_for_the_configured_site() {
     let h = Harness::start(|_| {}).await;
     let mut client = h.client().await;
+    // Links are of the scheme the core was built with, and a connect link
+    // is for the site it was built for; nothing in the request chooses them.
+    let site = agent_relay_probe::relay::links::built_in_site_url();
+    let scheme = agent_relay_probe::relay::links::built_in_url_scheme();
     let link = client
         .ok(
             "links.parse",
-            json!({"url": "agentrelay://message?to=reviewer%40sf-frame"}),
+            json!({"url": format!("{scheme}://message?to=reviewer%40sf-frame")}),
         )
         .await;
     assert_eq!(
         link,
         json!({"kind": "message", "endpoint": "reviewer@sf-frame", "address": true})
     );
+    let encoded =
+        |value: &str| url::form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>();
     let connect = client
         .ok(
             "links.parse",
-            json!({"url": "agentrelay-dev://connect?site=http%3A%2F%2Flocalhost%3A3100&account=user-1&workspace=ws_1",
-                "site_url": "http://localhost:3100"}),
+            json!({"url": format!("{scheme}://connect?site={}&account=user-1&workspace=ws_1", encoded(site))}),
         )
         .await;
     assert_eq!(connect["kind"], "connect");
+    assert_eq!(connect["site_url"], site);
     assert_eq!(connect["workspace_id"], "ws_1");
+    let (kind, message) = client
+        .error(
+            "links.parse",
+            json!({"url": format!("{scheme}://connect?site={}&account=user-1&workspace=ws_1", encoded("https://other.example"))}),
+        )
+        .await;
+    assert_eq!(kind, "invalid_params");
+    assert_eq!(
+        message,
+        format!("That link connects to https://other.example, but this app is built for {site}.")
+    );
     let (kind, _) = client
         .error(
             "links.parse",
-            json!({"url": "agentrelay://message?to=a%40b&text=secret"}),
+            json!({"url": format!("{scheme}://message?to=a%40b&text=secret")}),
         )
         .await;
     assert_eq!(kind, "invalid_params");

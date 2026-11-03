@@ -18,7 +18,6 @@ use std::{
     time::Duration,
 };
 
-const SITE: &str = "https://agentrelay.com";
 const TIMEOUT: Duration = Duration::from_secs(90);
 
 mod host_state;
@@ -268,11 +267,12 @@ fn mcp(state: &HostState, tool: &str, arguments: Value) -> Result<Value> {
         .auth
         .as_ref()
         .ok_or_else(|| error("Host sign-in is missing."))?;
+    let site = crate::relay::links::built_in_site_url();
     ensure!(
-        session.site_url == SITE,
+        session.site_url == site,
         SafeError("Host credentials belong to another site.".into())
     );
-    let answer = cloud_http::send_blocking_with_headers("POST", &format!("{SITE}/cloud/api/v1/mcp/shared-sessions"),
+    let answer = cloud_http::send_blocking_with_headers("POST", &format!("{site}/cloud/api/v1/mcp/shared-sessions"),
         Some(session.access_token.expose()),
         &[("Mcp-Session-Id", &state.session), ("MCP-Protocol-Version", "2025-03-26"), ("Accept", "application/json, text/event-stream")],
         Some(&json!({"jsonrpc":"2.0","id":state.request,"method":"tools/call","params":{"name":tool,"arguments":arguments}})), TIMEOUT)
@@ -312,7 +312,10 @@ fn login(path: &Path, state: &mut HostState) -> Result<()> {
     let grant = rt
         // Relay Connect's host is not the desktop installation: an
         // ordinary device login, without the desktop proof.
-        .block_on(DeviceLogin::begin(SITE, None))
+        .block_on(DeviceLogin::begin(
+            crate::relay::links::built_in_site_url(),
+            None,
+        ))
         .map_err(|e| error(e.to_string()))?;
     let approval = grant
         .verification_url_complete

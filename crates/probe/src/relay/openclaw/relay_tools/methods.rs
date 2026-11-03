@@ -9,13 +9,14 @@ use crate::relay::protocol::{ErrorKind, RpcError};
 use serde_json::Value;
 use std::sync::Arc;
 
-/// The site whose hosted MCP OpenClaw signs in to: the signed-in account's.
+/// The site whose hosted MCP OpenClaw signs in to: the signed-in account's,
+/// else the one this build is made for.
 fn site(core: &Core) -> String {
     core.plugins
         .account
         .as_ref()
         .map(|account| account.site_url().to_string())
-        .unwrap_or_else(|| crate::relay::links::DEFAULT_SITE_URL.into())
+        .unwrap_or_else(|| crate::relay::links::built_in_site_url().into())
 }
 
 fn not_set_up() -> String {

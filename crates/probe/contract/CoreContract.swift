@@ -4147,31 +4147,28 @@ public struct LimitParams: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+/// `links.parse`'s parameters. The link's scheme and, for a connect link,
+/// its site are the build's own (`AGENT_RELAY_SITE_URL` and
+/// `AGENT_RELAY_URL_SCHEME` when the core was built); nothing in the request
+/// chooses them.
 public struct LinkParams: Codable, Equatable, Hashable, Sendable {
-    /// The site this app is built for; the signed-in site, else
-    /// `https://agentrelay.com`, when absent.
-    public let siteUrl: String?
     public let url: String
 
-    public init(siteUrl: String? = nil, url: String) {
-        self.siteUrl = siteUrl
+    public init(url: String) {
         self.url = url
     }
 
     enum CodingKeys: String, CodingKey {
-        case siteUrl = "site_url"
         case url
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.siteUrl = try c.decodeIfPresent(String.self, forKey: .siteUrl)
         self.url = try c.decode(String.self, forKey: .url)
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encodeIfPresent(self.siteUrl, forKey: .siteUrl)
         try c.encode(self.url, forKey: .url)
     }
 }
