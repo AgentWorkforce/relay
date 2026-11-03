@@ -29,8 +29,8 @@ pub const DEFAULT_URL_SCHEME: &str = "agentrelay";
 
 /// The Agent Relay site this build talks to: `AGENT_RELAY_SITE_URL` when it
 /// was built, checked and normalized by `build.rs` (an https origin, or http
-/// on localhost or 127.0.0.1 with a port), else [`DEFAULT_SITE_URL`]. Fixed
-/// when the build is made; nothing at run time changes it, in any build.
+/// on localhost or 127.0.0.1), else [`DEFAULT_SITE_URL`]. Fixed when the
+/// build is made; nothing at run time changes it, in any build.
 pub fn built_in_site_url() -> &'static str {
     match option_env!("AGENT_RELAY_SITE_URL") {
         Some(site) if !site.trim().is_empty() => site,
@@ -39,8 +39,9 @@ pub fn built_in_site_url() -> &'static str {
 }
 
 /// The scheme of the links this build opens (`agentrelay://…`):
-/// `AGENT_RELAY_URL_SCHEME` when it was built, else [`DEFAULT_URL_SCHEME`].
-/// One scheme per build, so a build for another site can register its own.
+/// `AGENT_RELAY_URL_SCHEME` when it was built (checked by `build.rs`: never
+/// one of the web's), else [`DEFAULT_URL_SCHEME`]. One scheme per build, so
+/// a build for another site can register its own.
 pub fn built_in_url_scheme() -> &'static str {
     match option_env!("AGENT_RELAY_URL_SCHEME") {
         Some(scheme) if !scheme.trim().is_empty() => scheme,
@@ -307,6 +308,55 @@ mod tests {
         }
         assert_eq!(Endpoint::parse(""), Err(EndpointError::Empty));
         assert_eq!(Endpoint::parse("a b"), Err(EndpointError::Whitespace));
+    }
+
+    /// Every site and scheme `build.rs` lets into a build is one the core
+    /// then trusts and parses: the build-time check and the run-time rules
+    /// move together.
+    #[test]
+    fn a_site_and_scheme_the_build_accepts_work_at_run_time() {
+        for value in [
+            "https://agentrelay.com",
+            "https://Staging.AgentRelay.com:443/",
+            "http://localhost:3100",
+            "http://localhost:80",
+            "http://127.0.0.1",
+        ] {
+            let site = crate::build_site::site_origin(value).unwrap();
+            assert_eq!(
+                crate::cloud::site_origin_with(&site, &site).unwrap(),
+                site,
+                "{value}"
+            );
+            assert_eq!(site_url_for(&site, &site).as_deref(), Some(site.as_str()));
+            let link = format!(
+                "agentrelay://connect?site={}&account=user&workspace=ws",
+                url::form_urlencoded::byte_serialize(site.as_bytes()).collect::<String>()
+            );
+            assert!(
+                parse_link_for(&link, "agentrelay", &site).is_ok(),
+                "{value}"
+            );
+        }
+        for value in ["agentrelay", "agentrelay-dev", "x1+.-"] {
+            let scheme = crate::build_site::url_scheme(value).unwrap();
+            assert!(
+                parse_link_for(
+                    &format!("{scheme}://message?to=alice"),
+                    &scheme,
+                    DEFAULT_SITE_URL
+                )
+                .is_ok(),
+                "{value}"
+            );
+        }
+        // A web scheme would parse with a `/` path, never as an app link,
+        // and the build refuses it (as an app link of it would be refused).
+        assert!(crate::build_site::url_scheme("https").is_err());
+        assert_eq!(
+            parse_link_for("https://message?to=alice", "https", DEFAULT_SITE_URL),
+            Err(LinkError::NotALink)
+        );
     }
 
     #[test]

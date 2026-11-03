@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The core (`agent-relay-probe`) talks to one Agent Relay site, fixed when it is built: `AGENT_RELAY_SITE_URL` at build time (`https://agentrelay.com` when unset; an https origin, or `http://localhost:<port>` / `http://127.0.0.1:<port>`), and a build for a malformed site fails to build. Nothing changes the site at run time, in any build.
-- The core opens links of one scheme, fixed at build time from `AGENT_RELAY_URL_SCHEME` (`agentrelay` when unset); the `agentrelay-dev://` rule for non-production sites is gone, and on Windows the link handler registers the build's scheme.
+- The core (`agent-relay-probe`) talks to one Agent Relay site, fixed when it is built: `AGENT_RELAY_SITE_URL` at build time (`https://agentrelay.com` when unset; an https origin, or `http://localhost[:port]` / `http://127.0.0.1[:port]`), and a build for a site the core could not trust fails to build. Nothing changes the site at run time, in any build.
+- The core opens links of one scheme, fixed at build time from `AGENT_RELAY_URL_SCHEME` (`agentrelay` when unset; a web scheme such as `https` fails the build); the `agentrelay-dev://` rule for non-production sites is gone, and on Windows the link handler registers the build's scheme.
 - The site a build is made for is trusted beside `https://agentrelay.com` and loopback: it needs no `RELAYHISTORY_ALLOW_UNTRUSTED_CLOUD_BASE_URL`, which stays a development switch for any other origin.
 - `links.parse` opens links of the build's scheme only, and refuses a connect link for another site naming that site.
 - `agent-relay-probe cloud install`, `cloud rotate-key`, `status`, `stop` and the other install commands default `--site-url` to the build's site, as does `sharing status --account --workspace`; the Cloud API default, Relay Connect invite links and the Connect host sign-in are the build's site's.
@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking Changes
 
-- A core built for another site than `https://agentrelay.com` must be built with `AGENT_RELAY_SITE_URL`; `relay serve --site-url`, `account.sign_in {"site_url"}` and `links.parse {"site_url"}` are refused.
+- A core built for another site than `https://agentrelay.com` must be built with `AGENT_RELAY_SITE_URL`. `relay serve --site-url` is refused; a `site_url` in an `account.sign_in` or `links.parse` request is ignored, as any unknown field is, and the build's site applies.
 
 ### Migration Guidance
 

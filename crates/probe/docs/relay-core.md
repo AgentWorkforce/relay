@@ -19,9 +19,10 @@ list names them without `~`.
 
 The Agent Relay site a core talks to is fixed when it is built, from
 `AGENT_RELAY_SITE_URL` (`https://agentrelay.com` when unset; an https origin,
-or `http://localhost:<port>` or `http://127.0.0.1:<port>` for a site served on
-this computer), and the scheme of the links it opens from
-`AGENT_RELAY_URL_SCHEME` (`agentrelay` when unset). No option, request or
+or `http://localhost[:port]` or `http://127.0.0.1[:port]` for a site served on
+this computer, which is http only), and the scheme of the links it opens from
+`AGENT_RELAY_URL_SCHEME` (`agentrelay` when unset; never a web scheme such as
+`https`). A value the core could not then trust or parse fails the build. No option, request or
 environment variable changes either at run time, in any build; a build for
 another site is another build. The site a build is made for is trusted beside
 production and loopback, so it needs no

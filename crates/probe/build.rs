@@ -161,8 +161,8 @@ fn built_in_site() {
         let origin = build_site::site_origin(&value).unwrap_or_else(|reason| {
             panic!(
                 "AGENT_RELAY_SITE_URL `{value}` is not a site this build can talk to: {reason}. \
-                 Set it to https://<host>, or to http://localhost:<port> or \
-                 http://127.0.0.1:<port> for a site served on this computer, with no \
+                 Set it to https://<host>, or to http://localhost[:port] or \
+                 http://127.0.0.1[:port] for a site served on this computer, with no \
                  user info, path, query or fragment; or leave it unset for https://agentrelay.com."
             )
         });
@@ -171,7 +171,7 @@ fn built_in_site() {
     if let Some(value) = read("AGENT_RELAY_URL_SCHEME") {
         let scheme = build_site::url_scheme(&value).unwrap_or_else(|reason| {
             panic!(
-                "AGENT_RELAY_URL_SCHEME `{value}` is not a URL scheme: {reason}. \
+                "AGENT_RELAY_URL_SCHEME `{value}` is not a scheme for the app's links: {reason}. \
                  Leave it unset for agentrelay."
             )
         });

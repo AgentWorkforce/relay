@@ -4,10 +4,14 @@
 //! the crate's tests through `#[path]`, where this is a plain module.
 
 /// `value` as the origin a build may talk to: `https://<host>` on its
-/// default port, or `http://localhost:<port>` / `http://127.0.0.1:<port>` for
-/// a site served on this computer; no user info, path, query or fragment. A
-/// trailing slash is dropped and the scheme and host lowercased, so the
-/// result compares byte for byte with what the core stores.
+/// default port, or `http://localhost[:port]` / `http://127.0.0.1[:port]` for
+/// a site served on this computer; no user info, path, query or fragment.
+/// The result is the origin as the core writes one (`url::Origin`'s ASCII
+/// serialization: scheme and host lowercased, a default port dropped, no
+/// trailing slash), so it compares byte for byte with a stored site. The
+/// rule is the one `cloud::site_origin` trusts at run time, which its tests
+/// hold it to: loopback is http only there, so https on loopback is refused
+/// here rather than accepted into a build that cannot sign in.
 pub fn site_origin(value: &str) -> Result<String, String> {
     let value = value.trim();
     let (scheme, rest) = value
@@ -33,6 +37,7 @@ pub fn site_origin(value: &str) -> Result<String, String> {
         return Err("its host is not a host name".into());
     }
     let host = host.to_ascii_lowercase();
+    let local = host == "localhost" || host == "127.0.0.1";
     let port = port
         .map(|port| {
             port.parse::<u16>()
@@ -43,24 +48,38 @@ pub fn site_origin(value: &str) -> Result<String, String> {
         .transpose()?;
     match scheme.as_str() {
         "https" => {
-            if port.is_some() {
-                return Err("an https site is on its default port, so names none".into());
+            if local {
+                return Err(
+                    "a site on localhost or 127.0.0.1 is served over http, not https".into(),
+                );
+            }
+            if port.is_some_and(|port| port != 443) {
+                return Err("an https site is on its default port, 443".into());
             }
             Ok(format!("https://{host}"))
         }
         "http" => {
-            if host != "localhost" && host != "127.0.0.1" {
+            if !local {
                 return Err("http is for a site on localhost or 127.0.0.1 only".into());
             }
-            let port = port.ok_or_else(|| "a local http site names its port".to_string())?;
-            Ok(format!("http://{host}:{port}"))
+            match port {
+                // The default port is not part of an origin.
+                None | Some(80) => Ok(format!("http://{host}")),
+                Some(port) => Ok(format!("http://{host}:{port}")),
+            }
         }
         _ => Err(format!("its scheme `{scheme}` is not https or http")),
     }
 }
 
+/// Schemes the WHATWG URL parser treats specially (a host, a default port,
+/// a `/` path): a link of one is not an app link the core can parse, and
+/// the platforms register them for browsers.
+const SPECIAL_SCHEMES: [&str; 6] = ["http", "https", "ws", "wss", "ftp", "file"];
+
 /// `value` as a URL scheme the app may register for its links (RFC 3986:
-/// a letter, then letters, digits, `+`, `-` or `.`), lowercased.
+/// a letter, then letters, digits, `+`, `-` or `.`, and none of the web's
+/// own schemes), lowercased.
 pub fn url_scheme(value: &str) -> Result<String, String> {
     let value = value.trim().to_ascii_lowercase();
     let mut bytes = value.bytes();
@@ -70,6 +89,11 @@ pub fn url_scheme(value: &str) -> Result<String, String> {
         && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'));
     if !well_formed {
         return Err("a scheme is a letter followed by letters, digits, `+`, `-` or `.`".into());
+    }
+    if SPECIAL_SCHEMES.contains(&value.as_str()) {
+        return Err(format!(
+            "`{value}` is a web scheme, which a link of the app's cannot use"
+        ));
     }
     Ok(value)
 }
@@ -89,6 +113,11 @@ mod tests {
             (" HTTPS://relay.example.test ", "https://relay.example.test"),
             ("http://localhost:3100", "http://localhost:3100"),
             ("http://127.0.0.1:3100/", "http://127.0.0.1:3100"),
+            // A default port is no part of an origin, as the core writes one.
+            ("https://agentrelay.com:443", "https://agentrelay.com"),
+            ("http://localhost:80", "http://localhost"),
+            ("http://localhost", "http://localhost"),
+            ("http://127.0.0.1:443", "http://127.0.0.1:443"),
         ] {
             assert_eq!(site_origin(value).as_deref(), Ok(origin), "{value}");
         }
@@ -101,12 +130,14 @@ mod tests {
             "https://agentrelay.com/#top",
             "https://user:secret@agentrelay.com",
             "https://agentrelay.com:8443",
-            "https://agentrelay.com:443",
             "https://",
             "https://relay example",
             "http://agentrelay.com",
             "http://relay.example.test:3100",
-            "http://localhost",
+            // The core trusts loopback over http only.
+            "https://localhost",
+            "https://localhost:3100",
+            "https://127.0.0.1",
             "http://localhost:0",
             "http://localhost:70000",
             "http://localhost:web",
@@ -128,6 +159,14 @@ mod tests {
             "agent_relay",
             "agentrelay://",
             "-dev",
+            // The web's schemes parse with a host and a `/` path, not as
+            // an app link, and browsers own them.
+            "http",
+            "HTTPS",
+            "ws",
+            "wss",
+            "ftp",
+            "file",
         ] {
             assert!(url_scheme(value).is_err(), "{value}");
         }
