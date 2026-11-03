@@ -221,7 +221,6 @@ fn accept_control(
         });
     }
     let now = Instant::now();
-    let mut stop = false;
     let mut index = 0;
     while index < pending.len() {
         let expired = now >= pending[index].deadline;
@@ -230,10 +229,8 @@ fn accept_control(
             ControlRead::Waiting | ControlRead::Dropped => {
                 pending.swap_remove(index);
             }
-            // A line that came after the budget is dropped like silence.
-            ControlRead::Line(_) if expired => {
-                pending.swap_remove(index);
-            }
+            // A line is answered even when this pass came after the budget:
+            // the client wrote in time if the host itself was slow to read.
             ControlRead::Line(line) => {
                 let mut control = pending.swap_remove(index);
                 let Ok(request) = serde_json::from_slice::<Value>(&line) else {
@@ -247,12 +244,15 @@ fn accept_control(
                     .set_write_timeout(Some(CONTROL_READ_BUDGET));
                 let _ = writeln!(control.stream, "{response}");
                 if request["op"] == "stop" {
-                    stop = true;
+                    // Nothing after the stop is answered: a prompt accepted
+                    // now would never be sent. Its client reads a closed
+                    // connection instead.
+                    return Ok(true);
                 }
             }
         }
     }
-    Ok(stop)
+    Ok(false)
 }
 
 enum ControlRead {
