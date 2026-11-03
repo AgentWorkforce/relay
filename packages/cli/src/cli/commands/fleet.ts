@@ -33,8 +33,8 @@ import {
   type FleetNodeContribution,
   type RosterAgent,
 } from './fleet-agent.js';
-import { removedBrokerCommandMessage } from './node.js';
 import { formatRelativeTime, sanitizeForTerminalLine } from '../lib/formatting.js';
+import { removedBrokerCommandMessage } from '../lib/removed-broker-command.js';
 import {
   AgentRemovalPendingError,
   parseRemovalWaitTimeout,

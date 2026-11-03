@@ -243,9 +243,11 @@ function parseEntries(raw: string, file: string): PendingCleanupEntry[] {
 /** How often a holder refreshes its lease while a transaction is open. */
 const LOCK_HEARTBEAT_MS = 5_000;
 /**
- * A lease whose heartbeat is older than this is abandoned even if its pid
- * still answers: it bounds a PID-reuse wedge (or a holder on another host
- * sharing the directory) to one window instead of forever.
+ * A lock held from ANOTHER host (a shared data directory) whose heartbeat is
+ * older than this is abandoned: its pid cannot be probed from here. A holder on
+ * this host is never broken on its lease, only once its pid is gone, so a live
+ * writer that stalls (a slow fsync, a suspended laptop) keeps exclusive
+ * ownership through its commit.
  */
 const LOCK_LEASE_MS = 60_000;
 /** A lock directory with no readable owner (crash between mkdir and write). */
@@ -303,17 +305,18 @@ function processIsAlive(pid: number): boolean {
 }
 
 /**
- * The token of an abandoned lock (holder crashed, lease expired, or an
- * ownerless directory older than the orphan window), or undefined while the
- * lock is live. An ownerless stale lock yields the empty token.
+ * The token of an abandoned lock (holder on this host exited, a holder on
+ * another host let its lease expire, or an ownerless directory older than the
+ * orphan window), or undefined while the lock is live. An ownerless stale lock yields the empty token.
  */
 function staleLockToken(lockDir: string, now: number): string | undefined {
   const current = readLockOwner(lockDir);
   if (current) {
     const { owner, heartbeatAt } = current;
-    if (now - heartbeatAt >= LOCK_LEASE_MS) return owner.token;
-    if (owner.host === os.hostname() && !processIsAlive(owner.pid)) return owner.token;
-    return undefined;
+    if (owner.host === os.hostname()) {
+      return processIsAlive(owner.pid) ? undefined : owner.token;
+    }
+    return now - heartbeatAt >= LOCK_LEASE_MS ? owner.token : undefined;
   }
   try {
     return now - fs.statSync(lockDir).mtimeMs >= LOCK_ORPHAN_MS ? '' : undefined;
@@ -352,11 +355,13 @@ function ownsLock(lockDir: string, token: string): boolean {
   return readLockOwner(lockDir)?.owner.token === token;
 }
 
+class LockLostError extends Error {}
+
 /**
  * Replace `journal` durably: exclusive 0600 temp file, fsync, atomic rename,
  * then fsync the parent directory so the rename itself survives a crash.
  */
-function replaceJournalDurably(journal: string, payload: string): void {
+function replaceJournalDurably(journal: string, payload: string, stillOwned: () => boolean): void {
   const tmp = `${journal}.tmp-${process.pid}-${randomUUID()}`;
   let fd: number | undefined;
   try {
@@ -365,6 +370,9 @@ function replaceJournalDurably(journal: string, payload: string): void {
     fs.fsyncSync(fd);
     fs.closeSync(fd);
     fd = undefined;
+    // Re-checked after the (possibly slow) fsync, immediately before the one
+    // step that changes the journal.
+    if (!stillOwned()) throw new LockLostError();
     fs.renameSync(tmp, journal);
   } catch (err) {
     if (fd !== undefined) {
@@ -398,12 +406,13 @@ function replaceJournalDurably(journal: string, payload: string): void {
  * (`pid`, `host`, a per-transaction token) whose mtime is refreshed as a lease
  * heartbeat while the transaction is open. A holder that crashes leaves the
  * directory behind; the next contender breaks it as soon as the owner pid is
- * provably gone on this host, or once the lease heartbeat is older than
- * `LOCK_LEASE_MS` (PID reuse, or a holder on another host). Contenders in the
+ * provably gone on this host; a holder on another host sharing the directory
+ * is broken once its lease heartbeat is older than `LOCK_LEASE_MS`. Contenders in the
  * same process wait like any other, so concurrent updates serialize.
  *
- * The commit re-checks ownership before replacing the journal, so a holder
- * whose lease was broken out from under it never overwrites a newer journal.
+ * The commit re-checks ownership after writing and syncing the replacement and
+ * immediately before renaming it into place, so a holder whose lock was broken
+ * out from under it never overwrites a newer journal.
  * The lock directory is removed on release (only when this transaction still
  * owns it).
  */
@@ -445,7 +454,7 @@ async function beginJournalTransaction(lockDir: string, journalFile: string): Pr
     if (Date.now() >= deadline) {
       throw new CleanupJournalError(
         'locked',
-        `Timed out waiting for the pending-cleanup journal lock at ${lockDir}: another agent-relay process holds it. It is released when that process finishes (or broken automatically once that process has exited); retry afterwards.`
+        `Timed out waiting for the pending-cleanup journal lock at ${lockDir}: another agent-relay process holds it. It is released when that process finishes (or broken automatically once that process has exited); retry afterwards. If no agent-relay process is running, remove ${lockDir} and retry.`
       );
     }
     await sleep(LOCK_RETRY_MS);
@@ -485,8 +494,14 @@ async function beginJournalTransaction(lockDir: string, journalFile: string): Pr
           );
         }
         try {
-          replaceJournalDurably(journalFile, payload);
+          replaceJournalDurably(journalFile, payload, () => ownsLock(lockDir, token));
         } catch (err) {
+          if (err instanceof LockLostError) {
+            throw new CleanupJournalError(
+              'io',
+              `The pending-cleanup journal lock at ${lockDir} was lost before ${journalFile} could be committed; the journal was left unmodified.`
+            );
+          }
           throw new CleanupJournalError(
             'io',
             `Could not commit the pending-cleanup journal at ${journalFile}: ${err instanceof Error ? err.message : String(err)}`

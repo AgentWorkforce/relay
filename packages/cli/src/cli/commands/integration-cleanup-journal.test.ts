@@ -215,14 +215,28 @@ describe('fileCleanupJournal', () => {
     expect(fs.readdirSync(dir)).toEqual(['pending-cleanups.json']);
   }, 20_000);
 
-  it('breaks a lock whose lease heartbeat expired even if its pid still answers', async () => {
+  it('never breaks a live holder on this host, however old its heartbeat', async () => {
     const dir = tmpJournalDir();
     const lockDir = path.join(dir, LOCK_DIR);
     fs.mkdirSync(lockDir);
-    // A live pid (this process) on this host, but a heartbeat far in the past:
-    // models PID reuse after a crash.
+    // A live pid (this process) on this host with a heartbeat far in the past:
+    // a stalled writer keeps exclusive ownership through its commit.
     const ownerFile = path.join(lockDir, 'owner.json');
-    fs.writeFileSync(ownerFile, JSON.stringify({ pid: process.pid, host: os.hostname(), token: 'old' }));
+    fs.writeFileSync(ownerFile, JSON.stringify({ pid: process.pid, host: os.hostname(), token: 'stalled' }));
+    const past = new Date(Date.now() - 10 * 60_000);
+    fs.utimesSync(ownerFile, past, past);
+
+    const journal = fileCleanupJournal(dir);
+    await expect(journal.update(() => [CONCRETE])).rejects.toMatchObject({ code: 'locked' });
+    expect(JSON.parse(fs.readFileSync(ownerFile, 'utf8')).token).toBe('stalled');
+  }, 20_000);
+
+  it('breaks a lock from another host once its lease heartbeat expired', async () => {
+    const dir = tmpJournalDir();
+    const lockDir = path.join(dir, LOCK_DIR);
+    fs.mkdirSync(lockDir);
+    const ownerFile = path.join(lockDir, 'owner.json');
+    fs.writeFileSync(ownerFile, JSON.stringify({ pid: 1, host: 'some-other-host', token: 'remote' }));
     const past = new Date(Date.now() - 10 * 60_000);
     fs.utimesSync(ownerFile, past, past);
 
@@ -230,6 +244,18 @@ describe('fileCleanupJournal', () => {
     await journal.update(() => [CONCRETE]);
     await expect(journal.list()).resolves.toEqual([CONCRETE]);
   });
+
+  it('keeps a lock from another host while its lease is fresh', async () => {
+    const dir = tmpJournalDir();
+    const lockDir = path.join(dir, LOCK_DIR);
+    fs.mkdirSync(lockDir);
+    fs.writeFileSync(
+      path.join(lockDir, 'owner.json'),
+      JSON.stringify({ pid: 1, host: 'some-other-host', token: 'remote' })
+    );
+    const journal = fileCleanupJournal(dir);
+    await expect(journal.update(() => [CONCRETE])).rejects.toMatchObject({ code: 'locked' });
+  }, 20_000);
 
   it('leaves a lock file from an older broker-helper release untouched', async () => {
     const dir = tmpJournalDir();
