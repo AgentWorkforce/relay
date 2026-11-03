@@ -97,7 +97,7 @@ function cloudError(response: Response, payload: unknown): Error {
   if ((response.status === 400 || response.status === 409) && isObject(payload)) {
     if (payload.error === 'unknown_provider') {
       return new Error(
-        'This provider is not supported for workspace connections. Run `agent-relay cloud integration catalog --static` to list supported providers.'
+        'This provider is not supported for workspace connections on this Cloud endpoint. Check `agent-relay cloud integration catalog`, using the same `--api-url` if set.'
       );
     }
   }

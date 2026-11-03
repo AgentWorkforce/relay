@@ -310,7 +310,7 @@ describe('registerCloudIntegrationCommands', () => {
       ])
     ).rejects.toThrow('exit:1');
     expect(deps.error).toHaveBeenCalledWith(
-      'This provider is not supported for workspace connections. Run `agent-relay cloud integration catalog --static` to list supported providers.'
+      'This provider is not supported for workspace connections on this Cloud endpoint. Check `agent-relay cloud integration catalog`, using the same `--api-url` if set.'
     );
     expect(vi.mocked(deps.error).mock.calls.flat().join('\n')).not.toMatch(/private server detail|secret/);
   });
