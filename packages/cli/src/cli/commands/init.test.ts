@@ -2775,8 +2775,8 @@ describe('relay init message injection', () => {
 
 /**
  * The `skills` CLI as `add --global --copy` runs it: one copy per agent's
- * global skills folder (Codex, OpenCode and Pi share ~/.agents/skills) and
- * the skill's entry in its lock file.
+ * global skills folder (Codex, OpenCode, Pi and Cursor share
+ * ~/.agents/skills) and the skill's entry in its lock file.
  */
 function fakeSkillsCli(status = 0, lockFile?: string) {
   const dirs: Record<string, string> = {
@@ -2784,6 +2784,7 @@ function fakeSkillsCli(status = 0, lockFile?: string) {
     codex: path.join(toolHome, '.agents', 'skills'),
     opencode: path.join(toolHome, '.agents', 'skills'),
     pi: path.join(toolHome, '.agents', 'skills'),
+    cursor: path.join(toolHome, '.agents', 'skills'),
     grok: path.join(toolHome, '.grok', 'skills'),
     devin: path.join(toolHome, '.config', 'devin', 'skills'),
   };
@@ -2894,6 +2895,22 @@ describe('relay init messaging skill', () => {
       []
     );
     expect(fs.existsSync(path.join(home, 'local', 'core-settings.json'))).toBe(false);
+  });
+
+  it("records Cursor's copy in the shared ~/.agents/skills, and --uninstall removes it", async () => {
+    installedProbe();
+    const core = fakeCore({ running: true, settings: { auto_activate: true } });
+    const skills = fakeSkillsCli();
+    const { run, logs } = setup({ ...core.deps, runSkillsCli: skills.run });
+    await run('--tools', 'cursor');
+
+    const copy = path.join(toolHome, '.agents', 'skills', RELAY_SKILL_NAME);
+    expect(logs.join('\n')).toContain(`✓ Agent skill        installed ${RELAY_SKILL_NAME} for Cursor`);
+    const record = JSON.parse(fs.readFileSync(path.join(home, 'local', 'core-settings.json'), 'utf8'));
+    expect(record.relaySkill.copies).toEqual([expect.objectContaining({ path: copy, ref: RELAY_SKILL_REF })]);
+
+    await setup(core.deps).run('--uninstall');
+    expect(fs.existsSync(copy)).toBe(false);
   });
 
   it('installs without asking anything, even in a terminal, and prints one line', async () => {
