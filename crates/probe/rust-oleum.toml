@@ -370,6 +370,7 @@ rust_roots = ["src"]
 "src/relay/daemon.rs::Core::workspace" = 1
 "src/relay/daemon.rs::watch_connect_idle" = 1
 "src/relay/daemon.rs::watch_stdin" = 1
+"src/relay/daemon/plugins.rs::Plugins::extension_method_names" = 1
 "src/relay/daemon/workspace_verification.rs::Core::verify_workspace" = 2
 "src/relay/delivery.rs::Core::activity_list" = 1
 "src/relay/delivery.rs::Core::agent_credential" = 1

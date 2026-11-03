@@ -199,10 +199,10 @@ pub fn this_fleet(core: &Core) -> Fleet {
     Fleet::new(workspace::relay_home(&env, &config.home))
 }
 
-/// Every session discovery finds, plus every registered session it does
-/// not (shown offline), each with its registration.
+/// Every session discovery last found, plus every registered session it
+/// did not (shown offline), each with its registration. Answered from the
+/// last discovery pass; a request never starts one.
 pub async fn sessions_list(core: &Arc<Core>) -> LocalSessions {
-    core.session_snapshot.request();
     cached_sessions_list(core).await
 }
 

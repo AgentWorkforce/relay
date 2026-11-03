@@ -270,8 +270,8 @@ fn read_page(
     // instead, which never groups with another node — they stay. Picking the
     // winner is a session-wide aggregate, so only Devin runs it; every other
     // source keeps the plain keyset scan below.
-    let page_sql = "SELECT id, ts_ms, event_uid, role, kind, substr(text,1,CASE WHEN raw_kind='input_image' THEN 1400000 ELSE 65536 END), control_kind, length(CAST(text AS BLOB)) FROM session_events WHERE source = ?1 AND session_id = ?2 AND (?3 IS NULL OR ts_ms > ?3 OR (ts_ms = ?3 AND id > ?4)) ORDER BY ts_ms, id LIMIT 101";
-    let devin_sql = "SELECT id, ts_ms, event_uid, role, kind, substr(text,1,CASE WHEN raw_kind='input_image' THEN 1400000 ELSE 65536 END), control_kind, length(CAST(text AS BLOB)) FROM session_events WHERE source = ?1 AND session_id = ?2 AND (?3 IS NULL OR ts_ms > ?3 OR (ts_ms = ?3 AND id > ?4)) AND id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY CASE WHEN event_uid GLOB 'n[0-9]*:*' THEN COALESCE(message_id, event_uid) || substr(event_uid, instr(event_uid, ':')) ELSE event_uid END ORDER BY ts_ms, id) AS position FROM session_events WHERE source = ?1 AND session_id = ?2) WHERE position = 1) ORDER BY ts_ms, id LIMIT 101";
+    let page_sql = "SELECT id, ts_ms, event_uid, role, kind, substr(text,1,CASE WHEN raw_kind='input_image' THEN 1400000 ELSE 65536 END), control_kind, length(CAST(text AS BLOB)), raw_kind FROM session_events WHERE source = ?1 AND session_id = ?2 AND (?3 IS NULL OR ts_ms > ?3 OR (ts_ms = ?3 AND id > ?4)) ORDER BY ts_ms, id LIMIT 101";
+    let devin_sql = "SELECT id, ts_ms, event_uid, role, kind, substr(text,1,CASE WHEN raw_kind='input_image' THEN 1400000 ELSE 65536 END), control_kind, length(CAST(text AS BLOB)), raw_kind FROM session_events WHERE source = ?1 AND session_id = ?2 AND (?3 IS NULL OR ts_ms > ?3 OR (ts_ms = ?3 AND id > ?4)) AND id IN (SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY CASE WHEN event_uid GLOB 'n[0-9]*:*' THEN COALESCE(message_id, event_uid) || substr(event_uid, instr(event_uid, ':')) ELSE event_uid END ORDER BY ts_ms, id) AS position FROM session_events WHERE source = ?1 AND session_id = ?2) WHERE position = 1) ORDER BY ts_ms, id LIMIT 101";
     let mut query = conn.prepare(if source == "devin" {
         devin_sql
     } else {
@@ -332,6 +332,7 @@ struct TranscriptEvent {
     text: Option<String>,
     control_kind: Option<String>,
     text_bytes: Option<usize>,
+    raw_kind: Option<String>,
 }
 
 impl TranscriptEvent {
@@ -345,10 +346,11 @@ impl TranscriptEvent {
             text: row.get(5)?,
             control_kind: row.get(6)?,
             text_bytes: row.get(7)?,
+            raw_kind: row.get(8)?,
         })
     }
 
-    /// None means the user-facing display filtered out a context wrapper;
+    /// None means the display filtered a context wrapper or usage-only event;
     /// its database position must still count toward the next page cursor.
     fn display_entry(self, conn: &Connection) -> Result<Option<LocalTranscriptEntry>> {
         let Self {
@@ -359,8 +361,14 @@ impl TranscriptEvent {
             text,
             control_kind,
             text_bytes,
+            raw_kind,
             ..
         } = self;
+        // Grok’s unified log adds accounting records without message content.
+        // Keep their database positions for pagination, but never draw a bubble.
+        if raw_kind.as_deref() == Some("unified_log_usage") {
+            return Ok(None);
+        }
         let text = text.as_deref().unwrap_or("");
         let system_context =
             role == "user" && kind == "text" && super::transcript_display::system_context(text);
@@ -404,6 +412,47 @@ impl TranscriptEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grok_usage_records_do_not_become_empty_messages_and_pagination_keeps_progress() {
+        let root = tempfile::tempdir().unwrap();
+        let db = root.path().join("history.db");
+        super::super::history::open(&db).unwrap();
+        let conn = Connection::open(db).unwrap();
+        for i in 1..=101 {
+            conn.execute("INSERT INTO session_events(source,session_id,ts_ms,event_uid,role,kind,raw_kind) VALUES('grok','s',?1,?2,'assistant','text','unified_log_usage')", rusqlite::params![i, format!("unified:{i}")]).unwrap();
+        }
+        for (ts, id, role, kind, text) in [
+            (102, "answer", "assistant", "text", "Actual answer"),
+            (103, "tool", "assistant", "tool_use", "Read file"),
+            (104, "result", "tool_result", "tool_result", "File contents"),
+        ] {
+            conn.execute("INSERT INTO session_events(source,session_id,ts_ms,event_uid,role,kind,text) VALUES('grok','s',?1,?2,?3,?4,?5)", rusqlite::params![ts,id,role,kind,text]).unwrap();
+        }
+        let first = read_page(&conn, "grok", "s", None).unwrap();
+        assert!(first.entries.is_empty());
+        assert_eq!(first.next_cursor.as_ref().unwrap().ts_ms, 100);
+        let second = read_page(&conn, "grok", "s", first.next_cursor).unwrap();
+        assert_eq!(
+            second
+                .entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["answer", "tool", "result"]
+        );
+        assert!(second.next_cursor.is_none());
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM session_events WHERE raw_kind='unified_log_usage'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            101,
+            "usage accounting is retained"
+        );
+    }
 
     #[test]
     fn reset_session_reports_safe_reason_without_recreating_reader_cache() {

@@ -91,6 +91,21 @@ impl SessionDirectory for LocalSessions {
         self.discovered_sessions()
     }
 
+    /// Devin reviews: never discovered, and a registration one left behind
+    /// is not listed as an offline session either.
+    fn hidden_sessions(&self) -> std::collections::HashSet<Target> {
+        self.config
+            .probe_root
+            .as_deref()
+            .map(|root| {
+                crate::relay::devin_cloud::automation_session_ids(root)
+                    .into_iter()
+                    .map(|id| Target::new(SessionKind::Devin, id))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn presentation_partitions(&self) -> Vec<SessionPartition> {
         vec![
             SessionPartition::Codex,
@@ -369,18 +384,6 @@ impl LocalSessions {
     fn activation_check(&self) -> impl Fn(&DiscoveredSession) -> bool + '_ {
         let claude_registry = claude::registry(&self.config.claude, &*self.scans);
         let grok_reachable = move |session_id: &str| self.grok_open_reachable(session_id);
-        let automated = std::cell::OnceCell::new();
-        let started_by_automation = move |session_id: &str| {
-            automated
-                .get_or_init(|| {
-                    self.config
-                        .probe_root
-                        .as_deref()
-                        .map(crate::relay::devin_cloud::started_by_automation)
-                        .unwrap_or_default()
-                })
-                .contains(session_id)
-        };
         move |session: &DiscoveredSession| {
             if !session.live {
                 return false;
@@ -392,14 +395,12 @@ impl LocalSessions {
             // only while it was active in the last day: an untouched
             // cloud session has nobody to talk to and would only
             // heartbeat Relaycast. Leaving this set is what takes an
-            // automatic one off the relay after the grace period. One an
-            // automation started (a Devin review) has nobody in it to talk
-            // to, so it never joins.
+            // automatic one off the relay after the grace period.
+            // Discovery never lists a Devin review, so none joins.
             if session.target.kind == SessionKind::Devin
                 && session.host.as_deref() == Some(crate::relay::devin_cloud::CLOUD_HOST)
             {
-                return !started_by_automation(&session.target.id)
-                    && crate::relay::devin_cloud::recent_enough_to_join(session);
+                return crate::relay::devin_cloud::recent_enough_to_join(session);
             }
             if let Some(admitted) = self.gateway_admits(session.target.kind) {
                 return admitted;

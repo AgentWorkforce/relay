@@ -9,6 +9,7 @@ use crate::relay::{
 };
 use serde_json::{json, Value};
 
+#[derive(PartialEq)]
 pub(super) struct Capability {
     account: CloudAccount,
     generation: u64,
@@ -59,16 +60,22 @@ impl DesktopIdentitySync {
             .as_ref()
             .is_some_and(|c| c.account == *account && c.generation == generation && c.supported)
     }
+    /// Whether a capability is recorded for this account generation.
+    pub(super) fn capability_known(&self, account: &CloudAccount, generation: u64) -> bool {
+        self.native_capability
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(|c| c.account == *account && c.generation == generation)
+    }
+    /// Records what Cloud advertises; whether that changed what is known.
     pub(super) fn record_native_capability(
         &self,
         account: &CloudAccount,
         generation: u64,
         response: &Value,
-    ) {
-        *self
-            .native_capability
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(Capability {
+    ) -> bool {
+        let recorded = Some(Capability {
             account: account.clone(),
             generation,
             supported: response["capabilities"]["native_session_identity"].as_u64() == Some(1),
@@ -78,6 +85,13 @@ impl DesktopIdentitySync {
             claude_attestation: response["capabilities"]["claude_session_attestation"].as_u64()
                 == Some(1),
         });
+        let mut capability = self
+            .native_capability
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let changed = *capability != recorded;
+        *capability = recorded;
+        changed
     }
 }
 impl Core {
@@ -122,9 +136,10 @@ impl Core {
         generation: u64,
         response: &Value,
     ) {
-        self.desktop_identity_sync
+        let changed = self
+            .desktop_identity_sync
             .record_native_capability(account, generation, response);
-        if let (Some(account), Some(core)) = (&self.plugins.account, self.arc()) {
+        if let (true, Some(account), Some(core)) = (changed, &self.plugins.account, self.arc()) {
             account.native_capability_changed(&core);
         }
     }

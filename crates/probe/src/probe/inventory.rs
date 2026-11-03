@@ -697,11 +697,12 @@ mod tests {
         // between them, so one quiet second proves nothing.
         let mut seen = last_pass(&directory);
         let mut quiet = 0;
-        let settle_by = std::time::Instant::now() + Duration::from_secs(60);
+        let settling = std::time::Instant::now();
         while quiet < 4 {
             assert!(
-                std::time::Instant::now() < settle_by,
-                "startup passes never settled"
+                settling.elapsed() < Duration::from_secs(30),
+                "inventory never becomes idle; last diagnostic: {:?}",
+                fs::read_to_string(directory.join("inventory-diagnostic.json"))
             );
             std::thread::sleep(Duration::from_millis(1_000));
             let now = last_pass(&directory);

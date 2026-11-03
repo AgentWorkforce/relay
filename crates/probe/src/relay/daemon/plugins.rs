@@ -74,6 +74,13 @@ pub trait AccountPlugin: Send + Sync + 'static {
     fn shared_uploads(&self) -> BTreeSet<String>;
     /// Whether the account has looked for an install yet.
     fn looked_for_install(&self) -> bool;
+    /// Whether sessions join the relay by themselves until the person turns
+    /// it off: the desktop app's default. A core without such an account
+    /// (the CLI's) leaves `auto_activate` unset, so only the kinds that join
+    /// by default do. An explicit Off is always kept.
+    fn auto_activate_by_default(&self) -> bool {
+        false
+    }
     /// The concrete account, for the build that made it.
     fn as_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync>;
 }

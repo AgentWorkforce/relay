@@ -269,6 +269,17 @@ impl Core {
         // Persist the installation-scoped Cloud reconciliation id before
         // any credential-bearing identity sync can run.
         let _ = store.update(|store| store.ensure_desktop_sync_source_id());
+        // The account's default for automatic activation: an unset setting
+        // becomes on, and a saved choice either way is left alone.
+        if plugins
+            .account
+            .as_ref()
+            .is_some_and(|account| account.auto_activate_by_default())
+        {
+            let _ = store.update(|store| {
+                store.auto_activate.get_or_insert(true);
+            });
+        }
         let claude_delivery = ClaudeDeliveryPolicy::open(&config.app_data_dir);
         let project_names = crate::relay::project::Names::new(crate::relay::workspace::relay_home(
             &|key| config.env.get(key).cloned(),
@@ -676,7 +687,6 @@ pub fn serve_with(options: ServeOptions, build: PluginBuilder) -> Result<()> {
     let result = runtime.block_on(async move {
         // Before the socket exists: a client that sees it may signal at once.
         let stop_signals = StopSignals::register();
-        let headless_cleanup = cleanup_gui_autostart(&options, &config.home, &config.env);
         let socket = BoundSocket::bind(&config.paths)?;
         // A CLI-managed core writes into Pi's folder only once relay init
         // turns `pi_extension` on for a person who chose Pi.
@@ -695,17 +705,6 @@ pub fn serve_with(options: ServeOptions, build: PluginBuilder) -> Result<()> {
             own_defaults(&options).integration,
             std::sync::atomic::Ordering::SeqCst,
         );
-        match headless_cleanup {
-            Some(Ok(true)) => core.hub.activity(
-                Level::Info,
-                "Removed the app's login entry: the headless service starts Agent Relay.",
-            ),
-            Some(Err(_)) => core.hub.activity(
-                Level::Warning,
-                "The app's login entry could not be removed; the headless service still runs.",
-            ),
-            _ => {}
-        }
         // A user may install and open the app after a standalone probe was
         // started. Once the app's launchd core is registered for this HOME,
         // yield the socket so its KeepAlive job can take over.
@@ -1036,35 +1035,9 @@ fn own_defaults(options: &ServeOptions) -> OwnDefaults {
     }
 }
 
-fn cleanup_gui_autostart(
-    options: &ServeOptions,
-    home: &Path,
-    env: &BTreeMap<String, String>,
-) -> Option<std::io::Result<bool>> {
-    (options.headless && !options.connect_ephemeral && !options.cli_managed)
-        .then(|| crate::relay::login_item::remove_gui_autostart(home, env))
-}
 #[cfg(test)]
 mod connect_startup_tests {
     use super::*;
-    #[test]
-    fn ephemeral_run_preserves_desktop_login_entry() {
-        let home = tempfile::tempdir().unwrap();
-        let path = home.path().join(".config/autostart/agent-relay.desktop");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, "desktop preference").unwrap();
-        let options = ServeOptions {
-            socket: None,
-            app_data_dir: None,
-            exit_on_stdin_eof: false,
-            site_url: None,
-            headless: true,
-            connect_ephemeral: true,
-            cli_managed: false,
-        };
-        assert!(cleanup_gui_autostart(&options, home.path(), &BTreeMap::new()).is_none());
-        assert_eq!(fs::read_to_string(path).unwrap(), "desktop preference");
-    }
 
     #[test]
     fn a_cli_managed_core_turns_nothing_on_by_itself() {
@@ -1098,25 +1071,6 @@ mod connect_startup_tests {
                 integration: true
             }
         );
-    }
-
-    #[test]
-    fn cli_managed_run_preserves_desktop_login_entry() {
-        let home = tempfile::tempdir().unwrap();
-        let path = home.path().join(".config/autostart/agent-relay.desktop");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, "desktop preference").unwrap();
-        let options = ServeOptions {
-            socket: None,
-            app_data_dir: None,
-            exit_on_stdin_eof: false,
-            site_url: None,
-            headless: true,
-            connect_ephemeral: false,
-            cli_managed: true,
-        };
-        assert!(cleanup_gui_autostart(&options, home.path(), &BTreeMap::new()).is_none());
-        assert_eq!(fs::read_to_string(path).unwrap(), "desktop preference");
     }
 }
 

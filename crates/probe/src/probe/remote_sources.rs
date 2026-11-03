@@ -20,6 +20,8 @@ mod claude_records;
 #[cfg(test)]
 mod cursor_tests;
 mod diagnostic;
+mod enumeration_schedule;
+use enumeration_schedule::due_for;
 mod hydrate;
 mod pacing;
 mod sweep;
@@ -499,25 +501,6 @@ fn due(db: &Path) -> bool {
         return true;
     };
     stamped.elapsed().unwrap_or(ENUMERATE_INTERVAL) >= ENUMERATE_INTERVAL
-}
-
-/// Whether listing is due for `host`: the interval passed, or a connector
-/// the last listing could not use because Claude Code was not signed in or
-/// its folder was not shared can be used now. A person who signs in, or
-/// shares the folder, then sees their cloud sessions on the next pass
-/// instead of after the interval. Only those two reasons: an expired or
-/// refused login can still look usable before it is read, and must not be
-/// listed again on every pass.
-fn due_for(host: &Host, db: &Path) -> bool {
-    due(db)
-        || last_enumeration(db).connectors.iter().any(|connector| {
-            connector.state == "unavailable"
-                && matches!(
-                    connector.reason.as_deref(),
-                    Some(claude_cloud::NOT_SIGNED_IN | claude_cloud::FOLDER_NOT_SHARED)
-                )
-                && reach(host, &connector.connector) == Reach::Ready
-        })
 }
 
 /// The last enumeration's report; empty when none ran or it is unreadable.
@@ -1698,6 +1681,25 @@ pub(crate) mod tests {
             .any(|(id, _)| *id == CLAUDE_WEB_CONNECTOR));
         assert_eq!(keychain.interactive_reads.load(Ordering::SeqCst), 0);
         assert_eq!(api.requests(), 0);
+
+        // Still refused: no API retries or prompts while the listing interval
+        // is active. The quiet read can notice a later Always Allow grant.
+        assert_eq!(enumerate_with(&host, &db, || false).unwrap(), None);
+        assert_eq!(api.requests(), 0);
+        assert_eq!(keychain.interactive_reads.load(Ordering::SeqCst), 0);
+
+        // Access granted: refresh immediately rather than leaving the earlier
+        // blocked warning visible for the five-minute listing interval.
+        let allowed = FakeKeychain::holding(Some(&fresh_login()));
+        let allowing = self::host(home.path(), &db, &allowed);
+        let report = enumerate_with(&allowing, &db, || false).unwrap().unwrap();
+        assert_eq!(
+            report_for(&report, CLAUDE_WEB_CONNECTOR).unwrap().state,
+            "listed"
+        );
+        assert!(api.requests() > 0);
+        assert_eq!(allowed.interactive_reads.load(Ordering::SeqCst), 0);
+        assert_eq!(enumerate_with(&allowing, &db, || false).unwrap(), None);
     }
 
     #[test]

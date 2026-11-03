@@ -2196,6 +2196,31 @@ fn aliased(name: &str, alias: &str, target: Target) -> Registration {
     }
 }
 
+// Every join_relay hint (SessionStart, DM, web and channel replies) links
+// the registered address Desktop syncs to Cloud, never the alias's.
+#[test]
+fn a_renamed_registration_links_its_registered_address_but_is_named_by_its_alias() {
+    let renamed = aliased("original", "nickname", target(THREAD));
+    let link = renamed.link_address("mac-1");
+    assert_eq!(link, renamed.direct_address("mac-1"));
+    assert!(link.starts_with("original@"), "{link}");
+    assert!(renamed.current_address("mac-1").starts_with("nickname@"));
+    assert_eq!(renamed.display_name(), "nickname");
+    // Delivery reads a renamed session through its alias view; the hint
+    // still links the registered address, through the store.
+    let mut store = Store::default();
+    store.add(renamed.clone(), token("at_original"));
+    let (view, _) = renamed.alias_credential().unwrap();
+    assert!(view.direct_address("mac-1").starts_with("nickname@"));
+    assert_eq!(store.link_address_for(&view, "mac-1"), link);
+    // A session the store does not hold links its own address.
+    let other = registration("loose", target("01a0c221-6806-7210-af25-97e104b15050"));
+    assert_eq!(
+        store.link_address_for(&other, "mac-1"),
+        other.direct_address("mac-1")
+    );
+}
+
 #[test]
 fn an_alias_is_a_credential_of_its_own_and_holds_its_name() {
     let mut store = Store::default();

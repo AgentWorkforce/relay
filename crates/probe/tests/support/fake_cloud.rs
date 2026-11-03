@@ -27,6 +27,9 @@ pub struct Recorded {
 /// What the fake answers; tests change it as they go.
 pub struct State {
     pub requests: Vec<Recorded>,
+    /// Explicit per-request fixtures keyed by (path, bearer, RPC method or verb).
+    pub response_overrides: HashMap<(String, String, String), (u16, Value)>,
+    pub response_gates: HashMap<String, Arc<tokio::sync::Notify>>,
     /// Device polls answered `authorization_pending` before approval.
     pub pending_polls: u32,
     /// The device poll's final answer: `None` approves.
@@ -67,6 +70,8 @@ impl Default for State {
     fn default() -> State {
         State {
             requests: Vec::new(),
+            response_overrides: HashMap::new(),
+            response_gates: HashMap::new(),
             pending_polls: 1,
             device_error: None,
             valid: Vec::new(),
@@ -216,7 +221,7 @@ async fn serve(stream: TcpStream, state: Arc<Mutex<State>>, site: String) {
     } else if path.ends_with("/resolve") {
         state.lock().unwrap().resolve_gate.clone()
     } else {
-        None
+        state.lock().unwrap().response_gates.get(&path).cloned()
     };
     if let Some(gate) = gate {
         gate.notified().await;
@@ -238,6 +243,8 @@ fn route(
     bearer: Option<&str>,
     body: &Value,
 ) -> (u16, Value) {
+    let key = (path.to_string(), bearer.unwrap_or_default().to_string(), body["method"].as_str().unwrap_or(method).to_string());
+    if let Some(response) = state.response_overrides.get(&key) { return response.clone(); }
     let authorized = bearer.is_some_and(|b| state.valid.iter().any(|v| v == b));
     let api = path.strip_prefix("/cloud/api/v1").unwrap_or(path);
     match (method, api) {

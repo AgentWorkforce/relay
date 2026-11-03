@@ -338,11 +338,9 @@ fn write_cloud_catalog(
 // A Devin review (a session an automation started) has nobody in it to
 // talk to, so it is neither listed nor auto-activated; one a person
 // started still is.
-// A Devin review (a session an automation started) has nobody in it to
-// talk to, so it never auto-activates; one a person started still does.
 #[cfg(feature = "history")]
 #[test]
-fn a_devin_review_session_never_auto_activates() {
+fn a_devin_review_session_is_never_listed_or_auto_activated() {
     let _lock = crate::relay::devin_cloud::tests::ENV_LOCK
         .lock()
         .unwrap_or_else(|p| p.into_inner());
@@ -360,7 +358,6 @@ fn a_devin_review_session_never_auto_activates() {
             (person, "Setting up Devin's laptop", Some("webapp")),
         ],
     );
-    let _unsigned = crate::relay::devin_cloud::tests::unsigned_env();
     let _env = crate::relay::devin_cloud::tests::signed_in_env();
     let activated: Vec<String> = world
         .sessions
@@ -369,14 +366,62 @@ fn a_devin_review_session_never_auto_activates() {
         .map(|session| session.target.id)
         .collect();
     assert_eq!(activated, [person]);
-    assert!(
-        world
-            .sessions
-            .sessions()
-            .iter()
-            .any(|s| s.target.id == review),
-        "still listed, and can be registered by hand"
+    let listed: Vec<String> = world
+        .sessions
+        .sessions()
+        .into_iter()
+        .map(|session| session.target.id)
+        .collect();
+    assert!(listed.iter().any(|id| id == person));
+    assert!(!listed.iter().any(|id| id == review));
+}
+
+#[cfg(feature = "history")]
+#[tokio::test]
+async fn a_registered_devin_review_is_not_recreated_as_an_offline_session() {
+    let mut world = world();
+    let review = "7b26a9f9201f4d3380a655e33b20e887";
+    let person = "d4005cc839f84411aa3df250a51ce5fa";
+    cloud_catalog_from(&mut world, &[(review, "Review", Some(" Automation "))]);
+    let home = world._temp.path();
+    let (core, _signals) = Core::with_plugins(
+        Config {
+            paths: CorePaths::for_socket(home.join("core.sock")).unwrap(),
+            home: home.into(),
+            app_data_dir: home.join("app-data"),
+            env: Default::default(),
+            version: "test".into(),
+            host_name: "Test Desk.local".into(),
+            rediscover_every: Duration::from_secs(3600),
+            push_timing: PushTiming::default(),
+            delivery_timing: DeliveryTiming::default(),
+        },
+        Plugins {
+            sessions: Arc::new(world.sessions),
+            ..Default::default()
+        },
     );
+    core.store
+        .update(|store| {
+            for id in [review, person] {
+                store.registrations.push(
+                    serde_json::from_value(serde_json::json!({
+                        "name": id, "agentID": id,
+                        "target": Target::new(SessionKind::Devin, id),
+                        "title": id, "baseURL": "https://example.invalid",
+                        "registeredAt": "2026-10-28T00:00:00Z"
+                    }))
+                    .unwrap(),
+                );
+            }
+        })
+        .unwrap();
+    let listed = crate::relay::local_methods::sessions_list(&core).await;
+    assert_eq!(listed.sessions.len(), 1);
+    assert_eq!(listed.sessions[0].target.id, person);
+    assert_eq!(listed.sessions[0].running, Some(false));
+    // Keep registration removal available independently of session presentation.
+    assert_eq!(core.store.snapshot().registrations.len(), 2);
 }
 
 /// A live session joins the relay by itself only once the upload policy
@@ -618,4 +663,76 @@ async fn a_stale_devin_cloud_session_never_joins_by_itself_and_an_automatic_one_
         by_hand.missing_since.is_none(),
         "still present on the relay"
     );
+}
+
+/// A desktop-configured core (an account whose default is on) treats an
+/// unset `auto_activate` as on and keeps an explicit Off, while a core
+/// without one (the CLI's) leaves it unset. Either way an open Pi, Oh My Pi
+/// or OpenCode session never joins by itself without its own opt-in.
+#[tokio::test]
+async fn the_desktop_account_turns_automatic_activation_on_unless_turned_off() {
+    use crate::relay::agents::auto_activation::{activation_applies, ActivationSettings};
+    use crate::relay::test_account::TestAccount;
+    use crate::relay::uploader::{ProcessRunner, Uploader};
+    let start = |home: &Path, default_on: Option<bool>, saved: Option<bool>| {
+        let data = home.join("app-data");
+        std::fs::create_dir_all(&data).unwrap();
+        if let Some(saved) = saved {
+            let store = crate::relay::store::StoreHandle::open_agent_store(
+                data.join(crate::relay::app_store::STORE_FILE),
+                "test-desk",
+            );
+            store
+                .update(|store| store.auto_activate = Some(saved))
+                .unwrap();
+        }
+        let account = default_on.map(|on| {
+            let mut account = TestAccount::new(Arc::new(Uploader::new(Arc::new(
+                ProcessRunner::new(home.join("unused")),
+            ))));
+            account.auto_activate_by_default = on;
+            account.into_plugin()
+        });
+        let (core, _signals) = Core::with_plugins(
+            Config {
+                paths: CorePaths::for_socket(home.join("core.sock")).unwrap(),
+                home: home.into(),
+                app_data_dir: data,
+                env: Default::default(),
+                version: "test".into(),
+                host_name: "Test Desk.local".into(),
+                rediscover_every: Duration::from_secs(3600),
+                push_timing: PushTiming::default(),
+                delivery_timing: DeliveryTiming::default(),
+            },
+            Plugins {
+                account,
+                ..Default::default()
+            },
+        );
+        core.store.read(|store| store.auto_activate)
+    };
+    let home = tempfile::tempdir().unwrap();
+    assert_eq!(start(&home.path().join("cli"), None, None), None);
+    assert_eq!(start(&home.path().join("plain"), Some(false), None), None);
+    assert_eq!(
+        start(&home.path().join("desktop"), Some(true), None),
+        Some(true)
+    );
+    assert_eq!(
+        start(&home.path().join("off"), Some(true), Some(false)),
+        Some(false),
+        "an explicit Off is kept"
+    );
+    let on = ActivationSettings {
+        auto_activate: Some(true),
+        ..ActivationSettings::default()
+    };
+    for kind in [SessionKind::Pi, SessionKind::Omp, SessionKind::OpenCodeOpen] {
+        assert!(
+            !activation_applies(&on, kind),
+            "{kind:?} needs its own opt-in"
+        );
+    }
+    assert!(activation_applies(&on, SessionKind::Codex));
 }
