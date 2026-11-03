@@ -9,7 +9,6 @@ import { Command } from 'commander';
 import { config as dotenvConfig } from 'dotenv';
 
 import { checkForUpdatesInBackground } from '@agent-relay/utils';
-import { ensureCanonicalBroker } from '@agent-relay/harness-driver/broker-install';
 import { redactCredentialValues } from '@agent-relay/cloud';
 import {
   cloudIdentityEnv,
@@ -34,10 +33,9 @@ import { CliExit } from './lib/exit.js';
 import { exitAfterFlush } from './lib/flush-stdio.js';
 import { errorClassName } from './lib/telemetry-helpers.js';
 import { registerSetupCommands } from './commands/setup.js';
-import { registerCoreCommands, registerCoreMaintenance } from './commands/core.js';
-import { registerNodeCommands } from './commands/node.js';
+import { registerCoreMaintenance } from './commands/core.js';
+import { registerNodeCommands, registerRemovedBrokerCommands } from './commands/node.js';
 import { registerStatusCommand } from './commands/status.js';
-import { registerLocalAgentCommands } from './commands/local-agent.js';
 import { registerLocalWorkflowCommands } from './commands/local-workflow.js';
 import { registerCloudCommands } from './commands/cloud.js';
 import { registerWorkspaceCommands } from './commands/workspace.js';
@@ -122,7 +120,7 @@ function resolveProgramName(argv: string[] = process.argv): string {
 
 /**
  * Read the identity recorded at `agent-relay cloud login` and publish it on
- * `process.env` so the broker, spawned agents, and the relaycast SDK all
+ * `process.env` so spawned agents and the relaycast SDK all
  * attribute their telemetry to the same user and org — without any of them
  * needing to know where the identity file lives or how to call cloud.
  *
@@ -157,8 +155,8 @@ function propagateCloudIdentityToChildren(): void {
  * case rather than a hypothetical one.
  *
  * Deleting also makes `process.env` agree with what every consumer already
- * believes when telemetry is off — the broker, the header builder, and
- * `initTelemetry` all treat opted-out as "no identity".
+ * believes when telemetry is off — the header builder and
+ * `initTelemetry` both treat opted-out as "no identity".
  */
 function clearInheritedIdentity(): void {
   for (const key of [...Object.values(IDENTITY_ENV_KEYS), AGENT_RELAY_DISTINCT_ID_ENV, MACHINE_ID_ENV]) {
@@ -168,7 +166,7 @@ function clearInheritedIdentity(): void {
 
 /**
  * Export the resolved CLI + SDK versions on the current process env so that
- * any child process we spawn (the Rust broker, etc.)
+ * any child process we spawn (spawned harnesses, etc.)
  * inherits them and can attach them as common telemetry properties without
  * having to re-resolve `package.json`s on its own.
  *
@@ -218,7 +216,7 @@ export function propagateTelemetryContextToChildren(): string {
       process.env[MACHINE_ID_ENV] = getDistinctId();
     }
     if (!process.env[AGENT_RELAY_DISTINCT_ID_ENV]) {
-      // Signed-in runs are keyed by the cloud user id so CLI, broker, and
+      // Signed-in runs are keyed by the cloud user id so CLI and
       // relaycast-server events all land on one PostHog person.
       process.env[AGENT_RELAY_DISTINCT_ID_ENV] =
         process.env[IDENTITY_ENV_KEYS.userId] || process.env[MACHINE_ID_ENV];
@@ -398,12 +396,12 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerNodeCommands(program);
 
   // `local` is a hidden, deprecated alias of `node`. It keeps the pre-rename flat
-  // surface (`local up|run|logs|sync`, `local agent …`) so existing scripts keep
-  // working, and warns once per process on first use.
+  // workflow surface (`local run|logs|sync`) so existing scripts keep working,
+  // and warns once per process on first use. The broker verbs it used to carry
+  // (`local up`, `local agent …`) answer with the removal notice.
   const local = program.command('local', { hidden: true }).description('Deprecated alias of "node"');
-  registerCoreCommands(local);
-  registerLocalAgentCommands(local);
   registerLocalWorkflowCommands(local);
+  registerRemovedBrokerCommands(local);
   local.hook('preAction', () => {
     if (localDeprecationWarned) {
       return;
@@ -449,21 +447,6 @@ export function createProgram(options: { name?: string } = {}): Command {
   return program;
 }
 
-/**
- * npm installs ship the broker inside node_modules. On first run, copy it into
- * the canonical bin directory (~/.agentworkforce/relay/bin) so the CLI, the
- * broker it launches and the desktop app share one binary. Done here rather
- * than in a postinstall script because many users install with ignore-scripts.
- * Best effort: a failure leaves the npm broker as the resolver's fallback.
- */
-function convergeBrokerInstall(): void {
-  try {
-    ensureCanonicalBroker();
-  } catch {
-    // ensureCanonicalBroker never throws; this guards the import boundary.
-  }
-}
-
 function maybeRunUpdateCheck(version: string, argv: string[]): void {
   const commandName = argv[2];
   if (!commandName || !UPDATE_CHECK_COMMANDS.has(commandName)) return;
@@ -502,7 +485,6 @@ function collectTopLevelVerbs(program: Command): Set<string> {
 export async function runCli(argv: string[] = process.argv): Promise<Command> {
   assertSupportedNodeVersion();
   ensureWebSocketGlobal();
-  convergeBrokerInstall();
   maybeRunUpdateCheck(VERSION, argv);
   const orchestratorHarness = propagateTelemetryContextToChildren();
 

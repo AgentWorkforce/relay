@@ -36,7 +36,7 @@ function nextMajor(version: string): string {
   return `${major + 1}.0.0`;
 }
 
-function writeWorkspacePackage(root: string, name: 'sdk' | 'harness-driver', version: string): void {
+function writeWorkspacePackage(root: string, name: 'sdk', version: string): void {
   const dir = path.join(root, 'pkgs', name);
   mkdirSync(dir, { recursive: true });
   writeFileSync(
@@ -71,7 +71,6 @@ describe('published CLI @relayflows/sdk peer compatibility', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'relayflows-peer-compat-'));
     try {
       writeWorkspacePackage(root, 'sdk', next);
-      writeWorkspacePackage(root, 'harness-driver', next);
 
       writeFileSync(
         path.join(root, 'package.json'),
@@ -81,7 +80,6 @@ describe('published CLI @relayflows/sdk peer compatibility', () => {
             private: true,
             dependencies: {
               '@agent-relay/sdk': 'file:pkgs/sdk',
-              '@agent-relay/harness-driver': 'file:pkgs/harness-driver',
               '@relayflows/sdk': pin,
             },
           },

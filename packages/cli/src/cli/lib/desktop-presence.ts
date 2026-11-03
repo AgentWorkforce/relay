@@ -10,8 +10,8 @@ import {
   type CoreClient,
   type CoreStatus,
 } from './probe-core.js';
+import { isUsableBinary } from './install-paths.js';
 import { originBindingsPath } from './relaycast-origin-binding.js';
-import { isUsableBinary } from '@agent-relay/harness-driver/install-paths';
 
 function subdirectories(dir: string): string[] {
   try {

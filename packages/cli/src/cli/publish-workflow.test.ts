@@ -53,35 +53,52 @@ describe('package=main publish dependency chain', () => {
     const publishedByMainChain = [
       ...sdkInternalDepsPackages.map((name) => `@agent-relay/${name}`),
       ...parallelRuntimePackages.map((name) => `@agent-relay/${name}`),
-      '@agent-relay/harnesses',
-      '@agent-relay/fleet',
     ].sort();
 
     expect(publishedByMainChain).toEqual(directInternalDependencies);
   });
 
-  it('orders harnesses and fleet after their exact-version dependencies', () => {
+  it('publishes every CLI dependency before the root CLI on package=all too', () => {
+    const jobs = loadPublishWorkflow().jobs;
+    const cliPackage = JSON.parse(readFileSync(repoPath('packages/cli/package.json'), 'utf8')) as {
+      dependencies?: Record<string, string>;
+    };
+    const published = new Set(
+      [
+        ...(jobs['publish-sdk-internal-deps']?.strategy?.matrix?.package ?? []),
+        ...(jobs['publish-packages']?.strategy?.matrix?.package ?? []),
+      ].map((name) => `@agent-relay/${name}`)
+    );
+    for (const name of Object.keys(cliPackage.dependencies ?? {}).filter((dep) =>
+      dep.startsWith('@agent-relay/')
+    )) {
+      expect(published.has(name), name).toBe(true);
+    }
+    expect(jobs['publish-packages']?.needs).toContain('publish-sdk-internal-deps');
+  });
+
+  it('gates the root CLI on its dependency publish jobs', () => {
     const jobs = loadPublishWorkflow().jobs;
 
-    expect(jobs['publish-main-harnesses']?.needs).toContain('publish-main-runtime-deps');
-    expect(jobs['publish-main-fleet']?.needs).toContain('publish-main-harnesses');
-    expect(jobs['publish-main-harnesses']?.steps).toEqual(jobs['publish-harnesses']?.steps);
-    expect(jobs['publish-main-fleet']?.steps).toEqual(jobs['publish-fleet']?.steps);
+    expect(jobs['publish-main-runtime-deps']?.needs).toContain('publish-sdk-internal-deps');
     expect(jobs['publish-main']?.needs).toEqual(
-      expect.arrayContaining(['publish-main-runtime-deps', 'publish-main-harnesses', 'publish-main-fleet'])
+      expect.arrayContaining(['publish-packages', 'publish-main-runtime-deps'])
     );
 
     const publishMainIf = jobs['publish-main']?.if;
-    for (const job of ['publish-packages', 'publish-fleet']) {
-      expect(publishMainIf).toContain(
-        `(needs.${job}.result == 'success' || ((github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease') && needs.${job}.result == 'skipped'))`
-      );
-    }
-    for (const job of ['publish-main-runtime-deps', 'publish-main-harnesses', 'publish-main-fleet']) {
-      expect(publishMainIf).toContain(
-        `(needs.${job}.result == 'success' || (github.event.inputs.package == 'all' && needs.${job}.result == 'skipped'))`
-      );
-    }
+    expect(publishMainIf).toContain(
+      "(needs.publish-packages.result == 'success' || ((github.event.inputs.package == 'main' || github.event.inputs.package == 'cli-prerelease') && needs.publish-packages.result == 'skipped'))"
+    );
+    expect(publishMainIf).toContain(
+      "(needs.publish-main-runtime-deps.result == 'success' || (github.event.inputs.package == 'all' && needs.publish-main-runtime-deps.result == 'skipped'))"
+    );
+  });
+
+  it('no longer builds, stages or publishes the retired broker packages', () => {
+    const text = readFileSync(repoPath('.github/workflows/publish.yml'), 'utf8');
+    expect(text).not.toMatch(
+      /agent-relay-broker|harness-driver|@agent-relay\/(harnesses|fleet|evals)|broker-(darwin|linux|win32)|cargo/
+    );
   });
 
   it('passes the untrusted npm tag to publish commands through a quoted environment variable', () => {
@@ -118,7 +135,7 @@ describe('package=main publish dependency chain', () => {
 
     expect(run).toContain("rootPkg.overrides['@relayflows/sdk']");
     expect(run).toContain("'@agent-relay/sdk': version");
-    expect(run).toContain("'@agent-relay/harness-driver': version");
+    expect(run).not.toContain('harness-driver');
 
     const cleanReinstall = loadPublishWorkflow().jobs.build?.steps?.find(
       (step) => step.name === 'Clean reinstall after version bump'

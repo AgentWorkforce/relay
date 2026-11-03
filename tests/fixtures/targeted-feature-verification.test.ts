@@ -605,36 +605,4 @@ describe('targeted Flows v2 PR verification', () => {
     // "Re-run all jobs" re-uploads the same name.
     expect(upload.with.overwrite).toBe(true);
   });
-
-  it('expands the broker binary template in a full-smoke spec', async () => {
-    const directory = await mkdtemp(path.join(os.tmpdir(), 'relay-targeted-pr-broker-'));
-    temporaryDirectories.push(directory);
-    const planPath = path.join(directory, 'plan.json');
-    const specPath = path.join(directory, 'spec.json');
-    const selected = plan(['scripts/verify-features/targeted-pr-plan.mjs']);
-    await writeFile(planPath, `${JSON.stringify(selected)}\n`);
-
-    await execFileAsync(
-      process.execPath,
-      [
-        '--experimental-strip-types',
-        'flows/verify/targeted-pr.spec.ts',
-        '--plan',
-        planPath,
-        '--out',
-        specPath,
-      ],
-      { cwd: process.cwd(), timeout: 30_000 }
-    );
-    const spec = JSON.parse(await readFile(specPath, 'utf8'));
-    const brokerScenario = spec.steps.find(
-      ({ id }: { id: string }) => id === 'scenario-broker-agents-broker-process-integration'
-    );
-    const payload = generatedCommandPayload(brokerScenario.command);
-    expect(payload.environment.AGENT_RELAY_BIN).toBe(
-      path.join(process.cwd(), 'target', 'release', 'agent-relay-broker')
-    );
-    expect(JSON.stringify(payload)).not.toContain('{{brokerBinary}}');
-    expect(payload.forbidOutput).toEqual(['# SKIP']);
-  });
 });

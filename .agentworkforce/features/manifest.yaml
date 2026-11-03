@@ -13,14 +13,14 @@ updated: '2026-11-01'
 #   standard - useful feature; verify periodically
 #
 # status (a category without one is current):
-#   legacy - still shipped and reachable, on the broker and PTY path that the
-#            core replaces. Verified by hand on demand, never on a pull request.
+#   legacy - still shipped and reachable, on a path a newer surface replaces
+#            (the core, or `relay flows` for relayflows v1 workflows).
+#            Verified by hand on demand, never on a pull request.
 #            Add nothing here that could live on the core instead.
 #
 # verify_tier (the primary environment needed to run verification):
 #   1 - isolated local CLI/filesystem
 #   2 - local Relay: the core and server `relay init` runs, in a sandboxed home
-#       (legacy features: a local broker)
 #   3 - hosted workspace plus one registered agent token
 #   4 - hosted workspace plus two or more registered agent identities
 #   5 - authenticated, disposable hosted workspace or external test service
@@ -35,14 +35,12 @@ verification:
     init: relay-init
     core: core-daemon
     core-delivery: core-delivery
-    broker: broker-lifecycle
     agent-management: workspace-agents-and-capabilities
     messaging-channels: channel-messaging
     messaging-messages: message-round-trip
     messaging-dm: direct-messages
     messaging-reactions: reactions-and-read-status
     messaging-inbox: reactions-and-read-status
-    local-agents: local-agent-lifecycle
     local-workflows: local-workflow-lifecycle
     cloud: cloud-workflows
     cloud-workers: cloud-workers
@@ -54,7 +52,6 @@ verification:
     integration: integrations-and-webhooks
     product-surfaces: product-cli-surfaces
     mcp: mcp-stdio
-    harnesses: harnesses
     sdk: typescript-sdk
     swift-sdk: swift-sdk
     opencode-plugin: opencode-plugin
@@ -305,54 +302,6 @@ categories:
         location: crates/probe/src/relay/delivery/, crates/probe/src/relay/delivery.rs, crates/probe/src/relay/inject.rs
         verify_tier: 2
 
-  broker:
-    name: Local Broker
-    description: The Rust daemon that routes all agent messages locally
-    criticality: standard
-    status: legacy
-    features:
-      - id: broker-up
-        name: Start Broker
-        cli: relay node up --background
-        description: Start the local broker daemon in the background
-        location: packages/cli/src/cli/commands/core.ts
-        verify_tier: 1
-
-      - id: broker-down
-        name: Stop Broker
-        cli: relay node down
-        description: Stop the running broker daemon
-        location: packages/cli/src/cli/commands/core.ts
-        verify_tier: 2
-
-      - id: broker-status
-        name: Broker Status
-        cli: relay node status [--wait-for <seconds>]
-        description: Check whether the local broker daemon is running and report its agent and delivery state
-        location: packages/cli/src/cli/commands/core.ts, packages/cli/src/cli/commands/node.ts
-        verify_tier: 2
-
-      - id: broker-metrics
-        name: Broker Metrics
-        cli: relay node metrics [--agent <name>]
-        description: Show resource usage for broker and its agents
-        location: packages/cli/src/cli/commands/core.ts
-        verify_tier: 2
-
-      - id: broker-deadletters
-        name: Dead Letter Queue
-        cli: relay node deadletters [--json]
-        description: List terminally-failed message deliveries retained in the broker
-        location: packages/cli/src/cli/commands/core.ts
-        verify_tier: 2
-
-      - id: broker-redeliver
-        name: Redeliver Messages
-        cli: relay node redeliver (<id> | --all)
-        description: Requeue dead-letter messages through the normal delivery path
-        location: packages/cli/src/cli/commands/core.ts
-        verify_tier: 2
-
   agent-management:
     name: Agent Management
     description: Register and manage agents in the workspace
@@ -431,7 +380,7 @@ categories:
       - id: system-status
         name: Composite System Status
         cli: relay status
-        description: Show the current project path, local broker state, and Cloud-login state
+        description: Show the current project path and Cloud-login state
         location: packages/cli/src/cli/commands/status.ts
         verify_tier: 1
 
@@ -648,85 +597,9 @@ categories:
         location: packages/cli/src/cli/commands/message.ts, packages/cli/src/cli/mcp/messaging-tools.ts
         verify_tier: 4
 
-  local-agents:
-    name: Local Agent Orchestration
-    description: Spawn and control AI agent processes on the local broker
-    criticality: standard
-    status: legacy
-    features:
-      - id: local-agent-spawn
-        name: Spawn Agent
-        cli: relay node agent spawn <provider> [--name <agent-name>] [--task <task>] [--spawn-mode task-exit] [--exit-after-task]
-        description: Launch an AI agent process attached to the local broker
-        location: packages/cli/src/cli/commands/local-agent.ts
-        verify_tier: 2
-
-      - id: local-agent-new
-        name: Spawn and Attach
-        cli: relay node agent new <provider> [--name <agent-name>]
-        description: Spawn an agent and immediately attach your terminal to it
-        location: packages/cli/src/cli/commands/local-agent.ts
-        verify_tier: 6
-
-      - id: local-agent-release
-        name: Release Agent
-        cli: relay node agent release <name>
-        description: Gracefully stop a running local agent
-        location: packages/cli/src/cli/commands/local-agent.ts
-        verify_tier: 2
-
-      - id: local-agent-list
-        name: List Local Agents
-        cli: relay node agent list
-        description: Show all agents currently running on the local broker
-        location: packages/cli/src/cli/commands/local-agent.ts
-        verify_tier: 2
-
-      - id: local-agent-set-model
-        name: Switch Agent Model
-        cli: relay node agent set-model <name> <model>
-        description: Request a best-effort /model switch from a running agent's provider TUI
-        location: packages/cli/src/cli/commands/local-agent.ts
-        verify_tier: 2
-
-      - id: local-agent-attach
-        name: Attach to Agent
-        cli: relay node agent attach <name>
-        description: Interactively connect terminal to a running agent (drive/view/passthrough)
-        location: packages/cli/src/cli/commands/local-agent.ts
-        verify_tier: 6
-
-      - id: local-agent-flush
-        name: Flush Agent Messages
-        cli: relay node agent message flush <name>
-        description: Immediately deliver all queued messages to a held agent
-        location: packages/cli/src/cli/commands/local-agent.ts
-        verify_tier: 2
-
-      - id: local-agent-hold
-        name: Hold Agent Messages
-        cli: relay node agent message hold <name>
-        description: Pause message delivery to an agent (queue them)
-        location: packages/cli/src/cli/commands/local-agent.ts
-        verify_tier: 2
-
-      - id: local-agent-auto
-        name: Resume Agent Messages
-        cli: relay node agent message auto <name>
-        description: Resume automatic message injection for an agent
-        location: packages/cli/src/cli/commands/local-agent.ts
-        verify_tier: 2
-
-      - id: local-agent-tail
-        name: Tail Broker Events
-        cli: relay node tail [--agent <name>]
-        description: Stream live broker events, optionally filtered to one agent
-        location: packages/cli/src/cli/commands/local-agent.ts, packages/cli/src/cli/commands/node.ts
-        verify_tier: 2
-
   local-workflows:
     name: Local Workflow Execution
-    description: Run multi-agent workflows on the local broker
+    description: Run relayflows v1 workflows on this machine (relayflows resolves its own runtime)
     criticality: hot
     status: legacy
     features:
@@ -1002,8 +875,8 @@ categories:
 
       - id: fleet-spawn
         name: Spawn Fleet Agent
-        cli: relay fleet spawn <cli> [--name <name>] [--task <text>] [--node <name>] [--persona <persona>] [--model <model>]
-        description: Spawn a worker agent onto a live fleet node, by explicit node or by persona placement
+        cli: relay fleet spawn <cli> --name <name> [--task <text>] (--node|--target-node <name> | --auto-place | --persona <persona> | --workspace-key <key> | --sandbox) [--model <model>]
+        description: Spawn a worker agent onto a live fleet node or a fresh Cloud sandbox, by explicit node, automatic placement, or persona placement
         location: packages/cli/src/cli/commands/fleet.ts
         verify_tier: 5
 
@@ -1020,13 +893,6 @@ categories:
         description: Release a spawned fleet agent, optionally deleting the agent identity
         location: packages/cli/src/cli/commands/fleet.ts
         verify_tier: 5
-
-      - id: fleet-status
-        name: Fleet Node Status
-        cli: relay fleet status
-        description: Show local broker status and this node's provider attachment
-        location: packages/cli/src/cli/commands/fleet.ts
-        verify_tier: 2
 
       - id: fleet-agent-list
         name: List Fleet Agents
@@ -1106,7 +972,7 @@ categories:
       - id: workspace-rebind
         name: Rebind Project Workspace
         cli: relay workspace rebind <name>
-        description: Pin this project's broker to a stored workspace
+        description: Pin this project to a stored workspace
         location: packages/cli/src/cli/commands/workspace.ts
         verify_tier: 1
 
@@ -1534,71 +1400,6 @@ categories:
         location: packages/cli/src/cli/agent-relay-mcp.ts
         verify_tier: 6
 
-  harnesses:
-    name: AI Harness Integrations
-    description: PTY-based integrations with AI coding tools
-    criticality: hot
-    features:
-      - id: harness-claude
-        name: Claude Code Harness
-        description: Run agents using Claude Code (claude CLI) with PTY injection
-        location: packages/harnesses/
-        verify_tier: 6
-
-      - id: harness-codex
-        name: Codex Harness
-        description: Run agents using OpenAI Codex CLI
-        location: packages/harnesses/
-        verify_tier: 6
-
-      - id: harness-gemini
-        name: Gemini Harness
-        description: Run agents using Google Gemini CLI
-        location: packages/harnesses/
-        verify_tier: 6
-
-      - id: harness-cursor
-        name: Cursor Harness
-        description: Run agents using Cursor IDE cursor-agent command
-        location: packages/harnesses/
-        verify_tier: 6
-
-      - id: harness-aider
-        name: Aider Harness
-        description: Run agents using the Aider code editing tool
-        location: packages/harnesses/
-        verify_tier: 6
-
-      - id: harness-goose
-        name: Goose Harness
-        description: Run agents using Block's Goose automation tool
-        location: packages/harnesses/
-        verify_tier: 6
-
-      - id: harness-grok
-        name: Grok Harness
-        description: Run agents using xAI Grok CLI
-        location: packages/harnesses/
-        verify_tier: 6
-
-      - id: harness-opencode
-        name: OpenCode Harness
-        description: Run agents using the OpenCode extension
-        location: packages/harnesses/
-        verify_tier: 6
-
-      - id: harness-droid
-        name: Droid Harness
-        description: Run agents using Factory's Droid CLI
-        location: packages/harnesses/src/index.ts
-        verify_tier: 6
-
-      - id: harness-custom
-        name: Custom Harness
-        description: Define a bespoke harness via the defineHarness contract
-        location: packages/harnesses/
-        verify_tier: 3
-
   sdk:
     name: SDK (Programmatic API)
     description: TypeScript SDK for building agent integrations
@@ -1840,17 +1641,10 @@ categories:
 
   node:
     name: Node Management
-    description: Manage this machine as a relay node
+    description: The node command group, which now carries only the local workflow commands
     criticality: standard
     status: legacy
     features:
-      - id: node-up
-        name: Node Up
-        cli: relay node up [--no-spawn] [--config <file>]
-        description: Start this node in the foreground, optionally serving a node-definition file
-        location: packages/cli/src/cli/commands/node.ts
-        verify_tier: 1
-
       - id: node-workflow
         name: Workflow Command Discovery
         cli: relay node workflow --help

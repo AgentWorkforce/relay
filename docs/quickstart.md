@@ -213,9 +213,8 @@ a private certificate authority, set `NODE_EXTRA_CA_CERTS` to its certificate
 file, and keep it set for every `relay` command (for example in your shell
 profile): the CLI does not save it.
 
-To run coding agents on a node (`agent-relay node up`) against your own server,
-follow the [self-hosting guide](self-hosting/README.md); nodes need extra
-setup today.
+`relay init` also starts the Agent Relay core against your own server; see
+the [self-hosting guide](self-hosting/README.md) for the details.
 
 ## The local server
 

@@ -369,13 +369,7 @@ export function buildFleetDaytonaSpec(): Record<string, unknown> {
       600_000,
       ['build-current-cli']
     );
-    det(
-      'stage-current-platform-broker',
-      'node scripts/verify-features/relay-candidate-install.mjs stage-source-broker',
-      1_800_000,
-      ['install-candidate-npm']
-    );
-    candidatePreparationDependency = 'stage-current-platform-broker';
+    candidatePreparationDependency = 'install-candidate-npm';
   }
   det('prepare-clean-installed-candidate', CANDIDATE_PREPARE_COMMAND, 1_800_000, [
     candidatePreparationDependency,

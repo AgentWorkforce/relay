@@ -1,398 +1,74 @@
 import type { Command } from 'commander';
-import {
-  fleetNodeEnrollmentStorePath,
-  readFleetNodeEnrollmentStore,
-  resolveActiveFleetNodeEnrollment,
-  type FleetNodeEnrollmentRecord,
-} from '@agent-relay/cloud';
 
-import {
-  addUpCommandOptions,
-  registerCoreCommands,
-  withDefaults,
-  type CoreDependencies,
-  type UpCommandOptions,
-} from './core.js';
-import { runUpCommand } from '../lib/broker-lifecycle.js';
-import {
-  describeNodeClaimHolder,
-  enrolledNodeIdForClaim,
-  inspectNodeClaim,
-  type NodeClaimState,
-} from '../lib/node-claim.js';
-import {
-  projectWorkspaceKeyPath,
-  readProjectWorkspaceSession,
-  type ProjectWorkspaceSession,
-} from '../lib/project-workspace-key.js';
-import { promoteWorkspaceKeyEnvAlias } from '../lib/workspace-env.js';
-import { registerLocalAgentCommands } from './local-agent.js';
+import { defaultExit } from '../lib/exit.js';
+import { removedBrokerCommandMessage } from '../lib/removed-broker-command.js';
 import { registerLocalWorkflowCommands } from './local-workflow.js';
 
 type ExitFn = (code: number) => never;
 
-/** `node up` options: the shared broker set plus `--config` and `--force`. */
-type NodeUpCommandOptions = UpCommandOptions & { force?: boolean };
+/**
+ * The `node` verbs that drove the local Rust broker. The broker was retired:
+ * the Agent Relay core started by `relay init` now delivers messages and
+ * spawns, lists and releases agents on this machine.
+ */
+export const REMOVED_BROKER_COMMANDS = [
+  'up',
+  'down',
+  'status',
+  'metrics',
+  'deadletters',
+  'redeliver',
+  'agent',
+  'tail',
+] as const;
 
-export interface NodeCommandDependencies {
-  core: CoreDependencies;
-  resolveEnrollment: typeof resolveActiveFleetNodeEnrollment;
-  /** Every stored fleet enrollment, used only to report how many a project pin is shadowing. */
-  listFleetEnrollments: (env: NodeJS.ProcessEnv) => FleetNodeEnrollmentRecord[];
-  resolveProjectWorkspaceSession: () => ProjectWorkspaceSession | undefined;
-  /**
-   * Whether a live local broker already serves a node id. Injected so tests can
-   * drive the guard without a real claim directory.
-   */
-  inspectNodeClaim: (nodeId: string) => Promise<NodeClaimState>;
-  log: (...args: unknown[]) => void;
-  warn: (...args: unknown[]) => void;
+export interface RemovedCommandDependencies {
   error: (...args: unknown[]) => void;
   exit: ExitFn;
 }
 
 /**
- * Fill in the real Cloud/enrollment/project lookups for anything the caller did
- * not inject.
- * @param overrides - Dependencies to substitute, as tests do.
- * @returns A fully populated dependency set.
+ * Register hidden stubs for the removed broker verbs on `group`, so an old
+ * script gets the replacement instead of Commander's bare unknown-command
+ * error. Each stub swallows any arguments and options the old verb took.
+ * @param group - The `node` group or its deprecated `local` alias
+ * @param overrides - Output and exit, as tests inject
  */
-function withNodeDefaults(overrides: Partial<NodeCommandDependencies> = {}): NodeCommandDependencies {
-  const core = overrides.core ?? withDefaults();
-  return {
-    core,
-    resolveEnrollment: resolveActiveFleetNodeEnrollment,
-    listFleetEnrollments: (env: NodeJS.ProcessEnv) => Object.values(readFleetNodeEnrollmentStore(env).nodes),
-    resolveProjectWorkspaceSession: () => readProjectWorkspaceSession(core.getProjectPaths().dataDir),
-    inspectNodeClaim: (nodeId: string) =>
-      inspectNodeClaim(nodeId, {
-        env: core.env,
-        killProcess: core.killProcess,
-        execCommand: core.execCommand,
-      }),
-    log: (...args: unknown[]) => console.log(...args),
-    warn: (...args: unknown[]) => console.warn(...args),
+export function registerRemovedBrokerCommands(
+  group: Command,
+  overrides: Partial<RemovedCommandDependencies> = {}
+): void {
+  const deps: RemovedCommandDependencies = {
     error: (...args: unknown[]) => console.error(...args),
-    exit: core.exit,
+    exit: defaultExit,
     ...overrides,
   };
+  for (const name of REMOVED_BROKER_COMMANDS) {
+    group
+      .command(name, { hidden: true })
+      .description('Removed: the local broker was retired; use relay init')
+      .argument('[args...]')
+      .allowUnknownOption(true)
+      .allowExcessArguments(true)
+      .helpOption(false)
+      .action(() => {
+        deps.error(removedBrokerCommandMessage(`${group.name()} ${name}`));
+        deps.exit(1);
+      });
+  }
 }
 
 /**
- * Register the `node` command group: `node up|down|status|metrics`, the
- * `node agent …` subtree (+ `node tail`), and `node workflow run|logs|sync`.
+ * Register the `node` command group: `node workflow run|logs|sync`, plus
+ * hidden removal notices for the broker verbs it used to carry.
  */
 export function registerNodeCommands(
   program: Command,
-  overrides: Partial<NodeCommandDependencies> = {}
+  overrides: Partial<RemovedCommandDependencies> = {}
 ): void {
-  const deps = withNodeDefaults(overrides);
-  const node = program.command('node').description("Run and manage this machine's relay node");
-
-  // `up` is registered here (not via registerCoreCommands) because the node
-  // variant adds `--config` and runs enrollment pickup before delegating.
-  addUpCommandOptions(node.command('up').description("Start this node's local broker"))
-    .option(
-      '--config <file>',
-      'Node definition file to serve (defaults to auto-discovered agent-relay.{ts,tsx,mts,cts,js,mjs,cjs})'
-    )
-    .option(
-      '--force',
-      "Serve the enrolled node even when another live local broker already claims it (evicts that broker's Cloud delivery socket)"
-    )
-    .action(async (options: NodeUpCommandOptions) => {
-      await runNodeUp(options, deps);
-    });
-
-  // down / status / metrics are the same as `local` — reuse the core
-  // registrations without a second `up`.
-  registerCoreCommands(node, deps.core, { includeUp: false });
-
-  registerLocalAgentCommands(node);
+  const node = program.command('node').description('Run and inspect workflows on this machine');
   registerLocalWorkflowCommands(
     node.command('workflow').description('Run and inspect workflows on this node')
   );
-}
-
-/** Normalize workspace env aliases and report whether `node up` received an explicit workspace. */
-function prepareExplicitWorkspaceForNodeUp(
-  options: UpCommandOptions,
-  deps: NodeCommandDependencies
-): boolean {
-  const envWorkspaceKey = promoteWorkspaceKeyEnvAlias(deps.core.env);
-  return Boolean(options.workspaceKey?.trim() || envWorkspaceKey);
-}
-
-/**
- * Refuse to start when the stored enrollment addresses a different workspace
- * than the repository pin.
- *
- * The enrollment store is machine-global; the pin is per-repository. When they
- * disagree, silently preferring either one re-homes the node — so name both
- * sources and stop. Only possible once a previous start recorded the pin's
- * workspace id; before that the two are simply passed through together (the
- * pin wins for workspace selection, the enrollment for node identity) and a
- * mismatched node token fails loudly at registration instead.
- */
-function reportWorkspaceSourceConflict(
-  record: NonNullable<ReturnType<typeof resolveActiveFleetNodeEnrollment>>,
-  session: ProjectWorkspaceSession | undefined,
-  deps: NodeCommandDependencies
-): boolean {
-  const pinnedWorkspaceId = session?.workspaceId?.trim();
-  const enrolledWorkspaceId = record.relayWorkspaceId?.trim();
-  if (!pinnedWorkspaceId || !enrolledWorkspaceId || pinnedWorkspaceId === enrolledWorkspaceId) {
-    return false;
-  }
-
-  const pinPath = projectWorkspaceKeyPath(deps.core.getProjectPaths().dataDir);
-  deps.error(
-    'Refusing to start: this repository and the stored Fleet enrollment select different workspaces.'
-  );
-  deps.error(`  repository pin      ${pinPath} -> workspace ${pinnedWorkspaceId}`);
-  deps.error(
-    `  fleet enrollment    ${fleetNodeEnrollmentStorePath(deps.core.env)} -> workspace ${enrolledWorkspaceId} (node ${record.nodeId})`
-  );
-  deps.error(
-    'Run `agent-relay workspace rebind <name>` to repin this project and clear the stale ' +
-      'enrolled-node association; alternatively pass --workspace-key or re-enroll this node in ' +
-      'the pinned workspace.'
-  );
-  return true;
-}
-
-/** Apply stored enrollment credentials and return the enrolled node name, when present. */
-function applyEnrollment(
-  record: NonNullable<ReturnType<typeof resolveActiveFleetNodeEnrollment>>,
-  deps: NodeCommandDependencies
-): string | undefined {
-  const env = deps.core.env;
-  env.RELAY_NODE_TOKEN = record.nodeToken;
-  env.RELAY_NODE_ID = record.nodeId;
-  // Internal, non-secret association inherited by a detached child. The broker
-  // records it beside the project workspace so later starts can resolve the
-  // same durable enrollment instead of minting a replacement node identity.
-  env.AGENT_RELAY_ENROLLED_NODE_ID = record.nodeId;
-  if (!env.RELAY_BASE_URL) {
-    env.RELAY_BASE_URL = record.relaycastUrl;
-  }
-  deps.log(
-    `Using persisted Cloud enrollment for node "${record.nodeName}" (workspace ${record.relayWorkspaceId}).`
-  );
-  return record.nodeName?.trim() || undefined;
-}
-
-/**
- * Report the enrollments a project pin without an `enrolledNodeId` shadows.
- *
- * The pin wins over the enrollment store, so the broker starts in the pinned
- * workspace and this machine never serves its Cloud fleet node. That used to be
- * completely silent: the Cloud dashboard showed the node, `fleet nodes` showed a
- * different roster, and nothing said the two were different workspaces.
- */
-function warnPinShadowsFleetEnrollments(deps: NodeCommandDependencies): void {
-  let count: number | undefined;
-  try {
-    count = deps.listFleetEnrollments(deps.core.env).length;
-  } catch {
-    // A corrupt or unreadable store must not break `node up` here — nothing on
-    // this path needs it. Warn without a count rather than hide the mismatch.
-    count = undefined;
-  }
-  if (count === 0) {
-    return;
-  }
-  const subject =
-    count === undefined ? 'stored Cloud fleet enrollments' : `${count} stored Cloud fleet enrollment(s)`;
-  deps.warn(
-    `This project is pinned to a workspace with no enrolled node id, so ${subject} will be ignored: ` +
-      'the broker starts in the pinned workspace and this machine will not serve its Cloud fleet node. ' +
-      "Re-run 'relay cloud enroll' from this project to link the pin to a node, or export " +
-      "RELAY_NODE_ID and RELAY_NODE_TOKEN and start with 'relay node up --broker-name <node>'."
-  );
-}
-
-/** Resolve the enrollment associated with a project session, avoiding ambiguous global fallback. */
-function resolveEnrollmentForProject(
-  session: ProjectWorkspaceSession | undefined,
-  deps: NodeCommandDependencies
-): ReturnType<typeof resolveActiveFleetNodeEnrollment> | undefined {
-  const env = deps.core.env;
-  if (session?.enrolledNodeId) {
-    return deps.resolveEnrollment({
-      ...(env.RELAY_BASE_URL ? { baseUrl: env.RELAY_BASE_URL } : {}),
-      nodeId: session.enrolledNodeId,
-      env,
-    });
-  }
-  if (session) {
-    warnPinShadowsFleetEnrollments(deps);
-    return undefined;
-  }
-  return deps.resolveEnrollment({
-    ...(env.RELAY_BASE_URL ? { baseUrl: env.RELAY_BASE_URL } : {}),
-    env,
-  });
-}
-
-/**
- * Apply the node identity for this start.
- *
- * Workspace selection is NOT decided here — `runUpCommand` walks the shared
- * precedence ladder (flag → env → repository pin → machine-global active) after
- * this returns. This function only settles which node identity the broker runs
- * as, so an enrollment can no longer suppress the repository's workspace.
- */
-function applyResolvedNodeSession(
-  record: ReturnType<typeof resolveActiveFleetNodeEnrollment> | undefined,
-  projectSession: ProjectWorkspaceSession | undefined,
-  deps: NodeCommandDependencies
-): string | undefined {
-  if (record) {
-    return applyEnrollment(record, deps);
-  }
-  if (projectSession?.enrolledNodeId) {
-    deps.core.env.AGENT_RELAY_ENROLLED_NODE_ID = projectSession.enrolledNodeId;
-    deps.warn(
-      `Persisted enrollment for node "${projectSession.enrolledNodeId}" was not found; resuming the pinned workspace without that node identity.`
-    );
-  }
-  return undefined;
-}
-
-/**
- * Refuse to adopt an enrolled node id that a live local broker already serves.
- *
- * The Fleet enrollment store is machine-global and is not scoped to a broker
- * state dir, so a `node up` in another checkout — or the same one under a
- * different `--state-dir` — resolves the very same node id. Both brokers then
- * register as that node and the engine hands the node-control delivery socket
- * to whichever registered last: the first broker keeps running, keeps reporting
- * healthy, and silently stops receiving messages. The claim file written by the
- * holding broker is the only machine-local record of that ownership, so it is
- * checked here, before anything starts.
- *
- * Both of `runNodeUp`'s enrollment branches land the node identity in the env,
- * so reading it back from there covers a stored enrollment, a project-pinned
- * enrollment, and pre-set credentials alike.
- *
- * This is the operator-facing half of the guard: it turns a conflict into
- * remedies instead of a startup failure. It is NOT what makes ownership
- * exclusive — `runUpCommand` reserves the node id with an exclusive create
- * before it spawns anything, and that reservation is what two starts racing
- * past this check are serialized by.
- *
- * @returns True when startup may continue.
- */
-async function guardEnrolledNodeIdentity(
-  options: NodeUpCommandOptions,
-  deps: NodeCommandDependencies
-): Promise<boolean> {
-  const nodeId = enrolledNodeIdForClaim(deps.core.env);
-  if (!nodeId) {
-    return true;
-  }
-  let status: NodeClaimState;
-  try {
-    status = await deps.inspectNodeClaim(nodeId);
-  } catch {
-    // The claim store is a guard, not a dependency: an unreadable claims
-    // directory must not stop a node that would otherwise start fine.
-    return true;
-  }
-  // A claim left behind by a crashed or rebooted broker is not a conflict; this
-  // start overwrites it.
-  if (status.state !== 'held') {
-    return true;
-  }
-
-  const holder = describeNodeClaimHolder(status.claim);
-  if (options.force) {
-    deps.warn(
-      `--force: taking node ${nodeId} over from a live local broker (${holder}). ` +
-        "That broker's Cloud delivery socket is evicted when this one registers, so messages routed to it stop arriving."
-    );
-    return true;
-  }
-
-  deps.error(`Refusing to start: node ${nodeId} is already served by a live broker on this machine.`);
-  deps.error(`  holding broker      ${holder}`);
-  deps.error(`  claimed at          ${status.claim.claimed_at}`);
-  deps.error(
-    "Two brokers cannot share one node id: the second registration takes over the node's Cloud " +
-      'delivery socket and messages stop reaching the first.'
-  );
-  deps.error('Pick one:');
-  deps.error(`  stop the running broker   agent-relay node down --state-dir ${status.claim.state_dir}`);
-  deps.error(
-    '  run a second node here    agent-relay cloud enroll --name <other-node>, then start this ' +
-      'project from that enrollment'
-  );
-  deps.error('  take the node over        agent-relay node up --force (evicts the broker above)');
-  return false;
-}
-
-/**
- * `node up` with Cloud enrollment pickup: when no `RELAY_NODE_TOKEN` is set,
- * resolve a persisted enrollment and wire its credentials into the env before
- * delegating to the shared broker `up` flow.
- */
-async function runNodeUp(options: NodeUpCommandOptions, deps: NodeCommandDependencies): Promise<void> {
-  if (options.localOnly || deps.core.env.AGENT_RELAY_LOCAL_ONLY === '1') {
-    await runUpCommand({ ...options, localOnly: true, discoverConfig: false }, deps.core);
-    return;
-  }
-
-  const env = deps.core.env;
-  // Fleet nodes may be started concurrently on one machine. Let the broker
-  // bind an ephemeral API port atomically unless the operator explicitly
-  // selected a stable broker base port.
-  env.AGENT_RELAY_BROKER_PORT ??= '0';
-  // An explicit workspace key (flag or env) is a direct workspace choice; the
-  // enrollment store records workspace ids, not keys, so a stored enrollment
-  // cannot be matched against it — skip pickup entirely rather than risk
-  // starting the broker with a token from a different workspace.
-  const explicitWorkspaceKey = prepareExplicitWorkspaceForNodeUp(options, deps);
-  let enrolledNodeName: string | undefined;
-  if (env.RELAY_NODE_TOKEN?.trim() && env.RELAY_NODE_ID?.trim()) {
-    env.AGENT_RELAY_ENROLLED_NODE_ID ??= env.RELAY_NODE_ID.trim();
-  }
-  if (!env.RELAY_NODE_TOKEN && !explicitWorkspaceKey) {
-    const projectSession = deps.resolveProjectWorkspaceSession();
-    let record: ReturnType<typeof resolveActiveFleetNodeEnrollment> | undefined;
-    try {
-      record = resolveEnrollmentForProject(projectSession, deps);
-    } catch (err) {
-      // A missing store resolves to undefined (fine); only an ambiguous
-      // multi-match throws, which must surface as a clear CLI error.
-      deps.error(err instanceof Error ? err.message : String(err));
-      deps.exit(1);
-      return;
-    }
-    if (record && reportWorkspaceSourceConflict(record, projectSession, deps)) {
-      deps.exit(1);
-      return;
-    }
-    // Serve under the enrolled name (mirrors the old `fleet serve
-    // --enrollment-token` behavior where --name beat the enrollment name).
-    enrolledNodeName = applyResolvedNodeSession(record, projectSession, deps);
-  }
-
-  if (!(await guardEnrolledNodeIdentity(options, deps))) {
-    deps.exit(1);
-    return;
-  }
-
-  const nodeName = options.brokerName ?? enrolledNodeName;
-  await runUpCommand(
-    {
-      ...options,
-      discoverConfig: true,
-      // The broker name is also its registered fleet-node name. Keeping both
-      // fields aligned makes foreground startup use the enrolled identity and
-      // lets detached startup preserve it via the existing --broker-name arg.
-      ...(nodeName ? { brokerName: nodeName, nodeName } : {}),
-    },
-    deps.core
-  );
+  registerRemovedBrokerCommands(node, overrides);
 }

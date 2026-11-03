@@ -70,10 +70,10 @@ export function resolveWorkspaceSelection(options: SdkClientOptions = {}): Works
 
 /**
  * Resolve the workspace key and report which source it came from. Precedence:
- * explicit flag → `RELAY_WORKSPACE_KEY`/`RELAY_API_KEY` env → the key the local
- * broker in this CWD was started with (`relay up`) → the machine-global active
- * workspace. Callers use the source to warn when the key was inferred from the
- * project broker rather than named explicitly.
+ * explicit flag → `RELAY_WORKSPACE_KEY`/`RELAY_API_KEY` env → the workspace
+ * pinned to this project → the machine-global active workspace. Callers use the
+ * source to warn when the key was inferred from the project pin rather than
+ * named explicitly.
  */
 export function resolveWorkspaceKeyWithSource(options: SdkClientOptions = {}): {
   key: string;
