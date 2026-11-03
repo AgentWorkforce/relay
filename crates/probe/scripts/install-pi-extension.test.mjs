@@ -24,28 +24,28 @@ function run(home) {
   }
 }
 
-function home(name) {
+function home(t, name) {
   // Short: a Unix socket path must fit in about a hundred bytes.
   const root = fs.mkdtempSync(join(process.platform === 'win32' ? tmpdir() : '/tmp', 'rpi-'));
   const dir = join(root, name);
   fs.mkdirSync(join(dir, 'agent', 'extensions'), { recursive: true });
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return { root, dir, file: join(dir, 'agent', 'extensions', 'agent-relay.js') };
 }
 
 const unix = process.platform !== 'win32';
 
-test('a home path naming a placeholder is written as it is', { skip: !unix }, () => {
-  const h = home('__HARNESS__');
+test('a home path naming a placeholder is written as it is', { skip: !unix }, (t) => {
+  const h = home(t, '__HARNESS__');
   assert.equal(run(h.dir).ok, true);
   const installed = fs.readFileSync(h.file, 'utf8');
   assert.match(installed, /const harness = "pi";/);
   assert.ok(installed.includes(`${h.dir}/.agentworkforce/desktop/pi`));
   execFileSync(process.execPath, ['--check', h.file]);
-  fs.rmSync(h.root, { recursive: true, force: true });
 });
 
-test('an Oh My Pi copy is refused, not overwritten', { skip: !unix }, () => {
-  const h = home('omp');
+test('an Oh My Pi copy is refused, not overwritten', { skip: !unix }, (t) => {
+  const h = home(t, 'omp');
   assert.equal(run(h.dir).ok, true);
   const omp = fs.readFileSync(h.file, 'utf8').replace('const harness = "pi";', 'const harness = "omp";');
   fs.writeFileSync(h.file, omp);
@@ -53,15 +53,14 @@ test('an Oh My Pi copy is refused, not overwritten', { skip: !unix }, () => {
   assert.equal(result.ok, false);
   assert.match(result.out, /Preserving the Oh My Pi extension/);
   assert.equal(fs.readFileSync(h.file, 'utf8'), omp);
-  fs.rmSync(h.root, { recursive: true, force: true });
 });
 
 for (const [name, make] of [
   ['a symlink', (file) => fs.symlinkSync('/etc/hosts', file)],
   ['a FIFO', (file) => execFileSync('mkfifo', [file])],
 ]) {
-  test(`${name} at the extension path is refused`, { skip: !unix }, () => {
-    const h = home('special');
+  test(`${name} at the extension path is refused`, { skip: !unix }, (t) => {
+    const h = home(t, 'special');
     make(h.file);
     const result = run(h.dir);
     assert.equal(result.ok, false);
@@ -70,13 +69,12 @@ for (const [name, make] of [
   });
 }
 
-test('a socket at the extension path is refused', { skip: !unix }, async () => {
-  const h = home('socket');
+test('a socket at the extension path is refused', { skip: !unix }, async (t) => {
+  const h = home(t, 'socket');
   const server = net.createServer();
   await new Promise((resolve) => server.listen(h.file, resolve));
   const result = run(h.dir);
   server.close();
   assert.equal(result.ok, false);
   assert.match(result.out, /Preserving another extension/);
-  fs.rmSync(h.root, { recursive: true, force: true });
 });

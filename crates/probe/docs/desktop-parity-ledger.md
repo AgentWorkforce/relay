@@ -26,7 +26,7 @@ which dropped some desktop changes made before the split. #2060 restores them.
 | `relay serve --headless` keeps the app's Open-at-login entry | d23664e2 | `the_headless_service_preserves_the_apps_login_entry_and_stops_on_sigterm`, `the_binary_serves_answers_calls_and_stops_with_its_host` |
 | Devin reviews are never listed, activated, or recreated as offline rows | 27854327, aa893455 | `discover_skips_sessions_an_automation_started`, `automation_classification_wins_across_installs_in_either_order`, `a_devin_review_session_is_never_listed_or_auto_activated`, `a_registered_devin_review_is_not_recreated_as_an_offline_session` |
 | Grok usage records do not become empty transcript messages | fc84dd6e | `grok_usage_records_do_not_become_empty_messages_and_pagination_keeps_progress` |
-| Presentation discovery runs on a fixed cadence; reads never start a pass | 96ebd2c5 | existing `local_methods` and `relay_agents` suites |
+| Presentation discovery runs on a fixed cadence; reads never start a pass | 96ebd2c5 | `warm_session_reads_do_not_repeat_live_discovery` (tests/relay_agents.rs) |
 | The desktop's automatic-activation default (on unless turned off) | a37b11a3, 7373df8b | `the_desktop_account_turns_automatic_activation_on_unless_turned_off` |
 
 The activation default is a hook, not relay's default:
@@ -42,8 +42,9 @@ those kinds by itself.
 - The broker, fleet and `relay-cli` pieces desktop removed in 27d4b2e0 (fleet
   methods, fleet-owned filtering and authority slot, CLI workspace sources,
   official CLI session reuse, `ar_` keys, `cli_managed`).
-- #2057's reviewed retry rule for `permission_denied` (c24c1706 retried at
-  every start).
+- #2057's reviewed retry rule for `permission_denied`: a block is retried
+  after an update and once more at a later start, then stays until a new
+  build (the desktop's c24c1706 retried it at every start).
 - Relay's per-provider opt-ins for Pi and OpenCode activation, and Pi
   installation under `relay init`.
 
