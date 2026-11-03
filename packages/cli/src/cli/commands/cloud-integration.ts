@@ -82,7 +82,7 @@ function canonicalApiUrl(value: string): string {
   return url.toString().replace(/\/+$/, '');
 }
 
-function cloudError(response: Response): Error {
+function cloudError(response: Response, payload: unknown): Error {
   if (response.status === 401) {
     return new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
   }
@@ -91,6 +91,15 @@ function cloudError(response: Response): Error {
   }
   if (response.status === 404) {
     return new Error('The integration resource was not found or is no longer available.');
+  }
+  // Decode only known error codes. Server messages and provider responses may
+  // contain credentials or private details and must never reach the terminal.
+  if ((response.status === 400 || response.status === 409) && isObject(payload)) {
+    if (payload.error === 'unknown_provider') {
+      return new Error(
+        'This provider is not supported for workspace connections on this Cloud endpoint. Check `agent-relay cloud integration catalog`, using the same `--api-url` if set.'
+      );
+    }
   }
   if (response.status === 409) {
     return new Error('The integration operation conflicts with its current lifecycle state.');
@@ -130,7 +139,7 @@ async function requestWithAuth(
     interactive: false,
   });
   const payload = (await result.response.json().catch(() => null)) as unknown;
-  if (!result.response.ok) throw cloudError(result.response);
+  if (!result.response.ok) throw cloudError(result.response, payload);
   return { payload, auth: result.auth };
 }
 
