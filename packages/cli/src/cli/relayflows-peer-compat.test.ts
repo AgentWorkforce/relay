@@ -1,11 +1,7 @@
 /**
- * Keep the published CLI installable when this monorepo ships the next major.
- *
- * `@relayflows/sdk` >=2.0.23 declares optional peers capped at `<13`. A caret
- * pin floats consumers onto that range and npm ERESOLVEs once `agent-relay` /
- * `@agent-relay/sdk` are 13.x — even though the peers are optional. The publish
- * workflow's root override does not travel with the published package, so the
- * CLI manifest itself must stay on a peer-safe pin.
+ * Keep the published CLI installable with its exact Flows SDK pin and Relay peers.
+ * Optional peers participate in npm resolution, so the root development override
+ * cannot substitute for a fresh consumer install without that override.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -62,16 +58,16 @@ describe('published CLI @relayflows/sdk peer compatibility', () => {
 
   // Fresh registry install of @relayflows/sdk routinely exceeds vitest's 5s
   // default under CI load; keep the proof but budget for a cold npm resolve.
-  it('installs cleanly beside workspace packages at the next major', () => {
+  it('installs cleanly beside workspace packages at the released CLI version', () => {
     const cli = readCliPackage();
     const pin = cli.dependencies?.['@relayflows/sdk'];
     expect(pin).toBeTruthy();
-    const next = nextMajor(cli.version);
+    const current = cli.version;
 
     const root = mkdtempSync(path.join(tmpdir(), 'relayflows-peer-compat-'));
     try {
-      writeWorkspacePackage(root, 'sdk', next);
-      writeWorkspacePackage(root, 'harness-driver', next);
+      writeWorkspacePackage(root, 'sdk', current);
+      writeWorkspacePackage(root, 'harness-driver', current);
 
       writeFileSync(
         path.join(root, 'package.json'),
@@ -95,6 +91,25 @@ describe('published CLI @relayflows/sdk peer compatibility', () => {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
       });
+
+      // Unsupported Relay majors must fail resolution instead of being accepted
+      // because a development-only override hid the published peer contract.
+      rmSync(path.join(root, 'node_modules'), { recursive: true, force: true });
+      rmSync(path.join(root, 'package-lock.json'));
+      writeWorkspacePackage(root, 'sdk', nextMajor(current));
+      writeWorkspacePackage(root, 'harness-driver', nextMajor(current));
+      let rejected: { status?: number; stderr?: string } | undefined;
+      try {
+        execFileSync('npm', ['install', '--no-fund', '--no-audit'], {
+          cwd: root,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (error) {
+        rejected = error as typeof rejected;
+      }
+      expect(rejected?.status).not.toBe(0);
+      expect(rejected?.stderr).toContain('ERESOLVE');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
