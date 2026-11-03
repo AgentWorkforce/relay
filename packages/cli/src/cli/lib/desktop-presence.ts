@@ -121,7 +121,12 @@ function shown(command: string, args: string[]): string {
   return [command, ...args].join(' ');
 }
 
-/** The enabled systemd user unit, else the app's launcher: in the tray with a display, headless without. */
+/**
+ * The enabled systemd user unit, else the app's launcher in the tray when
+ * there is a display. Never the launcher's `--headless`: a headless start
+ * removes the person's GUI autostart entry, so one run over SSH into a Linux
+ * desktop would cost them the tray app at login.
+ */
 function startLinuxDesktopCore(home: string, env: NodeJS.ProcessEnv, effects: DesktopStartEffects): string {
   if (effects.run('systemctl', ['--user', 'is-enabled', '--quiet', DESKTOP_LINUX_UNIT]) === 0) {
     const args = ['--user', 'start', DESKTOP_LINUX_UNIT];
@@ -129,13 +134,17 @@ function startLinuxDesktopCore(home: string, env: NodeJS.ProcessEnv, effects: De
     if (status !== 0) throw new Error(`${shown('systemctl', args)} exited with ${status ?? 'no status'}`);
     return shown('systemctl', args);
   }
+  if (!env.DISPLAY?.trim() && !env.WAYLAND_DISPLAY?.trim()) {
+    throw new Error(
+      `the desktop app's core needs ${DESKTOP_LINUX_UNIT} enabled, or a desktop session (DISPLAY or WAYLAND_DISPLAY)`
+    );
+  }
   // Only a launcher that can run: one that cannot is passed over, not started and waited on.
   const launcher = linuxLaunchers(home, env).find((file) => effects.executable(file));
   if (!launcher) {
     throw new Error(`${DESKTOP_LINUX_UNIT} is not enabled and no runnable ${LINUX_LAUNCHER} was found`);
   }
-  const display = Boolean(env.DISPLAY?.trim() || env.WAYLAND_DISPLAY?.trim());
-  const args = [display ? '--background' : '--headless'];
+  const args = ['--background'];
   effects.launch(launcher, args);
   return shown(launcher, args);
 }
@@ -144,8 +153,8 @@ function startLinuxDesktopCore(home: string, env: NodeJS.ProcessEnv, effects: De
  * Ask the desktop app to start its own core, without waiting for it to answer.
  * On macOS the app opens in the background and hidden (`open -g -j -b`), and
  * registers and starts its core's LaunchAgent as it does on every launch. On
- * Linux an enabled systemd user unit is started; otherwise the app's launcher
- * runs, in the tray when there is a display and headless when there is not.
+ * Linux an enabled systemd user unit is started; otherwise, in a desktop
+ * session, the app's launcher runs in the tray. Without either it throws.
  * Windows has no start here: its logon task is off unless the person turned it on.
  *
  * @param platform - The platform to start it on.

@@ -147,15 +147,27 @@ describe('startDesktopCore', () => {
     expect(fake.launched).toEqual([]);
   });
 
-  it('runs the Linux launcher when the unit is not enabled: in the tray with a display, headless without', () => {
+  it('runs the Linux launcher in the tray when the unit is not enabled and there is a display', () => {
     const launcher = '/usr/bin/agent-relay-desktop';
     const tray = effects({ [IS_ENABLED]: 1 }, [launcher]);
     expect(startDesktopCore('linux', home, { DISPLAY: ':0' }, tray.effects)).toBe(`${launcher} --background`);
     expect(tray.launched).toEqual([`${launcher} --background`]);
     expect(tray.ran).not.toContain('systemctl --user start agent-relay.service');
 
-    const headless = effects({ [IS_ENABLED]: null }, [launcher]);
-    expect(startDesktopCore('linux', home, {}, headless.effects)).toBe(`${launcher} --headless`);
+    const wayland = effects({ [IS_ENABLED]: null }, [launcher]);
+    expect(startDesktopCore('linux', home, { WAYLAND_DISPLAY: 'wayland-0' }, wayland.effects)).toBe(
+      `${launcher} --background`
+    );
+  });
+
+  it('never starts the Linux launcher headless: no enabled unit and no display throws, launching nothing', () => {
+    const launcher = '/usr/bin/agent-relay-desktop';
+    const ssh = effects({ [IS_ENABLED]: 1 }, [launcher]);
+    expect(() => startDesktopCore('linux', home, {}, ssh.effects)).toThrow(
+      "the desktop app's core needs agent-relay.service enabled, or a desktop session (DISPLAY or WAYLAND_DISPLAY)"
+    );
+    expect(ssh.launched).toEqual([]);
+    expect(ssh.ran).toEqual([IS_ENABLED]);
   });
 
   it('prefers the newest per-user Linux tree when there is no package launcher', () => {
@@ -166,12 +178,14 @@ describe('startDesktopCore', () => {
       fs.writeFileSync(tree(version), '');
     }
     const fake = effects({ [IS_ENABLED]: 1 }, [tree('2026.9.70'), tree('2026.10.66')]);
-    expect(startDesktopCore('linux', home, {}, fake.effects)).toBe(`${tree('2026.10.66')} --headless`);
+    expect(startDesktopCore('linux', home, { DISPLAY: ':0' }, fake.effects)).toBe(
+      `${tree('2026.10.66')} --background`
+    );
   });
 
   it('throws on Linux when neither the unit nor a launcher is there', () => {
     const fake = effects({ [IS_ENABLED]: 1 });
-    expect(() => startDesktopCore('linux', home, {}, fake.effects)).toThrow(
+    expect(() => startDesktopCore('linux', home, { DISPLAY: ':0' }, fake.effects)).toThrow(
       'no runnable agent-relay-desktop was found'
     );
     expect(fake.launched).toEqual([]);
