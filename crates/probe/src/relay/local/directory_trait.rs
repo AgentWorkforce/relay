@@ -4,6 +4,10 @@ mod mobile_claude_roots;
 mod session_activity;
 
 impl SessionDirectory for LocalSessions {
+    fn location(&self, source: &str, id: &str) -> Result<crate::relay::contract::session_locations::SessionLocationReport, String> {
+        crate::relay::session_locations::report(&self.config, &*self.table, source, id)
+    }
+
     fn mobile_claude_config_roots(&self) -> std::collections::BTreeMap<Target, PathBuf> {
         mobile_claude_roots::read(&self.config.claude, &*self.table)
     }

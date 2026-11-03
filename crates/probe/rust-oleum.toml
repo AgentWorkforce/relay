@@ -222,7 +222,8 @@ rust_roots = ["src"]
 "src/relay/process.rs::macos::SystemProcesses::all_pids" = 2
 "src/relay/process.rs::macos::SystemProcesses::cwd" = 2
 "src/relay/process.rs::macos::SystemProcesses::executable" = 1
-"src/relay/process.rs::macos::SystemProcesses::has_terminal" = 2
+# The controlling terminal read from fd 0.
+"src/relay/process/macos/terminal.rs::path" = 2
 "src/relay/process.rs::macos::SystemProcesses::opened_files" = 5
 "src/relay/process.rs::macos::SystemProcesses::owns_tcp_listener" = 4
 "src/relay/process.rs::macos::SystemProcesses::process_gone" = 1

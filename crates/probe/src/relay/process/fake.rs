@@ -21,6 +21,7 @@ pub struct FakeProcess {
     pub cwd: Option<PathBuf>,
     pub tcp_listeners: Vec<(String, u16)>,
     pub has_terminal: bool,
+    pub terminal_path: Option<PathBuf>,
     /// Exited but not reaped.
     pub zombie: bool,
 }
@@ -140,6 +141,8 @@ impl ProcessTable for FakeProcesses {
         })
         .unwrap_or(false)
     }
+    fn terminal_path(&self, pid: i32) -> Option<PathBuf> { self.with(pid, |p| p.terminal_path.clone()).flatten() }
+
     fn has_terminal(&self, pid: i32) -> bool {
         self.with(pid, |p| p.has_terminal).unwrap_or(false)
     }

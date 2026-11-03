@@ -15,6 +15,7 @@
 
 pub mod account;
 pub mod agents;
+pub mod session_locations;
 pub mod capy;
 pub mod chat;
 pub mod claude_delivery;
@@ -172,6 +173,7 @@ methods! {
     // Agents on this computer.
     SessionsTranscript = "sessions.transcript", Account, transcript::LocalTranscriptParams => transcript::LocalTranscriptPage;
     SessionsList = "sessions.list", Always, NoParams => LocalSessions;
+    SessionsLocation = "sessions.location", Always, SessionTitleIdentity => session_locations::SessionLocationReport;
     SessionsTitleCapability = "sessions.title.capability", Always, SessionTitleIdentity => SessionTitleCapability;
     SessionsTitleSet = "sessions.title.set", Always, SessionTitleSetParams => SessionTitleUpdated;
     SessionsManagedLaunch = "sessions.managed.launch", Always, ManagedLaunchParams => ManagedSessionStarted;

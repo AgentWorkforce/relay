@@ -145,6 +145,8 @@ pub trait ProcessTable: Send + Sync {
     fn has_terminal(&self, _pid: i32) -> bool {
         false
     }
+    /// Kernel path of stdin when attached to a terminal; never inferred from cwd or title.
+    fn terminal_path(&self, _pid: i32) -> Option<PathBuf> { None }
     fn start_clock(&self) -> StartClock;
 }
 
@@ -675,6 +677,7 @@ fn split_nul(bytes: &[u8]) -> Vec<String> {
 
 #[cfg(target_os = "macos")]
 mod macos {
+    mod terminal;
     use super::*;
     use std::ffi::{c_int, c_void};
     use std::mem::{size_of, zeroed};
@@ -1044,24 +1047,11 @@ mod macos {
         }
 
         fn has_terminal(&self, pid: i32) -> bool {
-            // A terminal stdin is a character device whose kernel path is a
-            // tty. `proc_pidfdinfo` asks about exactly fd 0 without opening
-            // or disturbing the other process.
-            let mut info: VnodeFdInfoWithPath = unsafe { zeroed() };
-            let expected = size_of::<VnodeFdInfoWithPath>() as c_int;
-            let read = unsafe {
-                libc::proc_pidfdinfo(
-                    pid,
-                    0,
-                    PROC_PIDFDVNODEPATHINFO,
-                    (&mut info as *mut VnodeFdInfoWithPath).cast(),
-                    expected,
-                )
-            };
-            if read != expected {
-                return false;
-            }
-            path_of(&info.pvip).is_some_and(|path| terminal_device(&path))
+            self.terminal_path(pid).is_some()
+        }
+
+        fn terminal_path(&self, pid: i32) -> Option<PathBuf> {
+            terminal::path(pid)
         }
 
         fn start_clock(&self) -> StartClock {
