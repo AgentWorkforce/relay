@@ -24,7 +24,7 @@ const source = fs
 // file checked is the file read.
 let current = null;
 try {
-  const fd = fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  const fd = fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
   try {
     current = fs.fstatSync(fd).isFile() ? fs.readFileSync(fd, 'utf8') : '';
   } finally {
