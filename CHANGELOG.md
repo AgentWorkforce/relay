@@ -5,7 +5,29 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Major]
+
+### Changed
+
+- The core (`agent-relay-probe`) talks to one Agent Relay site, fixed when it is built: `AGENT_RELAY_SITE_URL` at build time (`https://agentrelay.com` when unset; an https origin, or `http://localhost:<port>` / `http://127.0.0.1:<port>`), and a build for a malformed site fails to build. Nothing changes the site at run time, in any build.
+- The core opens links of one scheme, fixed at build time from `AGENT_RELAY_URL_SCHEME` (`agentrelay` when unset); the `agentrelay-dev://` rule for non-production sites is gone, and on Windows the link handler registers the build's scheme.
+- The site a build is made for is trusted beside `https://agentrelay.com` and loopback: it needs no `RELAYHISTORY_ALLOW_UNTRUSTED_CLOUD_BASE_URL`, which stays a development switch for any other origin.
+- `links.parse` opens links of the build's scheme only, and refuses a connect link for another site naming that site.
+- `agent-relay-probe cloud install`, `cloud rotate-key`, `status`, `stop` and the other install commands default `--site-url` to the build's site, as does `sharing status --account --workspace`; the Cloud API default, Relay Connect invite links and the Connect host sign-in are the build's site's.
+
+### Removed
+
+- `relay serve --site-url`: the core takes no site at start.
+- The `site_url` field of `account.sign_in` and of `links.parse` in the bridge contract (and the generated Swift contract).
+
+### Breaking Changes
+
+- A core built for another site than `https://agentrelay.com` must be built with `AGENT_RELAY_SITE_URL`; `relay serve --site-url`, `account.sign_in {"site_url"}` and `links.parse {"site_url"}` are refused.
+
+### Migration Guidance
+
+- Set `AGENT_RELAY_SITE_URL` (and `AGENT_RELAY_URL_SCHEME`, for a build registering its own links) in the environment of `cargo build`; a changed value rebuilds the crate. Leave both unset for production.
+- Drop `--site-url` from `relay serve` command lines and launch entries, and `site_url` from `account.sign_in` and `links.parse` requests: the build's site applies.
 
 ## [15.1.1] - 2026-11-03
 
