@@ -40,7 +40,9 @@ if (current !== null) {
     throw new Error(`Preserving another extension at ${path}; move it before installing.`);
   // Oh My Pi can share this folder; its copy names the omp harness.
   if (current.includes('const harness = "omp";'))
-    throw new Error(`Preserving the Oh My Pi extension at ${path}; move it, or point PI_CODING_AGENT_DIR at a separate folder, before installing.`);
+    throw new Error(
+      `Preserving the Oh My Pi extension at ${path}; move it, or point PI_CODING_AGENT_DIR at a separate folder, before installing.`
+    );
 }
 fs.mkdirSync(join(agentDir, 'extensions'), { recursive: true, mode: 0o700 });
 if (current !== source) {

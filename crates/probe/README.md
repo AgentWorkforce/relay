@@ -122,12 +122,12 @@ arm64, builds on Windows x64, checks the generated contract for drift and runs
 `build.rs` stamps `agent_relay_probe::VERSION` (what the daemon reports in its
 bridge handshake, telemetry and Relaycast `origin_version`):
 
-| Build                                         | `VERSION`                                                                                                              |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `AGENT_RELAY_PROBE_VERSION=X` set             | `X` exactly: a relay release passes the relay version, relay-desktop passes its CalVer (`2026.10.58`)                  |
-| unset, `AGENT_RELAY_PROBE_BASE_VERSION=B` set | `B-dev+<git revision>`: development cores still order below the builder's next release |
+| Build                                                              | `VERSION`                                                                                                                                                                          |
+| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AGENT_RELAY_PROBE_VERSION=X` set                                  | `X` exactly: a relay release passes the relay version, relay-desktop passes its CalVer (`2026.10.58`)                                                                              |
+| unset, `AGENT_RELAY_PROBE_BASE_VERSION=B` set                      | `B-dev+<git revision>`: development cores still order below the builder's next release                                                                                             |
 | unset, no `B`, `AGENT_RELAY_PROBE_CHANGELOG=P` (absolute path) set | `<newest non-empty "## v" heading of P>-dev+<git revision>`: relay-desktop sets this from `.cargo/config.toml`; an unreadable `P`, or one with no release heading, fails the build |
-| none of these                                 | `<crate version>-dev+<git revision>`                                                                                   |
+| none of these                                                      | `<crate version>-dev+<git revision>`                                                                                                                                               |
 
 The revision is the builder's checkout's when `AGENT_RELAY_PROBE_GIT_DIR`
 names one (relay-desktop's, from `.cargo/config.toml`), else this crate's.
