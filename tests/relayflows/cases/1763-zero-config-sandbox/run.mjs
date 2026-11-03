@@ -25,7 +25,7 @@ const observationPath = path.join(targetDir, '.relayflow-1763-zero-config-sandbo
 const excludePath = path.join(path.dirname(resultPath), `${CASE_ID}-${arm}.exclude`);
 const revision = expectedSha;
 const configSource = `import path from 'node:path';
-const names = ['cloud','config','fleet','harness-driver','harnesses','policy','sdk','session','utils'];
+const names = ['cloud','config','fleet','harness-driver','harnesses','sdk','session','utils'];
 export default { resolve: { alias: names.flatMap((name) => { const root = path.resolve(process.cwd(), 'packages', name, 'src'); return [{ find: new RegExp('^@agent-relay/' + name + '/(.+)$'), replacement: root + '/$1' }, { find: '@agent-relay/' + name, replacement: path.join(root, 'index.ts') }]; }) }, test: { environment: 'node', include: ['packages/cloud/src/.relayflow-1763-zero-config-sandbox.test.ts'], setupFiles: [] } };
 `;
 const probeSource = String.raw`import { expect, test, vi } from 'vitest';

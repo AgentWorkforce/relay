@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The core has no account sign-in of its own: methods that need an account answer `method_not_found`, and spawn approvals are off, unless the core is built with an account. `agent-relay cloud login` keeps device sign-in for Relay Connect hosts.
 
+### Removed
+
+- `@agent-relay/policy` and `@agent-relay/brand` are no longer published; nothing in Relay used them.
+
 ### Fixed
 
 - `relay serve` delivers messages to agents more reliably and finds their sessions more consistently.

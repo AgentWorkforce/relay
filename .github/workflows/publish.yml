@@ -12,7 +12,6 @@ on:
           - main
           - cli-prerelease
           - sdk
-          - brand
         default: 'all'
       version:
         description: 'Version bump type'
@@ -1005,10 +1004,8 @@ jobs:
           # an exact version, so it must land before publish-main.
           - cli-surface
           - connect
-          - policy
           - utils
           - sdk
-          - brand
           - harness-driver
           - integration-prompts
           - session
@@ -1055,11 +1052,7 @@ jobs:
         if: github.event.inputs.dry_run == 'true'
         working-directory: packages/${{ matrix.package }}
         run: |
-          if [ "${{ matrix.package }}" = "brand" ]; then
-            echo "Dry run - would publish @agent-relay/brand"
-          else
-            echo "Dry run - would publish @agent-relay/${{ matrix.package }}"
-          fi
+          echo "Dry run - would publish @agent-relay/${{ matrix.package }}"
           npm publish --dry-run --access public --tag "$NPM_TAG" --ignore-scripts
 
       - name: Publish to NPM
@@ -1282,44 +1275,6 @@ jobs:
     env:
       PUBLISH_PACKAGE: fleet
     steps: *publish-fleet-steps
-
-  # Publish brand package only (when selected)
-  publish-brand-only:
-    name: Publish Brand to NPM
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.event.inputs.package == 'brand'
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: build-output
-          path: .
-
-      - name: Update npm for OIDC support
-        run: npm install -g npm@latest
-
-      - name: Dry run check
-        if: github.event.inputs.dry_run == 'true'
-        working-directory: packages/brand
-        run: |
-          echo "Dry run - would publish @agent-relay/brand"
-          npm publish --dry-run --access public --tag "$NPM_TAG" --ignore-scripts
-
-      - name: Publish Brand to NPM
-        if: github.event.inputs.dry_run != 'true'
-        working-directory: packages/brand
-        run: npm publish --access public --provenance --tag "$NPM_TAG" --ignore-scripts
 
   # Publish SDK only (when selected)
   publish-sdk-only:
@@ -2051,7 +2006,6 @@ jobs:
             ```bash
             npm install -g agent-relay@${{ needs.build.outputs.new_version }}
             npm install @agent-relay/sdk@${{ needs.build.outputs.new_version }}
-            npm install @agent-relay/brand@${{ needs.build.outputs.new_version }}
             ```
 
             ### Standalone binaries
@@ -2096,7 +2050,6 @@ jobs:
             ```bash
             npm install -g agent-relay@${{ needs.build.outputs.new_version }}
             npm install @agent-relay/sdk@${{ needs.build.outputs.new_version }}
-            npm install @agent-relay/brand@${{ needs.build.outputs.new_version }}
             ```
 
             Or by dist-tag:
@@ -2172,7 +2125,6 @@ jobs:
         publish-broker-packages,
         publish-packages,
         publish-harnesses,
-        publish-brand-only,
         publish-main,
         verify-publish,
         verify-publish-sdk,
@@ -2215,7 +2167,6 @@ jobs:
           echo "| Publish Broker Packages | ${{ needs.publish-broker-packages.result == 'success' && '✅' || (needs.publish-broker-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-broker-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Packages | ${{ needs.publish-packages.result == 'success' && '✅' || (needs.publish-packages.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-packages.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Harnesses | ${{ needs.publish-harnesses.result == 'success' && '✅' || (needs.publish-harnesses.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-harnesses.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Publish Brand | ${{ needs.publish-brand-only.result == 'success' && '✅' || (needs.publish-brand-only.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-brand-only.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Publish Main | ${{ needs.publish-main.result == 'success' && '✅' || (needs.publish-main.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.publish-main.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Post-Publish Verify | ${{ needs.verify-publish.result == 'success' && '✅' || (needs.verify-publish.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-publish.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Post-Publish Verify SDK (cross-platform) | ${{ needs.verify-publish-sdk.result == 'success' && '✅' || (needs.verify-publish-sdk.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.verify-publish-sdk.result }} |" >> $GITHUB_STEP_SUMMARY
