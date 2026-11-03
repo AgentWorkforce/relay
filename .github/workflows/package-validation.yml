@@ -48,7 +48,7 @@ jobs:
       # right after `npm ci` produces a clean tree; otherwise the implicit
       # post-job save runs after `pack:validate`, which deletes
       # `packages/*/node_modules` and poisons the cache for the next run
-      # (broker fails at runtime with `Cannot find package 'posthog-node'`
+      # (the CLI fails at runtime with `Cannot find package 'posthog-node'`
       # because the cached telemetry workspace has no nested deps).
       - name: Restore node_modules
         id: cache-modules
@@ -99,9 +99,7 @@ jobs:
           ERRORS=0
 
           # Check dist files exist (skip non-Node package directories).
-          # broker-* packages ship a Rust-built binary in bin/, not a JS
-          # dist — they live under packages/ only for workspace linkage.
-          SKIP_PACKAGES="build-plans brand broker-darwin-arm64 broker-darwin-x64 broker-linux-arm64 broker-linux-x64 broker-win32-x64 personas"
+          SKIP_PACKAGES="build-plans brand personas"
           for pkg_dir in packages/*/; do
             pkg_name=$(basename "$pkg_dir")
             if [ ! -f "$pkg_dir/package.json" ]; then
@@ -165,33 +163,18 @@ jobs:
 
       - name: Test CLI startup
         run: |
-          echo "=== Testing CLI broker lifecycle ==="
-          BROKER_PORT=3899
-          API_PORT=$((BROKER_PORT + 1))
-          # Start the broker in background
-          AGENT_RELAY_BROKER_PORT="$BROKER_PORT" node packages/cli/dist/cli/index.js node up &
-          DAEMON_PID=$!
-
-          # Wait for health endpoint (broker API is the base port + 1)
-          for i in {1..20}; do
-            if curl -sf "http://127.0.0.1:${API_PORT}/health" > /dev/null; then
-              break
-            fi
-            sleep 1
-          done
-
-          # Verify broker is reachable
-          if curl -sf "http://127.0.0.1:${API_PORT}/health" > /dev/null; then
-            echo "✓ Broker health endpoint responding"
-            AGENT_RELAY_SKIP_TMUX=1 node packages/cli/dist/cli/index.js node status || true
-          else
-            echo "✗ Broker health endpoint did not become ready"
+          set -euo pipefail
+          CLI="node packages/cli/dist/cli/index.js"
+          $CLI --version
+          $CLI --help > /dev/null
+          echo "✓ CLI starts"
+          # A removed broker verb must explain itself, not crash.
+          if OUTPUT="$($CLI node up 2>&1)"; then
+            echo "✗ relay node up unexpectedly succeeded" >&2
             exit 1
           fi
-
-          # Cleanup through CLI down first, then hard-kill fallback
-          node packages/cli/dist/cli/index.js node down --force --timeout 5000 || true
-          kill $DAEMON_PID 2>/dev/null || true
+          echo "$OUTPUT" | grep -q "was removed together with the local broker"
+          echo "✓ relay node up prints the removal notice"
 
       # Keep tarball validation after runtime smoke tests. The tarball
       # validator removes nested workspace node_modules before packing so the
@@ -221,7 +204,7 @@ jobs:
 
       - name: Upgrade npm before fresh resolution
         # See publish.yml's "Upgrade npm before fresh resolution" step: npm
-        # <=10.9.x's arborist crashes re-resolving the harnesses package's
+        # <=10.9.x's arborist crashes re-resolving a deep optional
         # peer set once the lockfile is gone (npm/cli#8261). Fixed by npm
         # version, not Node version — confirmed via repro on npm 10.9.4/Node
         # 22.22.0 still crashing and npm 11.19.1/Node 22.14.0 succeeding.
@@ -237,9 +220,6 @@ jobs:
       - name: Ensure rollup optional dependencies are installed
         run: npm install --no-save rollup || true
 
-      - name: Build Rust broker
-        run: npm run build:rust
-
       - name: Build TypeScript packages
         env:
           NODE_OPTIONS: --max-old-space-size=4096
@@ -248,11 +228,8 @@ jobs:
   standalone-macos-smoke:
     name: Standalone macOS Smoke
     needs: changes
-    # Fork and Dependabot pull requests cannot receive Actions repository
-    # secrets. Skip this live-cloud smoke there instead of falling back to
-    # provisioning an undeletable workspace; other same-repository PRs and
-    # main pushes must reuse the CI workspace.
-    if: needs.changes.outputs.node_changed == 'true' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # Builds, signs and runs the Bun standalone CLI on macOS; needs no secrets.
+    if: needs.changes.outputs.node_changed == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: macos-latest
     env:
       NPM_CONFIG_FUND: false
@@ -272,57 +249,11 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
       - name: Install dependencies
         run: npm ci
 
       - name: Build packages
         run: npm run build
-
-      - name: Build broker binary
-        # Pin the broker's reported version to the same release line as
-        # `agent-relay` / `@agent-relay/sdk`. `option_env!` in
-        # crates/broker/src/util/version.rs consumes this at compile time
-        # and falls back to `CARGO_PKG_VERSION` when unset.
-        run: |
-          AGENT_RELAY_VERSION="$(node -p "require('./package.json').version")"
-          export AGENT_RELAY_VERSION
-          echo "Building broker with AGENT_RELAY_VERSION=$AGENT_RELAY_VERSION"
-          cargo build --release --bin agent-relay-broker
-
-      - name: Verify broker binary
-        run: |
-          STANDALONE_BROKER="$PWD/target/release/agent-relay-broker"
-          if [ ! -f "$STANDALONE_BROKER" ]; then
-            echo "ERROR: Broker binary not found after build: $STANDALONE_BROKER" >&2
-            echo "Contents of target/release:" >&2
-            ls -la "$PWD/target/release" >&2 || true
-            exit 1
-          fi
-          if [ ! -x "$STANDALONE_BROKER" ]; then
-            echo "ERROR: Broker binary is not executable: $STANDALONE_BROKER" >&2
-            ls -la "$STANDALONE_BROKER" >&2
-            exit 1
-          fi
-          echo "STANDALONE_BROKER=$STANDALONE_BROKER" >> "$GITHUB_ENV"
-          echo "Verified broker binary: $STANDALONE_BROKER"
-
-      - name: Verify broker version matches release version
-        # Acceptance criteria from #904: released broker binaries must
-        # report the same version as the `agent-relay` / `@agent-relay/sdk`
-        # release that shipped them.
-        run: |
-          EXPECTED_VERSION="$(node -p "require('./package.json').version")"
-          REPORTED="$(./target/release/agent-relay-broker --version | awk '{print $NF}')"
-          echo "expected: $EXPECTED_VERSION"
-          echo "reported: $REPORTED"
-          if [ "$EXPECTED_VERSION" != "$REPORTED" ]; then
-            echo "ERROR: broker --version reported '$REPORTED' but package.json is '$EXPECTED_VERSION'." >&2
-            echo "AGENT_RELAY_VERSION did not propagate at compile time. See crates/broker/src/util/version.rs." >&2
-            exit 1
-          fi
 
       - name: Build standalone binary
         run: |
@@ -356,7 +287,8 @@ jobs:
       - name: Verify standalone MCP dispatches each request once
         run: node scripts/verify-standalone-mcp-single-dispatch.mjs "$STANDALONE_CLI"
 
-      - name: Smoke standalone lifecycle
-        env:
-          AGENT_RELAY_STARTUP_DEBUG: 1
-        run: bash scripts/ci-standalone-smoke.sh "$STANDALONE_CLI" "$STANDALONE_BROKER"
+      - name: Smoke standalone CLI
+        run: |
+          set -euo pipefail
+          "$STANDALONE_CLI" --version
+          "$STANDALONE_CLI" --help > /dev/null

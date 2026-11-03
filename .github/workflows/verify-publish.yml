@@ -59,10 +59,7 @@ jobs:
       - name: Upgrade npm before global install
         # `npm install -g` always does a fresh, lockfile-less resolution, so
         # it's exposed to the same arborist crash (npm/cli#8261) as the
-        # publish workflow's clean reinstall once `agent-relay` pulls in
-        # @agent-relay/harnesses' pi-coding-agent chain. Not failing today
-        # only because the currently-published version predates that
-        # dependency bump — this would break on the next release otherwise.
+        # publish workflow's clean reinstall.
         run: npm install -g npm@11.19.1
 
       - name: Get package spec
@@ -85,13 +82,9 @@ jobs:
             "${{ steps.pkg.outputs.spec }}" \
             "@agent-relay/cloud@$VERSION" \
             "@agent-relay/config@$VERSION" \
-            "@agent-relay/fleet@$VERSION" \
-            "@agent-relay/harness-driver@$VERSION" \
-            "@agent-relay/harnesses@$VERSION" \
             "@agent-relay/sdk@$VERSION" \
             "@agent-relay/session@$VERSION" \
-            "@agent-relay/utils@$VERSION" \
-            "@agent-relay/broker-linux-x64@$VERSION"
+            "@agent-relay/utils@$VERSION"
 
       # Test 1: Global npm install
       - name: 'Test: Global npm install'
@@ -184,50 +177,6 @@ jobs:
             exit 1
           fi
 
-      # Test: broker binary resolution after installing agent-relay.
-      # The broker is delivered as a platform-specific optional-dep of
-      # @agent-relay/harness-driver (itself a regular dep of agent-relay), so
-      # npm hoists both to node_modules/@agent-relay/ at install time.
-      - name: 'Test: broker binary resolves after npm install agent-relay'
-        run: |
-          rm -rf ~/.npm/_npx 2>/dev/null || true
-          TMP_DIR=$(mktemp -d)
-          trap 'rm -rf "$TMP_DIR"' EXIT
-          cd "$TMP_DIR"
-          npm init -y --silent >/dev/null
-          npm install --no-audit --no-fund "${{ steps.pkg.outputs.spec }}"
-          node --input-type=module -e "
-            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
-            import os from 'node:os';
-            import path from 'node:path';
-            import { accessSync, constants } from 'node:fs';
-            const expected = getOptionalDepPackageName();
-            const p = getBrokerBinaryPath();
-            console.log('expected package:', expected);
-            console.log('resolved:', p);
-            if (!p) { console.error('FAIL: resolver returned null'); process.exit(1); }
-            // The npx runs above already started the CLI, whose first run
-            // copies the broker into the install root's bin dir.
-            // Accept the install-root bin dir the resolver itself uses (honours
-            // AGENT_RELAY_INSTALL_DIR / AGENT_RELAY_HOME); mirror its rule for
-            // releases published before install-paths existed.
-            let canonicalBinDir;
-            try {
-              const { getRelayBinDir } = await import('@agent-relay/harness-driver/install-paths');
-              canonicalBinDir = getRelayBinDir();
-            } catch {
-              const root = (process.env.AGENT_RELAY_INSTALL_DIR || '').trim() || (process.env.AGENT_RELAY_HOME || '').trim();
-              canonicalBinDir = path.join(root ? path.resolve(root) : path.join(os.homedir(), '.agentworkforce', 'relay'), 'bin');
-            }
-            const canonical = path.join(canonicalBinDir, path.basename(p));
-            if (!p.replace(/\\\\/g, '/').includes(expected) && p !== canonical) {
-              console.error('FAIL: resolution went through neither the optional-dep package nor the canonical bin dir; got', p);
-              process.exit(1);
-            }
-            accessSync(p, constants.X_OK);
-            console.log('OK: resolver returned an executable broker (optional-dep package or canonical bin dir)');
-          "
-
       # Test 3: Local project install
       - name: 'Test: Local project install'
         run: |
@@ -259,44 +208,6 @@ jobs:
             echo "Local bin not found or not executable"
             exit 1
           fi
-
-      # Test 4: Broker binary resolution via harness driver resolver.
-      # The broker ships as a platform-specific optional-dep package
-      # (@agent-relay/broker-<platform>-<arch>); getBrokerBinaryPath()
-      # is the canonical way harness owners find it.
-      - name: 'Test: broker binary resolves and runs'
-        run: |
-          cd /tmp/test-project
-          # Isolate the home directory: the earlier npx runs copied a broker
-          # into ~/.agentworkforce/relay/bin, which would otherwise mask a
-          # local project that lacks its own platform broker package.
-          HOME="$(mktemp -d)"
-          export HOME
-          unset AGENT_RELAY_INSTALL_DIR AGENT_RELAY_HOME
-          node --input-type=module -e "
-            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
-            import { accessSync, constants } from 'node:fs';
-            import { execFileSync } from 'node:child_process';
-            const expected = getOptionalDepPackageName();
-            const p = getBrokerBinaryPath();
-            console.log('expected package:', expected);
-            console.log('resolved:', p);
-            if (!p) { console.error('FAIL: resolver returned null'); process.exit(1); }
-            // HOME is isolated, so only the local project's own optional
-            // dependency can satisfy this.
-            if (!p.replace(/\\\\/g, '/').includes(expected)) {
-              console.error('FAIL: resolution did not go through the local optional-dep package; got', p);
-              process.exit(1);
-            }
-            accessSync(p, constants.X_OK);
-            const out = execFileSync(p, ['--help'], { encoding: 'utf8' });
-            if (!out.includes('agent-relay-broker')) {
-              console.error('FAIL: --help output did not mention agent-relay-broker');
-              console.error(out);
-              process.exit(1);
-            }
-            console.log('OK: resolver returned executable broker binary and --help works');
-          "
 
       - name: Cleanup
         run: rm -rf /tmp/test-project
@@ -344,13 +255,9 @@ jobs:
             "${{ steps.pkg.outputs.spec }}" \
             "@agent-relay/cloud@$VERSION" \
             "@agent-relay/config@$VERSION" \
-            "@agent-relay/fleet@$VERSION" \
-            "@agent-relay/harness-driver@$VERSION" \
-            "@agent-relay/harnesses@$VERSION" \
             "@agent-relay/sdk@$VERSION" \
             "@agent-relay/session@$VERSION" \
-            "@agent-relay/utils@$VERSION" \
-            "@agent-relay/broker-darwin-arm64@$VERSION"
+            "@agent-relay/utils@$VERSION"
 
       - name: 'Test: npm install'
         run: |
@@ -371,45 +278,6 @@ jobs:
           else
             exit 1
           fi
-
-      # Broker resolution on macOS arm64. Under the optional-dep model the
-      # harness driver's resolver finds the binary at
-      # node_modules/@agent-relay/broker-darwin-arm64/bin/agent-relay-broker;
-      # running it also exercises macOS code signing end-to-end.
-      - name: 'Test: broker binary resolves and runs (macOS arm64)'
-        run: |
-          cd /tmp/test-project
-          # Isolated home: the earlier npx run copied a broker into
-          # ~/.agentworkforce/relay/bin; this must find the project's own.
-          HOME="$(mktemp -d)"
-          export HOME
-          unset AGENT_RELAY_INSTALL_DIR AGENT_RELAY_HOME
-          node --input-type=module -e "
-            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
-            import { accessSync, constants } from 'node:fs';
-            import { execFileSync } from 'node:child_process';
-            const expected = getOptionalDepPackageName();
-            const p = getBrokerBinaryPath();
-            console.log('expected package:', expected);
-            console.log('resolved:', p);
-            if (!p) { console.error('FAIL: resolver returned null'); process.exit(1); }
-            if (expected !== '@agent-relay/broker-darwin-arm64') {
-              console.error('FAIL: expected darwin-arm64 optional-dep, got', expected);
-              process.exit(1);
-            }
-            if (!p.includes(expected)) {
-              console.error('FAIL: resolution did not go through the local optional-dep package; got', p);
-              process.exit(1);
-            }
-            accessSync(p, constants.X_OK);
-            const out = execFileSync(p, ['--help'], { encoding: 'utf8' });
-            if (!out.includes('agent-relay-broker')) {
-              console.error('FAIL: --help output did not mention agent-relay-broker (possible code signing issue)');
-              console.error(out);
-              process.exit(1);
-            }
-            console.log('OK: darwin-arm64 broker resolves, is executable, and --help works');
-          "
 
       - name: 'Test: npx agent-relay --version from local install'
         run: |
@@ -451,13 +319,9 @@ jobs:
             "agent-relay@$VERSION" \
             "@agent-relay/cloud@$VERSION" \
             "@agent-relay/config@$VERSION" \
-            "@agent-relay/fleet@$VERSION" \
-            "@agent-relay/harness-driver@$VERSION" \
-            "@agent-relay/harnesses@$VERSION" \
             "@agent-relay/sdk@$VERSION" \
             "@agent-relay/session@$VERSION" \
-            "@agent-relay/utils@$VERSION" \
-            "@agent-relay/broker-linux-x64@$VERSION"
+            "@agent-relay/utils@$VERSION"
 
       - name: Build verification image
         run: |
@@ -491,7 +355,7 @@ jobs:
           echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| ${{ inputs.hotfix && 'Node 22.14.0 (hotfix: Node 24 skipped)' || 'Node 22 and 24' }} | ${{ needs.verify.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### macOS Tests (broker binary)" >> $GITHUB_STEP_SUMMARY
+          echo "### macOS Tests" >> $GITHUB_STEP_SUMMARY
           echo "| Architecture | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|--------------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| arm64 (M1/M2) | ${{ needs.verify-macos-arm64.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
