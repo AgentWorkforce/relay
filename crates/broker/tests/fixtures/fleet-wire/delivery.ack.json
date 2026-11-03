@@ -1,6 +1,0 @@
-{
-  "v": 1,
-  "type": "delivery.ack",
-  "agent": "codex-builder-1",
-  "up_to_seq": 42
-}
