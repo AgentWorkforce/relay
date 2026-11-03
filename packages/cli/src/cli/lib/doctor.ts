@@ -1,10 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { getProjectPaths } from '@agent-relay/config';
-import { HarnessDriverClient, type BrokerStatus } from '@agent-relay/harness-driver';
-import { readNodeDeliveryStatus } from './broker-lifecycle.js';
 
 type SqliteDriver = 'better-sqlite3' | 'node';
 
@@ -39,100 +36,6 @@ interface DiagnosticDb {
   close?: () => void;
 }
 
-interface DoctorBrokerConnection {
-  url: string;
-  api_key: string;
-  pid: number;
-}
-
-interface BrokerProcessInfo {
-  pid: number;
-  command: string;
-}
-
-function parseBrokerConnection(raw: string): DoctorBrokerConnection | null {
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      !Array.isArray(parsed) &&
-      typeof (parsed as { url?: unknown }).url === 'string' &&
-      typeof (parsed as { api_key?: unknown }).api_key === 'string' &&
-      typeof (parsed as { pid?: unknown }).pid === 'number' &&
-      (parsed as { pid: number }).pid > 0
-    ) {
-      const conn = parsed as DoctorBrokerConnection;
-      return { url: conn.url, api_key: conn.api_key, pid: conn.pid };
-    }
-  } catch {
-    // Handled by caller as invalid metadata.
-  }
-  return null;
-}
-
-function readBrokerConnectionFile(dataDir: string): {
-  path: string;
-  exists: boolean;
-  conn: DoctorBrokerConnection | null;
-} {
-  const connPath = path.join(dataDir, 'connection.json');
-  if (!fs.existsSync(connPath)) {
-    return { path: connPath, exists: false, conn: null };
-  }
-
-  try {
-    return {
-      path: connPath,
-      exists: true,
-      conn: parseBrokerConnection(fs.readFileSync(connPath, 'utf-8')),
-    };
-  } catch {
-    return { path: connPath, exists: true, conn: null };
-  }
-}
-
-function isProcessRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function parsePsLine(line: string): BrokerProcessInfo | null {
-  const match = line.match(/^\s*(\d+)\s+(.+)$/);
-  if (!match) return null;
-  const pid = Number.parseInt(match[1], 10);
-  if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return null;
-  return { pid, command: match[2] };
-}
-
-function findLiveBrokerProcesses(projectRoot: string, dataDir: string): BrokerProcessInfo[] {
-  let output: string;
-  try {
-    output = execFileSync('ps', ['axo', 'pid=,command='], { encoding: 'utf-8' });
-  } catch {
-    return [];
-  }
-
-  const resolvedProjectRoot = path.resolve(projectRoot);
-  const resolvedDataDir = path.resolve(dataDir);
-  const brokerName = path.basename(resolvedProjectRoot);
-  return output
-    .split('\n')
-    .map(parsePsLine)
-    .filter((processInfo): processInfo is BrokerProcessInfo => processInfo !== null)
-    .filter((processInfo) => processInfo.command.includes('agent-relay-broker'))
-    .filter(
-      (processInfo) =>
-        processInfo.command.includes(resolvedProjectRoot) ||
-        processInfo.command.includes(resolvedDataDir) ||
-        (brokerName !== '' && processInfo.command.includes(`--name ${brokerName}`))
-    );
-}
-
 function unresolvedTemplate(value: string | undefined): string | null {
   const trimmed = value?.trim();
   if (!trimmed) return null;
@@ -140,165 +43,20 @@ function unresolvedTemplate(value: string | undefined): string | null {
   return match?.[0] ?? null;
 }
 
-async function checkBrokerReliability(): Promise<CheckResult[]> {
-  let client: HarnessDriverClient | undefined;
-  const paths = getProjectPaths();
-  const connection = readBrokerConnectionFile(paths.dataDir);
+/** A literal `${...}` placeholder exported instead of a real workspace key. */
+function checkWorkspaceKeyTemplate(): CheckResult[] {
   const hasRelayWorkspaceKeyTemplate = unresolvedTemplate(process.env.RELAY_WORKSPACE_KEY) !== null;
   const hasLegacyRelayKeyTemplate = unresolvedTemplate(process.env.RELAY_API_KEY) !== null;
-  const hasUnresolvedRelayKeyTemplate = hasRelayWorkspaceKeyTemplate || hasLegacyRelayKeyTemplate;
+  if (!hasRelayWorkspaceKeyTemplate && !hasLegacyRelayKeyTemplate) return [];
   const relayKeyEnvName = hasRelayWorkspaceKeyTemplate ? 'RELAY_WORKSPACE_KEY' : 'RELAY_API_KEY';
-  const relayKeyTemplateResult: CheckResult | null = hasUnresolvedRelayKeyTemplate
-    ? {
-        name: 'Agent Relay workspace key',
-        ok: false,
-        message: `Unresolved ${relayKeyEnvName} template`,
-        remediation: 'Export a real rk_live_... workspace key instead of a literal ${...} placeholder.',
-      }
-    : null;
-
-  if (!connection.exists) {
-    const liveBrokers = findLiveBrokerProcesses(paths.projectRoot, paths.dataDir);
-    if (liveBrokers.length > 0) {
-      return [
-        ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
-        {
-          name: 'Broker connection',
-          ok: false,
-          message: `Broker process alive but ${relativePath(connection.path)} is missing (pid${liveBrokers.length === 1 ? '' : 's'}: ${liveBrokers.map((processInfo) => processInfo.pid).join(', ')})`,
-          remediation:
-            'Run `agent-relay down --force`, then `agent-relay up` to clear the half-started broker.',
-        },
-        {
-          name: 'Outbound queues',
-          ok: true,
-          message: 'Skipped (broker connection metadata missing)',
-        },
-      ];
-    }
-
-    return [
-      ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
-      {
-        name: 'Broker connection',
-        ok: true,
-        message: 'Skipped (broker not running: no connection metadata found)',
-      },
-      {
-        name: 'Outbound queues',
-        ok: true,
-        message: 'Skipped (broker not running)',
-      },
-    ];
-  }
-
-  if (!connection.conn) {
-    return [
-      ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
-      {
-        name: 'Broker connection',
-        ok: false,
-        message: `Invalid broker connection metadata at ${relativePath(connection.path)}`,
-        remediation: 'Run `agent-relay down --force`, then `agent-relay up` to rewrite connection metadata.',
-      },
-      {
-        name: 'Outbound queues',
-        ok: true,
-        message: 'Skipped (broker connection metadata invalid)',
-      },
-    ];
-  }
-
-  if (!isProcessRunning(connection.conn.pid)) {
-    return [
-      ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
-      {
-        name: 'Broker connection',
-        ok: false,
-        message: `Stale broker connection metadata: pid ${connection.conn.pid} is not running`,
-        remediation:
-          'Run `agent-relay down --force`, then `agent-relay up` to remove stale connection metadata.',
-      },
-      {
-        name: 'Outbound queues',
-        ok: true,
-        message: 'Skipped (broker process is not running)',
-      },
-    ];
-  }
-
-  try {
-    client = HarnessDriverClient.connect({ cwd: process.cwd() });
-    const status = await client.getStatus();
-    const typedStatus = status as BrokerStatus;
-    const auth = typedStatus.auth;
-    const authMessage = auth?.authenticated
-      ? `Authenticated (${auth.workspace_count} workspace${auth.workspace_count === 1 ? '' : 's'})`
-      : 'No authenticated Relaycast workspace reported by broker';
-    const pending = typedStatus.pending_deliveries ?? [];
-    const stuck = pending.filter((delivery) => (delivery.age_ms ?? 0) >= 10_000 || delivery.last_error);
-    const nodeDelivery = readNodeDeliveryStatus(typedStatus);
-    const nodeDeliveryOk = Boolean(nodeDelivery?.tokenPresent && nodeDelivery.connected);
-    const nodeDeliveryMessage = !nodeDelivery
-      ? 'Node delivery status unavailable'
-      : nodeDelivery.connected
-        ? 'Node delivery connected'
-        : nodeDelivery.tokenPresent
-          ? 'Node token present, but /v1/node/ws is disconnected'
-          : 'No node token; /v1/node/ws cannot connect';
-    return [
-      ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
-      {
-        name: 'Broker connection',
-        ok: true,
-        message: `Reachable at ${connection.conn.url} (pid ${connection.conn.pid})`,
-      },
-      {
-        name: 'Broker auth',
-        ok: true,
-        message: authMessage,
-      },
-      {
-        name: 'Node delivery',
-        ok: nodeDeliveryOk,
-        message: nodeDeliveryMessage,
-        remediation: !nodeDeliveryOk
-          ? 'Check broker logs for create_node/node token errors; realtime injection requires an active /v1/node/ws connection.'
-          : undefined,
-      },
-      {
-        name: 'Outbound queues',
-        ok: stuck.length === 0,
-        message:
-          pending.length === 0
-            ? 'No pending deliveries'
-            : `${pending.length} pending deliver${pending.length === 1 ? 'y' : 'ies'}, ${stuck.length} stuck`,
-        remediation:
-          stuck.length > 0
-            ? 'Check agent-relay who --json for blocked_on_send agents and inspect pending_deliveries in /api/status.'
-            : undefined,
-      },
-    ];
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    return [
-      ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
-      {
-        name: 'Broker connection',
-        ok: false,
-        message: `Stale or unreachable broker connection metadata: ${message}`,
-        remediation:
-          'Run `agent-relay status --wait-for=10` to confirm readiness, or `agent-relay down --force` before retrying.',
-      },
-      {
-        name: 'Outbound queues',
-        ok: true,
-        message: 'Skipped (broker unavailable)',
-      },
-    ];
-  } finally {
-    await client?.shutdown().catch(() => undefined);
-  }
+  return [
+    {
+      name: 'Agent Relay workspace key',
+      ok: false,
+      message: `Unresolved ${relayKeyEnvName} template`,
+      remediation: 'Export a real rk_live_... workspace key instead of a literal ${...} placeholder.',
+    },
+  ];
 }
 
 const require = createRequire(import.meta.url);
@@ -820,7 +578,7 @@ export async function runDoctor(): Promise<void> {
   results.push(writeResult);
   const readResult = await checkReadTest(storageType, dbPath, availability, testKey, testValue);
   results.push(readResult);
-  results.push(...(await checkBrokerReliability()));
+  results.push(...checkWorkspaceKeyTemplate());
 
   printHeader();
   printInstallationStatus(installationStatus);

@@ -18,7 +18,6 @@ import {
   type EnsureCloudFleetSandboxInput,
   type EnsureCloudFleetSandboxResult,
 } from '@agent-relay/cloud';
-import { HarnessDriverClient } from '@agent-relay/harness-driver';
 import {
   createWorkspaceClient,
   RelayPlacementError,
@@ -29,17 +28,13 @@ import {
 import { withDefaults, type CoreDependencies } from './core.js';
 import {
   buildRows,
-  collectWithRetry,
   formatPretty,
   readRemoteLiveAgents,
-  readLocalBrokerMaps,
   type FleetNodeContribution,
   type RosterAgent,
 } from './fleet-agent.js';
-import { readBrokerConnection } from '../lib/broker-lifecycle.js';
-import { spawnAgentWithClient } from '../lib/client-factory.js';
+import { removedBrokerCommandMessage } from './node.js';
 import { formatRelativeTime, sanitizeForTerminalLine } from '../lib/formatting.js';
-import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
 import {
   AgentRemovalPendingError,
   parseRemovalWaitTimeout,
@@ -80,9 +75,10 @@ import {
 const FLEET_NODES_ALWAYS_ON_MESSAGE =
   'Fleet nodes need no per-workspace enablement; this command is a no-op.';
 
-const SERVE_REPLACEMENT_MESSAGE =
-  "'fleet serve' has been replaced. Run 'relay node up' (with an optional --config <file>); " +
-  "for Cloud-managed nodes run 'relay cloud enroll --token <token>' first.";
+const LOCAL_SPAWN_REMOVED_MESSAGE =
+  'Spawning on this machine without a target was removed together with the local broker. ' +
+  "Run 'relay init' and spawn through the Agent Relay core (the Agent Relay MCP spawn tools or the " +
+  'desktop app), or pass --node <name>, --auto-place or --sandbox to place the worker on the fleet.';
 
 const FLEET_CLIS = new Set([
   'claude',
@@ -98,15 +94,15 @@ const FLEET_CLIS = new Set([
 /**
  * Floor for `--confirm-timeout` on a verified targeted spawn.
  *
- * The broker holds a verified spawn open for its 90s
- * `VERIFIED_SPAWN_READY_TIMEOUT` (`crates/broker/src/runtime/fleet.rs`), but
+ * A fleet node holds a verified spawn open for its 90s readiness window
+ * (`VERIFIED_SPAWN_READY_TIMEOUT` on broker-backed nodes), but
  * starts that clock only after `spawn_worker_from_request` returns — i.e. after
  * process creation, the stability window, agent registration and token minting.
  * The requester's budget starts earlier, at the dispatch ack, so the two
  * windows only nest when the requester's is strictly larger. The 5s margin
  * covers the invoke round-trip, that launch work, and one
  * `DEFAULT_CONFIRM_POLL_MS` (500ms) confirmation poll. Below this floor a worker
- * the broker already released with `spawn_readiness_timeout` is reported as
+ * the node already released with `spawn_readiness_timeout` is reported as
  * `spawn_unconfirmed` — the failure shape this confirmation exists to remove.
  */
 const MIN_VERIFIED_CONFIRM_TIMEOUT_MS = 95_000;
@@ -272,8 +268,6 @@ async function runFleetSpawn(deps: SdkCommandDeps, fn: () => Promise<void>): Pro
 export interface FleetCommandDependencies {
   core: CoreDependencies;
   sdk: SdkCommandDeps;
-  cwd: () => string;
-  connectLocalBroker: (cwd: string) => Promise<HarnessDriverClient>;
   createFleetWorkspaceClient: (options: SdkClientOptions) => RelayWorkspaceThinClient;
   resolveWorkspaceSelection: typeof resolveWorkspaceSelection;
   resolveSandboxRepository: typeof resolveSandboxRepository;
@@ -297,8 +291,6 @@ function withFleetDefaults(overrides: Partial<FleetCommandDependencies> = {}): F
   return {
     core,
     sdk,
-    cwd: () => process.cwd(),
-    connectLocalBroker: async (cwd) => connectProjectBrokerClient(cwd),
     createFleetWorkspaceClient: (options) => {
       const { workspaceKey, baseUrl } = resolveWorkspaceTransport(options);
       return createWorkspaceClient({ workspaceKey, baseUrl });
@@ -431,18 +423,22 @@ export function registerFleetCommands(
   const deps = withFleetDefaults(overrides);
   const group = program.command('fleet').description('Inspect and manage Agent Relay fleet nodes');
 
-  // `fleet serve` has moved to `relay node up`. Keep a hidden stub so existing
-  // invocations fail loudly with migration guidance instead of an "unknown
-  // command" error. `allowUnknownOption` lets it swallow the old serve flags.
-  group
-    .command('serve', { hidden: true })
-    .argument('[file]')
-    .allowUnknownOption(true)
-    .allowExcessArguments(true)
-    .action(() => {
-      deps.error(SERVE_REPLACEMENT_MESSAGE);
-      deps.exit(1);
-    });
+  // `fleet serve` and `fleet status` drove the local broker, which was retired.
+  // Keep hidden stubs so existing invocations fail loudly with migration
+  // guidance instead of an "unknown command" error. `allowUnknownOption` lets
+  // them swallow the old flags.
+  for (const command of ['serve', 'status']) {
+    group
+      .command(command, { hidden: true })
+      .argument('[args...]')
+      .allowUnknownOption(true)
+      .allowExcessArguments(true)
+      .helpOption(false)
+      .action(() => {
+        deps.error(removedBrokerCommandMessage(`fleet ${command}`));
+        deps.exit(1);
+      });
+  }
 
   const nodes = group
     .command('nodes')
@@ -488,7 +484,7 @@ export function registerFleetCommands(
       });
     });
 
-  // `fleet agent list` — the fleet-wide answer to `node agent list --pretty`.
+  // `fleet agent list` — which agents run on which fleet node.
   // See relay#1553 for the gap this fills and packages/cli/src/cli/commands/
   // fleet-agent.ts for the join logic (three name spaces, per-node contributions).
   const agent = group.command('agent').description('Inspect agents across the fleet');
@@ -498,7 +494,7 @@ export function registerFleetCommands(
       .description('List agents on every reachable fleet node, joined against the workspace roster')
       .option('--pretty', 'Render as a human-readable table')
       .option('--json', 'Render JSON output (default; explicit so the flag advertised in --help works)')
-      .option('--node <name>', 'Return only this node and its live broker agents')
+      .option('--node <name>', 'Return only this node and its live agents')
       .option('--all', 'Include offline/history nodes the way `fleet nodes --all` does')
   ).action(async (options: Record<string, unknown>) => {
     await runFleetAgentList(deps, options);
@@ -567,7 +563,7 @@ export function registerFleetCommands(
   addSdkOptions(
     group
       .command('spawn')
-      .description('Spawn locally by default, or select a fleet node or Cloud sandbox explicitly')
+      .description('Spawn on a fleet node (--node or --auto-place) or a fresh Cloud sandbox (--sandbox)')
       .argument('<cli>', 'AI CLI to launch', parseFleetCli)
       .requiredOption('--name <name>', 'Worker agent name')
       .option('--task <text>', 'Initial task instructions')
@@ -601,7 +597,7 @@ export function registerFleetCommands(
       .option('--model <model>', 'Model powering the worker')
       .option(
         '--cwd <path>',
-        'Working directory: defaults to the caller directory for local spawn; maps a local repo-relative path with --sandbox; otherwise selects a path on the remote node'
+        'Working directory: maps a local repo-relative path with --sandbox; otherwise selects a path on the remote node'
       )
       .option('--organization <organization>', 'Declared organization for workforce reporting')
       .option('--project <project>', 'Declared project for workforce reporting')
@@ -725,7 +721,6 @@ export function registerFleetCommands(
       let sandboxRepository: SandboxRepositorySelection | undefined;
       let liveRepository: CloudRelayfileRepositoryMaterialization | undefined;
       let sandboxMountPaths: string[] | undefined;
-      let attachProjectRoot: string | undefined;
       let workspaceRelay: ReturnType<FleetCommandDependencies['sdk']['createWorkspaceRelay']> | undefined;
       let relaycastClientOptions = clientOptions;
       let legacyWorkspaceClientOptions = clientOptions;
@@ -800,9 +795,6 @@ export function registerFleetCommands(
             : sandboxRepository && pathContains(sandboxRepository.projectRoot, coreProjectRoot)
               ? coreProjectRoot
               : (sandboxRepository?.projectRoot ?? coreProjectRoot);
-        if (path.resolve(workspaceProjectRoot) !== path.resolve(coreProjectRoot)) {
-          attachProjectRoot = workspaceProjectRoot;
-        }
         const sandboxClientOptions = {
           ...clientOptions,
           projectRoot: workspaceProjectRoot,
@@ -1337,12 +1329,7 @@ export function registerFleetCommands(
                 }
               : sandbox;
           printJson(deps.sdk, {
-            ...(sandbox
-              ? {
-                  sandbox: printableSandbox,
-                  attachCommand: sandboxAttachCommand(name, attachProjectRoot),
-                }
-              : {}),
+            ...(sandbox ? { sandbox: printableSandbox } : {}),
             invocation: spawnInvocationWithMergedPlacement(invocation as unknown as Record<string, unknown>),
           });
         } catch (error) {
@@ -1387,28 +1374,7 @@ export function registerFleetCommands(
       }
       const persona = optionalText(options.persona, 'Persona');
       if (!automaticPlacement) {
-        if (organization || project || workstream || role || objective) {
-          throw new Error('Workforce metadata requires --auto-place, --node, or --sandbox.');
-        }
-        const callerCwd = deps.cwd();
-        const localCwd = path.resolve(callerCwd, requestedCwd ?? '.');
-        const local = await deps.connectLocalBroker(deps.findProjectRoot(callerCwd));
-        try {
-          await spawnAgentWithClient(local, {
-            name,
-            cli,
-            task,
-            channels: [channel ?? 'general'],
-            ...(model ? { model } : {}),
-            // A broker can be shared by nested packages. Never inherit its
-            // startup directory when the caller requested a local checkout.
-            cwd: localCwd,
-          });
-          printJson(deps.sdk, { local: { name, cli, cwd: localCwd } });
-        } finally {
-          local.disconnect();
-        }
-        return;
+        throw new Error(LOCAL_SPAWN_REMOVED_MESSAGE);
       }
       const workspace = deps.createFleetWorkspaceClient(clientOptions);
       const invocation = await workspace.agents.spawn({
@@ -1454,9 +1420,8 @@ export function registerFleetCommands(
       const waitTimeoutMs =
         deleteAgent && options.wait === true ? parseRemovalWaitTimeout(options.waitTimeout) : undefined;
       const sdkOpts = sdkOptionsFromOpts(options);
-      // One transport for both cleanup and release. Cleanup otherwise
-      // substitutes the local broker session whenever --workspace-key is
-      // omitted, even if RELAY_WORKSPACE_KEY selected a different workspace.
+      // One transport for both cleanup and release, so cleanup can never
+      // retire bindings in a different workspace than the one released from.
       const transport = resolveWorkspaceTransport(sdkOpts);
       const cleanupOpts: Record<string, unknown> = {
         ...options,
@@ -1542,17 +1507,6 @@ export function registerFleetCommands(
       }
     });
   }
-
-  addSdkOptions(
-    group.command('status').description('Show local broker status and this node’s provider attachment')
-  ).action(async (options: Record<string, unknown>) => {
-    try {
-      await runFleetStatus(deps, options);
-    } catch (error) {
-      deps.error(error instanceof Error ? error.message : String(error));
-      deps.exit(1);
-    }
-  });
 }
 
 function parseFleetCli(value: string): string {
@@ -1587,16 +1541,6 @@ function optionalTextList(value: unknown, label: string): string[] | undefined {
   return [...new Set(normalized)];
 }
 
-/** Quote untrusted names in the copy-pasteable attach command printed on success. */
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-
-function sandboxAttachCommand(name: string, projectRoot: string | undefined): string {
-  const attach = `agent-relay node agent attach ${shellQuote(name)} --mode drive`;
-  return projectRoot ? `cd ${shellQuote(projectRoot)} && ${attach}` : attach;
-}
-
 /**
  * Warn (on stderr, so it never pollutes the JSON on stdout) when the workspace
  * key was inferred from the project's persisted session rather than named
@@ -1623,51 +1567,10 @@ function warnIfInferredFromProjectSession(
 }
 
 /**
- * Assemble the local broker's contribution from the raw per-half results.
- * `sessionError` is a hard failure (broker session lookup blew up) — it
- * degrades to a full ERROR row so the operator can see the local machine
- * itself is unreachable. `liveError` / `inventoryError` are partial and are
- * preserved into the contribution so `buildRows` can render one map with a
- * `(?)` marker on the missing half instead of dropping both.
- */
-function buildLocalContribution(
-  node: RelayNode,
-  input: {
-    liveAgents?: Awaited<ReturnType<HarnessDriverClient['listAgents']>>;
-    liveError?: string;
-    inventoryAgents?: Awaited<ReturnType<HarnessDriverClient['listFleetInventory']>>['agents'];
-    inventoryError?: string;
-    sessionError?: string;
-    retried?: boolean;
-    note?: string;
-  }
-): FleetNodeContribution {
-  if (input.sessionError) {
-    return {
-      node,
-      isLocal: true,
-      error: input.note ? `${input.note}: ${input.sessionError}` : input.sessionError,
-      ...(input.retried ? { retried: true } : {}),
-    };
-  }
-  return {
-    node,
-    isLocal: true,
-    ...(input.liveAgents !== undefined ? { liveAgents: input.liveAgents } : {}),
-    ...(input.liveError ? { liveError: input.liveError } : {}),
-    ...(input.inventoryAgents !== undefined ? { inventoryAgents: input.inventoryAgents } : {}),
-    ...(input.inventoryError ? { inventoryError: input.inventoryError } : {}),
-    ...(input.retried ? { retried: true } : {}),
-  };
-}
-
-/**
  * Fan-out for `fleet agent list`. Reads `nodes.list()` for the roster of
- * reachable fleet nodes, `agents.list()` for the workspace agent registry,
- * and — when this machine has a running local broker — both the live worker
- * map and the fleet_inventory snapshot from it. Remote live names arrive in
- * the node heartbeat capabilities returned by the same `nodes.list()` call.
- * A node is never dropped from the output.
+ * reachable fleet nodes and `agents.list()` for the workspace agent registry.
+ * Live names arrive in the node heartbeat capabilities returned by the same
+ * `nodes.list()` call. A node is never dropped from the output.
  *
  * The pure join lives in {@link ./fleet-agent.ts} so it can be tested against
  * fixtures without wiring up the SDK.
@@ -1730,120 +1633,25 @@ async function runFleetAgentList(
       );
     }
 
-    // Local broker (this machine): read /api/spawned and /api/fleet-inventory.
-    // The broker's node_name identifies which entry in `visibleNodes` is us.
-    const paths = deps.core.getProjectPaths();
-    const conn = readBrokerConnection(paths.dataDir);
-    let localNodeName: string | undefined;
-    let localLive: Awaited<ReturnType<HarnessDriverClient['listAgents']>> | undefined;
-    let localInventory: Awaited<ReturnType<HarnessDriverClient['listFleetInventory']>>['agents'] | undefined;
-    let localLiveError: string | undefined;
-    let localInventoryError: string | undefined;
-    /** Whole-session failure (session lookup blew up before either map ran). */
-    let localSessionError: string | undefined;
-    let localRetried = false;
-
-    if (conn) {
-      const client = new HarnessDriverClient({ baseUrl: conn.url, apiKey: conn.api_key });
-      try {
-        const session = await client.getSession();
-        localNodeName = session.node_name ?? undefined;
-        // `readLocalBrokerMaps` uses Promise.allSettled so a failure in one
-        // half never discards the other. `collectWithRetry` retries the pair
-        // once as a unit; a per-half retry policy is more code for no
-        // observable win when both halves hit the same broker.
-        const result = await collectWithRetry('local broker', () => readLocalBrokerMaps(client));
-        if (result.ok) {
-          localLive = result.value.liveAgents;
-          localLiveError = result.value.liveError;
-          localInventory = result.value.inventoryAgents;
-          localInventoryError = result.value.inventoryError;
-          localRetried = result.retried;
-        } else {
-          // Both halves failed as a unit — record it as a session error so
-          // the contribution below renders an explicit ERROR row rather than
-          // silently pretending both maps were empty.
-          localSessionError = result.error;
-          localRetried = result.retried;
-        }
-      } catch (error) {
-        localSessionError = `local broker: ${error instanceof Error ? error.message : String(error)}`;
-      } finally {
-        client.disconnect();
-      }
-    }
-
-    // Assemble per-node contributions. Brokers encode the live WorkerName set
+    // Assemble per-node contributions. Nodes encode the live WorkerName set
     // in reserved heartbeat capabilities. This path is independent of agent
     // registration and adds no API call beyond nodes.list(): no workspace
     // roster and no node-binding read.
     const contributions: FleetNodeContribution[] = [];
     for (const node of visibleNodes) {
-      if (localNodeName && node.name === localNodeName) {
-        contributions.push(
-          buildLocalContribution(node, {
-            liveAgents: localLive,
-            liveError: localLiveError,
-            inventoryAgents: localInventory,
-            inventoryError: localInventoryError,
-            sessionError: localSessionError,
-            retried: localRetried,
-          })
-        );
-        continue;
-      }
-
       const remote = readRemoteLiveAgents(node);
       if (remote.supported) {
         contributions.push({
           node,
-          isLocal: false,
           remoteAgents: remote.agents,
           ...(remote.warning ? { remoteWarning: remote.warning } : {}),
         });
       } else {
         contributions.push({
           node,
-          isLocal: false,
-          remoteError: 'broker heartbeat does not publish live agent names',
+          remoteError: 'node heartbeat does not publish live agent names',
         });
       }
-    }
-
-    // Guarantee the local machine appears somewhere in the output even if
-    // `nodes.list()` filtered its record out or the workspace never saw it.
-    // Dropping the local machine's contribution silently was one of the
-    // review findings on the first pass — this is the third-state discipline
-    // applied to the local node itself, not just to per-agent rows.
-    const localNodeIsInScope =
-      requestedNodeName === undefined || (localNodeName !== undefined && requestedNodeName === localNodeName);
-    if (
-      localNodeIsInScope &&
-      (localNodeName || localSessionError || conn) &&
-      !contributions.some((c) => c.isLocal)
-    ) {
-      const syntheticNodeName =
-        localNodeName ?? (process.env.AGENT_RELAY_BROKER_NAME?.trim() || undefined) ?? '(local broker)';
-      // Keep the authoritative roster metadata when the node was filtered from
-      // the default visible set. This preserves a known offline/degraded
-      // control-plane state while still showing node-local workers.
-      const knownLocalNode = nodes.find((node) => node.name === syntheticNodeName);
-      const syntheticNode: RelayNode = knownLocalNode ?? {
-        name: syntheticNodeName,
-        status: 'unknown',
-        capabilities: [],
-      };
-      contributions.unshift(
-        buildLocalContribution(syntheticNode, {
-          liveAgents: localLive,
-          liveError: localLiveError,
-          inventoryAgents: localInventory,
-          inventoryError: localInventoryError,
-          sessionError: localSessionError,
-          retried: localRetried,
-          note: 'local broker not in visible node list',
-        })
-      );
     }
 
     const now = new Date();
@@ -1870,68 +1678,9 @@ async function runFleetAgentList(
     printJson(deps.sdk, {
       generatedAt: now.toISOString(),
       nodes: heartbeatNodes,
-      localNode: localNodeName ?? null,
       perNode: output.perNode,
       unplacedRoster: output.unplacedRoster,
       errors: output.errors,
     });
   });
-}
-
-async function runFleetStatus(
-  deps: FleetCommandDependencies,
-  options: Record<string, unknown>
-): Promise<void> {
-  const paths = deps.core.getProjectPaths();
-  const conn = readBrokerConnection(paths.dataDir);
-
-  let broker: Record<string, unknown> = { running: false };
-  let nodeName: string | undefined;
-  if (conn) {
-    const client = new HarnessDriverClient({ baseUrl: conn.url, apiKey: conn.api_key });
-    try {
-      const session = await client.getSession();
-      nodeName = session.node_name;
-      broker = {
-        running: true,
-        url: conn.url,
-        pid: conn.pid,
-        workspaceKey: session.workspace_key,
-        brokerVersion: session.broker_version,
-        protocolVersion: session.protocol_version,
-        nodeId: session.node_id,
-        nodeName: session.node_name,
-      };
-    } catch (error) {
-      broker = {
-        running: false,
-        url: conn.url,
-        pid: conn.pid,
-        error: error instanceof Error ? error.message : String(error),
-      };
-    } finally {
-      client.disconnect();
-    }
-  }
-
-  // Provider attachment (per-provider liveness) is owned by the engine now, not a
-  // local status file; read this node's record from the nodes API.
-  let node: unknown;
-  if (nodeName) {
-    try {
-      const relay = deps.sdk.createWorkspaceRelay(sdkOptionsFromOpts(options));
-      const nodes = await relay.nodes.list({ name: nodeName });
-      node = nodes[0] ?? { available: false, reason: `no node named "${nodeName}" in the workspace` };
-    } catch (error) {
-      node = { error: error instanceof Error ? error.message : String(error) };
-    }
-  } else {
-    // A running broker that never reported a node name means the engine lookup
-    // was skipped — say so rather than looking fully checked.
-    node = { available: false, reason: 'broker did not report a node name' };
-  }
-
-  // Redact the node token / workspace key structurally so status output (which a
-  // user may paste into a bug report) never carries a live credential.
-  deps.log(JSON.stringify(redactSecrets({ broker, node }), null, 2));
 }

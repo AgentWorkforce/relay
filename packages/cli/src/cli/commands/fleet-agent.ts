@@ -4,29 +4,20 @@
  * Answers "which agents are running on which node, right now?" without the
  * operator having to already know the node. See relay#1553 for the gap.
  *
- * Reads the maps it can from where the CLI runs:
- * - **Local broker** (this machine): both `/api/spawned` (the live PTY map)
- *   and `/api/fleet-inventory` (the snapshot the broker publishes to the
- *   engine via `inventory.sync`). Joining these on `WorkerName` exposes the
- *   workers-vs-inventory divergence documented in relay#1539.
- * - **Every other node in the workspace**: names carried in a reserved node
- *   capability on the broker's normal heartbeat, joined against that same
+ * Reads the maps it can from the workspace:
+ * - **Every node in the workspace**: names carried in a reserved node
+ *   capability on the node's normal heartbeat, joined against that same
  *   heartbeat's `activeAgents` count so partial inventory is labelled degraded.
- * - **Relaycast agent registry** (`agents.list()`): joined against the local
- *   broker rows to flag registry gaps and to surface roster-only identities
- *   that have no node placement anywhere (a distinct section).
+ * - **Relaycast agent registry** (`agents.list()`): joined against the node
+ *   rows to flag registry gaps and to surface roster-only identities that have
+ *   no node placement anywhere (a distinct section).
  *
  * The rendered table is the primary user contract; JSON mirrors it verbatim.
  * Callers should never assume a row's absence proves the agent is not
  * running — a row's PRESENCE column names exactly which maps saw it.
  */
 
-import type { HarnessDriverClient } from '@agent-relay/harness-driver';
-import type { FleetInventoryAgent, ListAgent } from '@agent-relay/harness-driver';
-
 import type { RelayNode } from '@agent-relay/sdk';
-
-export { collectWithRetry } from '../lib/collect-with-retry.js';
 
 /** Roster entry as returned by `agents.list()`; only the fields we consume. */
 export interface RosterAgent {
@@ -45,36 +36,13 @@ export { LIVE_AGENT_CAPABILITY_NAME, readRemoteLiveAgents } from '../lib/fleet-l
 export interface FleetNodeContribution {
   /** Node record from `nodes.list()`. */
   node: RelayNode;
-  /** True when this row came from the local broker's HTTP surface. */
-  isLocal: boolean;
-  /** `/api/spawned` result — only present for the local broker when it succeeded. */
-  liveAgents?: ListAgent[];
-  /** `/api/fleet-inventory` result — only present for the local broker when it succeeded. */
-  inventoryAgents?: FleetInventoryAgent[];
-  /** Broker-owned live WorkerNames returned in heartbeat capabilities. */
+  /** Node-owned live WorkerNames returned in heartbeat capabilities. */
   remoteAgents?: RemoteLiveAgent[];
   /** Non-null when some heartbeat names could not be decoded safely. */
   remoteWarning?: string;
   /** Non-null when the remote node does not expose a usable live-name heartbeat. */
   remoteError?: string;
-  /**
-   * Non-null when the live-worker read failed. A `liveError` alone still
-   * produces per-agent rows (from `inventoryAgents`) so the local machine
-   * never falls back to a bare error row unless BOTH halves fail.
-   */
-  liveError?: string;
-  /**
-   * Non-null when the inventory read failed (missing route on an old broker,
-   * `success:false` from the runtime channel, transport failure). Handled
-   * independently from `liveError`: partial rows still render, and the
-   * presence column marks inventory as unknown rather than lying about it.
-   */
-  inventoryError?: string;
-  /**
-   * Non-null when this node's contribution failed entirely (both halves, or a
-   * remote node that could not be reached). Distinct from `liveError` /
-   * `inventoryError` which are per-half diagnostics.
-   */
+  /** Non-null when this node's contribution failed entirely (it could not be reached). */
   error?: string;
   /** True when the contribution was produced only after a retry. */
   retried?: boolean;
@@ -88,17 +56,7 @@ export interface FleetNodeContribution {
  * divergence.
  */
 export type Presence =
-  | 'live+inventory+roster'
-  | 'live+inventory'
-  | 'live+roster'
-  | 'inventory+roster'
-  | 'live only'
-  | 'inventory only'
   | 'roster only'
-  | 'live only (inventory?)'
-  | 'inventory only (live?)'
-  | 'empty (inventory?)'
-  | 'empty (live?)'
   | 'remote live'
   | 'remote live+roster'
   | 'remote stale (control plane unavailable)'
@@ -151,12 +109,6 @@ export interface BuildRowsOutput {
   errors: { node: string; message: string }[];
 }
 
-const AGENT_STATE_SYMBOL: Record<string, string> = {
-  working: '● working',
-  idle: '○ idle',
-  blocked_on_send: '◐ waiting',
-};
-
 // eslint-disable-next-line no-control-regex
 const ANSI_CSI_RE = /\u001B\[[0-9;]*[A-Za-z]/g;
 // C0 (U+0000-U+001F), DEL (U+007F), C1 (U+0080-U+009F), bidi overrides
@@ -169,17 +121,7 @@ function sanitizeCell(value: string): string {
   return value.replace(ANSI_CSI_RE, '').replace(UNSAFE_CTRL_RE, '�');
 }
 
-function renderState(state: string | undefined): string {
-  if (!state) return '· unknown';
-  return AGENT_STATE_SYMBOL[state] ?? `· ${state}`;
-}
-
-function renderPending(value: number | undefined): string {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '-';
-  return String(Math.floor(value));
-}
-
-/** Relative "now / N minutes ago" — matches `node agent list --pretty`. */
+/** Relative "now / N minutes ago". */
 function renderRelative(iso: string | undefined, now: Date): string {
   if (!iso) return 'unknown';
   const ts = Date.parse(iso);
@@ -193,11 +135,6 @@ function renderRelative(iso: string | undefined, now: Date): string {
   if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
   const days = Math.floor(hours / 24);
   return `${days} day${days === 1 ? '' : 's'} ago`;
-}
-
-function cliModel(agent: ListAgent): string {
-  const parts = [agent.cli ?? agent.provider ?? agent.runtime, agent.model].filter(Boolean);
-  return parts.join(' / ');
 }
 
 /**
@@ -242,223 +179,118 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
       continue;
     }
 
-    if (!contribution.isLocal) {
-      const count = contribution.node.activeAgents;
-      const controlPlane = controlPlaneState(contribution.node);
-      const hostedWorkersUnavailable = controlPlane !== 'online';
-      if (contribution.remoteAgents === undefined) {
-        const renderedCount =
-          count === undefined
-            ? 'active count unavailable'
-            : `${count} agent${count === 1 ? '' : 's'} reported`;
-        const detail = contribution.remoteError
-          ? `live-name heartbeat unavailable: ${sanitizeCell(contribution.remoteError)}`
-          : 'live-name heartbeat unavailable';
-        const row: RenderedRow = {
-          node: nodeName,
-          name: `<${renderedCount} — names unavailable: ${detail}>`,
-          cliModel: '',
-          state: '· remote degraded',
-          pending: '-',
-          lastActive: '-',
-          presence: 'count only (degraded)',
-          controlPlane,
-          workerLiveness: 'unknown',
-          note: contribution.retried ? 'retried' : 'inventory unavailable',
-        };
-        perNode.push(row);
-        contributionByRow.set(row, contribution);
-        if (contribution.remoteError) {
-          errors.push({ node: nodeName, message: sanitizeCell(contribution.remoteError) });
-        }
-        continue;
-      }
-
-      const remoteAgents = [...contribution.remoteAgents].sort((a, b) => a.name.localeCompare(b.name));
-      const mismatch = count !== undefined && count !== remoteAgents.length;
-      const noteParts = [
-        ...(contribution.retried ? ['retried'] : []),
-        ...(contribution.remoteWarning
-          ? [`${hostedWorkersUnavailable ? 'stale' : 'degraded'}: ${contribution.remoteWarning}`]
-          : []),
-        ...(mismatch
-          ? [
-              `${hostedWorkersUnavailable ? 'stale' : 'degraded'}: heartbeat reports ${count}, broker returned ${remoteAgents.length}`,
-            ]
-          : []),
-      ];
-      const note = noteParts.length > 0 ? noteParts.join('; ') : undefined;
-
-      for (const agent of remoteAgents) {
-        const inRoster = rosterNames.has(agent.name);
-        if (inRoster) rosterPlaced.add(agent.name);
-        const row: RenderedRow = {
-          node: nodeName,
-          name: sanitizeCell(agent.name),
-          cliModel: '',
-          state: '· remote',
-          pending: '-',
-          lastActive: '-',
-          presence: hostedWorkersUnavailable
-            ? 'remote stale (control plane unavailable)'
-            : inRoster
-              ? 'remote live+roster'
-              : 'remote live',
-          controlPlane,
-          workerLiveness: hostedWorkersUnavailable ? 'unknown' : 'live',
-          ...(note ? { note: sanitizeCell(note) } : {}),
-        };
-        perNode.push(row);
-        contributionByRow.set(row, contribution);
-      }
-
-      if (remoteAgents.length === 0 && count === 0) {
-        const row: RenderedRow = {
-          node: nodeName,
-          name: '<0 agents on this node>',
-          cliModel: '',
-          state: '· empty',
-          pending: '-',
-          lastActive: '-',
-          presence: hostedWorkersUnavailable ? 'remote stale (control plane unavailable)' : 'remote live',
-          controlPlane,
-          workerLiveness: hostedWorkersUnavailable ? 'unknown' : 'empty',
-          ...(note ? { note: sanitizeCell(note) } : {}),
-        };
-        perNode.push(row);
-        contributionByRow.set(row, contribution);
-      } else if (count !== undefined && count > remoteAgents.length) {
-        const missing = count - remoteAgents.length;
-        const row: RenderedRow = {
-          node: nodeName,
-          name: `<${missing} additional agent${missing === 1 ? '' : 's'} — names unavailable: broker/heartbeat mismatch>`,
-          cliModel: '',
-          state: hostedWorkersUnavailable ? '· remote stale' : '· remote degraded',
-          pending: '-',
-          lastActive: '-',
-          presence: hostedWorkersUnavailable
-            ? 'remote stale (control plane unavailable)'
-            : 'count only (degraded)',
-          controlPlane,
-          workerLiveness: hostedWorkersUnavailable ? 'unknown' : 'degraded',
-          ...(note ? { note: sanitizeCell(note) } : {}),
-        };
-        perNode.push(row);
-        contributionByRow.set(row, contribution);
-      } else if (remoteAgents.length === 0) {
-        const row: RenderedRow = {
-          node: nodeName,
-          name: '<node inventory returned no names; active count unavailable>',
-          cliModel: '',
-          state: '· remote degraded',
-          pending: '-',
-          lastActive: '-',
-          presence: 'count only (degraded)',
-          controlPlane,
-          workerLiveness: 'unknown',
-          note: 'inventory/count comparison unavailable',
-        };
-        perNode.push(row);
-        contributionByRow.set(row, contribution);
-      }
-      continue;
-    }
-
-    // Local broker: two-map read. Each half may have failed independently
-    // (Promise.allSettled semantics upstream), so union the names we did get
-    // and classify each with `?` where a surface is genuinely unknown rather
-    // than confirmed empty. `?` markers propagate the third-state discipline
-    // the whole command is built on down to individual rows.
-    const liveKnown = contribution.liveAgents !== undefined;
-    const inventoryKnown = contribution.inventoryAgents !== undefined;
-    const live = new Map<string, ListAgent>();
-    for (const agent of contribution.liveAgents ?? []) {
-      live.set(agent.name, agent);
-    }
-    const inventory = new Map<string, FleetInventoryAgent>();
-    for (const agent of contribution.inventoryAgents ?? []) {
-      inventory.set(agent.name, agent);
-    }
-    const names = new Set<string>([...live.keys(), ...inventory.keys()]);
-
-    if (!liveKnown && !inventoryKnown) {
-      // Both halves failed: only now do we degrade to an ERROR row. This is
-      // strictly stronger than the pre-fix behaviour, which produced an ERROR
-      // row whenever EITHER half failed and threw away the surviving map.
-      const combined = [contribution.liveError, contribution.inventoryError].filter(Boolean).join('; ');
+    const count = contribution.node.activeAgents;
+    const controlPlane = controlPlaneState(contribution.node);
+    const hostedWorkersUnavailable = controlPlane !== 'online';
+    if (contribution.remoteAgents === undefined) {
+      const renderedCount =
+        count === undefined ? 'active count unavailable' : `${count} agent${count === 1 ? '' : 's'} reported`;
+      const detail = contribution.remoteError
+        ? `live-name heartbeat unavailable: ${sanitizeCell(contribution.remoteError)}`
+        : 'live-name heartbeat unavailable';
       const row: RenderedRow = {
         node: nodeName,
-        name: '',
+        name: `<${renderedCount} — names unavailable: ${detail}>`,
         cliModel: '',
-        state: `ERROR: ${sanitizeCell(combined || 'local broker unavailable')}`,
+        state: '· remote degraded',
         pending: '-',
         lastActive: '-',
-        presence: 'count only',
-        ...(contribution.retried ? { note: 'retried' } : {}),
+        presence: 'count only (degraded)',
+        controlPlane,
+        workerLiveness: 'unknown',
+        note: contribution.retried ? 'retried' : 'inventory unavailable',
       };
       perNode.push(row);
       contributionByRow.set(row, contribution);
-      errors.push({ node: nodeName, message: combined || 'local broker unavailable' });
-      continue;
-    }
-
-    if (names.size === 0) {
-      // At least one half is known-empty; if the OTHER half is unknown, say
-      // so plainly rather than rendering "0 agents on this node" — a
-      // partially-observed empty result is not a confirmed empty node.
-      if (liveKnown && inventoryKnown) {
-        const row: RenderedRow = {
-          node: nodeName,
-          name: '<0 agents on this node>',
-          cliModel: '',
-          state: '· empty',
-          pending: '-',
-          lastActive: '-',
-          presence: 'live+inventory',
-          ...(contribution.retried ? { note: 'retried' } : {}),
-        };
-        perNode.push(row);
-        contributionByRow.set(row, contribution);
-      } else {
-        const missing = liveKnown ? 'inventory' : 'live';
-        const row: RenderedRow = {
-          node: nodeName,
-          name: `<local ${missing} map unavailable — other map empty; total unknown>`,
-          cliModel: '',
-          state: `· ${missing}? unavailable`,
-          pending: '-',
-          lastActive: '-',
-          presence: liveKnown ? 'empty (inventory?)' : 'empty (live?)',
-          ...(contribution.retried ? { note: 'retried' } : {}),
-        };
-        perNode.push(row);
-        contributionByRow.set(row, contribution);
+      if (contribution.remoteError) {
+        errors.push({ node: nodeName, message: sanitizeCell(contribution.remoteError) });
       }
       continue;
     }
 
-    const sortedNames = Array.from(names).sort();
-    for (const name of sortedNames) {
-      const liveEntry = live.get(name);
-      const inventoryEntry = inventory.get(name);
-      const inRoster = rosterNames.has(name);
-      if (inRoster) rosterPlaced.add(name);
+    const remoteAgents = [...contribution.remoteAgents].sort((a, b) => a.name.localeCompare(b.name));
+    const mismatch = count !== undefined && count !== remoteAgents.length;
+    const noteParts = [
+      ...(contribution.retried ? ['retried'] : []),
+      ...(contribution.remoteWarning
+        ? [`${hostedWorkersUnavailable ? 'stale' : 'degraded'}: ${contribution.remoteWarning}`]
+        : []),
+      ...(mismatch
+        ? [
+            `${hostedWorkersUnavailable ? 'stale' : 'degraded'}: heartbeat reports ${count}, broker returned ${remoteAgents.length}`,
+          ]
+        : []),
+    ];
+    const note = noteParts.length > 0 ? noteParts.join('; ') : undefined;
 
-      const presence = classifyPresenceWithUncertainty(
-        { present: Boolean(liveEntry), known: liveKnown },
-        { present: Boolean(inventoryEntry), known: inventoryKnown },
-        inRoster
-      );
-
+    for (const agent of remoteAgents) {
+      const inRoster = rosterNames.has(agent.name);
+      if (inRoster) rosterPlaced.add(agent.name);
       const row: RenderedRow = {
         node: nodeName,
-        name: sanitizeCell(name),
-        cliModel: liveEntry ? sanitizeCell(cliModel(liveEntry)) : '',
-        state: liveEntry ? sanitizeCell(renderState(liveEntry.current_state)) : '· inventory-only',
-        pending: liveEntry ? renderPending(liveEntry.pending_messages) : '-',
-        lastActive: liveEntry ? sanitizeCell(renderRelative(liveEntry.last_activity_at, now)) : '-',
-        presence,
-        ...(contribution.retried ? { note: 'retried' } : {}),
+        name: sanitizeCell(agent.name),
+        cliModel: '',
+        state: '· remote',
+        pending: '-',
+        lastActive: '-',
+        presence: hostedWorkersUnavailable
+          ? 'remote stale (control plane unavailable)'
+          : inRoster
+            ? 'remote live+roster'
+            : 'remote live',
+        controlPlane,
+        workerLiveness: hostedWorkersUnavailable ? 'unknown' : 'live',
+        ...(note ? { note: sanitizeCell(note) } : {}),
+      };
+      perNode.push(row);
+      contributionByRow.set(row, contribution);
+    }
+
+    if (remoteAgents.length === 0 && count === 0) {
+      const row: RenderedRow = {
+        node: nodeName,
+        name: '<0 agents on this node>',
+        cliModel: '',
+        state: '· empty',
+        pending: '-',
+        lastActive: '-',
+        presence: hostedWorkersUnavailable ? 'remote stale (control plane unavailable)' : 'remote live',
+        controlPlane,
+        workerLiveness: hostedWorkersUnavailable ? 'unknown' : 'empty',
+        ...(note ? { note: sanitizeCell(note) } : {}),
+      };
+      perNode.push(row);
+      contributionByRow.set(row, contribution);
+    } else if (count !== undefined && count > remoteAgents.length) {
+      const missing = count - remoteAgents.length;
+      const row: RenderedRow = {
+        node: nodeName,
+        name: `<${missing} additional agent${missing === 1 ? '' : 's'} — names unavailable: broker/heartbeat mismatch>`,
+        cliModel: '',
+        state: hostedWorkersUnavailable ? '· remote stale' : '· remote degraded',
+        pending: '-',
+        lastActive: '-',
+        presence: hostedWorkersUnavailable
+          ? 'remote stale (control plane unavailable)'
+          : 'count only (degraded)',
+        controlPlane,
+        workerLiveness: hostedWorkersUnavailable ? 'unknown' : 'degraded',
+        ...(note ? { note: sanitizeCell(note) } : {}),
+      };
+      perNode.push(row);
+      contributionByRow.set(row, contribution);
+    } else if (remoteAgents.length === 0) {
+      const row: RenderedRow = {
+        node: nodeName,
+        name: '<node inventory returned no names; active count unavailable>',
+        cliModel: '',
+        state: '· remote degraded',
+        pending: '-',
+        lastActive: '-',
+        presence: 'count only (degraded)',
+        controlPlane,
+        workerLiveness: 'unknown',
+        note: 'inventory/count comparison unavailable',
       };
       perNode.push(row);
       contributionByRow.set(row, contribution);
@@ -483,68 +315,20 @@ export function buildRows(input: BuildRowsInput, now: Date): BuildRowsOutput {
     });
   }
 
-  // Every row carries both axes explicitly. In particular, a local broker can
-  // lose its control-plane link while its child workers continue doing useful
-  // work; that must render as offline control-plane + live hosted workers.
+  // Every row carries both axes explicitly: an unreachable node's error row
+  // still reports its control-plane state, with worker liveness unknown.
   for (const row of perNode) {
     if (row.controlPlane !== undefined) continue;
     const contribution = contributionByRow.get(row);
     if (!contribution) continue;
     row.controlPlane = controlPlaneState(contribution.node);
-    row.workerLiveness =
-      contribution.liveAgents === undefined
-        ? 'unknown'
-        : contribution.liveAgents.length > 0
-          ? 'live'
-          : contribution.inventoryAgents === undefined
-            ? 'unknown'
-            : contribution.inventoryAgents.length > 0
-              ? 'degraded'
-              : 'empty';
+    row.workerLiveness = 'unknown';
   }
 
   perNode.sort((a, b) => (a.node === b.node ? a.name.localeCompare(b.name) : a.node.localeCompare(b.node)));
   unplacedRoster.sort((a, b) => a.name.localeCompare(b.name));
 
   return { perNode, unplacedRoster, errors };
-}
-
-function classifyPresence(live: boolean, inventory: boolean, roster: boolean): Presence {
-  if (live && inventory && roster) return 'live+inventory+roster';
-  if (live && inventory) return 'live+inventory';
-  if (live && roster) return 'live+roster';
-  if (inventory && roster) return 'inventory+roster';
-  if (live) return 'live only';
-  if (inventory) return 'inventory only';
-  return 'roster only';
-}
-
-/**
- * Presence classifier that carries per-surface uncertainty. If one of the two
- * broker maps was unqueryable, the CLI must NOT report the surviving map's
- * membership as a divergence — an unqueryable map is unknown, not empty. The
- * `(inventory?)` / `(live?)` variants say that plainly so an operator can't
- * misread the row as the relay#1539 signature when the other surface simply
- * was not observed.
- */
-function classifyPresenceWithUncertainty(
-  live: { present: boolean; known: boolean },
-  inventory: { present: boolean; known: boolean },
-  roster: boolean
-): Presence {
-  if (live.known && inventory.known) {
-    return classifyPresence(live.present, inventory.present, roster);
-  }
-  // Exactly one surface is unknown. Since names are surfaced from the union
-  // of the two maps, the KNOWN half must be `present === true` for any row
-  // that reaches this classifier — the branches below are still explicit for
-  // defensive clarity, but the `!present` branches are unreachable via the
-  // normal iteration path (a bug there would surface as a plain 'roster only'
-  // rather than a silent lie).
-  if (live.known) {
-    return live.present ? 'live only (inventory?)' : 'roster only';
-  }
-  return inventory.present ? 'inventory only (live?)' : 'roster only';
 }
 
 /**
@@ -581,15 +365,7 @@ export function formatPretty(output: BuildRowsOutput): string {
     ...rows.map((_row, rowIndex) => format(columns.map((column) => column.values[rowIndex]!))),
   ];
 
-  // Legend: `○ idle` cannot separate "finished" from "working" — the
-  // harnesses park at the prompt (per the #1553 cleanup census). A reader
-  // who takes `idle` as "safe to release" loses evidence in a way this CLI
-  // could quietly cause; the legend flags it every time the column shows.
-  const hasIdle = rows.some((row) => row.state.includes('idle'));
   const notes: string[] = [];
-  if (hasIdle) {
-    notes.push('○ idle means the harness is at its prompt; it does NOT prove the assigned work is complete.');
-  }
   if (output.perNode.some((row) => row.presence === 'remote live' || row.presence === 'remote live+roster')) {
     notes.push(
       "remote live: names come from the broker's live WorkerName set on the node heartbeat; PTY detail remains node-local."
@@ -610,24 +386,6 @@ export function formatPretty(output: BuildRowsOutput): string {
       'remote degraded: the heartbeat count and heartbeat-published live names could not be reconciled; names may be incomplete.'
     );
   }
-  if (output.perNode.some((row) => row.presence === 'live only')) {
-    notes.push(
-      'live only: agent is in the broker PTY map but was not published to the engine (relay#1539 shape).'
-    );
-  }
-  if (
-    output.perNode.some(
-      (row) =>
-        row.presence === 'live only (inventory?)' ||
-        row.presence === 'inventory only (live?)' ||
-        row.presence === 'empty (inventory?)' ||
-        row.presence === 'empty (live?)'
-    )
-  ) {
-    notes.push(
-      '(inventory?) / (live?): one of the local broker maps was unqueryable — treat that surface as unknown, not empty; the labelled surface is what was actually observed.'
-    );
-  }
 
   const parts = [table.join('\n')];
   if (notes.length > 0) parts.push('', ...notes.map((line) => `  ${line}`));
@@ -638,42 +396,4 @@ export function formatPretty(output: BuildRowsOutput): string {
     }
   }
   return parts.join('\n');
-}
-
-/**
- * Result of reading the two local broker maps. Each half succeeds or fails
- * independently — `Promise.allSettled` semantics — so that an older broker
- * that has `/api/spawned` but not `/api/fleet-inventory` still contributes
- * the live worker names it can. Discarding the live map on an inventory
- * failure would recreate the exact defect this command exists to prevent
- * (the local machine's agents vanishing because one endpoint is unavailable).
- */
-export interface LocalBrokerMapsResult {
-  liveAgents?: ListAgent[];
-  liveError?: string;
-  inventoryAgents?: FleetInventoryAgent[];
-  inventoryError?: string;
-}
-
-export async function readLocalBrokerMaps(client: HarnessDriverClient): Promise<LocalBrokerMapsResult> {
-  const [liveOutcome, inventoryOutcome] = await Promise.allSettled([
-    client.listAgents(),
-    client.listFleetInventory(),
-  ]);
-  const result: LocalBrokerMapsResult = {};
-  if (liveOutcome.status === 'fulfilled') {
-    result.liveAgents = liveOutcome.value;
-  } else {
-    result.liveError = errorMessage(liveOutcome.reason);
-  }
-  if (inventoryOutcome.status === 'fulfilled') {
-    result.inventoryAgents = inventoryOutcome.value.agents;
-  } else {
-    result.inventoryError = errorMessage(inventoryOutcome.reason);
-  }
-  return result;
-}
-
-function errorMessage(reason: unknown): string {
-  return reason instanceof Error ? reason.message : String(reason);
 }
