@@ -189,6 +189,9 @@ struct Control {
 const CONTROL_LINE_LIMIT: usize = 131_072;
 /// How long a control client has to send its request line.
 const CONTROL_READ_BUDGET: Duration = Duration::from_secs(1);
+/// How many control clients may wait on their request line at once; the
+/// relay sends one request at a time, so more are dropped.
+const CONTROL_PENDING_LIMIT: usize = 64;
 
 /// Accepts control connections and answers every request whose line has
 /// arrived, without waiting on any client: a client that has not written
@@ -208,6 +211,9 @@ fn accept_control(
         // macOS hands an accepted socket the listener's non-blocking mode and
         // Linux does not; set it either way, since reads below must not wait.
         stream.set_nonblocking(true)?;
+        if pending.len() >= CONTROL_PENDING_LIMIT {
+            continue;
+        }
         pending.push(Control {
             stream,
             line: Vec::new(),
@@ -218,9 +224,14 @@ fn accept_control(
     let mut stop = false;
     let mut index = 0;
     while index < pending.len() {
+        let expired = now >= pending[index].deadline;
         match read_control(&mut pending[index]) {
-            ControlRead::Waiting if now < pending[index].deadline => index += 1,
+            ControlRead::Waiting if !expired => index += 1,
             ControlRead::Waiting | ControlRead::Dropped => {
+                pending.swap_remove(index);
+            }
+            // A line that came after the budget is dropped like silence.
+            ControlRead::Line(_) if expired => {
                 pending.swap_remove(index);
             }
             ControlRead::Line(line) => {
@@ -258,6 +269,9 @@ fn read_control(control: &mut Control) -> ControlRead {
             Ok(read) => {
                 control.line.extend_from_slice(&chunk[..read]);
                 if let Some(end) = control.line.iter().position(|b| *b == b'\n') {
+                    if end > CONTROL_LINE_LIMIT {
+                        return ControlRead::Dropped;
+                    }
                     control.line.truncate(end);
                     return ControlRead::Line(std::mem::take(&mut control.line));
                 }
