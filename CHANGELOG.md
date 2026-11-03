@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- `@agent-relay/policy` and `@agent-relay/brand` are no longer published; nothing in Relay used them.
+- `@agent-relay/policy` and `@agent-relay/brand` are no longer published; existing versions stay installable on npm.
 
 ### Fixed
 
