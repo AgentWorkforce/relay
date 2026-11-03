@@ -13,12 +13,6 @@
     "packages/sdk": {
       "project": ["src/**/*.ts"]
     },
-    "packages/harness-driver": {
-      "project": ["src/**/*.ts"]
-    },
-    "packages/harnesses": {
-      "project": ["src/**/*.ts"]
-    },
     "packages/config": {
       "project": ["src/**/*.ts"]
     },
@@ -28,14 +22,5 @@
   },
   "ignore": ["**/*.test.ts", "scripts/**", "plugins/**", "tests/**", "packages/openclaw/bridge/**"],
   "ignoreDependencies": ["turbo"],
-  "ignoreWorkspaces": [
-    "packages/brand",
-    "packages/broker-darwin-arm64",
-    "packages/broker-darwin-x64",
-    "packages/broker-linux-arm64",
-    "packages/broker-linux-x64",
-    "packages/broker-win32-x64",
-    "packages/cloud",
-    "packages/policy"
-  ]
+  "ignoreWorkspaces": ["packages/brand", "packages/cloud", "packages/policy"]
 }

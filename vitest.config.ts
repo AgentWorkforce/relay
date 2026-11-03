@@ -15,11 +15,8 @@ const workspacePackages = [
   'cloud',
   'config',
   'events',
-  'fleet',
   'gateway',
   'github-primitive',
-  'harness-driver',
-  'harnesses',
   'hooks',
   'integration-prompts',
   'memory',
@@ -65,8 +62,6 @@ export default defineConfig({
     include: [
       '.agentworkforce/agents/**/*.test.ts',
       'tests/fixtures/**/*.test.ts',
-      'tests/integration/ai-sdk-harnesses/**/*.test.ts',
-      'tests/integration/broker/evals/**/*.unit.test.ts',
       'packages/**/src/**/*.test.ts',
       'packages/**/src/**/*.test.tsx',
       'packages/**/tests/**/*.test.ts',
@@ -86,7 +81,7 @@ export default defineConfig({
         '**/*.test.tsx',
         '**/dist/**',
         'packages/sdk-swift/.build/**',
-        'packages/sdk/**', // SDK uses Node.js test runner in tests/integration/broker
+        'packages/sdk/**', // SDK uses the Node.js test runner
         // Transitively loaded via barrel re-exports but not exercised by the
         // root test suite. Previously these resolved to dist/*.js and were
         // excluded via **/dist/**; the src alias migration started reporting
