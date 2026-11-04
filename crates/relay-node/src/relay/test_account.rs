@@ -58,7 +58,11 @@ impl AccountPlugin for TestAccount {
         Box::pin(async { None })
     }
 
-    fn note_identity_sync(&self, _core: &Core, _succeeded: Option<bool>) {}
+    fn agents_changed(&self, _core: &Arc<Core>) {}
+
+    fn mcp_linked_at(&self, _agent_id: &str) -> Option<String> {
+        None
+    }
 
     fn cloud_identity_sync(&self, _core: &Core) -> Value {
         Value::Null
@@ -66,12 +70,6 @@ impl AccountPlugin for TestAccount {
 
     fn refresh_tools(&self, _core: &Core) -> Vec<String> {
         Vec::new()
-    }
-
-    fn native_capability_changed(&self, _core: &Arc<Core>) {}
-
-    fn attestation_key(&self, _core: &Core) -> Option<Value> {
-        None
     }
 
     fn session_route<'a>(

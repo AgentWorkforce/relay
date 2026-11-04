@@ -8,8 +8,7 @@ pub(super) async fn run(core: Arc<Core>) {
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticks.tick().await;
-        // The workspace, then the hosted MCP links that pick reply hints.
-        core.refresh_pass().await;
+        core.refresh_workspace().await;
         if let Some(account) = &core.plugins.account {
             account.maintain().await;
         }

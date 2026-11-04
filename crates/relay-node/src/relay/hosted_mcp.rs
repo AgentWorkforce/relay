@@ -79,7 +79,11 @@ impl Core {
         }) else {
             return McpAccess::Unknown;
         };
-        let linked = self.mcp_linked_at(&agent_id);
+        let linked = self
+            .plugins
+            .account
+            .as_ref()
+            .and_then(|account| account.mcp_linked_at(&agent_id));
         if linked_after(&registered_at, Some(SERVER_NAME), linked.as_deref()).is_some() {
             return McpAccess::Declared;
         }

@@ -242,6 +242,19 @@ fn is_name_taken(error: &relaycast::RelayError) -> bool {
 }
 
 impl Core {
+    /// The agents or the sign-in changed: the spawn node is claimed for them,
+    /// the people in the workspace are trusted like the person, and the
+    /// account hears of it.
+    pub fn agents_changed(&self) {
+        self.request_spawn_claim();
+        if let Some(trusted) = &self.plugins.trusted {
+            trusted.refresh_soon();
+        }
+        if let (Some(account), Some(core)) = (&self.plugins.account, self.arc()) {
+            account.agents_changed(&core);
+        }
+    }
+
     /// This computer's name as agent metadata shows it.
     pub(crate) fn host_label(&self) -> String {
         let host = self.config.host_name.trim_end_matches('.');
@@ -292,7 +305,7 @@ impl Core {
     /// Account changes never transfer ownership of an existing agent. Older
     /// registrations with no binding remain unknown until re-registered.
     pub async fn credit_agents(&self) {
-        self.request_desktop_identity_sync();
+        self.agents_changed();
     }
 
     fn metadata(
@@ -1282,7 +1295,7 @@ impl Core {
         self.sync_push(self.forget_stale_push(targets)).await;
         let error = self.store.error();
         self.hub.update(|status| status.agents.store_error = error);
-        self.request_desktop_identity_sync();
+        self.agents_changed();
         self.sync_spawn_node().await;
     }
 

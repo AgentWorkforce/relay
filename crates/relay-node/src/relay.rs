@@ -32,7 +32,7 @@
 //! | `files` | Message attachments: saving what a delivery carries, uploading what a session sends |
 //! | `inject` | The `Injector` trait: the session side of delivery |
 //! | `sessions` | The `SessionDirectory` trait: sessions on this computer |
-//! | `cloud_session` | The `CloudAccess` trait; Cloud session calls: refresh, handoff exchange, revoke, whoami, workspace resolve; where the session is kept |
+//! | `cloud_session` | The `CloudAccess` trait; session refresh and `whoami` |
 //! | `cloud_http` | One redirect-free, bounded JSON request to Cloud |
 //! | `cloud_login` | Device sign-in, for Relay Connect hosts (`connect create`); an account (sign-in, its bridge methods) is a plugin the core is built with (`daemon::plugins::AccountPlugin`) |
 //! | `probe_alias` | The space-free link to the probe that Codex and Claude Code rules and reply hints name while their hooks are on |
@@ -83,7 +83,6 @@ pub mod contract;
 pub mod cursor_cli;
 pub mod daemon;
 pub mod delivery;
-pub mod desktop_identity;
 pub(crate) mod detach;
 pub mod devin;
 pub mod devin_cloud;

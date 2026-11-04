@@ -39,17 +39,16 @@ pub trait AccountPlugin: Send + Sync + 'static {
         refused: &'a Workspace,
         workspace_id: &'a str,
     ) -> BoxFuture<'a, Option<(Workspace, WorkspaceInfo)>>;
-    /// Records how the desktop identity sync went: `None` when it was skipped.
-    fn note_identity_sync(&self, core: &Core, succeeded: Option<bool>);
+    /// The agents or the sign-in changed.
+    fn agents_changed(&self, core: &Arc<Core>);
+    /// When a hosted MCP session linked itself to this agent, as Cloud last
+    /// reported it.
+    fn mcp_linked_at(&self, agent_id: &str) -> Option<String>;
     /// The identity sync state `/setup/status` reports.
     fn cloud_identity_sync(&self, core: &Core) -> Value;
     /// Refreshes what the account set up for this computer's tools, and
     /// says what went wrong. Runs off the async threads.
     fn refresh_tools(&self, core: &Core) -> Vec<String>;
-    /// Cloud's answer to an identity sync changed what it supports.
-    fn native_capability_changed(&self, core: &Arc<Core>);
-    /// This installation's key for Cloud to verify proofs with, when it has one.
-    fn attestation_key(&self, core: &Core) -> Option<Value>;
     /// Answers a session-socket hook route this account owns.
     fn session_route<'a>(
         &'a self,

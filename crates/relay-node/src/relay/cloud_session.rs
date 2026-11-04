@@ -1,22 +1,16 @@
 //! Access to Agent Relay Cloud with the signed-in person's own session.
 //!
 //! Messaging, people and integrations only name the API route they need,
-//! through a `CloudAccess`; `relay::account` is the daemon's, `SignedOut`
-//! answers `not_signed_in` everywhere. This module holds the Cloud calls the
-//! session itself is made of: refresh, the browser handoff exchange, revoke,
-//! `whoami`, the workspace resolve, and where the session is kept.
-//!
-//! The session is kept in the agent store's `cloudSession`, on both
-//! platforms.
+//! through a `CloudAccess`; a build's account implements it, and `SignedOut`
+//! answers `not_signed_in` everywhere. This module holds what the core itself
+//! calls: session refresh and `whoami`.
 
 use crate::relay::cloud_http::{self, Answer};
 use crate::relay::contract::plan::{parse_workspace_plan, WorkspacePlan};
-use crate::relay::store::{CloudSession, CloudWorkspace};
-use crate::relay::workspace::{is_workspace_key, validated_base_url, Secret, DEFAULT_BASE_URL};
+use crate::relay::store::CloudSession;
+use crate::relay::workspace::{validated_base_url, Secret};
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// The signed-in account.
@@ -217,7 +211,7 @@ fn string(value: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn status_error(answer: &Answer) -> CloudError {
+pub fn status_error(answer: &Answer) -> CloudError {
     if answer.status == 401 {
         return CloudError::Rejected;
     }
@@ -292,62 +286,6 @@ pub async fn refresh(session: &CloudSession) -> Result<CloudSession, CloudError>
             .or(session.refresh_token_expires_at.clone()),
         site_url: site,
     })
-}
-
-/// Trades the browser sign-in's short-lived handoff token for a renewable
-/// session. The handoff arrives on a loopback redirect, so Cloud keeps the
-/// refresh token out of it; `code_verifier` proves this core opened that
-/// sign-in (it matches the challenge on the login URL). Single use.
-pub async fn exchange_handoff(
-    handoff: &CloudSession,
-    code_verifier: &Secret,
-) -> Result<CloudSession, CloudError> {
-    let site = validated_base_url(&handoff.site_url).ok_or(CloudError::Rejected)?;
-    let answer = cloud_http::send(
-        "POST",
-        format!("{}/auth/desktop/session", api_base(&site)),
-        Some(handoff.access_token.expose().to_string()),
-        Some(json!({ "codeVerifier": code_verifier.expose() })),
-        Duration::from_secs(10),
-    )
-    .await
-    .map_err(|_| CloudError::Unreachable)?;
-    if !answer.ok() {
-        return Err(status_error(&answer));
-    }
-    let body = answer.inner();
-    let (Some(access), Some(refresh)) = (string(body, "accessToken"), string(body, "refreshToken"))
-    else {
-        return Err(CloudError::Status {
-            status: answer.status,
-            message: Some("Agent Relay did not return a renewable session.".into()),
-        });
-    };
-    Ok(CloudSession {
-        access_token: Secret::new(access),
-        access_token_expires_at: string(body, "accessTokenExpiresAt"),
-        refresh_token: Some(Secret::new(refresh)),
-        refresh_token_expires_at: string(body, "refreshTokenExpiresAt"),
-        site_url: site,
-    })
-}
-
-/// Revokes a refresh token so it cannot be used again. Best effort.
-pub async fn revoke(session: &CloudSession) {
-    let (Some(refresh), Some(site)) = (
-        session.refresh_token.as_ref(),
-        validated_base_url(&session.site_url),
-    ) else {
-        return;
-    };
-    let _ = cloud_http::send(
-        "POST",
-        format!("{}/auth/token/revoke", api_base(&site)),
-        None,
-        Some(json!({ "token": refresh.expose() })),
-        Duration::from_secs(10),
-    )
-    .await;
 }
 
 /// Who a Cloud bearer belongs to. `current_workspace_id` is Cloud's current
@@ -447,131 +385,9 @@ pub fn identity_from_whoami(value: Value) -> Result<Identity, CloudError> {
     })
 }
 
-/// Whether `id` is an Agent Relay workspace id (a UUID), the only form the
-/// resolve route takes.
-pub fn is_workspace_uuid(id: &str) -> bool {
-    let groups: Vec<&str> = id.split('-').collect();
-    groups.iter().map(|g| g.len()).eq([8, 4, 4, 4, 12])
-        && groups
-            .iter()
-            .all(|g| g.bytes().all(|b| b.is_ascii_hexdigit()))
-}
-
-/// Why the account's workspace could not be resolved.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ResolveError {
-    /// Not an Agent Relay workspace id.
-    InvalidWorkspace,
-    /// The workspace shares no Relaycast key with this account.
-    NoKey,
-    Cloud(CloudError),
-}
-
-impl std::fmt::Display for ResolveError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ResolveError::InvalidWorkspace => f.write_str("That is not an Agent Relay workspace."),
-            ResolveError::NoKey => f.write_str(
-                "Your Agent Relay workspace did not share an Agent Relay key with this account. Ask a workspace owner, or paste a key.",
-            ),
-            ResolveError::Cloud(error) => error.fmt(f),
-        }
-    }
-}
-
-/// The Relaycast workspace behind the account's Agent Relay workspace:
-/// `GET /workspaces/{id}/resolve`. Only a workspace key and a validated
-/// origin are accepted.
-pub async fn resolve_workspace(
-    site_url: &str,
-    bearer: &Secret,
-    workspace_id: &str,
-) -> Result<CloudWorkspace, ResolveError> {
-    if !is_workspace_uuid(workspace_id) {
-        return Err(ResolveError::InvalidWorkspace);
-    }
-    let id = workspace_id.to_ascii_lowercase();
-    let value = api(
-        site_url,
-        bearer,
-        "GET",
-        &format!("/workspaces/{id}/resolve"),
-        None,
-    )
-    .await
-    .map_err(ResolveError::Cloud)?;
-    decode_resolution(&value, &id)
-}
-
-mod recovery;
-pub use recovery::resolve_workspace_for_recovery;
-
-/// Reads a resolve answer, bare or in a `data` envelope.
-pub fn decode_resolution(
-    value: &Value,
-    workspace_id: &str,
-) -> Result<CloudWorkspace, ResolveError> {
-    let value = match value.get("data") {
-        Some(data) if data.is_object() => data,
-        _ => value,
-    };
-    let key = value["relaycastApiKey"]
-        .as_str()
-        .map(str::trim)
-        .filter(|key| is_workspace_key(key))
-        .ok_or(ResolveError::NoKey)?;
-    let base_url = value["urls"]["relaycastUrl"]
-        .as_str()
-        .and_then(validated_base_url)
-        .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
-    Ok(CloudWorkspace {
-        key: Secret::new(key),
-        base_url,
-        workspace_id: string(value, "relaycastWorkspaceId")
-            .or(string(value, "workspaceId"))
-            .or(Some(workspace_id.to_string())),
-        account_workspace_id: Some(workspace_id.to_string()),
-        name: string(value, "name"),
-        relayfile_workspace_id: string(value, "relayfileWorkspaceId"),
-    })
-}
-
-/// Linux's former `cloud-session.json`, in the format `cloud_auth.py` wrote:
-/// `{"apiUrl", "accessToken", "accessTokenExpiresAt", "refreshToken",
-/// "refreshTokenExpiresAt"}`. Read once, to import it into the store.
-pub struct SessionFile {
-    pub path: PathBuf,
-}
-
-impl SessionFile {
-    pub fn new(app_data_dir: &Path) -> SessionFile {
-        SessionFile {
-            path: app_data_dir.join("cloud-session.json"),
-        }
-    }
-
-    pub fn load(&self) -> Option<CloudSession> {
-        let value: Value = serde_json::from_slice(&fs::read(&self.path).ok()?).ok()?;
-        let api = value["apiUrl"].as_str()?.trim().trim_end_matches('/');
-        let site = validated_base_url(api.strip_suffix("/cloud")?)?;
-        Some(CloudSession {
-            access_token: Secret::new(string(&value, "accessToken")?),
-            access_token_expires_at: string(&value, "accessTokenExpiresAt"),
-            refresh_token: string(&value, "refreshToken").map(Secret::new),
-            refresh_token_expires_at: string(&value, "refreshTokenExpiresAt"),
-            site_url: site,
-        })
-    }
-
-    pub fn remove(&self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn whoami_reads_the_workspace_plan_and_tolerates_a_cloud_without_one() {
         // Cloud's route keys the workspace `currentWorkspace` (camelCase) with
@@ -700,124 +516,4 @@ mod tests {
             now
         ));
     }
-
-    #[test]
-    fn a_resolution_takes_only_a_workspace_key_and_a_valid_origin() {
-        let id = "0f8fad5b-d9cb-469f-a165-70867728950e";
-        let resolved = decode_resolution(
-            &json!({"data": {"relaycastApiKey": "rk_live_abcdefgh1234", "name": "Acme",
-                "relaycastWorkspaceId": "rw_1", "relayfileWorkspaceId": "rf_1",
-                "urls": {"relaycastUrl": "https://cast.agentrelay.com/"}}}),
-            id,
-        )
-        .unwrap();
-        assert_eq!(resolved.key.expose(), "rk_live_abcdefgh1234");
-        assert_eq!(resolved.base_url, "https://cast.agentrelay.com");
-        assert_eq!(resolved.workspace_id.as_deref(), Some("rw_1"));
-        assert_eq!(resolved.account_workspace_id.as_deref(), Some(id));
-        assert_eq!(resolved.relayfile_workspace_id.as_deref(), Some("rf_1"));
-        assert_eq!(resolved.name.as_deref(), Some("Acme"));
-
-        let untrusted = decode_resolution(
-            &json!({"relaycastApiKey": "rk_live_abcdefgh1234", "urls": {"relaycastUrl": "http://evil.example"}}),
-            id,
-        )
-        .unwrap();
-        assert_eq!(untrusted.base_url, DEFAULT_BASE_URL);
-        assert_eq!(untrusted.workspace_id.as_deref(), Some(id));
-        assert_eq!(
-            decode_resolution(&json!({"relaycastApiKey": "at_live_agenttoken"}), id),
-            Err(ResolveError::NoKey)
-        );
-        assert_eq!(decode_resolution(&json!({}), id), Err(ResolveError::NoKey));
-    }
-
-    #[test]
-    fn only_uuids_are_workspace_ids() {
-        assert!(is_workspace_uuid("0f8fad5b-d9cb-469f-a165-70867728950e"));
-        assert!(is_workspace_uuid("0F8FAD5B-D9CB-469F-A165-70867728950E"));
-        assert!(!is_workspace_uuid("acme"));
-        assert!(!is_workspace_uuid("../../members"));
-        assert!(!is_workspace_uuid("0f8fad5b-d9cb-469f-a165-70867728950"));
-    }
-
-    #[cfg(not(feature = "relay-cli"))]
-    #[test]
-    fn without_relay_cli_a_resolved_armadillo_key_is_refused_before_any_origin() {
-        let key = "ar_ws_0123456789abcdef";
-        for answer in [
-            json!({"relaycastApiKey": key}),
-            json!({"relaycastApiKey": key,
-                   "urls": {"relaycastUrl": "https://armadillo.agentrelay.com"}}),
-        ] {
-            assert_eq!(
-                decode_resolution(&answer, "workspace"),
-                Err(ResolveError::NoKey)
-            );
-        }
-    }
-
-    #[cfg(feature = "relay-cli")]
-    #[test]
-    fn a_resolved_armadillo_key_keeps_the_origin_cloud_names() {
-        let found = decode_resolution(
-            &json!({"relaycastApiKey": "ar_ws_0123456789abcdef",
-                    "urls": {"relaycastUrl": "https://armadillo.agentrelay.com"}}),
-            "workspace",
-        )
-        .unwrap();
-        assert_eq!(found.base_url, "https://armadillo.agentrelay.com");
-    }
-
-    #[test]
-    fn the_former_linux_session_file_is_read_in_cloud_auth_s_format() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = SessionFile::new(dir.path());
-        assert!(file.load().is_none());
-        fs::write(
-            &file.path,
-            json!({"apiUrl": "https://agentrelay.com/cloud/", "accessToken": "access",
-                   "accessTokenExpiresAt": "2026-09-30T11:00:00Z", "refreshToken": "refresh"})
-            .to_string(),
-        )
-        .unwrap();
-        let kept = file.load().unwrap();
-        assert_eq!(kept.site_url, "https://agentrelay.com");
-        assert_eq!(kept.refresh_token.unwrap().expose(), "refresh");
-        file.remove();
-        assert!(!file.path.exists());
-    }
-}
-
-/// Membership choices for the native welcome screen, before any setup runs.
-pub async fn desktop_workspaces(
-    site: &str,
-    bearer: &Secret,
-) -> Result<Vec<crate::relay::state::WorkspaceChoice>, CloudError> {
-    let value = api(site, bearer, "GET", "/auth/desktop/workspaces", None).await?;
-    serde_json::from_value(value["workspaces"].clone()).map_err(|_| CloudError::Unreachable)
-}
-
-pub async fn select_desktop_workspace(
-    site: &str,
-    bearer: &Secret,
-    workspace: &str,
-) -> Result<CloudSession, CloudError> {
-    let value = api(
-        site,
-        bearer,
-        "POST",
-        "/auth/desktop/workspaces",
-        Some(json!({"workspaceId": workspace})),
-    )
-    .await?;
-    Ok(CloudSession {
-        access_token: Secret::new(string(&value, "accessToken").ok_or(CloudError::Unreachable)?),
-        access_token_expires_at: string(&value, "accessTokenExpiresAt"),
-        refresh_token: Some(Secret::new(
-            string(&value, "refreshToken").ok_or(CloudError::Unreachable)?,
-        )),
-        refresh_token_expires_at: string(&value, "refreshTokenExpiresAt"),
-        site_url: site.to_string(),
-    })
 }

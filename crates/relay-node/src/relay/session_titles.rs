@@ -182,7 +182,6 @@ fn publish_title(core: &Core, source: &str, id: &str, title: &str) {
         core.hub.invalidated(Listing::Agents);
     }
     core.hub.invalidated(Listing::Sessions);
-    core.hub.invalidated(Listing::Uploader);
 }
 
 fn patch_snapshot(

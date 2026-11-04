@@ -206,9 +206,6 @@ pub struct Core {
     /// (`apply_integration_defaults`). Off for a core the relay CLI manages
     /// (`--cli-managed`): it turns on only the tools the person chose.
     pub(crate) integration_defaults: std::sync::atomic::AtomicBool,
-    /// Serializes credential-bearing Cloud reconciliations. A sign-out or
-    /// workspace clear queued behind an upsert is therefore always last.
-    pub(crate) desktop_identity_sync: crate::relay::desktop_identity::DesktopIdentitySync,
     /// The spawn node, while spawns are on (`relay::spawn`).
     pub(crate) spawn_node: tokio::sync::Mutex<Option<crate::relay::spawn::node::SpawnNode>>,
     pub(crate) me: std::sync::Weak<Core>,
@@ -312,7 +309,6 @@ impl Core {
             messaging: Mutex::default(),
             integration_lock: tokio::sync::Mutex::new(()),
             integration_defaults: std::sync::atomic::AtomicBool::new(true),
-            desktop_identity_sync: Default::default(),
             spawn_node: tokio::sync::Mutex::new(None),
             me: me.clone(),
         });
