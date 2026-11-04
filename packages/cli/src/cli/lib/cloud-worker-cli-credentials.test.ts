@@ -348,7 +348,12 @@ describe('cloud worker CLI logins', () => {
     try {
       fs.symlinkSync(outside, path.join(runDir, '.cli-home'));
       const cp = controlPlane([codexFile]);
-      const materialized = await materializeCliCredentials({ worker, credentials, runDir, fetchImpl: cp.fetchImpl });
+      const materialized = await materializeCliCredentials({
+        worker,
+        credentials,
+        runDir,
+        fetchImpl: cp.fetchImpl,
+      });
       expect(fs.readdirSync(outside)).toEqual([]);
       expect(fs.lstatSync(path.join(runDir, '.cli-home')).isSymbolicLink()).toBe(false);
       expect(fs.readFileSync(materialized.files[0]!.filePath, 'utf-8')).toBe(CODEX);

@@ -112,7 +112,8 @@ async function freshLoginHome(runDir: string): Promise<string> {
   await fsp.mkdir(home, { mode: 0o700 });
   await fsp.chmod(home, 0o700).catch(() => undefined);
   const stat = await fsp.lstat(home);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Could not create the CLI login directory');
+  if (!stat.isDirectory() || stat.isSymbolicLink())
+    throw new Error('Could not create the CLI login directory');
   return home;
 }
 

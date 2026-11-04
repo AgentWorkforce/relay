@@ -286,7 +286,7 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
       if (cliCredentials) {
         const loginHome = materialized?.home ?? path.join(runDir, '.cli-home');
         await fsp.rm(loginHome, { recursive: true, force: true }).catch(() => {
-          deps.error('[cloud-worker] could not remove the run\'s CLI login directory; delete it manually');
+          deps.error("[cloud-worker] could not remove the run's CLI login directory; delete it manually");
         });
       }
       if (!keepRunDir) {
