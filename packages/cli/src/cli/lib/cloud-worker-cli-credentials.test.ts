@@ -386,6 +386,7 @@ describe('cloud worker CLI logins', () => {
     const runDir = tmp('cli-creds-');
     const outside = tmp('cli-creds-outside-');
     try {
+      fs.mkdirSync(path.dirname(cliLoginHome(runDir)), { recursive: true });
       fs.symlinkSync(outside, cliLoginHome(runDir));
       const cp = controlPlane([codexFile]);
       const materialized = await materializeCliCredentials({
