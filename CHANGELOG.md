@@ -13,13 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The core's commands have no `relay` word (`agent-relay-node serve`, `agent-relay-node call status.get`). The hooks, Codex rules and Claude permission rules it installs use that form, and setup replaces the earlier `… relay …` entries.
 - The core is the messaging runtime: session discovery, delivery, spawning, harness setup and the bridge. Session history, uploads, Agent Relay Cloud sign-in and the Cloud provider methods are the desktop app's.
 
-### Fixed
-
-- `agent-relay cloud worker` runs flows with `@relayflows/cli` 1.1.9, whose core uses the same `@agent-relay` 16 packages and broker as the CLI instead of bundling 12.4.1 ones.
-
 ### Removed
 
 - The account, uploader, tools, telemetry, chat, contractor, Cloud provider and `sessions.transcript` bridge methods: a core outside the desktop app answers them `method_not_found`.
+
+### Fixed
+
+- `agent-relay cloud worker` no longer fails to start flows against a self-hosted Relay with `failed to initialize relaycast session`: flows no longer run on an old bundled broker.
 
 ### Breaking Changes
 
