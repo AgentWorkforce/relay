@@ -104,7 +104,9 @@ pub trait NodeHost: Send + Sync + 'static {
     /// The agents this node hosts that run now.
     fn inventory(&self, node: &NodeInfo) -> Vec<InventoryAgent>;
     /// A `deliver` frame for one of them.
-    fn deliver(&self, agent: &str, frame: Value);
+    /// Hands a delivery to its agent; true when this core holds that agent
+    /// and queued the delivery for it.
+    fn deliver(&self, agent: &str, frame: Value) -> bool;
     fn state(&self, status: SpawnStatus);
     /// What to advertise in the next frame: the configured facts and the
     /// live ones measured now.
@@ -144,6 +146,10 @@ pub struct NodeLink {
     /// (its register reply named `wire::ERROR_DETAILS_CAPABILITY` as the
     /// contract); learned again on every connection.
     pub error_details: bool,
+    /// This connection's Relaycast takes `delivery.accepted` (its register
+    /// reply listed `wire::DELIVERY_ACCEPTED_CAPABILITY`); learned again
+    /// on every connection, since a reconnect may land on another engine.
+    pub delivery_accepted: bool,
     outgoing: mpsc::UnboundedSender<Value>,
     pending: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
     results: Arc<Mutex<Results>>,
@@ -175,6 +181,7 @@ impl NodeLink {
         let link = NodeLink {
             node,
             error_details: false,
+            delivery_accepted: false,
             outgoing,
             pending: Arc::default(),
             results: Arc::default(),
@@ -424,18 +431,16 @@ async fn connect_once(
             match sdk_gaps::next_frame(&mut socket).await {
                 Some(Ok(frame)) => {
                     if let Some(answer) = wire::reply_to(&frame, &register_id) {
-                        return answer
-                            .map(wire::error_details_agreed)
-                            .map_err(|refusal| refusal.message);
+                        return answer.map(wire::agreed).map_err(|refusal| refusal.message);
                     }
                 }
                 _ => return Err("Agent Relay closed the spawn node's connection.".to_string()),
             }
         }
     });
-    let error_details = tokio::select! {
+    let agreed = tokio::select! {
         result = registered => match result {
-            Ok(Ok(error_details)) => error_details,
+            Ok(Ok(agreed)) => agreed,
             Ok(Err(reason)) => return Ended::Closed(reason),
             Err(_) => return Ended::Closed("Agent Relay did not accept the spawn node in time.".into()),
         },
@@ -459,7 +464,8 @@ async fn connect_once(
     let (outgoing, mut queued) = mpsc::unbounded_channel();
     let link = NodeLink {
         node: node.clone(),
-        error_details,
+        error_details: agreed.error_details,
+        delivery_accepted: agreed.delivery_accepted,
         outgoing,
         pending: Arc::default(),
         results,
@@ -593,7 +599,15 @@ fn note_refusals(host: &dyn NodeHost, link: &NodeLink) {
 /// action to answer on the link.
 fn dispatch(host: &dyn NodeHost, link: &NodeLink, frame: Value) {
     if let Some(agent) = wire::delivery_agent(&frame) {
-        host.deliver(agent, frame.clone());
+        // The receipt goes out the moment the delivery is queued here for
+        // its agent, before anything handles it, and only to a Relaycast
+        // that takes it (the register reply listed the frame). A delivery
+        // for an agent this core does not hold is nobody's to accept.
+        if host.deliver(agent, frame.clone()) && link.delivery_accepted {
+            if let Some(receipt) = wire::delivery_accepted(&frame) {
+                link.send(receipt);
+            }
+        }
         return;
     }
     match wire::invoke(&frame) {
@@ -958,6 +972,7 @@ mod tests {
                 node_name: "mac".into(),
             },
             error_details: false,
+            delivery_accepted: false,
             outgoing,
             pending: Arc::default(),
             results: Arc::default(),

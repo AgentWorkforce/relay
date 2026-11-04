@@ -695,7 +695,9 @@ impl NodeHost for Recording {
     fn inventory(&self, _node: &NodeInfo) -> Vec<InventoryAgent> {
         Vec::new()
     }
-    fn deliver(&self, _agent: &str, _frame: Value) {}
+    fn deliver(&self, _agent: &str, _frame: Value) -> bool {
+        false
+    }
     fn state(&self, status: SpawnStatus) {
         self.states.lock().unwrap().push(status);
     }
