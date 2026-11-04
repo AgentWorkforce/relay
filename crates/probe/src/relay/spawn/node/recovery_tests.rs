@@ -183,7 +183,7 @@ async fn a_queued_delivery_is_accepted_at_once_when_relaycast_takes_the_receipt(
     assert_eq!(
         sent.try_recv().unwrap(),
         json!({"v": 1, "type": "delivery.accepted", "agent": "bob",
-            "delivery_id": "del_1", "up_to_seq": 3})
+            "delivery_id": "del_1"})
     );
     // A delivery that names nothing to accept is queued without a receipt.
     dispatch(&host, &link, json!({"type": "deliver", "agent": "bob"}));

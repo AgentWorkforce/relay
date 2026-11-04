@@ -1089,7 +1089,7 @@ mod tests {
             delivery_accepted(&json!({"type": "deliver", "agent": "bob",
                 "delivery_id": "del_1", "seq": 42, "msg_id": "m", "payload": {}})),
             Some(json!({"v": 1, "type": "delivery.accepted", "agent": "bob",
-                "delivery_id": "del_1", "up_to_seq": 42}))
+                "delivery_id": "del_1"}))
         );
         assert_eq!(
             delivery_accepted(&json!({"type": "deliver", "agent": "bob", "delivery_id": "del_1"})),
@@ -1097,12 +1097,9 @@ mod tests {
                 json!({"v": 1, "type": "delivery.accepted", "agent": "bob", "delivery_id": "del_1"})
             )
         );
-        assert_eq!(
-            delivery_accepted(&json!({"type": "deliver", "agent": "bob", "seq": 7})),
-            Some(json!({"v": 1, "type": "delivery.accepted", "agent": "bob", "up_to_seq": 7}))
-        );
         for frame in [
             json!({"type": "deliver", "agent": "bob"}),
+            json!({"type": "deliver", "agent": "bob", "seq": 7}),
             json!({"type": "deliver", "agent": "bob", "delivery_id": "", "seq": -1}),
             json!({"type": "action.invoke", "agent": "bob", "delivery_id": "del_1"}),
         ] {
