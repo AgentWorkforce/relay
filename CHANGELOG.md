@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [15.1.1] - 2026-11-03
 
 ### Fixed
+- `agent-relay-probe`: every build accepts an `ar_ws_…` workspace key from Cloud's workspace resolve, not only the `relay-cli` build, so a Desktop signs in to a self-hosted Relaycast on durable actors.
 
 - GitLab event listeners work in both npm and standalone Relay 15.1 installs.
 - `f.gitlab` helpers read and write projects in nested GitLab groups.
