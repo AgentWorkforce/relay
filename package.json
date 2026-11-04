@@ -1,6 +1,6 @@
 {
   "name": "@agent-relay/monorepo",
-  "version": "15.1.1",
+  "version": "16.0.0",
   "private": true,
   "description": "Agent Relay monorepo",
   "type": "module",
@@ -141,7 +141,7 @@
     "@relaycast/sdk": "^8.0.7",
     "@relayfile/adapter-github": "0.5.9",
     "@relayfile/relay-helpers": "^0.4.6",
-    "@relayflows/sdk": "2.0.60",
+    "@relayflows/sdk": "2.0.61",
     "@testing-library/jest-dom": "^6.9.1",
     "@types/node": "^22.19.3",
     "@types/ssh2": "^1.15.5",
@@ -181,8 +181,8 @@
     "smol-toml": "^1.7.1",
     "tar": "^7.5.22",
     "@relayflows/sdk": {
-      "@agent-relay/sdk": "15.1.1",
-      "@agent-relay/harness-driver": "15.1.1"
+      "@agent-relay/sdk": "16.0.0",
+      "@agent-relay/harness-driver": "16.0.0"
     }
   }
 }

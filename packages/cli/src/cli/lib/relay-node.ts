@@ -26,7 +26,7 @@ import type { EnginePlatform } from './relaycast-engine-install.js';
 import { relaySkillRecordOf, type RelaySkillRecord } from './relay-skill.js';
 
 /** The core `relay init` installs. Pinned so every machine runs the same core. */
-export const RELAY_NODE_VERSION = '15.0.9';
+export const RELAY_NODE_VERSION = '16.0.0';
 /** Release tags of the core; distinct from the CLI's `v*` tags. */
 export const RELAY_NODE_TAG_PREFIX = 'relay-node-v';
 const RELEASE_BASE = 'https://github.com/AgentWorkforce/relay/releases/download';
