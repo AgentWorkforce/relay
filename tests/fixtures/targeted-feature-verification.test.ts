@@ -191,7 +191,7 @@ describe('targeted Flows v2 PR verification', () => {
 
   it('runs only the core lane on a pull request, whatever the change', () => {
     for (const file of [
-      'crates/probe/src/relay/delivery.rs',
+      'crates/relay-node/src/relay/delivery.rs',
       'packages/cli/src/cli/commands/init.ts',
       'crates/broker/src/main.rs',
       'packages/cli/src/cli/commands/fleet.ts',
@@ -206,12 +206,12 @@ describe('targeted Flows v2 PR verification', () => {
 
   it('routes core and init paths to the core lane without falling back', () => {
     for (const file of [
-      'crates/probe/src/relay/delivery.rs',
-      'crates/probe/src/relay/grok.rs',
-      'crates/probe/src/relay/cursor_cli/wait.rs',
-      'crates/probe/Cargo.toml',
+      'crates/relay-node/src/relay/delivery.rs',
+      'crates/relay-node/src/relay/grok.rs',
+      'crates/relay-node/src/relay/cursor_cli/wait.rs',
+      'crates/relay-node/Cargo.toml',
       'packages/cli/src/cli/commands/init.ts',
-      'packages/cli/src/cli/lib/probe-core.ts',
+      'packages/cli/src/cli/lib/relay-node.ts',
     ]) {
       const selected = prPlan([file]);
       expect(selected.mode, file).toBe('targeted');
@@ -220,7 +220,7 @@ describe('targeted Flows v2 PR verification', () => {
   });
 
   it('builds the core from source only for a change to the core', () => {
-    expect(setupIds(prPlan(['crates/probe/src/relay/delivery.rs']))).toContain('build-core-from-source');
+    expect(setupIds(prPlan(['crates/relay-node/src/relay/delivery.rs']))).toContain('build-core-from-source');
     expect(setupIds(prPlan(['packages/cli/src/cli/commands/init.ts']))).not.toContain(
       'build-core-from-source'
     );
@@ -230,7 +230,7 @@ describe('targeted Flows v2 PR verification', () => {
   });
 
   it('asks for Rust only when the core is built, in one shard', () => {
-    const shards = shardTargetedPlan(prPlan(['crates/probe/src/relay/delivery.rs']));
+    const shards = shardTargetedPlan(prPlan(['crates/relay-node/src/relay/delivery.rs']));
     expect(shards).toHaveLength(1);
     expect(
       [...shards[0].setup, ...shards[0].scenarios].some(

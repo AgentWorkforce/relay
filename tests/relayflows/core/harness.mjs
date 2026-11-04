@@ -26,7 +26,7 @@ const BRIDGE_VERSION = 2;
 function builtCore() {
   const configured = process.env.RELAY_CORE_BIN?.trim();
   if (configured) return path.resolve(configured);
-  const prepared = path.join(repoRoot, '.workflow-artifacts/core/agent-relay-probe');
+  const prepared = path.join(repoRoot, '.workflow-artifacts/core/agent-relay-node');
   return fs.existsSync(prepared) ? prepared : undefined;
 }
 
@@ -119,7 +119,7 @@ export class Sandbox {
       CI: '1',
     };
     const core = builtCore();
-    if (core) this.env.AGENT_RELAY_PROBE_PATH = core;
+    if (core) this.env.AGENT_RELAY_NODE_PATH = core;
   }
 
   path(...segments) {

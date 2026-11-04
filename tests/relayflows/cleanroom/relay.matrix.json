@@ -87,7 +87,7 @@
       "issueMatch": [
         "relay init",
         "core",
-        "agent-relay-probe",
+        "agent-relay-node",
         "injection",
         "cursor",
         "grok",
@@ -106,7 +106,7 @@
           "command": ["node", "tests/relayflows/core/prepare-core.mjs"],
           "timeoutSeconds": 540,
           "requiredCommands": ["cargo"],
-          "whenChanged": ["crates/probe/"]
+          "whenChanged": ["crates/relay-node/"]
         }
       ],
       "scenarios": [

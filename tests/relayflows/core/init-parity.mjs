@@ -18,7 +18,7 @@ const ROUTES = {
     written: (text) => {
       const settings = JSON.parse(text);
       assert.equal(settings.crossSessionInbound, 'accept');
-      assert.match(JSON.stringify(settings.hooks.SessionStart), /relay claude-session-hook/);
+      assert.match(JSON.stringify(settings.hooks.SessionStart), /claude-session-hook/);
     },
   },
   codex: {
@@ -28,7 +28,7 @@ const ROUTES = {
     written: (text) => {
       const { hooks } = JSON.parse(text);
       for (const event of ['PostToolUse', 'Stop', 'SessionStart']) {
-        assert.match(JSON.stringify(hooks[event]), /relay codex-stop-hook/);
+        assert.match(JSON.stringify(hooks[event]), /codex-stop-hook/);
       }
     },
   },
@@ -55,7 +55,7 @@ const ROUTES = {
     label: 'Devin',
     file: '.config/devin/config.json',
     settings: ['devin_direct_delivery', 'auto_activate'],
-    written: (text) => assert.ok(has('relay devin-hook')(text), text),
+    written: (text) => assert.ok(has('devin-hook')(text), text),
   },
   cursor: {
     label: 'Cursor',
@@ -68,21 +68,21 @@ const ROUTES = {
     settings: ['cursor_direct_delivery', 'auto_activate'],
     written: (text) => {
       const { hooks } = JSON.parse(text);
-      assert.match(JSON.stringify(hooks.stop), /relay cursor-hook/);
-      assert.match(JSON.stringify(hooks.postToolUse), /relay cursor-hook/);
+      assert.match(JSON.stringify(hooks.stop), /cursor-hook/);
+      assert.match(JSON.stringify(hooks.postToolUse), /cursor-hook/);
     },
   },
 };
 
 /** What `--uninstall` must leave no trace of, in a file that stays. */
 const LEFT_BEHIND = {
-  claude: /relay claude-session-hook|crossSessionInbound/,
-  codex: /relay codex-stop-hook/,
+  claude: /claude-session-hook|crossSessionInbound/,
+  codex: /codex-stop-hook/,
   opencode: /./,
   grok: /use_leader = true/,
   pi: /./,
-  devin: /relay devin-hook/,
-  cursor: /relay cursor-hook/,
+  devin: /devin-hook/,
+  cursor: /cursor-hook/,
 };
 
 for (const tool of TOOLS) {

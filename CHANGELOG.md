@@ -5,7 +5,27 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Major]
+
+### Changed
+
+- The core is now `agent-relay-node`: `relay init` installs it from `relay-node-v<version>` releases, and `AGENT_RELAY_NODE_PATH` points at a binary of your own.
+- The core's commands have no `relay` word (`agent-relay-node serve`, `agent-relay-node call status.get`). The hooks, Codex rules and Claude permission rules it installs use that form, and setup replaces the earlier `… relay …` entries.
+- The core is the messaging runtime: session discovery, delivery, spawning, harness setup and the bridge. Session history, uploads, Agent Relay Cloud sign-in and the Cloud provider methods are the desktop app's.
+
+### Removed
+
+- The account, uploader, tools, telemetry, chat, contractor, Cloud provider and `sessions.transcript` bridge methods: a core outside the desktop app answers them `method_not_found`.
+
+### Breaking Changes
+
+- `agent-relay-probe` is now `agent-relay-node`, without the `relay` subcommand: `agent-relay-probe relay call status.get` is `agent-relay-node call status.get`. `AGENT_RELAY_PROBE_PATH` is no longer read.
+- `@agent-relay/harness-driver` exports `RELAY_NODE_BINARY_NAME`, `RELAY_NODE_PATH_ENV` and `getCanonicalRelayNodePath` in place of the `PROBE` names.
+
+### Migration Guidance
+
+- Replace `AGENT_RELAY_PROBE_PATH` with `AGENT_RELAY_NODE_PATH`, and `agent-relay-probe relay <command>` with `agent-relay-node <command>` in scripts and launch entries.
+- Run `relay init` to install `agent-relay-node`. It leaves the old `agent-relay-probe` in the install directory's `bin`, and `relay init --uninstall` no longer removes a `~/.local/bin/agent-relay-probe` copy; delete them by hand when no desktop app uses them.
 
 ## [16.0.0] - 2026-11-04
 

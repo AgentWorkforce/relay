@@ -1,0 +1,121 @@
+[package]
+name = "agent-relay-node"
+# Internal crate only; build.rs stamps the release (AGENT_RELAY_PROBE_VERSION)
+# or a development version derived from this number and the Git revision.
+version = "0.1.0"
+publish = false
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "agent_relay_node"
+
+[[bin]]
+name = "agent-relay-node"
+path = "src/bin/agent-relay-node.rs"
+required-features = ["production-binaries"]
+
+[[bin]]
+name = "relay-contract-codegen"
+path = "src/bin/relay-contract-codegen.rs"
+required-features = ["production-binaries"]
+
+[[test]]
+name = "relay_core_binary"
+required-features = ["production-binaries"]
+
+[features]
+# Ordinary builds keep every production executable. The desktop apps'
+# crates opt out with --no-default-features when they only need the library.
+default = ["production-binaries", "relay-cli"]
+# Every production executable here is the core relay ships, so it always
+# has `relay-cli`, however the build picks its features.
+production-binaries = ["relay-cli"]
+# The core as the `agent-relay` CLI runs it: the CLI's workspace selection
+# (environment keys, project pins, `workspaces.json`) and origin bindings,
+# armadillo's `ar_ws_`/`ar_ag_` keys, and fleet brokers. A build without it
+# reads only the account's workspace and accepts only `rk_` workspace keys;
+# `fleet.*` stay in the contract and answer `method_not_found`.
+relay-cli = []
+
+[workspace]
+
+[dependencies]
+# Safe PTY ownership and shutdown signals for native Muse spawning.
+portable-pty = "=0.8.1"
+anyhow = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+atomicwrites = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+fs2 = "0.4"
+futures-util = "0.3"
+getrandom = "0.2"
+hostname = "0.4"
+libc = "0.2"
+# Gravatar addresses avatars by the MD5 of an email; nothing else uses it.
+md-5 = "0.10"
+same-file = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+relaycast = "10.0.0"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "signal", "process"] }
+# The version and TLS stack the relaycast SDK already links, for the node
+# socket it does not expose (see src/relay/sdk_gaps.rs).
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+# The TLS configuration every WebSocket connect shares, with the platform's
+# roots read once (src/relay/websocket_tls.rs); the versions and features
+# tokio-tungstenite already links.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+# The local OpenClaw Gateway (src/relay/openclaw.rs): a blocking WebSocket
+# client on the version tokio-tungstenite already links, Ed25519 device
+# signatures from the TLS stack's ring, and its JSON5 config file.
+tungstenite = "0.24"
+ring = "0.17"
+json5 = "0.4"
+unicode-normalization = "0.1"
+ureq = { version = "2", features = ["json"] }
+url = "2"
+schemars = { version = "1", default-features = false, features = ["derive", "std"] }
+
+# Signals, process groups, uids and file modes, which Windows has no
+# counterpart for; the modules that use them gate the Windows build.
+[target.'cfg(unix)'.dependencies]
+signal-hook = "=0.3.18"
+nix = { version = "=0.25.1", default-features = false, features = ["signal", "process", "fs", "user"] }
+
+# Codex is trusted on macOS only with OpenAI's code signature (see
+# src/relay/process.rs), and Claude Code's login lives in the login Keychain;
+# these crates are already linked by the TLS stack.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+security-framework = "3"
+# Received attachments are quarantined (src/relay/files/store.rs).
+xattr = "1"
+
+# Windows platform APIs: the profile directory, consoles, job objects,
+# named pipes and the process table.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_NetworkManagement_IpHelper", "Win32_System_ProcessStatus", "Wdk_System_SystemInformation"] }
+
+# The core's Windows platform shims (src/platform, src/relay/process/windows.rs):
+# stopping processes and job objects; the process
+# table's start times, executables, open files (the system handle table) and
+# and loopback listeners. sysinfo reads another
+# process's command line, folder and environment from its PEB, which
+# windows-sys alone would need hand-kept structure offsets for. The
+# windows-sys features these need (Storage_FileSystem, IpHelper,
+# ProcessStatus, Wdk SystemInformation) are on the entry above.
+[target.'cfg(target_os = "windows")'.dependencies]
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+# End of the core's Windows platform shims.
+
+[dev-dependencies]
+# Tests read and write the agent CLIs' TOML config files.
+toml_edit = "0.25"
+rusqlite = { version = "0.32", features = ["hooks"] }
+tokio = { version = "1", features = ["test-util"] }

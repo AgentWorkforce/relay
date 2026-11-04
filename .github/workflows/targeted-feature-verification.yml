@@ -141,7 +141,7 @@ jobs:
           cache-bin: false
           workspaces: |
             . -> target
-            crates/probe -> target
+            crates/relay-node -> target
 
       - name: Set up Swift
         if: matrix.requiresSwift

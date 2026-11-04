@@ -9,7 +9,7 @@ import {
   readCoreState,
   type CoreClient,
   type CoreStatus,
-} from './probe-core.js';
+} from './relay-node.js';
 import { originBindingsPath } from './relaycast-origin-binding.js';
 import { isUsableBinary } from '@agent-relay/harness-driver/install-paths';
 
