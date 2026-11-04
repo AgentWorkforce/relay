@@ -494,24 +494,21 @@ pub fn agreed(reply_data: &Value) -> Agreed {
     }
 }
 
-/// The receipt for a `deliver` frame held here: its agent and the delivery
-/// it names (`delivery_id`, and `seq` as the cumulative `up_to_seq` when
-/// the frame carries one). None for a frame that names no delivery.
+/// The receipt for a `deliver` frame held here: its agent and the one
+/// delivery it names (`delivery_id`). Each delivery is reported on its own;
+/// the cumulative `up_to_seq` form is never sent, because a watermark may
+/// only advance over contiguous successes and a frame for an agent this
+/// core does not hold gets no receipt, which would leave a gap behind it.
+/// None for a frame that names no delivery.
 pub fn delivery_accepted(frame: &Value) -> Option<Value> {
     let agent = delivery_agent(frame)?;
-    let delivery_id = frame["delivery_id"].as_str().filter(|id| !id.is_empty());
-    let seq = frame["seq"].as_u64();
-    if delivery_id.is_none() && seq.is_none() {
-        return None;
-    }
-    let mut receipt = json!({"v": WIRE_VERSION, "type": "delivery.accepted", "agent": agent});
-    if let Some(delivery_id) = delivery_id {
-        receipt["delivery_id"] = Value::String(delivery_id.into());
-    }
-    if let Some(seq) = seq {
-        receipt["up_to_seq"] = Value::from(seq);
-    }
-    Some(receipt)
+    let delivery_id = frame["delivery_id"].as_str().filter(|id| !id.is_empty())?;
+    Some(json!({
+        "v": WIRE_VERSION,
+        "type": "delivery.accepted",
+        "agent": agent,
+        "delivery_id": delivery_id,
+    }))
 }
 
 /// Whether `frame` is Relaycast's answer to the request `id`, and the data
