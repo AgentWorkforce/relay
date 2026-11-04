@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay-probe`: beside a site other than production, a 404 from the desktop-identities route means the site has none: the sync is reported once, at Info, and no longer every minute as a failure that counts against the sign-in.
 - The desktop spawn node asks Agent Relay for the same node id on every attempt of a first enrollment and keeps the alternate name it took, so a name another node holds is not asked for again; a node enrolled whose answer was lost, or an id another node has, is left behind for a fresh one under the same name.
 - A node token Agent Relay refuses three times in a row stops the spawn node with a status saying so, instead of retrying forever; turning Accept spawns from Agent Relay off and on, or signing in again, enrolls a new node.
 
