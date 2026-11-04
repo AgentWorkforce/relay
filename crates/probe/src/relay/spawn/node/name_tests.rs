@@ -368,7 +368,8 @@ async fn a_first_enrollment_asks_for_the_same_node_without_a_key_until_answered(
     assert!(!request.contains("x-relaycast-node-token"));
     assert_eq!(idempotency_key(&request), None);
     // Not this computer's node yet: nothing is sent as it, and nothing is
-    // asked of Relaycast for it.
+    // asked of Relaycast for it. Kept beside the enrollment, not as one.
+    assert!(!node_file(&config).exists());
     assert_eq!(load(&config), None);
     assert_eq!(read(&config), None);
     assert_eq!(saved(&config).await, Ok(None));
@@ -468,11 +469,13 @@ async fn a_name_another_node_holds_is_not_asked_for_again_after_a_failure_on_its
 }
 
 /// An id Relaycast already has a node under, whose token nothing here holds
-/// (a first enrollment it completed whose answer was lost): that node holds
-/// the name asked for too, so a fresh id is asked for under the next
-/// alternate name, rather than that id forever or that name again.
+/// (a first enrollment it completed whose answer was lost): a fresh id is
+/// asked for under the same name. That node holds the name, offline; a
+/// Relaycast that replaces an offline holder enrolls the fresh one under
+/// it, and one that does not answers `node_name_conflict`, whereupon the
+/// alternate follows as it would for any other holder.
 #[tokio::test]
-async fn an_id_relaycast_has_a_node_under_is_replaced_under_the_next_name() {
+async fn an_id_relaycast_has_a_node_under_is_replaced_under_the_same_name() {
     let folder = tempfile::tempdir().unwrap();
     let relaycast = Scripted::new().await;
     let config = config(&relaycast.base_url, folder.path());
@@ -483,24 +486,145 @@ async fn an_id_relaycast_has_a_node_under_is_replaced_under_the_next_name() {
     let (enrolled, requests) = tokio::join!(enroll_named(&config, None), async {
         vec![
             relaycast.answer(PROOF_REQUIRED).await,
+            relaycast.answer(CONFLICT).await,
             relaycast.answer(ENROLLED).await,
         ]
     });
-    assert_eq!(enrolled.unwrap().node_id, "node_desktop_new");
-    // The lost answer's node, asked for again, then a fresh one beside it.
+    let enrolled = enrolled.unwrap();
+    assert_eq!(enrolled.node_id, "node_desktop_new");
+    // The lost answer's node, asked for again; then a fresh one under the
+    // same name; then, that name refused, the fresh one under an alternate.
     assert_eq!(body(&requests[0])["node_id"], asked.node_id.as_str());
     assert_eq!(body(&requests[0])["name"], "mac-desktop");
     let fresh = body(&requests[1])["node_id"].as_str().unwrap().to_string();
     assert_ne!(fresh, asked.node_id);
     assert!(fresh.starts_with("node_desktop_"), "{fresh}");
-    let next = body(&requests[1])["name"].as_str().unwrap().to_string();
+    assert_eq!(body(&requests[1])["name"], "mac-desktop");
+    assert_eq!(body(&requests[2])["node_id"], fresh.as_str());
+    let next = body(&requests[2])["name"].as_str().unwrap().to_string();
     assert!(
         named_for(&next, "mac-desktop") && next != "mac-desktop",
         "{next}"
     );
-    assert!(!requests[1].contains("x-relaycast-node-token"));
-    assert_eq!(idempotency_key(&requests[1]), None);
-    assert_eq!(load(&config).unwrap().node_name, next);
+    for request in &requests {
+        assert!(!request.contains("x-relaycast-node-token"));
+        assert_eq!(idempotency_key(request), None);
+    }
+    assert_eq!(enrolled.node_name, next);
+    assert_eq!(load(&config), Some(enrolled));
+    assert_eq!(pending(&config), None);
+}
+
+/// An id another node has (`node_id_conflict`): a fresh one is asked for
+/// under the same name, which did not conflict.
+#[tokio::test]
+async fn an_id_another_node_has_is_replaced_under_the_same_name() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let config = config(&relaycast.base_url, folder.path());
+    const ID_CONFLICT: (&str, &str) = (
+        "409 Conflict",
+        r#"{"ok":false,"error":{"code":"node_id_conflict","message":"Node id is already enrolled"}}"#,
+    );
+    let (enrolled, requests) = tokio::join!(enroll_named(&config, None), async {
+        vec![
+            relaycast.answer(ID_CONFLICT).await,
+            relaycast.answer(ENROLLED).await,
+        ]
+    });
+    assert_eq!(enrolled.unwrap().node_id, "node_desktop_new");
+    assert_ne!(body(&requests[0])["node_id"], body(&requests[1])["node_id"]);
+    assert_eq!(body(&requests[0])["name"], "mac-desktop");
+    assert_eq!(body(&requests[1])["name"], "mac-desktop");
+    assert_eq!(pending(&config), None);
+}
+
+/// A pending node persisted under an alternate (taken after a conflict in
+/// this series) is asked for as it is: the alternate, not the base name.
+#[tokio::test]
+async fn a_pending_alternate_is_asked_for_as_it_is() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let config = config(&relaycast.base_url, folder.path());
+    let asked = Pending::new(&config, "mac-desktop-3f9a");
+    save_pending(&pending_file(&config), &asked).unwrap();
+    let (enrolled, request) = tokio::join!(enroll_named(&config, None), relaycast.answer(ENROLLED));
+    assert_eq!(body(&request)["node_id"], asked.node_id.as_str());
+    assert_eq!(body(&request)["name"], "mac-desktop-3f9a");
+    assert_eq!(enrolled.unwrap().node_name, "mac-desktop-3f9a");
+}
+
+/// The saved node of another key, not the holder of its name here, stays
+/// on disk until a new node replaces it: an enrollment that fails before
+/// Relaycast answers loses nothing.
+#[tokio::test]
+async fn another_keys_node_is_kept_until_a_new_one_is_enrolled() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let current = config(&relaycast.base_url, folder.path());
+    let kept = enrollment(&current, "node_desktop_1", "mac-desktop", "rk_live_old");
+    save(&node_file(&current), &kept).unwrap();
+    let (found, _) = tokio::join!(
+        saved(&current),
+        relaycast.answer((
+            "200 OK",
+            r#"{"ok":true,"data":{"id":"node_desktop_2","name":"mac-desktop"}}"#,
+        ))
+    );
+    assert_eq!(found, Ok(None));
+    let (first, _) = tokio::join!(enroll_named(&current, None), relaycast.answer(LOST));
+    assert!(first.is_err());
+    assert_eq!(read(&current), Some(kept));
+    assert!(pending(&current).is_some());
+    let (second, _) = tokio::join!(enroll_named(&current, None), relaycast.answer(ENROLLED));
+    let enrolled = second.unwrap();
+    assert_eq!(read(&current), Some(enrolled.clone()));
+    assert_eq!(load(&current), Some(enrolled));
+    assert_eq!(pending(&current), None);
+}
+
+/// A rotation's key Relaycast refuses as a key: replaced once, and a
+/// refusal of the new one is a failure to try again later, with the new
+/// key kept so it is not sent again.
+#[tokio::test]
+async fn a_key_relaycast_refuses_is_replaced_once() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let config = config(&relaycast.base_url, folder.path());
+    let current = enrollment(&config, "node_desktop_1", "mac-desktop", "rk_live_one");
+    save(&node_file(&config), &current).unwrap();
+    const KEY_REFUSED: (&str, &str) = (
+        "400 Bad Request",
+        r#"{"ok":false,"error":{"code":"node_rotation_idempotency_key_mismatch","message":"Idempotency-Key was used for another body"}}"#,
+    );
+    let (rotated, requests) = tokio::join!(rotate(&config, &current), async {
+        vec![
+            relaycast.answer(KEY_REFUSED).await,
+            relaycast.answer(KEY_REFUSED).await,
+        ]
+    });
+    assert!(matches!(rotated, Err(Refused::Failed(_))), "{rotated:?}");
+    let keys: Vec<_> = requests.iter().map(|r| idempotency_key(r)).collect();
+    assert!(keys
+        .iter()
+        .all(|key| key.as_ref().is_some_and(|k| k.len() == 48)));
+    assert_ne!(keys[0], keys[1]);
+    for request in &requests {
+        assert_eq!(body(request)["name"], "mac-desktop");
+        assert!(request.contains("x-relaycast-node-token: nt_live_x"));
+    }
+    let kept = read(&config).expect("the node is kept");
+    assert_eq!(kept.token, current.token);
+    assert_eq!(kept.rotation_key, keys[1]);
+    let (again, replayed) = tokio::join!(
+        rotate(&config, &kept),
+        relaycast.answer((
+            "201 Created",
+            r#"{"ok":true,"data":{"id":"node_desktop_1","token":"nt_live_y"}}"#,
+        ))
+    );
+    assert_eq!(idempotency_key(&replayed), keys[1]);
+    assert_eq!(again.unwrap().rotation_key, None);
 }
 
 /// A pending node of another workspace, origin or name is not the one asked
@@ -510,7 +634,7 @@ fn a_pending_node_is_asked_for_only_in_its_workspace_origin_and_name() {
     let folder = tempfile::tempdir().unwrap();
     let config = config("https://cast.example", folder.path());
     let asked = Pending::new(&config, "mac-desktop-3f9a");
-    save_pending(&node_file(&config), &asked).unwrap();
+    save_pending(&pending_file(&config), &asked).unwrap();
     assert_eq!(pending(&config), Some(asked));
     for other in [
         NodeConfig {
@@ -670,13 +794,53 @@ async fn a_name_no_alternate_frees_stops_the_node_and_says_so() {
     assert!(error.contains("Turn Accept spawns from Agent Relay off and on"));
     assert!(!states.iter().any(|s| s.state == SpawnState::Waiting));
     assert!(!node_file(&host_config(folder.path())).exists());
+    assert!(!pending_file(&host_config(folder.path())).exists());
+    node.stop().await;
+}
+
+/// The socket refused for the workspace key (`workspace_expired`, as a
+/// trial's is), and so the rotation: never the token, which is kept, with
+/// the node, for when the workspace is back. Nothing is given up, however
+/// many times in a row.
+#[tokio::test]
+async fn a_workspace_refused_keeps_the_node_and_its_token_and_tries_again() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let config = config(&relaycast.base_url, folder.path());
+    let current = enrollment(&config, "node_desktop_1", "mac-desktop", "rk_live_one");
+    save(&node_file(&config), &current).unwrap();
+    let host = Arc::new(Recording::default());
+    let node = SpawnNode::start(config.clone(), host.clone());
+    const EXPIRED: (&str, &str) = (
+        "401 Unauthorized",
+        r#"{"ok":false,"error":{"code":"workspace_expired","message":"Workspace trial expired"}}"#,
+    );
+    for _ in 0..TOKEN_REFUSALS {
+        let socket = relaycast.answer(EXPIRED).await;
+        assert!(socket.starts_with("get "), "{socket}");
+        let rotation = relaycast.answer(EXPIRED).await;
+        assert!(rotation.starts_with("post /v1/nodes "), "{rotation}");
+        assert!(rotation.contains("x-relaycast-node-token: nt_live_x"));
+    }
+    // Tried again after the backoff, as it was.
+    let next = tokio::time::timeout(Duration::from_secs(30), relaycast.answer(EXPIRED))
+        .await
+        .expect("tried again");
+    assert!(next.starts_with("get "), "{next}");
+    let states = host.states.lock().unwrap().clone();
+    assert!(!states.iter().any(|s| s.state == SpawnState::Off));
+    assert!(states.iter().any(|s| s.state == SpawnState::Waiting));
+    let kept = load(&config).expect("the node is kept");
+    assert_eq!(kept.node_id, current.node_id);
+    assert_eq!(kept.token, current.token);
     node.stop().await;
 }
 
 /// A token Relaycast no longer takes as proof (the socket refused, the
-/// rotation refused `TOKEN_REFUSALS` times in a row): the node stops and
-/// says so, and the enrollment is forgotten, so the next start enrolls a
-/// new node rather than asking with the dead token forever.
+/// rotation refused as `node_token_proof_required` `TOKEN_REFUSALS` times
+/// in a row): the node stops and says so, and the enrollment is
+/// forgotten, so the next start enrolls a new node rather than asking with
+/// the dead token forever.
 #[tokio::test]
 async fn a_token_refused_as_proof_three_times_stops_the_node_and_forgets_the_enrollment() {
     let folder = tempfile::tempdir().unwrap();
@@ -686,22 +850,15 @@ async fn a_token_refused_as_proof_three_times_stops_the_node_and_forgets_the_enr
     save(&node_file(&config), &current).unwrap();
     let host = Arc::new(Recording::default());
     let node = SpawnNode::start(config.clone(), host.clone());
-    const UNAUTHORIZED: (&str, &str) = (
+    const INVALID: (&str, &str) = (
         "401 Unauthorized",
-        r#"{"ok":false,"error":{"code":"unauthorized","message":"invalid node token"}}"#,
+        r#"{"ok":false,"error":{"code":"invalid_token","message":"invalid token"}}"#,
     );
     let mut rotations = Vec::new();
-    for round in 0..TOKEN_REFUSALS {
-        let socket = relaycast.answer(UNAUTHORIZED).await;
+    for _ in 0..TOKEN_REFUSALS {
+        let socket = relaycast.answer(INVALID).await;
         assert!(socket.starts_with("get "), "{socket}");
-        // 401 and `node_token_proof_required` alike: neither changes with
-        // the attempt.
-        let refusal = if round % 2 == 0 {
-            UNAUTHORIZED
-        } else {
-            PROOF_REQUIRED
-        };
-        rotations.push(relaycast.answer(refusal).await);
+        rotations.push(relaycast.answer(PROOF_REQUIRED).await);
     }
     for rotation in &rotations {
         assert!(rotation.starts_with("post /v1/nodes "), "{rotation}");

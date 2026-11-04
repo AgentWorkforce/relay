@@ -3,8 +3,8 @@
 //! and an alternate name when another node holds this one.
 
 use super::enrollment::{
-    alternate, fingerprint, forget, fresh_id, load, node_file, pending, read, save, save_pending,
-    Enrollment, Pending,
+    alternate, fingerprint, forget, fresh_id, load, node_file, pending, pending_file, read, save,
+    save_pending, Enrollment, Pending,
 };
 use super::NodeConfig;
 use crate::relay::contract::plan::PlanLimitExceeded;
@@ -23,14 +23,20 @@ pub(super) const ALTERNATES: usize = 3;
 pub(super) enum Refused {
     /// Another node holds the name (`node_name_conflict`).
     NameTaken,
-    /// Relaycast has a node under the id asked for a new one, whose token
-    /// nothing here holds (`node_token_proof_required` without proof): an
-    /// earlier attempt enrolled it, and the answer with its token was lost.
+    /// Relaycast has a node under the id asked for a new one: another's
+    /// (`node_id_conflict`), or one an earlier attempt enrolled whose
+    /// answer with its token was lost (`node_token_proof_required` without
+    /// proof). Either way its token is nothing here holds.
     IdTaken,
-    /// Relaycast no longer takes the node's token as proof of it (401, or
-    /// `node_token_proof_required` with the token sent): a rotation it
-    /// refuses the same way every time.
+    /// Relaycast no longer takes the node's token as proof of it
+    /// (`node_token_proof_required` with the token sent): a rotation it
+    /// refuses the same way every time. A 401 is never that: it is the
+    /// workspace key refused (`unauthorized`, `workspace_expired`), which
+    /// the node waits out with its enrollment kept.
     ProofRefused(String),
+    /// Relaycast refused the rotation's `Idempotency-Key`
+    /// (`node_rotation_idempotency_*`): a new key is tried once.
+    KeyRefused(String),
     /// Anything else; trying again may succeed.
     Failed(String),
     /// Every name tried was taken: trying again would loop.
@@ -48,9 +54,10 @@ impl Refused {
             Refused::IdTaken => {
                 "Agent Relay did not enroll this computer: another node holds its id.".into()
             }
-            Refused::ProofRefused(reason) | Refused::Failed(reason) | Refused::NoName(reason) => {
-                reason
-            }
+            Refused::ProofRefused(reason)
+            | Refused::KeyRefused(reason)
+            | Refused::Failed(reason)
+            | Refused::NoName(reason) => reason,
             Refused::PlanLimit(limit) => limit.message(),
         }
     }
@@ -91,16 +98,20 @@ pub(super) async fn enroll(
             if let Some(limit) = PlanLimitExceeded::from_relaycast(&error) {
                 return Refused::PlanLimit(limit);
             }
-            let proof_required = error.code() == Some("node_token_proof_required");
+            let failed =
+                || Refused::Failed(format!("Agent Relay did not enroll this computer: {error}"));
             match error.code() {
                 Some("node_name_conflict") => Refused::NameTaken,
-                _ if !proof && proof_required => Refused::IdTaken,
-                _ if proof && (proof_required || error.status() == Some(401)) => {
-                    Refused::ProofRefused(format!(
-                        "Agent Relay no longer accepts this computer's node token: {error}"
-                    ))
+                Some("node_id_conflict" | "node_token_proof_required") if !proof => {
+                    Refused::IdTaken
                 }
-                _ => Refused::Failed(format!("Agent Relay did not enroll this computer: {error}")),
+                Some("node_token_proof_required") => Refused::ProofRefused(format!(
+                    "Agent Relay no longer accepts this computer's node token: {error}"
+                )),
+                Some(code) if proof && code.starts_with("node_rotation_idempotency") => {
+                    Refused::KeyRefused(failed().reason())
+                }
+                _ => failed(),
             }
         })?;
     let token = data["token"]
@@ -151,16 +162,18 @@ pub(super) async fn enroll_named(
 /// A new node, asked for as the `Pending` one saved before its first
 /// `POST /v1/nodes`: the same id on every attempt of the series, and the
 /// name saved is the last one not refused, so a name another node holds is
-/// never asked for again after a failure on its alternate. Relaycast
+/// never asked for again after a failure on its alternate; an alternate is
+/// taken only after `NameTaken`. An id Relaycast has a node under
+/// (`IdTaken`) is replaced by a fresh one under the same name: Relaycast
 /// replays no first enrollment, so one it completed whose answer was lost
-/// is found as `IdTaken` on the next attempt: that node holds the name
-/// asked for, under a token nothing here has, so a fresh id is asked for
-/// under the next alternate name, as after `NameTaken`. The node left
-/// behind stays offline and harmless; Relaycast (relaycast-cloud, behind a
-/// flag) may later let an offline holder's name be taken over, so the base
-/// name can be asked for again.
+/// is met that way on the next attempt, and the node left behind, holding
+/// the name, is offline by construction. With Relaycast's replacement of
+/// an offline holder (relaycast-cloud, behind a flag) the same name then
+/// succeeds; without it the next answer is `NameTaken` and the alternate
+/// follows, one request later and no alternate burned needlessly. Either
+/// way the node left behind stays offline and harmless.
 async fn enroll_new(config: &NodeConfig) -> Result<Enrollment, Refused> {
-    let path = node_file(config);
+    let path = pending_file(config);
     let mut pending = match pending(config) {
         Some(pending) => pending,
         None => {
@@ -169,23 +182,38 @@ async fn enroll_new(config: &NodeConfig) -> Result<Enrollment, Refused> {
             pending
         }
     };
-    for _ in 0..=ALTERNATES {
+    let mut names = 0;
+    let mut ids = 0;
+    loop {
         match enroll(config, &pending.node_id, &pending.node_name, None).await {
-            Err(Refused::NameTaken) => {}
-            Err(Refused::IdTaken) => pending.node_id = fresh_id(),
+            Err(Refused::NameTaken) if names < ALTERNATES => {
+                names += 1;
+                pending.node_name = alternate(&config.node_name);
+            }
+            Err(Refused::NameTaken) => {
+                // Nothing enrolled to keep: the next start asks for a new
+                // node.
+                let _ = forget(&path);
+                return Err(no_name(config));
+            }
+            Err(Refused::IdTaken) if ids < ALTERNATES => {
+                ids += 1;
+                pending.node_id = fresh_id();
+            }
+            Err(refused @ Refused::IdTaken) => return Err(Refused::Failed(refused.reason())),
+            Ok(enrolled) => {
+                let _ = forget(&path);
+                return Ok(enrolled);
+            }
             done => return done,
         }
-        pending.node_name = alternate(&config.node_name);
         save_pending(&path, &pending).map_err(save_failed)?;
     }
-    // Nothing enrolled to keep: the next start asks for a new node.
-    let _ = forget(&path);
-    Err(no_name(config))
 }
 
 /// A rotation of `current` under its own id (`enroll_named`). Its key is
 /// kept until a rotation succeeds, so one whose answer was lost is replayed
-/// rather than refused.
+/// rather than refused; one Relaycast refuses as a key is replaced once.
 async fn rotate_named(config: &NodeConfig, current: &Enrollment) -> Result<Enrollment, Refused> {
     let path = node_file(config);
     let mut pending = current.clone();
@@ -198,7 +226,9 @@ async fn rotate_named(config: &NodeConfig, current: &Enrollment) -> Result<Enrol
             key
         }
     };
-    for _ in 0..=ALTERNATES {
+    let mut names = 0;
+    let mut rekeyed = false;
+    loop {
         match enroll(
             config,
             &pending.node_id,
@@ -207,18 +237,22 @@ async fn rotate_named(config: &NodeConfig, current: &Enrollment) -> Result<Enrol
         )
         .await
         {
-            Err(Refused::NameTaken) => {}
+            Err(Refused::NameTaken) if names < ALTERNATES => {
+                // Another body: a new key, so Relaycast does not take it
+                // for a replay of the refused one. Saved first with the
+                // name, so one whose answer is lost is replayed as sent.
+                names += 1;
+                pending.node_name = alternate(&config.node_name);
+            }
+            Err(Refused::NameTaken) => return Err(no_name(config)),
+            Err(Refused::KeyRefused(_)) if !rekeyed => rekeyed = true,
+            Err(Refused::KeyRefused(reason)) => return Err(Refused::Failed(reason)),
             done => return done,
         }
-        // Another body: a new key, so Relaycast does not take it for a
-        // replay of the refused one. Saved first with the name, so one
-        // whose answer is lost is replayed as sent.
         key = random_hex(48);
-        pending.node_name = alternate(&config.node_name);
         pending.rotation_key = Some(key.clone());
         save(&path, &pending).map_err(save_failed)?;
     }
-    Err(no_name(config))
 }
 
 /// This workspace's saved node, under its name or the alternate it took.

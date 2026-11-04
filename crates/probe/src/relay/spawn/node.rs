@@ -36,7 +36,7 @@ use enroll::{enroll_named, rotate, saved, Refused};
 pub(crate) use enrollment::enrolled_name;
 #[cfg(test)]
 use enrollment::{alternate, fingerprint, pending, read, save, save_pending, Pending};
-use enrollment::{forget, load, node_file, Enrollment};
+use enrollment::{forget, load, node_file, pending_file, Enrollment};
 
 use super::wire::{self, Advertisement, HarnessId, InventoryAgent, Invoke, NodeIdentity};
 use crate::relay::contract::plan::PlanLimitExceeded;
@@ -57,6 +57,8 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest, Message};
 
 pub const NODE_FILE: &str = "spawn-node.json";
+/// The node being enrolled, until it is (`enrollment::Pending`).
+pub const PENDING_FILE: &str = "spawn-node.pending.json";
 
 /// Relaycast calls a node live within 45 s of its last heartbeat.
 const HEARTBEAT: Duration = Duration::from_secs(12);
@@ -235,9 +237,11 @@ enum Ended {
     Closed(String),
     /// Trying again cannot help: the node stops and says why.
     GaveUp(String),
-    /// Relaycast refused the node's token as proof of it on a rotation:
-    /// the enrollment is tried again after the backoff, unless this is the
-    /// `TOKEN_REFUSALS`th time in a row.
+    /// Relaycast refused the node's token as proof of it on a rotation
+    /// (`node_token_proof_required` with the token sent; never a 401, which
+    /// is the workspace key refused and waited out): the enrollment is
+    /// tried again after the backoff, unless this is the `TOKEN_REFUSALS`th
+    /// time in a row.
     TokenRefused(String),
     /// Agent Relay refused to enroll this computer: the plan's device cap.
     Refused(PlanLimitExceeded),
@@ -325,6 +329,7 @@ async fn run(
 fn dead_token(config: &NodeConfig) -> String {
     let again =
         "Turn Accept spawns from Agent Relay off and on, or sign in again, to enroll it again.";
+    let _ = forget(&pending_file(config));
     match forget(&node_file(config)) {
         Ok(()) => format!(
             "Agent Relay no longer accepts this computer's node token. {again}"
@@ -670,47 +675,45 @@ mod tests {
         assert_eq!(load(&other_name), None);
     }
 
-    /// The file as every core wrote it before a node was saved ahead of its
-    /// enrollment: an enrollment as it is.
+    /// A record without a token (which no core writes) is not an
+    /// enrollment: its id is not sent as this computer's node without the
+    /// token as proof.
     #[test]
-    fn a_record_with_a_token_is_the_enrollment() {
+    fn a_record_without_a_token_is_not_an_enrollment() {
         let folder = tempfile::tempdir().unwrap();
         let config = config(folder.path());
         std::fs::write(
             node_file(&config),
             format!(
-                r#"{{"nodeID":"node_desktop_1","nodeName":"mac-desktop","token":"nt_live_x","baseURL":"https://cast.example","workspace":"{}"}}"#,
+                r#"{{"nodeID":"node_desktop_1","nodeName":"mac-desktop","baseURL":"https://cast.example","workspace":"{}"}}"#,
                 fingerprint(&config.workspace_key)
             ),
         )
         .unwrap();
-        let enrollment = load(&config).expect("enrolled");
-        assert_eq!(enrollment.node_id, "node_desktop_1");
-        assert_eq!(enrollment.token, Secret::new("nt_live_x".to_string()));
-        assert_eq!(enrollment.rotation_key, None);
-        assert_eq!(pending(&config), None);
+        assert_eq!(load(&config), None);
+        assert_eq!(read(&config), None);
     }
 
-    /// A record without a token is a node asked for, never one enrolled:
-    /// its id is not sent as this computer's node without the token as
-    /// proof.
+    /// The node being enrolled is kept beside the enrollment, not in its
+    /// place, so an enrollment of another key stays until a new one
+    /// replaces it.
     #[test]
-    fn a_record_without_a_token_is_not_an_enrollment() {
+    fn a_pending_node_is_kept_in_its_own_file() {
         let folder = tempfile::tempdir().unwrap();
         let config = config(folder.path());
         let asked = Pending::new(&config, "mac-desktop");
-        save_pending(&node_file(&config), &asked).unwrap();
+        save_pending(&pending_file(&config), &asked).unwrap();
+        assert!(!node_file(&config).exists());
         assert_eq!(load(&config), None);
-        assert_eq!(read(&config), None);
         assert_eq!(pending(&config), Some(asked.clone()));
         let written: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(node_file(&config)).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(pending_file(&config)).unwrap()).unwrap();
         assert_eq!(written["nodeID"], asked.node_id.as_str());
         assert!(written.get("token").is_none(), "{written}");
         // Forgotten, with or without a file to forget.
-        forget(&node_file(&config)).unwrap();
+        forget(&pending_file(&config)).unwrap();
         assert_eq!(pending(&config), None);
-        forget(&node_file(&config)).unwrap();
+        forget(&pending_file(&config)).unwrap();
     }
 
     /// Answers one `GET` with `status` and `body`; returns the request.
@@ -939,9 +942,11 @@ mod tests {
         };
         assert_eq!(limit.limit, PlanLimitKind::Devices);
         assert_eq!((limit.max, limit.current), (5, 5));
-        // Not retried under another name, and nothing is saved.
+        // Not retried under another name, and nothing is enrolled: only
+        // the node asked for is kept, for the next attempt.
         assert!(server.join().unwrap().starts_with("POST /v1/nodes "));
         assert_eq!(read(&config), None);
+        assert!(pending(&config).is_some());
     }
 
     #[tokio::test]
