@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Major]
 
+### Added
+
+- `agent-relay cloud worker` can run Codex and Grok jobs with the workspace's subscription logins when the control plane provides them; the login files exist only while the run does.
+- `agent-relay cloud worker` saves refreshed Codex and Grok login tokens for later runs.
+
 ### Changed
 
 - `agent-relay-probe`: a successful spawn's launch result carries `worker_cwd`, the working folder the agent runs in: the one the caller named, or the machine default the spawn node applied when none was named, so a caller that left it out sees where its agent works.
