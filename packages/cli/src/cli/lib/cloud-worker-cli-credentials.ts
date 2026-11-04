@@ -14,6 +14,10 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 import type { CloudWorkerRecord } from '@agent-relay/cloud';
 
@@ -349,35 +353,12 @@ export async function removeLoginHome(home: string): Promise<void> {
   } catch {
     // Restore owner permissions and retry once.
   }
-  // Only directories need restoring (removing a file needs its parent's
-  // permissions). A readable directory is opened with O_NOFOLLOW | O_DIRECTORY
-  // and chmod-ed through that handle; one the workflow made unreadable (mode
-  // 000) cannot be opened, so after lstat confirms a real directory it is
-  // chmod-ed by path. Node has no descriptor-relative traversal, so the walk
-  // itself is by path; racing it needs a live same-user process.
-  const noFollowDir = (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_DIRECTORY ?? 0);
-  const restore = async (target: string): Promise<void> => {
-    const stat = await fsp.lstat(target).catch(() => null);
-    if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) return;
-    let handle: fsp.FileHandle | null = null;
-    try {
-      handle = await fsp.open(target, fs.constants.O_RDONLY | noFollowDir);
-    } catch {
-      handle = null;
-    }
-    if (handle) {
-      try {
-        if ((await handle.stat()).isDirectory()) await handle.chmod(0o700).catch(() => undefined);
-      } finally {
-        await handle.close();
-      }
-    } else {
-      await fsp.chmod(target, 0o700).catch(() => undefined);
-    }
-    for (const entry of await fsp.readdir(target, { withFileTypes: true }).catch(() => [])) {
-      if (entry.isDirectory()) await restore(path.join(target, entry.name));
-    }
-  };
-  await restore(home);
+  // Restore owner permissions with chmod(1) rather than a check-then-chmod in
+  // this process: `chmod -R` (default -P) never follows symlinks, applies the
+  // mode to a directory before descending, so a mode-000 directory made by
+  // the workflow is repaired too, and leaves no check/use race in this code.
+  if (process.platform !== 'win32') {
+    await execFileAsync('chmod', ['-R', 'u+rwX', '--', home]).catch(() => undefined);
+  }
   await fsp.rm(home, { recursive: true, force: true });
 }
