@@ -188,7 +188,6 @@ to show a person. Messages never carry provider bodies, keys or tokens.
 | `fleet_unavailable`       | -32000 | yes       | Whether this computer's relay already manages the session could not be read, so it is not registered now    |
 | `cloud_failed`            | -32000 | yes       | Agent Relay Cloud (or relayfile) could not be reached or failed                                             |
 | `cloud_refused`           | -32000 | no        | Agent Relay Cloud refused the request; `message` is its own text when it sent one                           |
-| `uploader_failed`         | -32000 | no        | A build's uploader command failed or ran out of time; `message` is its own sentence                         |
 
 Methods registered `Availability::Account` are in the contract of every build,
 so clients see one contract. A core built without an account answers them with
@@ -406,16 +405,6 @@ The conversation and project view are kept per account in
 | `contractors.dismiss` | `{"user_id"}`                            | As `contractors.status`; hidden per site and workspace on this computer                                                                                                                                                                                                                                                                                                                                                                                                                                                             | 2c       |
 
 A 403 is `refused`. Sign-in adopts the person's own grant; sign-out drops it.
-
-**Answered by a build's account** — no handler in this crate; `method_not_found` without an account
-
-| Method | Answers |
-| --- | --- |
-| `account.status` / `account.mcp_headers` / `account.sign_in` / `account.sign_in.cancel` / `account.select_workspace` / `account.connect_workspace` / `account.sign_out` | Sign-in and the account's workspace |
-| `uploader.status` / `uploader.start` / `uploader.pause` / `uploader.resume` / `uploader.retry` / `uploader.compact` / `uploader.disconnect` / `uploader.sharing.set` / `uploader.sessions.list` / `uploader.sessions.facets` / `uploader.sessions.query` / `uploader.sessions.preview` / `uploader.sessions.include` / `uploader.sessions.reset` / `uploader.sessions.delete` / `uploader.sessions.exclude` | Session history |
-| `sessions.transcript` | A session's transcript |
-| `tools.status` / `tools.check` / `tools.select` / `tools.manage` | Provider setup |
-| `telemetry.record` | Usage telemetry |
 
 ## The relay-send socket
 
@@ -901,7 +890,8 @@ agent and restarts one whose origin, token or machine address changed.
 | `relay::cloud_chat`                                        | Skip chat: requests, the saved conversation and project view, pushes                                                                                                                                                      |
 | `relay::contractor_access`                                 | Owner grants of scoped service access to contractor seats over `CloudAccess` (members via `relay::people`); this person's own grant to a `Provisioner`; the flag and per-workspace dismissals in `contractor-access.json` |
 | `relay::spawn`                                             | The spawn node: Relaycast `spawn:codex`/`spawn:claude`/`release` capacity, headless launches, spawned agents' registrations (native-spawn.md (relay-desktop `native-spawn.md`))                                                |
-| `relay::telemetry` / `relay::login_item`                   | PostHog: schema, opt-out, identity, rate limits, the send queue; Linux launch at login                                                                                                                                    |
+| `relay::login_item`                                       | Launch at login                                                                                                      |
+| `relay::usage`                                             | What the core reports about its own operations to a build's account                                                  |
 
 ## Verification
 

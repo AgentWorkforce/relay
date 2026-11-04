@@ -44,7 +44,7 @@
 //! | `contractor_access` | Owner grants of scoped service access to contractor seats; a contractor's own grant |
 //! | `integrations` | relayfile subscriptions |
 //! | `links` | Message endpoints and deep links |
-//! | `telemetry` | PostHog operation telemetry: opt-out, identity, rate limits, the send queue |
+//! | `usage` | What the core reports about its own operations to a build's account |
 //! | `login_item` | Linux launch at login: the XDG autostart entry |
 //! | `methods` | The bridge methods for agents, messaging, people, links, settings |
 //! | `process` | The kernel's process table and the Codex caller rules |
@@ -154,10 +154,10 @@ pub mod spawn;
 pub mod state;
 pub mod store;
 pub mod store_settings;
-pub mod telemetry;
 #[doc(hidden)]
 pub mod test_account;
 pub mod transport;
 pub mod trusted;
+pub mod usage;
 pub mod websocket_tls;
 pub mod workspace;

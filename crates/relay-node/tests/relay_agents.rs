@@ -118,14 +118,7 @@ async fn codex_inbox_stall_is_listed_warns_once_and_clears() {
     h.stop().await;
 }
 
-#[derive(Default)]
-struct UsageRecorder(std::sync::Mutex<Vec<Value>>);
-impl agent_relay_node::relay::telemetry::TelemetrySender for UsageRecorder {
-    fn send(&self, events: Vec<Value>) -> Result<(), String> {
-        self.0.lock().unwrap().extend(events);
-        Ok(())
-    }
-}
+type UsageRecorder = std::sync::Mutex<Vec<agent_relay_node::relay::usage::UsageEvent>>;
 
 struct Harness {
     fake: FakeRelaycast,
@@ -282,21 +275,9 @@ impl Harness {
         if let Some(cloud) = &cloud {
             plugins.cloud = cloud.clone() as Arc<dyn CloudAccess>;
         }
-        if let Some(sender) = usage {
-            use agent_relay_node::relay::{
-                telemetry::{PostHogProject, Telemetry, TelemetryConfig},
-                test_account::TestAccount,
-            };
-            let mut telemetry_config = TelemetryConfig::new(
-                config.app_data_dir.clone(),
-                home.clone(),
-                BTreeMap::new(),
-                "test".into(),
-            );
-            telemetry_config.project =
-                PostHogProject::new("phc_test", "https://analytics.example.com");
-            let mut account = TestAccount::new();
-            account.telemetry = Some(Telemetry::new(telemetry_config, sender));
+        if let Some(usage) = usage {
+            let mut account = agent_relay_node::relay::test_account::TestAccount::new();
+            account.usage = usage;
             plugins.account = Some(account.into_plugin());
         }
         let (core, signals) = Core::with_plugins(config, plugins);
@@ -4936,34 +4917,28 @@ async fn usage_records_new_and_existing_agents_and_sent_messages() {
             json!({"to":"usage-agent", "text":"private message body"}),
         )
         .await;
+    use agent_relay_node::relay::usage::{UsageOperation, UsageOutcome};
     eventually("message usage delivered", || {
-        usage.0.lock().unwrap().iter().any(|e| {
-            e["properties"]["operation"] == "message_send"
-                && e["properties"]["outcome"] == "succeeded"
+        usage.lock().unwrap().iter().any(|e| {
+            e.operation == UsageOperation::MessageSend && e.outcome == UsageOutcome::Succeeded
         })
     })
     .await;
-    let events = usage.0.lock().unwrap().clone();
+    let events = usage.lock().unwrap().clone();
     let registrations: Vec<_> = events
         .iter()
         .filter(|e| {
-            e["event"] == "desktop_operation"
-                && e["properties"]["operation"] == "agent_register"
-                && e["properties"]["outcome"] == "succeeded"
+            e.operation == UsageOperation::AgentRegister && e.outcome == UsageOutcome::Succeeded
         })
         .collect();
     assert_eq!(registrations.len(), 2, "{events:?}");
-    assert_eq!(registrations[0]["properties"]["already_registered"], false);
-    assert_eq!(registrations[1]["properties"]["already_registered"], true);
+    assert_eq!(registrations[0].already_registered, Some(false));
+    assert_eq!(registrations[1].already_registered, Some(true));
     assert!(events
         .iter()
-        .any(|e| e["properties"]["operation"] == "message_send"
-            && e["properties"]["outcome"] == "succeeded"
-            && e["properties"]["is_reply"] == false));
-    let encoded = serde_json::to_string(&events).unwrap();
-    for forbidden in ["usage-agent", CODEX, "private message body"] {
-        assert!(!encoded.contains(forbidden));
-    }
+        .any(|e| e.operation == UsageOperation::MessageSend
+            && e.outcome == UsageOutcome::Succeeded
+            && e.is_reply == Some(false)));
     h.stop().await;
 }
 

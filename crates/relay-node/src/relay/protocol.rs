@@ -164,8 +164,6 @@ pub enum ErrorKind {
     /// Whether this computer's relay already manages a session could not
     /// be read, so it is not given a second identity now.
     FleetUnavailable,
-    /// The probe's uploader command failed; `message` is its own sentence.
-    UploaderFailed,
     Internal,
 }
 

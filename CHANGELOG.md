@@ -19,8 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 - `--site-url` on the core's `serve`: the core takes no site at start.
-- The `site_url` field of `account.sign_in` and of `links.parse` in the bridge contract (and the generated Swift contract).
+- The `site_url` field of `links.parse` in the bridge contract (and the generated Swift contract).
 - The `incoming.*` bridge methods: nothing has answered them since Agent Relay Cloud retired the Room API.
+- `account.*`, `uploader.*`, `tools.*`, `sessions.transcript` and `telemetry.record` from the bridge contract, and PostHog telemetry from the core: a core without an account answered them `method_not_found` and sent no usage.
 
 ### Fixed
 
@@ -31,14 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Breaking Changes
 
 - `agent-relay-probe` is now `agent-relay-node`, without the `relay` subcommand: `agent-relay-probe relay call status.get` is `agent-relay-node call status.get`. `AGENT_RELAY_PROBE_PATH` is no longer read.
-- A core built for another site than `https://agentrelay.com` must be built with `AGENT_RELAY_SITE_URL`. `--site-url` on `serve` is refused; a `site_url` in an `account.sign_in` or `links.parse` request is ignored, as any unknown field is, and the build's site applies.
+- A core built for another site than `https://agentrelay.com` must be built with `AGENT_RELAY_SITE_URL`. `--site-url` on `serve` is refused; a `site_url` in a `links.parse` request is ignored, as any unknown field is, and the build's site applies.
 
 ### Migration Guidance
 
 - Replace `AGENT_RELAY_PROBE_PATH` with `AGENT_RELAY_NODE_PATH`, and `agent-relay-probe relay <command>` with `agent-relay-node <command>` in scripts and launch entries.
 - Run `relay init` to install `agent-relay-node`. It leaves the old `agent-relay-probe` in the install directory's `bin`, and `relay init --uninstall` no longer removes a `~/.local/bin/agent-relay-probe` copy; delete them by hand when no desktop app uses them.
 - Set `AGENT_RELAY_SITE_URL` (and `AGENT_RELAY_URL_SCHEME`, for a build registering its own links) in the environment of `cargo build`; a changed value rebuilds the crate. Leave both unset for production.
-- Drop `--site-url` from `serve` command lines and launch entries, and `site_url` from `account.sign_in` and `links.parse` requests: the build's site applies.
+- Drop `--site-url` from `serve` command lines and launch entries, and `site_url` from `links.parse` requests: the build's site applies.
 
 ## [15.1.1] - 2026-11-03
 

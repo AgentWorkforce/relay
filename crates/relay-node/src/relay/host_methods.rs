@@ -1,5 +1,5 @@
 //! The bridge methods every core answers about this computer and its Cloud
-//! chat and contractors, then whatever its account plugin answers.
+//! chat and contractors.
 
 use crate::relay::contract::platform::LoginItemState;
 use crate::relay::contract::{answer, method, Done};
@@ -36,8 +36,6 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
                 .await,
             )
         }
-        _ => {}
+        _ => None,
     }
-    let account = core.plugins.account.clone()?;
-    account.call(core, method, raw).await
 }

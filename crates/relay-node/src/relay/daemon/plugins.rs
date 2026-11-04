@@ -12,7 +12,7 @@ use crate::relay::outbound::{Outbound, OutboundError, RelaySend, Request};
 use crate::relay::protocol::RpcError;
 use crate::relay::sessions::{NoSessions, SessionDirectory};
 use crate::relay::store::Target as SessionTarget;
-use crate::relay::telemetry::TelemetryEvent;
+use crate::relay::usage::UsageEvent;
 use crate::relay::workspace::Workspace;
 use futures_util::future::BoxFuture;
 use serde_json::Value;
@@ -31,13 +31,6 @@ pub trait AccountPlugin: Send + Sync + 'static {
     fn shutdown(&self) -> BoxFuture<'_, ()>;
     /// `account.status`'s answer.
     fn report(&self) -> Value;
-    /// Answers an account method, or `None` when `method` is not one.
-    fn call<'a>(
-        &'a self,
-        core: &'a Arc<Core>,
-        method: &'a str,
-        raw: Value,
-    ) -> BoxFuture<'a, Option<Result<Value, RpcError>>>;
     /// The periodic pass after the workspace refresh.
     fn maintain(&self) -> BoxFuture<'_, ()>;
     /// A replacement for a workspace key Relaycast refused.
@@ -68,8 +61,8 @@ pub trait AccountPlugin: Send + Sync + 'static {
     /// The site this account signs in to: the one the build is made for
     /// (`links::built_in_site_url`), which nothing at run time changes.
     fn site_url(&self) -> String;
-    /// Reports usage through the account's opt-out and identity.
-    fn record_usage(&self, event: TelemetryEvent);
+    /// Takes a usage report of the core's own operations.
+    fn record_usage(&self, event: UsageEvent);
     /// Whether sessions join the relay by themselves until the person turns
     /// it off: the desktop app's default. A core without such an account
     /// (the CLI's) leaves `auto_activate` unset, so only the kinds that join

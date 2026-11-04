@@ -21,9 +21,7 @@ use crate::relay::daemon::Core;
 use crate::relay::links::{self, Endpoint};
 use crate::relay::people::RosterQuery;
 use crate::relay::protocol::{ErrorKind, RpcError};
-use crate::relay::telemetry::{
-    self, TelemetryEvent, TelemetryOperation as Op, TelemetryOutcome as Outcome,
-};
+use crate::relay::usage::{action, UsageEvent, UsageOperation as Op};
 use serde_json::{json, Map, Value};
 use std::sync::Arc;
 
@@ -251,15 +249,11 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
         }
         method::AgentsTestMessage::NAME => {
             answer::<method::AgentsTestMessage, _>(raw, |request| async move {
-                telemetry::action(
-                    core,
-                    TelemetryEvent::new(Op::MessageTest, Outcome::Started),
-                    async {
-                        core.test_message(&request.name, request.text.as_deref())
-                            .await
-                            .map(|message_id| TestMessageSent { message_id })
-                    },
-                )
+                action(core, UsageEvent::started(Op::MessageTest), async {
+                    core.test_message(&request.name, request.text.as_deref())
+                        .await
+                        .map(|message_id| TestMessageSent { message_id })
+                })
                 .await
             })
             .await

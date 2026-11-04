@@ -43,7 +43,7 @@ nothing. A build such as relay-desktop's `desktop-core` adds:
 
 | Seam                                       | What it is                                                                                                                              |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `Plugins.account` (`AccountPlugin`)        | Sign-in and Cloud maintenance; it answers the `Availability::Account` methods this crate has no handler for                             |
+| `Plugins.account` (`AccountPlugin`)        | Sign-in and Cloud maintenance                                                                                                           |
 | `Plugins.session_policy` (`SessionPolicy`) | Which sessions join the relay by themselves, may be asked to join, and publish their activity                                           |
 | `Plugins.settings` (`SettingsExtension`)   | Extra settings, such as `history_retention_days`                                                                                        |
 | `Plugins.extensions` (`MethodExtension`)   | Extra bridge methods                                                                                                                    |

@@ -4,15 +4,15 @@
 use crate::relay::client::WorkspaceInfo;
 use crate::relay::daemon::{AccountPlugin, Core};
 use crate::relay::outbound::{Outbound, OutboundError, Request};
-use crate::relay::protocol::RpcError;
-use crate::relay::telemetry::{Telemetry, TelemetryEvent};
+use crate::relay::usage::UsageEvent;
 use crate::relay::workspace::Workspace;
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
 pub struct TestAccount {
-    pub telemetry: Option<Arc<Telemetry>>,
+    /// Every usage report, in order.
+    pub usage: Arc<std::sync::Mutex<Vec<UsageEvent>>>,
     /// The account's automatic-activation default
     /// ([`AccountPlugin::auto_activate_by_default`]).
     pub auto_activate_by_default: bool,
@@ -21,7 +21,7 @@ pub struct TestAccount {
 impl TestAccount {
     pub fn new() -> TestAccount {
         TestAccount {
-            telemetry: None,
+            usage: Default::default(),
             auto_activate_by_default: false,
         }
     }
@@ -44,15 +44,6 @@ impl AccountPlugin for TestAccount {
 
     fn report(&self) -> Value {
         json!({"state": "signed_out"})
-    }
-
-    fn call<'a>(
-        &'a self,
-        _core: &'a Arc<Core>,
-        _method: &'a str,
-        _raw: Value,
-    ) -> BoxFuture<'a, Option<Result<Value, RpcError>>> {
-        Box::pin(async { None })
     }
 
     fn maintain(&self) -> BoxFuture<'_, ()> {
@@ -97,10 +88,8 @@ impl AccountPlugin for TestAccount {
         crate::relay::links::built_in_site_url().into()
     }
 
-    fn record_usage(&self, event: TelemetryEvent) {
-        if let Some(telemetry) = &self.telemetry {
-            telemetry.record(event);
-        }
+    fn record_usage(&self, event: UsageEvent) {
+        self.usage.lock().unwrap().push(event);
     }
 
     fn auto_activate_by_default(&self) -> bool {

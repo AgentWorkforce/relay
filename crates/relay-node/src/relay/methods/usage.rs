@@ -3,18 +3,16 @@ use super::recipient_endpoint;
 use crate::relay::contract::directory::SentMessage;
 use crate::relay::daemon::Core;
 use crate::relay::protocol::RpcError;
-use crate::relay::telemetry::{
-    self, TelemetryEvent, TelemetryOperation as Op, TelemetryOutcome as Outcome,
-};
+use crate::relay::usage::{self, UsageEvent, UsageOperation as Op};
 use std::sync::Arc;
 
 pub(super) async fn register(
     core: &Arc<Core>,
     request: crate::relay::contract::agents::RegisterParams,
 ) -> Result<crate::relay::agents::Registered, RpcError> {
-    let mut event = TelemetryEvent::new(Op::AgentRegister, Outcome::Started);
+    let mut event = UsageEvent::started(Op::AgentRegister);
     event.agent_kind = Some(request.target.kind);
-    telemetry::record_for(core, event);
+    usage::record(core, event);
     let result = core
         .register_target(
             &request.target,
@@ -26,7 +24,7 @@ pub(super) async fn register(
         .as_ref()
         .ok()
         .map(|registered| registered.already_registered);
-    telemetry::record_for(core, event.completed(&result));
+    usage::record(core, event.completed(&result));
     result
 }
 
@@ -34,9 +32,9 @@ pub(super) async fn send(
     core: &Arc<Core>,
     request: crate::relay::contract::directory::SendParams,
 ) -> Result<crate::relay::contract::directory::SentMessage, RpcError> {
-    let mut event = TelemetryEvent::new(Op::MessageSend, Outcome::Started);
+    let mut event = UsageEvent::started(Op::MessageSend);
     event.is_reply = Some(request.reply_to.is_some());
-    telemetry::action(core, event, async {
+    usage::action(core, event, async {
         let target = recipient_endpoint(request.to.as_deref(), request.address.as_deref())?;
         let sent = core
             .send_as_person(&target, &request.text, request.reply_to.as_deref())
@@ -57,17 +55,13 @@ pub(super) async fn remove(
     name: &str,
     end_spawned: bool,
 ) -> Result<crate::relay::contract::Done, RpcError> {
-    telemetry::action(
-        core,
-        TelemetryEvent::new(Op::AgentUnregister, Outcome::Started),
-        async {
-            let removed = if end_spawned {
-                core.end_spawned_agent(name).await
-            } else {
-                core.unregister(name).await
-            };
-            removed.map(|_| crate::relay::contract::Done {})
-        },
-    )
+    usage::action(core, UsageEvent::started(Op::AgentUnregister), async {
+        let removed = if end_spawned {
+            core.end_spawned_agent(name).await
+        } else {
+            core.unregister(name).await
+        };
+        removed.map(|_| crate::relay::contract::Done {})
+    })
     .await
 }

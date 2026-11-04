@@ -30,7 +30,6 @@ pub mod reader;
 pub mod replicas;
 pub mod spawn_control;
 pub mod spawned;
-pub mod tool_integrations;
 pub mod transcript;
 
 use crate::relay::protocol::{ErrorKind, RpcError, Topic};
@@ -114,7 +113,6 @@ macro_rules! methods {
     };
 }
 
-use account::*;
 use agents::*;
 use capy::*;
 use chat::*;
@@ -127,7 +125,6 @@ use openclaw::*;
 use platform::*;
 use replicas::*;
 use spawned::*;
-use tool_integrations::*;
 
 methods! {
     // Core.
@@ -140,35 +137,7 @@ methods! {
     WorkspaceVerify = "workspace.verify", Always, NoParams => crate::relay::state::WorkspaceStatus;
     DaemonShutdown = "daemon.shutdown", Always, NoParams => Stopping;
 
-    // Workspace and account.
-    AccountStatus = "account.status", Account, NoParams => SignInReport;
-    AccountMcpHeaders = "account.mcp_headers", Account, McpHeadersParams => McpHeaders;
-    AccountSignIn = "account.sign_in", Account, account::SignInRequest => SignInReport;
-    AccountSelectWorkspace = "account.select_workspace", Account, ConnectWorkspaceParams => Done;
-    AccountSignInCancel = "account.sign_in.cancel", Account, NoParams => Done;
-    AccountSignOut = "account.sign_out", Account, NoParams => Done;
-    AccountConnectWorkspace = "account.connect_workspace", Account, ConnectWorkspaceParams => crate::relay::state::WorkspaceStatus;
-
-    // The uploader.
-    UploaderStatus = "uploader.status", Account, NoParams => account::UploaderStatus;
-    UploaderStart = "uploader.start", Account, NoParams => UploaderStarted;
-    UploaderPause = "uploader.pause", Account, NoParams => UploaderPaused;
-    UploaderResume = "uploader.resume", Account, NoParams => UploaderPaused;
-    UploaderRetry = "uploader.retry", Account, NoParams => UploadsRetried;
-    UploaderCompact = "uploader.compact", Account, NoParams => JournalCompacted;
-    UploaderDisconnect = "uploader.disconnect", Account, NoParams => UploaderDisconnected;
-    UploaderSharingSet = "uploader.sharing.set", Account, SharingParams => SharingChanged;
-    UploaderSessionsList = "uploader.sessions.list", Account, LimitParams => UploadSessions;
-    UploaderSessionsFacets = "uploader.sessions.facets", Account, SessionFacetParams => SessionFacetsPage;
-    UploaderSessionsQuery = "uploader.sessions.query", Account, SessionQueryParams => SessionQueryPage;
-    UploaderSessionsPreview = "uploader.sessions.preview", Account, PreviewParams => UploadPreview;
-    UploaderSessionsInclude = "uploader.sessions.include", Account, SessionKeysParams => SessionsUpdated;
-    UploaderSessionsReset = "uploader.sessions.reset", Account, ResetSessionsParams => SessionsReset;
-    UploaderSessionsDelete = "uploader.sessions.delete", Account, SessionKeysParams => SessionsUpdated;
-    UploaderSessionsExclude = "uploader.sessions.exclude", Account, SessionKeysParams => SessionsUpdated;
-
     // Agents on this computer.
-    SessionsTranscript = "sessions.transcript", Account, transcript::LocalTranscriptParams => transcript::LocalTranscriptPage;
     SessionsList = "sessions.list", Always, NoParams => LocalSessions;
     SessionsTitleCapability = "sessions.title.capability", Always, SessionTitleIdentity => SessionTitleCapability;
     SessionsTitleSet = "sessions.title.set", Always, SessionTitleSetParams => SessionTitleUpdated;
@@ -194,10 +163,6 @@ methods! {
     AgentsIntegrationsUnsubscribe = "agents.integrations.unsubscribe", Always, IntegrationParams => IntegrationChange;
     AgentsIntegrationsCleanUp = "agents.integrations.clean_up", Always, IntegrationParams => IntegrationChange;
     SettingsGet = "settings.get", Always, NoParams => SettingsValues;
-    ToolsStatus = "tools.status", Account, NoParams => ToolsReport;
-    ToolsCheck = "tools.check", Account, NoParams => ToolsReport;
-    ToolsSelect = "tools.select", Account, ToolsSelectParams => ToolsReport;
-    ToolsManage = "tools.manage", Account, ToolsManageParams => ToolsReport;
     SettingsSet = "settings.set", Always, SettingsChange => SettingsValues;
     ActivityList = "activity.list", Always, LimitParams => ActivityLog;
     ClaudeDeliveryStatus = "claude_delivery.status", Always, NoParams => claude_delivery::ClaudeDeliveryStatus;
@@ -244,7 +209,6 @@ methods! {
 
     // Platform services.
     LinksParse = "links.parse", Always, LinkParams => crate::relay::links::DeepLink;
-    TelemetryRecord = "telemetry.record", Account, crate::relay::telemetry::TelemetryEvent => Done;
     LoginItemSet = "login_item.set", Always, LoginItemParams => Done;
     LoginItemStatus = "login_item.status", Always, NoParams => LoginItemState;
 
@@ -307,7 +271,7 @@ events! {
     Shutdown => ShutdownNotice;
     Invalidated => Invalidation;
     Notify => CoreNotification;
-    SignIn => SignInReport;
+    SignIn => account::SignInReport;
 }
 
 /// `method`'s parameters, `null` read as `{}`.

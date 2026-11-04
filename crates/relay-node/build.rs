@@ -41,8 +41,6 @@ fn main() {
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_PROBE_BASE_VERSION");
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_PROBE_CHANGELOG");
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_PROBE_GIT_DIR");
-    println!("cargo:rerun-if-env-changed=AGENT_RELAY_POSTHOG_API_KEY");
-    println!("cargo:rerun-if-env-changed=AGENT_RELAY_POSTHOG_HOST");
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_SITE_URL");
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_URL_SCHEME");
     println!("cargo:rerun-if-changed=build_site.rs");
