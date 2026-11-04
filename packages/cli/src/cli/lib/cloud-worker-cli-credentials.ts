@@ -46,7 +46,10 @@ export type MaterializedCliCredentials = {
 };
 
 /** Result of a write-back pass. */
-export type CliCredentialWriteBack = { written: number; failed: Array<{ credentialId: string; cli: string }> };
+export type CliCredentialWriteBack = {
+  written: number;
+  failed: Array<{ credentialId: string; cli: string }>;
+};
 
 /** The only layouts a login may use: each CLI's own home variable, directory and file. */
 const CLI_LAYOUTS: Record<string, { homeEnv: string; directory: string; file: string }> = {
@@ -57,7 +60,8 @@ const CLI_LAYOUTS: Record<string, { homeEnv: string; directory: string; file: st
 /** Env flag relayflows reads to give the subscription precedence over API keys. */
 export const SUBSCRIPTION_LOGINS_ENV = 'AGENT_RELAY_SUBSCRIPTION_LOGINS';
 
-const CREDENTIAL_PATH = /^\/api\/v1\/workers\/\{workerId\}\/assignments\/[A-Za-z0-9_-]{1,128}\/cli-credentials$/;
+const CREDENTIAL_PATH =
+  /^\/api\/v1\/workers\/\{workerId\}\/assignments\/[A-Za-z0-9_-]{1,128}\/cli-credentials$/;
 const CREDENTIAL_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const WRITE_BACK_TIMEOUT_MS = 15_000;
 const WRITE_BACK_ATTEMPTS = 3;
@@ -134,7 +138,9 @@ export async function materializeCliCredentials(input: {
     throw new Error(`Could not load the run's CLI logins (HTTP ${response.status}).`);
   }
   const body = (await response.json()) as { files?: CredentialFile[]; skipped?: Array<{ reason?: string }> };
-  const expected = new Map((input.credentials.credentials ?? []).map((entry) => [entry.credentialId, entry.cli]));
+  const expected = new Map(
+    (input.credentials.credentials ?? []).map((entry) => [entry.credentialId, entry.cli])
+  );
   const home = path.join(input.runDir, '.cli-home');
   await fsp.mkdir(home, { recursive: true, mode: 0o700 });
   await fsp.chmod(home, 0o700).catch(() => undefined);
@@ -153,7 +159,9 @@ export async function materializeCliCredentials(input: {
       typeof entry.content === 'string' &&
       !(layout.homeEnv in env);
     if (!valid || !layout) {
-      input.log?.(`[cloud-worker] skipping a CLI login that does not match the assignment (${String(entry.cli)})`);
+      input.log?.(
+        `[cloud-worker] skipping a CLI login that does not match the assignment (${String(entry.cli)})`
+      );
       continue;
     }
     const directory = path.join(home, layout.directory);
@@ -165,7 +173,8 @@ export async function materializeCliCredentials(input: {
     env[layout.homeEnv] = directory;
     files.push({ credentialId: entry.credentialId, cli: entry.cli, filePath, original: entry.content });
   }
-  if (files.length) env[SUBSCRIPTION_LOGINS_ENV] = [...new Set(files.map((file) => file.cli))].sort().join(',');
+  if (files.length)
+    env[SUBSCRIPTION_LOGINS_ENV] = [...new Set(files.map((file) => file.cli))].sort().join(',');
   if (body.skipped?.length) {
     input.log?.(`[cloud-worker] ${body.skipped.length} CLI login(s) unavailable for this run`);
   }

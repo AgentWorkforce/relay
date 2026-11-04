@@ -89,8 +89,16 @@ describe('cloud worker CLI logins', () => {
     try {
       const cp = controlPlane([codexFile, grokFile]);
       const log = vi.fn();
-      const materialized = await materializeCliCredentials({ worker, credentials, runDir, fetchImpl: cp.fetchImpl, log });
-      expect(cp.calls[0]!.url).toBe('https://control.test/api/v1/workers/wrk_1/assignments/run_1/cli-credentials');
+      const materialized = await materializeCliCredentials({
+        worker,
+        credentials,
+        runDir,
+        fetchImpl: cp.fetchImpl,
+        log,
+      });
+      expect(cp.calls[0]!.url).toBe(
+        'https://control.test/api/v1/workers/wrk_1/assignments/run_1/cli-credentials'
+      );
       expect(cp.calls[0]!.headers.get('authorization')).toBe('Bearer sh_wrk_secret');
       expect(cp.calls[0]!.headers.get('x-cli-credential-ref')).toBe('sh_clicred_ref');
       expect(materialized.home).toBe(path.join(runDir, '.cli-home'));
@@ -123,7 +131,12 @@ describe('cloud worker CLI logins', () => {
         { ...codexFile, directory: '../../etc' },
         { ...codexFile, cli: 'claude' },
       ]);
-      const materialized = await materializeCliCredentials({ worker, credentials, runDir, fetchImpl: cp.fetchImpl });
+      const materialized = await materializeCliCredentials({
+        worker,
+        credentials,
+        runDir,
+        fetchImpl: cp.fetchImpl,
+      });
       expect(materialized.files).toEqual([]);
       expect(materialized.env).toEqual({});
       expect(fs.existsSync(path.join(runDir, '.cli-home', '.grok'))).toBe(false);
@@ -155,7 +168,12 @@ describe('cloud worker CLI logins', () => {
       ]) {
         const cp = controlPlane([]);
         await expect(
-          materializeCliCredentials({ worker, credentials: { ...credentials, path: hostile }, runDir, fetchImpl: cp.fetchImpl })
+          materializeCliCredentials({
+            worker,
+            credentials: { ...credentials, path: hostile },
+            runDir,
+            fetchImpl: cp.fetchImpl,
+          })
         ).rejects.toThrow(/credential route/);
         expect(cp.calls).toHaveLength(0);
       }
@@ -168,7 +186,12 @@ describe('cloud worker CLI logins', () => {
     const runDir = tmp('cli-creds-');
     try {
       const cp = controlPlane([codexFile, grokFile]);
-      const materialized = await materializeCliCredentials({ worker, credentials, runDir, fetchImpl: cp.fetchImpl });
+      const materialized = await materializeCliCredentials({
+        worker,
+        credentials,
+        runDir,
+        fetchImpl: cp.fetchImpl,
+      });
       const refreshed = JSON.stringify({ auth_mode: 'chatgpt', tokens: { refresh_token: 'rt-secret-2' } });
       fs.writeFileSync(materialized.files[0]!.filePath, refreshed);
       if (posix) {
@@ -177,11 +200,18 @@ describe('cloud worker CLI logins', () => {
         fs.rmSync(materialized.files[1]!.filePath);
         fs.symlinkSync(secret, materialized.files[1]!.filePath);
       }
-      const outcome = await writeBackCliCredentials({ worker, credentials, materialized, fetchImpl: cp.fetchImpl });
+      const outcome = await writeBackCliCredentials({
+        worker,
+        credentials,
+        materialized,
+        fetchImpl: cp.fetchImpl,
+      });
       expect(outcome).toEqual({ written: 1, failed: [] });
       const puts = cp.calls.filter((call) => call.method === 'PUT');
       expect(puts).toHaveLength(1);
-      expect(puts[0]!.url).toBe('https://control.test/api/v1/workers/wrk_1/assignments/run_1/cli-credentials/c-codex');
+      expect(puts[0]!.url).toBe(
+        'https://control.test/api/v1/workers/wrk_1/assignments/run_1/cli-credentials/c-codex'
+      );
       expect(puts[0]!.headers.get('x-cli-credential-ref')).toBe('sh_clicred_ref');
       expect(JSON.parse(puts[0]!.body!)).toEqual({ content: refreshed });
     } finally {
@@ -193,7 +223,12 @@ describe('cloud worker CLI logins', () => {
     const runDir = tmp('cli-creds-');
     try {
       const cp = controlPlane([codexFile], 503);
-      const materialized = await materializeCliCredentials({ worker, credentials, runDir, fetchImpl: cp.fetchImpl });
+      const materialized = await materializeCliCredentials({
+        worker,
+        credentials,
+        runDir,
+        fetchImpl: cp.fetchImpl,
+      });
       fs.writeFileSync(materialized.files[0]!.filePath, '{"changed":true}');
       const outcome = await writeBackCliCredentials({
         worker,
@@ -220,7 +255,10 @@ describe('cloud worker CLI logins', () => {
         const authPath = path.join(options.env.CODEX_HOME!, 'auth.json');
         fileDuringRun = fs.readFileSync(authPath, 'utf-8');
         // The CLI refreshes its token during the run.
-        fs.writeFileSync(authPath, JSON.stringify({ auth_mode: 'chatgpt', tokens: { refresh_token: 'rt-secret-3' } }));
+        fs.writeFileSync(
+          authPath,
+          JSON.stringify({ auth_mode: 'chatgpt', tokens: { refresh_token: 'rt-secret-3' } })
+        );
         const child = new EventEmitter() as EventEmitter & { killed: boolean; kill: () => boolean };
         child.killed = false;
         child.kill = () => true;
@@ -232,7 +270,11 @@ describe('cloud worker CLI logins', () => {
         error: vi.fn(),
         exit: vi.fn() as never,
         // The run dir is kept, but the logins must still be removed.
-        env: { AGENT_RELAY_HOME: home, CODEX_HOME: '/home/user/.codex', AGENT_RELAY_WORKER_KEEP_RUN_DIR: '1' },
+        env: {
+          AGENT_RELAY_HOME: home,
+          CODEX_HOME: '/home/user/.codex',
+          AGENT_RELAY_WORKER_KEEP_RUN_DIR: '1',
+        },
         spawnProcess,
         now: () => new Date(),
         cwd: () => home,
