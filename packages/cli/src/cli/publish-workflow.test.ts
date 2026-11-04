@@ -150,6 +150,7 @@ function expressionValue(
     .replace(/needs\.([\w-]+)\.result/g, (_, name) => JSON.stringify(results[name] ?? 'success'))
     .replace(/needs\.build\.outputs\.is_prerelease/g, JSON.stringify(String(prerelease)))
     .replace(/github\.event\.inputs\.([\w-]+)/g, (_, name) => JSON.stringify(inputs[name] ?? ''))
+    .replace(/steps\.release_tag\.outputs\.release_exists/g, JSON.stringify(''))
     .replace(/always\(\)/g, 'true');
   return Function(`return (${javascript});`)();
 }
@@ -162,6 +163,34 @@ function condition(
 ): boolean {
   return Boolean(expressionValue(expression, inputs, results, prerelease));
 }
+
+// GitHub implicitly adds success() unless the expression calls a status function.
+function jobRuns(job: WorkflowJob, inputs: Record<string, string>, results: Record<string, string> = {}, prerelease = false): boolean {
+  const statuses = needsOf(job).map((name) => results[name] ?? 'success');
+  const success = statuses.every((status) => status === 'success');
+  if (!/\b(always|success|failure|cancelled)\(/.test(job.if ?? '') && !success) return false;
+  const expression = job.if?.replace(/success\(\)/g, String(success))
+    .replace(/failure\(\)/g, String(statuses.includes('failure')))
+    .replace(/cancelled\(\)/g, String(statuses.includes('cancelled')));
+  return condition(expression, inputs, results, prerelease);
+}
+
+describe('Actions job status semantics', () => {
+  it('applies implicit success to ordinary conditions and preserves explicit status expressions', () => {
+    const inputs = { package: 'all' };
+    const ordinary = { needs: ['dependency'], if: "github.event.inputs.package == 'all'" };
+    expect(jobRuns(ordinary, inputs)).toBe(true);
+    for (const status of ['failure', 'cancelled', 'skipped']) {
+      expect(jobRuns(ordinary, inputs, { dependency: status })).toBe(false);
+      expect(jobRuns({ ...ordinary, if: 'always()' }, inputs, { dependency: status })).toBe(true);
+    }
+    expect(jobRuns({ ...ordinary, if: 'success()' }, inputs, { dependency: 'failure' })).toBe(false);
+    expect(jobRuns({ ...ordinary, if: 'failure()' }, inputs, { dependency: 'failure' })).toBe(true);
+    expect(jobRuns({ ...ordinary, if: 'failure()' }, inputs, { dependency: 'skipped' })).toBe(false);
+    expect(jobRuns({ ...ordinary, if: 'cancelled()' }, inputs, { dependency: 'cancelled' })).toBe(true);
+    expect(jobRuns({ ...ordinary, if: 'cancelled()' }, inputs, { dependency: 'failure' })).toBe(false);
+  });
+});
 
 describe('unified relay-node release', () => {
   it('uses one release workflow and builds all supported node targets at the CLI version', () => {
@@ -196,13 +225,13 @@ describe('unified relay-node release', () => {
     expect(publishers.length).toBeGreaterThan(0);
     for (const [name, job] of publishers) {
       expect(needsOf(job), name).toContain('create-release');
+      expect(['all', 'main', 'sdk', 'cli-prerelease'].some((mode) => jobRuns(job, { package: mode, dry_run: 'false' })), `${name} must publish in at least one mode`).toBe(true);
       for (const result of ['failure', 'cancelled', 'skipped']) {
-        // Jobs without an explicit status function inherit success() in Actions.
-        if (job.if?.includes('always()')) {
-          for (const mode of ['all', 'main', 'sdk', 'cli-prerelease']) {
+        for (const mode of ['all', 'main', 'sdk', 'cli-prerelease']) {
+          for (const dryRun of ['true', 'false']) {
             expect(
-              condition(job.if, { package: mode, dry_run: 'false' }, { 'create-release': result }),
-              `${name}, ${mode}, ${result}`
+              jobRuns(job, { package: mode, dry_run: dryRun }, { 'create-release': result }),
+              `${name}, ${mode}, dry=${dryRun}, ${result}`
             ).toBe(false);
           }
         }
@@ -215,6 +244,7 @@ describe('unified relay-node release', () => {
     (mode) => {
       const release = loadPublishWorkflow().jobs['create-release'];
       expect(needsOf(release)).toContain('build-node');
+      expect(needsOf(release)).toContain('smoke-broker-packages');
       const results = {
         'build-standalone': mode === 'sdk' || mode === 'cli-prerelease' ? 'skipped' : 'success',
         'verify-binaries': mode === 'sdk' || mode === 'cli-prerelease' ? 'skipped' : 'success',
@@ -238,6 +268,7 @@ describe('unified relay-node release', () => {
           ).toBe(false);
         }
         for (const failed of ['failure', 'cancelled', 'skipped']) {
+          expect(jobRuns(release, { package: mode, dry_run: dryRun }, { ...results, 'smoke-broker-packages': failed })).toBe(false);
           expect(
             condition(release.if, { package: mode, dry_run: dryRun }, { ...results, 'build-node': failed })
           ).toBe(false);
@@ -344,7 +375,7 @@ describe('unified relay-node release', () => {
               VERSION: '16.0.1',
               PACKAGE_MODE: 'all',
               GITHUB_SHA: source,
-              GITHUB_OUTPUT: output,
+              GITHUB_OUTPUT: output, DRY_RUN: 'true',
             },
             stdio: 'pipe',
           });
@@ -368,9 +399,7 @@ describe('unified relay-node release', () => {
       const stable = release.steps?.find((step) => step.name === 'Create GitHub Release (stable)');
       const prerelease = release.steps?.find((step) => step.name === 'Create GitHub Release (prerelease)');
       const hasStandalone = mode === 'all' || mode === 'main';
-      expect(expressionValue(String(stable?.with?.make_latest), { package: mode }, {})).toBe(
-        String(hasStandalone)
-      );
+      expect(stable?.with?.make_latest).toBe(false);
       expect(prerelease?.with?.make_latest).toBe(false);
       const notes = release.steps?.find((step) => step.name === 'Write mode-specific release notes');
       expect(notes?.env?.PACKAGE_MODE).toBe('${{ github.event.inputs.package }}');
@@ -431,6 +460,153 @@ describe('unified relay-node release', () => {
           expect(Boolean(step.with?.prerelease)).toBe(prerelease);
         }
       }
+    }
+  });
+});
+
+describe('release finalization', () => {
+  it.each(['all', 'main', 'sdk', 'cli-prerelease'])('finalizes %s only after npm verification and outside dry runs', (mode) => {
+    const job = loadPublishWorkflow().jobs['finalize-release'];
+    expect(job).toBeDefined();
+    const results: Record<string, string> = mode === 'main' ? { 'verify-publish-sdk': 'skipped' } : {};
+    for (const prerelease of [false, true]) {
+      for (const dryRun of ['false', 'true']) {
+        const inputs = { package: mode, dry_run: dryRun, hotfix: 'false' };
+        const expected = dryRun === 'false' && (mode === 'all' || mode === 'main');
+        expect(jobRuns(job, inputs, results, prerelease)).toBe(expected);
+        if (!expected) continue;
+        const required = ['build', 'create-release', 'publish-sdk-internal-deps', 'publish-broker-packages', 'publish-main', 'verify-publish', ...(mode === 'all' ? ['publish-packages', 'publish-harnesses', 'publish-fleet', 'verify-publish-sdk'] : ['publish-main-runtime-deps', 'publish-main-harnesses', 'publish-main-fleet'])];
+        for (const dependency of required) {
+          expect(needsOf(job)).toContain(dependency);
+          for (const status of ['failure', 'cancelled', 'skipped']) {
+            expect(jobRuns(job, inputs, { ...results, [dependency]: status }, prerelease), `${mode}: ${dependency} ${status}`).toBe(false);
+          }
+        }
+      }
+    }
+    const promote = job.steps?.find((step) => step.name === 'Promote verified stable release to latest');
+    expect(promote?.run).toContain('gh release edit "v${VERSION}"');
+    expect(promote?.run).toContain('--latest');
+    expect(condition(promote?.if, {}, {}, false)).toBe(true);
+    expect(condition(promote?.if, {}, {}, true)).toBe(false);
+  });
+
+  it('permits intentionally skipped SDK verification only for main or explicit all hotfix', () => {
+    const job = loadPublishWorkflow().jobs['finalize-release'];
+    const skipped = { 'verify-publish-sdk': 'skipped' };
+    expect(jobRuns(job, { package: 'all', dry_run: 'false', hotfix: 'false' }, skipped)).toBe(false);
+    expect(jobRuns(job, { package: 'all', dry_run: 'false', hotfix: 'true' }, skipped)).toBe(true);
+    for (const status of ['failure', 'cancelled']) {
+      expect(jobRuns(job, { package: 'all', dry_run: 'false', hotfix: 'true' }, { 'verify-publish-sdk': status })).toBe(false);
+    }
+  });
+
+  it('preserves an existing release latest status and uploads only missing assets on retries', () => {
+    const release = loadPublishWorkflow().jobs['create-release'];
+    const retry = release.steps?.find((step) => step.name === 'Upload only missing assets on release retries');
+    const withExistingRelease = (expression: string | undefined) => expression?.replace('steps.release_tag.outputs.release_exists', "'true'");
+    for (const step of release.steps?.filter((step) => step.uses?.startsWith('softprops/action-gh-release@')) ?? []) {
+      expect(condition(withExistingRelease(step.if), { dry_run: 'false' }, {}, false)).toBe(false);
+      expect(condition(withExistingRelease(step.if), { dry_run: 'false' }, {}, true)).toBe(false);
+    }
+    expect(condition(withExistingRelease(retry?.if), { dry_run: 'false' }, {})).toBe(true);
+    expect(condition(withExistingRelease(retry?.if), { dry_run: 'true' }, {})).toBe(false);
+    const directory = mkdtempSync(resolve(tmpdir(), 'relay-retry-assets-'));
+    try {
+      mkdirSync(resolve(directory, 'release-binaries'));
+      writeFileSync(resolve(directory, 'release-binaries', 'existing'), 'rebuilt bytes must not replace original');
+      writeFileSync(resolve(directory, 'release-binaries', 'missing'), 'new asset');
+      const mock = `gh() {
+        if [ "$1 $2" = "release view" ]; then printf 'existing\\n';
+        elif [ "$1 $2" = "release upload" ]; then printf '%s\\n' "$*" >> calls;
+        else return 99; fi
+      }
+`;
+      execFileSync('bash', ['-c', mock + retry!.run!.replaceAll('/tmp/existing-release-assets', 'existing-release-assets')], {
+        cwd: directory, env: { ...process.env, VERSION: '2.0.0', GITHUB_REPOSITORY: 'test/relay' }, stdio: 'pipe',
+      });
+      const calls = readFileSync(resolve(directory, 'calls'), 'utf8').trim().split('\n');
+      expect(calls).toEqual(['release upload v2.0.0 release-binaries/missing --repo test/relay']);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps branch updates and latest promotion out of the pre-npm asset job', () => {
+    const release = loadPublishWorkflow().jobs['create-release'];
+    const commands = release.steps?.map((step) => step.run ?? '').join('\n') ?? '';
+    expect(commands).not.toMatch(/git push origin (HEAD:|main|staging)/);
+    expect(commands).not.toContain('git pull --rebase');
+    expect(commands).not.toContain('--latest');
+    for (const step of release.steps?.filter((step) => step.uses?.startsWith('softprops/action-gh-release@')) ?? []) {
+      expect(step.with?.make_latest).toBe(false);
+    }
+  });
+
+  it.each(['main', 'staging', 'new-staging', 'older-staging', 'newer-release'])('safely retries finalization onto %s while preserving newer source and generated commits', (scenario) => {
+    const job = loadPublishWorkflow().jobs['finalize-release'];
+    const advance = job.steps?.find((step) => step.name === 'Advance release branch without rewriting history');
+    expect(advance?.run).toBeTruthy();
+    const directory = mkdtempSync(resolve(tmpdir(), 'relay-finalize-'));
+    try {
+      const origin = resolve(directory, 'origin.git');
+      const seed = resolve(directory, 'seed');
+      const checkout = resolve(directory, 'checkout');
+      const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' }).toString().trim();
+      git(directory, 'init', '--bare', origin);
+      git(directory, 'init', '-b', 'main', seed);
+      git(seed, 'config', 'user.name', 'Release test');
+      git(seed, 'config', 'user.email', 'release@example.test');
+      git(seed, 'remote', 'add', 'origin', origin);
+      writeFileSync(resolve(seed, 'package.json'), '{"version":"1.0.0"}\n');
+      git(seed, 'add', '.'); git(seed, 'commit', '-m', 'source');
+      const base = git(seed, 'rev-parse', 'HEAD');
+      writeFileSync(resolve(seed, 'source-runtime.txt'), 'runtime source included in release build\n');
+      git(seed, 'add', '.'); git(seed, 'commit', '-m', 'runtime source');
+      const source = git(seed, 'rev-parse', 'HEAD');
+      writeFileSync(resolve(seed, 'package.json'), '{"version":"2.0.0"}\n');
+      git(seed, 'commit', '-am', 'version');
+      writeFileSync(resolve(seed, 'trajectory.txt'), 'generated trajectory summary\n');
+      git(seed, 'add', '.'); git(seed, 'commit', '-m', 'compact trajectory');
+      git(seed, 'tag', '-a', 'v2.0.0', '-m', 'Release', '-m', `Source: ${source}`, '-m', 'Mode: all');
+      const tagged = git(seed, 'rev-parse', 'v2.0.0^{}');
+      git(seed, 'checkout', 'main'); git(seed, 'reset', '--hard', source);
+      writeFileSync(resolve(seed, 'newer.txt'), 'new source landed while publishing\n');
+      git(seed, 'add', '.'); git(seed, 'commit', '-m', 'new source');
+      const newer = git(seed, 'rev-parse', 'HEAD');
+      git(seed, 'push', 'origin', 'main', '--tags');
+      if (scenario === 'staging') git(seed, 'push', 'origin', 'main:staging');
+      if (scenario === 'older-staging') git(seed, 'push', 'origin', `${base}:refs/heads/staging`);
+      git(directory, 'clone', '--branch', 'main', origin, checkout);
+      const branch = scenario === 'main' || scenario === 'newer-release' ? 'main' : 'staging';
+      const env = { ...process.env, VERSION: '2.0.0', PACKAGE_MODE: 'all', IS_PRERELEASE: String(branch === 'staging'), GITHUB_SHA: source };
+      const run = () => execFileSync('bash', ['-c', advance!.run!], { cwd: checkout, env, stdio: 'pipe' });
+      expect(run).not.toThrow();
+      const firstTip = git(directory, '--git-dir', origin, 'rev-parse', branch);
+      // Another source commit lands after finalization but before a job retry.
+      git(seed, 'fetch', 'origin');
+      git(seed, 'checkout', '-B', 'retry-source', `origin/${branch}`);
+      writeFileSync(resolve(seed, 'after-finalization.txt'), 'source landed after finalization\n');
+      if (scenario === 'newer-release') writeFileSync(resolve(seed, 'package.json'), '{"version":"3.0.0"}\n');
+      git(seed, 'add', '.'); git(seed, 'commit', '-m', 'source after finalization');
+      git(seed, 'push', 'origin', `HEAD:refs/heads/${branch}`);
+      const advanced = git(seed, 'rev-parse', 'HEAD');
+      if (scenario === 'newer-release') expect(run).toThrow();
+      else expect(run).not.toThrow();
+      expect(git(directory, '--git-dir', origin, 'rev-parse', branch)).toBe(advanced);
+      if (scenario === 'newer-release') return;
+      git(checkout, 'merge-base', '--is-ancestor', firstTip, 'HEAD');
+      expect(readFileSync(resolve(checkout, 'after-finalization.txt'), 'utf8')).toContain('source landed');
+      expect(git(checkout, 'rev-parse', 'v2.0.0^{}')).toBe(tagged);
+      expect(JSON.parse(readFileSync(resolve(checkout, 'package.json'), 'utf8')).version).toBe('2.0.0');
+      expect(readFileSync(resolve(checkout, 'trajectory.txt'), 'utf8')).toContain('generated trajectory');
+      expect(readFileSync(resolve(checkout, 'source-runtime.txt'), 'utf8')).toContain('runtime source');
+      if (scenario === 'main' || scenario === 'staging') {
+        expect(readFileSync(resolve(checkout, 'newer.txt'), 'utf8')).toContain('new source');
+        git(checkout, 'merge-base', '--is-ancestor', newer, 'HEAD');
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 });
