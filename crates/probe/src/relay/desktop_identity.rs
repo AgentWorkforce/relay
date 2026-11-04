@@ -81,6 +81,19 @@ fn owner_matches(owner: &AgentOwner, account: &CloudAccount) -> bool {
             .is_none_or(|workspace| workspace == account.workspace_id)
 }
 
+/// Whether `error` from the identity route means the site has none: a 404
+/// beside a site other than production, which always has it. A self-hosted
+/// site without it links no desktop identities to hosted MCP sessions,
+/// which is not a failure of this computer's sign-in.
+fn identity_sync_unsupported(site: &str, error: &CloudError) -> bool {
+    site != crate::relay::links::DEFAULT_SITE_URL
+        && matches!(error, CloudError::Status { status: 404, .. })
+}
+
+fn sync_unsupported_message(site: &str) -> String {
+    format!("Desktop identity sync is not available on {site}; this computer's agents are not linked to hosted MCP sessions.")
+}
+
 fn sync_failure_message(error: &CloudError) -> String {
     match error {
         CloudError::Status { status, .. } => {
@@ -251,6 +264,22 @@ impl Core {
                     .remember_synced(account.clone(), generation, body);
                 self.note_identity_sync(Some(true));
                 self.apply_mcp_links(&account.workspace_id, &clears, &response);
+            }
+            Err(error) if identity_sync_unsupported(&account.site_url, &error) => {
+                // The site has no identity route: nothing to sync, said
+                // once, then backed off like a refusal; no failure stands
+                // against the sign-in (`note_identity_sync`: did not run).
+                self.desktop_identity_sync.forget_synced();
+                self.note_identity_sync(None);
+                let site = account.site_url.clone();
+                if self
+                    .desktop_identity_sync
+                    .remember_refusal(account, generation, body)
+                {
+                    let message = sync_unsupported_message(&site);
+                    crate::relay::diagnostics::write(format_args!("relay: {message}"));
+                    self.hub.activity(Level::Info, message);
+                }
             }
             Err(error) => {
                 self.desktop_identity_sync.forget_synced();
@@ -641,6 +670,8 @@ mod tests {
         on_request: Mutex<Option<Box<dyn Fn() + Send>>>,
         /// When set, every request fails with this error.
         failure: Mutex<Option<CloudError>>,
+        /// The account's site; production when unset.
+        site: Mutex<Option<String>>,
     }
 
     impl CloudAccess for FakeCloud {
@@ -654,7 +685,12 @@ mod tests {
 
         fn account(&self) -> Option<CloudAccount> {
             Some(CloudAccount {
-                site_url: "https://agentrelay.com".into(),
+                site_url: self
+                    .site
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .unwrap_or_else(|| "https://agentrelay.com".into()),
                 workspace_id: WORKSPACE.into(),
                 user_id: Some("user-1".into()),
             })
@@ -1107,6 +1143,87 @@ mod tests {
             .unwrap();
         core.sync_desktop_identities().await;
         assert_eq!(cloud.calls.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_404_means_no_identity_route_only_beside_another_site() {
+        let missing = CloudError::Status {
+            status: 404,
+            message: Some("Route not found".into()),
+        };
+        assert!(identity_sync_unsupported(
+            "https://gcp-proof.example",
+            &missing
+        ));
+        assert!(!identity_sync_unsupported(
+            crate::relay::links::DEFAULT_SITE_URL,
+            &missing
+        ));
+        for error in [
+            CloudError::Unreachable,
+            CloudError::Rejected,
+            CloudError::Status {
+                status: 403,
+                message: None,
+            },
+            CloudError::Status {
+                status: 503,
+                message: None,
+            },
+        ] {
+            assert!(
+                !identity_sync_unsupported("https://gcp-proof.example", &error),
+                "{error}"
+            );
+        }
+    }
+
+    /// A self-hosted site without the identity route (relaycontrol, seen
+    /// in the gcp-proof end-to-end test) is not a failed sync: said once,
+    /// at Info, and not held against the sign-in.
+    #[tokio::test]
+    async fn a_site_without_the_identity_route_is_reported_once_and_not_as_a_failure() {
+        let (_temp, core, cloud) = core();
+        *cloud.site.lock().unwrap() = Some("https://gcp-proof.example".into());
+        *cloud.failure.lock().unwrap() = Some(CloudError::Status {
+            status: 404,
+            message: Some("Route not found".into()),
+        });
+        core.store
+            .update(|store| {
+                account_cloud(store);
+                assert!(store.add(registration("first", "agent-1", KEY), Secret::new("one")));
+            })
+            .unwrap();
+        let mut events = core.hub.subscribe();
+
+        core.sync_desktop_identities().await;
+        core.sync_desktop_identities().await;
+
+        let reported = std::iter::from_fn(|| events.try_recv().ok())
+            .filter(|event| event.topic == crate::relay::protocol::Topic::Activity)
+            .map(|event| {
+                (
+                    event.data["level"].as_str().unwrap_or_default().to_string(),
+                    event.data["message"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reported,
+            [(
+                "info".to_string(),
+                "Desktop identity sync is not available on https://gcp-proof.example; this computer's agents are not linked to hosted MCP sessions.".to_string()
+            )]
+        );
+        assert_eq!(
+            cloud.calls.lock().unwrap().len(),
+            1,
+            "backed off like a refusal"
+        );
     }
 
     #[tokio::test]
