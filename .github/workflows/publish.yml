@@ -1844,7 +1844,7 @@ jobs:
           node-version: '22.14.0'
 
       - name: Generate changelog entry
-        if: github.event.inputs.dry_run != 'true' && steps.release_tag.outputs.exists != 'true'
+        if: github.event.inputs.dry_run != 'true' && steps.release_tag.outputs.exists != 'true' && (github.event.inputs.package == 'all' || github.event.inputs.package == 'main')
         run: |
           NEW_VERSION="${{ needs.build.outputs.new_version }}"
           IS_PRERELEASE="${{ needs.build.outputs.is_prerelease }}"
@@ -2051,7 +2051,7 @@ jobs:
           node /tmp/gen-changelog.mjs "$LAST_TAG" "$NEW_VERSION" "$TODAY"
 
       - name: Compact trajectories
-        if: github.event.inputs.dry_run != 'true' && steps.release_tag.outputs.exists != 'true'
+        if: github.event.inputs.dry_run != 'true' && steps.release_tag.outputs.exists != 'true' && (github.event.inputs.package == 'all' || github.event.inputs.package == 'main')
         run: |
           cp package-lock.json /tmp/release-package-lock.json
           if command -v npx &>/dev/null && [ -d ".trajectories" ]; then
@@ -2096,12 +2096,16 @@ jobs:
           git add package.json package-lock.json packages/*/package.json CHANGELOG.md
           # Stage optional paths that may not exist (trajectories already committed in prior step)
           git add .trajectories/ 2>/dev/null || true
+          # Partial modes get an immutable versioned tag for node downloads,
+          # but preserve their existing behavior of not advancing main/staging.
           TAG_TARGET=""
           if ! git diff --staged --quiet; then
             if [ "$IS_PRERELEASE" = "true" ]; then
               git commit -m "chore(prerelease): v${NEW_VERSION}"
               # Prerelease: push to staging branch, not main
-              git push origin HEAD:staging
+              if [[ "${{ github.event.inputs.package }}" == "all" || "${{ github.event.inputs.package }}" == "main" ]]; then
+                git push origin HEAD:staging
+              fi
             else
               git commit -m "chore(release): v${NEW_VERSION}"
               # Tag the commit whose tree is exactly what this run built and
@@ -2110,8 +2114,10 @@ jobs:
               # published artifacts do not contain.
               TAG_TARGET=$(git rev-parse HEAD)
               # Rebase on latest main in case it advanced during the pipeline
-              git pull --rebase origin main
-              git push origin HEAD:main
+              if [[ "${{ github.event.inputs.package }}" == "all" || "${{ github.event.inputs.package }}" == "main" ]]; then
+                git pull --rebase origin main
+                git push origin HEAD:main
+              fi
             fi
           fi
 
@@ -2119,50 +2125,52 @@ jobs:
           git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}" -m "Source: ${GITHUB_SHA}" "$TAG_TARGET"
           git push origin "v${NEW_VERSION}"
 
+      - name: Write mode-specific release notes
+        env:
+          VERSION: ${{ needs.build.outputs.new_version }}
+          PACKAGE_MODE: ${{ github.event.inputs.package }}
+          IS_PRERELEASE: ${{ needs.build.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Agent Relay v${VERSION}"
+            echo
+            echo "Release mode: ${PACKAGE_MODE}; npm dist-tag: ${NPM_TAG}."
+            echo "npm packages are published after the release assets are verified."
+            echo
+            if [ "$PACKAGE_MODE" = "sdk" ]; then
+              echo "Install the SDK: npm install @agent-relay/sdk@${VERSION}"
+            else
+              echo "Install the CLI: npm install -g agent-relay@${VERSION}"
+              echo "Install the SDK: npm install @agent-relay/sdk@${VERSION}"
+            fi
+            echo
+            echo "### agent-relay-node binaries"
+            echo "The CLI downloads agent-relay-node-${VERSION}-{linux,darwin}-{x64,arm64}"
+            echo "or agent-relay-node-${VERSION}-windows-x64.exe from this release"
+            echo 'and verifies the matching .sha256 sidecar.'
+            echo
+            echo "### Broker binaries"
+            echo 'agent-relay-broker-{linux,darwin}-{x64,arm64} and agent-relay-broker-win32-x64.exe.'
+            if [ "$PACKAGE_MODE" = "all" ] || [ "$PACKAGE_MODE" = "main" ]; then
+              echo
+              echo "### Standalone CLI binaries"
+              echo 'agent-relay-{linux,darwin}-{x64,arm64}, also available compressed as .gz.'
+              if [ "$IS_PRERELEASE" != "true" ]; then
+                echo
+                echo 'Install the latest stable release: curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash'
+              fi
+            fi
+          } > /tmp/release-notes.md
+
       - name: Create GitHub Release (stable)
         if: github.event.inputs.dry_run != 'true' && needs.build.outputs.is_prerelease != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.build.outputs.new_version }}
           name: v${{ needs.build.outputs.new_version }}
-          body: |
-            ## agent-relay v${{ needs.build.outputs.new_version }}
-
-            ### Quick Install (no Node.js required!)
-            ```bash
-            curl -fsSL https://raw.githubusercontent.com/AgentWorkforce/relay/main/install.sh | bash
-            ```
-
-            ### npm install
-            ```bash
-            npm install -g agent-relay@${{ needs.build.outputs.new_version }}
-            npm install @agent-relay/sdk@${{ needs.build.outputs.new_version }}
-            ```
-
-            ### Standalone binaries
-            Self-contained executables (no runtime dependencies).
-            **Use `.gz` versions for faster downloads (~60-70% smaller).**
-
-            | Platform | Compressed (recommended) | Uncompressed |
-            |----------|--------------------------|--------------|
-            | Linux x64 | `agent-relay-linux-x64.gz` | `agent-relay-linux-x64` |
-            | Linux ARM64 | `agent-relay-linux-arm64.gz` | `agent-relay-linux-arm64` |
-            | macOS Intel | `agent-relay-darwin-x64.gz` | `agent-relay-darwin-x64` |
-            | macOS Apple Silicon | `agent-relay-darwin-arm64.gz` | `agent-relay-darwin-arm64` |
-
-            ### agent-relay-node binaries
-            The CLI downloads `agent-relay-node-${{ needs.build.outputs.new_version }}-{linux,darwin}-{x64,arm64}`
-            or `agent-relay-node-${{ needs.build.outputs.new_version }}-windows-x64.exe`
-            from this release and verifies the matching `.sha256` sidecar.
-
-            ### agent-relay-broker binaries
-            Broker binary for spawning and managing agents:
-            - `agent-relay-broker-linux-x64` - Linux x86_64
-            - `agent-relay-broker-linux-arm64` - Linux ARM64
-            - `agent-relay-broker-darwin-x64` - macOS Intel
-            - `agent-relay-broker-darwin-arm64` - macOS Apple Silicon
-            - `agent-relay-broker-win32-x64.exe` - Windows x86_64
-
+          make_latest: ${{ (github.event.inputs.package == 'all' || github.event.inputs.package == 'main') && 'true' || 'false' }}
+          body_path: /tmp/release-notes.md
           files: |
             release-binaries/*
           overwrite_files: false
@@ -2178,43 +2186,8 @@ jobs:
           tag_name: v${{ needs.build.outputs.new_version }}
           name: v${{ needs.build.outputs.new_version }} (prerelease)
           prerelease: true
-          body: |
-            ## agent-relay v${{ needs.build.outputs.new_version }} (prerelease)
-
-            > This is a **prerelease** version published under the `${{ github.event.inputs.tag }}` npm dist-tag.
-            > It is not installed by default. Use `npm install agent-relay@${{ github.event.inputs.tag }}` to test.
-
-            ### Install this prerelease
-            ```bash
-            npm install -g agent-relay@${{ needs.build.outputs.new_version }}
-            npm install @agent-relay/sdk@${{ needs.build.outputs.new_version }}
-            ```
-
-            Or by dist-tag:
-            ```bash
-            npm install -g agent-relay@${{ github.event.inputs.tag }}
-            ```
-
-            ### Standalone binaries
-            | Platform | Compressed | Uncompressed |
-            |----------|------------|--------------|
-            | Linux x64 | `agent-relay-linux-x64.gz` | `agent-relay-linux-x64` |
-            | Linux ARM64 | `agent-relay-linux-arm64.gz` | `agent-relay-linux-arm64` |
-            | macOS Intel | `agent-relay-darwin-x64.gz` | `agent-relay-darwin-x64` |
-            | macOS Apple Silicon | `agent-relay-darwin-arm64.gz` | `agent-relay-darwin-arm64` |
-
-            ### agent-relay-node binaries
-            The CLI downloads `agent-relay-node-${{ needs.build.outputs.new_version }}-{linux,darwin}-{x64,arm64}`
-            or `agent-relay-node-${{ needs.build.outputs.new_version }}-windows-x64.exe`
-            from this release and verifies the matching `.sha256` sidecar.
-
-            ### agent-relay-broker binaries
-            - `agent-relay-broker-{linux,darwin}-{x64,arm64}`
-
-            ### Next Steps
-            1. Deploy to staging: Run **Deploy Staging** workflow in relay-cloud with `relay_version=${{ needs.build.outputs.new_version }}`
-            2. Test on staging environment
-            3. If validated, run this workflow again with `tag=latest` for the stable release
+          make_latest: false
+          body_path: /tmp/release-notes.md
           files: |
             release-binaries/*
           overwrite_files: false
@@ -2231,6 +2204,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/published-node-assets
+          # Existing assets remain immutable on retries, even if rebuilding the
+          # same source produces different bytes. The tag's Source annotation
+          # pins their source; verify the actual published binary/sidecar pairs.
           gh release download "v${VERSION}" --repo "$GITHUB_REPOSITORY" \
             --pattern "agent-relay-node-${VERSION}-*" --dir /tmp/published-node-assets
           cd /tmp/published-node-assets
