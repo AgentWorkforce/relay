@@ -1750,6 +1750,8 @@ jobs:
       - name: Check existing release tag
         id: release_tag
         env:
+          GH_TOKEN: ${{ steps.create_github_app_token.outputs.token || github.token }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
           VERSION: ${{ needs.build.outputs.new_version }}
           PACKAGE_MODE: ${{ github.event.inputs.package }}
         run: |
@@ -1761,6 +1763,14 @@ jobs:
               exit 1
             fi
             echo 'exists=true' >> "$GITHUB_OUTPUT"
+            if [ "$DRY_RUN" != "true" ]; then
+              if response=$(gh api --include "repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}"); then
+                echo 'release_exists=true' >> "$GITHUB_OUTPUT"
+              elif ! grep -Eq '^HTTP/[0-9.]+ 404' <<<"$response"; then
+                echo '::error::Could not check the existing release safely.'
+                exit 1
+              fi
+            fi
           fi
 
       - name: Download build artifacts
@@ -2153,7 +2163,7 @@ jobs:
           } > /tmp/release-notes.md
 
       - name: Create GitHub Release (stable)
-        if: github.event.inputs.dry_run != 'true' && needs.build.outputs.is_prerelease != 'true'
+        if: github.event.inputs.dry_run != 'true' && steps.release_tag.outputs.release_exists != 'true' && needs.build.outputs.is_prerelease != 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.build.outputs.new_version }}
@@ -2169,7 +2179,7 @@ jobs:
           GITHUB_TOKEN: ${{ steps.create_github_app_token.outputs.token }}
 
       - name: Create GitHub Release (prerelease)
-        if: github.event.inputs.dry_run != 'true' && needs.build.outputs.is_prerelease == 'true'
+        if: github.event.inputs.dry_run != 'true' && steps.release_tag.outputs.release_exists != 'true' && needs.build.outputs.is_prerelease == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.build.outputs.new_version }}
@@ -2184,6 +2194,22 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ steps.create_github_app_token.outputs.token }}
+
+      - name: Upload only missing assets on release retries
+        if: github.event.inputs.dry_run != 'true' && steps.release_tag.outputs.release_exists == 'true'
+        env:
+          GH_TOKEN: ${{ steps.create_github_app_token.outputs.token }}
+          VERSION: ${{ needs.build.outputs.new_version }}
+        run: |
+          set -euo pipefail
+          # Leave existing release metadata (including latest) and assets intact.
+          gh release view "v${VERSION}" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name' > /tmp/existing-release-assets
+          for asset in release-binaries/*; do
+            if ! grep -Fxq "${asset##*/}" /tmp/existing-release-assets; then
+              gh release upload "v${VERSION}" "$asset" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
 
       - name: Verify published node assets
         if: github.event.inputs.dry_run != 'true'
@@ -2312,6 +2338,12 @@ jobs:
             # errors must fail instead of being treated as an absent branch.
             if [ "$status" -ne 2 ] || [ "$BRANCH" != "staging" ]; then exit "$status"; fi
           fi
+          # Staging can still point at an earlier prerelease's source. Include
+          # this release's source before replaying generated metadata. Merge
+          # conflicts fail safely rather than losing either branch's changes.
+          git checkout --detach "$BASE"
+          git merge --no-edit "$GITHUB_SHA"
+          BASE=$(git rev-parse HEAD)
           # Replay only generated release commits, including optional trajectory
           # compaction, onto the current branch. Already applied patches are
           # skipped on retries. The immutable tag continues to identify what
