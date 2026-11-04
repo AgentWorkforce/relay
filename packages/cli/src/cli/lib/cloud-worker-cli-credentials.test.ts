@@ -458,11 +458,15 @@ describe('cloud worker CLI logins', () => {
     if (!posix || process.getuid?.() === 0) return;
     const runDir = tmp('cli-creds-');
     const cp = controlPlane([codexFile]);
-    const materialized = await materializeCliCredentials({ worker, credentials, runDir, fetchImpl: cp.fetchImpl });
+    const materialized = await materializeCliCredentials({
+      worker,
+      credentials,
+      runDir,
+      fetchImpl: cp.fetchImpl,
+    });
     fs.chmodSync(path.join(materialized.home, '.codex'), 0o000);
     await removeLoginHome(materialized.home);
     expect(fs.existsSync(materialized.home)).toBe(false);
     expect(materialized.home).toBe(path.join(path.dirname(path.dirname(runDir)), 'cli-logins', 'run'));
   });
 });
-
