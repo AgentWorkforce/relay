@@ -1,7 +1,7 @@
 //! A durable, bounded native-input queue. Taking text is irreversible: a
 //! lost acknowledgement never makes it eligible for another submission.
 
-use crate::relay::outbox::{create_private_dir, write_atomic};
+use crate::platform::fs::{create_private_dir, write_atomic};
 use crate::relay::store::random_uuid;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};

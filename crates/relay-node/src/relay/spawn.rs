@@ -2096,7 +2096,6 @@ mod tests {
         assert_eq!(core.spawn_settings().max_agents, 0);
         assert_eq!(core.spawn_slots().free(), None);
 
-        assert!(advertised.live.quota.is_empty(), "no quota lane is on");
         // Back to unspecified and no repositories: nothing stored.
         core.set_settings(
             json!({"spawn_billing_codex": "unspecified", "spawn_repositories": []})

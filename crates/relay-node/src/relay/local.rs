@@ -8,9 +8,7 @@
 
 use crate::relay::claude::{self, ClaudeConfig};
 use crate::relay::claude_settings::ClaudeSettings;
-use crate::relay::codex::app_server::TurnError;
 use crate::relay::codex::rollout::{self, RolloutSummary};
-use crate::relay::codex::router::{CodexRoutes, QueueError};
 use crate::relay::codex::{self, CodexConfig, CodexRouter, SystemCodexRoutes};
 use crate::relay::cursor_cli::{self, CursorConfig};
 use crate::relay::daemon::{Config, Plugins};
@@ -30,7 +28,6 @@ use crate::relay::openclaw::OpenClawConfig;
 use crate::relay::opencode::{OpenCodeConfig, OpenCodeSettings};
 use crate::relay::opencode_existing;
 use crate::relay::outbound::{self, RelaySend, ServingPath};
-use crate::relay::outbox::effects;
 use crate::relay::process::{
     claude_start_matches, codex_caller_thread, codex_locked_threads, resume_argument,
     ProcessSnapshot, ProcessTable, SystemProcesses, MAX_ANCESTRY,
@@ -1862,194 +1859,6 @@ pub use plugins::{
     ClientProfile,
 };
 
-/// The Codex side of the desktop mailbox's delivery passes: the same routes
-/// injection uses, over this computer's Codex.
-pub struct CodexMailboxEffects {
-    config: CodexConfig,
-    table: Arc<dyn ProcessTable>,
-    uid: u32,
-    routes: SystemCodexRoutes,
-}
-
-impl CodexMailboxEffects {
-    pub fn new(config: CodexConfig, table: Arc<dyn ProcessTable>, uid: u32) -> CodexMailboxEffects {
-        CodexMailboxEffects {
-            routes: SystemCodexRoutes::new(config.clone(), table.clone(), uid),
-            config,
-            table,
-            uid,
-        }
-    }
-}
-
-/// One Codex app connection, as the delivery pass drives it.
-struct Window(codex::ipc::Session);
-
-fn bridge_error(error: codex::ipc::IpcError) -> effects::CodexBridgeError {
-    use codex::ipc::IpcError;
-    use effects::CodexBridgeError;
-    match error {
-        IpcError::NotRunning => CodexBridgeError::CodexNotRunning,
-        IpcError::TimedOut => CodexBridgeError::TimedOut,
-        IpcError::Rejected(reason) => CodexBridgeError::Rejected(reason),
-        other => CodexBridgeError::Io(other.to_string()),
-    }
-}
-
-impl effects::CodexWindowDelivering for Window {
-    fn owners(
-        &mut self,
-        thread_ids: &[String],
-    ) -> Result<HashMap<String, String>, effects::CodexBridgeError> {
-        self.0
-            .owners(thread_ids)
-            .map(|owners| owners.into_iter().collect())
-            .map_err(bridge_error)
-    }
-
-    fn start_turn(
-        &mut self,
-        thread_id: &str,
-        text: &str,
-        message_id: &str,
-        owner: &str,
-    ) -> Result<Option<String>, effects::CodexBridgeError> {
-        self.0
-            .start_relay_turn(thread_id, text, message_id, owner)
-            .map_err(bridge_error)
-    }
-}
-
-impl effects::CodexDeliveryEffects for CodexMailboxEffects {
-    fn queue_available(&self) -> bool {
-        self.config.executable.is_some()
-    }
-
-    fn queue_send(&self, thread_id: &str, text: &str) -> Result<(), effects::CodexQueueError> {
-        use effects::CodexQueueError;
-        self.routes
-            .queue_send(thread_id, text)
-            .map_err(|error| match error {
-                QueueError::NotInstalled => CodexQueueError::CodexNotInstalled,
-                QueueError::Failed(reason) => CodexQueueError::Failed(reason),
-                QueueError::TimedOut => CodexQueueError::TimedOut,
-            })
-    }
-
-    fn queue_waiting(&self, thread_id: &str, reference: &str) -> Option<bool> {
-        self.routes.queue_waiting(thread_id, reference)
-    }
-
-    fn queue_cleanup(&self, thread_id: &str, reference: &str) {
-        self.routes.cleanup(thread_id, reference);
-    }
-
-    fn app_server_loaded(&self) -> HashSet<String> {
-        codex::app_server_loaded(&self.config, &*self.table, self.uid)
-            .into_iter()
-            .collect()
-    }
-
-    fn app_server_send(
-        &self,
-        thread_id: &str,
-        text: &str,
-        message_id: &str,
-    ) -> Result<bool, effects::CodexAppServerError> {
-        use effects::CodexAppServerError;
-        self.routes
-            .app_server(thread_id, text, message_id)
-            .map_err(|error| match error {
-                TurnError::Refused(reason) => CodexAppServerError::Refused(reason),
-                TurnError::InDoubt(reason) => CodexAppServerError::InDoubt(reason),
-            })
-    }
-
-    fn terminal_live(&self, thread_id: &str) -> bool {
-        self.routes.terminal_live(thread_id)
-    }
-
-    fn rollout(&self, thread_id: &str) -> Option<RolloutSummary> {
-        rollout::rollout_path(&self.config, thread_id).and_then(|path| RolloutSummary::read(&path))
-    }
-
-    fn idle(&self, thread_id: &str) -> bool {
-        self.routes.idle(thread_id)
-    }
-
-    fn rollout_readable(&self, thread_id: &str) -> bool {
-        self.rollout(thread_id).is_some()
-    }
-
-    fn with_window_session(
-        &self,
-        body: &mut dyn FnMut(
-            &mut dyn effects::CodexWindowDelivering,
-        ) -> Result<(), effects::WindowSessionError>,
-    ) -> Result<(), effects::WindowSessionError> {
-        let session =
-            codex::ipc::Session::connect(&self.config.ipc_socket).map_err(bridge_error)?;
-        body(&mut Window(session))
-    }
-}
-
-/// The Claude side of the desktop mailbox: `claude --print --cloud`.
-pub struct ClaudeMailboxEffects {
-    config: ClaudeConfig,
-}
-
-impl ClaudeMailboxEffects {
-    pub fn new(config: ClaudeConfig) -> ClaudeMailboxEffects {
-        ClaudeMailboxEffects { config }
-    }
-}
-
-impl effects::ClaudeDeliveryEffects for ClaudeMailboxEffects {
-    fn is_available(&self) -> bool {
-        self.config.executable.is_some()
-    }
-
-    fn send(&self, session_id: &str, text: &str) -> Result<(), effects::ClaudeBridgeError> {
-        use effects::ClaudeBridgeError;
-        // An untagged id would be taken by the CLI as a new session's
-        // description: never run it.
-        if !crate::relay::store::is_claude_session_id(session_id) {
-            return Err(ClaudeBridgeError::Refused("invalid session id".into()));
-        }
-        let runner = claude::SystemRunner::default();
-        let Some(executable) = &self.config.executable else {
-            return Err(ClaudeBridgeError::ClaudeNotInstalled);
-        };
-        let arguments = claude::cloud_arguments(
-            session_id,
-            claude::supports_json_result(&runner, executable),
-        );
-        match claude::CommandRunner::run(
-            &runner,
-            executable,
-            &arguments,
-            text.as_bytes(),
-            claude::SEND_TIMEOUT,
-        ) {
-            claude::RunOutcome::NotStarted(_) => Err(ClaudeBridgeError::ClaudeNotInstalled),
-            claude::RunOutcome::TimedOut => Err(ClaudeBridgeError::TimedOut),
-            claude::RunOutcome::Exited {
-                code,
-                stdout,
-                stderr,
-            } => match claude::send_outcome(
-                code,
-                &String::from_utf8_lossy(&stdout),
-                &String::from_utf8_lossy(&stderr),
-            ) {
-                claude::SendOutcome::Sent { .. } => Ok(()),
-                claude::SendOutcome::Refused(reason) => Err(ClaudeBridgeError::Refused(reason)),
-                claude::SendOutcome::Failed(reason) => Err(ClaudeBridgeError::Failed(reason)),
-            },
-        }
-    }
-}
-
 // The fixtures are Unix sockets, shell scripts, file modes and `/tmp`, for
 // the Grok, Muse and OpenCode routes Windows does not have.
 #[cfg(test)]
@@ -2059,7 +1868,8 @@ mod tests {
 
     mod spawned_delivery;
     use super::*;
-    use crate::relay::codex::router::CodexRoutes;
+    use crate::relay::codex::app_server::TurnError;
+    use crate::relay::codex::router::{CodexRoutes, QueueError};
     use crate::relay::opencode_existing::{Clock, HttpResponse, HttpTransport};
     use crate::relay::process::{FakeProcess, FakeProcesses, StartClock};
     use std::path::PathBuf;
@@ -4429,21 +4239,6 @@ mod tests {
         assert!(partitioned
             .iter()
             .any(|row| row.target == Target::new(SessionKind::Codex, THREAD)));
-    }
-
-    // Review: the mailbox never runs `claude --cloud` with an untagged id.
-    #[test]
-    fn the_mailbox_refuses_an_untagged_claude_id() {
-        use crate::relay::outbox::effects::{ClaudeBridgeError, ClaudeDeliveryEffects};
-        let world = world();
-        let effects = ClaudeMailboxEffects::new(ClaudeConfig {
-            executable: Some(PathBuf::from("/nonexistent/claude-for-tests")),
-            ..world.sessions.config.claude.clone()
-        });
-        assert!(matches!(
-            effects.send("make a new session about this", "hi"),
-            Err(ClaudeBridgeError::Refused(_))
-        ));
     }
 
     // Review: a Codex thread has one spelling, whatever the database holds.

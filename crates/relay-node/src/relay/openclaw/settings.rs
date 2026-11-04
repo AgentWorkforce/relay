@@ -86,7 +86,7 @@ impl crate::relay::agents::SettingsExtension for OpenClawSettings {
                 _ => Ok(()),
             }
         } else {
-            crate::relay::mailbox::write_private(
+            crate::platform::fs::write_private(
                 &marker,
                 b"OpenClaw was turned off in Agent Relay's settings.\n",
             )

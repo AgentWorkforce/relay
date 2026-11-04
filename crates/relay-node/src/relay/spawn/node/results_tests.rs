@@ -67,7 +67,6 @@ impl NodeHost for Host {
                 resources: resources::Resources::default(),
                 agents: Vec::new(),
                 reclaimed: Vec::new(),
-                quota: Vec::new(),
             },
         }
     }

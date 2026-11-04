@@ -95,7 +95,7 @@ pub(super) fn remember(
     message_id: &str,
 ) -> Result<(), String> {
     let bytes = serde_json::to_vec(sent).map_err(|e| e.to_string())?;
-    crate::relay::mailbox::write_private(
+    crate::platform::fs::write_private(
         &sent_path(config, &sent.agent, &MessageRef::of(message_id)),
         &bytes,
     )
@@ -133,7 +133,7 @@ pub(super) fn record_session_run(
     match run {
         Some(run) => {
             let bytes = serde_json::to_vec(run).map_err(|e| e.to_string())?;
-            crate::relay::mailbox::write_private(&path, &bytes)
+            crate::platform::fs::write_private(&path, &bytes)
         }
         None => match std::fs::remove_file(&path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),

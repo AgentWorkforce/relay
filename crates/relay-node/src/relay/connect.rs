@@ -5,6 +5,7 @@
 //! Cloud identity reconciliation and workspace-key removal only see team
 //! registrations.
 
+use crate::platform::fs::{create_private_dir, write_atomic};
 use crate::relay::client;
 use crate::relay::cloud_http;
 use crate::relay::codex::processes::needs_probe_reply_client;
@@ -14,7 +15,6 @@ use crate::relay::delivery::policy::{self, Decision, MessageRef};
 use crate::relay::delivery::{preview, DeliveryActivity, DeliveryOutcome, DeliverySettlement};
 use crate::relay::inject::InjectOutcome;
 use crate::relay::outbound::OutboundError;
-use crate::relay::outbox::{create_private_dir, write_atomic};
 use crate::relay::peer::current_uid;
 use crate::relay::store::random_uuid;
 use crate::relay::store::{SessionKind, Target};

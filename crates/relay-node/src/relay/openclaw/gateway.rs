@@ -49,7 +49,7 @@ impl Device {
 
     pub(super) fn save(&self, path: &Path) -> Result<(), String> {
         let bytes = serde_json::to_vec(&self.stored).map_err(|e| e.to_string())?;
-        crate::relay::mailbox::write_private(path, &bytes)
+        crate::platform::fs::write_private(path, &bytes)
     }
 
     pub(super) fn public_key(&self) -> &[u8] {

@@ -89,12 +89,11 @@ signal-hook = "=0.3.18"
 nix = { version = "=0.25.1", default-features = false, features = ["signal", "process", "fs", "user"] }
 
 # Codex is trusted on macOS only with OpenAI's code signature (see
-# src/relay/process.rs), and a mailbox credential lives in the login
-# Keychain; these crates are already linked by the TLS stack.
+# src/relay/process.rs), and Claude Code's login lives in the login Keychain;
+# these crates are already linked by the TLS stack.
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 security-framework = "3"
-security-framework-sys = "2"
 # Received attachments are quarantined (src/relay/files/store.rs).
 xattr = "1"
 

@@ -1,5 +1,5 @@
 //! Native mode survives retries, restarts, opt-out, and window replacement.
-use crate::relay::outbox::{create_private_dir, write_atomic};
+use crate::platform::fs::{create_private_dir, write_atomic};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::io::Read;

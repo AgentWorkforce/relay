@@ -43,7 +43,6 @@ impl NodeHost for Recovering {
                 resources: resources::Resources::default(),
                 agents: Vec::new(),
                 reclaimed: Vec::new(),
-                quota: Vec::new(),
             },
         }
     }

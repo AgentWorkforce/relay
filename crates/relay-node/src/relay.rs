@@ -57,7 +57,6 @@
 //! | `local_methods` | `sessions.list` and the sessions watcher |
 //! | `outbound` | The relay-send socket: sessions send, list, register and run setup |
 //! | `setup` | Agent-led setup routes and defaults |
-//! | `outbox` | Incoming cloud messages: outboxes, delivery workers, sharing policy, inboxes |
 //! | `spawn` | The spawn node: Agent Relay starting Codex and Claude headless on this computer |
 
 pub mod activity;
@@ -106,7 +105,6 @@ pub mod hermes;
 pub mod hook_agents;
 pub mod host_methods;
 pub mod hosted_mcp;
-pub mod incoming;
 pub mod inject;
 pub mod integration_defaults;
 pub mod integrations;
@@ -115,7 +113,6 @@ pub mod local;
 pub mod local_methods;
 pub mod login_item;
 pub mod machine;
-pub mod mailbox;
 pub mod managed_sessions;
 pub mod message_pointer;
 pub mod messaging;
@@ -129,7 +126,6 @@ pub mod opencode;
 pub mod opencode_existing;
 pub mod opencode_serve;
 pub mod outbound;
-pub mod outbox;
 pub mod paseo;
 pub mod paths;
 pub mod peer;
@@ -142,7 +138,6 @@ pub mod process;
 pub mod project;
 pub mod protocol;
 pub mod push;
-pub mod quota;
 pub mod recipients;
 pub mod request_log;
 pub mod sdk_gaps;

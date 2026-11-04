@@ -301,7 +301,7 @@ pub fn send(
             };
             let saved = serde_json::to_vec(&intent)
                 .map_err(|e| e.to_string())
-                .and_then(|bytes| crate::relay::mailbox::write_private(&path, &bytes));
+                .and_then(|bytes| crate::platform::fs::write_private(&path, &bytes));
             if let Err(error) = saved {
                 return InjectOutcome::Retry(error);
             }
@@ -343,7 +343,7 @@ pub fn send(
             };
             let saved = serde_json::to_vec(&started)
                 .map_err(|e| e.to_string())
-                .and_then(|bytes| crate::relay::mailbox::write_private(&path, &bytes));
+                .and_then(|bytes| crate::platform::fs::write_private(&path, &bytes));
             match saved {
                 Ok(()) => InjectOutcome::Delivered,
                 // Sending the same key again finds the same run.
@@ -466,7 +466,7 @@ impl crate::relay::agents::SettingsExtension for HermesSettings {
                 _ => Ok(()),
             }
         } else {
-            crate::relay::mailbox::write_private(
+            crate::platform::fs::write_private(
                 &marker,
                 b"Hermes was turned off in Agent Relay's settings.\n",
             )

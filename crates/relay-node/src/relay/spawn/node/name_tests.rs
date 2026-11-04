@@ -715,7 +715,6 @@ impl NodeHost for Recording {
                 resources: resources::Resources::default(),
                 agents: Vec::new(),
                 reclaimed: Vec::new(),
-                quota: Vec::new(),
             },
         }
     }

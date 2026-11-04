@@ -38,8 +38,8 @@ pub(super) fn consume(root: &Path, key: &str) -> bool {
     let Some(parent) = path.parent() else {
         return false;
     };
-    if crate::relay::outbox::create_private_dir(root).is_err()
-        || crate::relay::outbox::create_private_dir(parent).is_err()
+    if crate::platform::fs::create_private_dir(root).is_err()
+        || crate::platform::fs::create_private_dir(parent).is_err()
     {
         return false;
     }

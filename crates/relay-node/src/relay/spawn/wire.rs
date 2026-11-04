@@ -147,27 +147,6 @@ pub struct Live {
     pub resources: Resources,
     pub agents: Vec<LiveAgent>,
     pub reclaimed: Vec<Reclaimed>,
-    /// Each harness's quota, where a quota source reports one
-    /// (`relay::quota`, not wired yet): sent as `metadata.live.quota` on its
-    /// `spawn:<harness>` capability, `null` until then.
-    pub quota: Vec<(HarnessId, QuotaSignal)>,
-}
-
-/// A harness's normalized quota, in the shape of `relay::quota`'s
-/// `QuotaReading` (lanes `CodexOAuth`/`CodexRpc` are Codex, `ClaudeOAuth` is
-/// Claude). Every failure, stale reading or unidentified source is
-/// `unknown`; with no lane turned on, nothing is reported.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QuotaSignal {
-    /// `available`, `approaching_limit`, `blocked` or `unknown`.
-    pub state: String,
-    pub reason: Option<String>,
-    /// ISO-8601, when it was read.
-    pub observed_at: String,
-    /// Read recently enough to stand; a stale reading's state is `unknown`.
-    pub fresh: bool,
-    /// ISO-8601, when the nearest limit window resets, if known.
-    pub resets_at: Option<String>,
 }
 
 /// Everything the node says about itself in one frame.
@@ -195,22 +174,8 @@ impl Advertisement {
         })
     }
 
-    fn live_node(&self, harness: HarnessId) -> Value {
+    fn live_node(&self) -> Value {
         let (slots, work) = (&self.live.slots, &self.live.work);
-        let quota = self
-            .live
-            .quota
-            .iter()
-            .find(|(of, _)| *of == harness)
-            .map(|(_, quota)| {
-                json!({
-                    "state": if quota.fresh { quota.state.as_str() } else { "unknown" },
-                    "reason": quota.reason,
-                    "observed_at": quota.observed_at,
-                    "fresh": quota.fresh,
-                    "resets_at": quota.resets_at,
-                })
-            });
         json!({
             "observed_at": self.live.observed_at,
             "slots": {
@@ -224,7 +189,6 @@ impl Advertisement {
                 "unknown": work.unknown,
             },
             "resources": self.live.resources.to_json(),
-            "quota": quota,
         })
     }
 
@@ -262,7 +226,7 @@ impl Advertisement {
                     "kind": "capacity",
                     "metadata": {
                         "configured": self.configured_for(harness),
-                        "live": self.live_node(harness.harness),
+                        "live": self.live_node(),
                     },
                 })
             })
@@ -694,16 +658,6 @@ mod tests {
                         pending_deliveries: Some(2),
                     },
                 }],
-                quota: vec![(
-                    codex::ID,
-                    QuotaSignal {
-                        state: "approaching_limit".into(),
-                        reason: None,
-                        observed_at: "2026-10-14T09:58:00Z".into(),
-                        fresh: true,
-                        resets_at: None,
-                    },
-                )],
             },
         }
     }
@@ -759,21 +713,8 @@ mod tests {
                 "waiting": 0, "unknown": 0})
         );
         assert_eq!(codex["live"]["resources"]["cpus"], 10);
-        assert_eq!(codex["live"]["quota"]["state"], "approaching_limit");
-        let mut stale = advertisement(&harness::ids(), 2);
-        stale.live.quota[0].1.fresh = false;
-        let frame_stale = identity().heartbeat(&stale);
-        assert_eq!(
-            frame_stale["capabilities"][0]["metadata"]["live"]["quota"]["state"], "unknown",
-            "a stale quota is never reported as its last state"
-        );
         let claude = &frame["capabilities"][1]["metadata"];
         assert_eq!(claude["configured"]["full_access"], false);
-        assert_eq!(
-            claude["live"]["quota"],
-            Value::Null,
-            "the quota hook is per harness"
-        );
         let release = &frame["capabilities"]
             .as_array()
             .unwrap()

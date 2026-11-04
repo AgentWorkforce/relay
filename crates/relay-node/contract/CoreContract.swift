@@ -120,10 +120,6 @@ public enum CoreMethod {
     public static let telemetryRecord = "telemetry.record"
     public static let loginItemSet = "login_item.set"
     public static let loginItemStatus = "login_item.status"
-    public static let incomingStatus = "incoming.status"
-    public static let incomingShare = "incoming.share"
-    public static let incomingApprove = "incoming.approve"
-    public static let incomingReject = "incoming.reject"
     public static let chatConversation = "chat.conversation"
     public static let chatSend = "chat.send"
     public static let chatClear = "chat.clear"
@@ -848,30 +844,6 @@ public struct ApproveParams: Codable, Equatable, Hashable, Sendable {
         try c.encode(self.description, forKey: .description)
         try c.encode(self.scopes, forKey: .scopes)
         try c.encode(self.userId, forKey: .userId)
-    }
-}
-
-public struct Approved: Codable, Equatable, Hashable, Sendable {
-    /// `false` when the message cannot be approved now (expired, gone, or
-    /// incoming paused).
-    public let approved: Bool
-
-    public init(approved: Bool) {
-        self.approved = approved
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case approved
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.approved = try c.decode(Bool.self, forKey: .approved)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(self.approved, forKey: .approved)
     }
 }
 
@@ -3523,76 +3495,6 @@ public struct HarnessDescriptor: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-/// A message held for the person to approve.
-public struct HeldMessage: Codable, Equatable, Hashable, Sendable {
-    public let enqueuedAtMs: Int64
-    public let expiresAtMs: Int64
-    public let id: String
-    public let senderName: String?
-    public let text: String
-    public let threadId: String
-
-    public init(enqueuedAtMs: Int64, expiresAtMs: Int64, id: String, senderName: String? = nil, text: String, threadId: String) {
-        self.enqueuedAtMs = enqueuedAtMs
-        self.expiresAtMs = expiresAtMs
-        self.id = id
-        self.senderName = senderName
-        self.text = text
-        self.threadId = threadId
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case enqueuedAtMs = "enqueued_at_ms"
-        case expiresAtMs = "expires_at_ms"
-        case id
-        case senderName = "sender_name"
-        case text
-        case threadId = "thread_id"
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.enqueuedAtMs = try c.decode(Int64.self, forKey: .enqueuedAtMs)
-        self.expiresAtMs = try c.decode(Int64.self, forKey: .expiresAtMs)
-        self.id = try c.decode(String.self, forKey: .id)
-        self.senderName = try c.decodeIfPresent(String.self, forKey: .senderName)
-        self.text = try c.decode(String.self, forKey: .text)
-        self.threadId = try c.decode(String.self, forKey: .threadId)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(self.enqueuedAtMs, forKey: .enqueuedAtMs)
-        try c.encode(self.expiresAtMs, forKey: .expiresAtMs)
-        try c.encode(self.id, forKey: .id)
-        try c.encode(self.senderName, forKey: .senderName)
-        try c.encode(self.text, forKey: .text)
-        try c.encode(self.threadId, forKey: .threadId)
-    }
-}
-
-public struct HeldMessageParams: Codable, Equatable, Hashable, Sendable {
-    public let id: String
-
-    public init(id: String) {
-        self.id = id
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case id
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = try c.decode(String.self, forKey: .id)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(self.id, forKey: .id)
-    }
-}
-
 public struct HelloParams: Codable, Equatable, Hashable, Sendable {
     /// The bridge version the client speaks.
     public let bridgeVersion: Int
@@ -3808,125 +3710,6 @@ public struct InboxStall: Codable, Equatable, Hashable, Sendable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(self.oldestUndrainedAgeMs, forKey: .oldestUndrainedAgeMs)
         try c.encode(self.undrainedCount, forKey: .undrainedCount)
-    }
-}
-
-/// Where incoming stands.
-public enum IncomingState: String, Codable, CaseIterable, Hashable, Sendable {
-    case paused
-    case connecting
-    case connected
-    case polling
-    case needsSignIn = "needs_sign_in"
-    /// Not connected: signed out, or the mailbox is not available.
-    case stopped
-    /// The mailbox needs activating, which a sign-in does.
-    case unavailable
-
-    /// A value this build does not know reads as `stopped`.
-    public init(from decoder: Decoder) throws {
-        self = IncomingState(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .stopped
-    }
-}
-
-/// `incoming.status`'s result.
-public struct IncomingStatus: Codable, Equatable, Hashable, Sendable {
-    /// Whether a held message can be approved now.
-    public let canApprove: Bool
-    /// A sharing change that was recovered or could not be saved.
-    public let error: String?
-    /// Messages waiting for approval.
-    public let held: [HeldMessage]
-    public let state: IncomingState
-    public let threads: [IncomingThread]
-
-    public init(canApprove: Bool, error: String? = nil, held: [HeldMessage], state: IncomingState, threads: [IncomingThread]) {
-        self.canApprove = canApprove
-        self.error = error
-        self.held = held
-        self.state = state
-        self.threads = threads
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case canApprove = "can_approve"
-        case error
-        case held
-        case state
-        case threads
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.canApprove = try c.decode(Bool.self, forKey: .canApprove)
-        self.error = try c.decodeIfPresent(String.self, forKey: .error)
-        self.held = try c.decode([HeldMessage].self, forKey: .held)
-        self.state = try c.decode(IncomingState.self, forKey: .state)
-        self.threads = try c.decode([IncomingThread].self, forKey: .threads)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(self.canApprove, forKey: .canApprove)
-        try c.encode(self.error, forKey: .error)
-        try c.encode(self.held, forKey: .held)
-        try c.encode(self.state, forKey: .state)
-        try c.encode(self.threads, forKey: .threads)
-    }
-}
-
-/// A Codex thread on this computer and how it is shared.
-public struct IncomingThread: Codable, Equatable, Hashable, Sendable {
-    public let allowsUnrestricted: Bool
-    public let id: String
-    /// `null` when not shared.
-    public let mode: Mode?
-    /// Open in Codex now.
-    public let open: Bool
-    public let project: String
-    public let shared: Bool
-    public let title: String
-
-    public init(allowsUnrestricted: Bool, id: String, mode: Mode? = nil, open: Bool, project: String, shared: Bool, title: String) {
-        self.allowsUnrestricted = allowsUnrestricted
-        self.id = id
-        self.mode = mode
-        self.open = open
-        self.project = project
-        self.shared = shared
-        self.title = title
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case allowsUnrestricted = "allows_unrestricted"
-        case id
-        case mode
-        case open
-        case project
-        case shared
-        case title
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.allowsUnrestricted = try c.decode(Bool.self, forKey: .allowsUnrestricted)
-        self.id = try c.decode(String.self, forKey: .id)
-        self.mode = try c.decodeIfPresent(Mode.self, forKey: .mode)
-        self.open = try c.decode(Bool.self, forKey: .open)
-        self.project = try c.decode(String.self, forKey: .project)
-        self.shared = try c.decode(Bool.self, forKey: .shared)
-        self.title = try c.decode(String.self, forKey: .title)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(self.allowsUnrestricted, forKey: .allowsUnrestricted)
-        try c.encode(self.id, forKey: .id)
-        try c.encode(self.mode, forKey: .mode)
-        try c.encode(self.open, forKey: .open)
-        try c.encode(self.project, forKey: .project)
-        try c.encode(self.shared, forKey: .shared)
-        try c.encode(self.title, forKey: .title)
     }
 }
 
@@ -4184,15 +3967,13 @@ public enum Listing: RawRepresentable, Codable, CaseIterable, Hashable, Sendable
     case projects
     /// The uploader's status or sessions.
     case uploader
-    /// Incoming messages: threads shared, messages held.
-    case incoming
     /// The core's settings, changed from outside the app (an agent's
     /// `PATCH /settings`).
     case settings
     /// A value this build does not know, as the core sent it.
     case unknown(String)
 
-    public static let allCases: [Listing] = [.agents, .roster, .messages, .people, .activity, .sessions, .fleet, .chat, .projects, .uploader, .incoming, .settings]
+    public static let allCases: [Listing] = [.agents, .roster, .messages, .people, .activity, .sessions, .fleet, .chat, .projects, .uploader, .settings]
 
     public init(rawValue: String) {
         switch rawValue {
@@ -4206,7 +3987,6 @@ public enum Listing: RawRepresentable, Codable, CaseIterable, Hashable, Sendable
         case "chat": self = .chat
         case "projects": self = .projects
         case "uploader": self = .uploader
-        case "incoming": self = .incoming
         case "settings": self = .settings
         default: self = .unknown(rawValue)
         }
@@ -4224,7 +4004,6 @@ public enum Listing: RawRepresentable, Codable, CaseIterable, Hashable, Sendable
         case .chat: return "chat"
         case .projects: return "projects"
         case .uploader: return "uploader"
-        case .incoming: return "incoming"
         case .settings: return "settings"
         case .unknown(let value): return value
         }
@@ -4846,43 +4625,6 @@ public enum MessageState: String, Codable, CaseIterable, Hashable, Sendable {
     /// A value this build does not know reads as `queued`.
     public init(from decoder: Decoder) throws {
         self = MessageState(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .queued
-    }
-}
-
-/// How a shared thread treats incoming messages.
-public enum Mode: RawRepresentable, Codable, CaseIterable, Hashable, Sendable {
-    /// Ask the local user first.
-    case hold
-    /// Deliver without asking.
-    case auto
-    /// A value this build does not know, as the core sent it.
-    case unknown(String)
-
-    public static let allCases: [Mode] = [.hold, .auto]
-
-    public init(rawValue: String) {
-        switch rawValue {
-        case "hold": self = .hold
-        case "auto": self = .auto
-        default: self = .unknown(rawValue)
-        }
-    }
-
-    public var rawValue: String {
-        switch self {
-        case .hold: return "hold"
-        case .auto: return "auto"
-        case .unknown(let value): return value
-        }
-    }
-
-    public init(from decoder: Decoder) throws {
-        self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.singleValueContainer()
-        try c.encode(rawValue)
     }
 }
 
@@ -5901,28 +5643,6 @@ public struct Registered: Codable, Equatable, Hashable, Sendable {
         try c.encode(self.address, forKey: .address)
         try c.encode(self.alreadyRegistered, forKey: .alreadyRegistered)
         try c.encode(self.name, forKey: .name)
-    }
-}
-
-public struct Rejected: Codable, Equatable, Hashable, Sendable {
-    public let rejected: Bool
-
-    public init(rejected: Bool) {
-        self.rejected = rejected
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case rejected
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.rejected = try c.decode(Bool.self, forKey: .rejected)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(self.rejected, forKey: .rejected)
     }
 }
 
@@ -8362,39 +8082,6 @@ public struct SettingsValues: Codable, Equatable, Hashable, Sendable {
         try c.encodeIfPresent(self.trustWorkspaceMembers, forKey: .trustWorkspaceMembers)
         try c.encodeIfPresent(self.trustedRelaySenders, forKey: .trustedRelaySenders)
         try c.encodeIfPresent(self.workspaceMembers, forKey: .workspaceMembers)
-    }
-}
-
-public struct ShareParams: Codable, Equatable, Hashable, Sendable {
-    public let allowsUnrestricted: Bool
-    /// `null` stops sharing.
-    public let mode: Mode?
-    public let threadId: String
-
-    public init(allowsUnrestricted: Bool = false, mode: Mode? = nil, threadId: String) {
-        self.allowsUnrestricted = allowsUnrestricted
-        self.mode = mode
-        self.threadId = threadId
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case allowsUnrestricted = "allows_unrestricted"
-        case mode
-        case threadId = "thread_id"
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.allowsUnrestricted = try c.decodeIfPresent(Bool.self, forKey: .allowsUnrestricted) ?? false
-        self.mode = try c.decodeIfPresent(Mode.self, forKey: .mode)
-        self.threadId = try c.decode(String.self, forKey: .threadId)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(self.allowsUnrestricted, forKey: .allowsUnrestricted)
-        try c.encodeIfPresent(self.mode, forKey: .mode)
-        try c.encode(self.threadId, forKey: .threadId)
     }
 }
 
@@ -11629,30 +11316,6 @@ extension CoreClient {
     @discardableResult
     public func loginItemStatus() async throws -> LoginItemState {
         try await call(CoreMethod.loginItemStatus, NoParams())
-    }
-
-    /// `incoming.status`; only a core built with an account answers it.
-    @discardableResult
-    public func incomingStatus() async throws -> IncomingStatus {
-        try await call(CoreMethod.incomingStatus, NoParams())
-    }
-
-    /// `incoming.share`; only a core built with an account answers it.
-    @discardableResult
-    public func incomingShare(_ params: ShareParams) async throws -> Done {
-        try await call(CoreMethod.incomingShare, params)
-    }
-
-    /// `incoming.approve`; only a core built with an account answers it.
-    @discardableResult
-    public func incomingApprove(_ params: HeldMessageParams) async throws -> Approved {
-        try await call(CoreMethod.incomingApprove, params)
-    }
-
-    /// `incoming.reject`; only a core built with an account answers it.
-    @discardableResult
-    public func incomingReject(_ params: HeldMessageParams) async throws -> Rejected {
-        try await call(CoreMethod.incomingReject, params)
     }
 
     /// `chat.conversation`.

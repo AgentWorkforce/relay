@@ -484,8 +484,6 @@ pub enum Listing {
     Projects,
     /// The uploader's status or sessions.
     Uploader,
-    /// Incoming messages: threads shared, messages held.
-    Incoming,
     /// The core's settings, changed from outside the app (an agent's
     /// `PATCH /settings`).
     Settings,

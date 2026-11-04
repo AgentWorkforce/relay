@@ -213,6 +213,89 @@ pub fn lock_held(error: &io::Error) -> bool {
             && error.raw_os_error() == fs2::lock_contended_error().raw_os_error())
 }
 
+/// Creates `dir` and any missing parents, private to this user. A `dir`
+/// that already exists is used only when it is a real directory (not a
+/// symlink) this user owns and no one else can write to; its permissions
+/// are never changed, so a planted path cannot be re-permissioned.
+pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    let mut builder = DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        builder.mode(0o700);
+        builder.create(dir)?;
+        let entry = std::fs::symlink_metadata(dir)?;
+        if !entry.is_dir()
+            || entry.uid() != crate::relay::peer::current_uid()
+            || entry.mode() & 0o022 != 0
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "{} must be a directory only you can write to",
+                    dir.display()
+                ),
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    builder.create(dir)
+}
+
+fn make_private_file(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+/// Replaces `path` with `body` atomically: a reader sees the old file or the
+/// new one, never a mix. The file is private to this user.
+pub fn write_atomic(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    make_private_file(file.path())?;
+    std::io::Write::write_all(&mut file, body)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|error| error.error)?;
+    // The rename is durable only once the directory is synced; callers rely
+    // on it (a recovery intent must outlive a crash). Windows cannot open a
+    // directory for syncing.
+    #[cfg(unix)]
+    std::fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+/// Writes `bytes` to `path` as a 0600 file in 0700 directories, swapped
+/// into place.
+pub fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    let failed = |error: std::io::Error| format!("Could not save the file ({error}).");
+    let directory = path.parent().ok_or("No directory.")?;
+    create_private_dir_all(directory).map_err(failed)?;
+    let temporary = directory.join(format!(".{}.tmp", crate::relay::store::random_uuid()));
+    let result = (|| {
+        let mut file =
+            private(std::fs::OpenOptions::new().write(true).create_new(true)).open(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&temporary, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result.map_err(failed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

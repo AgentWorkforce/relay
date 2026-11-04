@@ -23,7 +23,6 @@ pub mod connection;
 pub mod contractors;
 pub mod cursor_cloud;
 pub mod directory;
-pub mod incoming;
 pub mod openclaw;
 pub mod plan;
 pub mod platform;
@@ -124,7 +123,6 @@ use connection::*;
 use contractors::*;
 use cursor_cloud::*;
 use directory::*;
-use incoming::*;
 use openclaw::*;
 use platform::*;
 use replicas::*;
@@ -249,12 +247,6 @@ methods! {
     TelemetryRecord = "telemetry.record", Account, crate::relay::telemetry::TelemetryEvent => Done;
     LoginItemSet = "login_item.set", Always, LoginItemParams => Done;
     LoginItemStatus = "login_item.status", Always, NoParams => LoginItemState;
-
-    // Incoming messages.
-    IncomingStatus = "incoming.status", Account, NoParams => incoming::IncomingStatus;
-    IncomingShare = "incoming.share", Account, ShareParams => Done;
-    IncomingApprove = "incoming.approve", Account, HeldMessageParams => Approved;
-    IncomingReject = "incoming.reject", Account, HeldMessageParams => Rejected;
 
     // Skip chat.
     ChatConversation = "chat.conversation", Always, NoParams => chat::ChatConversation;

@@ -780,8 +780,8 @@ pub(crate) mod tests {
         server.join().unwrap();
     }
 
-    // Bugbot #510: a relay turn in a window hides a fresh message (the mailbox
-    // and the relay route share this) behind an empty input, and starts an
+    // Bugbot #510: a relay turn in a window hides a fresh message (the routes
+    // share this) behind an empty input, and starts an
     // already injected one empty, without hiding it again.
     #[test]
     fn a_relay_turn_hides_a_fresh_message_and_not_an_injected_one() {

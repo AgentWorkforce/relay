@@ -186,11 +186,10 @@ impl TrustedSenders {
     /// Turns trusting the people in the workspace on or off.
     pub fn set_trusts_members(&self, on: bool) -> Result<(), String> {
         self.clear_members();
-        crate::relay::mailbox::write_private(
-            &self.members_on_path,
-            json!(on).to_string().as_bytes(),
-        )
-        .map_err(|e| format!("Could not save whether people in your workspace are trusted: {e}"))
+        crate::platform::fs::write_private(&self.members_on_path, json!(on).to_string().as_bytes())
+            .map_err(|e| {
+                format!("Could not save whether people in your workspace are trusted: {e}")
+            })
     }
 
     /// Only a fresh list confirmed for the current account grants trust.
@@ -276,7 +275,7 @@ impl TrustedSenders {
     pub fn set(&self, value: &Value) -> Result<(), String> {
         let senders = parse(value)?;
         let bytes = serde_json::to_vec(&senders).map_err(|e| e.to_string())?;
-        crate::relay::mailbox::write_private(&self.path, &bytes)
+        crate::platform::fs::write_private(&self.path, &bytes)
             .map_err(|e| format!("Could not save the trusted senders: {e}"))
     }
 }

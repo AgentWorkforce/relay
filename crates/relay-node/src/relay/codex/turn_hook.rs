@@ -435,7 +435,7 @@ fn framed(text: &str) -> String {
 }
 
 fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    crate::relay::outbox::write_atomic(path, bytes)
+    crate::platform::fs::write_atomic(path, bytes)
 }
 
 #[cfg(test)]

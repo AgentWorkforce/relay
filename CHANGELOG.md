@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `--site-url` on the core's `serve`: the core takes no site at start.
 - The `site_url` field of `account.sign_in` and of `links.parse` in the bridge contract (and the generated Swift contract).
+- The `incoming.*` bridge methods: nothing has answered them since Agent Relay Cloud retired the Room API.
 
 ### Fixed
 

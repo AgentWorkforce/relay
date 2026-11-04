@@ -122,17 +122,6 @@ impl Core {
         });
     }
 
-    /// Each harness's quota, for `metadata.live.quota`. The hook for
-    /// `relay::quota`: it must read only `QuotaCache::snapshot(now)` (an
-    /// instant cache read; readings older than 180 s come back unknown),
-    /// never `quota::collect`, whose helpers take up to 35 s against a 12 s
-    /// heartbeat. The cache refreshes itself (`spawn_refresh`, every 120 s).
-    /// No lane is on until each provider is approved, so nothing is
-    /// reported and the field is `null`.
-    fn harness_quota(&self, _harnesses: &[HarnessId]) -> Vec<(HarnessId, wire::QuotaSignal)> {
-        Vec::new()
-    }
-
     /// What the node says about itself now: the configured facts, and the
     /// live ones measured for this frame.
     pub(super) fn spawn_advertisement(
@@ -202,7 +191,6 @@ impl Core {
                 resources: resources::sample(),
                 agents,
                 reclaimed,
-                quota: self.harness_quota(harnesses),
             },
         }
     }
@@ -334,7 +322,6 @@ impl NodeHost for CoreHost {
                     resources: resources::Resources::default(),
                     agents: Vec::new(),
                     reclaimed: Vec::new(),
-                    quota: Vec::new(),
                 },
             },
         }
