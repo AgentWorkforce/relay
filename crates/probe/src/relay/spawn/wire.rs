@@ -1020,12 +1020,20 @@ mod tests {
     #[test]
     fn results_match_the_broker_shapes_cloud_reads() {
         assert_eq!(
-            action_output("inv_1", spawned("w1")),
+            action_output("inv_1", spawned("w1", None)),
             json!({"v": 1, "type": "action.result", "invocation_id": "inv_1",
                 "output": {"spawned": true, "ready": true, "name": "w1"}})
         );
-        let warned = spawned_unconfirmed("w1", "none");
+        // The caller learns where its agent works: the folder it asked for,
+        // or the machine default the node applied when it named none.
+        assert_eq!(
+            spawned("w1", Some(Path::new("/srv/repo")))["worker_cwd"],
+            "/srv/repo"
+        );
+        let warned = spawned_unconfirmed("w1", Some(Path::new("/srv/repo")), "none");
         assert_eq!(warned["warning"]["code"], "spawn_task_unconfirmed");
+        assert_eq!(warned["worker_cwd"], "/srv/repo");
+        assert_eq!(warned["spawned"], true);
         assert_eq!(
             action_error("inv_1", "spawn_failed: x")["error"],
             "spawn_failed: x"

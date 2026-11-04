@@ -171,8 +171,10 @@ impl Scope {
     }
 }
 
-/// Successful output is stored verbatim, including unconfirmed-task warnings.
-/// No raw task, directory, workspace key or agent token belongs in this record.
+/// Successful output is stored verbatim, including unconfirmed-task warnings
+/// and the working folder the spawn resolved (`worker_cwd`), which the
+/// caller was told and a replay tells again. No raw task, workspace key or
+/// agent token belongs in this record.
 #[derive(Serialize, Deserialize)]
 pub(super) struct Completion {
     version: u8,
@@ -193,6 +195,11 @@ impl Completion {
     /// Whether this spawn of `name` failed here.
     pub(super) fn failed_as(&self, name: &str) -> bool {
         self.failed() && self.name == name
+    }
+
+    /// The working folder the answer reported, kept with a restored origin.
+    pub(super) fn worker_cwd(&self) -> Option<String> {
+        self.output["worker_cwd"].as_str().map(str::to_string)
     }
 
     pub(super) fn verification(&self) -> Option<String> {
@@ -228,14 +235,16 @@ fn digest(parts: &[&str]) -> String {
 /// The answer a spawn saved as `registration` gives when asked again,
 /// with the unconfirmed-task warning its launch reported (or, kept after a
 /// restart, could not rule out).
+/// The answer to the spawn, with the working folder the registration
+/// recorded (none on a record from before it was kept).
 pub(super) fn spawned_output(registration: &Registration) -> Value {
-    match registration
-        .spawn
-        .as_ref()
-        .and_then(|spawn| spawn.task_unconfirmed.as_deref())
-    {
-        Some(verification) => wire::spawned_unconfirmed(&registration.name, verification),
-        None => wire::spawned(&registration.name),
+    let spawn = registration.spawn.as_ref();
+    let directory = spawn.and_then(|spawn| spawn.worker_cwd.as_deref().map(Path::new));
+    match spawn.and_then(|spawn| spawn.task_unconfirmed.as_deref()) {
+        Some(verification) => {
+            wire::spawned_unconfirmed(&registration.name, directory, verification)
+        }
+        None => wire::spawned(&registration.name, directory),
     }
 }
 

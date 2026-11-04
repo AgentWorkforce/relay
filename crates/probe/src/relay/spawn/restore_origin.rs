@@ -90,6 +90,7 @@ pub(super) fn restorable(
         harness: codex::ID.name().into(),
         requester: None,
         process: None,
+        worker_cwd: receipt.worker_cwd(),
         owner: None,
         taken_over_at: None,
         task_unconfirmed: receipt.verification(),

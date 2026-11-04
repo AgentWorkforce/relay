@@ -352,6 +352,7 @@ fn it_owns_codex_threads_only() {
         message_id: "m1".into(),
         session_id: "s1".into(),
         created_ms: 0,
+        worker_cwd: None,
         ended: false,
         launch_failed: false,
         register_sent: false,

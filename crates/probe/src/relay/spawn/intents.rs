@@ -59,6 +59,11 @@ pub struct Intent {
     /// When the spawn began, in Unix milliseconds.
     #[serde(rename = "createdMs", default)]
     pub created_ms: i64,
+    /// The working folder the agent runs in: the request's, or the machine
+    /// default applied in its place. Told to the caller with every answer
+    /// to the spawn (`worker_cwd`), so it is kept with the intent.
+    #[serde(rename = "workerCwd", default, skip_serializing_if = "Option::is_none")]
+    pub worker_cwd: Option<String>,
     /// Ended after a restart: only taking it off the node is left, sent
     /// again on each connection until Relaycast answers.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -141,6 +146,7 @@ impl Intent {
                 harness: self.harness.name().to_string(),
                 requester: self.requester.clone(),
                 process,
+                worker_cwd: self.worker_cwd.clone(),
                 // Relaycast's spawn invoke carries no owner it vouches for
                 // (only caller-aware `action` capabilities get `caller_id`,
                 // and that names the invoking agent, not a person), so the
@@ -467,6 +473,7 @@ pub(super) mod tests {
             message_id: format!("spawn-inv_{name}"),
             session_id: "0b6f2d0e-8a51-4a5c-9c3e-5d1f0a2b3c4d".into(),
             created_ms: 0,
+            worker_cwd: None,
             ended: false,
             launch_failed: false,
             register_sent: false,

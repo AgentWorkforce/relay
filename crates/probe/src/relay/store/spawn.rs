@@ -27,6 +27,11 @@ pub struct SpawnOrigin {
     /// enough, as another agent can take it later.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requester: Option<SpawnRequester>,
+    /// The working folder the agent runs in, as the spawn resolved it (the
+    /// request's, or the machine default): what every answer to the spawn
+    /// reports as `worker_cwd`. Absent on records from before it was kept.
+    #[serde(rename = "workerCwd", default, skip_serializing_if = "Option::is_none")]
+    pub worker_cwd: Option<String>,
     /// A spawned Claude's own process; a Codex thread runs in Codex's
     /// app-server daemon and has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]

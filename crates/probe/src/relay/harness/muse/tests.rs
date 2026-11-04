@@ -63,6 +63,7 @@ fn intent() -> Intent {
         message_id: "message-test".into(),
         session_id: MARKER.into(),
         created_ms: 0,
+        worker_cwd: None,
         ended: false,
         launch_failed: false,
         register_sent: false,
