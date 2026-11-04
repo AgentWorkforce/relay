@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `agent-relay-probe`: the spawn node sends Relaycast a `delivery.accepted` receipt the moment a delivery is queued for one of its agents, before anything handles it, when Relaycast's `node.register` reply lists that frame in `capabilities`; older engines get nothing new. Delivery acknowledgement after handling is unchanged.
 - The core (`agent-relay-probe`) talks to one Agent Relay site, fixed when it is built: `AGENT_RELAY_SITE_URL` at build time (`https://agentrelay.com` when unset; an https origin, or `http://localhost[:port]` / `http://127.0.0.1[:port]`), and a build for a site the core could not trust fails to build. Nothing changes the site at run time, in any build.
 - The core opens links of one scheme, fixed at build time from `AGENT_RELAY_URL_SCHEME` (`agentrelay` when unset; a web scheme such as `https` fails the build); the `agentrelay-dev://` rule for non-production sites is gone, and on Windows the link handler registers the build's scheme.
 - The site a build is made for is trusted beside `https://agentrelay.com` and loopback: it needs no `RELAYHISTORY_ALLOW_UNTRUSTED_CLOUD_BASE_URL`, which stays a development switch for any other origin.

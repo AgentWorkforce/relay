@@ -261,9 +261,9 @@ impl NodeHost for CoreHost {
             .unwrap_or_default()
     }
 
-    fn deliver(&self, agent: &str, frame: Value) {
+    fn deliver(&self, agent: &str, frame: Value) -> bool {
         let Some(core) = self.0.upgrade() else {
-            return;
+            return false;
         };
         let ours = core.store.read(|store| {
             store
@@ -274,6 +274,7 @@ impl NodeHost for CoreHost {
         if ours {
             core.wake(agent.to_string(), Some(frame));
         }
+        ours
     }
 
     fn state(&self, mut status: SpawnStatus) {

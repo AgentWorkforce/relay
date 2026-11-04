@@ -460,6 +460,60 @@ pub fn error_details_agreed(reply_data: &Value) -> bool {
     reply_data[ERROR_DETAILS_CONTRACT_FIELD] == ERROR_DETAILS_CAPABILITY
 }
 
+/// The inbound frame type a `node.register` reply lists in
+/// `data.capabilities` when Relaycast takes `delivery.accepted`: the
+/// receipt the node sends the moment a delivery is held here, before any
+/// agent runs (Relaycast's docs/delivery-confirmation.md). An engine that
+/// does not list it would answer the frame with an error, so the frame is
+/// gated on the list, learned again on every connection, never on a
+/// version.
+pub const DELIVERY_ACCEPTED_CAPABILITY: &str = "delivery.accepted";
+
+/// Whether a `node.register` reply's data lists `delivery.accepted`.
+pub fn delivery_accepted_agreed(reply_data: &Value) -> bool {
+    reply_data["capabilities"]
+        .as_array()
+        .is_some_and(|capabilities| {
+            capabilities
+                .iter()
+                .any(|c| c == DELIVERY_ACCEPTED_CAPABILITY)
+        })
+}
+
+/// What a connection's `node.register` reply agreed to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Agreed {
+    pub error_details: bool,
+    pub delivery_accepted: bool,
+}
+
+pub fn agreed(reply_data: &Value) -> Agreed {
+    Agreed {
+        error_details: error_details_agreed(reply_data),
+        delivery_accepted: delivery_accepted_agreed(reply_data),
+    }
+}
+
+/// The receipt for a `deliver` frame held here: its agent and the delivery
+/// it names (`delivery_id`, and `seq` as the cumulative `up_to_seq` when
+/// the frame carries one). None for a frame that names no delivery.
+pub fn delivery_accepted(frame: &Value) -> Option<Value> {
+    let agent = delivery_agent(frame)?;
+    let delivery_id = frame["delivery_id"].as_str().filter(|id| !id.is_empty());
+    let seq = frame["seq"].as_u64();
+    if delivery_id.is_none() && seq.is_none() {
+        return None;
+    }
+    let mut receipt = json!({"v": WIRE_VERSION, "type": "delivery.accepted", "agent": agent});
+    if let Some(delivery_id) = delivery_id {
+        receipt["delivery_id"] = Value::String(delivery_id.into());
+    }
+    if let Some(seq) = seq {
+        receipt["up_to_seq"] = Value::from(seq);
+    }
+    Some(receipt)
+}
+
 /// Whether `frame` is Relaycast's answer to the request `id`, and the data
 /// or the refusal it carries.
 pub fn reply_to<'a>(frame: &'a Value, id: &str) -> Option<Result<&'a Value, Refusal>> {
@@ -1015,6 +1069,48 @@ mod tests {
             reply_to(&refused, "r").unwrap().unwrap_err().code,
             "agent_already_exists"
         );
+    }
+
+    #[test]
+    fn delivery_accepted_is_gated_on_the_register_reply_and_names_the_delivery() {
+        assert!(delivery_accepted_agreed(
+            &json!({"capabilities": ["delivery.accepted"], "accepted_capabilities": []})
+        ));
+        assert!(delivery_accepted_agreed(
+            &json!({"capabilities": ["later.frame", "delivery.accepted"]})
+        ));
+        for reply in [
+            json!({}),
+            json!({"capabilities": []}),
+            json!({"capabilities": ["delivery.ack"]}),
+            json!({"capabilities": "delivery.accepted"}),
+            json!({"accepted_capabilities": [{"name": "delivery.accepted"}]}),
+        ] {
+            assert!(!delivery_accepted_agreed(&reply), "{reply}");
+        }
+        assert_eq!(
+            delivery_accepted(&json!({"type": "deliver", "agent": "bob",
+                "delivery_id": "del_1", "seq": 42, "msg_id": "m", "payload": {}})),
+            Some(json!({"v": 1, "type": "delivery.accepted", "agent": "bob",
+                "delivery_id": "del_1", "up_to_seq": 42}))
+        );
+        assert_eq!(
+            delivery_accepted(&json!({"type": "deliver", "agent": "bob", "delivery_id": "del_1"})),
+            Some(
+                json!({"v": 1, "type": "delivery.accepted", "agent": "bob", "delivery_id": "del_1"})
+            )
+        );
+        assert_eq!(
+            delivery_accepted(&json!({"type": "deliver", "agent": "bob", "seq": 7})),
+            Some(json!({"v": 1, "type": "delivery.accepted", "agent": "bob", "up_to_seq": 7}))
+        );
+        for frame in [
+            json!({"type": "deliver", "agent": "bob"}),
+            json!({"type": "deliver", "agent": "bob", "delivery_id": "", "seq": -1}),
+            json!({"type": "action.invoke", "agent": "bob", "delivery_id": "del_1"}),
+        ] {
+            assert_eq!(delivery_accepted(&frame), None, "{frame}");
+        }
     }
 
     #[test]

@@ -49,7 +49,9 @@ impl NodeHost for Host {
             .into_iter()
             .collect()
     }
-    fn deliver(&self, _agent: &str, _frame: Value) {}
+    fn deliver(&self, _agent: &str, _frame: Value) -> bool {
+        false
+    }
     fn state(&self, _status: SpawnStatus) {}
     fn advertisement(&self, _harnesses: &[HarnessId], repositories: &[String]) -> Advertisement {
         Advertisement {

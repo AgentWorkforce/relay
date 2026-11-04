@@ -22,8 +22,9 @@ impl NodeHost for Recovering {
     fn inventory(&self, _node: &NodeInfo) -> Vec<InventoryAgent> {
         Vec::new()
     }
-    fn deliver(&self, agent: &str, _frame: Value) {
+    fn deliver(&self, agent: &str, _frame: Value) -> bool {
         self.delivered.lock().unwrap().push(agent.to_string());
+        true
     }
     fn state(&self, _status: SpawnStatus) {}
     fn advertisement(&self, _harnesses: &[HarnessId], repositories: &[String]) -> Advertisement {
@@ -151,4 +152,41 @@ async fn heartbeats_go_on_while_recovery_runs_and_the_inventory_follows_it() {
     }
     assert_eq!(*delivered.lock().unwrap(), ["w1"]);
     node.stop().await;
+}
+
+/// The receipt for a delivery goes out the moment the core queues it for
+/// its agent, before anything handles it, and only when this connection's
+/// Relaycast listed `delivery.accepted` in its register reply.
+#[tokio::test]
+async fn a_queued_delivery_is_accepted_at_once_when_relaycast_takes_the_receipt() {
+    let delivered = Arc::new(Mutex::new(Vec::new()));
+    let host = Recovering {
+        release: Mutex::new(None),
+        delivered: delivered.clone(),
+        changed: Arc::default(),
+        events: Arc::default(),
+    };
+    let frame = json!({"type": "deliver", "agent": "bob", "delivery_id": "del_1",
+        "seq": 3, "msg_id": "m1", "payload": {"type": "dm.received", "data": {}}});
+    let (mut link, mut sent) = NodeLink::detached(NodeInfo {
+        node_id: "node_desktop_1".into(),
+        node_name: "mac-desktop".into(),
+    });
+    // An engine that did not list the frame gets no receipt.
+    dispatch(&host, &link, frame.clone());
+    assert_eq!(delivered.lock().unwrap().as_slice(), ["bob"]);
+    assert!(sent.try_recv().is_err());
+    // One that did gets it, before anything else is sent.
+    link.delivery_accepted = true;
+    dispatch(&host, &link, frame.clone());
+    assert_eq!(delivered.lock().unwrap().len(), 2);
+    assert_eq!(
+        sent.try_recv().unwrap(),
+        json!({"v": 1, "type": "delivery.accepted", "agent": "bob",
+            "delivery_id": "del_1", "up_to_seq": 3})
+    );
+    // A delivery that names nothing to accept is queued without a receipt.
+    dispatch(&host, &link, json!({"type": "deliver", "agent": "bob"}));
+    assert_eq!(delivered.lock().unwrap().len(), 3);
+    assert!(sent.try_recv().is_err());
 }
