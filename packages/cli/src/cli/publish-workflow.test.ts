@@ -193,7 +193,9 @@ function hasNonTagPush(script: string): boolean {
     const positional = words.filter((word) => !word.startsWith('-'));
     const destinations = positional.slice(1);
     return (
-      words.some((word) => ['--all', '--mirror', '--force', '-f'].includes(word)) ||
+      words.some((word) =>
+        ['--all', '--mirror', '--force', '-f', '--tags', '--follow-tags'].includes(word)
+      ) ||
       destinations.length === 0 ||
       destinations.some((destination) => !/^(?:refs\/tags\/[^:]+|v\$\{(?:NEW_)?VERSION\})$/.test(destination))
     );
@@ -681,6 +683,8 @@ describe('release finalization', () => {
     ['git push origin "refs/heads/main:refs/heads/main"', true],
     ['git push origin "$DESTINATION"', true],
     ['git push origin --all', true],
+    ['git push origin --tags "v${NEW_VERSION}"', true],
+    ['git push origin --follow-tags "v${NEW_VERSION}"', true],
     ['git -C . push origin HEAD:main', true],
     ['git -c push.default=current push origin', true],
     ['git -C "release worktree" -c "push.default=current" push origin "HEAD:refs/heads/main"', true],
