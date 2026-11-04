@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The account, uploader, tools, telemetry, chat, contractor, Cloud provider and `sessions.transcript` bridge methods: a core outside the desktop app answers them `method_not_found`.
 
+### Fixed
+
+- `agent-relay cloud worker` no longer fails to start flows against a self-hosted Relay with `failed to initialize relaycast session`: flows no longer run on an old bundled broker.
+
 ### Breaking Changes
 
 - `agent-relay-probe` is now `agent-relay-node`, without the `relay` subcommand: `agent-relay-probe relay call status.get` is `agent-relay-node call status.get`. `AGENT_RELAY_PROBE_PATH` is no longer read.
