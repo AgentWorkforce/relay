@@ -21,6 +21,17 @@ export type WorkerWorkflowPayload = {
   sourceFileType: WorkerFileType | 'workflow';
   workflowFileName: string;
   envSecrets?: Record<string, string>;
+  /**
+   * Subscription logins for the run: a short-lived reference the worker
+   * exchanges, with its worker token, for CLI auth files (see
+   * packages/cli/src/cli/commands/cloud-worker-cli-credentials.ts).
+   */
+  cliCredentials?: {
+    ref: string;
+    expiresAt?: string;
+    path: string;
+    credentials?: Array<{ credentialId: string; provider: string; cli: string }>;
+  };
   metadata?: Record<string, string>;
   s3CodeKey?: string;
   paths?: Array<{

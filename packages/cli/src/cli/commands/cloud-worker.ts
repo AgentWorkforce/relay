@@ -20,6 +20,12 @@ import {
 } from '@agent-relay/cloud';
 
 import { defaultExit } from '../lib/exit.js';
+import {
+  isCliCredentialsPayload,
+  materializeCliCredentials,
+  writeBackCliCredentials,
+  type MaterializedCliCredentials,
+} from './cloud-worker-cli-credentials.js';
 
 type ExitFn = (code: number) => never;
 
@@ -80,11 +86,15 @@ function safePathSegment(value: string): string {
 
 function buildWorkerRuntimeEnv(
   payload: WorkerWorkflowPayload,
-  deps: CloudWorkerDependencies
+  deps: CloudWorkerDependencies,
+  cliCredentialEnv: Record<string, string> = {}
 ): NodeJS.ProcessEnv {
   return {
     ...deps.env,
     ...payload.envSecrets,
+    // Materialised subscription logins (CODEX_HOME/GROK_HOME pointing into the
+    // run dir) win over anything inherited or delivered under those names.
+    ...cliCredentialEnv,
     AGENT_RELAY_CLOUD_WORKER_RUN_ID: payload.runId,
     RELAY_WORKSPACE_ID: payload.relayWorkspaceId,
     RELAY_API_KEY: payload.relaycastApiKey,
@@ -217,6 +227,8 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
     // directory/env and then invokes relayflows with the equivalent run flags.
     const runDir = path.join(cloudWorkerStateDir(deps.env), 'runs', payload.runId);
     const keepRunDir = deps.env.AGENT_RELAY_WORKER_KEEP_RUN_DIR === '1';
+    const cliCredentials = isCliCredentialsPayload(payload.cliCredentials) ? payload.cliCredentials : null;
+    let materialized: MaterializedCliCredentials | null = null;
     try {
       await fsp.mkdir(runDir, { recursive: true, mode: 0o700 });
       await fsp.chmod(runDir, 0o700).catch(() => undefined);
@@ -225,12 +237,23 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
       const workflowPath = path.join(runDir, safeFileName(payload.workflowFileName));
       await writeSecretFile(workflowPath, payload.workflow);
 
+      if (cliCredentials) {
+        materialized = await materializeCliCredentials({
+          worker,
+          credentials: cliCredentials,
+          runDir,
+          fetchImpl: deps.fetchImpl,
+          signal,
+          log: deps.log,
+        });
+      }
+
       const relayflowsCli = deps.resolveRelayflowsCliEntrypoint();
       const result = await runChild({
         command: process.execPath,
         args: relayflowsArgs(relayflowsCli, workflowPath, payload),
         cwd: runDir,
-        env: buildWorkerRuntimeEnv(payload, deps),
+        env: buildWorkerRuntimeEnv(payload, deps, materialized?.env),
         deps,
         signal,
       });
@@ -245,6 +268,15 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
         summary: `Workflow ${payload.runId} completed.`,
       };
     } finally {
+      if (cliCredentials && materialized?.files.length) {
+        await writeBackCliCredentials({
+          worker,
+          credentials: cliCredentials,
+          materialized,
+          fetchImpl: deps.fetchImpl,
+          log: deps.log,
+        }).catch(() => undefined);
+      }
       if (!keepRunDir) {
         await fsp.rm(runDir, { recursive: true, force: true }).catch(() => undefined);
       }
