@@ -8,7 +8,7 @@
 - Files: 4
 - Commits: 5
 
-## Testing
+## Release
 - Split release preparation from finalization -> Split release preparation from finalization (traj_lus9g32cijle)
 
 ## Key Learnings

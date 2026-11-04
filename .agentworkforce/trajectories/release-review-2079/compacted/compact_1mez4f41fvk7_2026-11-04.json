@@ -19,7 +19,7 @@
   },
   "decisionGroups": [
     {
-      "category": "testing",
+      "category": "release",
       "decisions": [
         {
           "question": "Split release preparation from finalization",
