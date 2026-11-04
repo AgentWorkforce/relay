@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay cloud worker` can run Codex and Grok jobs with the workspace's subscription logins when the control plane provides them; the login files exist only while the run does.
 - `agent-relay cloud worker` saves refreshed Codex and Grok login tokens for later runs.
+- `agent-relay cloud worker` runs flows with `@relayflows/cli` 1.1.8, where a subscription login wins over an API key for its own CLI. Claude gets `CLAUDE_CODE_OAUTH_TOKEN` without `ANTHROPIC_API_KEY`, and Codex and Grok with a login file no longer see `OPENAI_API_KEY` or `XAI_API_KEY`.
 
 ### Changed
 
