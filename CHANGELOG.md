@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay-probe`: beside a site other than production, a 404 from the desktop-identities route means the site has none: the sync is reported once, at Info, and no longer every minute as a failure that counts against the sign-in.
 - The desktop spawn node asks Agent Relay for the same node id on every attempt of a first enrollment and keeps the alternate name it took, so a name another node holds is not asked for again; a node enrolled whose answer was lost, or an id another node has, is left behind for a fresh one under the same name.
 - A node token Agent Relay refuses three times in a row stops the spawn node with a status saying so, instead of retrying forever; turning Accept spawns from Agent Relay off and on, or signing in again, enrolls a new node.
+- `agent-relay-probe`: beside a self-hosted site the uploader accepts the https RelayHistory origin that site's control plane names (production still accepts only `history.agentrelay.com`), so a Desktop built for that site uploads sessions to it.
+- `agent-relay-probe`: a message link may name its site (`agentrelay://message?to=…&site=…`), as the dashboard's do; it opens when that is the build's site and says which site it is for otherwise.
+- `agent-relay-probe`: every build accepts an `ar_ws_…` workspace key from Cloud's workspace resolve, not only the `relay-cli` build, so a Desktop signs in to a self-hosted Relaycast on durable actors.
 
 ### Breaking Changes
 

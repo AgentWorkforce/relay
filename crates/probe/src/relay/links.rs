@@ -11,10 +11,13 @@
 //! ```text
 //! agentrelay://connect?site=https%3A%2F%2Fagentrelay.com&account=<id>&workspace=<id>
 //! agentrelay://message?to=reviewer%40sf-frame
+//! agentrelay://message?to=reviewer%40sf-frame&site=https%3A%2F%2Fagentrelay.com
 //! ```
 //!
 //! A build opens links of its own scheme only ([`built_in_url_scheme`]), and
-//! a connect link only for the site it was built for ([`built_in_site_url`]).
+//! a link that names a site only for the site it was built for
+//! ([`built_in_site_url`]): a connect link always names one, a message link
+//! may.
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -223,22 +226,7 @@ pub fn parse_link_for(raw: &str, scheme: &str, site: &str) -> Result<DeepLink, L
                 }
             }
             let linked = values.get("site").ok_or(LinkError::NotALink)?;
-            // Name another site by its origin only: the rest of the value
-            // is whatever the link carried.
-            let origin = Url::parse(linked)
-                .ok()
-                .map(|url| url.origin())
-                .filter(url::Origin::is_tuple)
-                .ok_or(LinkError::NotALink)?;
-            if Url::parse(site).map_or(true, |built_in| built_in.origin() != origin) {
-                return Err(LinkError::OtherSite {
-                    site: origin.ascii_serialization(),
-                    built_in: site.to_string(),
-                });
-            }
-            if site_url_for(site, linked).is_none() {
-                return Err(LinkError::NotALink);
-            }
+            this_site(site, linked)?;
             let account = values
                 .get("account")
                 .filter(|v| valid_id(v))
@@ -254,13 +242,26 @@ pub fn parse_link_for(raw: &str, scheme: &str, site: &str) -> Result<DeepLink, L
             })
         }
         "message" => {
-            let [(key, value)] = pairs.as_slice() else {
-                return Err(LinkError::NotALink);
-            };
-            if key != "to" {
-                return Err(LinkError::NotALink);
+            let mut to = None;
+            let mut linked = None;
+            for (key, value) in &pairs {
+                let slot = match key.as_str() {
+                    "to" => &mut to,
+                    // A dashboard's message link names its site as its
+                    // connect link does, so a build for another site says
+                    // so instead of messaging the wrong one.
+                    "site" => &mut linked,
+                    _ => return Err(LinkError::NotALink),
+                };
+                if slot.replace(value.as_str()).is_some() {
+                    return Err(LinkError::NotALink);
+                }
             }
-            let endpoint = Endpoint::parse(value).map_err(|_| LinkError::NotALink)?;
+            if let Some(linked) = linked {
+                this_site(site, linked)?;
+            }
+            let to = to.ok_or(LinkError::NotALink)?;
+            let endpoint = Endpoint::parse(to).map_err(|_| LinkError::NotALink)?;
             Ok(DeepLink::Message {
                 address: endpoint.is_address(),
                 endpoint: endpoint.value().into(),
@@ -268,6 +269,27 @@ pub fn parse_link_for(raw: &str, scheme: &str, site: &str) -> Result<DeepLink, L
         }
         _ => Err(LinkError::NotALink),
     }
+}
+
+/// The site a link names must be this build's: another site is named by
+/// its origin only (the rest of the value is whatever the link carried),
+/// and a value that is no site at all is no link.
+fn this_site(site: &str, linked: &str) -> Result<(), LinkError> {
+    let origin = Url::parse(linked)
+        .ok()
+        .map(|url| url.origin())
+        .filter(url::Origin::is_tuple)
+        .ok_or(LinkError::NotALink)?;
+    if Url::parse(site).map_or(true, |built_in| built_in.origin() != origin) {
+        return Err(LinkError::OtherSite {
+            site: origin.ascii_serialization(),
+            built_in: site.to_string(),
+        });
+    }
+    if site_url_for(site, linked).is_none() {
+        return Err(LinkError::NotALink);
+    }
+    Ok(())
 }
 
 fn valid_id(value: &str) -> bool {
@@ -538,6 +560,49 @@ mod tests {
             "http://localhost:3100"
         )
         .is_ok());
+    }
+
+    // A dashboard's message link names its site (relay-dashboard #88).
+    #[test]
+    fn message_deep_link_may_name_this_builds_site_only() {
+        let message = Ok(DeepLink::Message {
+            endpoint: "reviewer@sf-frame".into(),
+            address: true,
+        });
+        let parse = |raw: &str| parse_link_for(raw, "agentrelay", DEFAULT_SITE_URL);
+        assert_eq!(
+            parse("agentrelay://message?to=reviewer%40sf-frame&site=https%3A%2F%2Fagentrelay.com"),
+            message
+        );
+        assert_eq!(
+            parse(
+                "agentrelay://message?site=https%3A%2F%2Fagentrelay.com%2F&to=reviewer%40sf-frame"
+            ),
+            message
+        );
+        assert_eq!(
+            parse("agentrelay://message?to=reviewer%40sf-frame&site=https%3A%2F%2Fgcp-proof.agentrelay.com"),
+            Err(LinkError::OtherSite {
+                site: "https://gcp-proof.agentrelay.com".into(),
+                built_in: DEFAULT_SITE_URL.into(),
+            })
+        );
+        assert_eq!(
+            parse_link_for(
+                "agentrelay-gcpproof://message?to=reviewer%40sf-frame&site=https%3A%2F%2Fgcp-proof.agentrelay.com",
+                "agentrelay-gcpproof",
+                "https://gcp-proof.agentrelay.com",
+            ),
+            message
+        );
+        for invalid in [
+            "agentrelay://message?to=reviewer%40sf-frame&site=not%20a%20site",
+            "agentrelay://message?to=reviewer%40sf-frame&site=https%3A%2F%2Fagentrelay.com&site=https%3A%2F%2Fagentrelay.com",
+            "agentrelay://message?to=reviewer%40sf-frame&to=reviewer%40sf-frame",
+            "agentrelay://message?site=https%3A%2F%2Fagentrelay.com",
+        ] {
+            assert_eq!(parse(invalid), Err(LinkError::NotALink), "{invalid}");
+        }
     }
 
     #[test]

@@ -810,23 +810,18 @@ mod tests {
         assert!(cli_session(home.path(), "https://agentrelay.com", 0).is_none());
     }
 
-    #[cfg(not(feature = "relay-cli"))]
+    /// Every build takes the key a self-hosted Relaycast issues, not only
+    /// `relay-cli`: the Desktop core is built without it.
     #[test]
-    fn without_relay_cli_a_resolved_armadillo_key_is_refused_before_any_origin() {
-        let key = "ar_ws_0123456789abcdef";
-        for answer in [
-            json!({"relaycastApiKey": key}),
-            json!({"relaycastApiKey": key,
-                   "urls": {"relaycastUrl": "https://armadillo.agentrelay.com"}}),
-        ] {
-            assert_eq!(
-                decode_resolution(&answer, "workspace"),
-                Err(ResolveError::NoKey)
-            );
-        }
+    fn a_resolved_armadillo_key_is_a_workspace_key_in_every_build() {
+        let found = decode_resolution(
+            &json!({"relaycastApiKey": "ar_ws_0123456789abcdef"}),
+            "workspace",
+        )
+        .unwrap();
+        assert_eq!(found.key.expose(), "ar_ws_0123456789abcdef");
     }
 
-    #[cfg(feature = "relay-cli")]
     #[test]
     fn a_resolved_armadillo_key_keeps_the_origin_cloud_names() {
         let found = decode_resolution(
