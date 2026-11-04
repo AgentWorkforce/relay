@@ -271,13 +271,23 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
           ? `Workflow ${payload.runId} completed. The refreshed ${failedWriteBacks.join(', ')} login could not be stored; sign in again if the next run fails.`
           : `Workflow ${payload.runId} completed.`,
       };
-    } finally {
+    } catch (error) {
       // A failed or cancelled run still stores a refreshed login (Grok rotates
-      // its single-use refresh token), then the login files are removed even
-      // when the run directory is kept for debugging.
+      // its single-use refresh token), and says so when it could not.
+      const failedWriteBacks = await storeRefreshedLogins();
+      if (failedWriteBacks.length && error instanceof Error) {
+        error.message = `${error.message} The refreshed ${failedWriteBacks.join(', ')} login could not be stored; sign in again if the next run fails.`;
+      }
+      throw error;
+    } finally {
       await storeRefreshedLogins();
-      if (materialized) {
-        await fsp.rm(materialized.home, { recursive: true, force: true }).catch(() => undefined);
+      // The login files are removed even when the run directory is kept for
+      // debugging, and even when materialisation failed partway.
+      if (cliCredentials) {
+        const loginHome = materialized?.home ?? path.join(runDir, '.cli-home');
+        await fsp.rm(loginHome, { recursive: true, force: true }).catch(() => {
+          deps.error('[cloud-worker] could not remove the run\'s CLI login directory; delete it manually');
+        });
       }
       if (!keepRunDir) {
         await fsp.rm(runDir, { recursive: true, force: true }).catch(() => undefined);

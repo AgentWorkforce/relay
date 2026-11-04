@@ -57,7 +57,12 @@ const CLI_LAYOUTS: Record<string, { homeEnv: string; directory: string; file: st
   grok: { homeEnv: 'GROK_HOME', directory: '.grok', file: 'auth.json' },
 };
 
-/** Env flag relayflows reads to give the subscription precedence over API keys. */
+/**
+ * Lists the mounted CLIs. relayflows reads it to give the subscription
+ * precedence over API keys (AgentWorkforce/relayflows#65); the precedence
+ * applies once the relayflows release containing it is the one this package
+ * pins. Codex and Grok themselves read only CODEX_HOME/GROK_HOME.
+ */
 export const SUBSCRIPTION_LOGINS_ENV = 'AGENT_RELAY_SUBSCRIPTION_LOGINS';
 
 const CREDENTIAL_PATH =
@@ -76,6 +81,39 @@ export function isCliCredentialsPayload(value: unknown): value is CliCredentials
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
   return typeof candidate.ref === 'string' && candidate.ref.length > 0 && typeof candidate.path === 'string';
+}
+
+/** The listed credentials, or an error: a reference without its list cannot be matched safely. */
+function offeredCredentials(credentials: CliCredentialsPayload): Map<string, string> {
+  const list: unknown = credentials.credentials;
+  if (
+    !Array.isArray(list) ||
+    !list.every(
+      (entry) =>
+        entry !== null &&
+        typeof entry === 'object' &&
+        typeof (entry as Record<string, unknown>).credentialId === 'string' &&
+        typeof (entry as Record<string, unknown>).cli === 'string'
+    )
+  ) {
+    throw new Error('cliCredentials.credentials must list the CLI logins offered for this run.');
+  }
+  return new Map(list.map((entry: { credentialId: string; cli: string }) => [entry.credentialId, entry.cli]));
+}
+
+/**
+ * Creates `<runDir>/.cli-home` fresh: anything already there (a directory or a
+ * symlink planted by the workflow archive) is removed first, so every path
+ * below it is created by the worker and no write follows a link.
+ */
+async function freshLoginHome(runDir: string): Promise<string> {
+  const home = path.join(runDir, '.cli-home');
+  await fsp.rm(home, { recursive: true, force: true });
+  await fsp.mkdir(home, { mode: 0o700 });
+  await fsp.chmod(home, 0o700).catch(() => undefined);
+  const stat = await fsp.lstat(home);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Could not create the CLI login directory');
+  return home;
 }
 
 /**
@@ -133,21 +171,27 @@ export async function materializeCliCredentials(input: {
     method: 'GET',
     headers: headers(input.worker, input.credentials.ref),
     signal: input.signal,
+    // A redirect would resend the worker token and reference elsewhere.
+    redirect: 'error',
   });
   if (!response.ok) {
     throw new Error(`Could not load the run's CLI logins (HTTP ${response.status}).`);
   }
-  const body = (await response.json()) as { files?: CredentialFile[]; skipped?: Array<{ reason?: string }> };
-  const expected = new Map(
-    (input.credentials.credentials ?? []).map((entry) => [entry.credentialId, entry.cli])
-  );
-  const home = path.join(input.runDir, '.cli-home');
-  await fsp.mkdir(home, { recursive: true, mode: 0o700 });
-  await fsp.chmod(home, 0o700).catch(() => undefined);
+  const body = (await response.json().catch(() => null)) as {
+    files?: unknown;
+    skipped?: unknown;
+  } | null;
+  const expected = offeredCredentials(input.credentials);
+  const home = await freshLoginHome(input.runDir);
   const env: Record<string, string> = {};
   const files: MaterializedCliCredentials['files'] = [];
-  for (const entry of body.files ?? []) {
-    const layout = CLI_LAYOUTS[entry.cli];
+  const entries: Array<Partial<CredentialFile> | null> = Array.isArray(body?.files) ? body.files : [];
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') {
+      input.log?.('[cloud-worker] skipping a malformed CLI login entry');
+      continue;
+    }
+    const layout = typeof entry.cli === 'string' ? CLI_LAYOUTS[entry.cli] : undefined;
     const valid =
       layout !== undefined &&
       typeof entry.credentialId === 'string' &&
@@ -165,17 +209,23 @@ export async function materializeCliCredentials(input: {
       continue;
     }
     const directory = path.join(home, layout.directory);
-    await fsp.mkdir(directory, { recursive: true, mode: 0o700 });
+    await fsp.mkdir(directory, { mode: 0o700 });
     await fsp.chmod(directory, 0o700).catch(() => undefined);
     const filePath = path.join(directory, layout.file);
-    await fsp.writeFile(filePath, entry.content, { encoding: 'utf-8', mode: 0o600 });
+    // 'wx' = O_CREAT | O_EXCL: fails on anything already at the path, a symlink included.
+    await fsp.writeFile(filePath, entry.content as string, { encoding: 'utf-8', mode: 0o600, flag: 'wx' });
     await fsp.chmod(filePath, 0o600).catch(() => undefined);
     env[layout.homeEnv] = directory;
-    files.push({ credentialId: entry.credentialId, cli: entry.cli, filePath, original: entry.content });
+    files.push({
+      credentialId: entry.credentialId as string,
+      cli: entry.cli as string,
+      filePath,
+      original: entry.content as string,
+    });
   }
   if (files.length)
     env[SUBSCRIPTION_LOGINS_ENV] = [...new Set(files.map((file) => file.cli))].sort().join(',');
-  if (body.skipped?.length) {
+  if (Array.isArray(body?.skipped) && body.skipped.length) {
     input.log?.(`[cloud-worker] ${body.skipped.length} CLI login(s) unavailable for this run`);
   }
   return { env, home, files };
@@ -233,6 +283,7 @@ export async function writeBackCliCredentials(input: {
             headers: headers(input.worker, input.credentials.ref, true),
             body: JSON.stringify({ content: current }),
             signal: AbortSignal.timeout(WRITE_BACK_TIMEOUT_MS),
+            redirect: 'error',
           }
         );
         if (response.ok) stored = true;

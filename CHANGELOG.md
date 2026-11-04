@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `agent-relay cloud worker` mounts the workspace's Codex and Grok subscription logins for a run when the control plane offers them (`cliCredentials` in the assignment): each auth file is written 0600 under the run's private directory as `$CODEX_HOME/auth.json` / `$GROK_HOME/auth.json`, a file the CLI refreshed during the run is written back, and the files are removed after the run.
+- `agent-relay cloud worker` can run Codex and Grok jobs with the workspace's subscription logins when the control plane provides them; the login files exist only while the run does.
+- `agent-relay cloud worker` saves refreshed Codex and Grok login tokens for later runs.
 
 ### Changed
 
