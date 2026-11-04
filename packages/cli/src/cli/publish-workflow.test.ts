@@ -181,6 +181,23 @@ function jobRuns(
   return condition(expression, inputs, results, prerelease);
 }
 
+// Pre-publication writes may push only an explicit version tag. Reject ambiguous
+// destinations too, so quoting, push options, or variable branch names cannot
+// hide a branch update from this guard.
+function hasNonTagPush(script: string): boolean {
+  const commands = script.replace(/\\\n/g, ' ').match(/\bgit\s+push\b[^\n;]*/g) ?? [];
+  return commands.some((command) => {
+    const words = command.replace(/["']/g, '').trim().split(/\s+/).slice(2);
+    const positional = words.filter((word) => !word.startsWith('-'));
+    const destinations = positional.slice(1);
+    return (
+      words.some((word) => ['--all', '--mirror', '--force', '-f'].includes(word)) ||
+      destinations.length === 0 ||
+      destinations.some((destination) => !/^(?:refs\/tags\/[^:]+|v\$\{(?:NEW_)?VERSION\})$/.test(destination))
+    );
+  });
+}
+
 describe('Actions job status semantics', () => {
   it('applies implicit success to ordinary conditions and preserves explicit status expressions', () => {
     const inputs = { package: 'all' };
@@ -410,6 +427,79 @@ describe('unified relay-node release', () => {
     }
   );
 
+  it.each(['200', '404', '401', '500', 'network'])(
+    'checks existing non-dry-run releases with a %s API response',
+    (response) => {
+      const check = loadPublishWorkflow().jobs['create-release'].steps?.find(
+        (step) => step.name === 'Check existing release tag'
+      );
+      const directory = mkdtempSync(resolve(tmpdir(), 'relay-release-lookup-'));
+      try {
+        const git = (...args: string[]) =>
+          execFileSync('git', args, { cwd: directory, stdio: 'pipe' }).toString().trim();
+        git('init');
+        git(
+          '-c',
+          'user.name=Release test',
+          '-c',
+          'user.email=release@example.test',
+          'commit',
+          '--allow-empty',
+          '-m',
+          'source'
+        );
+        const source = git('rev-parse', 'HEAD');
+        git(
+          '-c',
+          'user.name=Release test',
+          '-c',
+          'user.email=release@example.test',
+          'tag',
+          '-a',
+          'v16.0.1',
+          '-m',
+          `Source: ${source}`,
+          '-m',
+          'Mode: all'
+        );
+        const output = resolve(directory, 'output');
+        writeFileSync(output, '');
+        const mock = `gh() {
+          printf '%s\\n' "$*" >> calls
+          if [ "$MOCK_RESPONSE" = network ]; then return 1; fi
+          printf 'HTTP/2.0 %s\\n' "$MOCK_RESPONSE"
+          [ "$MOCK_RESPONSE" = 200 ]
+        }
+`;
+        const run = () =>
+          execFileSync('bash', ['-c', mock + check!.run!], {
+            cwd: directory,
+            env: {
+              ...process.env,
+              VERSION: '16.0.1',
+              PACKAGE_MODE: 'all',
+              GITHUB_SHA: source,
+              GITHUB_OUTPUT: output,
+              DRY_RUN: 'false',
+              GITHUB_REPOSITORY: 'test/relay',
+              MOCK_RESPONSE: response,
+            },
+            stdio: 'pipe',
+          });
+        if (response === '200' || response === '404') expect(run).not.toThrow();
+        else expect(run).toThrow();
+        expect(readFileSync(output, 'utf8')).toBe(
+          response === '200' ? 'exists=true\nrelease_exists=true\n' : 'exists=true\n'
+        );
+        expect(readFileSync(resolve(directory, 'calls'), 'utf8')).toBe(
+          'api --include repos/test/relay/releases/tags/v16.0.1\n'
+        );
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
   it.each(['all', 'main', 'sdk', 'cli-prerelease'])(
     'keeps %s release discovery and install instructions consistent with its assets',
     (mode) => {
@@ -582,10 +672,24 @@ describe('release finalization', () => {
     }
   });
 
+  it.each([
+    ['git push origin "HEAD:refs/heads/main"', true],
+    ["git push origin 'HEAD:staging'", true],
+    ['git push --atomic origin "HEAD:refs/heads/${BRANCH}"', true],
+    ['git push origin "refs/heads/main:refs/heads/main"', true],
+    ['git push origin "$DESTINATION"', true],
+    ['git push origin --all', true],
+    ['git push origin', true],
+    ['git push origin "v${NEW_VERSION}"', false],
+    ['git push origin "refs/tags/v${VERSION}"', false],
+  ])('detects non-tag pushes in %s', (script, expected) => {
+    expect(hasNonTagPush(script)).toBe(expected);
+  });
+
   it('keeps branch updates and latest promotion out of the pre-npm asset job', () => {
     const release = loadPublishWorkflow().jobs['create-release'];
     const commands = release.steps?.map((step) => step.run ?? '').join('\n') ?? '';
-    expect(commands).not.toMatch(/git push origin (HEAD:|main|staging)/);
+    expect(hasNonTagPush(commands)).toBe(false);
     expect(commands).not.toContain('git pull --rebase');
     expect(commands).not.toContain('--latest');
     for (const step of release.steps?.filter((step) =>
