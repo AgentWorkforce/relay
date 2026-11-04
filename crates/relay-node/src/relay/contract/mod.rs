@@ -15,19 +15,13 @@
 
 pub mod account;
 pub mod agents;
-pub mod capy;
-pub mod chat;
 pub mod claude_delivery;
 pub mod codegen;
 pub mod connection;
-pub mod contractors;
-pub mod cursor_cloud;
 pub mod directory;
 pub mod openclaw;
 pub mod plan;
-pub mod platform;
 pub mod reader;
-pub mod replicas;
 pub mod spawn_control;
 pub mod spawned;
 pub mod transcript;
@@ -114,16 +108,10 @@ macro_rules! methods {
 }
 
 use agents::*;
-use capy::*;
-use chat::*;
 use claude_delivery::*;
 use connection::*;
-use contractors::*;
-use cursor_cloud::*;
 use directory::*;
 use openclaw::*;
-use platform::*;
-use replicas::*;
 use spawned::*;
 
 methods! {
@@ -179,56 +167,14 @@ methods! {
     RosterGet = "roster.get", Always, RecipientParams => Recipient;
     FleetList = "fleet.list", Always, NoParams => crate::relay::fleet::FleetListing;
     FleetRelease = "fleet.release", Always, ReleaseParams => Done;
-    CursorCloudModelsList = "cursor_cloud.models.list", Account, NoParams => CursorCloudModels;
-    CursorCloudRepositoriesList = "cursor_cloud.repositories.list", Account, NoParams => CursorCloudRepositories;
-    CursorCloudEnvironmentsList = "cursor_cloud.environments.list", Account, CursorCloudEnvironmentsListParams => CursorCloudEnvironments;
-    CursorCloudAgentsList = "cursor_cloud.agents.list", Account, CursorCloudAgentsListParams => CursorCloudAgents;
-    CursorCloudAgentsSpawn = "cursor_cloud.agents.spawn", Account, CursorCloudAgentSpawnParams => CursorCloudAgent;
-    CursorCloudAgentsGet = "cursor_cloud.agents.get", Account, CursorCloudAgentParams => CursorCloudAgent;
-    CursorCloudAgentsAttach = "cursor_cloud.agents.attach", Account, CursorCloudAgentParams => CursorCloudAgent;
-    CursorCloudRunsCreate = "cursor_cloud.runs.create", Account, CursorCloudRunCreateParams => CursorCloudRun;
-    CursorCloudRunsList = "cursor_cloud.runs.list", Account, CursorCloudRunsListParams => CursorCloudRuns;
-    CursorCloudRunsGet = "cursor_cloud.runs.get", Account, CursorCloudRunParams => CursorCloudRun;
-    CursorCloudRunsCancel = "cursor_cloud.runs.cancel", Account, CursorCloudRunParams => CursorCloudRun;
-    CursorCloudAgentsArchive = "cursor_cloud.agents.archive", Account, CursorCloudAgentParams => CursorCloudLifecycle;
-    CursorCloudAgentsUnarchive = "cursor_cloud.agents.unarchive", Account, CursorCloudAgentParams => CursorCloudLifecycle;
-    ReplicasEnvironmentsList = "replicas.environments.list", Account, NoParams => ReplicasEnvironments;
-    ReplicasSpawn = "replicas.spawn", Account, ReplicasSpawnParams => crate::relay::contract::replicas::ReplicasSpawn;
-    ReplicasSpawnGet = "replicas.spawn.get", Account, ReplicasSpawnGetParams => crate::relay::contract::replicas::ReplicasSpawn;
-    ReplicasRelease = "replicas.release", Account, ReplicasSpawnGetParams => ReplicasReleased;
-    CapyProjectsList = "capy.projects.list", Account, CapyProjectsParams => CapyProjects;
-    CapyThreadsSpawn = "capy.threads.spawn", Account, CapyThreadSpawnParams => CapyThreadSpawn;
-    CapyThreadsGet = "capy.threads.get", Account, CapyThreadSpawnGetParams => CapyThreadSpawn;
     MessagesConversations = "messages.conversations", Always, NoParams => Conversations;
     MessagesHistory = "messages.history", Always, HistoryParams => History;
     MessagesSend = "messages.send", Always, SendParams => SentMessage;
-    SessionsOverviewGet = "sessions.overview.get", Account, SessionOverviewParams => serde_json::Value;
-    SessionsOverviewRequest = "sessions.overview.request", Account, SessionOverviewParams => serde_json::Value;
-    SessionsOverviewEvents = "sessions.overview.events", Account, SessionOverviewParams => serde_json::Value;
     PeopleList = "people.list", Always, NoParams => People;
 
     // Platform services.
     LinksParse = "links.parse", Always, LinkParams => crate::relay::links::DeepLink;
-    LoginItemSet = "login_item.set", Always, LoginItemParams => Done;
-    LoginItemStatus = "login_item.status", Always, NoParams => LoginItemState;
 
-    // Skip chat.
-    ChatConversation = "chat.conversation", Always, NoParams => chat::ChatConversation;
-    ChatSend = "chat.send", Always, ChatSendParams => ChatAnswer;
-    ChatClear = "chat.clear", Always, NoParams => chat::ChatConversation;
-    ChatAct = "chat.act", Always, ActParams => ActResult;
-    ChatHistory = "chat.history", Always, ChatHistoryParams => HistoryPage;
-    ChatProjects = "chat.projects", Always, NoParams => ProjectsState;
-    ChatProjectsRefresh = "chat.projects.refresh", Always, NoParams => ProjectsState;
-    ChatPush = "chat.push", Always, PushParams => PushResult;
-
-    // Contractor access.
-    ContractorsStatus = "contractors.status", Always, NoParams => ContractorStatus;
-    ContractorsRefresh = "contractors.refresh", Always, NoParams => ContractorStatus;
-    ContractorsPropose = "contractors.propose", Always, ProposeParams => crate::relay::contractor_access::Proposal;
-    ContractorsApprove = "contractors.approve", Always, ApproveParams => GrantResult;
-    ContractorsRevoke = "contractors.revoke", Always, RevokeParams => Done;
-    ContractorsDismiss = "contractors.dismiss", Always, DismissParams => ContractorStatus;
 }
 
 /// Methods a connection answers about itself (its handshake, its topics,
@@ -525,7 +471,6 @@ mod tests {
                 "agents.integrations.clean_up"
             ]
         );
-        assert_eq!(names("`login_item.set` (Linux)"), ["login_item.set"]);
         assert_eq!(
             names("`uploader.start` / `uploader.pause`"),
             ["uploader.start", "uploader.pause"]

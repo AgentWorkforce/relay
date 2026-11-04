@@ -21,13 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--site-url` on the core's `serve`: the core takes no site at start.
 - The `site_url` field of `links.parse` in the bridge contract (and the generated Swift contract).
 - The `incoming.*` bridge methods: nothing has answered them since Agent Relay Cloud retired the Room API.
-- `account.*`, `uploader.*`, `tools.*`, `sessions.transcript` and `telemetry.record` from the bridge contract, and PostHog telemetry from the core: a core without an account answered them `method_not_found` and sent no usage.
+- `account.*`, `uploader.*`, `tools.*`, `sessions.transcript`, `sessions.overview.*`, `telemetry.record`, `chat.*`, `contractors.*`, `cursor_cloud.*`, `replicas.*`, `capy.*` and `login_item.*` from the bridge contract, and PostHog telemetry from the core: without an account they did nothing useful, and the desktop app answers them itself.
 
 ### Fixed
 
 - The spawn node asks Agent Relay for the same node id on every attempt of a first enrollment and keeps the alternate name it took, so a name another node holds is not asked for again; a node enrolled whose answer was lost, or an id another node has, is left behind for a fresh one under the same name.
 - A node token Agent Relay refuses three times in a row stops the spawn node with a status saying so, instead of retrying forever; turning `accept_spawns` off and on, or signing in again, enrolls a new node.
-- A core built without an account answers every account method with `method_not_found`, as `hello` lists them.
 
 ### Breaking Changes
 

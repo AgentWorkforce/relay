@@ -35,17 +35,13 @@
 //! | `cloud_session` | The `CloudAccess` trait; Cloud session calls: refresh, handoff exchange, revoke, whoami, workspace resolve; where the session is kept |
 //! | `cloud_http` | One redirect-free, bounded JSON request to Cloud |
 //! | `cloud_login` | Device sign-in, for Relay Connect hosts (`connect create`); an account (sign-in, its bridge methods) is a plugin the core is built with (`daemon::plugins::AccountPlugin`) |
-//! | `probe_copy` | The command-line copy of the probe in `~/.local/bin`, only ever upgraded |
 //! | `probe_alias` | The space-free link to the probe that Codex and Claude Code rules and reply hints name while their hooks are on |
-//! | `cloud_chat` | Skip chat: requests, the saved conversation and project view, pushes |
 //! | `messaging` | Messaging as the signed-in person; exact-address proof |
 //! | `people` | Workspace members and the agent roster |
 //! | `recipients` | Why a direct send's recipient was not an agent: candidates, a person, or nothing |
-//! | `contractor_access` | Owner grants of scoped service access to contractor seats; a contractor's own grant |
 //! | `integrations` | relayfile subscriptions |
 //! | `links` | Message endpoints and deep links |
 //! | `usage` | What the core reports about its own operations to a build's account |
-//! | `login_item` | Linux launch at login: the XDG autostart entry |
 //! | `methods` | The bridge methods for agents, messaging, people, links, settings |
 //! | `process` | The kernel's process table and the Codex caller rules |
 //! | `codex` | Codex threads: discovery, liveness, the routes into a thread, final answers |
@@ -68,13 +64,11 @@ pub mod backoff;
 pub mod claude;
 pub mod claude_delivery_policy;
 pub mod claude_dirs;
-pub mod claude_keychain;
 pub mod claude_mobile_plugin;
 pub mod claude_settings;
 pub mod claude_web;
 pub mod cli;
 pub mod client;
-pub mod cloud_chat;
 pub mod cloud_http;
 pub mod cloud_login;
 pub mod cloud_session;
@@ -86,7 +80,6 @@ mod connect_inbox;
 mod connect_lifetime;
 pub mod connect_presence;
 pub mod contract;
-pub mod contractor_access;
 pub mod cursor_cli;
 pub mod daemon;
 pub mod delivery;
@@ -103,7 +96,6 @@ pub mod grok;
 pub mod harness;
 pub mod hermes;
 pub mod hook_agents;
-pub mod host_methods;
 pub mod hosted_mcp;
 pub mod inject;
 pub mod integration_defaults;
@@ -111,7 +103,6 @@ pub mod integrations;
 pub mod links;
 pub mod local;
 pub mod local_methods;
-pub mod login_item;
 pub mod machine;
 pub mod managed_sessions;
 pub mod message_pointer;
@@ -133,7 +124,6 @@ pub mod people;
 pub mod pi;
 pub mod plan;
 pub mod probe_alias;
-pub mod probe_copy;
 pub mod process;
 pub mod project;
 pub mod protocol;

@@ -37,35 +37,11 @@ fn keep_system_environment(command: &mut Command) {
 fn the_binary_serves_answers_calls_and_stops_with_its_host() {
     let temp = tempfile::tempdir().unwrap();
     let socket = temp.path().join("core.sock");
-    let mut startup_env = std::collections::BTreeMap::new();
+    let mut startup_env = std::collections::BTreeMap::<String, String>::new();
     startup_env.insert(
         "XDG_CONFIG_HOME".into(),
         temp.path().join("config").display().to_string(),
     );
-    startup_env.insert(
-        agent_relay_node::relay::login_item::RUN_VALUE_ENV.into(),
-        format!(
-            "AgentRelay-test-{}",
-            temp.path().file_name().unwrap().to_string_lossy()
-        ),
-    );
-    #[cfg(not(target_os = "macos"))]
-    agent_relay_node::relay::login_item::set(temp.path(), &startup_env, true).unwrap();
-    struct StartupCleanup<'a> {
-        // Read only in `Drop`, and only off macOS.
-        _path: &'a std::path::Path,
-        _env: &'a std::collections::BTreeMap<String, String>,
-    }
-    impl Drop for StartupCleanup<'_> {
-        fn drop(&mut self) {
-            #[cfg(not(target_os = "macos"))]
-            let _ = agent_relay_node::relay::login_item::set(self._path, self._env, false);
-        }
-    }
-    let _cleanup = StartupCleanup {
-        _path: temp.path(),
-        _env: &startup_env,
-    };
     let command = |args: &[&str]| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_agent-relay-node"));
         command
@@ -107,11 +83,6 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
         std::thread::sleep(Duration::from_millis(10));
     }
 
-    #[cfg(not(target_os = "macos"))]
-    assert!(
-        agent_relay_node::relay::login_item::enabled(temp.path(), &startup_env),
-        "starting the headless service must preserve the GUI startup entry"
-    );
     let second = command(&serve_args[..3]).output().unwrap();
     assert!(!second.status.success());
     assert_eq!(

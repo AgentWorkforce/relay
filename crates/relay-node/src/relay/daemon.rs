@@ -148,7 +148,7 @@ pub struct Core {
     discovery_problem: Mutex<Option<String>>,
     push: tokio::sync::Mutex<PushManager>,
     shutdown: watch::Sender<bool>,
-    pub(crate) machine_prefix: String,
+    pub machine_prefix: String,
     #[doc(hidden)]
     pub store: StoreHandle,
     #[doc(hidden)]
@@ -209,9 +209,6 @@ pub struct Core {
     /// Serializes credential-bearing Cloud reconciliations. A sign-out or
     /// workspace clear queued behind an upsert is therefore always last.
     pub(crate) desktop_identity_sync: crate::relay::desktop_identity::DesktopIdentitySync,
-    /// Contractor access, made on first use (`contractor_access::of`).
-    pub(crate) contractors:
-        std::sync::OnceLock<Arc<crate::relay::contractor_access::ContractorAccess>>,
     /// The spawn node, while spawns are on (`relay::spawn`).
     pub(crate) spawn_node: tokio::sync::Mutex<Option<crate::relay::spawn::node::SpawnNode>>,
     pub(crate) me: std::sync::Weak<Core>,
@@ -316,7 +313,6 @@ impl Core {
             integration_lock: tokio::sync::Mutex::new(()),
             integration_defaults: std::sync::atomic::AtomicBool::new(true),
             desktop_identity_sync: Default::default(),
-            contractors: std::sync::OnceLock::new(),
             spawn_node: tokio::sync::Mutex::new(None),
             me: me.clone(),
         });

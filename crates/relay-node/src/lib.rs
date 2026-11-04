@@ -12,7 +12,6 @@ pub const BUILD_REVISION: &str = env!("RELAY_DESKTOP_REVISION");
 mod build_site;
 
 pub mod cli;
-pub mod install;
 pub mod platform;
 pub mod relay;
 pub fn parse_iso_ms(value: &str) -> Option<i64> {

@@ -88,6 +88,8 @@ impl AccountPlugin for TestAccount {
         crate::relay::links::built_in_site_url().into()
     }
 
+    fn person_changed_settings(&self, _changes: &serde_json::Map<String, Value>) {}
+
     fn record_usage(&self, event: UsageEvent) {
         self.usage.lock().unwrap().push(event);
     }

@@ -30,7 +30,6 @@ different `relaycast`, `nix` and `portable-pty` versions.
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `src/cli/`                          | The `agent-relay-node` command line: the node's commands and `connect …`                                                                                                 |
 | `src/relay/`                        | The daemon (`serve`): workspace, Relaycast, delivery and injection per harness, harness setup (hooks/plugins), spawning, the bridge and its contract (`relay::contract`) |
-| `src/install*`                      | Where a packaged desktop install keeps its executables; the core's launch-at-login entry uses it                                                                         |
 | `src/bin/relay-contract-codegen.rs` | Generates the Swift bridge contract the apps consume                                                                                                                     |
 | `contract/CoreContract.swift`       | The checked-in generated contract; CI fails on drift                                                                                                                     |
 | `scripts/`                          | `generate-contract.sh`, `check-open-source.sh`                                                                                                                           |

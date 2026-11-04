@@ -63,6 +63,9 @@ pub trait AccountPlugin: Send + Sync + 'static {
     fn site_url(&self) -> String;
     /// Takes a usage report of the core's own operations.
     fn record_usage(&self, event: UsageEvent);
+    /// The person changed these settings through `settings.set`; agents'
+    /// changes do not reach here.
+    fn person_changed_settings(&self, changes: &serde_json::Map<String, Value>);
     /// Whether sessions join the relay by themselves until the person turns
     /// it off: the desktop app's default. A core without such an account
     /// (the CLI's) leaves `auto_activate` unset, so only the kinds that join
@@ -280,19 +283,6 @@ mod tests {
         assert!(!server::all_method_names(&core).contains(&"extension.ping"));
         let answer = server::call(&core, "extension.ping", json!({})).await;
         assert_eq!(answer.unwrap_err().data.kind, ErrorKind::MethodNotFound);
-    }
-
-    #[tokio::test]
-    async fn a_core_answered_account_method_is_not_answered_without_an_account() {
-        let (_home, core) = test_core_with_plugins(Plugins::default());
-        for name in [
-            contract::method::CursorCloudModelsList::NAME,
-            contract::method::SessionsOverviewGet::NAME,
-        ] {
-            assert!(!server::all_method_names(&core).contains(&name));
-            let answer = server::call(&core, name, json!({"session_id": "s"})).await;
-            assert_eq!(answer.unwrap_err().data.kind, ErrorKind::MethodNotFound);
-        }
     }
 
     #[tokio::test]

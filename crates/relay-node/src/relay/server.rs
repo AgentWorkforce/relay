@@ -14,7 +14,7 @@ use crate::relay::protocol::{
     ErrorKind, Event, Request, Response, RpcError, Topic, BRIDGE_VERSION, MAX_FRAME_BYTES,
 };
 use crate::relay::transport::{CoreListener, CoreStream};
-use crate::relay::{host_methods, local_methods, methods};
+use crate::relay::{local_methods, methods};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -370,10 +370,7 @@ pub async fn call(core: &Arc<Core>, name: &str, raw: Value) -> Result<Value, Rpc
                 Some(answer) => Some(answer),
                 None => match local_methods::call(core, name, raw.clone()).await {
                     Some(answer) => Some(answer),
-                    None => match host_methods::call(core, name, raw.clone()).await {
-                        Some(answer) => Some(answer),
-                        None => extension_call(core, name, raw).await,
-                    },
+                    None => extension_call(core, name, raw).await,
                 },
             };
             answer.unwrap_or_else(|| Err(no_such_method()))
