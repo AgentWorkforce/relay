@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createDefaultAssignmentRunner } from '../commands/cloud-worker.js';
 import {
@@ -80,9 +80,19 @@ function controlPlane(files: unknown[], putStatus = 200) {
   return { calls, fetchImpl: fetchImpl as unknown as typeof fetch };
 }
 
+// Each run dir lives in its own temp parent, so the sibling login dir is
+// removed with it after every test.
+const tempParents: string[] = [];
 function tmp(prefix: string) {
-  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  tempParents.push(parent);
+  const runDir = path.join(parent, 'run');
+  fs.mkdirSync(runDir, { mode: 0o700 });
+  return runDir;
 }
+afterEach(() => {
+  for (const parent of tempParents.splice(0)) fs.rmSync(parent, { recursive: true, force: true });
+});
 
 describe('cloud worker CLI logins', () => {
   it('writes each auth file 0600 in a 0700 dir inside the run dir and points the CLI at it', async () => {

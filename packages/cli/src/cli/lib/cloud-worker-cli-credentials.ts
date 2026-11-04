@@ -102,15 +102,21 @@ function offeredCredentials(credentials: CliCredentialsPayload): Map<string, str
 }
 
 /**
- * Creates `<runDir>/.cli-home` fresh: anything already there (a directory or a
- * symlink planted by the workflow archive) is removed first, so every path
- * below it is created by the worker and no write follows a link.
+ * The run's login directory: a sibling of the run dir (`.<runId>.cli-home`),
+ * so no code-archive entry can collide with it. Pure path helper.
+ *
+ * @param runDir - The run's private directory.
+ * @returns The login directory path.
  */
 export function cliLoginHome(runDir: string): string {
-  // A sibling of the run dir, so no code-archive entry can collide with it.
   return path.join(path.dirname(runDir), `.${path.basename(runDir)}.cli-home`);
 }
 
+/**
+ * Creates the login directory fresh: anything already there (a directory or a
+ * symlink) is removed first, so every path below it is created by the worker
+ * and no write follows a link.
+ */
 async function freshLoginHome(runDir: string): Promise<string> {
   const home = cliLoginHome(runDir);
   await fsp.rm(home, { recursive: true, force: true });
@@ -341,14 +347,25 @@ export async function removeLoginHome(home: string): Promise<void> {
   } catch {
     // Restore owner permissions and retry once.
   }
+  // Only directories need restoring (removing a file needs its parent's
+  // permissions). Each is opened with O_NOFOLLOW | O_DIRECTORY and chmod-ed
+  // through that handle, so a symlink swapped in is never followed.
+  const noFollowDir = (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_DIRECTORY ?? 0);
   const restore = async (target: string): Promise<void> => {
-    const stat = await fsp.lstat(target).catch(() => null);
-    if (!stat || stat.isSymbolicLink()) return;
-    await fsp.chmod(target, stat.isDirectory() ? 0o700 : 0o600).catch(() => undefined);
-    if (stat.isDirectory()) {
-      for (const name of await fsp.readdir(target).catch(() => [] as string[])) {
-        await restore(path.join(target, name));
-      }
+    let handle: fsp.FileHandle;
+    try {
+      handle = await fsp.open(target, fs.constants.O_RDONLY | noFollowDir);
+    } catch {
+      return;
+    }
+    try {
+      if (!(await handle.stat()).isDirectory()) return;
+      await handle.chmod(0o700).catch(() => undefined);
+    } finally {
+      await handle.close();
+    }
+    for (const entry of await fsp.readdir(target, { withFileTypes: true }).catch(() => [])) {
+      if (entry.isDirectory()) await restore(path.join(target, entry.name));
     }
   };
   await restore(home);
