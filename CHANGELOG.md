@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay` installs beside `@agent-relay/sdk` and `@agent-relay/harness-driver` 17 without a dependency conflict.
 - `agent-relay cloud worker` no longer fails to start flows against a self-hosted Relay with `failed to initialize relaycast session`: flows no longer run on an old bundled broker.
 
 ### Breaking Changes
