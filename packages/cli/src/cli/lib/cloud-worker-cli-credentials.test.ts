@@ -9,6 +9,7 @@ import { createDefaultAssignmentRunner } from '../commands/cloud-worker.js';
 import {
   cliLoginHome,
   materializeCliCredentials,
+  removeLoginHome,
   SUBSCRIPTION_LOGINS_ENV,
   writeBackCliCredentials,
 } from './cloud-worker-cli-credentials.js';
@@ -86,8 +87,9 @@ const tempParents: string[] = [];
 function tmp(prefix: string) {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   tempParents.push(parent);
-  const runDir = path.join(parent, 'run');
-  fs.mkdirSync(runDir, { mode: 0o700 });
+  // <parent>/runs/run, so the login dir (<parent>/cli-logins/run) stays inside the parent.
+  const runDir = path.join(parent, 'runs', 'run');
+  fs.mkdirSync(runDir, { recursive: true, mode: 0o700 });
   return runDir;
 }
 afterEach(() => {
@@ -450,4 +452,16 @@ describe('cloud worker CLI logins', () => {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it('removes a login dir the workflow made unreadable', async () => {
+    if (!posix || process.getuid?.() === 0) return;
+    const runDir = tmp('cli-creds-');
+    const cp = controlPlane([codexFile]);
+    const materialized = await materializeCliCredentials({ worker, credentials, runDir, fetchImpl: cp.fetchImpl });
+    fs.chmodSync(path.join(materialized.home, '.codex'), 0o000);
+    await removeLoginHome(materialized.home);
+    expect(fs.existsSync(materialized.home)).toBe(false);
+    expect(materialized.home).toBe(path.join(path.dirname(path.dirname(runDir)), 'cli-logins', 'run'));
+  });
 });
+

@@ -102,14 +102,15 @@ function offeredCredentials(credentials: CliCredentialsPayload): Map<string, str
 }
 
 /**
- * The run's login directory: a sibling of the run dir (`.<runId>.cli-home`),
- * so no code-archive entry can collide with it. Pure path helper.
+ * The run's login directory: `<stateDir>/cli-logins/<runId>`, outside `runs/`,
+ * so neither a code-archive entry nor another run's directory can collide
+ * with it. Pure path helper.
  *
  * @param runDir - The run's private directory.
  * @returns The login directory path.
  */
 export function cliLoginHome(runDir: string): string {
-  return path.join(path.dirname(runDir), `.${path.basename(runDir)}.cli-home`);
+  return path.join(path.dirname(path.dirname(runDir)), 'cli-logins', path.basename(runDir));
 }
 
 /**
@@ -119,6 +120,7 @@ export function cliLoginHome(runDir: string): string {
  */
 async function freshLoginHome(runDir: string): Promise<string> {
   const home = cliLoginHome(runDir);
+  await fsp.mkdir(path.dirname(home), { recursive: true, mode: 0o700 });
   await fsp.rm(home, { recursive: true, force: true });
   await fsp.mkdir(home, { mode: 0o700 });
   await fsp.chmod(home, 0o700).catch(() => undefined);
@@ -348,21 +350,29 @@ export async function removeLoginHome(home: string): Promise<void> {
     // Restore owner permissions and retry once.
   }
   // Only directories need restoring (removing a file needs its parent's
-  // permissions). Each is opened with O_NOFOLLOW | O_DIRECTORY and chmod-ed
-  // through that handle, so a symlink swapped in is never followed.
+  // permissions). A readable directory is opened with O_NOFOLLOW | O_DIRECTORY
+  // and chmod-ed through that handle; one the workflow made unreadable (mode
+  // 000) cannot be opened, so after lstat confirms a real directory it is
+  // chmod-ed by path. Node has no descriptor-relative traversal, so the walk
+  // itself is by path; racing it needs a live same-user process.
   const noFollowDir = (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_DIRECTORY ?? 0);
   const restore = async (target: string): Promise<void> => {
-    let handle: fsp.FileHandle;
+    const stat = await fsp.lstat(target).catch(() => null);
+    if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) return;
+    let handle: fsp.FileHandle | null = null;
     try {
       handle = await fsp.open(target, fs.constants.O_RDONLY | noFollowDir);
     } catch {
-      return;
+      handle = null;
     }
-    try {
-      if (!(await handle.stat()).isDirectory()) return;
-      await handle.chmod(0o700).catch(() => undefined);
-    } finally {
-      await handle.close();
+    if (handle) {
+      try {
+        if ((await handle.stat()).isDirectory()) await handle.chmod(0o700).catch(() => undefined);
+      } finally {
+        await handle.close();
+      }
+    } else {
+      await fsp.chmod(target, 0o700).catch(() => undefined);
     }
     for (const entry of await fsp.readdir(target, { withFileTypes: true }).catch(() => [])) {
       if (entry.isDirectory()) await restore(path.join(target, entry.name));
