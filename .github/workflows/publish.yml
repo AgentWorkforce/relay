@@ -2320,7 +2320,7 @@ jobs:
           test "$(node -p "require('./package.json').version")" = "$VERSION"
           # A concurrent branch advance causes a safe non-fast-forward failure;
           # retrying fetches the newer branch. Never force-push a release branch.
-          git push origin "HEAD:${BRANCH}"
+          git push origin "HEAD:refs/heads/${BRANCH}"
 
       - name: Promote verified stable release to latest
         if: needs.build.outputs.is_prerelease != 'true'
