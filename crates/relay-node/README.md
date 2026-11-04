@@ -56,14 +56,17 @@ contract), `call`, the harness hooks and `connect`. The account methods
 answer `method_not_found`, and the core uses the workspace the `agent-relay`
 CLI selects (`src/relay/workspace/cli.rs`), with no sign-in needed.
 
-## Build and test
+## Claude mobile continuation
 
-Claude Code terminal sessions can receive the verified owner's mobile messages
-as native user turns through Relay's plugin. SDK and pipe-driven sessions,
-including app-hosted chats, keep their ordinary peer inbox instead: their host
-owns the input and interrupt lifecycle. Turning mobile continuation on does not
+On macOS and Linux, Claude Code terminal sessions can receive the verified owner's
+mobile messages as native user turns through Relay's plugin. Agent SDK,
+`claude --print` and pipe-driven sessions, including app-hosted chats, keep their
+ordinary peer inbox instead: their host owns the input and interrupt lifecycle. Turning mobile continuation on does not
 replace that inbox. A native submission refused after Stop or by a host limit
 is reported without automatic replay; unknown outcomes are never resubmitted.
+Native mobile continuation is unavailable on Windows.
+
+## Build and test
 
 ```sh
 cargo build --manifest-path crates/relay-node/Cargo.toml --locked

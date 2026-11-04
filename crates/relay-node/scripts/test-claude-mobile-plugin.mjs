@@ -80,7 +80,7 @@ async function fixture(options = {}) {
     prompt: {
       submit: async (value) => {
         submitted.push(value);
-        return options.drop
+        return options.drop !== undefined
           ? { drop: options.drop === true ? 'Policy refused' : options.drop }
           : { text: value.text };
       },
@@ -890,4 +890,16 @@ test('a new plugin keeps failure acknowledgements compatible with old cores', as
     f.calls.filter((call) => call.route === 'ack').map((call) => call.body),
     [{ lease_id: turn.lease_id, outcome: 'failed' }]
   );
+});
+
+test('every defined drop value refuses input even when it is falsy', async () => {
+  for (const drop of ['', false, 0, null]) {
+    const f = await fixture({ action: { ...turn, refusal_codes: true }, drop });
+    await f.tick();
+    assert.equal(f.submitted.length, 1);
+    assert.deepEqual(
+      f.calls.filter((call) => call.route === 'ack').map((call) => call.body),
+      [{ lease_id: turn.lease_id, outcome: 'failed' }]
+    );
+  }
 });

@@ -473,6 +473,16 @@ impl Journal {
                     active.confirmed = true;
                 }
             }
+        } else {
+            // Provisional control exists only so the first submission can
+            // ask for approval before its acknowledgement. A refusal ends
+            // that authority. A previously confirmed generation, however,
+            // still belongs to the earlier accepted turn.
+            self.active.retain(|active| {
+                active.binding != *binding
+                    || (active.runtime.pid, active.runtime.start) != (runtime.pid, runtime.start)
+                    || active.confirmed
+            });
         }
         Some(delivery_id)
     }

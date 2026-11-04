@@ -6486,8 +6486,10 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
             .get_mut(&300)
             .unwrap()
             .arguments = vec!["claude".into(), "--input-format=stream-json".into()];
-        assert!(world.sessions.mobile_claude_runtime(&target, 300).is_none(),
-            "a running SDK host cannot submit mobile input even with an interactive registry record");
+        assert!(
+            world.sessions.mobile_claude_runtime(&target, 300).is_none(),
+            "a running SDK host cannot submit mobile input even with an interactive registry record",
+        );
         assert!(
             world.sessions.caller(320).is_ok(),
             "the ordinary session route stays available"

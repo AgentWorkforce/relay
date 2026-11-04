@@ -210,7 +210,7 @@ pub(crate) fn native_input_supported(
     {
         return false;
     }
-    crate::relay::claude::is_interactive_process(table, session.pid)
+    crate::relay::claude::is_interactive_terminal(table, session)
 }
 
 pub(crate) fn install(config: &Path, socket: &Path) -> Result<(), String> {

@@ -117,6 +117,8 @@ fn sdk_host_keeps_its_inbox_but_never_advertises_native_mobile_input() {
     for arguments in [
         vec!["claude", "--input-format", "stream-json"],
         vec!["claude", "--input-format=stream-json"],
+        vec!["claude", "--output-format", "stream-json"],
+        vec!["claude", "--output-format=stream-json"],
         vec!["claude", "-p", "hello"],
         vec!["claude", "--print"],
         vec![],
@@ -172,4 +174,10 @@ fn sdk_host_keeps_its_inbox_but_never_advertises_native_mobile_input() {
     value["entrypoint"] = json!("cli");
     std::fs::write(&path, value.to_string()).unwrap();
     assert_eq!(read(&config, &table).len(), 1);
+    for name in ["sdk-task", "SDK-task", "Sdk-task"] {
+        value["name"] = json!(name);
+        std::fs::write(&path, value.to_string()).unwrap();
+        assert!(read(&config, &table).is_empty(), "{name}");
+        assert_eq!(claude::registry(&config, &table).sessions.len(), 1);
+    }
 }
