@@ -1,0 +1,53 @@
+{
+  "id": "traj_bjhvd5dhdi87",
+  "version": 1,
+  "task": {
+    "title": "Keep executable release identity out of compiled messaging libraries"
+  },
+  "status": "completed",
+  "startedAt": "2026-11-04T16:49:54.626Z",
+  "completedAt": "2026-11-04T16:53:53.135Z",
+  "agents": [
+    {
+      "name": "codex-relay-desktop-speed-up",
+      "role": "lead",
+      "joinedAt": "2026-11-04T16:49:54.728Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_or3b4rv9bqch",
+      "title": "Initial work",
+      "agentName": "codex-relay-desktop-speed-up",
+      "startedAt": "2026-11-04T16:49:54.728Z",
+      "endedAt": "2026-11-04T16:53:53.135Z",
+      "events": [
+        {
+          "ts": 1793811192903,
+          "type": "decision",
+          "content": "Make build identity an executable-owned value: Make build identity an executable-owned value",
+          "raw": {
+            "question": "Make build identity an executable-owned value",
+            "chosen": "Make build identity an executable-owned value",
+            "alternatives": [],
+            "reasoning": "A metadata dependency would propagate Cargo fingerprints into large libraries. Optional library-only embedded mode removes version/revision watches and exposes immutable startup initialization; standalone node behavior and compile-time site/scheme stay unchanged. Isolated desktop package split reduced version-only rebuild67.342s to1.149s with both libraries Fresh and executable reporting new baked identity."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added library-only embedded identity accessors and immutable startup installation; default constants/stamping preserved. Site/scheme remain compile-time, executable metadata/resource inputs no longer watched. Strict/fixture/build-script tests pass; all integration test targets compile with fixture. Isolated desktop version-only prototype67.342s ->1.149s, only executable rebuilt; production desktop adoption awaits profile/restructure handoff.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "ad983d7278bab88b0a7d541494521146b869f78a",
+    "endRef": "ad983d7278bab88b0a7d541494521146b869f78a"
+  }
+}

@@ -3854,7 +3854,7 @@ async fn agents_name_their_owner_and_keep_it_when_another_person_attaches() {
         registered.origin,
         (
             Some("relay-desktop".to_string()),
-            Some(agent_relay_node::VERSION.to_string())
+            Some(agent_relay_node::version().to_string())
         )
     );
 

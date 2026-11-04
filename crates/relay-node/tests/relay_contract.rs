@@ -86,7 +86,7 @@ async fn every_registered_method_reaches_a_handler() {
     );
     assert_eq!(
         status["result"]["daemon"]["build_revision"],
-        agent_relay_node::BUILD_REVISION
+        agent_relay_node::build_revision()
     );
     let listed: Vec<String> = serde_json::from_value(hello["result"]["methods"].clone()).unwrap();
     let registered: Vec<String> = METHODS.iter().map(|m| m.name.to_string()).collect();

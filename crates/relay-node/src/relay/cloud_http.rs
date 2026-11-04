@@ -145,7 +145,7 @@ pub fn send_raw_blocking(
             .set("Accept", "application/json")
             .set(
                 "User-Agent",
-                &format!("AgentRelayDesktop/{}", crate::VERSION),
+                &format!("AgentRelayDesktop/{}", crate::version()),
             );
         if let Some(bearer) = bearer {
             request = request.set("Authorization", &format!("Bearer {bearer}"));

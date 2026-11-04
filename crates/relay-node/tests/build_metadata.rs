@@ -1,3 +1,5 @@
+#![cfg(not(feature = "embedded-build-info"))]
+
 #[path = "../build_version.rs"]
 mod build_version;
 
@@ -52,4 +54,10 @@ fn development_identity_discards_release_suffixes() {
             "release heading: {release}"
         );
     }
+}
+
+#[test]
+fn identity_accessors_preserve_the_default_public_constants() {
+    assert_eq!(agent_relay_node::version(), VERSION);
+    assert_eq!(agent_relay_node::build_revision(), BUILD_REVISION);
 }

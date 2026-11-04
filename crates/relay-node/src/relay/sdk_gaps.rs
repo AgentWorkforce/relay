@@ -69,7 +69,7 @@ pub fn http(base_url: &str, credential: &Secret) -> relaycast::Result<HttpClient
     HttpClient::new(
         ClientOptions::new(credential.expose())
             .with_base_url(base_url)
-            .with_origin("relay-desktop", crate::VERSION),
+            .with_origin("relay-desktop", crate::version()),
     )
 }
 
