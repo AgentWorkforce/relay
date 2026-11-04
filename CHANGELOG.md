@@ -7,12 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Major]
 
+### Added
+
+- `agent-relay cloud worker` can run Codex and Grok jobs with the workspace's subscription logins when the control plane provides them; the login files exist only while the run does.
+- `agent-relay cloud worker` saves refreshed Codex and Grok login tokens for later runs.
+
 ### Changed
 
 - The core is now `agent-relay-node`: `relay init` installs it from `relay-node-v<version>` releases, and `AGENT_RELAY_NODE_PATH` points at a binary of your own.
 - The core's commands have no `relay` word (`agent-relay-node serve`, `agent-relay-node call status.get`). The hooks, Codex rules and Claude permission rules it installs use that form, and setup replaces the earlier `… relay …` entries.
 - The core (`agent-relay-node`) talks to one Agent Relay site, fixed when it is built: `AGENT_RELAY_SITE_URL` at build time (`https://agentrelay.com` when unset; an https origin, or `http://localhost[:port]` / `http://127.0.0.1[:port]`), and a build for a site the core could not trust fails to build. Nothing changes the site at run time.
 - The core opens links of one scheme, fixed at build time from `AGENT_RELAY_URL_SCHEME` (`agentrelay` when unset; a web scheme such as `https` fails the build); the `agentrelay-dev://` rule for non-production sites is gone.
+- `agent-relay-node`: a successful spawn's launch result carries `worker_cwd`, the working folder the agent runs in: the one the caller named, or the machine default the spawn node applied when none was named, so a caller that left it out sees where its agent works.
 - `links.parse` opens links of the build's scheme only, and refuses a connect link for another site naming that site.
 - Relay Connect invite links and the Connect host sign-in use the build's site.
 
@@ -27,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The spawn node asks Agent Relay for the same node id on every attempt of a first enrollment and keeps the alternate name it took, so a name another node holds is not asked for again; a node enrolled whose answer was lost, or an id another node has, is left behind for a fresh one under the same name.
 - A node token Agent Relay refuses three times in a row stops the spawn node with a status saying so, instead of retrying forever; turning `accept_spawns` off and on, or signing in again, enrolls a new node.
+- `agent-relay-node`: a message link may name its site (`agentrelay://message?to=…&site=…`), as the dashboard's do; it opens when that is the build's site and says which site it is for otherwise.
+- `agent-relay-node`: every build accepts an `ar_ws_…` workspace key from Cloud's workspace resolve, not only the `relay-cli` build, so a Desktop signs in to a self-hosted Relaycast on durable actors.
 
 ### Breaking Changes
 

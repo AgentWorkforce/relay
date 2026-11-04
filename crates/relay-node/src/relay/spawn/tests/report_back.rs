@@ -75,7 +75,10 @@ async fn the_requester_relaycast_recorded_is_named_and_owed_the_final_answer() {
     let (link, sent) = NodeLink::detached(node());
     let _frames = relaycast(link.clone(), sent);
     let answer = core.clone().answer_spawn(link, request("w1")).await;
-    assert_eq!(answer, wire::action_output("inv_w1", wire::spawned("w1")));
+    assert_eq!(
+        answer,
+        wire::action_output("inv_w1", wire::spawned("w1", Some(&core.config.home)))
+    );
     assert!(
         seen.lock()
             .unwrap()

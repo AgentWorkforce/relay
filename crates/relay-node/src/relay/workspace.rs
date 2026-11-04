@@ -170,10 +170,12 @@ pub fn relay_home(env: &dyn Fn(&str) -> Option<String>, home: &Path) -> PathBuf 
     }
 }
 
-/// Workspace keys are `rk_live_…` (or `rk_test_…`), or, with `relay-cli`,
-/// armadillo's `ar_ws_…`.
+/// Workspace keys are `rk_live_…` (or `rk_test_…`), or armadillo's
+/// `ar_ws_…`, which a self-hosted Relaycast on durable actors issues and
+/// which Cloud's workspace resolve hands every client, the Desktop core
+/// included; so every build accepts both.
 pub fn is_workspace_key(value: &str) -> bool {
-    (value.starts_with("rk_") || (cfg!(feature = "relay-cli") && value.starts_with("ar_ws_")))
+    (value.starts_with("rk_") || value.starts_with("ar_ws_"))
         && value.len() >= 12
         && !value.chars().any(char::is_whitespace)
 }
@@ -521,18 +523,12 @@ mod tests {
         );
     }
 
-    #[cfg(not(feature = "relay-cli"))]
     #[test]
-    fn without_relay_cli_an_armadillo_key_is_refused() {
+    fn an_armadillo_key_is_a_workspace_key_in_every_build() {
         let key = "ar_ws_0123456789abcdef";
-        assert!(!is_workspace_key(key));
-        assert!(resolve_with(&[], Some(account(key, "https://origin.example"))).is_none());
-    }
-
-    #[cfg(feature = "relay-cli")]
-    #[test]
-    fn an_armadillo_key_is_a_workspace_key() {
-        assert!(is_workspace_key("ar_ws_0123456789abcdef"));
+        assert!(is_workspace_key(key));
+        assert!(resolve_with(&[], Some(account(key, "https://origin.example"))).is_some());
+        assert!(!is_workspace_key("ar_ws_short"));
     }
 
     #[test]

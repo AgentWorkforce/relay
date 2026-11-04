@@ -57,7 +57,7 @@ async fn a_spawn_whose_receipt_cannot_be_saved_still_reports_the_running_agent()
         first,
         wire::action_output(
             "inv_w1",
-            wire::spawned_unconfirmed("w1", "transport_closed")
+            wire::spawned_unconfirmed("w1", Some(&core.config.home), "transport_closed")
         )
     );
     assert_eq!(core.store.read(|store| store.registrations.len()), 1);
@@ -101,9 +101,11 @@ async fn a_spawn_kept_after_a_restart_is_answered_as_unconfirmed() {
         .store
         .update(|store| store.add(registration, token))
         .unwrap());
+    // A registration kept from before the working folder was recorded
+    // answers without one.
     let expected = wire::action_output(
         "inv_w1",
-        wire::spawned_unconfirmed("w1", intents::INTERRUPTED),
+        wire::spawned_unconfirmed("w1", None, intents::INTERRUPTED),
     );
     assert_eq!(spawn(&core, "w1").await, expected);
     assert!(spawner.launched.lock().unwrap().is_empty());

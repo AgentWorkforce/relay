@@ -175,6 +175,7 @@ fn spawned(core: &Core, name: &str, kind: SessionKind, harness: HarnessId) {
         message_id: format!("spawn-inv_{name}"),
         session_id: SESSION.into(),
         created_ms: 0,
+        worker_cwd: None,
         ended: false,
         launch_failed: false,
         register_sent: false,
