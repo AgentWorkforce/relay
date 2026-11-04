@@ -247,6 +247,43 @@ describe('unified relay-node release', () => {
     }
   });
 
+  it.each(['absent', 'matching', 'different-source', 'different-mode', 'missing-mode'])('validates %s release tags against both source and package mode', (scenario) => {
+    const release = loadPublishWorkflow().jobs['create-release'];
+    const check = release.steps?.find((step) => step.name === 'Check existing release tag');
+    const tag = release.steps?.find((step) => step.name === 'Commit and tag');
+    expect(check?.env?.PACKAGE_MODE).toBe('${{ github.event.inputs.package }}');
+    expect(tag?.env?.PACKAGE_MODE).toBe('${{ github.event.inputs.package }}');
+    expect(tag?.run).toContain('-m "Mode: ${PACKAGE_MODE}"');
+    const directory = mkdtempSync(resolve(tmpdir(), 'relay-release-tag-'));
+    try {
+      const git = (...args: string[]) => execFileSync('git', args, { cwd: directory, stdio: 'pipe' }).toString().trim();
+      git('init');
+      git('-c', 'user.name=Release test', '-c', 'user.email=release@example.test', 'commit', '--allow-empty', '-m', 'source');
+      const source = git('rev-parse', 'HEAD');
+      if (scenario !== 'absent') {
+        const messages = ['-m', 'Release v16.0.1', '-m', `Source: ${scenario === 'different-source' ? 'wrong-source' : source}`];
+        if (scenario !== 'missing-mode') messages.push('-m', `Mode: ${scenario === 'different-mode' ? 'sdk' : 'all'}`);
+        git('-c', 'user.name=Release test', '-c', 'user.email=release@example.test', 'tag', '-a', 'v16.0.1', ...messages);
+      }
+      const output = resolve(directory, 'output');
+      writeFileSync(output, '');
+      const run = () => execFileSync('bash', ['-c', check!.run!], {
+        cwd: directory,
+        env: { ...process.env, VERSION: '16.0.1', PACKAGE_MODE: 'all', GITHUB_SHA: source, GITHUB_OUTPUT: output },
+        stdio: 'pipe',
+      });
+      if (scenario === 'absent' || scenario === 'matching') {
+        expect(run).not.toThrow();
+        expect(readFileSync(output, 'utf8')).toBe(scenario === 'matching' ? 'exists=true\n' : '');
+      } else {
+        expect(run).toThrow();
+        expect(readFileSync(output, 'utf8')).toBe('');
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(['all', 'main', 'sdk', 'cli-prerelease'])('keeps %s release discovery and install instructions consistent with its assets', (mode) => {
     const release = loadPublishWorkflow().jobs['create-release'];
     const stable = release.steps?.find((step) => step.name === 'Create GitHub Release (stable)');
