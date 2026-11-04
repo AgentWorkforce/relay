@@ -1749,12 +1749,13 @@ jobs:
         id: release_tag
         env:
           VERSION: ${{ needs.build.outputs.new_version }}
+          PACKAGE_MODE: ${{ github.event.inputs.package }}
         run: |
           set -euo pipefail
           if git rev-parse "refs/tags/v${VERSION}" >/dev/null 2>&1; then
             annotation=$(git for-each-ref --format='%(contents)' "refs/tags/v${VERSION}")
-            if ! grep -Fxq "Source: ${GITHUB_SHA}" <<<"$annotation"; then
-              echo "::error::v${VERSION} already exists for a different source; choose a new version."
+            if ! grep -Fxq "Source: ${GITHUB_SHA}" <<<"$annotation" || ! grep -Fxq "Mode: ${PACKAGE_MODE}" <<<"$annotation"; then
+              echo "::error::v${VERSION} already exists for a different source or release mode; choose a new version."
               exit 1
             fi
             echo 'exists=true' >> "$GITHUB_OUTPUT"
@@ -2084,6 +2085,7 @@ jobs:
         if: github.event.inputs.dry_run != 'true' && steps.release_tag.outputs.exists != 'true'
         env:
           GITHUB_TOKEN: ${{ steps.create_github_app_token.outputs.token }}
+          PACKAGE_MODE: ${{ github.event.inputs.package }}
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
@@ -2122,7 +2124,7 @@ jobs:
           fi
 
           TAG_TARGET="${TAG_TARGET:-$(git rev-parse HEAD)}"
-          git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}" -m "Source: ${GITHUB_SHA}" "$TAG_TARGET"
+          git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}" -m "Source: ${GITHUB_SHA}" -m "Mode: ${PACKAGE_MODE}" "$TAG_TARGET"
           git push origin "v${NEW_VERSION}"
 
       - name: Write mode-specific release notes
