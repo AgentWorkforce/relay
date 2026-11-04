@@ -15,11 +15,12 @@
 //! with them; this leniency applies only to what clients read.
 
 use super::codegen::{Contract, Def, Field, Ty};
-use super::{EventData, Method};
+use super::{Availability, EventData, Method, MethodSpec};
 use crate::relay::protocol::Topic;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
-use std::sync::OnceLock;
+use std::collections::BTreeMap;
+use std::sync::{Mutex, OnceLock};
 
 /// An answer or event that does not fit this build's contract.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,20 +42,33 @@ fn contract() -> &'static Contract {
     CONTRACT.get_or_init(|| Contract::collect(&[]))
 }
 
-/// Method `M`'s result. A method this contract does not list (an
-/// extension's) is read strictly with its own type.
+/// The contract of an extension's method `M`, read once from its own types.
+fn extension_contract<M: Method>() -> &'static Contract {
+    static CONTRACTS: Mutex<BTreeMap<&'static str, &'static Contract>> =
+        Mutex::new(BTreeMap::new());
+    let mut contracts = CONTRACTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    contracts.entry(M::NAME).or_insert_with(|| {
+        let spec = MethodSpec::of::<M>(Availability::Always);
+        Box::leak(Box::new(Contract::collect(&[spec])))
+    })
+}
+
+/// Method `M`'s result, a core method's or an extension's.
 pub fn result<M: Method>(value: Value) -> Result<M::Result, Unreadable> {
-    let contract = contract();
-    let Some(ty) = contract
-        .methods
-        .iter()
-        .find(|method| method.name == M::NAME)
-        .map(|method| &method.result)
-    else {
-        return serde_json::from_value(value).map_err(|error| Unreadable {
-            detail: format!("{}: {error}", M::NAME),
-        });
+    let listed = |contract: &'static Contract| {
+        contract
+            .methods
+            .iter()
+            .find(|method| method.name == M::NAME)
+            .map(|method| (contract, &method.result))
     };
+    let (contract, ty) = listed(contract())
+        .or_else(|| listed(extension_contract::<M>()))
+        .ok_or_else(|| Unreadable {
+            detail: format!("{}: not in the contract", M::NAME),
+        })?;
     read(contract, ty, value, M::NAME)
 }
 
@@ -195,7 +209,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn an_extension_methods_result_is_read_strictly_not_refused() {
+    fn an_extension_methods_result_reads_by_its_own_types() {
         struct Ping;
         impl Method for Ping {
             const NAME: &'static str = "extension.ping";
