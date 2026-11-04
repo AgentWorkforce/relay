@@ -115,7 +115,7 @@ fn apply(
         &path,
         format!(
             "[Desktop Entry]\nType=Application\nName=Agent Relay\n\
-             Comment=Upload coding sessions to Agent Relay\n{exec}\n\
+             Comment=Connect coding sessions to Agent Relay\n{exec}\n\
              Icon=agent-relay\nTerminal=false\nStartupNotify=false\nX-GNOME-Autostart-enabled=true\n"
         ),
     )
@@ -260,8 +260,9 @@ fn follow_autostart_entry(
 }
 
 /// Removes an app-owned GUI startup entry during explicit cleanup.
-/// Starting the headless service must never call this: the GUI and uploads
-/// share the person's Open at login choice. Foreign entries are preserved.
+/// Starting the headless service must never call this: the GUI and the
+/// service share the person's Open at login choice. Foreign entries are
+/// preserved.
 pub fn remove_gui_autostart(home: &Path, env: &BTreeMap<String, String>) -> std::io::Result<bool> {
     #[cfg(windows)]
     {

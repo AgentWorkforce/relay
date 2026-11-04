@@ -175,7 +175,7 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
     assert!(String::from_utf8_lossy(&gone.stderr).contains("is not running"));
 }
 
-/// Headless uploads and the GUI start together: starting the service
+/// The headless service and the GUI start together: starting the service
 /// preserves the person's GUI entry, then the isolated test core stops on
 /// SIGTERM. Linux's XDG autostart and signals only.
 #[cfg(unix)]

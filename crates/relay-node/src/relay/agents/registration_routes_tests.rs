@@ -330,7 +330,7 @@ async fn a_saved_sign_in_owns_its_session_after_a_restart() {
 #[cfg(feature = "relay-cli")]
 mod cli_login {
     use super::*;
-    use crate::relay::cloud_session::{cli_session, SignedOut};
+    use crate::relay::cloud_session::SignedOut;
     use std::path::Path;
 
     const SITE: &str = "https://agentrelay.com";
@@ -362,13 +362,9 @@ mod cli_login {
 
     #[tokio::test]
     async fn a_cli_login_alone_leaves_cloud_access_signed_out() {
-        let (_directory, failures, _fake, core, temp) =
+        let (_directory, failures, _fake, core, _temp) =
             activate_with(|home, _| write_cli_login(home, &fresh_login())).await;
         assert!(failures.is_empty(), "{failures:?}");
-        // The login is valid, so nothing here passes because it was ignored.
-        let relay_home = temp.path().join(".agentworkforce/relay");
-        let now = crate::relay::state::now_ms();
-        assert!(cli_session(&relay_home, SITE, now).is_some());
 
         assert_signed_out(core.plugins.cloud.as_ref()).await;
         assert_signed_out(&SignedOut).await;
@@ -394,15 +390,13 @@ mod cli_login {
     #[tokio::test]
     async fn a_broken_or_missing_cli_login_is_signed_out_too() {
         for contents in [None, Some("not json"), Some("{}")] {
-            let (_directory, failures, _fake, core, temp) = activate_with(|home, _| {
+            let (_directory, failures, _fake, core, _temp) = activate_with(|home, _| {
                 if let Some(contents) = contents {
                     write_cli_login(home, contents);
                 }
             })
             .await;
             assert!(failures.is_empty(), "{failures:?}");
-            let relay_home = temp.path().join(".agentworkforce/relay");
-            assert!(cli_session(&relay_home, SITE, crate::relay::state::now_ms()).is_none());
             assert_signed_out(core.plugins.cloud.as_ref()).await;
         }
     }

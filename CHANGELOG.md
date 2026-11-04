@@ -7,36 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Major]
 
-### Added
-
-- Session lists report which client started each session as `originator`, so a Claude app chat (`claude-desktop`) is told apart from Claude Code in the terminal (`cli`).
-
 ### Changed
 
-- The core `relay serve` and `relay init` run is messaging-only and is called `agent-relay-node`: `relay init` installs it from `relay-node-v<version>` releases, and `AGENT_RELAY_NODE_PATH` points at a binary of your own. Its commands have no `relay` word (`agent-relay-node serve`, `agent-relay-node call status.get`), and the hooks, Codex rules and Claude permission rules it installs use that form; setup replaces the earlier `… relay …` entries. Session history (capture, upload and the session catalog) lives in the Agent Relay desktop app.
-- The core (`agent-relay-node`) talks to one Agent Relay site, fixed when it is built: `AGENT_RELAY_SITE_URL` at build time (`https://agentrelay.com` when unset; an https origin, or `http://localhost[:port]` / `http://127.0.0.1[:port]`), and a build for a site the core could not trust fails to build. Nothing changes the site at run time, in any build.
-- The core opens links of one scheme, fixed at build time from `AGENT_RELAY_URL_SCHEME` (`agentrelay` when unset; a web scheme such as `https` fails the build); the `agentrelay-dev://` rule for non-production sites is gone, and on Windows the link handler registers the build's scheme.
+- The core is now `agent-relay-node`: `relay init` installs it from `relay-node-v<version>` releases, and `AGENT_RELAY_NODE_PATH` points at a binary of your own.
+- The core's commands have no `relay` word (`agent-relay-node serve`, `agent-relay-node call status.get`). The hooks, Codex rules and Claude permission rules it installs use that form, and setup replaces the earlier `… relay …` entries.
+- The core (`agent-relay-node`) talks to one Agent Relay site, fixed when it is built: `AGENT_RELAY_SITE_URL` at build time (`https://agentrelay.com` when unset; an https origin, or `http://localhost[:port]` / `http://127.0.0.1[:port]`), and a build for a site the core could not trust fails to build. Nothing changes the site at run time.
+- The core opens links of one scheme, fixed at build time from `AGENT_RELAY_URL_SCHEME` (`agentrelay` when unset; a web scheme such as `https` fails the build); the `agentrelay-dev://` rule for non-production sites is gone.
 - `links.parse` opens links of the build's scheme only, and refuses a connect link for another site naming that site.
-- Relay Connect invite links and the Connect host sign-in are the build's site's.
+- Relay Connect invite links and the Connect host sign-in use the build's site.
 
 ### Removed
 
-- `agent-relay-node serve --site-url`: the core takes no site at start.
+- `--site-url` on the core's `serve`: the core takes no site at start.
 - The `site_url` field of `account.sign_in` and of `links.parse` in the bridge contract (and the generated Swift contract).
 
 ### Fixed
 
-- The desktop spawn node asks Agent Relay for the same node id on every attempt of a first enrollment and keeps the alternate name it took, so a name another node holds is not asked for again; a node enrolled whose answer was lost, or an id another node has, is left behind for a fresh one under the same name.
-- A node token Agent Relay refuses three times in a row stops the spawn node with a status saying so, instead of retrying forever; turning Accept spawns from Agent Relay off and on, or signing in again, enrolls a new node.
+- The spawn node asks Agent Relay for the same node id on every attempt of a first enrollment and keeps the alternate name it took, so a name another node holds is not asked for again; a node enrolled whose answer was lost, or an id another node has, is left behind for a fresh one under the same name.
+- A node token Agent Relay refuses three times in a row stops the spawn node with a status saying so, instead of retrying forever; turning `accept_spawns` off and on, or signing in again, enrolls a new node.
+- A core built without an account answers every account method with `method_not_found`, as `hello` lists them.
 
 ### Breaking Changes
 
-- A core built for another site than `https://agentrelay.com` must be built with `AGENT_RELAY_SITE_URL`. `agent-relay-node serve --site-url` is refused; a `site_url` in an `account.sign_in` or `links.parse` request is ignored, as any unknown field is, and the build's site applies.
+- `agent-relay-probe` is now `agent-relay-node`, without the `relay` subcommand: `agent-relay-probe relay call status.get` is `agent-relay-node call status.get`. `AGENT_RELAY_PROBE_PATH` is no longer read.
+- A core built for another site than `https://agentrelay.com` must be built with `AGENT_RELAY_SITE_URL`. `--site-url` on `serve` is refused; a `site_url` in an `account.sign_in` or `links.parse` request is ignored, as any unknown field is, and the build's site applies.
 
 ### Migration Guidance
 
+- Replace `AGENT_RELAY_PROBE_PATH` with `AGENT_RELAY_NODE_PATH`, and `agent-relay-probe relay <command>` with `agent-relay-node <command>` in scripts and launch entries.
+- Run `relay init` to install `agent-relay-node`. It leaves the old `agent-relay-probe` in the install directory's `bin`, and `relay init --uninstall` no longer removes a `~/.local/bin/agent-relay-probe` copy; delete them by hand when no desktop app uses them.
 - Set `AGENT_RELAY_SITE_URL` (and `AGENT_RELAY_URL_SCHEME`, for a build registering its own links) in the environment of `cargo build`; a changed value rebuilds the crate. Leave both unset for production.
-- Drop `--site-url` from `agent-relay-node serve` command lines and launch entries, and `site_url` from `account.sign_in` and `links.parse` requests: the build's site applies.
+- Drop `--site-url` from `serve` command lines and launch entries, and `site_url` from `account.sign_in` and `links.parse` requests: the build's site applies.
 
 ## [15.1.1] - 2026-11-03
 

@@ -1,5 +1,5 @@
-//! The relay core: the messaging runtime the desktop apps and `relay serve`
-//! run, served by `agent-relay-node serve` over one bridge contract.
+//! The relay core: the messaging runtime `agent-relay-node serve` serves over
+//! one bridge contract, to `relay init` and the desktop apps.
 //! It finds the coding sessions on this computer, puts them on the relay,
 //! delivers messages into them and sends theirs. What a build adds (an
 //! account, session history, extra methods and sessions) it adds through
@@ -34,7 +34,7 @@
 //! | `sessions` | The `SessionDirectory` trait: sessions on this computer |
 //! | `cloud_session` | The `CloudAccess` trait; Cloud session calls: refresh, handoff exchange, revoke, whoami, workspace resolve; where the session is kept |
 //! | `cloud_http` | One redirect-free, bounded JSON request to Cloud |
-//! | `cloud_login` | Device sign-in, for Relay Connect hosts (`agent-relay cloud login`); an account (sign-in, its bridge methods) is a plugin the core is built with (`daemon::plugins::AccountPlugin`) |
+//! | `cloud_login` | Device sign-in, for Relay Connect hosts (`connect create`); an account (sign-in, its bridge methods) is a plugin the core is built with (`daemon::plugins::AccountPlugin`) |
 //! | `probe_copy` | The command-line copy of the probe in `~/.local/bin`, only ever upgraded |
 //! | `probe_alias` | The space-free link to the probe that Codex and Claude Code rules and reply hints name while their hooks are on |
 //! | `cloud_chat` | Skip chat: requests, the saved conversation and project view, pushes |
@@ -102,7 +102,6 @@ pub mod files;
 pub mod fleet;
 pub mod grok;
 pub mod harness;
-pub mod harness_setup;
 pub mod hermes;
 pub mod hook_agents;
 pub mod host_methods;

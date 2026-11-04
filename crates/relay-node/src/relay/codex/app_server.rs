@@ -26,13 +26,8 @@ const LOADED_ID: i64 = 2;
 const TURN_ID: i64 = 3;
 const INJECT_ID: i64 = 4;
 const THREAD_ID: i64 = 5;
-const MCP_THREAD_ID: i64 = 6;
 const ARCHIVE_ID: i64 = 7;
 const RESUME_ID: i64 = 8;
-/// Ids for the pages of the configured MCP server list.
-const MCP_LIST_ID: i64 = 10;
-/// The most pages of MCP servers read before giving up.
-const MCP_LIST_PAGES: i64 = 20;
 
 /// How long a liveness check waits for the loaded-thread list.
 pub const LOADED_TIMEOUT: Duration = Duration::from_secs(2);
@@ -374,53 +369,9 @@ pub struct StartedThread {
     pub turn: Result<(), TurnError>,
 }
 
-/// The names of the MCP servers the app-server's own configuration has,
-/// all pages (`mcpServerStatus/list` with no thread). Only names are kept;
-/// the answer carries no headers or other credentials.
-fn mcp_server_names(client: &mut Client, deadline: Instant) -> io::Result<Vec<String>> {
-    let mut names = Vec::new();
-    let mut cursor: Option<String> = None;
-    for page in 0..MCP_LIST_PAGES {
-        let id = MCP_LIST_ID + page;
-        client.send(
-            &json!({"method": "mcpServerStatus/list", "id": id, "params": {
-                "detail": "toolsAndAuthOnly", "cursor": cursor,
-            }}),
-            deadline,
-        )?;
-        let response = client.response(id, deadline)?;
-        let unreadable = || io::Error::new(ErrorKind::InvalidData, "an unreadable MCP server list");
-        let result = response
-            .get("result")
-            .filter(|r| r.is_object())
-            .ok_or_else(unreadable)?;
-        for server in result["data"].as_array().ok_or_else(unreadable)? {
-            names.push(server["name"].as_str().ok_or_else(unreadable)?.to_string());
-        }
-        match result["nextCursor"].as_str() {
-            Some(next) => cursor = Some(next.to_string()),
-            None => return Ok(names),
-        }
-    }
-    Err(io::Error::other("too many MCP servers to list"))
-}
-
-/// How a spawned thread is kept from the person's own MCP servers: every
-/// server their Codex configuration names is turned off for the thread, and
-/// the thread must then report none running before it gets a turn.
-pub struct McpIsolation<'a> {
-    /// The thread `config` override that turns the named servers off.
-    pub disable: &'a dyn Fn(&[String]) -> Value,
-    /// Whether a `mcpServerStatus/list` answer for the thread shows no
-    /// server running; false whenever it cannot tell.
-    pub none_active: &'a dyn Fn(&str) -> bool,
-}
-
 /// What a thread start does beyond starting the thread.
 #[derive(Clone, Copy, Default)]
 pub struct StartOptions<'a> {
-    /// Keeps the thread from the person's MCP servers, or archives it.
-    pub isolation: Option<&'a McpIsolation<'a>>,
     /// Told the thread's id once it is usable, before its first turn, so a
     /// caller that stops in between still knows the thread.
     pub created: Option<&'a dyn Fn(&str)>,
@@ -432,9 +383,7 @@ pub struct StartOptions<'a> {
 /// Starts a new thread in `directory` on the app-server and its first turn
 /// with `text`. Later turns use [`send_to_spawned`], since the app-server
 /// may unload an idle thread after this client goes. An error means
-/// no usable thread: none was created, or, with `isolation`, the thread
-/// could not be shown free of the person's MCP servers and was archived
-/// before any turn.
+/// no thread was created.
 pub fn start_thread(
     stream: &mut dyn ProxyStream,
     directory: &str,
@@ -459,24 +408,16 @@ fn start_thread_state(
     timeout: Duration,
     options: StartOptions<'_>,
 ) -> io::Result<(StartedThread, ClientState)> {
-    let isolation = options.isolation;
     let deadline = Instant::now() + timeout;
     let mut client = Client::open(stream, deadline)?;
     let sandbox = match access {
         Access::Workspace => "workspace-write",
         Access::Full => "danger-full-access",
     };
-    let config = match isolation {
-        Some(isolation) => {
-            let names = mcp_server_names(&mut client, deadline)?;
-            Some((isolation.disable)(&names))
-        }
-        None => None,
-    };
     client.send(
         &json!({"method": "thread/start", "id": THREAD_ID, "params": {
             "cwd": directory, "approvalPolicy": "on-request", "sandbox": sandbox,
-            "serviceName": "agent-relay-desktop", "config": config,
+            "serviceName": "agent-relay-desktop",
         }}),
         deadline,
     )?;
@@ -492,31 +433,6 @@ fn start_thread_state(
         .filter(|id| !id.is_empty())
         .ok_or_else(|| io::Error::new(ErrorKind::InvalidData, "Codex returned no thread id"))?
         .to_string();
-    if let Some(isolation) = isolation {
-        let isolated = client
-            .send(
-                &json!({"method": "mcpServerStatus/list", "id": MCP_THREAD_ID, "params": {
-                    "threadId": thread_id, "detail": "toolsAndAuthOnly",
-                }}),
-                deadline,
-            )
-            .and_then(|()| client.response(MCP_THREAD_ID, deadline))
-            .ok()
-            .and_then(|answer| serde_json::to_string(&answer).ok())
-            .is_some_and(|answer| (isolation.none_active)(&answer));
-        if !isolated {
-            // Never left usable: archived before it ever had a turn.
-            let _ = client.send(
-                &json!({"method": "thread/archive", "id": ARCHIVE_ID,
-                    "params": {"threadId": thread_id}}),
-                deadline,
-            );
-            let _ = client.response(ARCHIVE_ID, deadline);
-            return Err(io::Error::other(
-                "the thread could not be shown free of the person's own MCP servers",
-            ));
-        }
-    }
     if let Some(created) = options.created {
         created(&thread_id);
     }
@@ -1087,31 +1003,13 @@ pub(crate) mod tests {
         );
     }
 
-    /// An app-server whose configuration names `configured` MCP servers and
-    /// whose new thread reports `thread_status` for them.
-    fn spawning_server(configured: &[&str], thread_status: &'static str) -> FakeAppServer {
-        let configured: Vec<String> = configured.iter().map(|s| s.to_string()).collect();
+    /// An app-server that starts `THREAD` and archives on request.
+    fn spawning_server() -> FakeAppServer {
         FakeAppServer::new(move |request| {
             let id = request["id"].clone();
             let answer = |result: Value| Some(server_frame(&json!({"id": id, "result": result})));
             match request["method"].as_str() {
-                Some("mcpServerStatus/list") if request["params"]["threadId"].is_null() => {
-                    answer(json!({
-                        "data": configured.iter().map(|name| json!({
-                            "name": name, "authStatus": "bearerToken", "runtimeStatus": "connected",
-                            "tools": {"t": {}},
-                        })).collect::<Vec<_>>(),
-                        "nextCursor": null,
-                    }))
-                }
                 Some("thread/start") => answer(json!({"thread": {"id": THREAD}})),
-                Some("mcpServerStatus/list") => answer(json!({
-                    "data": configured.iter().map(|name| json!({
-                        "name": name, "authStatus": "bearerToken",
-                        "runtimeStatus": thread_status, "tools": {},
-                    })).collect::<Vec<_>>(),
-                    "nextCursor": null,
-                })),
                 Some("thread/archive") => answer(json!({})),
                 Some("turn/start") => answer(json!({"turn": {"id": "t"}})),
                 _ => None,
@@ -1119,18 +1017,11 @@ pub(crate) mod tests {
         })
     }
 
-    fn isolation() -> McpIsolation<'static> {
-        McpIsolation {
-            disable: &crate::relay::harness_setup::codex_disable_mcp_config,
-            none_active: &crate::relay::harness_setup::codex_no_mcp_active,
-        }
-    }
-
     #[test]
-    fn a_spawned_thread_starts_with_every_configured_mcp_server_off() {
-        let mut server = spawning_server(&["agent-relay-sessions", "other"], "disabled");
+    fn a_spawned_thread_is_reported_before_its_first_turn() {
+        let mut server = spawning_server();
         let seen = server.seen.clone();
-        let reported = std::sync::Mutex::new(None);
+        let reported = Mutex::new(None);
         let report = |thread: &str| {
             let methods: Vec<String> = seen
                 .lock()
@@ -1148,67 +1039,21 @@ pub(crate) mod tests {
             "m1",
             SEND_TIMEOUT,
             StartOptions {
-                isolation: Some(&isolation()),
                 created: Some(&report),
                 ended: None,
             },
         )
         .unwrap();
         assert_eq!(started.thread_id, THREAD);
-        // Reported once usable and before its first turn was asked for.
         let (thread, before) = reported.lock().unwrap().clone().unwrap();
         assert_eq!(thread, THREAD);
-        assert!(before.iter().any(|m| m == "mcpServerStatus/list"));
         assert!(!before.iter().any(|m| m == "turn/start"));
         assert!(started.turn.is_ok());
-        let seen = seen.lock().unwrap();
-        let start = seen.iter().find(|r| r["method"] == "thread/start").unwrap();
-        assert_eq!(
-            start["params"]["config"],
-            json!({"mcp_servers": {
-                "agent-relay-sessions": {"enabled": false}, "other": {"enabled": false},
-            }})
-        );
-        let methods: Vec<&str> = seen.iter().filter_map(|r| r["method"].as_str()).collect();
-        let check = methods
-            .iter()
-            .rposition(|m| *m == "mcpServerStatus/list")
-            .unwrap();
-        let turn = methods.iter().position(|m| *m == "turn/start").unwrap();
-        assert!(check < turn, "the thread is checked before its first turn");
-    }
-
-    #[test]
-    fn a_spawned_thread_with_a_server_still_running_is_archived_without_a_turn() {
-        let mut server = spawning_server(&["agent-relay-sessions"], "connected");
-        let seen = server.seen.clone();
-        assert!(start_thread(
-            &mut server,
-            "/tmp",
-            Access::Full,
-            "hi",
-            "m1",
-            SEND_TIMEOUT,
-            StartOptions {
-                isolation: Some(&isolation()),
-                created: None,
-                ended: None,
-            },
-        )
-        .is_err());
-        let methods: Vec<String> = seen
-            .lock()
-            .unwrap()
-            .iter()
-            .filter_map(|r| r["method"].as_str().map(String::from))
-            .collect();
-        assert!(methods.contains(&"thread/archive".to_string()));
-        assert!(!methods.contains(&"turn/start".to_string()));
     }
 
     #[test]
     fn a_released_thread_is_archived() {
-        let mut server = spawning_server(&[], "disabled");
+        let mut server = spawning_server();
         let seen = server.seen.clone();
         archive_thread(&mut server, THREAD, SEND_TIMEOUT).unwrap();
         let seen = seen.lock().unwrap();

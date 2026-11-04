@@ -269,27 +269,6 @@ async fn the_pi_opt_in_needs_auto_activate_on() {
     }
 }
 
-/// `cloud_catalog_from` with every row last active `age_ms` ago.
-
-/// Lands `(id, title, originator, age_ms)` rows in the probe root's
-/// `install-a` catalog, as the `devin-cloud` connector's listing at
-/// `stamp` would. A re-listing only moves a row's activity forward — the
-/// catalog keeps the latest — so re-dating a row older means removing the
-/// catalog first.
-
-// A Devin review (a session an automation started) has nobody in it to
-// talk to, so it is neither listed nor auto-activated; one a person
-// started still is.
-
-/// A live session joins the relay by itself only once the upload policy
-/// uploads it, and leaves when that stops.
-
-// A Devin Cloud session untouched for a day has nobody in it to talk to,
-// so a signed-in machine lists it — deliverable, and addable by hand — but
-// never auto-activates it, and an automatic agent whose session goes quiet
-// for a day is marked to leave the relay, instead of heartbeating
-// Relaycast every 15 s for as long as the catalog remembers it.
-
 /// A desktop-configured core (an account whose default is on) treats an
 /// unset `auto_activate` as on and keeps an explicit Off, while a core
 /// without one (the CLI's) leaves it unset. Either way an open Pi, Oh My Pi

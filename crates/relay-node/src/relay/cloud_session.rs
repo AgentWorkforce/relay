@@ -536,34 +536,6 @@ pub fn decode_resolution(
     })
 }
 
-/// The official `agent-relay` CLI's session for `site_url`, while its
-/// access token has more than a minute left. Read only. Never without
-/// `relay-cli`.
-pub fn cli_session(relay_home: &Path, site_url: &str, now: i64) -> Option<CloudSession> {
-    if cfg!(not(feature = "relay-cli")) {
-        return None;
-    }
-    let value: Value =
-        serde_json::from_slice(&fs::read(relay_home.join("cloud-auth.json")).ok()?).ok()?;
-    let api = value["apiUrl"].as_str()?.trim().trim_end_matches('/');
-    if api != format!("{site_url}/cloud") {
-        return None;
-    }
-    let token = string(&value, "accessToken")?;
-    let expires = string(&value, "accessTokenExpiresAt");
-    let session = CloudSession {
-        access_token: Secret::new(token),
-        access_token_expires_at: expires.clone(),
-        refresh_token: None,
-        refresh_token_expires_at: None,
-        site_url: site_url.to_string(),
-    };
-    // Without an expiry the CLI's token is not trusted: it may be long dead.
-    (expiry_ms(expires.as_deref()).is_some()
-        && access_is_fresh(&session, Duration::from_secs(60), now))
-    .then_some(session)
-}
-
 /// Linux's former `cloud-session.json`, in the format `cloud_auth.py` wrote:
 /// `{"apiUrl", "accessToken", "accessTokenExpiresAt", "refreshToken",
 /// "refreshTokenExpiresAt"}`. Read once, to import it into the store.
@@ -767,46 +739,6 @@ mod tests {
         assert!(!is_workspace_uuid("acme"));
         assert!(!is_workspace_uuid("../../members"));
         assert!(!is_workspace_uuid("0f8fad5b-d9cb-469f-a165-70867728950"));
-    }
-
-    #[cfg(feature = "relay-cli")]
-    #[test]
-    fn the_cli_session_is_used_only_for_the_same_site_with_life_left() {
-        let home = tempfile::tempdir().unwrap();
-        let now = crate::parse_iso_ms("2026-09-30T10:00:00Z").unwrap();
-        let write = |api: &str, expires: Option<&str>| {
-            let mut value = json!({"apiUrl": api, "accessToken": "cli-token"});
-            if let Some(expires) = expires {
-                value["accessTokenExpiresAt"] = json!(expires);
-            }
-            fs::write(home.path().join("cloud-auth.json"), value.to_string()).unwrap();
-        };
-        write(
-            "https://agentrelay.com/cloud/",
-            Some("2026-09-30T11:00:00Z"),
-        );
-        let found = cli_session(home.path(), "https://agentrelay.com", now).unwrap();
-        assert_eq!(found.access_token.expose(), "cli-token");
-        assert!(found.refresh_token.is_none());
-        assert!(cli_session(home.path(), "https://other.example", now).is_none());
-        write("https://agentrelay.com/cloud", Some("2026-09-30T10:00:30Z"));
-        assert!(cli_session(home.path(), "https://agentrelay.com", now).is_none());
-        write("https://agentrelay.com/cloud", None);
-        assert!(cli_session(home.path(), "https://agentrelay.com", now).is_none());
-    }
-
-    #[cfg(not(feature = "relay-cli"))]
-    #[test]
-    fn without_relay_cli_the_cli_session_is_ignored() {
-        let home = tempfile::tempdir().unwrap();
-        fs::write(
-            home.path().join("cloud-auth.json"),
-            json!({"apiUrl": "https://agentrelay.com/cloud", "accessToken": "cli-token",
-                   "accessTokenExpiresAt": "2999-01-01T00:00:00Z"})
-            .to_string(),
-        )
-        .unwrap();
-        assert!(cli_session(home.path(), "https://agentrelay.com", 0).is_none());
     }
 
     #[cfg(not(feature = "relay-cli"))]

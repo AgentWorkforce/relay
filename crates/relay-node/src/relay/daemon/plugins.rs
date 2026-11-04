@@ -98,6 +98,10 @@ pub trait SessionPolicy: Send + Sync + 'static {
     fn may_ask_to_join(&self) -> Option<bool>;
     /// Which of `targets` may publish what they are doing to the workspace.
     fn publishes_activity(&self, targets: &[SessionTarget]) -> HashSet<SessionTarget>;
+    /// The activity line for agents that joined by themselves and leave
+    /// because `/clear` moved them to a conversation this policy does not
+    /// admit, or `None` to say nothing. `agents` is never empty.
+    fn leaving_after_clear(&self, agents: &[String]) -> Option<String>;
 }
 
 /// Extra bridge methods a build of the core adds. An unsupported internal
@@ -283,6 +287,19 @@ mod tests {
         assert!(!server::all_method_names(&core).contains(&"extension.ping"));
         let answer = server::call(&core, "extension.ping", json!({})).await;
         assert_eq!(answer.unwrap_err().data.kind, ErrorKind::MethodNotFound);
+    }
+
+    #[tokio::test]
+    async fn a_core_answered_account_method_is_not_answered_without_an_account() {
+        let (_home, core) = test_core_with_plugins(Plugins::default());
+        for name in [
+            contract::method::CursorCloudModelsList::NAME,
+            contract::method::SessionsOverviewGet::NAME,
+        ] {
+            assert!(!server::all_method_names(&core).contains(&name));
+            let answer = server::call(&core, name, json!({"session_id": "s"})).await;
+            assert_eq!(answer.unwrap_err().data.kind, ErrorKind::MethodNotFound);
+        }
     }
 
     #[tokio::test]

@@ -106,9 +106,8 @@ pub fn plugins_with_options(
     let relay_send_socket = outbound::default_socket(&env, &config.app_data_dir, local.uid);
     crate::relay::message_pointer::configure(&config.app_data_dir, &relay_send_socket);
     // The journal is this route's dedupe record under app data, created on
-    // the first delivery. It is not gated on the probe's Muse directory: a
-    // Paseo `muse serve` can be the only Muse store on the machine, and a
-    // path here does not create that directory until a message is sent.
+    // the first delivery. A Paseo `muse serve` can be the only Muse store on
+    // the machine, and a path here creates nothing until a message is sent.
     local.existing_muse_journal = local.muse_open.then(|| {
         config
             .app_data_dir
@@ -141,8 +140,6 @@ pub fn plugins_with_options(
     // Agent Relay Dev stages into and drains its own Devin inbox, never
     // production's queue.
     local.devin = local.devin.development(development);
-    // Under the real home, so Dev's private provider profiles never move it.
-    local.probe_root = Some(config.home.join(".agentworkforce/probe"));
     local.sources = sources;
     // The person's OpenClaw Gateway, reached on loopback; on unless
     // `AGENT_RELAY_ENABLE_OPENCLAW=0`, and listed only while it answers.

@@ -12,11 +12,10 @@ long-lived process per user:
 agent-relay-node serve [--socket PATH] [--app-data-dir PATH] [--headless]
 ```
 
-The relay CLI (`relay init`, `relay serve`) installs and runs it headless. The
-desktop apps (macOS, Linux/Windows GTK and iPad, in the relay-desktop
-repository) are clients of the daemon over its JSON bridge, and build their
-own binary on this crate's library with their account and session history
-added through its plugins.
+`relay init` installs and runs it headless. The desktop apps (macOS,
+Linux/Windows GTK and iPad, in the relay-desktop repository) are clients of the
+daemon over its JSON bridge, and build their own binary on this crate's library
+with what they add through its plugins.
 
 - [`docs/relay-core.md`](docs/relay-core.md): the daemon, its bridge
   contract, delivery and the relay-send socket.
@@ -29,7 +28,7 @@ different `relaycast`, `nix` and `portable-pty` versions.
 
 | Path                                | Owns                                                                                                                                                                     |
 | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/cli/`                          | The `agent-relay-node` command line: `relay …` and `connect …`                                                                                                           |
+| `src/cli/`                          | The `agent-relay-node` command line: the node's commands and `connect …`                                                                                                 |
 | `src/relay/`                        | The daemon (`serve`): workspace, Relaycast, delivery and injection per harness, harness setup (hooks/plugins), spawning, the bridge and its contract (`relay::contract`) |
 | `src/install*`                      | Where a packaged desktop install keeps its executables; the core's launch-at-login entry uses it                                                                         |
 | `src/bin/relay-contract-codegen.rs` | Generates the Swift bridge contract the apps consume                                                                                                                     |
@@ -44,7 +43,7 @@ nothing. A build such as relay-desktop's `desktop-core` adds:
 
 | Seam                                       | What it is                                                                                                                              |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `Plugins.account` (`AccountPlugin`)        | Sign-in and Cloud maintenance; it answers the `Availability::Account` methods (`account.*`, `uploader.*`, `sessions.transcript`)        |
+| `Plugins.account` (`AccountPlugin`)        | Sign-in and Cloud maintenance; it answers the `Availability::Account` methods this crate has no handler for                             |
 | `Plugins.session_policy` (`SessionPolicy`) | Which sessions join the relay by themselves, may be asked to join, and publish their activity                                           |
 | `Plugins.settings` (`SettingsExtension`)   | Extra settings, such as `history_retention_days`                                                                                        |
 | `Plugins.extensions` (`MethodExtension`)   | Extra bridge methods                                                                                                                    |

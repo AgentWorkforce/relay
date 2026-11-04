@@ -1,6 +1,5 @@
-//! The Agent Relay core: the messaging runtime (`relay`) the desktop apps and
-//! `serve` run, and Relay Connect rooms. `agent-relay-node` (src/cli)
-//! is its binary.
+//! The Agent Relay core: the messaging runtime (`relay`) and Relay Connect
+//! rooms. `agent-relay-node` (src/cli) is its binary.
 /// The stamped release (AGENT_RELAY_PROBE_VERSION), or a Git-identified development build. The internal
 /// Cargo package version is never presented as a separate product release.
 pub const VERSION: &str = env!("RELAY_DESKTOP_VERSION");

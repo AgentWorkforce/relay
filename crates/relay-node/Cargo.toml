@@ -33,10 +33,9 @@ default = ["production-binaries", "relay-cli"]
 production-binaries = ["relay-cli"]
 # The core as the `agent-relay` CLI runs it: the CLI's workspace selection
 # (environment keys, project pins, `workspaces.json`) and origin bindings,
-# armadillo's `ar_ws_`/`ar_ag_` keys, the CLI's Cloud sign-in, and fleet
-# brokers. A build without it reads only the Cloud sign-in and accepts only
-# `rk_` workspace keys; `fleet.*` stay in the contract and answer
-# `method_not_found`.
+# armadillo's `ar_ws_`/`ar_ag_` keys, and fleet brokers. A build without it
+# reads only the account's workspace and accepts only `rk_` workspace keys;
+# `fleet.*` stay in the contract and answer `method_not_found`.
 relay-cli = []
 
 [workspace]
@@ -49,7 +48,6 @@ base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 atomicwrites = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-flate2 = "1.1"
 fs2 = "0.4"
 futures-util = "0.3"
 getrandom = "0.2"
@@ -58,9 +56,8 @@ libc = "0.2"
 # Gravatar addresses avatars by the MD5 of an email; nothing else uses it.
 md-5 = "0.10"
 same-file = "1"
-rusqlite = { version = "0.32", features = ["backup", "bundled", "functions"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 relaycast = "10.0.0"
-ryu-js = "1.0.3"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -83,8 +80,6 @@ json5 = "0.4"
 unicode-normalization = "0.1"
 ureq = { version = "2", features = ["json"] }
 url = "2"
-# Delivery request bodies, when the receiver publishes zstd (src/destination/encoding.rs).
-zstd = { version = "0.13", default-features = false }
 schemars = { version = "1", default-features = false, features = ["derive", "std"] }
 
 # Signals, process groups, uids and file modes, which Windows has no
@@ -94,8 +89,8 @@ signal-hook = "=0.3.18"
 nix = { version = "=0.25.1", default-features = false, features = ["signal", "process", "fs", "user"] }
 
 # Codex is trusted on macOS only with OpenAI's code signature (see
-# src/relay/process.rs), and the desktop mailbox credential lives in the
-# login Keychain; these crates are already linked by the TLS stack.
+# src/relay/process.rs), and a mailbox credential lives in the login
+# Keychain; these crates are already linked by the TLS stack.
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 security-framework = "3"

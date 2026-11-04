@@ -389,7 +389,6 @@ impl SpawnFacet for CodexAdapter {
                 &launch.message_id,
                 START_TIMEOUT,
                 app_server::StartOptions {
-                    isolation: None,
                     created: Some(&|thread| {
                         on_started(
                             &Target::new(SessionKind::Codex, thread.to_lowercase()),

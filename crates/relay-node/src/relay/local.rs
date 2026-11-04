@@ -96,9 +96,6 @@ pub struct LocalConfig {
     /// Where Cursor CLI keeps its conversations, and the inbox Agent Relay's
     /// Cursor hooks drain.
     pub cursor: CursorConfig,
-    /// The probe install root (`~/.agentworkforce/probe`), where a build's
-    /// remote session sources keep their state; `None` keeps none.
-    pub probe_root: Option<PathBuf>,
     /// What the build knows about sessions beyond this computer's discovery.
     pub sources: crate::relay::session_sources::SessionSources,
     /// The person's local OpenClaw Gateway and this core's state for it;
@@ -148,7 +145,6 @@ impl LocalConfig {
             opencode_open_journal: None,
             devin: DevinConfig::from_env(env, home),
             cursor: CursorConfig::from_env(env, home),
-            probe_root: None,
             sources: Default::default(),
             openclaw: None,
             hermes: None,
@@ -2327,7 +2323,6 @@ mod tests {
             opencode_open_journal: None,
             devin: DevinConfig::from_env(&|_| None, home),
             cursor: CursorConfig::from_env(&|_| None, home),
-            probe_root: None,
             sources: Default::default(),
             openclaw: None,
             hermes: None,

@@ -11,10 +11,9 @@ use std::collections::HashSet;
 /// itself.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Admission {
-    /// Every one: nothing uploads here, or the install is not this
-    /// computer's to read (another workspace's, a newer build's).
+    /// Every one.
     All,
-    /// Only these: those the install uploads, and those it never could.
+    /// Only these.
     Only(HashSet<SessionTarget>),
     /// Not known this time, and why when it is worth saying: nothing new
     /// joins and no one leaves until a later pass reads it.
@@ -33,9 +32,9 @@ impl Admission {
 
 /// Keeps in `found` only the sessions the session policy lets join the
 /// relay by themselves, and returns those still eligible to stay there.
-/// Why the policy could not be read goes on `failures`. An automatically
+/// Why the policy could not be read goes on `failures`. For an automatically
 /// activated agent `/clear` just `moved` to a conversation the policy does
-/// not upload is told why it leaves, and how to keep it.
+/// not admit, the activity log gets the policy's own line.
 pub async fn admit<T>(
     core: &Core,
     found: &mut std::collections::HashMap<SessionTarget, T>,
@@ -70,13 +69,14 @@ pub async fn admit<T>(
             .collect()
     });
     if !leaving.is_empty() {
-        core.hub.activity(
-            crate::relay::state::Level::Info,
-            format!(
-                "Conversation cleared: @{} joined the relay by itself, and its new conversation is not uploaded, so it leaves the relay in a few minutes. Turn on Upload session for the new conversation to keep it.",
-                leaving.join(", @")
-            ),
-        );
+        let line = core
+            .plugins
+            .session_policy
+            .as_ref()
+            .and_then(|policy| policy.leaving_after_clear(&leaving));
+        if let Some(line) = line {
+            core.hub.activity(crate::relay::state::Level::Info, line);
+        }
     }
     found.retain(|target, _| admission.admits(target));
     eligible

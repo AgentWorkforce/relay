@@ -343,6 +343,9 @@ pub async fn call(core: &Arc<Core>, name: &str, raw: Value) -> Result<Value, Rpc
             "Agent Relay core is stopping.",
         ));
     }
+    if core.plugins.account.is_none() && needs_account(core, name) {
+        return Err(no_such_method());
+    }
     match name {
         method::DiagnosticsRequests::NAME => {
             answer::<method::DiagnosticsRequests, _>(raw, |_| async {
@@ -373,12 +376,7 @@ pub async fn call(core: &Arc<Core>, name: &str, raw: Value) -> Result<Value, Rpc
                     },
                 },
             };
-            answer.unwrap_or_else(|| {
-                Err(RpcError::new(
-                    ErrorKind::MethodNotFound,
-                    "This Agent Relay core has no such method.",
-                ))
-            })
+            answer.unwrap_or_else(|| Err(no_such_method()))
         }
     }
 }
@@ -391,21 +389,42 @@ pub(crate) fn all_method_names(core: &Core) -> Vec<&'static str> {
     names
 }
 
-/// The first extension that answers `name`. A method `hello` leaves out (an
-/// account method on a core with no account) is not answered, as for the
-/// core's own account methods.
+fn no_such_method() -> RpcError {
+    RpcError::new(
+        ErrorKind::MethodNotFound,
+        "This Agent Relay core has no such method.",
+    )
+}
+
+/// Whether `name` is registered as an account method, by the core or by an
+/// extension: `hello` leaves those out of a core with no account, and
+/// [`call`] answers them as it answers an unknown name.
+fn needs_account(core: &Core, name: &str) -> bool {
+    let extensions = core
+        .plugins
+        .extensions
+        .iter()
+        .flat_map(|extension| extension.specs());
+    contract::METHODS
+        .iter()
+        .filter(|spec| spec.name == name)
+        .map(|spec| spec.availability)
+        .chain(
+            extensions
+                .filter(|spec| spec.name == name)
+                .map(|spec| spec.availability),
+        )
+        .any(|availability| availability == contract::Availability::Account)
+}
+
+/// The first extension that answers `name`.
 async fn extension_call(
     core: &Arc<Core>,
     name: &str,
     raw: Value,
 ) -> Option<Result<Value, RpcError>> {
-    let with_account = core.plugins.account.is_some();
     for extension in &core.plugins.extensions {
-        let offered = extension.specs().iter().any(|spec| {
-            spec.name == name
-                && (with_account || spec.availability == contract::Availability::Always)
-        });
-        if !offered {
+        if !extension.specs().iter().any(|spec| spec.name == name) {
             continue;
         }
         if let Some(answer) = extension.call(core, name, raw.clone()).await {
