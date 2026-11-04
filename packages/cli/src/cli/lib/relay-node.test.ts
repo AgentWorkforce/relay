@@ -42,19 +42,20 @@ describe('relayNodeAssetName', () => {
     expect(relayNodeAssetName('15.0.0', target)).toBeUndefined();
   });
 
-  it('downloads from relay-node-v tags, apart from the CLI v* tags', () => {
+  it('downloads from the CLI v* release tags', () => {
     expect(relayNodeAssetUrl('15.0.0', 'agent-relay-node-15.0.0-linux-x64')).toBe(
-      'https://github.com/AgentWorkforce/relay/releases/download/relay-node-v15.0.0/agent-relay-node-15.0.0-linux-x64'
+      'https://github.com/AgentWorkforce/relay/releases/download/v15.0.0/agent-relay-node-15.0.0-linux-x64'
     );
   });
 
   it('names the assets the release workflow publishes', () => {
-    const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/relay-node-release.yml'), 'utf8');
+    const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/publish.yml'), 'utf8');
     for (const suffix of ['linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64', 'windows-x64']) {
       expect(workflow).toContain(`suffix: ${suffix}`);
     }
     expect(workflow).toContain('agent-relay-node-${VERSION}-${SUFFIX}${EXT}');
-    expect(workflow).toContain('relay-node-v${VERSION}');
+    expect(workflow).not.toContain('relay-node-v');
+    expect(fs.existsSync(path.join(repoRoot, '.github/workflows/relay-node-release.yml'))).toBe(false);
   });
 });
 

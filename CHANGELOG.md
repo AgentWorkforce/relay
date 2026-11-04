@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The core is now `agent-relay-node`: `relay init` installs it from `relay-node-v<version>` releases, and `AGENT_RELAY_NODE_PATH` points at a binary of your own.
+- The core is now `agent-relay-node`: `relay init` installs the version matching its CLI from the same `v<version>` release, and `AGENT_RELAY_NODE_PATH` points at a binary of your own.
 - The core's commands have no `relay` word (`agent-relay-node serve`, `agent-relay-node call status.get`). The hooks, Codex rules and Claude permission rules it installs use that form, and setup replaces the earlier `… relay …` entries.
 - The core is the messaging runtime: session discovery, delivery, spawning, harness setup and the bridge. Session history, uploads, Agent Relay Cloud sign-in and the Cloud provider methods are the desktop app's.
 
