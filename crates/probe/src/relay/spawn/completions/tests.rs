@@ -19,11 +19,11 @@ fn successful_receipts_are_private_immutable_and_token_free() {
     let home = tempfile::tempdir().unwrap();
     let scope = Scope::new("https://relay.example", &Secret::new("workspace-secret"));
     let request = request();
-    let original = wire::spawned_unconfirmed(&request.name, "transport_closed");
+    let original = wire::spawned_unconfirmed(&request.name, None, "transport_closed");
     scope.save(home.path(), &request, original.clone()).unwrap();
     // A later writer cannot replace the first receipt with a more confident one.
     let replay = scope
-        .save(home.path(), &request, wire::spawned(&request.name))
+        .save(home.path(), &request, wire::spawned(&request.name, None))
         .unwrap();
     assert_eq!(replay.replay(&request).unwrap(), original);
     let path = scope.path(home.path(), &request.invocation_id);
@@ -57,7 +57,7 @@ fn receipts_are_scoped_to_workspace_origin_and_invocation() {
     let scope = Scope::new("https://relay.example", &key);
     let request = request();
     scope
-        .save(home.path(), &request, wire::spawned(&request.name))
+        .save(home.path(), &request, wire::spawned(&request.name, None))
         .unwrap();
     for other in [
         Scope::new("https://relay.example", &Secret::new("workspace-two")),
@@ -81,7 +81,7 @@ fn replay_cannot_rebind_a_completed_invocation() {
     let scope = Scope::new("https://relay.example", &Secret::new("workspace-one"));
     let original = request();
     scope
-        .save(home.path(), &original, wire::spawned(&original.name))
+        .save(home.path(), &original, wire::spawned(&original.name, None))
         .unwrap();
     for changed in [
         SpawnRequest {
@@ -107,7 +107,7 @@ fn corrupt_or_misbound_receipts_are_errors_not_new_invocations() {
     let scope = Scope::new("https://relay.example", &Secret::new("workspace-one"));
     let request = request();
     scope
-        .save(home.path(), &request, wire::spawned(&request.name))
+        .save(home.path(), &request, wire::spawned(&request.name, None))
         .unwrap();
     let path = scope.path(home.path(), &request.invocation_id);
     let original: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -154,7 +154,7 @@ fn failed_receipts_survive_restart_without_relaunch_or_origin_restoration() {
     assert!(!saved.confirms(&request.name, request.harness));
     assert_eq!(saved.replay(&request), Err(failure.redacted()));
     let saved = scope
-        .save(home.path(), &request, wire::spawned(&request.name))
+        .save(home.path(), &request, wire::spawned(&request.name, None))
         .unwrap();
     assert!(
         saved.replay(&request).is_err(),

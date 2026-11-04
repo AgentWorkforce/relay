@@ -1003,6 +1003,7 @@ mod tests {
                     harness: "claude".into(),
                     requester: None,
                     process: None,
+                    worker_cwd: None,
                     owner: None,
                     taken_over_at: None,
                     task_unconfirmed: None,

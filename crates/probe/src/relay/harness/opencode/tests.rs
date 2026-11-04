@@ -700,6 +700,7 @@ fn intent(target: Option<Target>, process: Option<SpawnedProcess>) -> Intent {
         message_id: "spawn-inv_o1".into(),
         session_id: SPAWN.into(),
         created_ms: 0,
+        worker_cwd: None,
         ended: false,
         launch_failed: false,
         register_sent: false,

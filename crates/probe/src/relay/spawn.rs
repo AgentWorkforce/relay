@@ -819,7 +819,7 @@ mod tests {
             result,
             wire::action_output(
                 "inv_w1_new",
-                wire::spawned_unconfirmed("w1", "transport_closed")
+                wire::spawned_unconfirmed("w1", Some(&restarted.config.home), "transport_closed")
             )
         );
         assert_eq!(spawner.launched.lock().unwrap().len(), 2);
@@ -973,7 +973,10 @@ mod tests {
         let (link, sent) = NodeLink::detached(node());
         let frames = relaycast(link.clone(), sent);
         let answer = core.clone().answer_spawn(link, request("w1")).await;
-        assert_eq!(answer, wire::action_output("inv_w1", wire::spawned("w1")));
+        assert_eq!(
+            answer,
+            wire::action_output("inv_w1", wire::spawned("w1", Some(&core.config.home)))
+        );
         let frames = frames.await.unwrap();
         assert_eq!(frames[0]["type"], "agent.register");
         assert_eq!(frames[0]["invocation_id"], "inv_w1");
@@ -1020,7 +1023,10 @@ mod tests {
         let (link, sent) = NodeLink::detached(node());
         let _frames = relaycast(link.clone(), sent);
         let again = core.clone().answer_spawn(link, request("w1")).await;
-        assert_eq!(again, wire::action_output("inv_w1", wire::spawned("w1")));
+        assert_eq!(
+            again,
+            wire::action_output("inv_w1", wire::spawned("w1", Some(&core.config.home)))
+        );
         assert_eq!(spawner.launched.lock().unwrap().len(), 1);
 
         // A release for another agent of that name is refused; the right
@@ -1309,7 +1315,7 @@ mod tests {
         set_max(&core, 1);
         assert_eq!(
             spawn(&core, "w1").await,
-            wire::action_output("inv_w1", wire::spawned("w1"))
+            wire::action_output("inv_w1", wire::spawned("w1", Some(&core.config.home)))
         );
         let refused = spawn(&core, "w2").await;
         assert_eq!(refused["error"], "spawn_capacity_exceeded");
@@ -1473,7 +1479,7 @@ mod tests {
         // its place takes a new spawn.
         assert_eq!(
             spawn(&core, "w2").await,
-            wire::action_output("inv_w2", wire::spawned("w2"))
+            wire::action_output("inv_w2", wire::spawned("w2", Some(&core.config.home)))
         );
         // Seen running again, it holds a place again: over the maximum, so
         // new spawns are refused until one is released.
@@ -1623,6 +1629,7 @@ mod tests {
             message_id: format!("spawn-inv_{name}"),
             session_id: "0b6f2d0e-8a51-4a5c-9c3e-5d1f0a2b3c4d".into(),
             created_ms: 0,
+            worker_cwd: None,
             ended: false,
             launch_failed: false,
             register_sent: registered,
@@ -2146,7 +2153,7 @@ mod tests {
         let _frames = relaycast(link.clone(), sent);
         assert_eq!(
             core.clone().answer_spawn(link, request.clone()).await,
-            wire::action_output("inv_w1", wire::spawned("w1"))
+            wire::action_output("inv_w1", wire::spawned("w1", Some(&core.config.home)))
         );
         assert_eq!(spawner.launched.lock().unwrap().len(), 1);
         assert_eq!(named(&core, "w1"), registration);

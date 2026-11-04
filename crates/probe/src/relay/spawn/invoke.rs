@@ -342,6 +342,7 @@ impl Core {
                 message_id: report_back::first_message_id(&request.invocation_id),
                 session_id: crate::relay::store::random_uuid(),
                 created_ms: Utc::now().timestamp_millis(),
+                worker_cwd: Some(directory.to_string_lossy().into_owned()),
                 ended: false,
                 launch_failed: false,
                 register_sent: false,

@@ -140,6 +140,7 @@ fn restart_finds_only_its_live_host_and_never_adopts_a_reused_pid() {
         message_id: "test-initial".into(),
         session_id: crate::relay::store::random_uuid(),
         created_ms: 0,
+        worker_cwd: None,
         ended: false,
         launch_failed: false,
         register_sent: false,

@@ -4,6 +4,7 @@
 use super::{HarnessId, WIRE_VERSION};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::path::Path;
 
 pub fn action_output(invocation_id: &str, output: Value) -> Value {
     json!({
@@ -107,19 +108,24 @@ pub fn action_failure(invocation_id: &str, failure: &SpawnFailure, details: bool
     })
 }
 
-/// A spawn the harness was seen to take its task in.
-pub fn spawned(name: &str) -> Value {
-    json!({"spawned": true, "ready": true, "name": name})
+/// A spawn the harness was seen to take its task in. `directory` is the
+/// working folder the agent runs in, the request's or the machine default
+/// the node applied in its place: the caller sees where its agent works,
+/// not just that it started. Absent only for a registration from before
+/// the folder was kept.
+pub fn spawned(name: &str, directory: Option<&Path>) -> Value {
+    let mut output = json!({"spawned": true, "ready": true, "name": name});
+    if let Some(directory) = directory {
+        output["worker_cwd"] = Value::String(directory.to_string_lossy().into_owned());
+    }
+    output
 }
 
 /// A live agent whose task was handed over without the harness confirming
 /// it. A retry would start a second agent, so it is still a success.
-pub fn spawned_unconfirmed(name: &str, verification: &str) -> Value {
-    json!({
-        "spawned": true,
-        "ready": true,
-        "name": name,
-        "warning": {
+pub fn spawned_unconfirmed(name: &str, directory: Option<&Path>, verification: &str) -> Value {
+    let mut output = spawned(name, directory);
+    output["warning"] = json!({
             "code": "spawn_task_unconfirmed",
             "verification": verification,
             "message": if verification == "model_start_unconfirmed" {
@@ -127,8 +133,8 @@ pub fn spawned_unconfirmed(name: &str, verification: &str) -> Value {
             } else {
                 format!("agent '{name}' is live and ready and its initial task was handed over, but the harness did not confirm taking it. Do not retry this spawn; message the agent to check.")
             },
-        },
-    })
+    });
+    output
 }
 
 pub fn released(name: &str) -> Value {
