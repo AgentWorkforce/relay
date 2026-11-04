@@ -282,7 +282,9 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
         // Assignment reports keep the first 500 characters: lead with the
         // warning when the original error would push it out.
         error.message =
-          error.message.length + warning.length + 1 > 500 ? `${warning} ${error.message}` : `${error.message} ${warning}`;
+          error.message.length + warning.length + 1 > 500
+            ? `${warning} ${error.message}`
+            : `${error.message} ${warning}`;
       }
       throw error;
     } finally {

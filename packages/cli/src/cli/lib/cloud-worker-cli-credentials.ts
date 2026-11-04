@@ -191,7 +191,7 @@ export async function materializeCliCredentials(input: {
   try {
     body = (await response.json()) as { files?: unknown; skipped?: unknown };
   } catch {
-    throw new Error("The control plane returned an unreadable CLI login response.");
+    throw new Error('The control plane returned an unreadable CLI login response.');
   }
   if (!body || typeof body !== 'object' || !Array.isArray(body.files)) {
     throw new Error('The control plane returned an invalid CLI login response.');
@@ -206,7 +206,9 @@ export async function materializeCliCredentials(input: {
       continue;
     }
     const layout =
-      typeof entry.cli === 'string' && Object.hasOwn(CLI_LAYOUTS, entry.cli) ? CLI_LAYOUTS[entry.cli] : undefined;
+      typeof entry.cli === 'string' && Object.hasOwn(CLI_LAYOUTS, entry.cli)
+        ? CLI_LAYOUTS[entry.cli]
+        : undefined;
     const valid =
       layout !== undefined &&
       typeof entry.credentialId === 'string' &&

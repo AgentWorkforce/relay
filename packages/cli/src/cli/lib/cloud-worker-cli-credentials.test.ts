@@ -345,16 +345,25 @@ describe('cloud worker CLI logins', () => {
       expect(materialized.env.GROK_HOME).toBe(path.join(cliLoginHome(runDir), '.grok'));
       // The list is checked before any request; an unreadable response fails the run.
       expect(cp.calls).toHaveLength(0);
-      const html = vi.fn(async () => new Response('<html>oops</html>', { status: 200 })) as unknown as typeof fetch;
-      await expect(materializeCliCredentials({ worker, credentials, runDir, fetchImpl: html })).rejects.toThrow(
-        /unreadable/
-      );
-      const shapeless = vi.fn(async () => new Response('{"files":"nope"}', { status: 200 })) as unknown as typeof fetch;
-      await expect(materializeCliCredentials({ worker, credentials, runDir, fetchImpl: shapeless })).rejects.toThrow(
-        /invalid/
-      );
-      const proto = controlPlane([{ ...codexFile, cli: '__proto__' }, { ...codexFile, cli: 'toString' }]);
-      expect((await materializeCliCredentials({ worker, credentials, runDir, fetchImpl: proto.fetchImpl })).files).toEqual([]);
+      const html = vi.fn(
+        async () => new Response('<html>oops</html>', { status: 200 })
+      ) as unknown as typeof fetch;
+      await expect(
+        materializeCliCredentials({ worker, credentials, runDir, fetchImpl: html })
+      ).rejects.toThrow(/unreadable/);
+      const shapeless = vi.fn(
+        async () => new Response('{"files":"nope"}', { status: 200 })
+      ) as unknown as typeof fetch;
+      await expect(
+        materializeCliCredentials({ worker, credentials, runDir, fetchImpl: shapeless })
+      ).rejects.toThrow(/invalid/);
+      const proto = controlPlane([
+        { ...codexFile, cli: '__proto__' },
+        { ...codexFile, cli: 'toString' },
+      ]);
+      expect(
+        (await materializeCliCredentials({ worker, credentials, runDir, fetchImpl: proto.fetchImpl })).files
+      ).toEqual([]);
     } finally {
       fs.rmSync(runDir, { recursive: true, force: true });
     }
