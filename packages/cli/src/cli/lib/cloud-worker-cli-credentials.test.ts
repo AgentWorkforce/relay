@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createDefaultAssignmentRunner } from '../commands/cloud-worker.js';
 import {
+  cliLoginHome,
   materializeCliCredentials,
   SUBSCRIPTION_LOGINS_ENV,
   writeBackCliCredentials,
@@ -101,19 +102,19 @@ describe('cloud worker CLI logins', () => {
       );
       expect(cp.calls[0]!.headers.get('authorization')).toBe('Bearer sh_wrk_secret');
       expect(cp.calls[0]!.headers.get('x-cli-credential-ref')).toBe('sh_clicred_ref');
-      expect(materialized.home).toBe(path.join(runDir, '.cli-home'));
+      expect(materialized.home).toBe(cliLoginHome(runDir));
       expect(materialized.env).toEqual({
-        CODEX_HOME: path.join(runDir, '.cli-home', '.codex'),
-        GROK_HOME: path.join(runDir, '.cli-home', '.grok'),
+        CODEX_HOME: path.join(cliLoginHome(runDir), '.codex'),
+        GROK_HOME: path.join(cliLoginHome(runDir), '.grok'),
         [SUBSCRIPTION_LOGINS_ENV]: 'codex,grok',
       });
-      const codexPath = path.join(runDir, '.cli-home', '.codex', 'auth.json');
+      const codexPath = path.join(cliLoginHome(runDir), '.codex', 'auth.json');
       expect(fs.readFileSync(codexPath, 'utf-8')).toBe(CODEX);
       if (posix) {
         expect(fs.statSync(codexPath).mode & 0o777).toBe(0o600);
-        expect(fs.statSync(path.join(runDir, '.cli-home', '.grok', 'auth.json')).mode & 0o777).toBe(0o600);
+        expect(fs.statSync(path.join(cliLoginHome(runDir), '.grok', 'auth.json')).mode & 0o777).toBe(0o600);
         expect(fs.statSync(path.dirname(codexPath)).mode & 0o777).toBe(0o700);
-        expect(fs.statSync(path.join(runDir, '.cli-home')).mode & 0o777).toBe(0o700);
+        expect(fs.statSync(cliLoginHome(runDir)).mode & 0o777).toBe(0o700);
       }
       expect(JSON.stringify(log.mock.calls)).not.toContain('rt-secret');
     } finally {
@@ -139,8 +140,13 @@ describe('cloud worker CLI logins', () => {
         fetchImpl: cp.fetchImpl,
       });
       expect(materialized.files).toEqual([]);
-      expect(materialized.env).toEqual({});
-      expect(fs.existsSync(path.join(runDir, '.cli-home', '.grok'))).toBe(false);
+      // No login mounted: each CLI home is an empty run-scoped dir, never the host's.
+      expect(materialized.env).toEqual({
+        CODEX_HOME: path.join(cliLoginHome(runDir), '.codex'),
+        GROK_HOME: path.join(cliLoginHome(runDir), '.grok'),
+        [SUBSCRIPTION_LOGINS_ENV]: '',
+      });
+      expect(fs.readdirSync(path.join(cliLoginHome(runDir), '.grok'))).toEqual([]);
       expect(fs.existsSync(path.join(runDir, 'etc'))).toBe(false);
     } finally {
       fs.rmSync(runDir, { recursive: true, force: true });
@@ -301,7 +307,7 @@ describe('cloud worker CLI logins', () => {
         signal: new AbortController().signal,
       });
       const runDir = path.join(home, 'cloud-workers', 'runs', 'run_1');
-      expect(seenEnv.CODEX_HOME).toBe(path.join(runDir, '.cli-home', '.codex'));
+      expect(seenEnv.CODEX_HOME).toBe(path.join(cliLoginHome(runDir), '.codex'));
       expect(seenEnv[SUBSCRIPTION_LOGINS_ENV]).toBe('codex');
       expect(fileDuringRun).toBe(CODEX);
       const puts = cp.calls.filter((call) => call.method === 'PUT');
@@ -309,7 +315,7 @@ describe('cloud worker CLI logins', () => {
       expect(JSON.parse(puts[0]!.body!).content).toContain('rt-secret-3');
       expect(result.summary).toBe('Workflow run_1 completed.');
       expect(fs.existsSync(runDir)).toBe(true);
-      expect(fs.existsSync(path.join(runDir, '.cli-home'))).toBe(false);
+      expect(fs.existsSync(cliLoginHome(runDir))).toBe(false);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
@@ -335,7 +341,20 @@ describe('cloud worker CLI logins', () => {
         fetchImpl: malformed.fetchImpl,
       });
       expect(materialized.files.map((file) => file.credentialId)).toEqual(['c-codex']);
-      expect(malformed.calls[0]!.url).toContain('/cli-credentials');
+      expect(materialized.env[SUBSCRIPTION_LOGINS_ENV]).toBe('codex');
+      expect(materialized.env.GROK_HOME).toBe(path.join(cliLoginHome(runDir), '.grok'));
+      // The list is checked before any request; an unreadable response fails the run.
+      expect(cp.calls).toHaveLength(0);
+      const html = vi.fn(async () => new Response('<html>oops</html>', { status: 200 })) as unknown as typeof fetch;
+      await expect(materializeCliCredentials({ worker, credentials, runDir, fetchImpl: html })).rejects.toThrow(
+        /unreadable/
+      );
+      const shapeless = vi.fn(async () => new Response('{"files":"nope"}', { status: 200 })) as unknown as typeof fetch;
+      await expect(materializeCliCredentials({ worker, credentials, runDir, fetchImpl: shapeless })).rejects.toThrow(
+        /invalid/
+      );
+      const proto = controlPlane([{ ...codexFile, cli: '__proto__' }, { ...codexFile, cli: 'toString' }]);
+      expect((await materializeCliCredentials({ worker, credentials, runDir, fetchImpl: proto.fetchImpl })).files).toEqual([]);
     } finally {
       fs.rmSync(runDir, { recursive: true, force: true });
     }
@@ -346,7 +365,7 @@ describe('cloud worker CLI logins', () => {
     const runDir = tmp('cli-creds-');
     const outside = tmp('cli-creds-outside-');
     try {
-      fs.symlinkSync(outside, path.join(runDir, '.cli-home'));
+      fs.symlinkSync(outside, cliLoginHome(runDir));
       const cp = controlPlane([codexFile]);
       const materialized = await materializeCliCredentials({
         worker,
@@ -355,9 +374,10 @@ describe('cloud worker CLI logins', () => {
         fetchImpl: cp.fetchImpl,
       });
       expect(fs.readdirSync(outside)).toEqual([]);
-      expect(fs.lstatSync(path.join(runDir, '.cli-home')).isSymbolicLink()).toBe(false);
+      expect(fs.lstatSync(cliLoginHome(runDir)).isSymbolicLink()).toBe(false);
       expect(fs.readFileSync(materialized.files[0]!.filePath, 'utf-8')).toBe(CODEX);
     } finally {
+      fs.rmSync(cliLoginHome(runDir), { recursive: true, force: true });
       fs.rmSync(runDir, { recursive: true, force: true });
       fs.rmSync(outside, { recursive: true, force: true });
     }
@@ -406,7 +426,7 @@ describe('cloud worker CLI logins', () => {
           signal: new AbortController().signal,
         })
       ).rejects.toThrow(/exited with code 1.*codex login could not be stored/);
-      expect(fs.existsSync(path.join(home, 'cloud-workers', 'runs', 'run_2', '.cli-home'))).toBe(false);
+      expect(fs.existsSync(cliLoginHome(path.join(home, 'cloud-workers', 'runs', 'run_2')))).toBe(false);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

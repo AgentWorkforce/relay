@@ -22,7 +22,9 @@ import {
 import { defaultExit } from '../lib/exit.js';
 import {
   isCliCredentialsPayload,
+  cliLoginHome,
   materializeCliCredentials,
+  removeLoginHome,
   writeBackCliCredentials,
   type MaterializedCliCredentials,
 } from '../lib/cloud-worker-cli-credentials.js';
@@ -276,7 +278,11 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
       // its single-use refresh token), and says so when it could not.
       const failedWriteBacks = await storeRefreshedLogins();
       if (failedWriteBacks.length && error instanceof Error) {
-        error.message = `${error.message} The refreshed ${failedWriteBacks.join(', ')} login could not be stored; sign in again if the next run fails.`;
+        const warning = `The refreshed ${failedWriteBacks.join(', ')} login could not be stored; sign in again if the next run fails.`;
+        // Assignment reports keep the first 500 characters: lead with the
+        // warning when the original error would push it out.
+        error.message =
+          error.message.length + warning.length + 1 > 500 ? `${warning} ${error.message}` : `${error.message} ${warning}`;
       }
       throw error;
     } finally {
@@ -284,8 +290,8 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
       // The login files are removed even when the run directory is kept for
       // debugging, and even when materialisation failed partway.
       if (cliCredentials) {
-        const loginHome = materialized?.home ?? path.join(runDir, '.cli-home');
-        await fsp.rm(loginHome, { recursive: true, force: true }).catch(() => {
+        const loginHome = materialized?.home ?? cliLoginHome(runDir);
+        await removeLoginHome(loginHome).catch(() => {
           deps.error("[cloud-worker] could not remove the run's CLI login directory; delete it manually");
         });
       }

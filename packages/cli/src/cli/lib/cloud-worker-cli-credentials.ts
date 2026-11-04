@@ -106,8 +106,13 @@ function offeredCredentials(credentials: CliCredentialsPayload): Map<string, str
  * symlink planted by the workflow archive) is removed first, so every path
  * below it is created by the worker and no write follows a link.
  */
+export function cliLoginHome(runDir: string): string {
+  // A sibling of the run dir, so no code-archive entry can collide with it.
+  return path.join(path.dirname(runDir), `.${path.basename(runDir)}.cli-home`);
+}
+
 async function freshLoginHome(runDir: string): Promise<string> {
-  const home = path.join(runDir, '.cli-home');
+  const home = cliLoginHome(runDir);
   await fsp.rm(home, { recursive: true, force: true });
   await fsp.mkdir(home, { mode: 0o700 });
   await fsp.chmod(home, 0o700).catch(() => undefined);
@@ -148,7 +153,7 @@ function headers(worker: CloudWorkerRecord, ref: string, json = false): Headers 
 
 /**
  * Fetches the run's subscription logins and writes each auth file 0600 into a
- * 0700 directory under `<runDir>/.cli-home`.
+ * 0700 directory in the run's login dir (a sibling of `runDir`).
  *
  * A file is mounted only when it matches a credential the assignment payload
  * listed, with that credential's CLI and the CLI's own layout; anything else is
@@ -168,6 +173,8 @@ export async function materializeCliCredentials(input: {
   signal?: AbortSignal;
   log?: (...args: unknown[]) => void;
 }): Promise<MaterializedCliCredentials> {
+  // Validate the payload before any request, so a bad list is reported as such.
+  const expected = offeredCredentials(input.credentials);
   const response = await input.fetchImpl(credentialUrl(input.worker, input.credentials.path), {
     method: 'GET',
     headers: headers(input.worker, input.credentials.ref),
@@ -178,21 +185,28 @@ export async function materializeCliCredentials(input: {
   if (!response.ok) {
     throw new Error(`Could not load the run's CLI logins (HTTP ${response.status}).`);
   }
-  const body = (await response.json().catch(() => null)) as {
-    files?: unknown;
-    skipped?: unknown;
-  } | null;
-  const expected = offeredCredentials(input.credentials);
+  // An unreadable response fails the run: starting without the offered login
+  // could silently fall back to inherited credentials.
+  let body: { files?: unknown; skipped?: unknown };
+  try {
+    body = (await response.json()) as { files?: unknown; skipped?: unknown };
+  } catch {
+    throw new Error("The control plane returned an unreadable CLI login response.");
+  }
+  if (!body || typeof body !== 'object' || !Array.isArray(body.files)) {
+    throw new Error('The control plane returned an invalid CLI login response.');
+  }
   const home = await freshLoginHome(input.runDir);
   const env: Record<string, string> = {};
   const files: MaterializedCliCredentials['files'] = [];
-  const entries: Array<Partial<CredentialFile> | null> = Array.isArray(body?.files) ? body.files : [];
+  const entries: Array<Partial<CredentialFile> | null> = body.files;
   for (const entry of entries) {
     if (!entry || typeof entry !== 'object') {
       input.log?.('[cloud-worker] skipping a malformed CLI login entry');
       continue;
     }
-    const layout = typeof entry.cli === 'string' ? CLI_LAYOUTS[entry.cli] : undefined;
+    const layout =
+      typeof entry.cli === 'string' && Object.hasOwn(CLI_LAYOUTS, entry.cli) ? CLI_LAYOUTS[entry.cli] : undefined;
     const valid =
       layout !== undefined &&
       typeof entry.credentialId === 'string' &&
@@ -224,9 +238,17 @@ export async function materializeCliCredentials(input: {
       original: entry.content as string,
     });
   }
-  if (files.length)
-    env[SUBSCRIPTION_LOGINS_ENV] = [...new Set(files.map((file) => file.cli))].sort().join(',');
-  if (Array.isArray(body?.skipped) && body.skipped.length) {
+  // Every CLI home points into the run's login dir, empty when nothing mounted,
+  // so a CLI never falls back to a login on the worker host (or its ~/.codex).
+  for (const layout of Object.values(CLI_LAYOUTS)) {
+    if (layout.homeEnv in env) continue;
+    const directory = path.join(home, layout.directory);
+    await fsp.mkdir(directory, { mode: 0o700 });
+    env[layout.homeEnv] = directory;
+  }
+  // Always set, so an inherited value never claims a login this run lacks.
+  env[SUBSCRIPTION_LOGINS_ENV] = [...new Set(files.map((file) => file.cli))].sort().join(',');
+  if (Array.isArray(body.skipped) && body.skipped.length) {
     input.log?.(`[cloud-worker] ${body.skipped.length} CLI login(s) unavailable for this run`);
   }
   return { env, home, files };
@@ -307,4 +329,26 @@ export async function writeBackCliCredentials(input: {
     }
   }
   return result;
+}
+
+/** Makes a login tree removable again (a workflow may have chmod-ed it) and removes it. */
+export async function removeLoginHome(home: string): Promise<void> {
+  try {
+    await fsp.rm(home, { recursive: true, force: true });
+    return;
+  } catch {
+    // Restore owner permissions and retry once.
+  }
+  const restore = async (target: string): Promise<void> => {
+    const stat = await fsp.lstat(target).catch(() => null);
+    if (!stat || stat.isSymbolicLink()) return;
+    await fsp.chmod(target, stat.isDirectory() ? 0o700 : 0o600).catch(() => undefined);
+    if (stat.isDirectory()) {
+      for (const name of await fsp.readdir(target).catch(() => [] as string[])) {
+        await restore(path.join(target, name));
+      }
+    }
+  };
+  await restore(home);
+  await fsp.rm(home, { recursive: true, force: true });
 }
