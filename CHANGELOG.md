@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- The desktop spawn node asks Agent Relay for the same node id, with an `Idempotency-Key`, on every attempt of a first enrollment, and keeps the alternate name it took, so a lost answer is replayed and a name another node holds is not asked for again.
+- The desktop spawn node asks Agent Relay for the same node id on every attempt of a first enrollment and keeps the alternate name it took, so a name another node holds is not asked for again; a node enrolled whose answer was lost is left behind for a fresh one under the next name.
 - A node token Agent Relay refuses three times in a row stops the spawn node with a status saying so, instead of retrying forever; turning Accept spawns from Agent Relay off and on, or signing in again, enrolls a new node.
 
 ### Breaking Changes

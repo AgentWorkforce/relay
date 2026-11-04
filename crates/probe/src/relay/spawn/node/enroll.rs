@@ -24,7 +24,8 @@ pub(super) enum Refused {
     /// Another node holds the name (`node_name_conflict`).
     NameTaken,
     /// Relaycast has a node under the id asked for a new one, whose token
-    /// nothing here holds (`node_token_proof_required` without proof).
+    /// nothing here holds (`node_token_proof_required` without proof): an
+    /// earlier attempt enrolled it, and the answer with its token was lost.
     IdTaken,
     /// Relaycast no longer takes the node's token as proof of it (401, or
     /// `node_token_proof_required` with the token sent): a rotation it
@@ -61,25 +62,30 @@ fn save_failed(error: std::io::Error) -> Refused {
     ))
 }
 
-/// `POST /v1/nodes` for `node_id` as `name`, replayed by Relaycast under
-/// `key`; with `proof`, a rotation proved by the current token.
+/// `POST /v1/nodes` for `node_id` as `name`; with `rotation`, a rotation
+/// proved by the current token and replayed by Relaycast under its key.
+/// A new node sends neither: Relaycast refuses an `Idempotency-Key`
+/// without the token (`node_rotation_idempotency_requires_current_token`),
+/// as it replays only rotations.
 pub(super) async fn enroll(
     config: &NodeConfig,
     node_id: &str,
     name: &str,
-    key: &str,
-    proof: Option<&Secret>,
+    rotation: Option<(&Secret, &str)>,
 ) -> Result<Enrollment, Refused> {
     let http = sdk_gaps::http(&config.base_url, &config.workspace_key)
         .map_err(|error| Refused::Failed(error.to_string()))?;
     let body = wire::enroll_body(node_id, name, &config.version);
-    let options = RequestOptions {
-        headers: proof
-            .map(|token| vec![("X-Relaycast-Node-Token".into(), token.expose().to_string())]),
+    let proof = rotation.is_some();
+    let options = rotation.map(|(token, key)| RequestOptions {
+        headers: Some(vec![(
+            "X-Relaycast-Node-Token".into(),
+            token.expose().to_string(),
+        )]),
         idempotency_key: Some(key.to_string()),
-    };
+    });
     let data: Value = http
-        .post("/v1/nodes", Some(body), Some(options))
+        .post("/v1/nodes", Some(body), options)
         .await
         .map_err(|error| {
             if let Some(limit) = PlanLimitExceeded::from_relaycast(&error) {
@@ -88,8 +94,8 @@ pub(super) async fn enroll(
             let proof_required = error.code() == Some("node_token_proof_required");
             match error.code() {
                 Some("node_name_conflict") => Refused::NameTaken,
-                _ if proof.is_none() && proof_required => Refused::IdTaken,
-                _ if proof.is_some() && (proof_required || error.status() == Some(401)) => {
+                _ if !proof && proof_required => Refused::IdTaken,
+                _ if proof && (proof_required || error.status() == Some(401)) => {
                     Refused::ProofRefused(format!(
                         "Agent Relay no longer accepts this computer's node token: {error}"
                     ))
@@ -143,12 +149,16 @@ pub(super) async fn enroll_named(
 }
 
 /// A new node, asked for as the `Pending` one saved before its first
-/// `POST /v1/nodes`: the same id and key on every attempt of the series,
-/// so an answer lost is replayed by Relaycast rather than asked for again
-/// under another id, and the name saved is the last one not refused, so a
-/// name another node holds is never asked for again after a failure on its
-/// alternate. A new body (another name, or another id when Relaycast has a
-/// node under this one) takes a new key, saved first, as a rotation's is.
+/// `POST /v1/nodes`: the same id on every attempt of the series, and the
+/// name saved is the last one not refused, so a name another node holds is
+/// never asked for again after a failure on its alternate. Relaycast
+/// replays no first enrollment, so one it completed whose answer was lost
+/// is found as `IdTaken` on the next attempt: that node holds the name
+/// asked for, under a token nothing here has, so a fresh id is asked for
+/// under the next alternate name, as after `NameTaken`. The node left
+/// behind stays offline and harmless; Relaycast (relaycast-cloud, behind a
+/// flag) may later let an offline holder's name be taken over, so the base
+/// name can be asked for again.
 async fn enroll_new(config: &NodeConfig) -> Result<Enrollment, Refused> {
     let path = node_file(config);
     let mut pending = match pending(config) {
@@ -160,20 +170,12 @@ async fn enroll_new(config: &NodeConfig) -> Result<Enrollment, Refused> {
         }
     };
     for _ in 0..=ALTERNATES {
-        match enroll(
-            config,
-            &pending.node_id,
-            &pending.node_name,
-            &pending.key,
-            None,
-        )
-        .await
-        {
-            Err(Refused::NameTaken) => pending.node_name = alternate(&config.node_name),
+        match enroll(config, &pending.node_id, &pending.node_name, None).await {
+            Err(Refused::NameTaken) => {}
             Err(Refused::IdTaken) => pending.node_id = fresh_id(),
             done => return done,
         }
-        pending.key = random_hex(48);
+        pending.node_name = alternate(&config.node_name);
         save_pending(&path, &pending).map_err(save_failed)?;
     }
     // Nothing enrolled to keep: the next start asks for a new node.
@@ -201,8 +203,7 @@ async fn rotate_named(config: &NodeConfig, current: &Enrollment) -> Result<Enrol
             config,
             &pending.node_id,
             &pending.node_name,
-            &key,
-            Some(&pending.token),
+            Some((&pending.token, &key)),
         )
         .await
         {

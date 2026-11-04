@@ -24,17 +24,17 @@ pub(super) struct Enrollment {
 }
 
 /// A node being enrolled for the first time: the id and name it is asked
-/// for and the `Idempotency-Key` of the asking, saved before the first
-/// `POST /v1/nodes` so every attempt of the series asks for the same node
-/// (an answer lost is replayed, a name refused is not asked for again). Not
-/// this computer's node until Relaycast gives its token.
+/// for, saved before the first `POST /v1/nodes` so every attempt of the
+/// series asks for the same node (a name refused is not asked for again).
+/// Not this computer's node until Relaycast gives its token. No
+/// `Idempotency-Key`: Relaycast replays only a rotation, proved by the
+/// current token, and refuses a key without one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Pending {
     pub(super) node_id: String,
     pub(super) node_name: String,
     pub(super) base_url: String,
     pub(super) workspace: String,
-    pub(super) key: String,
 }
 
 /// An id for a node not yet enrolled.
@@ -43,14 +43,13 @@ pub(super) fn fresh_id() -> String {
 }
 
 impl Pending {
-    /// A new node of `name`, under a fresh id and key.
+    /// A new node of `name`, under a fresh id.
     pub(super) fn new(config: &NodeConfig, name: &str) -> Pending {
         Pending {
             node_id: fresh_id(),
             node_name: name.to_string(),
             base_url: config.base_url.clone(),
             workspace: fingerprint(&config.workspace_key),
-            key: random_hex(48),
         }
     }
 }
@@ -69,7 +68,6 @@ struct Record {
     #[serde(rename = "baseURL")]
     base_url: String,
     workspace: String,
-    /// A rotation's `rotation_key`, or a pending node's `key`.
     #[serde(
         rename = "rotationKey",
         default,
@@ -99,7 +97,7 @@ impl From<&Pending> for Record {
             token: None,
             base_url: pending.base_url.clone(),
             workspace: pending.workspace.clone(),
-            rotation_key: Some(pending.key.clone()),
+            rotation_key: None,
         }
     }
 }
@@ -125,7 +123,6 @@ impl Record {
             node_name: self.node_name,
             base_url: self.base_url,
             workspace: self.workspace,
-            key: self.rotation_key?,
         })
     }
 }

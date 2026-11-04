@@ -36,6 +36,13 @@ impl Scripted {
 
     /// Answers one request with `(status, body)`.
     async fn answer(&self, (status, body): (&str, &str)) -> String {
+        let reply = (status.to_string(), body.to_string());
+        self.answer_with(move |_| reply).await
+    }
+
+    /// Answers one request as `reply` says for it (lower case, with its
+    /// body).
+    async fn answer_with(&self, reply: impl FnOnce(&str) -> (String, String)) -> String {
         let (mut stream, _) = self.listener.accept().await.unwrap();
         let mut request = Vec::new();
         let mut buffer = [0_u8; 4096];
@@ -57,13 +64,34 @@ impl Scripted {
             }
             request.extend_from_slice(&buffer[..read]);
         }
+        let request = String::from_utf8_lossy(&request).to_lowercase();
+        let (status, body) = reply(&request);
         let reply = format!(
             "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
         stream.write_all(reply.as_bytes()).await.unwrap();
         stream.shutdown().await.ok();
-        String::from_utf8_lossy(&request).to_lowercase()
+        request
+    }
+}
+
+/// Relaycast's answer to a `POST /v1/nodes`: `Idempotency-Key` without the
+/// node token is refused before anything is looked up (it replays only
+/// rotations); otherwise `enrolled`.
+fn keyed_without_proof_refused(
+    (status, body): (&str, &str),
+) -> impl FnOnce(&str) -> (String, String) {
+    let enrolled = (status.to_string(), body.to_string());
+    move |request| {
+        if request.contains("idempotency-key:") && !request.contains("x-relaycast-node-token:") {
+            (
+                "400 Bad Request".to_string(),
+                r#"{"ok":false,"error":{"code":"node_rotation_idempotency_requires_current_token","message":"Idempotency-Key requires X-Relaycast-Node-Token"}}"#.to_string(),
+            )
+        } else {
+            enrolled
+        }
     }
 }
 
@@ -317,11 +345,12 @@ const PROOF_REQUIRED: (&str, &str) = (
     r#"{"ok":false,"error":{"code":"node_token_proof_required","message":"Node token changed before enrollment completed; retry with the current node token"}}"#,
 );
 
-/// A first enrollment asks for the same node on every attempt: its id and
-/// key are saved before the first `POST`, so one whose answer was lost is
-/// replayed by Relaycast rather than asked for again under another id.
+/// A first enrollment asks for the same node on every attempt: its id is
+/// saved before the first `POST`, so a failure does not have the next
+/// attempt ask for another. Without an `Idempotency-Key`: Relaycast
+/// replays only rotations, and refuses a key sent without the token.
 #[tokio::test]
-async fn a_first_enrollment_asks_for_the_same_node_under_the_same_key_until_answered() {
+async fn a_first_enrollment_asks_for_the_same_node_without_a_key_until_answered() {
     let folder = tempfile::tempdir().unwrap();
     let relaycast = Scripted::new().await;
     let config = config(&relaycast.base_url, folder.path());
@@ -335,32 +364,77 @@ async fn a_first_enrollment_asks_for_the_same_node_under_the_same_key_until_answ
         "{}",
         asked.node_id
     );
-    assert_eq!(
-        idempotency_key(&request).as_deref(),
-        Some(asked.key.as_str())
-    );
-    assert_eq!(asked.key.len(), 48);
-    // A new node: no proof of a node it does not have.
+    // A new node: no proof of a node it does not have, and no key.
     assert!(!request.contains("x-relaycast-node-token"));
+    assert_eq!(idempotency_key(&request), None);
     // Not this computer's node yet: nothing is sent as it, and nothing is
     // asked of Relaycast for it.
     assert_eq!(load(&config), None);
     assert_eq!(read(&config), None);
     assert_eq!(saved(&config).await, Ok(None));
-    let (second, replayed) = tokio::join!(
+    let (second, again) = tokio::join!(
         enroll_named(&config, None),
         relaycast.answer((
             "201 Created",
             r#"{"ok":true,"data":{"id":"node_desktop_new","token":"nt_live_new"}}"#,
         ))
     );
-    assert_eq!(body(&replayed)["node_id"], asked.node_id.as_str());
-    assert_eq!(idempotency_key(&replayed), idempotency_key(&request));
+    assert_eq!(body(&again)["node_id"], asked.node_id.as_str());
+    assert_eq!(idempotency_key(&again), None);
+    assert!(!again.contains("x-relaycast-node-token"));
     let enrolled = second.unwrap();
     assert_eq!(enrolled.node_id, "node_desktop_new");
     assert_eq!(enrolled.token, Secret::new("nt_live_new".to_string()));
-    assert_eq!(load(&config), Some(enrolled));
+    assert_eq!(load(&config), Some(enrolled.clone()));
     assert_eq!(pending(&config), None);
+    // A rotation of it is proved by the token and keyed, as before.
+    let (rotated, rotation) = tokio::join!(
+        rotate(&config, &enrolled),
+        relaycast.answer((
+            "201 Created",
+            r#"{"ok":true,"data":{"id":"node_desktop_new","token":"nt_live_y"}}"#,
+        ))
+    );
+    assert!(rotated.is_ok(), "{rotated:?}");
+    assert!(rotation.contains("x-relaycast-node-token: nt_live_new"));
+    assert!(idempotency_key(&rotation).is_some_and(|key| key.len() == 48));
+}
+
+/// The client never sends what Relaycast refuses before any lookup: a key
+/// without the token. A Relaycast that refuses that enrolls the node, and
+/// rotates it, as asked.
+#[tokio::test]
+async fn a_key_is_never_sent_without_the_token_relaycast_requires_for_it() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let config = config(&relaycast.base_url, folder.path());
+    let (enrolled, requests) = tokio::join!(enroll_named(&config, None), async {
+        vec![
+            relaycast
+                .answer_with(keyed_without_proof_refused(CONFLICT))
+                .await,
+            relaycast
+                .answer_with(keyed_without_proof_refused(ENROLLED))
+                .await,
+        ]
+    });
+    let enrolled = enrolled.expect("enrolled, not refused for a key");
+    assert_eq!(enrolled.node_id, "node_desktop_new");
+    assert!(named_for(&enrolled.node_name, "mac-desktop"));
+    for request in &requests {
+        assert_eq!(idempotency_key(request), None, "{request}");
+    }
+    const ROTATED: (&str, &str) = (
+        "201 Created",
+        r#"{"ok":true,"data":{"id":"node_desktop_new","token":"nt_live_y"}}"#,
+    );
+    let (rotated, rotation) = tokio::join!(
+        rotate(&config, &enrolled),
+        relaycast.answer_with(keyed_without_proof_refused(ROTATED))
+    );
+    assert_eq!(rotated.unwrap().token, Secret::new("nt_live_y".to_string()));
+    assert!(rotation.contains("x-relaycast-node-token: nt_live_new"));
+    assert!(idempotency_key(&rotation).is_some());
 }
 
 /// A name refused is not asked for again in the series: the alternate is
@@ -382,29 +456,30 @@ async fn a_name_another_node_holds_is_not_asked_for_again_after_a_failure_on_its
     let alternate = body(&requests[1])["name"].as_str().unwrap().to_string();
     assert!(named_for(&alternate, "mac-desktop") && alternate != "mac-desktop");
     assert_eq!(asked.node_name, alternate);
-    // The same node under each name, with another key for the other body.
+    // The same node under each name; a new node is never keyed.
     assert_eq!(body(&requests[0])["node_id"], asked.node_id.as_str());
     assert_eq!(body(&requests[1])["node_id"], asked.node_id.as_str());
-    assert_ne!(idempotency_key(&requests[0]), idempotency_key(&requests[1]));
-    assert_eq!(
-        idempotency_key(&requests[1]).as_deref(),
-        Some(asked.key.as_str())
-    );
-    let (second, replayed) = tokio::join!(enroll_named(&config, None), relaycast.answer(ENROLLED));
-    assert_eq!(body(&replayed)["name"], alternate.as_str());
-    assert_eq!(body(&replayed)["node_id"], asked.node_id.as_str());
-    assert_eq!(idempotency_key(&replayed), idempotency_key(&requests[1]));
+    assert!(requests.iter().all(|r| idempotency_key(r).is_none()));
+    let (second, again) = tokio::join!(enroll_named(&config, None), relaycast.answer(ENROLLED));
+    assert_eq!(body(&again)["name"], alternate.as_str());
+    assert_eq!(body(&again)["node_id"], asked.node_id.as_str());
+    assert_eq!(idempotency_key(&again), None);
     assert_eq!(second.unwrap().node_name, alternate);
 }
 
 /// An id Relaycast already has a node under, whose token nothing here holds
-/// (a first enrollment it completed whose answer was lost past its replay):
-/// a new id is asked for, rather than that one forever.
+/// (a first enrollment it completed whose answer was lost): that node holds
+/// the name asked for too, so a fresh id is asked for under the next
+/// alternate name, rather than that id forever or that name again.
 #[tokio::test]
-async fn an_id_relaycast_has_a_node_under_is_replaced_for_a_new_node() {
+async fn an_id_relaycast_has_a_node_under_is_replaced_under_the_next_name() {
     let folder = tempfile::tempdir().unwrap();
     let relaycast = Scripted::new().await;
     let config = config(&relaycast.base_url, folder.path());
+    let (first, request) = tokio::join!(enroll_named(&config, None), relaycast.answer(LOST));
+    assert!(first.is_err());
+    let asked = pending(&config).unwrap();
+    assert_eq!(body(&request)["name"], "mac-desktop");
     let (enrolled, requests) = tokio::join!(enroll_named(&config, None), async {
         vec![
             relaycast.answer(PROOF_REQUIRED).await,
@@ -412,10 +487,20 @@ async fn an_id_relaycast_has_a_node_under_is_replaced_for_a_new_node() {
         ]
     });
     assert_eq!(enrolled.unwrap().node_id, "node_desktop_new");
-    assert_ne!(body(&requests[0])["node_id"], body(&requests[1])["node_id"]);
-    assert_eq!(body(&requests[1])["name"], "mac-desktop");
-    assert_ne!(idempotency_key(&requests[0]), idempotency_key(&requests[1]));
+    // The lost answer's node, asked for again, then a fresh one beside it.
+    assert_eq!(body(&requests[0])["node_id"], asked.node_id.as_str());
+    assert_eq!(body(&requests[0])["name"], "mac-desktop");
+    let fresh = body(&requests[1])["node_id"].as_str().unwrap().to_string();
+    assert_ne!(fresh, asked.node_id);
+    assert!(fresh.starts_with("node_desktop_"), "{fresh}");
+    let next = body(&requests[1])["name"].as_str().unwrap().to_string();
+    assert!(
+        named_for(&next, "mac-desktop") && next != "mac-desktop",
+        "{next}"
+    );
     assert!(!requests[1].contains("x-relaycast-node-token"));
+    assert_eq!(idempotency_key(&requests[1]), None);
+    assert_eq!(load(&config).unwrap().node_name, next);
 }
 
 /// A pending node of another workspace, origin or name is not the one asked

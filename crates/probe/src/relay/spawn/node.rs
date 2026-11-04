@@ -706,7 +706,6 @@ mod tests {
         let written: serde_json::Value =
             serde_json::from_slice(&std::fs::read(node_file(&config)).unwrap()).unwrap();
         assert_eq!(written["nodeID"], asked.node_id.as_str());
-        assert_eq!(written["rotationKey"], asked.key.as_str());
         assert!(written.get("token").is_none(), "{written}");
         // Forgotten, with or without a file to forget.
         forget(&node_file(&config)).unwrap();
