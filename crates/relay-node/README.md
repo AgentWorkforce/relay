@@ -58,6 +58,13 @@ CLI selects (`src/relay/workspace/cli.rs`), with no sign-in needed.
 
 ## Build and test
 
+Claude Code terminal sessions can receive the verified owner's mobile messages
+as native user turns through Relay's plugin. SDK and pipe-driven sessions,
+including app-hosted chats, keep their ordinary peer inbox instead: their host
+owns the input and interrupt lifecycle. Turning mobile continuation on does not
+replace that inbox. A native submission refused after Stop or by a host limit
+is reported without automatic replay; unknown outcomes are never resubmitted.
+
 ```sh
 cargo build --manifest-path crates/relay-node/Cargo.toml --locked
 cargo build --manifest-path crates/relay-node/Cargo.toml --locked --release --bin agent-relay-node

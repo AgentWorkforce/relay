@@ -419,3 +419,35 @@ fn an_open_doorbell_keeps_a_message_waiting_through_a_long_turn() {
         Some(Outcome::Unavailable)
     );
 }
+
+#[test]
+fn recognized_provider_refusals_survive_restart_without_replay_or_control() {
+    for reason in [
+        Refusal::Stopped,
+        Refusal::HostEnded,
+        Refusal::TurnLimit,
+        Refusal::BudgetLimit,
+    ] {
+        let mut queue = Journal::default();
+        queue
+            .enqueue(binding(), "delivery", "private message", 0)
+            .unwrap();
+        let submit = queue.poll(&binding(), &runtime(false), 1).unwrap();
+        let id = queue
+            .ack(&binding(), &runtime(false), lease(&submit), false, 2)
+            .unwrap();
+        queue.record_refusal(&id, reason);
+        assert!(!queue.confirmed_active_runtime(&binding(), &runtime(false)));
+        let bytes = serde_json::to_vec(&queue).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("private message"));
+        let mut restored: Journal = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            restored
+                .enqueue(binding(), "delivery", "private message", 3)
+                .unwrap(),
+            Outcome::Refused(reason)
+        );
+        assert_eq!(restored.notice(&binding().scope), reason.notice());
+        assert!(restored.poll(&binding(), &runtime(false), 4).is_none());
+    }
+}

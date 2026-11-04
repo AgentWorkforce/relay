@@ -23,6 +23,41 @@ fn supported(version: &str) -> bool {
     matches!(numbers.as_slice(), [Ok(2), Ok(1), Ok(patch)] if *patch >= 310)
 }
 
+fn acknowledgement(
+    fields: &Map<String, Value>,
+) -> Result<(&str, bool, Option<crate::relay::mobile_handoff::Refusal>), OutboundError> {
+    if !(2..=3).contains(&fields.len())
+        || fields
+            .keys()
+            .any(|key| !matches!(key.as_str(), "lease_id" | "outcome" | "refusal"))
+    {
+        return Err(error(
+            "Use lease_id, outcome and an optional refusal code only.",
+        ));
+    }
+    let lease = fields
+        .get("lease_id")
+        .and_then(Value::as_str)
+        .filter(|value| crate::relay::store::is_uuid(value))
+        .ok_or_else(|| error("The mobile handoff lease is invalid."))?;
+    let started = match fields.get("outcome").and_then(Value::as_str) {
+        Some("started") => true,
+        Some("failed") => false,
+        _ => return Err(error("The mobile handoff outcome is invalid.")),
+    };
+    let refusal = fields
+        .get("refusal")
+        .map(|value| {
+            serde_json::from_value::<crate::relay::mobile_handoff::Refusal>(value.clone())
+                .map_err(|_| error("The mobile handoff refusal code is invalid."))
+        })
+        .transpose()?;
+    if started && refusal.is_some() {
+        return Err(error("A started submission cannot carry a refusal code."));
+    }
+    Ok((lease, started, refusal))
+}
+
 impl Outbound {
     pub(super) async fn mobile_handoff_route(
         &self,
@@ -114,8 +149,12 @@ impl Outbound {
             self.core.mobile_handoff_changed(&registration);
         }
         match action {
-            Some(action) => serde_json::to_value(action)
-                .map_err(|_| error("Could not encode the mobile handoff action.")),
+            Some(action) => {
+                let mut value = serde_json::to_value(action)
+                    .map_err(|_| error("Could not encode the mobile handoff action."))?;
+                value["refusal_codes"] = json!(true);
+                Ok(value)
+            }
             // Queued while Claude works: the plugin asks again when its turn
             // completes rather than on a timer.
             None if waiting => Ok(json!({"action": null, "waiting": true})),
@@ -193,19 +232,7 @@ impl Outbound {
         uid: u32,
         fields: &Map<String, Value>,
     ) -> Result<Value, OutboundError> {
-        if fields.len() != 2 {
-            return Err(error("Use lease_id and outcome only."));
-        }
-        let lease = fields
-            .get("lease_id")
-            .and_then(Value::as_str)
-            .filter(|value| crate::relay::store::is_uuid(value))
-            .ok_or_else(|| error("The mobile handoff lease is invalid."))?;
-        let started = match fields.get("outcome").and_then(Value::as_str) {
-            Some("started") => true,
-            Some("failed") => false,
-            _ => return Err(error("The mobile handoff outcome is invalid.")),
-        };
+        let (lease, started, refusal) = acknowledgement(fields)?;
         let (_, registration, _) = self.authorize(pid, uid).await?;
         let runtime = self.mobile_runtime(&registration.target, pid).await?;
         let binding = self
@@ -216,13 +243,17 @@ impl Outbound {
                 error("Mobile handoff is off or the signed-in machine owner could not be verified.")
             })?;
         let settled = journal::edit(&self.core.config.app_data_dir, |queue| {
-            Ok(queue.ack(
+            let settled = queue.ack(
                 &binding,
                 &runtime,
                 lease,
                 started,
                 crate::relay::state::now_ms(),
-            ))
+            );
+            if let (Some(delivery_id), Some(reason)) = (&settled, refusal) {
+                queue.record_refusal(delivery_id, reason);
+            }
+            Ok(settled)
         })
         .map_err(error)?;
         let Some(delivery_id) = settled else {
@@ -253,7 +284,38 @@ impl Outbound {
 
 #[cfg(test)]
 mod tests {
-    use super::supported;
+    use super::{acknowledgement, supported};
+    use crate::relay::mobile_handoff::Refusal;
+    use serde_json::json;
+
+    #[test]
+    fn native_ack_accepts_only_safe_failure_codes_and_legacy_success() {
+        let lease = "00000000-0000-4000-8000-000000000001";
+        for (fields, expected) in [
+            (json!({"lease_id":lease,"outcome":"started"}), (true, None)),
+            (json!({"lease_id":lease,"outcome":"failed"}), (false, None)),
+            (
+                json!({"lease_id":lease,"outcome":"failed","refusal":"stopped"}),
+                (false, Some(Refusal::Stopped)),
+            ),
+            (
+                json!({"lease_id":lease,"outcome":"failed","refusal":"host_ended"}),
+                (false, Some(Refusal::HostEnded)),
+            ),
+        ] {
+            let parsed = acknowledgement(fields.as_object().unwrap()).unwrap();
+            assert_eq!(parsed, (lease, expected.0, expected.1));
+        }
+        for fields in [
+            json!({"lease_id":lease,"outcome":"failed","refusal":"raw error /private/path"}),
+            json!({"lease_id":lease,"outcome":"started","refusal":"stopped"}),
+            json!({"lease_id":lease,"outcome":"failed","text":"raw error"}),
+            json!({"lease_id":"forged","outcome":"failed","refusal":"stopped"}),
+            json!({"lease_id":lease,"outcome":"failed","refusal":null}),
+        ] {
+            assert!(acknowledgement(fields.as_object().unwrap()).is_err());
+        }
+    }
     #[test]
     fn native_api_version_requires_proven_release_series() {
         for version in [

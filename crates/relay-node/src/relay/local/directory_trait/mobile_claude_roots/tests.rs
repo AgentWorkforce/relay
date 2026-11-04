@@ -37,6 +37,7 @@ fn processes(pids: &[i32]) -> FakeProcesses {
             *pid,
             FakeProcess {
                 start: 123,
+                arguments: vec!["claude".into()],
                 ..Default::default()
             },
         );
@@ -101,4 +102,54 @@ fn unreadable_live_record_suspends_attribution_but_dead_record_does_not() {
         read(&config, &processes(&[42])),
         [(Target::new(SessionKind::ClaudeTerminal, SESSION), a)].into()
     );
+}
+
+#[test]
+fn sdk_host_keeps_its_inbox_but_never_advertises_native_mobile_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("login");
+    let b = dir.path().join("unused");
+    record(&a, 42, 123);
+    let config = config(&a, &b);
+    let table = processes(&[42]);
+    assert_eq!(read(&config, &table).len(), 1);
+    for arguments in [
+        vec!["claude", "--input-format", "stream-json"],
+        vec!["claude", "--input-format=stream-json"],
+        vec!["claude", "-p", "hello"],
+        vec!["claude", "--print"],
+        vec![],
+    ] {
+        table
+            .processes
+            .lock()
+            .unwrap()
+            .get_mut(&42)
+            .unwrap()
+            .arguments = arguments.iter().map(|arg| (*arg).into()).collect();
+        assert!(read(&config, &table).is_empty(), "{arguments:?}");
+        assert_eq!(
+            claude::registry(&config, &table).sessions.len(),
+            1,
+            "excluding native capability must not remove the peer inbox"
+        );
+    }
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&42)
+        .unwrap()
+        .arguments = vec!["claude".into()];
+    let path = a.join("sessions/42.json");
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for entrypoint in ["sdk-cli", "sdk-ts", "sdk"] {
+        value["entrypoint"] = json!(entrypoint);
+        std::fs::write(&path, value.to_string()).unwrap();
+        assert!(read(&config, &table).is_empty(), "{entrypoint}");
+    }
+    value["entrypoint"] = json!("cli");
+    std::fs::write(&path, value.to_string()).unwrap();
+    assert_eq!(read(&config, &table).len(), 1);
 }

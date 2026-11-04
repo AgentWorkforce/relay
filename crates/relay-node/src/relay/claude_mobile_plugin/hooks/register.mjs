@@ -24,6 +24,19 @@ const PERMISSION_WAIT_MS = 300000;
 // comfortably below the core's 96 KiB limit, including the visible notice.
 const MAX_ANSWER_UNITS = 24000;
 
+// Do not forward arbitrary hook text to other devices. These are provider
+// refusals, not transport failures, and none makes a submission retryable.
+function refusalCode(reason) {
+  switch (reason) {
+    case "the session was stopped and nobody has sent input since":
+    case "the prompt was removed from the queue before it ran": return "stopped";
+    case "the host has ended its input": return "host_ended";
+    case "the run reached its --max-turns limit": return "turn_limit";
+    case "the run is past its --max-budget-usd limit": return "budget_limit";
+    default: return undefined;
+  }
+}
+
 function mobileAnswer(text) {
   if (text.length <= MAX_ANSWER_UNITS) return text;
   let end = MAX_ANSWER_UNITS;
@@ -205,10 +218,15 @@ async function tick($) {
       } else if (forward) {
         controlToken = action.control_token;
       }
-      await request($, "ack", {
+      const acknowledgement = {
         lease_id: action.lease_id,
         outcome: admitted?.drop === undefined ? "started" : "failed",
-      });
+      };
+      const refusal = refusalCode(admitted?.drop);
+      // Older cores accept exactly two fields. Negotiate diagnostics on
+      // each action so a plugin upgrade or rollback cannot lose its ack.
+      if (action.refusal_codes === true && refusal) acknowledgement.refusal = refusal;
+      await request($, "ack", acknowledgement);
     } finally {
       confirming = false;
     }

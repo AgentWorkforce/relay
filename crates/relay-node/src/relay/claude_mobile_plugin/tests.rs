@@ -324,25 +324,35 @@ fn native_config_root_resolution_rejects_duplicate_session_ids() {
     let temp = tempfile::tempdir().unwrap();
     let config = crate::relay::claude::ClaudeConfig::resolve(&|_| None, temp.path(), &[]);
     let mut session = crate::relay::claude::TerminalSession::decode(br#"{"sessionId":"00000000-0000-4000-8000-000000000001","pid":123,"messagingSocketPath":"/tmp/claude.sock","kind":"interactive"}"#).unwrap();
+    let table = crate::relay::process::FakeProcesses::default();
+    for pid in [123, 124] {
+        table.insert(
+            pid,
+            crate::relay::process::FakeProcess {
+                arguments: vec!["claude".into()],
+                ..Default::default()
+            },
+        );
+    }
     let target = crate::relay::store::Target::new(
         crate::relay::store::SessionKind::ClaudeTerminal,
         &session.session_id,
     );
     assert_eq!(
-        session_roots(&config, &[session.clone()])[&target],
+        session_roots(&config, &[session.clone()], &table)[&target],
         config.home
     );
     session.registry = Some(temp.path().join("work/sessions"));
     assert_eq!(
-        session_roots(&config, &[session.clone()])[&target],
+        session_roots(&config, &[session.clone()], &table)[&target],
         temp.path().join("work")
     );
     let mut duplicate = session.clone();
     duplicate.pid = 124;
     duplicate.registry = None;
-    assert!(session_roots(&config, &[session.clone(), duplicate]).is_empty());
+    assert!(session_roots(&config, &[session.clone(), duplicate], &table).is_empty());
     session.kind = Some("unknown".into());
-    assert!(session_roots(&config, &[session]).is_empty());
+    assert!(session_roots(&config, &[session], &table).is_empty());
 }
 
 #[test]

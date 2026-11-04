@@ -50,7 +50,7 @@ pub(super) fn read(config: &ClaudeConfig, table: &dyn ProcessTable) -> BTreeMap<
             }
         }
     }
-    crate::relay::claude_mobile_plugin::session_roots(config, &sessions)
+    crate::relay::claude_mobile_plugin::session_roots(config, &sessions, table)
 }
 
 #[cfg(test)]

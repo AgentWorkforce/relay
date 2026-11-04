@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Major]
 
+### Fixed
+
+- Claude sessions hosted by apps keep receiving inbox messages when mobile continuation is enabled; SDK and pipe-driven sessions no longer enter the terminal's native mobile route. Native submission refusals explain stopped sessions and host limits without retrying uncertain or refused input.
+
 ### Changed
 
 - The core is now `agent-relay-node`: `relay init` installs it from `relay-node-v<version>` releases, and `AGENT_RELAY_NODE_PATH` points at a binary of your own.
