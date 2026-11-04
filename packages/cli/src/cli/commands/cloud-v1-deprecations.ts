@@ -93,7 +93,7 @@ function deprecateV1RunSelector(cloudCommand: Command, overrides: Partial<Deprec
  * Deprecate the local relayflows v1 workflow runner.
  *
  * `agent-relay node workflow run|logs|sync` executes through `@relayflows/cli`
- * 1.0.1 — the v1 engine — and relayflows v2 covers all three. Unlike the cloud
+ * 1.1.x — the v1 engine — and relayflows v2 covers all three. Unlike the cloud
  * group there is no dual-engine ambiguity here, so these are hidden as well as
  * warned: the replacements are real and the v1 runner should stop being
  * discovered by new users.
