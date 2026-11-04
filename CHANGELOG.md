@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [15.1.1] - 2026-11-03
 
 ### Fixed
-
+- `agent-relay-probe`: beside a self-hosted site the uploader accepts the https RelayHistory origin that site's control plane names (production still accepts only `history.agentrelay.com`), so a Desktop built for that site uploads sessions to it.
 - `agent-relay-probe`: every build accepts an `ar_ws_…` workspace key from Cloud's workspace resolve, not only the `relay-cli` build, so a Desktop signs in to a self-hosted Relaycast on durable actors.
 
 - GitLab event listeners work in both npm and standalone Relay 15.1 installs.

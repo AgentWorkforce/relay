@@ -693,14 +693,34 @@ pub fn site_origin_with(built_in: &str, site: &str) -> Result<String> {
 /// raw value: a trailing slash survives the checks below and would then be
 /// concatenated into request paths as `//v1/...`.
 pub fn history_origin(raw: &str, site: &str) -> Result<String> {
+    history_origin_for(raw, site, crate::relay::links::DEFAULT_SITE_URL)
+}
+
+/// [`history_origin`] with the production site named: beside a loopback
+/// site, loopback http; beside production, `https://history.agentrelay.com`
+/// alone; beside any other site, the one this build was made for, the
+/// https origin on a DNS name that its control plane hands out, since that
+/// deployment owns its RelayHistory as production owns its own. Never an
+/// address, a port or plain http off loopback.
+pub fn history_origin_for(raw: &str, site: &str, production_site: &str) -> Result<String> {
     let url = Url::parse(raw.trim())?;
-    let local = is_loopback_origin(&Url::parse(site.trim())?);
+    let site_url = Url::parse(site.trim())?;
+    let local = is_loopback_origin(&site_url);
+    let production = site_origin(site).ok().as_deref() == Some(production_site);
+    let named_host = url.scheme() == "https"
+        && url.port().is_none()
+        && url
+            .host_str()
+            .is_some_and(|host| host.contains('.') && !host.ends_with('.'))
+        && !is_loopback_origin(&url)
+        && !matches!(
+            url.host(),
+            Some(url::Host::Ipv4(_)) | Some(url::Host::Ipv6(_))
+        );
     anyhow::ensure!(
         (local && is_loopback_origin(&url) && url.scheme() == "http")
-            || (!local
-                && url.scheme() == "https"
-                && url.host_str() == Some(PRODUCTION_HISTORY_HOST)
-                && url.port().is_none()),
+            || (!local && named_host && url.host_str() == Some(PRODUCTION_HISTORY_HOST))
+            || (!local && !production && named_host),
         "untrusted history origin"
     );
     history_url_origin(url)
@@ -2206,6 +2226,42 @@ pub(crate) mod tests {
         .is_err());
         assert!(history_origin("https://history.agentrelay.com", "http://127.0.0.1:3100").is_err());
         assert!(history_origin("http://127.0.0.1:3102", "https://agentrelay.com").is_err());
+        // Beside production only production's history host; beside a self-hosted site, the
+        // https DNS name its control plane hands out, and nothing looser.
+        assert!(history_origin(
+            "https://history.gcp-proof.agentrelay.com",
+            "https://agentrelay.com"
+        )
+        .is_err());
+        assert_eq!(
+            history_origin(
+                "https://history.gcp-proof.agentrelay.com/",
+                "https://gcp-proof.agentrelay.com"
+            )
+            .unwrap(),
+            "https://history.gcp-proof.agentrelay.com"
+        );
+        assert_eq!(
+            history_origin(
+                "https://history.agentrelay.com",
+                "https://gcp-proof.agentrelay.com"
+            )
+            .unwrap(),
+            "https://history.agentrelay.com"
+        );
+        for raw in [
+            "http://history.gcp-proof.agentrelay.com",
+            "https://history.gcp-proof.agentrelay.com:8443",
+            "https://10.0.0.5",
+            "https://[::1]",
+            "https://history",
+            "https://127.0.0.1",
+        ] {
+            assert!(
+                history_origin(raw, "https://gcp-proof.agentrelay.com").is_err(),
+                "{raw}"
+            );
+        }
         assert_eq!(
             history_origin("http://127.0.0.1:3102", "http://127.0.0.1:3100").unwrap(),
             "http://127.0.0.1:3102"
