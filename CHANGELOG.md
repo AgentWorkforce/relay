@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Major]
 
+### Added
+
+- `agent-relay cloud worker` mounts the workspace's Codex and Grok subscription logins for a run when the control plane offers them (`cliCredentials` in the assignment): each auth file is written 0600 under the run's private directory as `$CODEX_HOME/auth.json` / `$GROK_HOME/auth.json`, a file the CLI refreshed during the run is written back, and the files are removed after the run.
+
 ### Changed
 
 - The core (`agent-relay-probe`) talks to one Agent Relay site, fixed when it is built: `AGENT_RELAY_SITE_URL` at build time (`https://agentrelay.com` when unset; an https origin, or `http://localhost[:port]` / `http://127.0.0.1[:port]`), and a build for a site the core could not trust fails to build. Nothing changes the site at run time, in any build.

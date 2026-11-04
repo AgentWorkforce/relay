@@ -25,7 +25,7 @@ import {
   materializeCliCredentials,
   writeBackCliCredentials,
   type MaterializedCliCredentials,
-} from './cloud-worker-cli-credentials.js';
+} from '../lib/cloud-worker-cli-credentials.js';
 
 type ExitFn = (code: number) => never;
 
@@ -229,6 +229,7 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
     const keepRunDir = deps.env.AGENT_RELAY_WORKER_KEEP_RUN_DIR === '1';
     const cliCredentials = isCliCredentialsPayload(payload.cliCredentials) ? payload.cliCredentials : null;
     let materialized: MaterializedCliCredentials | null = null;
+    let writeBackDone = false;
     try {
       await fsp.mkdir(runDir, { recursive: true, mode: 0o700 });
       await fsp.chmod(runDir, 0o700).catch(() => undefined);
@@ -262,24 +263,39 @@ export function createDefaultAssignmentRunner(deps: CloudWorkerDependencies): Ex
         throw new Error(`Workflow runner exited with code ${result.exitCode}`);
       }
 
+      const failedWriteBacks = await storeRefreshedLogins();
       return {
         exitCode: result.exitCode,
         durationMs: result.durationMs,
-        summary: `Workflow ${payload.runId} completed.`,
+        summary: failedWriteBacks.length
+          ? `Workflow ${payload.runId} completed. The refreshed ${failedWriteBacks.join(', ')} login could not be stored; sign in again if the next run fails.`
+          : `Workflow ${payload.runId} completed.`,
       };
     } finally {
-      if (cliCredentials && materialized?.files.length) {
-        await writeBackCliCredentials({
-          worker,
-          credentials: cliCredentials,
-          materialized,
-          fetchImpl: deps.fetchImpl,
-          log: deps.log,
-        }).catch(() => undefined);
+      // A failed or cancelled run still stores a refreshed login (Grok rotates
+      // its single-use refresh token), then the login files are removed even
+      // when the run directory is kept for debugging.
+      await storeRefreshedLogins();
+      if (materialized) {
+        await fsp.rm(materialized.home, { recursive: true, force: true }).catch(() => undefined);
       }
       if (!keepRunDir) {
         await fsp.rm(runDir, { recursive: true, force: true }).catch(() => undefined);
       }
+    }
+
+    /** Writes back refreshed logins once; returns the CLIs whose login could not be stored. */
+    async function storeRefreshedLogins(): Promise<string[]> {
+      if (!cliCredentials || !materialized?.files.length || writeBackDone) return [];
+      writeBackDone = true;
+      const outcome = await writeBackCliCredentials({
+        worker,
+        credentials: cliCredentials,
+        materialized,
+        fetchImpl: deps.fetchImpl,
+        log: deps.log,
+      }).catch(() => ({ written: 0, failed: materialized?.files ?? [] }));
+      return outcome.failed.map((file) => file.cli);
     }
   };
 }
