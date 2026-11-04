@@ -56,7 +56,10 @@ function credentialUrl(worker: CloudWorkerRecord, template: string, suffix = '')
   const relative = template.replace('{workerId}', encodeURIComponent(worker.workerId));
   // Only same-origin, relative API paths: the reference is never sent elsewhere.
   if (!relative.startsWith('/api/')) throw new Error('cliCredentials.path must be a relative /api/ path');
-  return new URL(`${relative}${suffix}`, worker.baseUrl.endsWith('/') ? worker.baseUrl : `${worker.baseUrl}/`).toString();
+  return new URL(
+    `${relative}${suffix}`,
+    worker.baseUrl.endsWith('/') ? worker.baseUrl : `${worker.baseUrl}/`
+  ).toString();
 }
 
 function headers(worker: CloudWorkerRecord, ref: string, json = false): Headers {
@@ -94,7 +97,9 @@ export async function materializeCliCredentials(input: {
       !SAFE_SEGMENT.test(entry.file) ||
       typeof entry.content !== 'string'
     ) {
-      input.log?.(`[cloud-worker] skipping a CLI login with an unexpected layout (${entry.cli ?? 'unknown'})`);
+      input.log?.(
+        `[cloud-worker] skipping a CLI login with an unexpected layout (${entry.cli ?? 'unknown'})`
+      );
       continue;
     }
     const directory = path.join(home, entry.directory);
@@ -106,7 +111,8 @@ export async function materializeCliCredentials(input: {
     env[entry.homeEnv] = directory;
     files.push({ credentialId: entry.credentialId, cli: entry.cli, filePath, original: entry.content });
   }
-  if (files.length) env[SUBSCRIPTION_LOGINS_ENV] = [...new Set(files.map((file) => file.cli))].sort().join(',');
+  if (files.length)
+    env[SUBSCRIPTION_LOGINS_ENV] = [...new Set(files.map((file) => file.cli))].sort().join(',');
   if (body.skipped?.length) {
     input.log?.(`[cloud-worker] ${body.skipped.length} CLI login(s) unavailable for this run`);
   }
