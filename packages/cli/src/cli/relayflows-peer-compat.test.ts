@@ -24,13 +24,6 @@ function readCliPackage(): {
   };
 }
 
-/**
- * The first Relay major above `version` that the pinned SDK's published peer
- * ranges refuse. Flows widens its peers ahead of a Relay major (the pin must
- * accept the major being released before main's version moves), so the
- * refused major is not always `version + 1`; it must exist, so the contract
- * stays bounded.
- */
 function parseVersion(version: string): number[] {
   const parts = version
     .split('-')[0]!
@@ -78,6 +71,13 @@ function satisfies(version: string, range: string): boolean {
   );
 }
 
+/**
+ * The first Relay major above `version` that the pinned SDK's published peer
+ * ranges refuse. Flows widens its peers before a Relay major ships, because
+ * the pin must accept the major being released before main's version moves.
+ * So the refused major is not always `version + 1`, but one must exist: the
+ * peer contract has to stay bounded.
+ */
 function firstUnsupportedMajor(version: string, peerRanges: string[]): string {
   const major = parseVersion(version)[0]!;
   for (let next = major + 1; next <= major + 10; next += 1) {

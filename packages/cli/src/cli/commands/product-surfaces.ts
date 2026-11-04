@@ -123,7 +123,7 @@ export const PRODUCT_SURFACES: readonly ProductSurfaceDefinition[] = [
 export const SURFACE_PACKAGES: Readonly<Record<string, SurfacePackage>> = {
   '@relayfile/sdk/relay-cli': { name: '@relayfile/sdk', range: '^0.10.64' },
   // Match the npm pin: this release includes GitLab helpers and accepts
-  // Relay 15.1 peers. The standalone installer must select the same build.
+  // Relay 15.1 and 16 peers. The standalone installer must select the same build.
   '@relayflows/sdk/relay-cli': { name: '@relayflows/sdk', range: '2.0.61' },
   'ai-hist/relay-cli': {
     name: 'ai-hist',
