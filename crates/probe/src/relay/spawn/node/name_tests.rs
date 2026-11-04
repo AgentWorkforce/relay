@@ -457,6 +457,8 @@ async fn a_name_another_node_holds_is_not_asked_for_again_after_a_failure_on_its
     let alternate = body(&requests[1])["name"].as_str().unwrap().to_string();
     assert!(named_for(&alternate, "mac-desktop") && alternate != "mac-desktop");
     assert_eq!(asked.node_name, alternate);
+    // One of the series' alternates taken, counted across restarts.
+    assert_eq!(asked.alternates, 1);
     // The same node under each name; a new node is never keyed.
     assert_eq!(body(&requests[0])["node_id"], asked.node_id.as_str());
     assert_eq!(body(&requests[1])["node_id"], asked.node_id.as_str());
@@ -552,6 +554,30 @@ async fn a_pending_alternate_is_asked_for_as_it_is() {
     assert_eq!(body(&request)["node_id"], asked.node_id.as_str());
     assert_eq!(body(&request)["name"], "mac-desktop-3f9a");
     assert_eq!(enrolled.unwrap().node_name, "mac-desktop-3f9a");
+}
+
+/// The alternates a series may take are counted in the pending node, so a
+/// restart does not start the count over: one that has taken them all is
+/// refused once more, then gives up, rather than trying three more.
+#[tokio::test]
+async fn the_alternates_of_a_series_are_counted_across_restarts() {
+    let folder = tempfile::tempdir().unwrap();
+    let relaycast = Scripted::new().await;
+    let config = config(&relaycast.base_url, folder.path());
+    let asked = Pending {
+        alternates: ALTERNATES,
+        ..Pending::new(&config, "mac-desktop-3f9a")
+    };
+    save_pending(&pending_file(&config), &asked).unwrap();
+    let (refused, request) = tokio::join!(enroll_named(&config, None), relaycast.answer(CONFLICT));
+    assert!(matches!(refused, Err(Refused::NoName(_))), "{refused:?}");
+    assert_eq!(body(&request)["name"], "mac-desktop-3f9a");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), relaycast.listener.accept())
+            .await
+            .is_err()
+    );
+    assert_eq!(pending(&config), None);
 }
 
 /// The saved node of another key, not the holder of its name here, stays

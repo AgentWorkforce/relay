@@ -102,6 +102,9 @@ pub(super) async fn enroll(
                 || Refused::Failed(format!("Agent Relay did not enroll this computer: {error}"));
             match error.code() {
                 Some("node_name_conflict") => Refused::NameTaken,
+                // With proof, `node_id_conflict` cannot happen: the id is
+                // this node's own, proven. It would fall to `Failed` and
+                // the same id be tried again.
                 Some("node_id_conflict" | "node_token_proof_required") if !proof => {
                     Refused::IdTaken
                 }
@@ -163,7 +166,9 @@ pub(super) async fn enroll_named(
 /// `POST /v1/nodes`: the same id on every attempt of the series, and the
 /// name saved is the last one not refused, so a name another node holds is
 /// never asked for again after a failure on its alternate; an alternate is
-/// taken only after `NameTaken`. An id Relaycast has a node under
+/// taken only after `NameTaken`, `ALTERNATES` of them in a series, counted
+/// in the record so a restart does not start the count over. An id
+/// Relaycast has a node under
 /// (`IdTaken`) is replaced by a fresh one under the same name: Relaycast
 /// replays no first enrollment, so one it completed whose answer was lost
 /// is met that way on the next attempt, and the node left behind, holding
@@ -182,12 +187,11 @@ async fn enroll_new(config: &NodeConfig) -> Result<Enrollment, Refused> {
             pending
         }
     };
-    let mut names = 0;
     let mut ids = 0;
     loop {
         match enroll(config, &pending.node_id, &pending.node_name, None).await {
-            Err(Refused::NameTaken) if names < ALTERNATES => {
-                names += 1;
+            Err(Refused::NameTaken) if pending.alternates < ALTERNATES => {
+                pending.alternates += 1;
                 pending.node_name = alternate(&config.node_name);
             }
             Err(Refused::NameTaken) => {

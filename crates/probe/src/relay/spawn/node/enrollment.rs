@@ -51,6 +51,10 @@ pub(super) struct Pending {
     #[serde(rename = "baseURL")]
     pub(super) base_url: String,
     pub(super) workspace: String,
+    /// How many alternates of the name this series has taken, so the
+    /// budget (`ALTERNATES`) holds across restarts.
+    #[serde(default)]
+    pub(super) alternates: usize,
 }
 
 /// An id for a node not yet enrolled.
@@ -66,6 +70,7 @@ impl Pending {
             node_name: name.to_string(),
             base_url: config.base_url.clone(),
             workspace: fingerprint(&config.workspace_key),
+            alternates: 0,
         }
     }
 }
