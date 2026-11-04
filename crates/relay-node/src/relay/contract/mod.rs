@@ -29,7 +29,6 @@ pub mod plan;
 pub mod platform;
 pub mod reader;
 pub mod replicas;
-pub mod session_locations;
 pub mod spawn_control;
 pub mod spawned;
 pub mod tool_integrations;
@@ -173,7 +172,6 @@ methods! {
     // Agents on this computer.
     SessionsTranscript = "sessions.transcript", Account, transcript::LocalTranscriptParams => transcript::LocalTranscriptPage;
     SessionsList = "sessions.list", Always, NoParams => LocalSessions;
-    SessionsLocation = "sessions.location", Always, SessionTitleIdentity => session_locations::SessionLocationReport;
     SessionsTitleCapability = "sessions.title.capability", Always, SessionTitleIdentity => SessionTitleCapability;
     SessionsTitleSet = "sessions.title.set", Always, SessionTitleSetParams => SessionTitleUpdated;
     SessionsManagedLaunch = "sessions.managed.launch", Always, ManagedLaunchParams => ManagedSessionStarted;

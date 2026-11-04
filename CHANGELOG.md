@@ -9,7 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `sessions.location` reports where a session runs on macOS: its Ghostty pane, Terminal tab or iTerm2 pane, or the Claude app link that opens it. Other platforms report it unavailable.
 - Session lists report which client started each session as `originator`, so a Claude app chat (`claude-desktop`) is told apart from Claude Code in the terminal (`cli`).
 
 ### Changed

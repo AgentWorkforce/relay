@@ -33,27 +33,6 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
         return Some(result);
     }
     match method {
-        method::SessionsLocation::NAME => Some(
-            answer::<method::SessionsLocation, _>(raw, |params| async move {
-                crate::relay::session_titles::validate_identity(
-                    &params.source,
-                    &params.session_id,
-                )?;
-                let sessions = core.plugins.sessions.clone();
-                tokio::task::spawn_blocking(move || {
-                    sessions.location(&params.source, &params.session_id)
-                })
-                .await
-                .map_err(|_| {
-                    RpcError::new(
-                        crate::relay::protocol::ErrorKind::Internal,
-                        "Could not locate session.",
-                    )
-                })?
-                .map_err(|error| RpcError::new(crate::relay::protocol::ErrorKind::Internal, error))
-            })
-            .await,
-        ),
         method::SessionsTitleCapability::NAME => Some(
             answer::<method::SessionsTitleCapability, _>(raw, |params| async move {
                 crate::relay::session_titles::validate_identity(

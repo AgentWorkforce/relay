@@ -96,9 +96,8 @@ pub struct LocalConfig {
     /// Where Cursor CLI keeps its conversations, and the inbox Agent Relay's
     /// Cursor hooks drain.
     pub cursor: CursorConfig,
-    /// The probe install root (`~/.agentworkforce/probe`), where session
-    /// locations are kept and a build's remote session sources keep their
-    /// state; `None` keeps neither.
+    /// The probe install root (`~/.agentworkforce/probe`), where a build's
+    /// remote session sources keep their state; `None` keeps none.
     pub probe_root: Option<PathBuf>,
     /// What the build knows about sessions beyond this computer's discovery.
     pub sources: crate::relay::session_sources::SessionSources,

@@ -47,7 +47,6 @@ public enum CoreMethod {
     public static let uploaderSessionsExclude = "uploader.sessions.exclude"
     public static let sessionsTranscript = "sessions.transcript"
     public static let sessionsList = "sessions.list"
-    public static let sessionsLocation = "sessions.location"
     public static let sessionsTitleCapability = "sessions.title.capability"
     public static let sessionsTitleSet = "sessions.title.set"
     public static let sessionsManagedLaunch = "sessions.managed.launch"
@@ -7318,105 +7317,6 @@ public enum SessionKind: RawRepresentable, Codable, CaseIterable, Hashable, Send
     }
 }
 
-public struct SessionLocation: Codable, Equatable, Hashable, Sendable {
-    public let application: String
-    public let bundleId: String
-    public let observedAtMs: Int64
-    public let pid: Int
-    public let processStart: Int
-    public let tty: String?
-
-    public init(application: String, bundleId: String, observedAtMs: Int64, pid: Int, processStart: Int, tty: String? = nil) {
-        self.application = application
-        self.bundleId = bundleId
-        self.observedAtMs = observedAtMs
-        self.pid = pid
-        self.processStart = processStart
-        self.tty = tty
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case application
-        case bundleId = "bundle_id"
-        case observedAtMs = "observed_at_ms"
-        case pid
-        case processStart = "process_start"
-        case tty
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.application = try c.decode(String.self, forKey: .application)
-        self.bundleId = try c.decode(String.self, forKey: .bundleId)
-        self.observedAtMs = try c.decode(Int64.self, forKey: .observedAtMs)
-        self.pid = try c.decode(Int.self, forKey: .pid)
-        self.processStart = try c.decode(Int.self, forKey: .processStart)
-        self.tty = try c.decodeIfPresent(String.self, forKey: .tty)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(self.application, forKey: .application)
-        try c.encode(self.bundleId, forKey: .bundleId)
-        try c.encode(self.observedAtMs, forKey: .observedAtMs)
-        try c.encode(self.pid, forKey: .pid)
-        try c.encode(self.processStart, forKey: .processStart)
-        try c.encode(self.tty, forKey: .tty)
-    }
-}
-
-public struct SessionLocationReport: Codable, Equatable, Hashable, Sendable {
-    /// Every verified location, including simultaneous owners. Never pick one arbitrarily.
-    public let current: [SessionLocation]
-    /// A provider-owned desktop identity mapped from this CLI session.
-    public let desktopLink: String?
-    /// Last observed locations survive process exit and core restarts. Never focus these.
-    public let previous: [SessionLocation]
-    public let reason: String?
-    /// A verified owner exists even if its UI cannot be located.
-    public let running: Bool
-    /// False on platforms without native window navigation.
-    public let supported: Bool
-
-    public init(current: [SessionLocation], desktopLink: String? = nil, previous: [SessionLocation], reason: String? = nil, running: Bool, supported: Bool) {
-        self.current = current
-        self.desktopLink = desktopLink
-        self.previous = previous
-        self.reason = reason
-        self.running = running
-        self.supported = supported
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case current
-        case desktopLink = "desktop_link"
-        case previous
-        case reason
-        case running
-        case supported
-    }
-
-    public init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.current = try c.decode([SessionLocation].self, forKey: .current)
-        self.desktopLink = try c.decodeIfPresent(String.self, forKey: .desktopLink)
-        self.previous = try c.decode([SessionLocation].self, forKey: .previous)
-        self.reason = try c.decodeIfPresent(String.self, forKey: .reason)
-        self.running = try c.decode(Bool.self, forKey: .running)
-        self.supported = try c.decode(Bool.self, forKey: .supported)
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var c = encoder.container(keyedBy: CodingKeys.self)
-        try c.encode(self.current, forKey: .current)
-        try c.encode(self.desktopLink, forKey: .desktopLink)
-        try c.encode(self.previous, forKey: .previous)
-        try c.encode(self.reason, forKey: .reason)
-        try c.encode(self.running, forKey: .running)
-        try c.encode(self.supported, forKey: .supported)
-    }
-}
-
 /// One uploaded session whose Cloud summary is read or requested.
 public struct SessionOverviewParams: Codable, Equatable, Hashable, Sendable {
     public let sessionId: String
@@ -11291,12 +11191,6 @@ extension CoreClient {
     @discardableResult
     public func sessionsList() async throws -> LocalSessions {
         try await call(CoreMethod.sessionsList, NoParams())
-    }
-
-    /// `sessions.location`.
-    @discardableResult
-    public func sessionsLocation(_ params: SessionTitleIdentity) async throws -> SessionLocationReport {
-        try await call(CoreMethod.sessionsLocation, params)
     }
 
     /// `sessions.title.capability`.

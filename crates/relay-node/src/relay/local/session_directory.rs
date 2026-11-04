@@ -306,12 +306,6 @@ impl LocalSessions {
                 .map(|config| self.hermes.sessions(config))
                 .unwrap_or_default(),
         };
-        if matches!(
-            partition,
-            SessionPartition::Codex | SessionPartition::Claude | SessionPartition::Grok
-        ) {
-            crate::relay::session_locations::observe(&self.config, &*self.scans, &found);
-        }
         Some(found)
     }
 
