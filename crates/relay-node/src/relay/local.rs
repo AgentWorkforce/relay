@@ -6453,6 +6453,14 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
             .get_mut(&300)
             .unwrap()
             .arguments = vec!["claude".into()];
+        world
+            .table
+            .processes
+            .lock()
+            .unwrap()
+            .get_mut(&300)
+            .unwrap()
+            .has_terminal = true;
         let path = world.sessions.config.claude.registry().join("300.json");
         let mut record: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();

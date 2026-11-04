@@ -330,6 +330,7 @@ fn native_config_root_resolution_rejects_duplicate_session_ids() {
             pid,
             crate::relay::process::FakeProcess {
                 arguments: vec!["claude".into()],
+                has_terminal: true,
                 ..Default::default()
             },
         );

@@ -196,7 +196,8 @@ pub(crate) fn session_roots(
 /// `prompt.submit` may reject even while the peer inbox remains available.
 /// Keep those sessions on their existing inbox route, independently of the
 /// mobile setting. Check the running process too: entrypoint labels alone
-/// do not distinguish every host, and unreadable argv proves no capability.
+/// do not distinguish every host. Require positive terminal input, not only
+/// the absence of SDK flags.
 pub(crate) fn native_input_supported(
     session: &crate::relay::claude::TerminalSession,
     table: &dyn crate::relay::process::ProcessTable,
@@ -209,15 +210,7 @@ pub(crate) fn native_input_supported(
     {
         return false;
     }
-    let args = table.arguments(session.pid);
-    !args.is_empty()
-        && !args.iter().any(|arg| {
-            arg == "-p"
-                || arg == "--print"
-                || arg.starts_with("--print=")
-                || arg == "--input-format"
-                || arg.starts_with("--input-format=")
-        })
+    crate::relay::claude::is_interactive_process(table, session.pid)
 }
 
 pub(crate) fn install(config: &Path, socket: &Path) -> Result<(), String> {

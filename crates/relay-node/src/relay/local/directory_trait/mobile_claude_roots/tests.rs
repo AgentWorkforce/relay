@@ -38,6 +38,7 @@ fn processes(pids: &[i32]) -> FakeProcesses {
             FakeProcess {
                 start: 123,
                 arguments: vec!["claude".into()],
+                has_terminal: true,
                 ..Default::default()
             },
         );
@@ -141,6 +142,25 @@ fn sdk_host_keeps_its_inbox_but_never_advertises_native_mobile_input() {
         .get_mut(&42)
         .unwrap()
         .arguments = vec!["claude".into()];
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&42)
+        .unwrap()
+        .has_terminal = false;
+    assert!(
+        read(&config, &table).is_empty(),
+        "a pipe without SDK flags is not native terminal input"
+    );
+    assert_eq!(claude::registry(&config, &table).sessions.len(), 1);
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&42)
+        .unwrap()
+        .has_terminal = true;
     let path = a.join("sessions/42.json");
     let mut value: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
