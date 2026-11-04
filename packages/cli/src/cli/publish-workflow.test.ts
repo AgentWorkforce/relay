@@ -185,9 +185,11 @@ function jobRuns(
 // destinations too, so quoting, push options, or variable branch names cannot
 // hide a branch update from this guard.
 function hasNonTagPush(script: string): boolean {
-  const commands = script.replace(/\\\n/g, ' ').match(/\bgit\s+push\b[^\n;]*/g) ?? [];
-  return commands.some((command) => {
-    const words = command.replace(/["']/g, '').trim().split(/\s+/).slice(2);
+  const commands = script
+    .replace(/\\\n/g, ' ')
+    .matchAll(/\bgit(?:\s+-(?:C|c)\s+(?:"[^"\n]*"|'[^'\n]*'|[^\s;]+))*\s+push\b([^\n;]*)/g);
+  return [...commands].some(([, operands]) => {
+    const words = (operands.match(/"[^"]*"|'[^']*'|[^\s]+/g) ?? []).map((word) => word.replace(/["']/g, ''));
     const positional = words.filter((word) => !word.startsWith('-'));
     const destinations = positional.slice(1);
     return (
@@ -679,6 +681,12 @@ describe('release finalization', () => {
     ['git push origin "refs/heads/main:refs/heads/main"', true],
     ['git push origin "$DESTINATION"', true],
     ['git push origin --all', true],
+    ['git -C . push origin HEAD:main', true],
+    ['git -c push.default=current push origin', true],
+    ['git -C "release worktree" -c "push.default=current" push origin "HEAD:refs/heads/main"', true],
+    ["git -c 'push.default=current' -C 'release worktree' push origin 'HEAD:staging'", true],
+    ['git -C "release worktree" push origin "v${NEW_VERSION}"', false],
+    ['git -c "user.name=Release bot" push origin "refs/tags/v${VERSION}"', false],
     ['git push origin', true],
     ['git push origin "v${NEW_VERSION}"', false],
     ['git push origin "refs/tags/v${VERSION}"', false],
