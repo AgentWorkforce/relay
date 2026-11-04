@@ -138,14 +138,18 @@ function needsOf(job: WorkflowJob): string[] {
 
 // Evaluate the workflow's boolean conditions with simulated Actions results.
 // Actions permits hyphenated property names; JavaScript needs bracket notation.
-function condition(expression: string | undefined, inputs: Record<string, string>, results: Record<string, string>, prerelease = false): boolean {
+function expressionValue(expression: string | undefined, inputs: Record<string, string>, results: Record<string, string>, prerelease = false): unknown {
   const javascript = (expression ?? 'true')
     .replace(/\$\{\{|\}\}/g, '')
     .replace(/needs\.([\w-]+)\.result/g, (_, name) => JSON.stringify(results[name] ?? 'success'))
     .replace(/needs\.build\.outputs\.is_prerelease/g, JSON.stringify(String(prerelease)))
     .replace(/github\.event\.inputs\.([\w-]+)/g, (_, name) => JSON.stringify(inputs[name] ?? ''))
     .replace(/always\(\)/g, 'true');
-  return Boolean(Function(`return (${javascript});`)());
+  return Function(`return (${javascript});`)();
+}
+
+function condition(expression: string | undefined, inputs: Record<string, string>, results: Record<string, string>, prerelease = false): boolean {
+  return Boolean(expressionValue(expression, inputs, results, prerelease));
 }
 
 describe('unified relay-node release', () => {
@@ -238,6 +242,41 @@ describe('unified relay-node release', () => {
       });
       if (scenario === 'complete') expect(run).not.toThrow();
       else expect(run).toThrow();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['all', 'main', 'sdk', 'cli-prerelease'])('keeps %s release discovery and install instructions consistent with its assets', (mode) => {
+    const release = loadPublishWorkflow().jobs['create-release'];
+    const stable = release.steps?.find((step) => step.name === 'Create GitHub Release (stable)');
+    const prerelease = release.steps?.find((step) => step.name === 'Create GitHub Release (prerelease)');
+    const hasStandalone = mode === 'all' || mode === 'main';
+    expect(expressionValue(String(stable?.with?.make_latest), { package: mode }, {})).toBe(String(hasStandalone));
+    expect(prerelease?.with?.make_latest).toBe(false);
+    const notes = release.steps?.find((step) => step.name === 'Write mode-specific release notes');
+    expect(notes?.env?.PACKAGE_MODE).toBe('${{ github.event.inputs.package }}');
+    expect(notes?.env?.IS_PRERELEASE).toBe('${{ needs.build.outputs.is_prerelease }}');
+    expect(stable?.with?.body_path).toBe('/tmp/release-notes.md');
+    expect(prerelease?.with?.body_path).toBe(stable?.with?.body_path);
+    const directory = mkdtempSync(resolve(tmpdir(), 'relay-release-notes-'));
+    try {
+      for (const isPrerelease of [false, true]) {
+        // Redirect only the output file, isolating each execution from other release tests.
+        const script = notes!.run!.replace('/tmp/release-notes.md', 'release-notes.md');
+        execFileSync('bash', ['-c', script], {
+          cwd: directory,
+          env: { ...process.env, VERSION: '16.0.1', PACKAGE_MODE: mode, IS_PRERELEASE: String(isPrerelease), NPM_TAG: isPrerelease ? 'next' : 'latest' },
+          stdio: 'pipe',
+        });
+        const text = readFileSync(resolve(directory, 'release-notes.md'), 'utf8');
+        expect(text.includes('Standalone CLI binaries')).toBe(hasStandalone);
+        expect(text.includes('install.sh')).toBe(hasStandalone && !isPrerelease);
+        expect(text.includes('npm install -g agent-relay@')).toBe(mode !== 'sdk');
+        expect(text).toContain('npm install @agent-relay/sdk@16.0.1');
+        expect(text).toContain('agent-relay-node-16.0.1-windows-x64.exe');
+        expect(text).toContain('.sha256');
+      }
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
