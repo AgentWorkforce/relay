@@ -237,7 +237,8 @@ jobs:
             target: aarch64-apple-darwin
             ext: ''
             smoke: true
-          # Cross-compiled on Apple silicon; it is not run there.
+          # Cross-compiled on Apple silicon; --version is not runtime-tested
+          # for this target here. The other four targets run the version smoke.
           - suffix: darwin-x64
             os: macos-latest
             target: x86_64-apple-darwin
@@ -1718,7 +1719,7 @@ jobs:
   # Publish release assets before any npm package can become installable.
   create-release:
     name: Create Release
-    needs: [build, build-node, build-broker, build-standalone, verify-binaries]
+    needs: [build, build-node, build-broker, build-standalone, verify-binaries, smoke-broker-packages]
     runs-on: ubuntu-latest
     # Standalone checks are absent for sdk and cli-prerelease. The node and
     # broker binaries are always built, including during dry runs.
@@ -1726,6 +1727,7 @@ jobs:
       always() &&
       needs.build.result == 'success' &&
       needs.build-node.result == 'success' &&
+      needs.smoke-broker-packages.result == 'success' &&
       needs.build-broker.result == 'success' &&
       (needs.build-standalone.result == 'success' || (needs.build-standalone.result == 'skipped' && (github.event.inputs.package == 'sdk' || github.event.inputs.package == 'cli-prerelease'))) &&
       (needs.verify-binaries.result == 'success' || (needs.verify-binaries.result == 'skipped' && (github.event.inputs.package == 'sdk' || github.event.inputs.package == 'cli-prerelease')))
@@ -2098,32 +2100,17 @@ jobs:
           git add package.json package-lock.json packages/*/package.json CHANGELOG.md
           # Stage optional paths that may not exist (trajectories already committed in prior step)
           git add .trajectories/ 2>/dev/null || true
-          # Partial modes get an immutable versioned tag for node downloads,
-          # but preserve their existing behavior of not advancing main/staging.
-          TAG_TARGET=""
+          # Keep generated version/compaction commits on the immutable tag.
+          # Release branches advance only after npm publication and verification.
           if ! git diff --staged --quiet; then
             if [ "$IS_PRERELEASE" = "true" ]; then
               git commit -m "chore(prerelease): v${NEW_VERSION}"
-              # Prerelease: push to staging branch, not main
-              if [[ "${{ github.event.inputs.package }}" == "all" || "${{ github.event.inputs.package }}" == "main" ]]; then
-                git push origin HEAD:staging
-              fi
             else
               git commit -m "chore(release): v${NEW_VERSION}"
-              # Tag the commit whose tree is exactly what this run built and
-              # published. If main advanced during the pipeline, the rebased
-              # copy pushed below also carries those newer commits, which the
-              # published artifacts do not contain.
-              TAG_TARGET=$(git rev-parse HEAD)
-              # Rebase on latest main in case it advanced during the pipeline
-              if [[ "${{ github.event.inputs.package }}" == "all" || "${{ github.event.inputs.package }}" == "main" ]]; then
-                git pull --rebase origin main
-                git push origin HEAD:main
-              fi
             fi
           fi
 
-          TAG_TARGET="${TAG_TARGET:-$(git rev-parse HEAD)}"
+          TAG_TARGET=$(git rev-parse HEAD)
           git tag -a "v${NEW_VERSION}" -m "Release v${NEW_VERSION}" -m "Source: ${GITHUB_SHA}" -m "Mode: ${PACKAGE_MODE}" "$TAG_TARGET"
           git push origin "v${NEW_VERSION}"
 
@@ -2171,7 +2158,7 @@ jobs:
         with:
           tag_name: v${{ needs.build.outputs.new_version }}
           name: v${{ needs.build.outputs.new_version }}
-          make_latest: ${{ (github.event.inputs.package == 'all' || github.event.inputs.package == 'main') && 'true' || 'false' }}
+          make_latest: false
           body_path: /tmp/release-notes.md
           files: |
             release-binaries/*
@@ -2251,6 +2238,97 @@ jobs:
     with:
       version: ${{ needs.build.outputs.new_version }}
 
+  # A public asset release is deliberately not latest until every required npm
+  # publisher and registry verification succeeds. Partial modes remain tag-only.
+  finalize-release:
+    name: Finalize verified release
+    needs:
+      [build, create-release, publish-sdk-internal-deps, publish-broker-packages,
+       publish-packages, publish-harnesses, publish-fleet, publish-main-runtime-deps,
+       publish-main-harnesses, publish-main-fleet, publish-main, verify-publish,
+       verify-publish-sdk]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: |
+      always() &&
+      github.event.inputs.dry_run != 'true' &&
+      (github.event.inputs.package == 'all' || github.event.inputs.package == 'main') &&
+      needs.build.result == 'success' &&
+      needs.create-release.result == 'success' &&
+      needs.publish-sdk-internal-deps.result == 'success' &&
+      needs.publish-broker-packages.result == 'success' &&
+      needs.publish-main.result == 'success' &&
+      needs.verify-publish.result == 'success' &&
+      ((github.event.inputs.package == 'all' &&
+        needs.publish-packages.result == 'success' &&
+        needs.publish-harnesses.result == 'success' &&
+        needs.publish-fleet.result == 'success' &&
+        (needs.verify-publish-sdk.result == 'success' ||
+         (github.event.inputs.hotfix == 'true' && needs.verify-publish-sdk.result == 'skipped'))) ||
+       (github.event.inputs.package == 'main' &&
+        needs.publish-main-runtime-deps.result == 'success' &&
+        needs.publish-main-harnesses.result == 'success' &&
+        needs.publish-main-fleet.result == 'success' &&
+        needs.verify-publish-sdk.result == 'skipped'))
+    steps:
+      - name: Setup Github App
+        uses: actions/create-github-app-token@v2
+        id: create_github_app_token
+        with:
+          app-id: ${{ secrets.GH_APP_PUSHER_ID }}
+          private-key: ${{ secrets.GH_APP_PUSHER_PRIVATE_KEY }}
+
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          token: ${{ steps.create_github_app_token.outputs.token }}
+
+      - name: Advance release branch without rewriting history
+        env:
+          VERSION: ${{ needs.build.outputs.new_version }}
+          PACKAGE_MODE: ${{ github.event.inputs.package }}
+          IS_PRERELEASE: ${{ needs.build.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          TAG="v${VERSION}"
+          annotation=$(git for-each-ref --format='%(contents)' "refs/tags/${TAG}")
+          grep -Fxq "Source: ${GITHUB_SHA}" <<<"$annotation"
+          grep -Fxq "Mode: ${PACKAGE_MODE}" <<<"$annotation"
+          git merge-base --is-ancestor "$GITHUB_SHA" "$TAG"
+          BRANCH=main
+          if [ "$IS_PRERELEASE" = "true" ]; then BRANCH=staging; fi
+          BASE="$GITHUB_SHA"
+          if git ls-remote --exit-code --heads origin "refs/heads/${BRANCH}" >/dev/null; then
+            git fetch origin "refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"
+            BASE="origin/${BRANCH}"
+          else
+            status=$?
+            # A first prerelease can create staging. Network/authentication
+            # errors must fail instead of being treated as an absent branch.
+            if [ "$status" -ne 2 ] || [ "$BRANCH" != "staging" ]; then exit "$status"; fi
+          fi
+          # Replay only generated release commits, including optional trajectory
+          # compaction, onto the current branch. Already applied patches are
+          # skipped on retries. The immutable tag continues to identify what
+          # was built; newer source commits on the branch are preserved.
+          git rebase --onto "$BASE" "$GITHUB_SHA" "$TAG"
+          test "$(node -p "require('./package.json').version")" = "$VERSION"
+          # A concurrent branch advance causes a safe non-fast-forward failure;
+          # retrying fetches the newer branch. Never force-push a release branch.
+          git push origin "HEAD:${BRANCH}"
+
+      - name: Promote verified stable release to latest
+        if: needs.build.outputs.is_prerelease != 'true'
+        env:
+          GH_TOKEN: ${{ steps.create_github_app_token.outputs.token }}
+          VERSION: ${{ needs.build.outputs.new_version }}
+        run: gh release edit "v${VERSION}" --repo "$GITHUB_REPOSITORY" --latest
+
   summary:
     name: Summary
     needs:
@@ -2259,6 +2337,7 @@ jobs:
         build-broker,
         build-node,
         create-release,
+        finalize-release,
         build-standalone,
         verify-binaries,
         verify-standalone-linux,
@@ -2301,6 +2380,7 @@ jobs:
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
           echo "| Build | ${{ needs.build.result == 'success' && '✅' || '❌' }} ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build Node | ${{ needs.build-node.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Finalize Release | ${{ needs.finalize-release.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Release Assets | ${{ needs.create-release.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build Broker (Rust) | ${{ needs.build-broker.result == 'success' && '✅' || (needs.build-broker.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.build-broker.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build Standalone (Bun) | ${{ needs.build-standalone.result == 'success' && '✅' || (needs.build-standalone.result == 'skipped' && '⏭️' || '❌') }} ${{ needs.build-standalone.result }} |" >> $GITHUB_STEP_SUMMARY
