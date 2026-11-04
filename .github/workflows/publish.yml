@@ -2269,10 +2269,21 @@ jobs:
   finalize-release:
     name: Finalize verified release
     needs:
-      [build, create-release, publish-sdk-internal-deps, publish-broker-packages,
-       publish-packages, publish-harnesses, publish-fleet, publish-main-runtime-deps,
-       publish-main-harnesses, publish-main-fleet, publish-main, verify-publish,
-       verify-publish-sdk]
+      [
+        build,
+        create-release,
+        publish-sdk-internal-deps,
+        publish-broker-packages,
+        publish-packages,
+        publish-harnesses,
+        publish-fleet,
+        publish-main-runtime-deps,
+        publish-main-harnesses,
+        publish-main-fleet,
+        publish-main,
+        verify-publish,
+        verify-publish-sdk,
+      ]
     runs-on: ubuntu-latest
     permissions:
       contents: write

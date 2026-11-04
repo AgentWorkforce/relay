@@ -78,14 +78,17 @@ arm64, builds on Windows x64, checks the generated contract for drift and runs
 the CLI version into each binary, and verifies the native builds report it.
 The `v<version>` GitHub release contains
 `agent-relay-node-<version>-<os>-<arch>[.exe]` and a `.sha256` sidecar for each
-binary. All five binaries and their checksums must be available before any
-npm package is published. Dry runs build and check the artifacts without
-creating a release or publishing packages.
+binary. All five binaries and their checksums must be available, and broker
+smoke tests must pass, before any npm package is published. The release stays
+off GitHub's latest release until npm publication and post-publish verification
+succeed; only then can the workflow advance the release branch and promote a
+stable release. Dry runs build and check the artifacts without creating a
+release or publishing packages.
 
 Retries reuse a release only when its tag records the same source commit and
-package mode. Use a new version when switching from an SDK-only or CLI-only
-release to a full release. Those partial releases do not replace GitHub's
-latest release or advance the release branches.
+package mode. Use a new version when switching from `sdk` or `cli-prerelease`
+mode to `all` or `main`. The `sdk` and `cli-prerelease` modes do not replace
+GitHub's latest release or advance the release branches.
 
 `relay init` downloads the node from its own CLI version's release. There is
 no independently selected node version or separate node release workflow.
