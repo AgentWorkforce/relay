@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `relay serve --site-url`: the core takes no site at start.
 - The `site_url` field of `account.sign_in` and of `links.parse` in the bridge contract (and the generated Swift contract).
 
+### Fixed
+
+- The desktop spawn node asks Agent Relay for the same node id on every attempt of a first enrollment and keeps the alternate name it took, so a name another node holds is not asked for again; a node enrolled whose answer was lost, or an id another node has, is left behind for a fresh one under the same name.
+- A node token Agent Relay refuses three times in a row stops the spawn node with a status saying so, instead of retrying forever; turning Accept spawns from Agent Relay off and on, or signing in again, enrolls a new node.
+
 ### Breaking Changes
 
 - A core built for another site than `https://agentrelay.com` must be built with `AGENT_RELAY_SITE_URL`. `relay serve --site-url` is refused; a `site_url` in an `account.sign_in` or `links.parse` request is ignored, as any unknown field is, and the build's site applies.

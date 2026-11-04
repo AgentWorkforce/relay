@@ -1,13 +1,18 @@
-//! The spawn node's enrollment as kept on disk (`spawn-node.json`, 0600).
+//! The spawn node's enrollment as kept on disk (`spawn-node.json`, 0600),
+//! and, beside it until Relaycast first answers, the id and name chosen for
+//! a node being enrolled (`spawn-node.pending.json`), which is not an
+//! enrollment.
 
-use super::{NodeConfig, NODE_FILE};
+use super::{NodeConfig, NODE_FILE, PENDING_FILE};
 use crate::relay::store::random_hex;
 use crate::relay::workspace::Secret;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-/// The enrolled node, as kept on disk.
+/// The enrolled node, as kept on disk. A record without a token (none is
+/// ever written) is not an enrollment: an id is never sent as this
+/// computer's node without its token as proof.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Enrollment {
     #[serde(rename = "nodeID")]
@@ -29,6 +34,47 @@ pub(super) struct Enrollment {
     pub(super) rotation_key: Option<String>,
 }
 
+/// A node being enrolled for the first time: the id and name it is asked
+/// for, saved in its own file before the first `POST /v1/nodes` so every
+/// attempt of the series asks for the same node (a name refused is not
+/// asked for again), while an enrollment of another workspace key stays
+/// in `spawn-node.json` until a new one replaces it. Not this computer's
+/// node until Relaycast gives its token. No `Idempotency-Key`: Relaycast
+/// replays only a rotation, proved by the current token, and refuses a
+/// key without one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct Pending {
+    #[serde(rename = "nodeID")]
+    pub(super) node_id: String,
+    #[serde(rename = "nodeName")]
+    pub(super) node_name: String,
+    #[serde(rename = "baseURL")]
+    pub(super) base_url: String,
+    pub(super) workspace: String,
+    /// How many alternates of the name this series has taken, so the
+    /// budget (`ALTERNATES`) holds across restarts.
+    #[serde(default)]
+    pub(super) alternates: usize,
+}
+
+/// An id for a node not yet enrolled.
+pub(super) fn fresh_id() -> String {
+    format!("node_desktop_{}", random_hex(24))
+}
+
+impl Pending {
+    /// A new node of `name`, under a fresh id.
+    pub(super) fn new(config: &NodeConfig, name: &str) -> Pending {
+        Pending {
+            node_id: fresh_id(),
+            node_name: name.to_string(),
+            base_url: config.base_url.clone(),
+            workspace: fingerprint(&config.workspace_key),
+            alternates: 0,
+        }
+    }
+}
+
 pub(super) fn fingerprint(key: &Secret) -> String {
     let digest = Sha256::digest(key.expose().as_bytes());
     digest[..8].iter().map(|b| format!("{b:02x}")).collect()
@@ -36,6 +82,10 @@ pub(super) fn fingerprint(key: &Secret) -> String {
 
 pub(super) fn node_file(config: &NodeConfig) -> PathBuf {
     config.app_data_dir.join(NODE_FILE)
+}
+
+pub(super) fn pending_file(config: &NodeConfig) -> PathBuf {
+    config.app_data_dir.join(PENDING_FILE)
 }
 
 /// Hex digits after an alternate name: `<name>-3f9a`.
@@ -69,6 +119,17 @@ fn read_in(app_data_dir: &Path, base_url: &str, base: &str) -> Option<Enrollment
         .then_some(enrollment)
 }
 
+/// The node being enrolled for this workspace, origin and name (or an
+/// alternate of it), when a first enrollment is under way.
+pub(super) fn pending(config: &NodeConfig) -> Option<Pending> {
+    let pending: Pending =
+        serde_json::from_slice(&std::fs::read(pending_file(config)).ok()?).ok()?;
+    (pending.base_url == config.base_url
+        && pending.workspace == fingerprint(&config.workspace_key)
+        && named_for(&pending.node_name, &config.node_name))
+    .then_some(pending)
+}
+
 /// The saved node of this origin and name (or an alternate of it),
 /// enrolled with any workspace key.
 pub(super) fn read(config: &NodeConfig) -> Option<Enrollment> {
@@ -89,6 +150,22 @@ pub(super) fn load(config: &NodeConfig) -> Option<Enrollment> {
 }
 
 pub(super) fn save(path: &Path, enrollment: &Enrollment) -> std::io::Result<()> {
+    write(path, enrollment)
+}
+
+pub(super) fn save_pending(path: &Path, pending: &Pending) -> std::io::Result<()> {
+    write(path, pending)
+}
+
+/// Removes a record; none is fine.
+pub(super) fn forget(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        done => done,
+    }
+}
+
+fn write(path: &Path, record: &impl Serialize) -> std::io::Result<()> {
     use std::io::Write;
     let temporary = path.with_extension("json.tmp");
     let mut file = crate::platform::fs::private(
@@ -98,7 +175,7 @@ pub(super) fn save(path: &Path, enrollment: &Enrollment) -> std::io::Result<()> 
             .write(true),
     )
     .open(&temporary)?;
-    file.write_all(&serde_json::to_vec_pretty(enrollment).map_err(std::io::Error::other)?)?;
+    file.write_all(&serde_json::to_vec_pretty(record).map_err(std::io::Error::other)?)?;
     file.sync_all()?;
     std::fs::rename(temporary, path)
 }
