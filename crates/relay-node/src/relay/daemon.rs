@@ -58,15 +58,14 @@ impl std::fmt::Display for SafeError {
 
 impl std::error::Error for SafeError {}
 
-/// How the daemon was started.
+/// How the daemon was started. The Agent Relay site is not among the
+/// options: a build signs in to the site it was made for
+/// (`links::built_in_site_url`).
 #[derive(Clone, Debug)]
 pub struct ServeOptions {
     pub socket: Option<PathBuf>,
     pub app_data_dir: Option<PathBuf>,
     pub exit_on_stdin_eof: bool,
-    /// The Agent Relay site this build signs in to; `https://agentrelay.com`
-    /// when absent.
-    pub site_url: Option<String>,
     /// Run as the Linux headless service: the systemd user unit owns
     /// startup, so the GUI's autostart entry is removed and never written,
     /// and the agent-led setup defaults apply at start.
@@ -1049,7 +1048,6 @@ mod connect_startup_tests {
             socket: None,
             app_data_dir: None,
             exit_on_stdin_eof: false,
-            site_url: None,
             headless,
             connect_ephemeral: false,
             cli_managed,

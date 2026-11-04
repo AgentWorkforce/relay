@@ -85,9 +85,6 @@ fn the_binary_serves_answers_calls_and_stops_with_its_host() {
         "--app-data-dir",
         data_dir.to_str().unwrap(),
         "--exit-on-stdin-eof",
-        // A development site: no telemetry, no command-line copy.
-        "--site-url",
-        "http://127.0.0.1:9",
         "--headless",
     ];
     let mut daemon = command(&serve_args)
@@ -207,8 +204,6 @@ fn the_headless_service_preserves_the_apps_login_entry_and_stops_on_sigterm() {
                 socket.to_str().unwrap(),
                 "--app-data-dir",
                 temp.path().join("app-data").to_str().unwrap(),
-                "--site-url",
-                "http://127.0.0.1:9",
             ])
             .stdin(Stdio::null())
             .stdout(Stdio::null())

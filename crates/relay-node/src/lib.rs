@@ -6,6 +6,12 @@
 pub const VERSION: &str = env!("RELAY_DESKTOP_VERSION");
 pub const BUILD_REVISION: &str = env!("RELAY_DESKTOP_REVISION");
 
+/// The build-time check of `AGENT_RELAY_SITE_URL` and `AGENT_RELAY_URL_SCHEME`
+/// (`build.rs`), tested here.
+#[cfg(test)]
+#[path = "../build_site.rs"]
+mod build_site;
+
 pub mod cli;
 pub mod install;
 pub mod platform;

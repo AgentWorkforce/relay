@@ -5,7 +5,7 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Minor]
+## [Unreleased - Major]
 
 ### Added
 
@@ -15,6 +15,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The core `relay serve` and `relay init` run is messaging-only and is called `agent-relay-node`: `relay init` installs it from `relay-node-v<version>` releases, and `AGENT_RELAY_NODE_PATH` points at a binary of your own. Its commands have no `relay` word (`agent-relay-node serve`, `agent-relay-node call status.get`), and the hooks, Codex rules and Claude permission rules it installs use that form; setup replaces the earlier `… relay …` entries. Session history (capture, upload and the session catalog) lives in the Agent Relay desktop app.
+- The core (`agent-relay-node`) talks to one Agent Relay site, fixed when it is built: `AGENT_RELAY_SITE_URL` at build time (`https://agentrelay.com` when unset; an https origin, or `http://localhost[:port]` / `http://127.0.0.1[:port]`), and a build for a site the core could not trust fails to build. Nothing changes the site at run time, in any build.
+- The core opens links of one scheme, fixed at build time from `AGENT_RELAY_URL_SCHEME` (`agentrelay` when unset; a web scheme such as `https` fails the build); the `agentrelay-dev://` rule for non-production sites is gone, and on Windows the link handler registers the build's scheme.
+- `links.parse` opens links of the build's scheme only, and refuses a connect link for another site naming that site.
+- Relay Connect invite links and the Connect host sign-in are the build's site's.
+
+### Removed
+
+- `agent-relay-node serve --site-url`: the core takes no site at start.
+- The `site_url` field of `account.sign_in` and of `links.parse` in the bridge contract (and the generated Swift contract).
+
+### Fixed
+
+- The desktop spawn node asks Agent Relay for the same node id on every attempt of a first enrollment and keeps the alternate name it took, so a name another node holds is not asked for again; a node enrolled whose answer was lost, or an id another node has, is left behind for a fresh one under the same name.
+- A node token Agent Relay refuses three times in a row stops the spawn node with a status saying so, instead of retrying forever; turning Accept spawns from Agent Relay off and on, or signing in again, enrolls a new node.
+
+### Breaking Changes
+
+- A core built for another site than `https://agentrelay.com` must be built with `AGENT_RELAY_SITE_URL`. `agent-relay-node serve --site-url` is refused; a `site_url` in an `account.sign_in` or `links.parse` request is ignored, as any unknown field is, and the build's site applies.
+
+### Migration Guidance
+
+- Set `AGENT_RELAY_SITE_URL` (and `AGENT_RELAY_URL_SCHEME`, for a build registering its own links) in the environment of `cargo build`; a changed value rebuilds the crate. Leave both unset for production.
+- Drop `--site-url` from `agent-relay-node serve` command lines and launch entries, and `site_url` from `account.sign_in` and `links.parse` requests: the build's site applies.
 
 ## [15.1.1] - 2026-11-03
 

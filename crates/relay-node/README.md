@@ -9,7 +9,7 @@ messaging only. It builds one binary, `agent-relay-node`, which runs as one
 long-lived process per user:
 
 ```sh
-agent-relay-node serve [--socket PATH] [--app-data-dir PATH] [--site-url URL] [--headless]
+agent-relay-node serve [--socket PATH] [--app-data-dir PATH] [--headless]
 ```
 
 The relay CLI (`relay init`, `relay serve`) installs and runs it headless. The

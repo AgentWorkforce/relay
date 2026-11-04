@@ -137,10 +137,11 @@ pub struct People {
     pub people: Vec<WorkspacePerson>,
 }
 
+/// `links.parse`'s parameters. The link's scheme and, for a connect link,
+/// its site are the build's own (`AGENT_RELAY_SITE_URL` and
+/// `AGENT_RELAY_URL_SCHEME` when the core was built); nothing in the request
+/// chooses them.
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct LinkParams {
     pub url: String,
-    /// The site this app is built for; the signed-in site, else
-    /// `https://agentrelay.com`, when absent.
-    pub site_url: Option<String>,
 }

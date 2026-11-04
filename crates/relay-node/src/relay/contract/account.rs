@@ -495,10 +495,10 @@ pub enum Flow {
     Device,
 }
 
-/// `account.sign_in`'s parameters.
+/// `account.sign_in`'s parameters. The sign-in is to the site the core was
+/// built for (`AGENT_RELAY_SITE_URL`); nothing in the request chooses it.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, schemars::JsonSchema)]
 pub struct SignInRequest {
-    pub site_url: Option<String>,
     pub workspace: Option<String>,
     pub sharing: SharingMode,
     #[serde(default)]

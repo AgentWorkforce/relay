@@ -18,7 +18,7 @@ mod cursor_cloud;
 mod replicas;
 use crate::relay::contract::{answer, method, Done};
 use crate::relay::daemon::Core;
-use crate::relay::links::{self, Endpoint, DEFAULT_SITE_URL};
+use crate::relay::links::{self, Endpoint};
 use crate::relay::people::RosterQuery;
 use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::telemetry::{
@@ -414,16 +414,8 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
         }
         method::LinksParse::NAME => {
             answer::<method::LinksParse, _>(raw, |request| async move {
-                let site = request
-                    .site_url
-                    .or_else(|| core.plugins.cloud.account().map(|a| a.site_url))
-                    .unwrap_or_else(|| DEFAULT_SITE_URL.into());
-                links::parse_link(&request.url, &site).ok_or_else(|| {
-                    RpcError::new(
-                        ErrorKind::InvalidParams,
-                        "That is not an Agent Relay link this app opens.",
-                    )
-                })
+                links::parse_link(&request.url)
+                    .map_err(|error| RpcError::new(ErrorKind::InvalidParams, error.to_string()))
             })
             .await
         }

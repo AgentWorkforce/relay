@@ -4,13 +4,18 @@
 //!
 //! The node is enrolled once and its id and token are kept in the app data
 //! directory (`spawn-node.json`, 0600), so it is the same node across
-//! restarts. A token Relaycast stops accepting is rotated with the current
-//! one as proof, always under the same id, so the agents spawned on the
-//! node stay bound to it (`rotate`). A name another node holds (another
-//! computer of the same name in the workspace, or this computer's own node
-//! from an install whose `spawn-node.json` is gone) is never retried: the
-//! node is enrolled as `<name>-<4 hex>` instead, saved with it so every
-//! restart uses that name (`enroll_named`).
+//! restarts. The id is chosen and saved before the first enrollment is
+//! asked for, so every attempt asks for the same node (`Pending`). A token
+//! Relaycast stops accepting is rotated with the current one as proof,
+//! always under the same id, so the agents spawned on the node stay bound
+//! to it (`rotate`); a proof Relaycast refuses `TOKEN_REFUSALS` times in a
+//! row is dead, and the node stops and says so, forgetting the enrollment
+//! so the next start enrolls a new node rather than asking forever. A name
+//! another node holds (another computer of the same name in the workspace,
+//! or this computer's own node from an install whose `spawn-node.json` is
+//! gone) is never retried: the node is enrolled as `<name>-<4 hex>`
+//! instead, saved with it so every restart uses that name
+//! (`enroll_named`).
 //!
 //! Requests the core makes on the socket (`agent.register`) are answered by
 //! id. Actions run as their own tasks, so a slow launch never holds up the
@@ -30,8 +35,8 @@ use enroll::ALTERNATES;
 use enroll::{enroll_named, rotate, saved, Refused};
 pub(crate) use enrollment::enrolled_name;
 #[cfg(test)]
-use enrollment::{alternate, fingerprint, node_file, read, save};
-use enrollment::{load, Enrollment};
+use enrollment::{alternate, fingerprint, pending, read, save, save_pending, Pending};
+use enrollment::{forget, load, node_file, pending_file, Enrollment};
 
 use super::wire::{self, Advertisement, HarnessId, InventoryAgent, Invoke, NodeIdentity};
 use crate::relay::contract::plan::PlanLimitExceeded;
@@ -52,6 +57,8 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::{self, client::IntoClientRequest, Message};
 
 pub const NODE_FILE: &str = "spawn-node.json";
+/// The node being enrolled, until it is (`enrollment::Pending`).
+pub const PENDING_FILE: &str = "spawn-node.pending.json";
 
 /// Relaycast calls a node live within 45 s of its last heartbeat.
 const HEARTBEAT: Duration = Duration::from_secs(12);
@@ -61,6 +68,9 @@ const REGISTER_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// How often the node's claim is checked (`NodeHost::claim`).
 const CLAIM_CHECK: Duration = Duration::from_secs(60);
+/// How many rotations in a row Relaycast refuses the node's token as proof
+/// of before the token is taken as dead and the node given up.
+const TOKEN_REFUSALS: u32 = 3;
 
 /// What a node is started with; a change starts a new one.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -227,6 +237,12 @@ enum Ended {
     Closed(String),
     /// Trying again cannot help: the node stops and says why.
     GaveUp(String),
+    /// Relaycast refused the node's token as proof of it on a rotation
+    /// (`node_token_proof_required` with the token sent; never a 401, which
+    /// is the workspace key refused and waited out): the enrollment is
+    /// tried again after the backoff, unless this is the `TOKEN_REFUSALS`th
+    /// time in a row.
+    TokenRefused(String),
     /// Agent Relay refused to enroll this computer: the plan's device cap.
     Refused(PlanLimitExceeded),
 }
@@ -257,9 +273,10 @@ async fn run(
         plan_limit,
     };
     let mut attempt = 0u32;
+    let mut token_refusals = 0u32;
     loop {
         host.state(status(SpawnState::Connecting, None, None));
-        let (reason, plan_limit) = match connect_once(
+        let ended = match connect_once(
             &config,
             host.as_ref(),
             &mut stopped,
@@ -268,8 +285,23 @@ async fn run(
         )
         .await
         {
+            Ended::TokenRefused(reason) => {
+                token_refusals += 1;
+                if token_refusals < TOKEN_REFUSALS {
+                    Ended::Closed(reason)
+                } else {
+                    Ended::GaveUp(dead_token(&config))
+                }
+            }
+            ended => {
+                token_refusals = 0;
+                ended
+            }
+        };
+        let (reason, plan_limit) = match ended {
             Ended::Stopped => break,
-            Ended::Closed(reason) => (reason, None),
+            // A refusal is counted above; one short of the last is a close.
+            Ended::Closed(reason) | Ended::TokenRefused(reason) => (reason, None),
             Ended::Refused(limit) => (limit.message(), Some(limit)),
             Ended::GaveUp(reason) => {
                 host.state(status(SpawnState::Off, Some(reason), None));
@@ -289,6 +321,23 @@ async fn run(
         }
     }
     host.state(SpawnStatus::default());
+}
+
+/// The node's token is dead: Relaycast refused it as proof `TOKEN_REFUSALS`
+/// times in a row, so the enrollment is forgotten (the next start enrolls a
+/// new node) and the node stops, saying how to start it again.
+fn dead_token(config: &NodeConfig) -> String {
+    let again =
+        "Turn Accept spawns from Agent Relay off and on, or sign in again, to enroll it again.";
+    let _ = forget(&pending_file(config));
+    match forget(&node_file(config)) {
+        Ok(()) => format!(
+            "Agent Relay no longer accepts this computer's node token. {again}"
+        ),
+        Err(error) => format!(
+            "Agent Relay no longer accepts this computer's node token, and the node could not be forgotten: {error}. {again}"
+        ),
+    }
 }
 
 async fn open(
@@ -341,6 +390,9 @@ async fn connect_once(
                 Ok(_) => Ended::Closed(refused.into()),
                 Err(Refused::PlanLimit(limit)) => Ended::Refused(limit),
                 Err(Refused::NoName(reason)) => Ended::GaveUp(format!("{refused} {reason}")),
+                Err(Refused::ProofRefused(reason)) => {
+                    Ended::TokenRefused(format!("{refused} {reason}"))
+                }
                 Err(reason) => Ended::Closed(format!("{refused} {}", reason.reason())),
             };
         }
@@ -623,6 +675,47 @@ mod tests {
         assert_eq!(load(&other_name), None);
     }
 
+    /// A record without a token (which no core writes) is not an
+    /// enrollment: its id is not sent as this computer's node without the
+    /// token as proof.
+    #[test]
+    fn a_record_without_a_token_is_not_an_enrollment() {
+        let folder = tempfile::tempdir().unwrap();
+        let config = config(folder.path());
+        std::fs::write(
+            node_file(&config),
+            format!(
+                r#"{{"nodeID":"node_desktop_1","nodeName":"mac-desktop","baseURL":"https://cast.example","workspace":"{}"}}"#,
+                fingerprint(&config.workspace_key)
+            ),
+        )
+        .unwrap();
+        assert_eq!(load(&config), None);
+        assert_eq!(read(&config), None);
+    }
+
+    /// The node being enrolled is kept beside the enrollment, not in its
+    /// place, so an enrollment of another key stays until a new one
+    /// replaces it.
+    #[test]
+    fn a_pending_node_is_kept_in_its_own_file() {
+        let folder = tempfile::tempdir().unwrap();
+        let config = config(folder.path());
+        let asked = Pending::new(&config, "mac-desktop");
+        save_pending(&pending_file(&config), &asked).unwrap();
+        assert!(!node_file(&config).exists());
+        assert_eq!(load(&config), None);
+        assert_eq!(pending(&config), Some(asked.clone()));
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(pending_file(&config)).unwrap()).unwrap();
+        assert_eq!(written["nodeID"], asked.node_id.as_str());
+        assert!(written.get("token").is_none(), "{written}");
+        // Forgotten, with or without a file to forget.
+        forget(&pending_file(&config)).unwrap();
+        assert_eq!(pending(&config), None);
+        forget(&pending_file(&config)).unwrap();
+    }
+
     /// Answers one `GET` with `status` and `body`; returns the request.
     fn answering_relaycast(
         status: &'static str,
@@ -849,9 +942,11 @@ mod tests {
         };
         assert_eq!(limit.limit, PlanLimitKind::Devices);
         assert_eq!((limit.max, limit.current), (5, 5));
-        // Not retried under another name, and nothing is saved.
+        // Not retried under another name, and nothing is enrolled: only
+        // the node asked for is kept, for the next attempt.
         assert!(server.join().unwrap().starts_with("POST /v1/nodes "));
         assert_eq!(read(&config), None);
+        assert!(pending(&config).is_some());
     }
 
     #[tokio::test]
