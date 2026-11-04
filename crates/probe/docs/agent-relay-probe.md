@@ -677,7 +677,8 @@ human-readable install/status/stop commands remain available.
   what each install on this computer shares, from each install's
   `config.json` alone, so it answers while a sync holds local history. With no
   account and workspace it lists every install (optionally only one site's);
-  with both it names that install, on `--site-url` or agentrelay.com, and fails
+  with both it names that install, on `--site-url` or the site this build is
+  made for, and fails
   when it is not set up here. Each entry has `directory`, `site_url`,
   `account_id`, `workspace_id`, `sharing_mode`, `change_pending` (a
   `sharing-change.json` is still being applied) and `upgrade_required`: an

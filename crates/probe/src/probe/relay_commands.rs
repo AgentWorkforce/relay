@@ -37,9 +37,6 @@ pub enum RelayCommands {
         /// Stop when stdin closes: the hosting app holds the other end.
         #[arg(long)]
         exit_on_stdin_eof: bool,
-        /// The Agent Relay site this build signs in to.
-        #[arg(long)]
-        site_url: Option<String>,
         /// Run as the Linux headless service (the systemd user unit).
         #[arg(long)]
         headless: bool,
@@ -358,7 +355,6 @@ pub fn run(command: RelayCommands) -> Result<()> {
             socket,
             app_data_dir,
             exit_on_stdin_eof,
-            site_url,
             headless,
             connect_ephemeral,
             cli_managed,
@@ -366,7 +362,6 @@ pub fn run(command: RelayCommands) -> Result<()> {
             socket,
             app_data_dir,
             exit_on_stdin_eof,
-            site_url,
             headless,
             connect_ephemeral,
             cli_managed,

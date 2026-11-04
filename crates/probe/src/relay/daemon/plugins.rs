@@ -66,7 +66,8 @@ pub trait AccountPlugin: Send + Sync + 'static {
         uid: u32,
         request: &'a Request,
     ) -> Option<BoxFuture<'a, Result<Value, OutboundError>>>;
-    /// The site this account signs in to.
+    /// The site this account signs in to: the one the build is made for
+    /// (`links::built_in_site_url`), which nothing at run time changes.
     fn site_url(&self) -> String;
     /// Reports usage through the account's opt-out and identity.
     fn record_usage(&self, event: TelemetryEvent);

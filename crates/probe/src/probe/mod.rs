@@ -169,7 +169,8 @@ enum HistoryCommands {
 #[cfg(feature = "history")]
 #[derive(Args, Clone)]
 struct Target {
-    #[arg(long, default_value = "https://agentrelay.com")]
+    /// The install's Agent Relay site; default the one this build is made for.
+    #[arg(long, default_value = crate::relay::links::built_in_site_url())]
     site_url: String,
     #[arg(long)]
     account: String,

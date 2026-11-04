@@ -635,7 +635,10 @@ fn auth_error(message: &'static str) -> anyhow::Error {
     CloudAuthError(message).into()
 }
 
-const DEFAULT_CLOUD_API_URL: &str = "https://agentrelay.com/cloud";
+/// The Cloud API of the site this build is made for.
+fn default_cloud_api_url() -> String {
+    format!("{}/cloud", crate::relay::links::built_in_site_url())
+}
 
 const NON_INTERACTIVE_LOGIN: &str = "Agent Relay Cloud login requires an interactive terminal. Re-run in a terminal, or provide --token / CLOUD_API_ACCESS_TOKEN.";
 
@@ -652,17 +655,26 @@ fn is_loopback_origin(url: &Url) -> bool {
 
 /// The Agent Relay Cloud site this process will talk to, as a normalized origin.
 ///
-/// Production is `https://agentrelay.com` exactly; loopback over http is the
-/// documented local-development site. Any other https origin requires the same
-/// explicit opt-in that lets a Cloud bearer reach a non-default RelayHistory.
+/// The site this build is made for (`AGENT_RELAY_SITE_URL` at build time,
+/// `links::built_in_site_url`) and production, `https://agentrelay.com`, are
+/// trusted as they are; loopback over http is the documented local-development
+/// site. Any other https origin requires the same explicit opt-in that lets a
+/// Cloud bearer reach a non-default RelayHistory.
 pub fn site_origin(site: &str) -> Result<String> {
+    site_origin_with(crate::relay::links::built_in_site_url(), site)
+}
+
+/// [`site_origin`] for a build made for `built_in`.
+pub fn site_origin_with(built_in: &str, site: &str) -> Result<String> {
     let url = Url::parse(site.trim())?;
     let local = is_loopback_origin(&url);
+    let built_in = Url::parse(built_in).ok().map(|built_in| built_in.origin());
     anyhow::ensure!(
         (local && url.scheme() == "http")
             || (!local
                 && url.scheme() == "https"
                 && ((url.host_str() == Some("agentrelay.com") && url.port().is_none())
+                    || built_in.is_some_and(|built_in| built_in == url.origin())
                     || untrusted_cloud_base_url_allowed())),
         "untrusted site"
     );
@@ -733,8 +745,9 @@ fn history_url_origin(url: Url) -> Result<String> {
     Ok(url.origin().ascii_serialization())
 }
 
-/// The Cloud API root: explicit selection, else `CLOUD_API_URL`, else production.
-/// Always `{trusted site origin}/cloud`, without a trailing slash.
+/// The Cloud API root: explicit selection, else `CLOUD_API_URL`, else the
+/// site this build is made for. Always `{trusted site origin}/cloud`,
+/// without a trailing slash.
 pub fn cloud_api_url(explicit: Option<&str>) -> Result<String> {
     let selected = explicit
         .map(str::trim)
@@ -746,7 +759,7 @@ pub fn cloud_api_url(explicit: Option<&str>) -> Result<String> {
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
         })
-        .unwrap_or_else(|| DEFAULT_CLOUD_API_URL.to_string());
+        .unwrap_or_else(default_cloud_api_url);
     Ok(format!("{}/cloud", cloud_site(&selected)?))
 }
 
@@ -2123,6 +2136,40 @@ pub(crate) mod tests {
         ] {
             assert!(site_origin(url).is_err());
         }
+        // The site a build is made for is trusted as it is, beside
+        // production and loopback, with no opt-in; nothing else is.
+        let built_in = "https://relay.example.test";
+        assert_eq!(
+            site_origin_with(built_in, "https://relay.example.test/").unwrap(),
+            built_in
+        );
+        assert_eq!(
+            site_origin_with(built_in, "https://Relay.Example.test:443").unwrap(),
+            built_in
+        );
+        assert_eq!(
+            site_origin_with(built_in, "https://agentrelay.com").unwrap(),
+            "https://agentrelay.com"
+        );
+        assert_eq!(
+            site_origin_with(built_in, "http://127.0.0.1:3100").unwrap(),
+            "http://127.0.0.1:3100"
+        );
+        for url in [
+            "https://relay.example.test:8443",
+            "http://relay.example.test",
+            "https://other.example.test",
+            "https://user:secret@relay.example.test",
+            "https://relay.example.test/path",
+        ] {
+            assert!(site_origin_with(built_in, url).is_err(), "{url}");
+        }
+        assert_eq!(
+            site_origin_with("http://localhost:3100", "http://localhost:3100").unwrap(),
+            "http://localhost:3100"
+        );
+        assert!(site_origin_with("http://localhost:3100", "https://localhost:3100").is_err());
+        assert!(site_origin_with("", "https://relay.example.test").is_err());
         // A pushed session may name production, the dev stage or loopback,
         // and the staging host stays out of the Cloud-bridged path.
         for (raw, origin) in [

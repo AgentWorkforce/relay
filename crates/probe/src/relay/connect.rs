@@ -170,8 +170,10 @@ pub(crate) const CONNECT_PRESENCE_HEADER: (&str, &str) =
 
 pub(crate) fn connect_id(link: &str) -> Option<String> {
     let id = if link.contains("://") {
+        // An invite link is one this build's site issued.
         let url = url::Url::parse(link).ok()?;
-        if url.scheme() != "https" || url.host_str() != Some("agentrelay.com") {
+        let site = url::Url::parse(crate::relay::links::built_in_site_url()).ok()?;
+        if url.origin() != site.origin() {
             return None;
         }
         let parts: Vec<_> = url
@@ -212,7 +214,10 @@ fn cloud_join_url(id: &str, debug_override: Option<&str>) -> String {
     }) {
         return format!("{base}/cloud/connect/{id}/join");
     }
-    format!("https://agentrelay.com/cloud/connect/{id}/join")
+    format!(
+        "{}/cloud/connect/{id}/join",
+        crate::relay::links::built_in_site_url()
+    )
 }
 
 fn cloud_roster_url(id: &str, debug_override: Option<&str>) -> String {
@@ -224,7 +229,7 @@ fn cloud_invite_url(id: &str, debug_override: Option<&str>) -> String {
     if let Some(join) = cloud_join_url(id, debug_override).strip_suffix("/join") {
         return join.replace("/cloud/connect/", "/connect/");
     }
-    format!("https://agentrelay.com/connect/{id}")
+    format!("{}/connect/{id}", crate::relay::links::built_in_site_url())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2134,9 +2139,10 @@ mod tests {
             "http://localhost:4312/test/connect/abc"
         );
         // Cloud's join response advertises this as `participants_url`.
+        let site = crate::relay::links::built_in_site_url();
         assert_eq!(
             cloud_roster_url("abc", None),
-            "https://agentrelay.com/cloud/connect/abc/participants"
+            format!("{site}/cloud/connect/abc/participants")
         );
         for refused in [
             "https://example.com",
@@ -2146,8 +2152,30 @@ mod tests {
         ] {
             assert_eq!(
                 cloud_join_url("abc", Some(refused)),
-                "https://agentrelay.com/cloud/connect/abc/join"
+                format!("{site}/cloud/connect/abc/join")
             );
+        }
+    }
+
+    #[test]
+    fn invite_links_are_this_build_s_site_s() {
+        let site = crate::relay::links::built_in_site_url();
+        assert_eq!(cloud_invite_url("abc", None), format!("{site}/connect/abc"));
+        assert_eq!(
+            connect_id(&format!("{site}/connect/abc")).as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            connect_id(&format!("{site}/cloud/connect/abc/join")).as_deref(),
+            Some("abc")
+        );
+        assert_eq!(connect_id("abc").as_deref(), Some("abc"));
+        for other in [
+            "https://other.example/connect/abc",
+            "http://agentrelay.com/connect/abc",
+            "https://agentrelay.com:8443/connect/abc",
+        ] {
+            assert_eq!(connect_id(other), None, "{other}");
         }
     }
 

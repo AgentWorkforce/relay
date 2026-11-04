@@ -9,7 +9,7 @@ to RelayHistory. It builds one daemon binary, `agent-relay-probe`, which runs
 as one long-lived process per user:
 
 ```sh
-agent-relay-probe relay serve [--socket PATH] [--app-data-dir PATH] [--site-url URL] [--headless]
+agent-relay-probe relay serve [--socket PATH] [--app-data-dir PATH] [--headless]
 ```
 
 The desktop apps (macOS, Linux/Windows GTK and iPad, in the relay-desktop
