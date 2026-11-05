@@ -8,10 +8,7 @@
 import type { RelayNode } from './types.js';
 
 export type PlacementReconcileReason =
-  | 'no_eligible_node'
-  | 'target_offline'
-  | 'unmapped_repo'
-  | 'sandbox_policy_mismatch';
+  'no_eligible_node' | 'target_offline' | 'unmapped_repo' | 'sandbox_policy_mismatch';
 
 /**
  * Evidence state for a targeted spawn placement.

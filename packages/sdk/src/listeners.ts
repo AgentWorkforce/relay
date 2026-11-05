@@ -460,11 +460,7 @@ export interface RelayEventEnvelope {
 }
 
 export type RelayMessageEventType =
-  | 'message.created'
-  | 'message.updated'
-  | 'thread.reply'
-  | 'dm.received'
-  | 'group_dm.received';
+  'message.created' | 'message.updated' | 'thread.reply' | 'dm.received' | 'group_dm.received';
 
 export interface RelayMessageEvent<TType extends RelayMessageEventType = RelayMessageEventType> {
   type: TType;
