@@ -4,6 +4,7 @@ use std::{path::Path, process::Command};
 fn run(script: &Path, directory: &Path, site: &str, version: &str) -> std::process::Output {
     Command::new(script)
         .current_dir(directory)
+        .env("CARGO_FEATURE_EMBEDDED_BUILD_INFO", "1")
         .env("CARGO_CFG_TARGET_OS", "windows")
         .env("AGENT_RELAY_PROBE_VERSION", version)
         .env("AGENT_RELAY_PROBE_GIT_DIR", directory.join("missing-git"))
@@ -29,7 +30,6 @@ fn embedded_build_watches_profile_but_not_release_identity() {
         .join(format!("build-script{}", std::env::consts::EXE_SUFFIX));
     let compiled = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
         .arg("--edition=2021")
-        .args(["--cfg", "feature=\"embedded-build-info\""])
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("build.rs"))
         .arg("-o")
         .arg(&executable)
@@ -57,7 +57,11 @@ fn embedded_build_watches_profile_but_not_release_identity() {
         "https://example.com",
         "2026.11.5-beta.1",
     );
-    assert!(second.status.success());
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
     assert_eq!(first.stdout, second.stdout);
     let output = String::from_utf8(first.stdout).unwrap();
     assert!(output.contains("cargo:rustc-env=AGENT_RELAY_SITE_URL=https://example.com"));

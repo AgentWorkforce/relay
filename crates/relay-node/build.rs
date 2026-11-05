@@ -40,7 +40,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_SITE_URL");
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_URL_SCHEME");
     println!("cargo:rerun-if-changed=build_site.rs");
-    if cfg!(feature = "embedded-build-info") {
+    if env::var_os("CARGO_FEATURE_EMBEDDED_BUILD_INFO").is_some() {
         // Only the executable owns release identity and Windows resources.
         // Site and scheme remain compile-time properties of the core.
         println!("cargo:rerun-if-changed=build.rs");

@@ -21,7 +21,7 @@ fn explicit_fixture_scenarios() {
             .output()
             .unwrap();
         assert!(
-            result.status.success(),
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
             "{scenario}: {}{}",
             String::from_utf8_lossy(&result.stdout),
             String::from_utf8_lossy(&result.stderr)
