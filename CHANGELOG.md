@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay` commands (`cloud`, `fleet`, `agent`, `core`, `doctor`, `skills`, `update` and others) print failures that are not `Error` objects as readable text with credentials masked, instead of `[object Object]`.
 
 ## [17.0.0] - 2026-11-05
 

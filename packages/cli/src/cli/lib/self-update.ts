@@ -20,6 +20,7 @@ import { RELAY_INSTALL_DIR_ENV, getRelayInstallDir } from '@agent-relay/harness-
 
 import type { CoreDependencies } from '../commands/core.js';
 import { isBundledBunEntrypointPath } from './agent-relay-mcp-command.js';
+import { describeError } from './describe-error.js';
 
 const RELEASE_REPO = 'AgentWorkforce/relay';
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
@@ -195,7 +196,7 @@ export async function updateStandaloneInstall(
   try {
     script = await deps.fetchText(url);
   } catch (err: unknown) {
-    throw new UpdateError(`could not download ${url}: ${(err as Error)?.message ?? String(err)}`);
+    throw new UpdateError(`could not download ${url}: ${describeError(err)}`);
   }
   if (!script.startsWith('#!')) {
     throw new UpdateError(`${url} did not return an installer script`);
@@ -221,7 +222,7 @@ export async function updateStandaloneInstall(
       },
     });
   } catch (err: unknown) {
-    throw new UpdateError(`could not run the installer: ${(err as Error)?.message ?? String(err)}`);
+    throw new UpdateError(`could not run the installer: ${describeError(err)}`);
   } finally {
     try {
       deps.fs.rmSync(workDir, { recursive: true, force: true });
@@ -283,7 +284,7 @@ export async function updateNpmInstall(
   try {
     output = await deps.execCommand(command);
   } catch (err: unknown) {
-    throw new UpdateError(`\`${command}\` failed: ${(err as Error)?.message ?? String(err)}`);
+    throw new UpdateError(`\`${command}\` failed: ${describeError(err)}`);
   }
   if (output.stdout.trim().length > 0) deps.log(output.stdout.trimEnd());
   if (output.stderr.trim().length > 0) deps.error(output.stderr.trimEnd());

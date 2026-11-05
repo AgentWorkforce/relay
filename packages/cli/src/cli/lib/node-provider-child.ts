@@ -736,7 +736,7 @@ export async function startNodeJsNodeProvider(
   } catch (err) {
     materialized?.cleanup();
     deps.warn(
-      `Fleet node provider skipped: ${err instanceof Error ? err.message : String(err)}. ` +
+      `Fleet node provider skipped: ${describeError(err)}. ` +
         `Serving a JS/TS node definition from the standalone agent-relay binary requires \`${nodeBin}\` on PATH; ` +
         'set AGENT_RELAY_NODE to point at a Node.js executable.'
     );

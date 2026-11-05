@@ -92,6 +92,7 @@ import type {
   SessionSetter,
   SessionState,
 } from './mcp/types.js';
+import { describeError } from './lib/describe-error.js';
 export type { AgentRelayMcpServerOptions } from './mcp/types.js';
 
 export const AGENT_RELAY_MCP_VERSION =
@@ -287,7 +288,7 @@ async function pollInvocation(
     } catch (error) {
       if (isInvocationAuthorizationError(error)) {
         throw new VerifiedSpawnError(
-          `Spawn confirmation could not be read after acceptance (${error instanceof Error ? error.message : String(error)}). The invocation may still be running; do not retry without checking it first. Invocation: ${current.invocationId}.`,
+          `Spawn confirmation could not be read after acceptance (${describeError(error)}). The invocation may still be running; do not retry without checking it first. Invocation: ${current.invocationId}.`,
           {
             code: 'spawn_unconfirmed',
             state: 'unconfirmed_may_be_running',
@@ -1020,7 +1021,7 @@ async function verifyMetadataLanded(
       timeoutMs
     );
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+    const detail = describeError(error);
     return {
       verified: false,
       warning: `Registered "${name}", but could not read the record back to confirm metadata landed: ${detail}`,
@@ -1028,8 +1029,7 @@ async function verifyMetadataLanded(
   }
 
   const record = agents.find((agent) => (agent as { name?: string } | null)?.name === name) as
-    | { metadata?: Record<string, unknown> }
-    | undefined;
+    { metadata?: Record<string, unknown> } | undefined;
 
   if (!record) {
     return {
@@ -1115,7 +1115,7 @@ function registerAgentRelayTools(
           persistWorkspaceSession({ name: workspaceName, workspaceKey })
         );
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = describeError(error);
         persistenceWarning =
           `Workspace created, but its session could not be persisted locally: ${message}. ` +
           'Keep the returned workspace key and retry persistence before starting another session.';
@@ -1188,7 +1188,7 @@ function registerAgentRelayTools(
         // node; surface that here instead of at the next `node up`.
         clearedEnrollmentWarning = describeClearedEnrollment(persistWorkspaceSession({ workspaceKey: key }));
       } catch (error) {
-        const persistenceError = error instanceof Error ? error.message : String(error);
+        const persistenceError = describeError(error);
         persistenceWarning =
           `The workspace is active for this process, but its session could not be persisted locally: ` +
           `${persistenceError}. Retry persistence before restarting this MCP server.`;
@@ -1670,7 +1670,7 @@ function registerAgentRelayTools(
           requireWorkspaceKey(session);
           workspace = new AgentRelay({ workspaceKey: session.workspaceKey!, baseUrl });
         } catch (error) {
-          unavailable = error instanceof Error ? error.message : String(error);
+          unavailable = describeError(error);
         }
         const removal = workspace
           ? await waitForAgentRemoval({
