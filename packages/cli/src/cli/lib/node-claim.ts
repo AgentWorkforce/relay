@@ -2,7 +2,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describeError } from './describe-error.js';
 
 /**
  * The machine-global Relay home that holds `fleet-enrollments.json`.
@@ -224,7 +223,7 @@ export class NodeClaimHoldError extends Error {
   ) {
     super(
       `could not establish the ownership fence for node ${nodeId} at ${holdPath}: ` +
-        `${describeError(cause)}. ` +
+        `${cause instanceof Error ? cause.message : String(cause)}. ` +
         'Startup was stopped rather than run a broker that another start could silently take the node from. ' +
         'Ensure the claims directory is writable and has free space, then retry.',
       { cause }

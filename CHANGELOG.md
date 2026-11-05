@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- `agent-relay` commands (`cloud`, `fleet`, `agent`, `core`, `doctor`, `skills`, `update` and others) print failures that are not `Error` objects as readable text with credentials masked, instead of `[object Object]`.
+- `agent-relay` commands such as `cloud`, `fleet`, `agent`, `core`, `doctor`, `skills` and `update` print failures that are not `Error` objects as readable messages.
+- `agent-relay` command error output masks credentials, including tokens echoed in server error messages.
 
 ## [17.0.0] - 2026-11-05
 
