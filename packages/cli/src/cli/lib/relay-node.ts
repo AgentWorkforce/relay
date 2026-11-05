@@ -3,7 +3,7 @@
  * the coding-agent sessions running on this machine and injects Relay
  * messages into them through each tool's own route (Claude Code's session
  * inbox, Codex hooks and queue, the OpenCode and Pi plugins, Devin and Cursor
- * hooks, Grok's leader socket). `relay init` installs it from a `relay-node-v<version>`
+ * hooks, Grok's leader socket). `relay init` installs it from a `v<CLI version>`
  * GitHub release of this repository, runs it in the background, and turns on
  * the core's delivery settings for the agent tools the person picked.
  *
@@ -25,10 +25,6 @@ import type { ClaudeFileState, OpenCodeState, PiState } from './init-leftovers.j
 import type { EnginePlatform } from './relaycast-engine-install.js';
 import { relaySkillRecordOf, type RelaySkillRecord } from './relay-skill.js';
 
-/** The core `relay init` installs. Pinned so every machine runs the same core. */
-export const RELAY_NODE_VERSION = '17.0.0';
-/** Release tags of the core; distinct from the CLI's `v*` tags. */
-export const RELAY_NODE_TAG_PREFIX = 'relay-node-v';
 const RELEASE_BASE = 'https://github.com/AgentWorkforce/relay/releases/download';
 /** The bridge version this client speaks (`crates/relay-node/src/relay/protocol.rs`). */
 export const BRIDGE_VERSION = 2;
@@ -67,7 +63,7 @@ export function relayNodeAssetName(version: string, target: EnginePlatform): str
  * @returns The GitHub release download URL; the checksum is at `<url>.sha256`
  */
 export function relayNodeAssetUrl(version: string, asset: string): string {
-  return `${RELEASE_BASE}/${RELAY_NODE_TAG_PREFIX}${version}/${asset}`;
+  return `${RELEASE_BASE}/v${version}/${asset}`;
 }
 
 /**

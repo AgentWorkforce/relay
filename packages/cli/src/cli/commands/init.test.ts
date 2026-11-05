@@ -15,7 +15,7 @@ import { readProjectWorkspaceKey } from '../lib/project-workspace-key.js';
 import { registerAgentCommands } from './agent.js';
 import { DownloadHttpError, engineAssetName } from '../lib/relaycast-engine-install.js';
 import { LOCAL_ENGINE_VERSION, registerInitCommand, type InitCommandDependencies } from './init.js';
-import { RELAY_NODE_VERSION, type CoreClient } from '../lib/relay-node.js';
+import type { CoreClient } from '../lib/relay-node.js';
 import {
   RELAY_SKILL_NAME,
   RELAY_SKILL_REF,
@@ -62,6 +62,8 @@ function jsonResponse(status: number, body: unknown = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
+const TEST_CLI_VERSION = '16.0.0';
+
 function setup(overrides: Partial<InitCommandDependencies> = {}) {
   const logs: string[] = [];
   const errors: string[] = [];
@@ -70,6 +72,7 @@ function setup(overrides: Partial<InitCommandDependencies> = {}) {
     workspaceKey: `rk_live_${name}_${baseUrl?.includes('127.0.0.1') ? 'local' : 'remote'}`,
   }));
   const deps: Partial<InitCommandDependencies> = {
+    cliVersion: TEST_CLI_VERSION,
     log: (...args) => logs.push(args.join(' ')),
     error: (...args) => errors.push(args.join(' ')),
     exit: vi.fn((code: number) => {
@@ -1200,7 +1203,7 @@ function fakeCore(
     fs.mkdirSync(path.dirname(marker), { recursive: true });
     fs.writeFileSync(marker, "Agent Relay's Pi extension was turned off (pi_extension).\n");
   };
-  let version = RELAY_NODE_VERSION;
+  let version = TEST_CLI_VERSION;
   const client: CoreClient = {
     async call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
       calls.push([method, params]);
@@ -1277,7 +1280,7 @@ function fakeCore(
     startForeign: (foreignPid = 777) => {
       up = true;
       pid = foreignPid;
-      version = RELAY_NODE_VERSION;
+      version = TEST_CLI_VERSION;
     },
     setVersion: (next: string) => {
       version = next;
@@ -1288,11 +1291,11 @@ function fakeCore(
       startCore: vi.fn(() => {
         up = true;
         pid = 5151;
-        version = RELAY_NODE_VERSION;
+        version = TEST_CLI_VERSION;
         return pid;
       }),
       // Only the core's pid is alive; the fake local server's is separate.
-      relayNodeVersion: vi.fn(() => RELAY_NODE_VERSION),
+      relayNodeVersion: vi.fn(() => TEST_CLI_VERSION),
     } satisfies Partial<InitCommandDependencies>,
   };
 }
@@ -1653,9 +1656,7 @@ describe('relay init message injection', () => {
       { auto_activate: true },
     ]);
     const output = logs.join('\n');
-    expect(output).toContain(
-      `Started the Agent Relay core (agent-relay-node ${RELAY_NODE_VERSION}, pid 5151)`
-    );
+    expect(output).toContain(`Started the Agent Relay core (agent-relay-node ${TEST_CLI_VERSION}, pid 5151)`);
     expect(output).toMatch(/Claude Code\s+injected through Claude Code's session inbox/);
     expect(output).toMatch(/Codex\s+injected through PostToolUse, Stop and SessionStart hooks/);
     expect(output).toContain('apply in every project on this machine');
@@ -1694,7 +1695,7 @@ describe('relay init message injection', () => {
     await run('--tools', 'codex');
     expect(core.calls.map(([method]) => method)).toContain('daemon.shutdown');
     expect(core.deps.startCore).toHaveBeenCalledTimes(2);
-    expect(logs.join('\n')).toContain(`Updating the Agent Relay core from 15.0.5 to ${RELAY_NODE_VERSION}`);
+    expect(logs.join('\n')).toContain(`Updating the Agent Relay core from 15.0.5 to ${TEST_CLI_VERSION}`);
   });
 
   describe('starting the desktop app core', () => {
@@ -1716,7 +1717,7 @@ describe('relay init message injection', () => {
       expect(fs.existsSync(corePath())).toBe(false);
       const output = logs.join('\n');
       expect(output).toContain(
-        `Asked the Agent Relay desktop app to start its core; using the core now running on this machine (agent-relay-node ${RELAY_NODE_VERSION}, pid 777)`
+        `Asked the Agent Relay desktop app to start its core; using the core now running on this machine (agent-relay-node ${TEST_CLI_VERSION}, pid 777)`
       );
       expect(output).not.toContain('could not be started');
       expect(core.sets()).toContainEqual({ codex_stop_hook: true });
@@ -1865,7 +1866,7 @@ describe('relay init message injection', () => {
       const core = fakeCore();
       const relayNodeVersion = vi.fn(() => {
         core.startForeign(777);
-        return RELAY_NODE_VERSION;
+        return TEST_CLI_VERSION;
       });
       const stop = vi.fn();
       const { run, logs } = setup({
@@ -2728,27 +2729,36 @@ describe('relay init message injection', () => {
     expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
   });
 
-  it('downloads, verifies and installs the pinned core from its relay-node-v release', async () => {
-    const asset = `agent-relay-node-${RELAY_NODE_VERSION}-linux-x64`;
-    const url = `https://github.com/AgentWorkforce/relay/releases/download/relay-node-v${RELAY_NODE_VERSION}/${asset}`;
-    const body = new TextEncoder().encode('#!/bin/sh\necho agent-relay-node\n');
-    const digest = createHash('sha256').update(body).digest('hex');
-    const downloadRelayNode = vi.fn(async (requested: string) => {
-      if (requested === url) return body;
-      if (requested === `${url}.sha256`) return new TextEncoder().encode(`${digest}  ${asset}\n`);
-      throw new DownloadHttpError(requested, 404);
-    });
-    const core = fakeCore();
-    const relayNodeVersion = vi.fn((binary: string) =>
-      binary.endsWith('.tmp') ? RELAY_NODE_VERSION : undefined
-    );
-    const { run, logs } = setup({ ...core.deps, downloadRelayNode, relayNodeVersion });
-    await run('--tools', 'claude');
-    expect(downloadRelayNode).toHaveBeenCalledWith(url, expect.anything());
-    expect(fs.readFileSync(path.join(home, 'bin', 'agent-relay-node'))).toEqual(Buffer.from(body));
-    expect(logs.join('\n')).toContain(`Installed agent-relay-node v${RELAY_NODE_VERSION}`);
-    expect(core.deps.startCore).toHaveBeenCalledTimes(1);
+  it('keeps the MCP route when the CLI release version is unavailable', async () => {
+    const { run, logs, deps } = setup({ cliVersion: undefined });
+    await run('--tools', 'claude', '--scope', 'project');
+    expect(deps.downloadRelayNode).not.toHaveBeenCalled();
+    expect(logs.join('\n')).toContain('Message injection is not available (the CLI version is unavailable)');
+    expect(mcpJson().mcpServers).toHaveProperty('agent-relay');
   });
+
+  it.each(['16.0.0', '16.1.0-next.6'])(
+    'downloads and verifies the core from CLI release v%s',
+    async (cliVersion) => {
+      const asset = `agent-relay-node-${cliVersion}-linux-x64`;
+      const url = `https://github.com/AgentWorkforce/relay/releases/download/v${cliVersion}/${asset}`;
+      const body = new TextEncoder().encode('#!/bin/sh\necho agent-relay-node\n');
+      const digest = createHash('sha256').update(body).digest('hex');
+      const downloadRelayNode = vi.fn(async (requested: string) => {
+        if (requested === url) return body;
+        if (requested === `${url}.sha256`) return new TextEncoder().encode(`${digest}  ${asset}\n`);
+        throw new DownloadHttpError(requested, 404);
+      });
+      const core = fakeCore();
+      const relayNodeVersion = vi.fn((binary: string) => (binary.endsWith('.tmp') ? cliVersion : undefined));
+      const { run, logs } = setup({ ...core.deps, cliVersion, downloadRelayNode, relayNodeVersion });
+      await run('--tools', 'claude');
+      expect(downloadRelayNode).toHaveBeenCalledWith(url, expect.anything());
+      expect(fs.readFileSync(path.join(home, 'bin', 'agent-relay-node'))).toEqual(Buffer.from(body));
+      expect(logs.join('\n')).toContain(`Installed agent-relay-node v${cliVersion}`);
+      expect(core.deps.startCore).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('refuses a core whose checksum does not match, and uses the MCP server', async () => {
     const downloadRelayNode = vi.fn(async (requested: string) =>

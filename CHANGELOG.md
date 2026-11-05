@@ -5,17 +5,30 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Major]
+## [Unreleased]
+
+## [17.0.0] - 2026-11-05
+
+### Fixed
+
+- `agent-relay-node` keeps messages to registered Claude Code app chats, Anthropic Agent SDK sessions, `claude --print` and structured JSON runs on their ordinary inbox route when mobile continuation is enabled.
+- Updated Claude mobile plugins and cores explain recognized stopped-session and host-limit refusals; older counterparts retain generic failure notices. Refused and uncertain input is never replayed.
+- A rejected first Claude mobile submission no longer leaves provisional mobile control active.
 
 ### Changed
 
-- The core is now `agent-relay-node`: `relay init` installs it from `relay-node-v<version>` releases, and `AGENT_RELAY_NODE_PATH` points at a binary of your own.
+- The core is now `agent-relay-node`: `relay init` installs the version matching its CLI from the same `v<version>` release, and `AGENT_RELAY_NODE_PATH` points at a binary of your own.
 - The core's commands have no `relay` word (`agent-relay-node serve`, `agent-relay-node call status.get`). The hooks, Codex rules and Claude permission rules it installs use that form, and setup replaces the earlier `… relay …` entries.
 - The core is the messaging runtime: session discovery, delivery, spawning, harness setup and the bridge. Session history, uploads, Agent Relay Cloud sign-in and the Cloud provider methods are the desktop app's.
 
 ### Removed
 
 - The account, uploader, tools, telemetry, chat, contractor, Cloud provider and `sessions.transcript` bridge methods: a core outside the desktop app answers them `method_not_found`.
+
+### Fixed
+
+- `agent-relay` installs beside `@agent-relay/sdk` and `@agent-relay/harness-driver` 17 without a dependency conflict.
+- `agent-relay cloud worker` no longer fails to start flows against a self-hosted Relay with `failed to initialize relaycast session`: flows no longer run on an old bundled broker.
 
 ### Breaking Changes
 

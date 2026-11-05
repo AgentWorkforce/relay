@@ -11,8 +11,10 @@ use crate::relay::spawn::drive::direct_from;
 use crate::relay::store::{Registration, SessionKind};
 
 pub(crate) mod journal;
+mod refusal;
 pub(crate) use journal::Binding;
 pub use journal::Runtime;
+pub(crate) use refusal::Refusal;
 
 pub(crate) fn eligible(registration: &Registration) -> bool {
     registration.target.kind == SessionKind::ClaudeTerminal
@@ -479,6 +481,7 @@ fn delivery_outcome(outcome: journal::Outcome) -> InjectOutcome {
             journal::Outcome::Failed => InjectOutcome::Refused(
                 "Claude could not start the mobile message. The message was not submitted.".into(),
             ),
+            journal::Outcome::Refused(reason) => InjectOutcome::Refused(reason.notice().into()),
             journal::Outcome::InDoubt => InjectOutcome::InDoubt(
                 "Claude's native submission was not confirmed; the message will not be sent again."
                     .into(),

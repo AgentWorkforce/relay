@@ -56,6 +56,16 @@ contract), `call`, the harness hooks and `connect`. The account methods
 answer `method_not_found`, and the core uses the workspace the `agent-relay`
 CLI selects (`src/relay/workspace/cli.rs`), with no sign-in needed.
 
+## Claude mobile continuation
+
+On macOS and Linux, Claude Code terminal sessions can receive the verified owner's
+mobile messages as native user turns through Relay's plugin. Agent SDK,
+`claude --print` and pipe-driven sessions, including app-hosted chats, keep their
+ordinary peer inbox instead: their host owns the input and interrupt lifecycle. Turning mobile continuation on does not
+replace that inbox. A native submission refused after Stop or by a host limit
+is reported without automatic replay; unknown outcomes are never resubmitted.
+Native mobile continuation is unavailable on Windows.
+
 ## Build and test
 
 ```sh
@@ -70,6 +80,28 @@ HOME="$(mktemp -d)" cargo test --manifest-path crates/relay-node/Cargo.toml --lo
 `.github/workflows/relay-node-ci.yml` builds and tests on Linux x64 and macOS
 arm64, builds on Windows x64, checks the generated contract for drift and runs
 `scripts/check-open-source.sh`.
+
+### Releasing the CLI and node
+
+`.github/workflows/publish.yml` versions the CLI and node together. It builds
+`agent-relay-node` for Linux x64/ARM64, macOS x64/ARM64 and Windows x64, stamps
+the CLI version into each binary, and verifies the native builds report it.
+The `v<version>` GitHub release contains
+`agent-relay-node-<version>-<os>-<arch>[.exe]` and a `.sha256` sidecar for each
+binary. All five binaries and their checksums must be available, and broker
+smoke tests must pass, before any npm package is published. The release stays
+off GitHub's latest release until npm publication and post-publish verification
+succeed; only then can the workflow advance the release branch and promote a
+stable release. Dry runs build and check the artifacts without creating a
+release or publishing packages.
+
+Retries reuse a release only when its tag records the same source commit and
+package mode. Use a new version when switching from `sdk` or `cli-prerelease`
+mode to `all` or `main`. The `sdk` and `cli-prerelease` modes do not replace
+GitHub's latest release or advance the release branches.
+
+`relay init` downloads the node from its own CLI version's release. There is
+no independently selected node version or separate node release workflow.
 
 ### Version stamping
 
@@ -141,6 +173,10 @@ crates/relay-node/scripts/generate-contract.sh --out /tmp/CoreContract.swift
   `agent-relay-node` as a library (a git dependency pinned to a relay commit,
   `default-features = false`). `desktop-core` adds the account, session
   history and its own binary through the seams above.
+  When adopting a Relay release, pin both desktop Cargo manifests to the
+  commit resolved by its `v<version>` tag, refresh both lockfiles, and regenerate
+  the Swift contract. This uses the same core source as the CLI's node;
+  the desktop still stamps its own application version.
 - **Swift (macOS/iPad):** `CoreContract.swift` comes from
   `contract/CoreContract.swift` (or `generate-contract.sh --app-root`).
 

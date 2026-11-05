@@ -419,3 +419,62 @@ fn an_open_doorbell_keeps_a_message_waiting_through_a_long_turn() {
         Some(Outcome::Unavailable)
     );
 }
+
+#[test]
+fn recognized_provider_refusals_survive_restart_without_replay_or_control() {
+    for reason in [
+        Refusal::Stopped,
+        Refusal::HostEnded,
+        Refusal::TurnLimit,
+        Refusal::BudgetLimit,
+    ] {
+        let mut queue = Journal::default();
+        queue
+            .enqueue(binding(), "delivery", "private message", 0)
+            .unwrap();
+        let submit = queue.poll(&binding(), &runtime(false), 1).unwrap();
+        let Action::Submit { control_token, .. } = &submit;
+        let control_token = control_token.clone();
+        assert!(queue.control_valid(&binding(), &runtime(false), &control_token, false));
+        let id = queue
+            .ack(&binding(), &runtime(false), lease(&submit), false, 2)
+            .unwrap();
+        queue.record_refusal(&id, reason);
+        assert!(!queue.confirmed_active_runtime(&binding(), &runtime(false)));
+        assert!(!queue.control_valid(&binding(), &runtime(false), &control_token, false));
+        let bytes = serde_json::to_vec(&queue).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("private message"));
+        let mut restored: Journal = serde_json::from_slice(&bytes).unwrap();
+        assert!(!restored.control_valid(&binding(), &runtime(false), &control_token, false));
+        assert_eq!(
+            restored
+                .enqueue(binding(), "delivery", "private message", 3)
+                .unwrap(),
+            Outcome::Refused(reason)
+        );
+        assert_eq!(restored.notice(&binding().scope), reason.notice());
+        assert!(restored.poll(&binding(), &runtime(false), 4).is_none());
+    }
+}
+
+#[test]
+fn a_later_refusal_does_not_revoke_an_earlier_confirmed_generation() {
+    let mut queue = Journal::default();
+    queue.enqueue(binding(), "accepted", "first", 0).unwrap();
+    let first = queue.poll(&binding(), &runtime(false), 1).unwrap();
+    let Action::Submit { control_token, .. } = &first;
+    queue
+        .ack(&binding(), &runtime(false), lease(&first), true, 2)
+        .unwrap();
+    queue.enqueue(binding(), "rejected", "second", 3).unwrap();
+    let second = queue.poll(&binding(), &runtime(false), 4).unwrap();
+    queue
+        .ack(&binding(), &runtime(false), lease(&second), false, 5)
+        .unwrap();
+    assert!(queue.control_valid(&binding(), &runtime(false), control_token, true));
+    assert_eq!(
+        queue.previous(&binding().scope, "rejected", true, 6),
+        Some(Outcome::Failed)
+    );
+    assert!(queue.poll(&binding(), &runtime(false), 7).is_none());
+}

@@ -36,7 +36,7 @@ impl SessionDirectory for LocalSessions {
         if matches.next().is_some() {
             return None;
         }
-        if !matches!(session.kind.as_deref()?, "background" | "interactive") {
+        if !crate::relay::claude_mobile_plugin::native_input_supported(session, &*self.table) {
             return None;
         }
         // The native Mods HTTP client runs inside Claude itself. A tool,

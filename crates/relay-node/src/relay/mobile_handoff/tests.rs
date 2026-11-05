@@ -12,6 +12,8 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
 
+mod rejection_routes;
+
 #[path = "../../../tests/support/fake_relaycast.rs"]
 mod fake_relaycast;
 

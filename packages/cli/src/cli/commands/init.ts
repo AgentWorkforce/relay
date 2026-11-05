@@ -59,7 +59,6 @@ import {
   AUTO_ACTIVATE,
   CORE_START_TIMEOUT_MS,
   CORE_DELIVERY,
-  RELAY_NODE_VERSION,
   connectCore,
   coreSocketPath,
   deliveryKeys,
@@ -138,7 +137,7 @@ export interface InitCommandDependencies extends SdkCommandDeps {
   toolContext: () => ToolContext;
   /** Runs an agent tool's own `mcp add`. */
   runTool: RunTool;
-  /** This CLI's version, pinned when agent tools start Relay through npx. */
+  /** This CLI's version, used for its core release and npx launchers. */
   cliVersion?: string;
   /** The command agent tools run for `relay mcp`, for an install scope. */
   resolveLaunch: (ctx: ToolContext, scope: InstallScope) => McpLaunch;
@@ -1096,7 +1095,7 @@ function relayNodeCommand(): string {
   return shellWord(process.env[RELAY_NODE_PATH_ENV]?.trim() || getCanonicalRelayNodePath());
 }
 
-/** The core binary: `AGENT_RELAY_NODE_PATH`, else the pinned release in the canonical bin slot. */
+/** The core binary: `AGENT_RELAY_NODE_PATH`, else this CLI's release in the canonical bin slot. */
 async function installRelayNode(
   deps: InitCommandDependencies
 ): Promise<{ binary: string } | { reason: string }> {
@@ -1106,24 +1105,25 @@ async function installRelayNode(
       ? { binary: explicit }
       : { reason: `${RELAY_NODE_PATH_ENV} (${explicit}) is not an executable file` };
   }
+  const coreVersion = deps.cliVersion?.trim();
+  if (!coreVersion) return { reason: 'the CLI version is unavailable' };
   const target = getCanonicalRelayNodePath();
   const platform = deps.enginePlatform();
-  const asset = relayNodeAssetName(RELAY_NODE_VERSION, platform);
+  const asset = relayNodeAssetName(coreVersion, platform);
   const result = await ensureReleaseBinary({
-    version: RELAY_NODE_VERSION,
+    version: coreVersion,
     target,
     asset,
-    url: asset ? relayNodeAssetUrl(RELAY_NODE_VERSION, asset) : undefined,
+    url: asset ? relayNodeAssetUrl(coreVersion, asset) : undefined,
     unsupported: `no Agent Relay core is published for ${platform.platform}-${platform.arch}${
       platform.musl ? ' (musl)' : ''
     }`,
-    description: `the Agent Relay core (agent-relay-node v${RELAY_NODE_VERSION}, ${asset})`,
+    description: `the Agent Relay core (agent-relay-node v${coreVersion}, ${asset})`,
     download: deps.downloadRelayNode,
     readVersion: deps.relayNodeVersion,
     progress: (line) => deps.log(line),
   });
-  if (result.status === 'installed')
-    deps.log(`Installed agent-relay-node v${RELAY_NODE_VERSION} to ${target}.`);
+  if (result.status === 'installed') deps.log(`Installed agent-relay-node v${coreVersion} to ${target}.`);
   if (result.status !== 'failed') return { binary: target };
   if (isUsableBinary(target)) {
     deps.log(`Could not update the Agent Relay core (${result.reason}); using the one at ${target}.`);
@@ -1157,14 +1157,15 @@ async function retireOutdatedCore(
   running: NonNullable<Awaited<ReturnType<typeof connectTo>>>
 ): Promise<boolean> {
   const { pid, version } = running.status.daemon;
-  if (version === RELAY_NODE_VERSION || process.env[RELAY_NODE_PATH_ENV]?.trim()) return false;
+  const coreVersion = deps.cliVersion?.trim();
+  if (!coreVersion || version === coreVersion || process.env[RELAY_NODE_PATH_ENV]?.trim()) return false;
   const node = await installRelayNode(deps);
   // A failed download leaves the old binary in place and usable.
-  if ('reason' in node || deps.relayNodeVersion(node.binary) !== RELAY_NODE_VERSION) {
-    deps.log(`Keeping the Agent Relay core ${version}; ${RELAY_NODE_VERSION} could not be fetched.`);
+  if ('reason' in node || deps.relayNodeVersion(node.binary) !== coreVersion) {
+    deps.log(`Keeping the Agent Relay core ${version}; ${coreVersion} could not be fetched.`);
     return false;
   }
-  deps.log(`Updating the Agent Relay core from ${version} to ${RELAY_NODE_VERSION}…`);
+  deps.log(`Updating the Agent Relay core from ${version} to ${coreVersion}…`);
   await running.client.call('daemon.shutdown').catch(() => undefined);
   running.client.close();
   for (let i = 0; i < 40 && deps.isAlive(pid); i += 1) await deps.sleep(250);

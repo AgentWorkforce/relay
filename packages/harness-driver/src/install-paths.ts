@@ -17,7 +17,7 @@
  *   relaycast-engine     local Relaycast server (install.sh, when published)
  *   agent-relay-node     the Agent Relay core that injects messages into
  *                        running agent sessions (`relay init`, from a
- *                        `relay-node-v<version>` GitHub release)
+ *                        CLI's `v<version>` GitHub release)
  *
  * `install.sh` resolves the same directory, so the shell installer and the
  * runtime resolvers cannot disagree about where binaries live.
