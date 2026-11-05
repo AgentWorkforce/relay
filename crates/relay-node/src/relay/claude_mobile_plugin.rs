@@ -164,6 +164,7 @@ impl Core {
 pub(crate) fn session_roots(
     config: &crate::relay::claude::ClaudeConfig,
     sessions: &[crate::relay::claude::TerminalSession],
+    table: &dyn crate::relay::process::ProcessTable,
 ) -> std::collections::BTreeMap<crate::relay::store::Target, PathBuf> {
     let mut roots = std::collections::BTreeMap::new();
     for session in sessions {
@@ -171,15 +172,14 @@ pub(crate) fn session_roots(
             crate::relay::store::SessionKind::ClaudeTerminal,
             &session.session_id,
         );
-        let root =
-            matches!(session.kind.as_deref(), Some("interactive" | "background")).then(|| {
-                session
-                    .registry
-                    .as_deref()
-                    .and_then(Path::parent)
-                    .unwrap_or(&config.home)
-                    .to_path_buf()
-            });
+        let root = native_input_supported(session, table).then(|| {
+            session
+                .registry
+                .as_deref()
+                .and_then(Path::parent)
+                .unwrap_or(&config.home)
+                .to_path_buf()
+        });
         roots
             .entry(target)
             .and_modify(|known| *known = None)
@@ -189,6 +189,28 @@ pub(crate) fn session_roots(
         .into_iter()
         .filter_map(|(target, root)| root.map(|root| (target, root)))
         .collect()
+}
+
+/// An app can publish an `interactive` session while owning Claude's input
+/// through the SDK. Its stop/input lifecycle does not belong to the mod:
+/// `prompt.submit` may reject even while the peer inbox remains available.
+/// Keep those sessions on their existing inbox route, independently of the
+/// mobile setting. Check the running process too: entrypoint labels alone
+/// do not distinguish every host. Require positive terminal input, not only
+/// the absence of SDK flags.
+pub(crate) fn native_input_supported(
+    session: &crate::relay::claude::TerminalSession,
+    table: &dyn crate::relay::process::ProcessTable,
+) -> bool {
+    if !matches!(session.kind.as_deref(), Some("interactive" | "background"))
+        || session
+            .entrypoint
+            .as_deref()
+            .is_some_and(|entry| entry == "sdk" || entry.starts_with("sdk-"))
+    {
+        return false;
+    }
+    crate::relay::claude::is_interactive_terminal(table, session)
 }
 
 pub(crate) fn install(config: &Path, socket: &Path) -> Result<(), String> {

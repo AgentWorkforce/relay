@@ -1,6 +1,7 @@
 //! A durable, bounded native-input queue. Taking text is irreversible: a
 //! lost acknowledgement never makes it eligible for another submission.
 
+use super::Refusal;
 use crate::platform::fs::{create_private_dir, write_atomic};
 use crate::relay::store::random_uuid;
 use fs2::FileExt;
@@ -52,6 +53,8 @@ struct Entry {
     /// and turning the setting off cancels it while unsent.
     #[serde(default)]
     teammate: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refusal: Option<Refusal>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -75,6 +78,7 @@ pub(crate) enum Outcome {
     Waiting,
     Started,
     Failed,
+    Refused(Refusal),
     InDoubt,
     Unavailable,
 }
@@ -124,7 +128,7 @@ impl Journal {
                 return Err("The queued message no longer matches this session.".into());
             }
             expire(entry, now);
-            return Ok(outcome(&entry.state));
+            return Ok(outcome(entry));
         }
         if text.len() > MAX_TEXT || self.entries.len() >= MAX_ENTRIES {
             return Err("The mobile message queue is full.".into());
@@ -137,6 +141,7 @@ impl Journal {
                 until: now + LEASE_MS,
             },
             teammate,
+            refusal: None,
         });
         Ok(Outcome::Waiting)
     }
@@ -192,7 +197,7 @@ impl Journal {
             cancel(entry);
         }
         expire(entry, now);
-        Some(outcome(&entry.state))
+        Some(outcome(entry))
     }
 
     pub fn pending_binding(&self, scope: &str, delivery_id: &str) -> Option<Binding> {
@@ -284,6 +289,16 @@ impl Journal {
     }
 
     pub fn notice(&self, scope: &str) -> &'static str {
+        if let Some(reason) = self
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| entry.binding.scope == scope)
+            .filter(|entry| matches!(entry.state, State::Failed))
+            .and_then(|entry| entry.refusal)
+        {
+            return reason.notice();
+        }
         match self.entries.iter().rev().find(|entry| entry.binding.scope == scope).map(|entry| &entry.state) {
             Some(State::Unavailable) => "Restart or reload Claude to enable mobile control, then send the message again. This message was not submitted.",
             Some(State::Failed | State::InDoubt) => "Claude's mobile connection could not be confirmed. Check the message status before sending again.",
@@ -458,8 +473,30 @@ impl Journal {
                     active.confirmed = true;
                 }
             }
+        } else {
+            // Provisional control exists only so the first submission can
+            // ask for approval before its acknowledgement. A refusal ends
+            // that authority. A previously confirmed generation, however,
+            // still belongs to the earlier accepted turn.
+            self.active.retain(|active| {
+                active.binding != *binding
+                    || (active.runtime.pid, active.runtime.start) != (runtime.pid, runtime.start)
+                    || active.confirmed
+            });
         }
         Some(delivery_id)
+    }
+
+    /// Called only after this lease's authenticated failed acknowledgement.
+    /// It adds an explanation, never a second submission or retry path.
+    pub fn record_refusal(&mut self, delivery_id: &str, refusal: Refusal) {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.delivery_id == delivery_id && matches!(entry.state, State::Failed))
+        {
+            entry.refusal = Some(refusal);
+        }
     }
 }
 
@@ -481,10 +518,13 @@ fn expire(entry: &mut Entry, now: i64) {
     entry.text.clear();
 }
 
-fn outcome(state: &State) -> Outcome {
-    match state {
+fn outcome(entry: &Entry) -> Outcome {
+    match &entry.state {
         State::Started => Outcome::Started,
-        State::Failed => Outcome::Failed,
+        State::Failed => entry
+            .refusal
+            .map(Outcome::Refused)
+            .unwrap_or(Outcome::Failed),
         State::InDoubt => Outcome::InDoubt,
         State::Unavailable => Outcome::Unavailable,
         _ => Outcome::Waiting,

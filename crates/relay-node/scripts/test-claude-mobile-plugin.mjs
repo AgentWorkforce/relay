@@ -80,7 +80,9 @@ async function fixture(options = {}) {
     prompt: {
       submit: async (value) => {
         submitted.push(value);
-        return options.drop ? { drop: 'Policy refused' } : { text: value.text };
+        return options.drop !== undefined
+          ? { drop: options.drop === true ? 'Policy refused' : options.drop }
+          : { text: value.text };
       },
     },
   };
@@ -854,3 +856,50 @@ test(
     assert.deepEqual(f.submitted, [{ text: turn.text, asUser: true }]);
   }
 );
+
+test('recognized refusals are bounded, negotiated and never retried', async () => {
+  for (const [drop, refusal] of [
+    ['the session was stopped and nobody has sent input since', 'stopped'],
+    ['the prompt was removed from the queue before it ran', 'stopped'],
+    ['the host has ended its input', 'host_ended'],
+    ['the run reached its --max-turns limit', 'turn_limit'],
+    ['the run is past its --max-budget-usd limit', 'budget_limit'],
+    ['secret prompt /private/path refused by a user hook', undefined],
+  ]) {
+    const f = await fixture({ action: { ...turn, refusal_codes: true }, drop });
+    await f.tick();
+    await f.tick();
+    const expected = { lease_id: turn.lease_id, outcome: 'failed' };
+    if (refusal) expected.refusal = refusal;
+    assert.deepEqual(
+      f.calls.filter((call) => call.route === 'ack').map((call) => call.body),
+      [expected]
+    );
+    assert.equal(f.submitted.length, 1);
+    assert.equal(
+      f.calls.some((call) => JSON.stringify(call.body).includes(drop)),
+      false
+    );
+  }
+});
+
+test('a new plugin keeps failure acknowledgements compatible with old cores', async () => {
+  const f = await fixture({ action: turn, drop: 'the session was stopped and nobody has sent input since' });
+  await f.tick();
+  assert.deepEqual(
+    f.calls.filter((call) => call.route === 'ack').map((call) => call.body),
+    [{ lease_id: turn.lease_id, outcome: 'failed' }]
+  );
+});
+
+test('every defined drop value refuses input even when it is falsy', async () => {
+  for (const drop of ['', false, 0, null]) {
+    const f = await fixture({ action: { ...turn, refusal_codes: true }, drop });
+    await f.tick();
+    assert.equal(f.submitted.length, 1);
+    assert.deepEqual(
+      f.calls.filter((call) => call.route === 'ack').map((call) => call.body),
+      [{ lease_id: turn.lease_id, outcome: 'failed' }]
+    );
+  }
+});

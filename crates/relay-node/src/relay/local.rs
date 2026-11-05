@@ -6445,6 +6445,22 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
     #[test]
     fn mobile_native_runtime_requires_exact_native_process_and_rejects_tool_descendants() {
         let world = world();
+        world
+            .table
+            .processes
+            .lock()
+            .unwrap()
+            .get_mut(&300)
+            .unwrap()
+            .arguments = vec!["claude".into()];
+        world
+            .table
+            .processes
+            .lock()
+            .unwrap()
+            .get_mut(&300)
+            .unwrap()
+            .has_terminal = true;
         let path = world.sessions.config.claude.registry().join("300.json");
         let mut record: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -6462,6 +6478,30 @@ printf '{{"jsonrpc":"2.0","id":"%s","result":{{"stopReason":"end_turn","outputTo
             "ordinary Relay descendant identification stays available"
         );
         assert_eq!((runtime.pid, runtime.start, runtime.idle), (300, 100, true));
+        world
+            .table
+            .processes
+            .lock()
+            .unwrap()
+            .get_mut(&300)
+            .unwrap()
+            .arguments = vec!["claude".into(), "--input-format=stream-json".into()];
+        assert!(
+            world.sessions.mobile_claude_runtime(&target, 300).is_none(),
+            "a running SDK host cannot submit mobile input even with an interactive registry record",
+        );
+        assert!(
+            world.sessions.caller(320).is_ok(),
+            "the ordinary session route stays available"
+        );
+        world
+            .table
+            .processes
+            .lock()
+            .unwrap()
+            .get_mut(&300)
+            .unwrap()
+            .arguments = vec!["claude".into()];
         assert_eq!(
             world.sessions.mobile_claude_runtime(&target, 300),
             Some(runtime.clone())

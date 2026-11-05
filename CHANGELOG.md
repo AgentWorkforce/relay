@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased - Major]
 
+### Fixed
+
+- `agent-relay-node` keeps messages to registered Claude Code app chats, Anthropic Agent SDK sessions, `claude --print` and structured JSON runs on their ordinary inbox route when mobile continuation is enabled.
+- Updated Claude mobile plugins and cores explain recognized stopped-session and host-limit refusals; older counterparts retain generic failure notices. Refused and uncertain input is never replayed.
+- A rejected first Claude mobile submission no longer leaves provisional mobile control active.
+
 ### Changed
 
 - The core is now `agent-relay-node`: `relay init` installs the version matching its CLI from the same `v<version>` release, and `AGENT_RELAY_NODE_PATH` points at a binary of your own.
