@@ -313,11 +313,28 @@ impl SessionDirectory for LocalSessions {
     }
 
     fn holds_codex_thread(&self, pid: i32, thread: &str) -> bool {
-        crate::relay::process::has_codex_writer_for_caller(
+        crate::relay::process::has_unambiguous_codex_hook_writer(
             &*self.table,
             pid,
             self.config.uid,
             thread,
+        )
+    }
+
+    fn codex_hook_turn_matches(&self, pid: i32, thread: &str, turn: &str) -> bool {
+        let Some(path) = codex::rollout::rollout_path(&self.config.codex, thread) else {
+            return false;
+        };
+        crate::relay::process::with_codex_hook_rollout(
+            &*self.table,
+            pid,
+            self.config.uid,
+            thread,
+            &path,
+            || {
+                codex::rollout::RolloutSummary::read(&path)
+                    .is_some_and(|summary| summary.active_turn.as_deref() == Some(turn))
+            },
         )
     }
 

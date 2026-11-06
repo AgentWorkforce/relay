@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
+mod codex_hook;
 mod command_line;
 mod fake;
 #[cfg(any(target_os = "macos", test))]
@@ -23,6 +24,7 @@ mod macos_args_bench;
 #[cfg(target_os = "macos")]
 mod macos_signing;
 mod snapshot;
+pub(crate) use codex_hook::{has_unambiguous_codex_hook_writer, with_codex_hook_rollout};
 pub use command_line::CommandLine;
 pub use fake::{FakeProcess, FakeProcesses};
 pub use snapshot::ProcessSnapshot;

@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay-node` can deliver messages to registered VS Code Copilot chats on macOS and resume the same chat while it waits.
 - Copilot messages with uncertain delivery stay pending confirmation and are never blindly submitted again.
 
+### Fixed
+
+- `relay init`'s Codex hooks keep a subagent from receiving its parent chat's pending messages or registration guidance.
+
 ## [17.0.0] - 2026-11-05
 
 ### Fixed
