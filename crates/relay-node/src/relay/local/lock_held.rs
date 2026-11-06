@@ -136,3 +136,11 @@ pub(super) fn inject(
         _ => InjectOutcome::Refused("This session is not held by a file.".into()),
     }
 }
+
+/// Shared runtimes without a readable per-chat tag cannot name a socket caller.
+/// In particular, Copilot's MCP/tool process may not choose a held chat or borrow
+/// an enclosing session's inherited identity.
+pub(super) fn unattributed_runtime(table: &dyn ProcessTable, pid: i32, stop_at_grok: bool) -> bool {
+    crate::relay::hook_agents::is_copilot_process(table, pid)
+        || (stop_at_grok && crate::relay::existing_session::grok::is_leader(&table.arguments(pid)))
+}

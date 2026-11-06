@@ -150,6 +150,10 @@ impl ProcessTable for ProcessSnapshot {
         self.inner.is_trusted_codex(executable)
     }
 
+    fn is_trusted_vscode(&self, executable: &Path) -> bool {
+        self.inner.is_trusted_vscode(executable)
+    }
+
     fn is_trusted_cursor(&self, executable: &Path) -> bool {
         self.inner.is_trusted_cursor(executable)
     }

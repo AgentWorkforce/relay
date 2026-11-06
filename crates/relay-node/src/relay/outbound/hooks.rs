@@ -4,6 +4,7 @@ use super::{payload, Outbound, OutboundError, Purpose, Request};
 use serde_json::Value;
 
 mod codex_stop;
+mod copilot;
 
 impl Outbound {
     pub(super) async fn hook_route(
@@ -25,6 +26,9 @@ impl Outbound {
             ));
         }
         let fields = payload(request, Purpose::Json)?;
+        if request.path == "/copilot/hook" {
+            return self.copilot_hook(pid, uid, &fields).await;
+        }
         self.codex_stop_hook(pid, uid, &fields).await
     }
 }

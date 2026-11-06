@@ -63,7 +63,8 @@ impl LocalSessions {
                         && crate::relay::muse::is_muse_process(table, current))
                     || devin::is_devin_process(table, current)
                     || crate::relay::cursor_cli::is_cursor_process(table, current)
-                    || crate::relay::cursor_cli::editor::is_editor_host(table, current);
+                    || crate::relay::cursor_cli::editor::is_editor_host(table, current)
+                    || crate::relay::hook_agents::is_copilot_process(table, current);
                 if agent {
                     return false;
                 }
@@ -94,6 +95,7 @@ impl LocalSessions {
                 if devin::is_devin_process(table, current)
                     || crate::relay::cursor_cli::is_cursor_process(table, current)
                     || crate::relay::cursor_cli::editor::is_editor_host(table, current)
+                    || crate::relay::hook_agents::is_copilot_process(table, current)
                 {
                     return true;
                 }

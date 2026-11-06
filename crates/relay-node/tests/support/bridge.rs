@@ -11,7 +11,7 @@ use agent_relay_node::relay::managed_sessions::ManagedAuthority;
 use agent_relay_node::relay::sessions::{
     CallerMiss, DiscoveredSession, SessionDirectory, UnreadableSessionFile,
 };
-use agent_relay_node::relay::store::Target;
+use agent_relay_node::relay::store::{SessionKind, Target};
 use agent_relay_node::relay::transport::{CoreReadHalf, CoreStream, CoreWriteHalf};
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
@@ -117,6 +117,8 @@ pub struct FakeSessions(
     /// Sessions the per-session activation check (`auto_activates`) admits,
     /// when they are live and in a known folder.
     pub Mutex<HashSet<Target>>,
+    /// Inputs accepted by the fake kernel-authenticated Copilot hook.
+    pub Mutex<Vec<Value>>,
 );
 
 impl Default for FakeSessions {
@@ -131,6 +133,7 @@ impl FakeSessions {
             Mutex::new(sessions),
             Mutex::default(),
             Mutex::new(Ok(Vec::new())),
+            Mutex::default(),
             Mutex::default(),
             Mutex::default(),
             Mutex::default(),
@@ -158,6 +161,15 @@ impl FakeSessions {
 }
 
 impl SessionDirectory for FakeSessions {
+    fn copilot_hook(&self, pid: i32, input: &Value) -> Option<Value> {
+        let caller = self.1.lock().unwrap().get(&pid)?.clone();
+        if caller.target.kind != SessionKind::Copilot || input["sessionId"] != caller.target.id {
+            return None;
+        }
+        self.9.lock().unwrap().push(input.clone());
+        Some(json!({}))
+    }
+
     fn sessions(&self) -> Vec<DiscoveredSession> {
         let delay = *self.5.lock().unwrap();
         if !delay.is_zero() {

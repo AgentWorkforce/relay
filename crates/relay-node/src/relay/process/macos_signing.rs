@@ -30,6 +30,10 @@ impl SignatureCache {
         self.0.trusted(path, identity, verify_codex_signature)
     }
 
+    pub(super) fn trusted_vscode(&self, path: &Path) -> bool {
+        installed_app_file(path) && self.0.trusted(path, identity, verify_vscode_signature)
+    }
+
     /// Cursor's own: an installed app file (`installed_app_file`) validly
     /// signed by Cursor's developer.
     pub(super) fn trusted_cursor(&self, path: &Path) -> bool {
@@ -66,6 +70,13 @@ fn verify_cursor_signature(path: &Path) -> bool {
     verify_signature(
         path,
         "anchor apple generic and certificate leaf[subject.OU] = \"VDXQ22DGB9\"",
+    )
+}
+
+fn verify_vscode_signature(path: &Path) -> bool {
+    verify_signature(
+        path,
+        "anchor apple generic and certificate leaf[subject.OU] = \"UBF8T346G9\"",
     )
 }
 

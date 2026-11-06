@@ -175,6 +175,7 @@ pub fn plugins_with_options(
     ));
     // Agent Relay Dev stages into and drains its own Cursor inbox too.
     local.cursor = local.cursor.development(development);
+    local.copilot = local.copilot.development(development);
     // Agent Relay's Cursor CLI hooks in ~/.cursor/hooks.json hand staged
     // messages to the session at its next tool call or turn end. An
     // installed copy is brought up to date off the start path.

@@ -5220,3 +5220,66 @@ async fn setup_status_answers_with_no_account() {
     assert_eq!(status["cloud_identity_sync"], Value::Null, "{status}");
     h.stop().await;
 }
+
+#[tokio::test]
+async fn copilot_verified_hook_gets_late_identity_once_and_only_core_registration_binding() {
+    let h = Harness::start().await;
+    let sid = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
+    let chat = session(SessionKind::Copilot, sid, "/fixture/copilot-vscode");
+    h.sessions.0.lock().unwrap().push(chat.clone());
+    h.sessions.call_from(4500, chat.clone());
+    let mut body = json!({"sessionId":sid,"relayEvent":"start","relayBinding":"forged"});
+    assert_eq!(
+        h.call(4500, "POST", "/copilot/hook", body.clone())
+            .await
+            .unwrap(),
+        json!({})
+    );
+    assert!(h.sessions.9.lock().unwrap().last().unwrap()["relayBinding"].is_null());
+    assert_eq!(
+        code(h.call(OUTSIDE, "POST", "/copilot/hook", body.clone()).await).0,
+        403
+    );
+    assert_eq!(
+        code(
+            h.call_as(4500, h.me + 1, "POST", "/copilot/hook", body.clone())
+                .await
+        )
+        .0,
+        403
+    );
+    h.core
+        .register_session(&chat, Some("copilot-proof"), None, false)
+        .await
+        .unwrap();
+    // An identity preamble must not end the idle stop wait.
+    body["relayEvent"] = json!("stop");
+    body["stopReason"] = json!("end_turn");
+    assert_eq!(
+        h.call(4500, "POST", "/copilot/hook", body.clone())
+            .await
+            .unwrap(),
+        json!({})
+    );
+    body["relayEvent"] = json!("tool");
+    let answer = h
+        .call(4500, "POST", "/copilot/hook", body.clone())
+        .await
+        .unwrap();
+    let context = answer["additionalContext"].as_str().unwrap();
+    assert!(context.contains("copilot-proof@"));
+    assert!(context.contains("join_relay"));
+    let expected = h.core.store.read(|s| {
+        let r = s.registration_for(&chat.target).unwrap();
+        format!("{}:{}", r.agent_id, r.registered_at)
+    });
+    assert_eq!(
+        h.sessions.9.lock().unwrap().last().unwrap()["relayBinding"],
+        expected
+    );
+    assert_eq!(
+        h.call(4500, "POST", "/copilot/hook", body).await.unwrap(),
+        json!({})
+    );
+    h.stop().await;
+}

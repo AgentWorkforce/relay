@@ -3776,6 +3776,8 @@ public enum SessionKind: RawRepresentable, Codable, CaseIterable, Hashable, Send
     /// `~/.cursor/hooks.json` hand to the session at its next tool call or
     /// when its turn ends (`relay::cursor_cli`). Not a Cursor Cloud agent.
     case cursorCli
+    /// A native Copilot harness session in VS Code, reached by verified hooks.
+    case copilot
     /// An OpenClaw agent on the person's local OpenClaw Gateway, reached as
     /// a loopback operator client. Each relay sender gets a session of its
     /// own on that agent, never the person's main chat (`relay::openclaw`).
@@ -3786,7 +3788,7 @@ public enum SessionKind: RawRepresentable, Codable, CaseIterable, Hashable, Send
     /// A value this build does not know, as the core sent it.
     case unknown(String)
 
-    public static let allCases: [SessionKind] = [.pi, .omp, .codex, .claudeTerminal, .claudeCloud, .grok, .grokOpen, .opencode, .museOpen, .opencodeOpen, .devin, .cursorCli, .openclaw, .hermes]
+    public static let allCases: [SessionKind] = [.pi, .omp, .codex, .claudeTerminal, .claudeCloud, .grok, .grokOpen, .opencode, .museOpen, .opencodeOpen, .devin, .cursorCli, .copilot, .openclaw, .hermes]
 
     public init(rawValue: String) {
         switch rawValue {
@@ -3802,6 +3804,7 @@ public enum SessionKind: RawRepresentable, Codable, CaseIterable, Hashable, Send
         case "opencode-open": self = .opencodeOpen
         case "devin": self = .devin
         case "cursor-cli": self = .cursorCli
+        case "copilot": self = .copilot
         case "openclaw": self = .openclaw
         case "hermes": self = .hermes
         default: self = .unknown(rawValue)
@@ -3822,6 +3825,7 @@ public enum SessionKind: RawRepresentable, Codable, CaseIterable, Hashable, Send
         case .opencodeOpen: return "opencode-open"
         case .devin: return "devin"
         case .cursorCli: return "cursor-cli"
+        case .copilot: return "copilot"
         case .openclaw: return "openclaw"
         case .hermes: return "hermes"
         case .unknown(let value): return value

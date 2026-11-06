@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- Registered Copilot harness chats in VS Code on macOS receive Relay messages through verified native hooks, including a waiting stop hook that resumes the same chat; durable delivery claims prevent uncertain submissions from being sent again.
 
 ## [17.0.0] - 2026-11-05
 

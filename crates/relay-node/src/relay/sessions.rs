@@ -79,6 +79,7 @@ pub enum SessionPartition {
     OpenCode,
     Devin,
     CursorCli,
+    Copilot,
     OpenClaw,
     Hermes,
 }
@@ -94,6 +95,7 @@ impl SessionPartition {
             SessionKind::OpenCode | SessionKind::OpenCodeOpen => Self::OpenCode,
             SessionKind::Devin => Self::Devin,
             SessionKind::CursorCli => Self::CursorCli,
+            SessionKind::Copilot => Self::Copilot,
             SessionKind::OpenClaw => Self::OpenClaw,
             SessionKind::Hermes => Self::Hermes,
         }
@@ -105,6 +107,12 @@ impl SessionPartition {
 }
 
 pub trait SessionDirectory: Send + Sync + 'static {
+    /// A peer-authenticated Copilot hook; ordinary callers cannot name chats
+    /// held by a multiplexing runtime.
+    fn copilot_hook(&self, _pid: i32, _payload: &serde_json::Value) -> Option<serde_json::Value> {
+        None
+    }
+
     /// Unique live Claude session config roots, refreshed during discovery.
     /// Ambiguous IDs must be absent. Capability checks use the core's cache.
     fn mobile_claude_config_roots(&self) -> std::collections::BTreeMap<Target, std::path::PathBuf> {

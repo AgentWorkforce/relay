@@ -33,6 +33,7 @@ pub struct FakeProcess {
 pub struct FakeProcesses {
     pub processes: std::sync::Mutex<HashMap<i32, FakeProcess>>,
     pub trusted_codex: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
+    pub trusted_vscode: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
     pub trusted_cursor: std::sync::Mutex<std::collections::HashSet<PathBuf>>,
     pub clock: Option<StartClock>,
     /// Processes whose environment the kernel would not let this user read.
@@ -90,6 +91,13 @@ impl ProcessTable for FakeProcesses {
         executable.file_stem().is_some_and(|name| name == "codex")
             && self.trusted_codex.lock().unwrap().contains(executable)
     }
+    fn is_trusted_vscode(&self, executable: &Path) -> bool {
+        self.trusted_vscode
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .contains(executable)
+    }
+
     fn is_trusted_cursor(&self, executable: &Path) -> bool {
         self.trusted_cursor
             .lock()

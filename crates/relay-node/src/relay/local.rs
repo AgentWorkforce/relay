@@ -93,6 +93,7 @@ pub struct LocalConfig {
     /// Where Cursor CLI keeps its conversations, and the inbox Agent Relay's
     /// Cursor hooks drain.
     pub cursor: CursorConfig,
+    pub copilot: crate::relay::copilot::CopilotConfig,
     /// What the build knows about sessions beyond this computer's discovery.
     pub sources: crate::relay::session_sources::SessionSources,
     /// The person's local OpenClaw Gateway and this core's state for it;
@@ -142,6 +143,7 @@ impl LocalConfig {
             opencode_open_journal: None,
             devin: DevinConfig::from_env(env, home),
             cursor: CursorConfig::from_env(env, home),
+            copilot: crate::relay::copilot::CopilotConfig::from_env(env, home),
             sources: Default::default(),
             openclaw: None,
             hermes: None,
@@ -343,10 +345,7 @@ impl LocalSessions {
             if let Some(file) = claude.unreadable.iter().find(|f| own && f.pid == current) {
                 return Err(CallerMiss::Unreadable(file.clone()));
             }
-            if own
-                && stop_at_grok_leaders
-                && crate::relay::existing_session::grok::is_leader(&table.arguments(current))
-            {
+            if own && lock_held::unattributed_runtime(table, current, stop_at_grok_leaders) {
                 return Err(CallerMiss::NotASession);
             }
             // Under OpenCode, without a session tag that can be read, the
@@ -1113,7 +1112,7 @@ impl LocalInjector {
                 claude::terminal_session(&self.config.claude, &*self.table, &target.id)
                     .is_some_and(|session| session.can_reply())
             }
-            SessionKind::ClaudeCloud => false,
+            SessionKind::ClaudeCloud | SessionKind::Copilot => false,
             SessionKind::OpenCode => self.managed.as_ref().is_some_and(|managed| {
                 crate::relay::opencode::managed::can_reply(
                     managed,
@@ -1640,6 +1639,9 @@ impl Injector for LocalInjector {
             SessionKind::OpenCodeOpen => InjectOutcome::Refused(
                 "An open OpenCode session takes messages only for its registered agent.".into(),
             ),
+            SessionKind::Copilot => InjectOutcome::Refused(
+                "A Copilot chat takes messages only through its registered Relay identity.".into(),
+            ),
             SessionKind::Devin | SessionKind::CursorCli => {
                 lock_held::inject(&self.config, &*self.table, target, message_id, text)
             }
@@ -2133,6 +2135,7 @@ mod tests {
             opencode_open_journal: None,
             devin: DevinConfig::from_env(&|_| None, home),
             cursor: CursorConfig::from_env(&|_| None, home),
+            copilot: crate::relay::copilot::CopilotConfig::from_env(&|_| None, home),
             sources: Default::default(),
             openclaw: None,
             hermes: None,

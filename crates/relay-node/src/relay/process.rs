@@ -103,6 +103,11 @@ pub trait ProcessTable: Send + Sync {
     fn is_trusted_cursor(&self, _executable: &Path) -> bool {
         false
     }
+    /// An installed VS Code executable, including its bundled Copilot runtime.
+    /// Unsupported process tables deny this proof.
+    fn is_trusted_vscode(&self, _executable: &Path) -> bool {
+        false
+    }
     /// The process's arguments and environment, from one read of it.
     fn command_line(&self, pid: i32) -> CommandLine;
     fn arguments(&self, pid: i32) -> Vec<String> {
@@ -658,6 +663,8 @@ pub struct SystemProcesses {
     signatures: macos_signing::SignatureCache,
     #[cfg(target_os = "macos")]
     cursor_signatures: macos_signing::SignatureCache,
+    #[cfg(target_os = "macos")]
+    vscode_signatures: macos_signing::SignatureCache,
     #[cfg(windows)]
     windows: windows::Cache,
 }
@@ -890,6 +897,10 @@ mod macos {
 
         fn is_trusted_cursor(&self, executable: &Path) -> bool {
             self.cursor_signatures.trusted_cursor(executable)
+        }
+
+        fn is_trusted_vscode(&self, executable: &Path) -> bool {
+            self.vscode_signatures.trusted_vscode(executable)
         }
 
         fn command_line(&self, pid: i32) -> CommandLine {

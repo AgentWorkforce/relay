@@ -198,6 +198,7 @@ fn partition_order(partition: SessionPartition) -> u8 {
         SessionPartition::CursorCli => 8,
         SessionPartition::OpenClaw => 9,
         SessionPartition::Hermes => 10,
+        SessionPartition::Copilot => 11,
     }
 }
 

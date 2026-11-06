@@ -80,6 +80,7 @@ mod connect_inbox;
 mod connect_lifetime;
 pub mod connect_presence;
 pub mod contract;
+pub mod copilot;
 pub mod cursor_cli;
 pub mod daemon;
 pub mod delivery;

@@ -26,7 +26,12 @@ pub fn is_copilot_process(table: &dyn ProcessTable, pid: i32) -> bool {
     let named = table.executable(pid).is_some_and(|path| {
         path.file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| matches!(name, "copilot" | "copilot.exe"))
+            .is_some_and(|name| {
+                matches!(
+                    name,
+                    "copilot" | "copilot.exe" | "copilot-runtime" | "copilot-runtime.exe"
+                )
+            })
     });
     named
         || table
