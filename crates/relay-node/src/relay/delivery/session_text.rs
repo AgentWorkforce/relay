@@ -127,7 +127,14 @@ impl Core {
         }
         let injector = self.plugins.injector.clone();
         let spawner = self.plugins.spawner.clone();
-        let registered = registration.clone();
+        let Some(registered) = self
+            .store
+            .read(|store| crate::relay::copilot::delivery_registration(store, registration))
+        else {
+            return InjectOutcome::InDoubt(
+                "The Copilot registration changed before delivery.".into(),
+            );
+        };
         let routed = delivery.clone();
         tokio::task::spawn_blocking(move || {
             // A teammate's turn that lost its plugin between classification

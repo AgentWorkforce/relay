@@ -1802,6 +1802,7 @@ mod tests {
             (SessionKind::MuseOpen, "Muse session"),
             (SessionKind::Devin, "Devin session"),
             (SessionKind::CursorCli, "Cursor CLI session"),
+            (SessionKind::Copilot, "Copilot chat"),
             (SessionKind::OpenClaw, "OpenClaw agent"),
             (SessionKind::Hermes, "Hermes"),
             (SessionKind::Pi, "Pi session"),

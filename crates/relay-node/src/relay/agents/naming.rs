@@ -25,6 +25,7 @@ pub(super) fn suggested_name_numbered(session: &DiscoveredSession, number: usize
             (prefix, title.as_str()),
             ("claude", "claude-code-session")
                 | ("cursor", "cursor-cli-session")
+                | ("copilot", "copilot-chat")
                 | ("openclaw", "openclaw-agent")
                 | ("hermes", "hermes")
                 | ("omp", "oh-my-pi-session")

@@ -73,6 +73,9 @@ pub enum SessionKind {
     /// when its turn ends (`relay::cursor_cli`). Not a Cursor Cloud agent.
     #[serde(rename = "cursor-cli")]
     CursorCli,
+    /// A native Copilot harness session in VS Code, reached by verified hooks.
+    #[serde(rename = "copilot")]
+    Copilot,
     /// An OpenClaw agent on the person's local OpenClaw Gateway, reached as
     /// a loopback operator client. Each relay sender gets a session of its
     /// own on that agent, never the person's main chat (`relay::openclaw`).
@@ -97,6 +100,7 @@ impl SessionKind {
             SessionKind::OpenCodeOpen => "opencode-open",
             SessionKind::Devin => "devin",
             SessionKind::CursorCli => "cursor-cli",
+            SessionKind::Copilot => "copilot",
             SessionKind::OpenClaw => "openclaw",
             SessionKind::Hermes => "hermes",
             SessionKind::Pi => "pi",

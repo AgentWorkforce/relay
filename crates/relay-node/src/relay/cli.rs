@@ -918,3 +918,6 @@ mod tests {
         assert!(other.contains("Pass --dev"), "{other}");
     }
 }
+
+mod copilot_hook;
+pub use copilot_hook::copilot_hook;

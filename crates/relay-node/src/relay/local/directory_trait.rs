@@ -4,6 +4,24 @@ mod mobile_claude_roots;
 mod session_activity;
 
 impl SessionDirectory for LocalSessions {
+    fn copilot_context_accepted(&self, sid: &str, context: &str) -> bool {
+        crate::relay::copilot::context_accepted(&self.config.copilot, sid, context)
+    }
+
+    fn configure_copilot_helper(&self, executable: PathBuf) {
+        self.config.copilot.set_helper(executable);
+    }
+
+    fn copilot_hook(&self, pid: i32, payload: &serde_json::Value) -> Option<serde_json::Value> {
+        crate::relay::copilot::hook_answer(
+            &self.config.copilot,
+            &*self.table,
+            self.config.uid,
+            pid,
+            payload,
+        )
+    }
+
     fn mobile_claude_config_roots(&self) -> std::collections::BTreeMap<Target, PathBuf> {
         mobile_claude_roots::read(&self.config.claude, &*self.table)
     }
@@ -108,6 +126,7 @@ impl SessionDirectory for LocalSessions {
             SessionPartition::OpenCode,
             SessionPartition::Devin,
             SessionPartition::CursorCli,
+            SessionPartition::Copilot,
             SessionPartition::OpenClaw,
             SessionPartition::Hermes,
         ]
@@ -261,6 +280,12 @@ impl SessionDirectory for LocalSessions {
                 self.config.uid,
                 &target.id,
             ),
+            SessionKind::Copilot => crate::relay::copilot::session(
+                &self.config.copilot,
+                &*self.table,
+                self.config.uid,
+                &target.id,
+            ),
             SessionKind::CursorCli => crate::relay::cursor_cli::session(
                 &self.config.cursor,
                 &*self.table,
@@ -361,6 +386,7 @@ fn fallback_title(kind: SessionKind) -> &'static str {
         SessionKind::MuseOpen => "Muse session",
         SessionKind::Devin => "Devin session",
         SessionKind::CursorCli => "Cursor CLI session",
+        SessionKind::Copilot => "Copilot chat",
         SessionKind::OpenClaw => "OpenClaw agent",
         SessionKind::Hermes => "Hermes",
         SessionKind::Pi => "Pi session",
@@ -451,7 +477,7 @@ impl LocalSessions {
                 // A Cursor CLI row exists only while a `cursor-agent`
                 // holds its conversation open, which is also its caller
                 // proof; like Codex, it joins only with the opt-in.
-                SessionKind::CursorCli => true,
+                SessionKind::CursorCli | SessionKind::Copilot => true,
                 SessionKind::OpenClaw | SessionKind::Hermes => false,
             }
         }
