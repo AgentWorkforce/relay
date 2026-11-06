@@ -5,13 +5,25 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Minor]
+## [Unreleased]
+
+## [17.2.0] - 2026-11-06
+
+### Fixed
+
+- Copilot hooks forward calls from the managed `agentrelay` MCP server to Desktop for chat identity verification, while retaining legacy server-name compatibility.
+
+## [17.1.0] - 2026-11-06
 
 ### Added
 
 - `agents.integrations.subscribe` and session socket subscriptions accept an `event_types` filter for exact provider events, such as Jira `comment_created`; the core refuses servers that cannot enforce it.
 - `agent-relay-node` can deliver messages to registered VS Code Copilot chats on macOS and resume the same chat while it waits.
 - Copilot messages with uncertain delivery stay pending confirmation and are never blindly submitted again.
+
+### Fixed
+
+- `relay init`'s Codex hooks keep a subagent from receiving its parent chat's pending messages or registration guidance.
 
 ## [17.0.0] - 2026-11-05
 
