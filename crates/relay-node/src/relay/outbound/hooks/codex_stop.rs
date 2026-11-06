@@ -56,10 +56,10 @@ impl Outbound {
     /// a tool call (PostToolUse) or as it ends (Stop): the next relayed
     /// message waiting for that turn (`codex::turn_hook`), or at a stop for
     /// that thread's Conductor chat, else a recap of those delivered while
-    /// the chat was idle, else `{}`. Only a hook below the Codex that holds
-    /// the thread's writer lock gets its messages; one for a thread nothing
-    /// waits for is answered before the slower check, so a tool call is not
-    /// held up.
+    /// the chat was idle, else `{}`. A hook must match the active turn in
+    /// the requested thread's rollout held by its trusted Codex writer. A
+    /// hook for a thread with nothing waiting is answered before the slower
+    /// check, so a tool call is not held up.
     pub(super) async fn codex_stop_hook(
         &self,
         pid: i32,
@@ -128,12 +128,13 @@ impl Outbound {
         let turn = fields
             .get("turn_id")
             .and_then(Value::as_str)
-            .unwrap_or_default()
+            .filter(|turn| !turn.is_empty())
+            .ok_or_else(OutboundError::not_a_session)?
             .to_string();
         let directory = self.core.plugins.sessions.clone();
         let injector = self.core.plugins.injector.clone();
         tokio::task::spawn_blocking(move || {
-            if !directory.holds_codex_thread(pid, &thread) {
+            if !directory.codex_hook_turn_matches(pid, &thread, &turn) {
                 return Err(OutboundError::not_a_session());
             }
             if event == HookEvent::PostToolUse {
@@ -168,8 +169,8 @@ impl Outbound {
     /// earlier context is gone), never on every prompt. Only a session on the
     /// relay, or one the core is putting there by itself, is told anything;
     /// for the rest, and whenever the socket's commands cannot be named,
-    /// the answer is `{}`. Like the turn hook, only a hook below the Codex
-    /// that holds the thread's writer lock is answered.
+    /// the answer is `{}`. With no turn id at SessionStart, only a trusted
+    /// Codex writer holding this thread alone can authorize its context.
     ///
     /// A session starts before the core's next pass would put it on the
     /// relay, so for one that activation admits the pass runs now, and the
@@ -285,6 +286,9 @@ mod tests {
         fn holds_codex_thread(&self, pid: i32, thread: &str) -> bool {
             pid == 42 && thread == THREAD
         }
+        fn codex_hook_turn_matches(&self, pid: i32, thread: &str, turn: &str) -> bool {
+            self.holds_codex_thread(pid, thread) && turn == "fixture-turn"
+        }
     }
     struct Direct;
     impl DirectDelivery for Direct {
@@ -340,7 +344,7 @@ mod tests {
         (temp, Outbound::new(core, direct), inbox)
     }
     fn fields() -> Map<String, Value> {
-        json!({"session_id": THREAD, "hook_event_name":"PostToolUse"})
+        json!({"session_id": THREAD, "hook_event_name":"PostToolUse", "turn_id":"fixture-turn"})
             .as_object()
             .unwrap()
             .clone()

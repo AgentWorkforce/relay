@@ -251,11 +251,17 @@ pub trait SessionDirectory: Send + Sync + 'static {
         Err(CallerMiss::NotASession)
     }
 
-    /// Whether `pid` belongs to this exact Codex thread, with its trusted
-    /// ancestor and held writer lock verified from kernel evidence. A shared
-    /// app-server holding both parent and child locks cannot authorize one
-    /// thread's hook to consume the other's messages. May block.
+    /// Whether a hook's nearest trusted writer holds only this Codex thread.
+    /// SessionStart lacks a turn id, so a shared writer must defer context.
+    /// May block; ordinary caller identity resolution is separate.
     fn holds_codex_thread(&self, _pid: i32, _thread: &str) -> bool {
+        false
+    }
+
+    /// Whether the requested thread's locally resolved, kernel-held rollout
+    /// records this active turn, with trusted writer/uid/start/lock proof.
+    /// Consuming hooks cannot use an inherited parent session id alone.
+    fn codex_hook_turn_matches(&self, _pid: i32, _thread: &str, _turn: &str) -> bool {
         false
     }
 

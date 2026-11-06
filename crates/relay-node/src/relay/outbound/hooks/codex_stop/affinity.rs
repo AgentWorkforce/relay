@@ -1,4 +1,4 @@
-//! The real hook route must bind consumption to its caller's own thread,
+//! The real hook route must bind consumption to the verified active turn,
 //! even when one trusted app-server owns both parent and subagent locks.
 
 use super::*;
@@ -54,6 +54,25 @@ fn fixture(
     let table = Arc::new(FakeProcesses::default());
     let executable = home.join("codex");
     table.trust(&executable);
+    let sessions = local.codex.home.join("sessions");
+    std::fs::create_dir_all(&sessions)?;
+    let mut open_files = Vec::new();
+    for (thread, turn) in [(PARENT, "parent-turn"), (CHILD, "child-turn")] {
+        let rollout = sessions.join(format!("rollout-fixture-{thread}.jsonl"));
+        std::fs::write(
+            &rollout,
+            format!(
+                "{}\n{}\n",
+                json!({"type":"session_meta","payload":{"id":thread}}),
+                json!({"type":"event_msg","payload":{"type":"task_started","turn_id":turn}})
+            ),
+        )?;
+        open_files.push(
+            home.join("thread-writer-locks")
+                .join(format!("{thread}.lock")),
+        );
+        open_files.push(rollout);
+    }
     table.insert(
         10,
         FakeProcess {
@@ -62,9 +81,7 @@ fn fixture(
             start: 10,
             executable: Some(executable),
             arguments: vec!["codex".into(), "app-server".into()],
-            open_files: [PARENT, CHILD]
-                .map(|id| home.join("thread-writer-locks").join(format!("{id}.lock")))
-                .into(),
+            open_files,
             ..FakeProcess::default()
         },
     );
@@ -75,8 +92,8 @@ fn fixture(
                 parent: 10,
                 uid: local.uid,
                 start: pid as u64,
-                // Subagent hooks inherit the root session id while their thread
-                // id names the actual conversation receiving additionalContext.
+                // Hook session ids and environment may both name the parent.
+                // The independent turn id must select the receiving conversation.
                 environment: [
                     ("CODEX_THREAD_ID".into(), thread.into()),
                     ("CODEX_SESSION_ID".into(), PARENT.into()),
@@ -130,10 +147,29 @@ fn fixture(
 }
 
 fn fields(thread: &str, event: &str) -> Map<String, Value> {
-    Map::from_iter([
+    let mut fields = Map::from_iter([
         ("session_id".into(), json!(thread)),
         ("hook_event_name".into(), json!(event)),
-    ])
+    ]);
+    if event != "SessionStart" {
+        fields.insert(
+            "turn_id".into(),
+            json!(if thread.eq_ignore_ascii_case(PARENT) {
+                "parent-turn"
+            } else {
+                "child-turn"
+            }),
+        );
+    }
+    fields
+}
+
+fn child_hook_claiming_parent(event: &str) -> Map<String, Value> {
+    let mut fields = fields(PARENT, event);
+    if event != "SessionStart" {
+        fields.insert("turn_id".into(), json!("child-turn"));
+    }
+    fields
 }
 
 /// A child cannot take its parent's offer; neither failure nor repeated hooks
@@ -141,7 +177,7 @@ fn fields(thread: &str, event: &str) -> Map<String, Value> {
 #[tokio::test]
 async fn consuming_hook_thread_affinity_preserves_parent_and_child_offers() {
     for event in ["PostToolUse", "Stop"] {
-        let (_temp, outbound, inbox, _) = fixture(false).unwrap();
+        let (_temp, outbound, inbox, table) = fixture(false).unwrap();
         inbox
             .turns()
             .offer(PARENT, "parent-message", "parent-only fixture")
@@ -151,7 +187,21 @@ async fn consuming_hook_thread_affinity_preserves_parent_and_child_offers() {
             .offer(CHILD, "child-message", "child-only fixture")
             .unwrap();
         assert!(outbound
-            .codex_stop_hook(CHILD_PID, outbound.uid, &fields(PARENT, event))
+            .codex_stop_hook(CHILD_PID, outbound.uid, &child_hook_claiming_parent(event))
+            .await
+            .is_err());
+        // Hooks can inherit the launcher's parent thread environment too.
+        // Their actual child turn must independently prevent consumption.
+        table
+            .processes
+            .lock()
+            .unwrap()
+            .get_mut(&CHILD_PID)
+            .unwrap()
+            .environment
+            .insert("CODEX_THREAD_ID".into(), PARENT.into());
+        assert!(outbound
+            .codex_stop_hook(CHILD_PID, outbound.uid, &child_hook_claiming_parent(event))
             .await
             .is_err());
         assert_eq!(inbox.turns().claimed("parent-message"), Claimed::Offered);
@@ -189,7 +239,15 @@ async fn consuming_hook_thread_affinity_preserves_parent_and_child_offers() {
 /// be spent by a subagent's hook claiming its parent's inherited session id.
 #[tokio::test]
 async fn consuming_hook_thread_affinity_preserves_registration_guidance() {
-    let (_temp, outbound, inbox, _) = fixture(true).unwrap();
+    let (_temp, outbound, inbox, table) = fixture(true).unwrap();
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&CHILD_PID)
+        .unwrap()
+        .environment
+        .insert("CODEX_THREAD_ID".into(), PARENT.into());
     assert!(outbound
         .codex_stop_hook(CHILD_PID, outbound.uid, &fields(PARENT, "SessionStart"))
         .await
@@ -200,7 +258,11 @@ async fn consuming_hook_thread_affinity_preserves_registration_guidance() {
         .store
         .read(|store| store.registrations.is_empty()));
     assert!(outbound
-        .codex_stop_hook(CHILD_PID, outbound.uid, &fields(PARENT, "PostToolUse"))
+        .codex_stop_hook(
+            CHILD_PID,
+            outbound.uid,
+            &child_hook_claiming_parent("PostToolUse")
+        )
         .await
         .is_err());
     assert!(inbox.needs_registration_guidance(PARENT));
@@ -208,7 +270,7 @@ async fn consuming_hook_thread_affinity_preserves_registration_guidance() {
         assert!(outbound
             .codex_stop_hook(pid, outbound.uid, &fields(thread, "SessionStart"))
             .await
-            .is_ok());
+            .is_err());
         assert!(inbox.needs_registration_guidance(thread));
         let answer = outbound
             .codex_stop_hook(pid, outbound.uid, &fields(thread, "PostToolUse"))
@@ -226,16 +288,17 @@ async fn consuming_hook_thread_affinity_preserves_registration_guidance() {
     }
 }
 
-/// A matching environment string cannot replace the trusted executable and
-/// held writer lock that make the caller-thread resolver authoritative.
+/// An active turn cannot replace the trusted executable, writer lock and
+/// held rollout; fresh hooks do not require ambient thread ids.
 #[tokio::test]
 async fn consuming_hook_thread_affinity_keeps_kernel_writer_checks() {
-    for missing in ["trust", "lock", "thread"] {
+    for missing in ["trust", "lock", "rollout", "turn"] {
         let (_temp, outbound, inbox, table) = fixture(false).unwrap();
         inbox
             .turns()
             .offer(PARENT, "parent-message", "parent-only fixture")
             .unwrap();
+        let mut hook = fields(PARENT, "PostToolUse");
         match missing {
             "trust" => table.trusted_codex.lock().unwrap().clear(),
             "lock" => table
@@ -246,23 +309,47 @@ async fn consuming_hook_thread_affinity_keeps_kernel_writer_checks() {
                 .unwrap()
                 .open_files
                 .clear(),
-            _ => {
+            "rollout" => {
                 table
                     .processes
                     .lock()
                     .unwrap()
-                    .get_mut(&PARENT_PID)
+                    .get_mut(&10)
                     .unwrap()
-                    .environment
-                    .remove("CODEX_THREAD_ID");
+                    .open_files
+                    .retain(|path| path.extension().is_some_and(|ext| ext == "lock"));
+            }
+            _ => {
+                hook.insert("turn_id".into(), json!("unproven-turn"));
             }
         }
         assert!(outbound
-            .codex_stop_hook(PARENT_PID, outbound.uid, &fields(PARENT, "PostToolUse"))
+            .codex_stop_hook(PARENT_PID, outbound.uid, &hook)
             .await
             .is_err());
         assert!(inbox.turns().has_offered(PARENT));
     }
+
+    // A fresh app-server hook can have no thread environment and no resume
+    // argument. Its verified, held target rollout still identifies the turn.
+    let (_temp, outbound, inbox, table) = fixture(false).unwrap();
+    table
+        .processes
+        .lock()
+        .unwrap()
+        .get_mut(&PARENT_PID)
+        .unwrap()
+        .environment
+        .remove("CODEX_THREAD_ID");
+    inbox
+        .turns()
+        .offer(PARENT, "fresh-message", "fresh fixture")
+        .unwrap();
+    let answer = outbound
+        .codex_stop_hook(PARENT_PID, outbound.uid, &fields(PARENT, "PostToolUse"))
+        .await
+        .unwrap();
+    assert!(answer.to_string().contains("fresh fixture"));
 
     // Older terminal Codex identifies its one thread through `resume`, not
     // CODEX_THREAD_ID. Retain that route and case-insensitive UUID matching,
@@ -274,7 +361,7 @@ async fn consuming_hook_thread_affinity_keeps_kernel_writer_checks() {
         codex.arguments = vec!["codex".into(), "resume".into(), PARENT.to_uppercase()];
         codex
             .open_files
-            .retain(|path| path.file_stem().unwrap() == PARENT);
+            .retain(|path| path.to_string_lossy().contains(PARENT));
         processes
             .get_mut(&PARENT_PID)
             .unwrap()
@@ -285,6 +372,10 @@ async fn consuming_hook_thread_affinity_keeps_kernel_writer_checks() {
         .turns()
         .offer(PARENT, "legacy-message", "legacy fixture")
         .unwrap();
+    assert!(outbound
+        .codex_stop_hook(PARENT_PID, outbound.uid, &fields(PARENT, "SessionStart"))
+        .await
+        .is_ok());
     let answer = outbound
         .codex_stop_hook(
             PARENT_PID,
