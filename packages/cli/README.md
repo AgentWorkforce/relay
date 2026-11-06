@@ -604,6 +604,20 @@ agent-relay cloud integration catalog
 agent-relay cloud integration connect linear --workspace rw_7ccfea89
 agent-relay cloud integration connections --workspace rw_7ccfea89
 
+# Keep an existing GitLab PAT/group-token identity and select its exact project.
+agent-relay cloud integration resources gitlab \
+  --workspace rw_7ccfea89 --json
+gitlab_webhook_secret_file=$(mktemp)
+chmod 600 "$gitlab_webhook_secret_file"
+openssl rand -hex 32 > "$gitlab_webhook_secret_file"
+agent-relay cloud integration configure gitlab \
+  --workspace rw_7ccfea89 \
+  --project 86233786 \
+  --manual-webhooks \
+  --webhook-secret-file "$gitlab_webhook_secret_file"
+agent-relay cloud integration status gitlab \
+  --workspace rw_7ccfea89 --json
+
 # Member clients use Relayfile directly, including its OAuth/backend selection
 # and durable writeback queue.
 relayfile integration available
@@ -612,6 +626,17 @@ RELAYFILE_LOCAL_DIR="$PWD/.integrations" relayfile setup
 RELAYFILE_LOCAL_DIR="$PWD/.integrations" relayfile status
 RELAYFILE_LOCAL_DIR="$PWD/.integrations" relayfile writeback status
 ```
+
+`configure gitlab` never reconnects the provider or opens OAuth. It resolves
+each selected ID against the retained connection's accessible projects, saves
+the exact repository allowlist, and requests the selected-project syncs. The
+manual-hook secret is read only from a file that is private to the current
+user; it is never accepted on argv or printed. Give the displayed webhook URL
+and that file's value to a GitLab project Maintainer or Owner, have them enable
+merge request, issue, push, pipeline, job, deployment, and tag-push events, and
+then deliver a test event. Scheduled-sync readiness can be healthy while
+`eventIngressReady` is still false; hosted listeners are ready only after the
+webhook event is observed.
 
 Fleet workers can subscribe to provider feedback using their broker-assigned
 identity, including workers that the desktop session socket rejects with

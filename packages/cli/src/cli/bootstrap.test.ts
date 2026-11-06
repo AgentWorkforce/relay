@@ -81,6 +81,9 @@ const expectedLeafCommands = [
   'cloud integration connections',
   'cloud integration connect',
   'cloud integration disconnect',
+  'cloud integration resources',
+  'cloud integration configure',
+  'cloud integration status',
   // workspace
   'workspace create',
   'init',

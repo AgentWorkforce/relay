@@ -4,6 +4,7 @@ import { defaultApiUrl } from '@agent-relay/cloud';
 import { stripAnsiFast } from '@agent-relay/utils';
 
 import type { CloudDependencies } from './cloud.js';
+import { registerCloudIntegrationConfigurationCommands } from './cloud-integration-configure.js';
 
 type Dependencies = Pick<
   CloudDependencies,
@@ -87,6 +88,11 @@ function cloudError(response: Response, payload: unknown): Error {
     return new Error('Cloud login required. Run `agent-relay cloud login` and retry.');
   }
   if (response.status === 403) {
+    if (isObject(payload) && payload.code === 'insufficient_scope') {
+      return new Error(
+        'Cloud credential needs cloud:integrations:write for this integration operation. Run `agent-relay cloud login` or use a scoped token that grants it.'
+      );
+    }
     return new Error('You do not have permission to perform that integration operation.');
   }
   if (response.status === 404) {
@@ -393,4 +399,10 @@ export function registerCloudIntegrationCommands(cloudCommand: Command, deps: De
         });
       }
     );
+
+  registerCloudIntegrationConfigurationCommands(integration, deps, {
+    request: (path, init, apiUrl) => request(deps, path, init, apiUrl),
+    workspaceId,
+    providerId,
+  });
 }

@@ -1,5 +1,9 @@
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { Command } from 'commander';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { registerCloudIntegrationCommands } from './cloud-integration.js';
 import type { CloudDependencies } from './cloud.js';
@@ -16,6 +20,17 @@ const auth = {
   refreshToken: 'refresh-secret',
   accessTokenExpiresAt: '2999-01-01T00:00:00.000Z',
 };
+
+const temporaryDirectories: string[] = [];
+
+async function secretFile(secret: string): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), 'agent-relay-gitlab-config-'));
+  temporaryDirectories.push(directory);
+  const path = join(directory, 'webhook-secret');
+  await writeFile(path, `${secret}\n`, { mode: 0o600 });
+  await chmod(path, 0o600);
+  return path;
+}
 
 function response(value: unknown, status = 200): Response {
   return new Response(value === null ? null : JSON.stringify(value), {
@@ -49,15 +64,338 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+afterEach(async () => {
+  await Promise.all(
+    temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))
+  );
+});
+
 describe('registerCloudIntegrationCommands', () => {
-  it('exposes only the existing Cloud connection lifecycle', () => {
+  it('exposes connection lifecycle and retained-connection configuration commands', () => {
     const { integration } = harness();
     expect(integration.commands.map((command) => command.name())).toEqual([
       'catalog',
       'connections',
       'connect',
       'disconnect',
+      'resources',
+      'configure',
+      'status',
     ]);
+  });
+
+  it('lists safe resources from an existing GitLab connection', async () => {
+    const { program, deps } = harness();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: response({
+        ok: true,
+        resources: [
+          {
+            id: '86233786',
+            path: 'nabis-engineering/it/nabis-slack-atlas',
+            name: 'Nabis Slack Atlas',
+            url: 'https://gitlab.com/nabis-engineering/it/nabis-slack-atlas',
+            token: 'must-not-print',
+          },
+        ],
+      }),
+      auth,
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'integration',
+      'resources',
+      'gitlab',
+      '--workspace',
+      'rw_7ccfea89',
+      '--json',
+    ]);
+
+    expect(deps.authorizedApiFetch).toHaveBeenCalledWith(
+      auth,
+      '/api/v1/workspaces/rw_7ccfea89/integrations/gitlab/accessible-resources',
+      { method: 'GET' },
+      { interactive: false }
+    );
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toContain('nabis-engineering/it/nabis-slack-atlas');
+    expect(output).not.toContain('must-not-print');
+  });
+
+  it('saves an exact GitLab selection and reads a manual-hook secret from a protected file', async () => {
+    const { program, deps } = harness();
+    const secret = 'a9c3f8e12d4b6075'.repeat(2);
+    const path = await secretFile(secret);
+    vi.mocked(deps.authorizedApiFetch)
+      .mockResolvedValueOnce({
+        response: response({
+          ok: true,
+          resources: [
+            {
+              id: '86233786',
+              path: 'nabis-engineering/it/nabis-slack-atlas',
+              name: 'Nabis Slack Atlas',
+              url: 'https://gitlab.com/nabis-engineering/it/nabis-slack-atlas',
+            },
+          ],
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({ response: response({ ok: true, metadata: {} }), auth })
+      .mockResolvedValueOnce({
+        response: response({
+          ok: true,
+          metadata: {
+            webhookUrl: 'https://agentrelay.test/cloud/api/v1/webhooks/hookdeck',
+            webhookSecret: '[redacted]',
+          },
+        }),
+        auth,
+      });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'integration',
+      'configure',
+      'gitlab',
+      '--workspace',
+      'rw_7ccfea89',
+      '--project',
+      '86233786',
+      '--manual-webhooks',
+      '--webhook-secret-file',
+      path,
+      '--json',
+    ]);
+
+    const third = vi.mocked(deps.authorizedApiFetch).mock.calls[2]!;
+    expect(third[1]).toBe('/api/v1/workspaces/rw_7ccfea89/integrations/gitlab/metadata');
+    expect(JSON.parse(String(third[2].body))).toEqual({
+      metadata: {
+        projectIds: ['86233786'],
+        projects: [
+          {
+            id: '86233786',
+            path_with_namespace: 'nabis-engineering/it/nabis-slack-atlas',
+            name_with_namespace: 'Nabis Slack Atlas',
+            web_url: 'https://gitlab.com/nabis-engineering/it/nabis-slack-atlas',
+          },
+        ],
+        manageWebhooks: false,
+        webhookSecret: secret,
+      },
+    });
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toContain('"manualWebhookSecret": "loaded_from_file"');
+    expect(output).not.toContain(secret);
+  });
+
+  it('retains an existing manual-hook secret when the project selection is re-saved', async () => {
+    const { program, deps } = harness();
+    vi.mocked(deps.authorizedApiFetch)
+      .mockResolvedValueOnce({
+        response: response({
+          ok: true,
+          resources: [
+            {
+              id: '86233786',
+              path: 'nabis-engineering/it/nabis-slack-atlas',
+              url: 'https://gitlab.com/nabis-engineering/it/nabis-slack-atlas',
+            },
+          ],
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({
+        response: response({
+          ok: true,
+          metadata: {
+            manageWebhooks: false,
+            webhookSecret: '[redacted]',
+          },
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({ response: response({ ok: true, metadata: {} }), auth });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'integration',
+      'configure',
+      'gitlab',
+      '--workspace',
+      'rw_7ccfea89',
+      '--project',
+      '86233786',
+      '--manual-webhooks',
+      '--json',
+    ]);
+
+    const body = JSON.parse(String(vi.mocked(deps.authorizedApiFetch).mock.calls[2]![2].body)) as {
+      metadata: Record<string, unknown>;
+    };
+    expect(body.metadata.webhookSecret).toBeUndefined();
+    expect(vi.mocked(deps.log).mock.calls.flat().join('\n')).toContain(
+      '"manualWebhookSecret": "existing_secret_retained"'
+    );
+  });
+
+  it('refuses first-time manual hooks without placing a secret on argv', async () => {
+    const { program, deps } = harness();
+    vi.mocked(deps.authorizedApiFetch)
+      .mockResolvedValueOnce({
+        response: response({
+          ok: true,
+          resources: [
+            {
+              id: '86233786',
+              path: 'nabis-engineering/it/nabis-slack-atlas',
+              url: 'https://gitlab.com/nabis-engineering/it/nabis-slack-atlas',
+            },
+          ],
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({ response: response({ ok: true, metadata: {} }), auth });
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'integration',
+        'configure',
+        'gitlab',
+        '--workspace',
+        'rw_7ccfea89',
+        '--project',
+        '86233786',
+        '--manual-webhooks',
+      ])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith(expect.stringContaining('--webhook-secret-file'));
+    expect(deps.authorizedApiFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('refuses a project ID the retained connection cannot see before metadata is read or written', async () => {
+    const { program, deps } = harness();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: response({
+        ok: true,
+        resources: [
+          {
+            id: '86233786',
+            path: 'nabis-engineering/it/nabis-slack-atlas',
+            url: 'https://gitlab.com/nabis-engineering/it/nabis-slack-atlas',
+          },
+        ],
+      }),
+      auth,
+    });
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'integration',
+        'configure',
+        'gitlab',
+        '--workspace',
+        'rw_7ccfea89',
+        '--project',
+        '99999999',
+        '--managed-webhooks',
+      ])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith('GitLab project 99999999 is not accessible to this connection.');
+    expect(deps.authorizedApiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a manual-hook secret file readable by other users', async () => {
+    const { program, deps } = harness();
+    const path = await secretFile('a9c3f8e12d4b6075'.repeat(2));
+    await chmod(path, 0o644);
+    vi.mocked(deps.authorizedApiFetch)
+      .mockResolvedValueOnce({
+        response: response({
+          ok: true,
+          resources: [
+            {
+              id: '86233786',
+              path: 'nabis-engineering/it/nabis-slack-atlas',
+              url: 'https://gitlab.com/nabis-engineering/it/nabis-slack-atlas',
+            },
+          ],
+        }),
+        auth,
+      })
+      .mockResolvedValueOnce({ response: response({ ok: true, metadata: {} }), auth });
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'integration',
+        'configure',
+        'gitlab',
+        '--workspace',
+        'rw_7ccfea89',
+        '--project',
+        '86233786',
+        '--manual-webhooks',
+        '--webhook-secret-file',
+        path,
+      ])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith(expect.stringContaining('chmod 600'));
+    expect(deps.authorizedApiFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports scheduled readiness separately from event ingress', async () => {
+    const { program, deps } = harness();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: response({
+        provider: 'gitlab',
+        ready: true,
+        state: 'ready',
+        currentConnectionId: 'conn-token',
+        configKey: 'gitlab-pat',
+        configuration: { complete: true, selectedProjectCount: 1, reason: 'ready' },
+        eventIngressReady: false,
+        webhookHealthy: null,
+        webhookHealth: { lastError: 'private detail must not print' },
+      }),
+      auth,
+    });
+
+    await program.parseAsync([
+      'node',
+      'agent-relay',
+      'cloud',
+      'integration',
+      'status',
+      'gitlab',
+      '--workspace',
+      'rw_7ccfea89',
+      '--json',
+    ]);
+
+    const output = vi.mocked(deps.log).mock.calls.flat().join('\n');
+    expect(output).toContain('"ready": true');
+    expect(output).toContain('"eventIngressReady": false');
+    expect(output).not.toContain('private detail');
   });
 
   it('lists dynamic providers without requiring room-specific capabilities', async () => {
@@ -286,6 +624,38 @@ describe('registerCloudIntegrationCommands', () => {
       'You do not have permission to perform that integration operation.'
     );
     expect(vi.mocked(deps.error).mock.calls.flat().join('\n')).not.toContain('private server detail');
+  });
+
+  it('names the exact control scope for a typed insufficient-scope refusal', async () => {
+    const { program, deps } = harness();
+    vi.mocked(deps.authorizedApiFetch).mockResolvedValueOnce({
+      response: response(
+        {
+          code: 'insufficient_scope',
+          error: 'private server detail',
+          token: 'must-not-print',
+        },
+        403
+      ),
+      auth,
+    });
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'integration',
+        'status',
+        'gitlab',
+        '--workspace',
+        'rw_7ccfea89',
+      ])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith(expect.stringContaining('cloud:integrations:write'));
+    const output = vi.mocked(deps.error).mock.calls.flat().join('\n');
+    expect(output).not.toMatch(/private server detail|must-not-print/);
   });
 
   it.each([400, 409])('explains an unsupported provider returned with HTTP %s', async (status) => {
