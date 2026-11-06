@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "1960-recipient-wire-size",
+  "kind": "bugfix",
+  "title": "Reject a paced recipient's oversized task before launch",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1960-recipient-wire-size/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 60,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "typed_task_admitted" },
+    "head": { "outcome": "fixed", "signature": "typed_task_rejected_before_launch" }
+  }
+}
