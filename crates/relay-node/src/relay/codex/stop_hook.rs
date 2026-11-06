@@ -125,6 +125,8 @@ pub struct CodexStopHookSettings {
     command: String,
     inbox: std::sync::Arc<StopHookInbox>,
     trust: Trust,
+    /// Refreshes and verifies an already-running owner after disk approval.
+    live_refresh: Trust,
     untrust: Untrust,
     /// The sandbox rules written beside the hook, when this core serves a
     /// session socket.
@@ -156,6 +158,7 @@ impl CodexStopHookSettings {
             trust: Box::new(move |home, command| {
                 trust::with_app_server(home, command, codex.as_deref())
             }),
+            live_refresh: Box::new(trust::live::refresh),
             untrust: Box::new(move |home, command, edit| {
                 trust::untrust_with_app_server(home, command, untrust_codex.as_deref(), edit)
             }),
@@ -202,6 +205,8 @@ impl CodexStopHookSettings {
         trust: impl Fn(&Path, &str) -> Result<(), String> + Send + Sync + 'static,
     ) -> Self {
         self.trust = Box::new(trust);
+        // Existing setup tests replace disk approval and never contact a real host.
+        self.live_refresh = Box::new(|_, _| Ok(()));
         self
     }
 
@@ -526,6 +531,7 @@ impl CodexStopHookSettings {
         self.write_rules()?;
         let config_existed = std::fs::symlink_metadata(self.config_file()).is_ok();
         (self.trust)(&self.codex_home, &self.command)?;
+        (self.live_refresh)(&self.codex_home, &self.command)?;
         if !config_existed && self.config_file().exists() {
             if let Some(marker) = self.config_marker() {
                 if let Some(folder) = marker.parent() {
@@ -1719,3 +1725,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "stop_hook/live_refresh_regression.rs"]
+mod live_refresh_regression;
