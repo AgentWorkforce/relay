@@ -1,16 +1,18 @@
 use super::{session_hook_socket, socket_response};
 use anyhow::Result;
+use serde::{
+    de::{DeserializeOwned, IgnoredAny},
+    Deserialize,
+};
 use serde_json::{json, Value};
-use std::io::{Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::time::Duration;
 
 /// A native Copilot hook talks only to this user's session socket. A stop
 /// waits without model calls, and returns when the person cancels the hook,
 /// setup is removed, the runtime exits, or the configured timeout approaches.
 pub fn copilot_hook(development: bool, event: &str) -> Result<()> {
-    let mut bytes = Vec::new();
-    std::io::stdin().take(4 << 20).read_to_end(&mut bytes)?;
-    let Some(value) = input(&bytes, event) else {
+    let Some(value) = input(std::io::stdin().lock(), event) else {
         std::io::stdout().write_all(b"{}\n")?;
         return Ok(());
     };
@@ -51,38 +53,73 @@ pub fn copilot_hook(development: bool, event: &str) -> Result<()> {
     Ok(())
 }
 
-// Tool results can exceed the socket's body limit and are not caller proof.
-// Forward only the identity and lifecycle fields the adapter actually needs.
-fn input(bytes: &[u8], event: &str) -> Option<Value> {
-    let value: Value = serde_json::from_slice(bytes).ok()?;
-    let object = value.as_object()?;
-    if event == "before" && !value["toolName"].as_str()?.starts_with("agent-relay-") {
-        return None;
-    }
-    let mut fields = serde_json::Map::new();
-    for key in ["sessionId", "cwd", "initialPrompt", "stopReason"] {
-        if let Some(text) = object.get(key).and_then(Value::as_str) {
-            let limit = if key == "initialPrompt" { 96 } else { 4096 };
-            fields.insert(
-                key.into(),
-                json!(text.chars().take(limit).collect::<String>()),
-            );
-        }
-    }
-    if event == "before" {
-        if let Some(name) = object.get("toolName").and_then(Value::as_str) {
-            fields.insert(
-                "toolName".into(),
-                json!(name.chars().take(256).collect::<String>()),
-            );
-        }
-        if let Some(args) = object.get("toolArgs").filter(|v| v.is_object()) {
-            if serde_json::to_vec(args).ok()?.len() > 32 * 1024 {
-                return None;
+// Stream native input, skipping unneeded values rather than retaining tool
+// results or truncating valid JSON at the old 4 MiB boundary. The total input
+// limit is separate from the much smaller retained/socket fields.
+const MAX_INPUT: u64 = 64 << 20;
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Hook<A> {
+    session_id: String,
+    cwd: Option<String>,
+    initial_prompt: Option<String>,
+    stop_reason: Option<String>,
+    tool_name: Option<String>,
+    tool_args: Option<A>,
+}
+impl<A> Hook<A> {
+    fn fields(&self) -> serde_json::Map<String, Value> {
+        let mut fields = serde_json::Map::new();
+        for (key, text, limit) in [
+            ("sessionId", Some(self.session_id.as_str()), 4096),
+            ("cwd", self.cwd.as_deref(), 4096),
+            ("initialPrompt", self.initial_prompt.as_deref(), 96),
+            ("stopReason", self.stop_reason.as_deref(), 4096),
+        ] {
+            if let Some(text) = text {
+                fields.insert(
+                    key.into(),
+                    json!(text.chars().take(limit).collect::<String>()),
+                );
             }
-            fields.insert("toolArgs".into(), args.clone());
         }
+        fields
     }
+}
+fn read_hook<A: DeserializeOwned>(reader: impl Read) -> Option<Hook<A>> {
+    let mut limited = reader.take(MAX_INPUT + 1);
+    let mut parser = serde_json::Deserializer::from_reader(BufReader::new(&mut limited));
+    let hook = Hook::deserialize(&mut parser).ok()?;
+    parser.end().ok()?;
+    drop(parser);
+    (limited.limit() > 0).then_some(hook)
+}
+fn input(reader: impl Read, event: &str) -> Option<Value> {
+    let mut fields = if event == "before" {
+        let hook = read_hook::<Value>(reader)?;
+        let name = hook.tool_name.as_deref()?.strip_prefix("agent-relay-")?;
+        if name.is_empty() {
+            return None;
+        }
+        let args = hook.tool_args.as_ref().filter(|v| v.is_object())?;
+        if serde_json::to_vec(args).ok()?.len() > 32 * 1024 {
+            return None;
+        }
+        let mut fields = hook.fields();
+        fields.insert(
+            "toolName".into(),
+            json!(hook
+                .tool_name
+                .as_deref()?
+                .chars()
+                .take(256)
+                .collect::<String>()),
+        );
+        fields.insert("toolArgs".into(), args.clone());
+        fields
+    } else {
+        read_hook::<IgnoredAny>(reader)?.fields()
+    };
     fields.insert("relayEvent".into(), json!(event));
     Some(Value::Object(fields))
 }
@@ -99,8 +136,8 @@ mod tests {
     use super::*;
     #[test]
     fn hook_forwards_identity_without_large_tool_results_or_client_binding() {
-        let payload = json!({"sessionId":"native-id","cwd":"/fixture","initialPrompt":"x".repeat(1000),"toolResult":"x".repeat(200_000),"relayBinding":"forged"});
-        let value = input(&serde_json::to_vec(&payload).unwrap(), "tool").unwrap();
+        let payload = json!({"sessionId":"native-id","cwd":"/fixture","initialPrompt":"x".repeat(1000),"toolResult":"x".repeat(5 * 1024 * 1024),"toolArgs":{"patch":"x".repeat(5 * 1024 * 1024)},"relayBinding":"forged"});
+        let value = input(serde_json::to_vec(&payload).unwrap().as_slice(), "tool").unwrap();
         assert_eq!(value["sessionId"], "native-id");
         assert_eq!(value["initialPrompt"].as_str().unwrap().len(), 96);
         assert!(value.get("toolResult").is_none());
