@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Codex subagent hooks no longer consume a parent chat's pending messages or registration guidance when they share an app-server.
+- `relay init`'s Codex hooks keep a subagent from receiving its parent chat's pending messages or registration guidance.
 
 ## [17.0.0] - 2026-11-05
 
