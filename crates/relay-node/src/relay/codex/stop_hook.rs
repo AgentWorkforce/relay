@@ -531,7 +531,6 @@ impl CodexStopHookSettings {
         self.write_rules()?;
         let config_existed = std::fs::symlink_metadata(self.config_file()).is_ok();
         (self.trust)(&self.codex_home, &self.command)?;
-        (self.live_refresh)(&self.codex_home, &self.command)?;
         if !config_existed && self.config_file().exists() {
             if let Some(marker) = self.config_marker() {
                 if let Some(folder) = marker.parent() {
@@ -540,6 +539,7 @@ impl CodexStopHookSettings {
                 let _ = std::fs::write(marker, b"");
             }
         }
+        (self.live_refresh)(&self.codex_home, &self.command)?;
         Ok(())
     }
 

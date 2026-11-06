@@ -3,6 +3,7 @@
 use super::*;
 use std::path::Path;
 
+/// The current owned hook definitions whose loaded state must match approval.
 struct HookSpec<'a> {
     home: &'a Path,
     command: &'a str,
@@ -10,6 +11,7 @@ struct HookSpec<'a> {
     optional: &'a [&'a str],
 }
 
+/// Keep diagnostics useful without exposing raw provider replies.
 fn refused(message: &str) -> io::Error {
     io::Error::other(message)
 }
@@ -34,8 +36,19 @@ pub(crate) fn refresh_hook_trust(
     let mut client = Client::open_with_experimental(stream, deadline, true)?;
     let loaded = super::mcp_reload::loaded(&mut client, deadline)?;
     let (approved, version) = approved_config(&mut client, home, deadline)?;
+    approved_definition(&mut client, &spec, &approved, deadline)?;
     if verified(&mut client, &loaded, &spec, &approved, deadline)? {
         return Ok(());
+    }
+    // Only an actual refresh could migrate unrelated legacy approvals.
+    if approved.as_object().is_some_and(|state| {
+        state
+            .values()
+            .any(|s| s["trusted_hash"].as_str().is_some_and(|h| h.contains('/')))
+    }) {
+        return Err(refused(
+            "Codex's legacy hook approvals require review before a byte-preserving refresh",
+        ));
     }
     let file = home.join("config.toml");
     let before = std::fs::read(&file)?;
@@ -68,6 +81,7 @@ pub(crate) fn refresh_hook_trust(
     Ok(())
 }
 
+/// Read versioned user-layer approval only from the expected Codex home.
 fn approved_config(
     client: &mut Client<'_>,
     home: &Path,
@@ -103,17 +117,42 @@ fn approved_config(
     let state = layer["config"]["hooks"]["state"]
         .as_object()
         .ok_or_else(|| refused("Codex did not expose approved hook state"))?;
-    if state
-        .values()
-        .any(|s| s["trusted_hash"].as_str().is_some_and(|h| h.contains('/')))
-    {
-        return Err(refused(
-            "Codex's legacy hook approvals require review before a byte-preserving refresh",
-        ));
-    }
     Ok((Value::Object(state.clone()), version))
 }
 
+/// Prove the intended current definition is approved independently of a loaded
+/// thread's old command, hash or missing cached definition.
+fn approved_definition(
+    client: &mut Client<'_>,
+    spec: &HookSpec<'_>,
+    approved: &Value,
+    deadline: Instant,
+) -> io::Result<()> {
+    client.send(
+        &json!({"method":"hooks/list","id":3002,"params":{"cwds":[spec.home]}}),
+        deadline,
+    )?;
+    let response = client.response(3002, deadline)?;
+    if !thread_ready(listed_hooks(&response)?, spec, approved)? {
+        return Err(refused(
+            "Relay's current hook definition is not approved and enabled on disk",
+        ));
+    }
+    Ok(())
+}
+
+/// Decode successful metadata; provider errors never become approval evidence.
+fn listed_hooks(response: &Value) -> io::Result<&[Value]> {
+    if response.get("error").is_some_and(|v| !v.is_null()) {
+        return Err(refused("Codex's hook definitions could not be inspected"));
+    }
+    response["result"]["data"]
+        .as_array()
+        .map(Vec::as_slice)
+        .ok_or_else(|| refused("Codex did not report its hook definitions"))
+}
+
+/// Inspect each exact loaded thread on this same owner connection.
 fn verified(
     client: &mut Client<'_>,
     loaded: &BTreeSet<String>,
@@ -129,17 +168,12 @@ fn verified(
             deadline,
         )?;
         let response = client.response(id, deadline)?;
-        if response.get("error").is_some_and(|v| !v.is_null()) {
-            return Err(refused("Codex's live hooks could not be inspected"));
-        }
-        let groups = response["result"]["data"]
-            .as_array()
-            .ok_or_else(|| refused("Codex did not report the loaded thread's hooks"))?;
-        ready &= thread_ready(groups, spec, approved)?;
+        ready &= thread_ready(listed_hooks(&response)?, spec, approved)?;
     }
     Ok(ready)
 }
 
+/// Missing or stale definitions are unready; malformed metadata is an error.
 fn thread_ready(groups: &[Value], spec: &HookSpec<'_>, approved: &Value) -> io::Result<bool> {
     let source = spec.home.join("hooks.json").canonicalize()?;
     let mut ready = true;
@@ -161,9 +195,8 @@ fn thread_ready(groups: &[Value], spec: &HookSpec<'_>, approved: &Value) -> io::
             if spec.optional.contains(event) {
                 continue;
             }
-            return Err(refused(
-                "A loaded Codex thread does not list Relay's required hook",
-            ));
+            ready = false;
+            continue;
         };
         let key = hook["key"]
             .as_str()
@@ -173,9 +206,8 @@ fn thread_ready(groups: &[Value], spec: &HookSpec<'_>, approved: &Value) -> io::
             .filter(|h| !h.is_empty())
             .ok_or_else(|| refused("Codex omitted the hook's definition hash"))?;
         if approved[key]["trusted_hash"] != hash || approved[key]["enabled"] == false {
-            return Err(refused(
-                "The live Relay hook is not approved in the user's configuration",
-            ));
+            ready = false;
+            continue;
         }
         ready &= hook["enabled"] == true
             && matches!(hook["trustStatus"].as_str(), Some("trusted" | "managed"));

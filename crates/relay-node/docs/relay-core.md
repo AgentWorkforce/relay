@@ -427,6 +427,8 @@ the bridge socket is for UIs, the relay-send socket for sessions
   with that daemon's own connect-only proxy. A normal empty-edit
   `config/batchWrite` with `reloadUserConfig: true` and Codex's authoritative
   config version reloads existing approved state when a loaded chat is stale.
+  Approval of the current disk definition is checked separately, so an old
+  loaded command or hash can be replaced without authorizing a new definition.
   Readiness requires enabled, trusted Relay hooks on the loaded chats; an
   acknowledgment alone is insufficient, no new trust hashes are authorized,
   and configuration bytes must remain unchanged. This uses Codex's normal

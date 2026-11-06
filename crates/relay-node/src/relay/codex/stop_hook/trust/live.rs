@@ -30,6 +30,7 @@ pub(in crate::relay::codex::stop_hook) fn refresh(
     )
 }
 
+/// Reconcile with explicit process/proxy providers, preserving owner checks.
 pub(in crate::relay::codex::stop_hook) fn refresh_with(
     home: &Path,
     command: &str,
@@ -67,6 +68,7 @@ pub(in crate::relay::codex::stop_hook) fn refresh_with(
 }
 
 impl Owner {
+    /// A recycled pid or replaced executable is no longer the selected owner.
     fn current(&self, table: &dyn ProcessTable) -> bool {
         table.process(self.process.pid) == Some(self.process)
             && table.executable(self.process.pid).as_deref() == Some(&self.executable)
@@ -75,6 +77,7 @@ impl Owner {
     }
 }
 
+/// Relative or unresolved home values provide no ownership proof.
 fn absolute(value: String) -> Result<PathBuf, String> {
     let path = PathBuf::from(value);
     if !path.is_absolute() {
@@ -84,6 +87,7 @@ fn absolute(value: String) -> Result<PathBuf, String> {
         .map_err(|_| "A running Codex home cannot be resolved".into())
 }
 
+/// Use the inspectable kernel environment, retaining Codex's home defaults.
 fn process_homes(
     table: &dyn ProcessTable,
     pid: i32,
@@ -116,6 +120,7 @@ fn process_homes(
     Ok((home, sqlite))
 }
 
+/// Select one trusted owner for this home; uncertainty is not absence.
 fn owner(
     home: &Path,
     table: &dyn ProcessTable,
@@ -156,3 +161,7 @@ fn owner(
     }
     Ok(found)
 }
+
+#[cfg(test)]
+#[path = "live/cleanup.rs"]
+mod cleanup;

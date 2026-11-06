@@ -97,6 +97,7 @@ fn fixture(refresh_works: bool) -> anyhow::Result<Fixture> {
     let live_trusted = Arc::new(AtomicBool::new(false));
     let trusted = live_trusted.clone();
     let api_file = file.clone();
+    let api_home = home.canonicalize()?;
     let server = FakeAppServer::new(move |request| {
         let result = match request["method"].as_str()? {
             "thread/loaded/list" => json!({"data":[THREAD],"nextCursor":null}),
@@ -114,11 +115,12 @@ fn fixture(refresh_works: bool) -> anyhow::Result<Fixture> {
                 json!({"status":"ok","version":"authoritative-version"})
             }
             "hooks/list" => {
-                if request["params"]["threadId"] != THREAD {
+                let disk = request["params"]["cwds"] == json!([api_home]);
+                if !disk && request["params"]["threadId"] != THREAD {
                     return None;
                 }
                 let mut entries = entries.clone();
-                if trusted.load(Ordering::SeqCst) {
+                if disk || trusted.load(Ordering::SeqCst) {
                     for entry in &mut entries {
                         entry["trustStatus"] = json!("trusted");
                     }
@@ -258,16 +260,27 @@ fn codex_hook_upgrade_without_own_shared_daemon_stays_functional() -> anyhow::Re
 
 #[test]
 fn codex_hook_upgrade_already_trusted_is_not_reloaded() -> anyhow::Result<()> {
-    let f = fixture(true)?;
-    f.live_trusted.store(true, Ordering::SeqCst);
-    settings(&f)?.refresh();
-    assert!(f.inbox.is_ready());
-    assert!(!f
-        .seen
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|r| r["method"] == "config/batchWrite"));
+    for legacy_other_plugin in [false, true] {
+        let f = fixture(true)?;
+        f.live_trusted.store(true, Ordering::SeqCst);
+        if legacy_other_plugin {
+            mutate_response(&f, "config/read", |_, response| {
+                response["result"]["layers"][0]["config"]["hooks"]["state"]["other-plugin"] =
+                    json!({"trusted_hash":"declaration/content"});
+            })?;
+        }
+        settings(&f)?.refresh();
+        assert!(
+            f.inbox.is_ready(),
+            "legacy other plugin: {legacy_other_plugin}"
+        );
+        assert!(!f
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r["method"] == "config/batchWrite"));
+    }
     Ok(())
 }
 
@@ -302,7 +315,7 @@ fn codex_hook_upgrade_rejects_ambiguous_or_changed_owner() -> anyhow::Result<()>
 fn mutate_response(
     f: &Fixture,
     method: &'static str,
-    edit: impl Fn(&mut Value) + Send + 'static,
+    edit: impl Fn(&Value, &mut Value) + Send + 'static,
 ) -> anyhow::Result<()> {
     use crate::relay::codex::app_server::{tests::UPGRADED, Decoder};
     let mut guard = f
@@ -323,7 +336,7 @@ fn mutate_response(
         decoder.consume(UPGRADED).ok()?;
         let payload = decoder.consume(&bytes).ok()?.pop()?;
         let mut response: Value = serde_json::from_slice(&payload).ok()?;
-        edit(&mut response);
+        edit(request, &mut response);
         Some(server_frame(&response))
     });
     Ok(())
@@ -348,7 +361,7 @@ fn codex_hook_upgrade_preserves_approval_and_configuration_boundaries() -> anyho
         };
         let key = format!("{}:0", f.home.join("hooks.json").display());
         let config = f.home.join("config.toml");
-        mutate_response(&f, method, move |response| {
+        mutate_response(&f, method, move |_, response| {
             if mode == "rpc_error" {
                 response.as_object_mut().unwrap().remove("result");
                 response["error"] = json!({"code":-32000,"message":"private provider detail"});
@@ -388,6 +401,46 @@ fn codex_hook_upgrade_preserves_approval_and_configuration_boundaries() -> anyho
             writes,
             usize::from(matches!(mode, "rpc_error" | "bytes")),
             "{mode}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn codex_hook_upgrade_refreshes_old_loaded_definitions() -> anyhow::Result<()> {
+    for stale in ["command", "hash", "missing"] {
+        let f = fixture(true)?;
+        let trusted = f.live_trusted.clone();
+        mutate_response(&f, "hooks/list", move |request, response| {
+            if request["params"]["threadId"] != THREAD || trusted.load(Ordering::SeqCst) {
+                return;
+            }
+            let hooks = response["result"]["data"][0]["hooks"]
+                .as_array_mut()
+                .unwrap();
+            if stale == "missing" {
+                hooks.clear();
+            } else {
+                for hook in hooks {
+                    if stale == "command" {
+                        hook["command"] = json!("'/old/agent-relay-node' relay codex-stop-hook");
+                    } else {
+                        hook["currentHash"] = json!("old-definition-hash");
+                    }
+                }
+            }
+        })?;
+        settings(&f)?.refresh();
+        assert!(f.inbox.is_ready(), "old loaded definition: {stale}");
+        assert!(f.live_trusted.load(Ordering::SeqCst));
+        assert_eq!(
+            f.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r["method"] == "config/batchWrite")
+                .count(),
+            1
         );
     }
     Ok(())
