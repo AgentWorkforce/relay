@@ -182,7 +182,11 @@ impl Outbound {
                 })
         });
         if current != Some((name, address, link, binding)) {
-            return json!({});
+            // The native hook already claimed this answer. A registration or
+            // display change cannot undo that handoff. Keep the message and
+            // let the next verified hook supply the current identity, without
+            // caching or appending the identity observed before the wait.
+            return answer;
         }
         if accepted {
             self.copilot_identities

@@ -121,7 +121,16 @@ pub struct FakeSessions(
     pub Mutex<Vec<Value>>,
     /// Identity contexts the pretend native runtime acknowledged.
     pub Mutex<HashSet<(String, String)>>,
+    /// Pauses a native receipt lookup after the hook has returned its claim.
+    pub Mutex<Option<CopilotReceiptGate>>,
+    /// The native hook's already-claimed message, when a fixture supplies one.
+    pub Mutex<Value>,
 );
+
+pub struct CopilotReceiptGate {
+    pub entered: std::sync::mpsc::Sender<()>,
+    pub resume: std::sync::mpsc::Receiver<()>,
+}
 
 impl Default for FakeSessions {
     fn default() -> FakeSessions {
@@ -135,6 +144,8 @@ impl FakeSessions {
             Mutex::new(sessions),
             Mutex::default(),
             Mutex::new(Ok(Vec::new())),
+            Mutex::default(),
+            Mutex::default(),
             Mutex::default(),
             Mutex::default(),
             Mutex::default(),
@@ -165,6 +176,11 @@ impl FakeSessions {
 
 impl SessionDirectory for FakeSessions {
     fn copilot_context_accepted(&self, sid: &str, context: &str) -> bool {
+        let gate = self.11.lock().unwrap().take();
+        if let Some(gate) = gate {
+            gate.entered.send(()).unwrap();
+            gate.resume.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
         self.10
             .lock()
             .unwrap()
@@ -184,7 +200,8 @@ impl SessionDirectory for FakeSessions {
             return None;
         }
         self.9.lock().unwrap().push(input.clone());
-        Some(json!({}))
+        let answer = self.12.lock().unwrap().clone();
+        Some(if answer.is_null() { json!({}) } else { answer })
     }
 
     fn sessions(&self) -> Vec<DiscoveredSession> {

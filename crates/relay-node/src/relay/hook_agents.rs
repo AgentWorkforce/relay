@@ -59,6 +59,7 @@ fn node_script(arguments: &[String]) -> Option<&str> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-e" | "--eval" | "-p" | "--print" => return None,
+            arg if arg.starts_with("--eval=") || arg.starts_with("--print=") => return None,
             "--" => return args.next().map(String::as_str),
             "-r"
             | "--require"
@@ -98,6 +99,20 @@ pub fn is_other_agent(table: &dyn ProcessTable, pid: i32) -> bool {
 mod copilot_tests {
     use super::*;
     use crate::relay::process::{FakeProcess, FakeProcesses};
+
+    #[test]
+    fn attached_eval_and_print_do_not_treat_user_arguments_as_a_script() {
+        for flag in ["--eval=console.log('hello')", "--print=process.version"] {
+            let arguments = [
+                "node",
+                flag,
+                "--",
+                "/opt/node_modules/@github/copilot/index.js",
+            ]
+            .map(str::to_owned);
+            assert!(node_script(&arguments).is_none());
+        }
+    }
     #[test]
     fn message_arguments_do_not_make_a_relay_client_a_copilot_process() {
         let table = FakeProcesses::default();

@@ -5361,3 +5361,77 @@ async fn copilot_verified_hook_gets_late_identity_once_and_only_core_registratio
     assert!(h.sessions.9.lock().unwrap().last().unwrap()["relayBinding"].is_null());
     h.stop().await;
 }
+
+#[tokio::test]
+async fn copilot_claimed_message_survives_rename_and_same_workspace_replacement() {
+    for replace in [false, true] {
+        let h = Harness::start().await;
+        h.core.rediscover_workspace();
+        let sid = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
+        let chat = session(SessionKind::Copilot, sid, "/fixture/copilot-vscode");
+        h.sessions.0.lock().unwrap().push(chat.clone());
+        h.sessions.call_from(4500, chat.clone());
+        h.core
+            .register_session(&chat, Some("copilot-proof"), None, false)
+            .await
+            .unwrap();
+        let claimed =
+            json!({"additionalContext":"[via Agent Relay ref abcdef123456]\nClaimed delivery"});
+        *h.sessions.12.lock().unwrap() = claimed.clone();
+        let (entered, receipt_started) = std::sync::mpsc::channel();
+        let (resume, receipt_resume) = std::sync::mpsc::channel();
+        *h.sessions.11.lock().unwrap() = Some(support::bridge::CopilotReceiptGate {
+            entered,
+            resume: receipt_resume,
+        });
+        let body = json!({"sessionId":sid,"relayEvent":"tool"});
+        let change_registration = async {
+            tokio::task::spawn_blocking(move || {
+                receipt_started
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
+            })
+            .await
+            .unwrap();
+            h.core
+                .store
+                .update(|store| {
+                    let mut registration = store.registration_for(&chat.target).unwrap().clone();
+                    if replace {
+                        registration.registered_at = "2026-11-06T01:00:00Z".into();
+                    } else {
+                        registration.alias = Some(agent_relay_node::relay::store::AgentAlias {
+                            name: "renamed-during-receipt".into(),
+                            agent_id: "renamed-agent".into(),
+                            token: Secret::new("test-alias-token"),
+                            registered_at: registration.registered_at.clone(),
+                        });
+                    }
+                    store.update(registration);
+                })
+                .unwrap();
+            resume.send(()).unwrap();
+        };
+        let (response, ()) = tokio::join!(
+            h.call(4500, "POST", "/copilot/hook", body.clone()),
+            change_registration
+        );
+        assert_eq!(
+            response.unwrap(),
+            claimed,
+            "an already-claimed answer is preserved"
+        );
+
+        // The stale identity was not cached or appended. A later callback
+        // supplies the identity now registered for this same native chat.
+        *h.sessions.12.lock().unwrap() = Value::Null;
+        let next = h.call(4500, "POST", "/copilot/hook", body).await.unwrap();
+        let context = next["additionalContext"].as_str().unwrap();
+        assert!(context.contains(if replace {
+            "@copilot-proof"
+        } else {
+            "@renamed-during-receipt"
+        }));
+        h.stop().await;
+    }
+}
