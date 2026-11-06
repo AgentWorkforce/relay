@@ -125,13 +125,16 @@ pub fn decide_for_agent_with_integrations(
     });
     // An unrelated broad subscription must not authorize a rejected filtered
     // resource, including after cleanup removes its record. Path-bearing events
-    // need a ready matching scope; pathless legacy messages retain old routing.
+    // need a ready matching scope when one can be recovered. Pathless messages
+    // and legacy records with no recoverable scope retain their old routing.
     let legacy_broad = !relevant_filter
         && integrations.iter().any(|held| {
             held.ready == Some(true)
                 && held.terminal != Some(true)
                 && held.effective_event_types().is_empty()
-                && path.or(event.path.as_deref()).is_none()
+                && (path.or(event.path.as_deref()).is_none()
+                    || (held.path_glob.is_none()
+                        && super::relayfile_glob(&held.provider, &held.resource).is_none()))
         });
     let accepted = legacy_broad
         || integrations
@@ -262,6 +265,36 @@ fn path_segments_match(glob: &str, path: &str) -> bool {
 mod tests {
     use super::super::{decide_for_agent_with_requested, Decision, Delivery};
     use super::*;
+    /// Preserve legacy broad records that have neither a stored nor a derivable
+    /// scope, while still rejecting events outside a recoverable legacy scope.
+    #[test]
+    fn legacy_broad_records_without_recoverable_scopes_keep_prior_routing() {
+        let mut legacy = Integration::new("jira", "legacy project subscription", "rw_test");
+        legacy.ready = Some(true);
+        let event = Delivery {
+            channel_id: Some("events".into()),
+            text: Some(
+                "Jira comment.created\nRelayfile path: /jira/issues/KAN-1/comments/9.json".into(),
+            ),
+            ..Delivery::default()
+        };
+        assert_eq!(
+            decide_for_agent_with_integrations(
+                &event,
+                "agent",
+                None,
+                Some("events"),
+                std::slice::from_ref(&legacy)
+            ),
+            Decision::Inject
+        );
+        legacy.resource = "/jira/projects/**".into();
+        assert!(matches!(
+            decide_for_agent_with_integrations(&event, "agent", None, Some("events"), &[legacy]),
+            Decision::Skip(_)
+        ));
+    }
+
     #[test]
     /// Keep local noise exemptions aligned with backend interior and legacy wildcard semantics.
     fn resource_globs_agree_with_backend_segment_and_legacy_prefix_semantics() {
