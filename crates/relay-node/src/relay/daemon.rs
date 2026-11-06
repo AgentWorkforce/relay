@@ -127,7 +127,7 @@ impl Config {
             // Read before `env` moves into the config.
             delivery_timing: DeliveryTiming::from_env(&lookup),
             env,
-            version: crate::VERSION.to_string(),
+            version: crate::version().to_string(),
             host_name: machine::host_name(),
             rediscover_every: Duration::from_secs(30),
             push_timing: PushTiming::default(),
@@ -227,7 +227,7 @@ impl Core {
         let machine_prefix = machine::machine_prefix(&config.host_name);
         let hub = Hub::new(
             DaemonInfo {
-                build_revision: Some(crate::BUILD_REVISION.into()),
+                build_revision: Some(crate::build_revision().into()),
                 history_version: plugins.history_version.map(Into::into),
                 version: config.version.clone(),
                 bridge_version: BRIDGE_VERSION,

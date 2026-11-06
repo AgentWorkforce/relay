@@ -131,6 +131,12 @@ jobs:
           export HOME="$RUNNER_TEMP/relay-node-home"
           mkdir -p "$HOME"
           cargo test --locked --no-default-features -- --test-threads=4
+      - name: Embedded executable identity
+        run: cargo test --locked --no-default-features --features embedded-build-info --test embedded_build_info --test embedded_build_script
+      - name: Explicit downstream test identity fixture
+        run: |
+          cargo check --locked --no-default-features --features test-build-info --tests
+          cargo test --locked --no-default-features --features test-build-info --test test_build_info
 
   macos:
     name: macOS arm64 build + test

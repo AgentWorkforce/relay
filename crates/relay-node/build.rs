@@ -37,13 +37,20 @@ fn git_path(name: &str) -> Option<PathBuf> {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=AGENT_RELAY_SITE_URL");
+    println!("cargo:rerun-if-env-changed=AGENT_RELAY_URL_SCHEME");
+    println!("cargo:rerun-if-changed=build_site.rs");
+    if env::var_os("CARGO_FEATURE_EMBEDDED_BUILD_INFO").is_some() {
+        // Only the executable owns release identity and Windows resources.
+        // Site and scheme remain compile-time properties of the core.
+        println!("cargo:rerun-if-changed=build.rs");
+        built_in_site();
+        return;
+    }
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_PROBE_VERSION");
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_PROBE_BASE_VERSION");
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_PROBE_CHANGELOG");
     println!("cargo:rerun-if-env-changed=AGENT_RELAY_PROBE_GIT_DIR");
-    println!("cargo:rerun-if-env-changed=AGENT_RELAY_SITE_URL");
-    println!("cargo:rerun-if-env-changed=AGENT_RELAY_URL_SCHEME");
-    println!("cargo:rerun-if-changed=build_site.rs");
     println!("cargo:rerun-if-changed=Cargo.lock");
     println!("cargo:rerun-if-changed=build_version.rs");
     // Resolve through git so linked worktrees also track their own HEAD.

@@ -102,7 +102,7 @@ impl Relayfile {
                 .set("Authorization", &format!("Bearer {}", token.expose()))
                 .set(
                     "User-Agent",
-                    &format!("AgentRelayDesktop/{}", crate::VERSION),
+                    &format!("AgentRelayDesktop/{}", crate::version()),
                 );
             let response = match body {
                 Some(body) => request.send_json(body),

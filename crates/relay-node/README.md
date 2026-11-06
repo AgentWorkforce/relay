@@ -121,6 +121,40 @@ The internal Cargo package version is never reported as a release on its
 own. On Windows, `AGENT_RELAY_WINDOWS_ICON` additionally embeds an icon and
 version resource.
 
+### Executable-owned identity
+
+An embedding application can enable `embedded-build-info` with
+`default-features = false`. In this mode the node library does not read or watch
+release version, Git revision, changelog, or Windows resource inputs. It still
+validates and bakes in the site and URL scheme. The feature is incompatible with
+`production-binaries`, whose standalone executables use the default stamping.
+
+The executable must install its compiled identity before calling the CLI,
+constructing a node, or reading identity:
+
+```rust,ignore
+agent_relay_node::install_build_info(agent_relay_node::BuildInfo {
+    version: env!("APP_RELEASE_VERSION"),
+    revision: env!("APP_SOURCE_REVISION"),
+}).expect("build identity is installed once at startup");
+```
+
+The executable's build script supplies these values at compile time. They are
+not read from the environment at startup. Getters `version()` and
+`build_revision()` fail if initialization was omitted, and a second install is
+rejected. These APIs do not configure the site, scheme, or branding.
+
+Keep the identity build script and Windows resources in an executable-only
+Cargo package. Putting changing metadata in a dependency of the heavy libraries
+would still invalidate them. The default node build continues to expose the
+existing `VERSION` and `BUILD_REVISION` constants; embedded builds use the getters.
+
+Downstream test suites can enable `test-build-info` through dev-dependencies
+only. It lazily installs a deterministic `0.0.0-dev+test` / `test-fixture`
+identity when a test does not install one explicitly. Production dependencies
+must use only `embedded-build-info`; verify real-binary startup separately
+without the fixture feature so missing initialization still fails closed.
+
 ### The bridge contract
 
 The bridge's methods, events and types are declared once in Rust

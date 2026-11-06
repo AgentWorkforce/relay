@@ -25,6 +25,11 @@ name = "relay_core_binary"
 required-features = ["production-binaries"]
 
 [features]
+# Library embedders bake identity into their executable instead of this crate.
+# Install BuildInfo before calling the core. Use with default-features = false.
+embedded-build-info = []
+# Deterministic identity fixture for downstream dev-dependencies only.
+test-build-info = ["embedded-build-info"]
 # Ordinary builds keep every production executable. The desktop apps'
 # crates opt out with --no-default-features when they only need the library.
 default = ["production-binaries", "relay-cli"]

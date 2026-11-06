@@ -13,7 +13,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "agent-relay-node",
-    version = crate::VERSION,
+    version = crate::version(),
     propagate_version = true,
     about = "Connect coding sessions to Agent Relay"
 )]

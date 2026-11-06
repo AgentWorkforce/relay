@@ -88,7 +88,7 @@ impl<'a> Client<'a> {
         }
         client.send(
             &json!({"method": "initialize", "id": 1, "params": {"clientInfo": {
-                "name": "agent-relay-desktop", "title": "Agent Relay", "version": crate::VERSION,
+                "name": "agent-relay-desktop", "title": "Agent Relay", "version": crate::version(),
             }}}),
             deadline,
         )?;
