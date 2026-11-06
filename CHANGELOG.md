@@ -5,7 +5,12 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Patch]
+
+### Fixed
+
+- `agent-relay file` accepts private JSON integration metadata files on Unix.
+- `agent-relay flows` reports GitLab setup requirements and resumes human-approved repository runs with their original access.
 
 ## [17.2.0] - 2026-11-06
 
