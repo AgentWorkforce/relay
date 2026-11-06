@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `agent-relay file` accepts private JSON integration metadata files on Unix.
 - `agent-relay flows` reports GitLab setup requirements and resumes human-approved repository runs with their original access.
-- `agent-relay-node` lists and delivers to Codex sessions promptly when Codex's thread database is large: lookups by thread id use its index instead of reading the whole table, and the recent-session list no longer sorts every thread's full first prompt.
+- `agent-relay-node` lists Codex sessions and delivers messages to them promptly when Codex's thread database is large.
 
 ## [17.2.0] - 2026-11-06
 

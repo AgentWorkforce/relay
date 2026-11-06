@@ -213,9 +213,10 @@ fn recent_sql(columns: &HashSet<String>) -> Option<String> {
 
 /// The rowids of the newest `?1` threads matching `filter`, ordered by the
 /// same updated time the row reports. Only the rowid and that time are
-/// sorted, so choosing the page never carries a thread's title — which is
-/// its first prompt and can run to a megabyte — through the sort; the
-/// outer select reads the full rows of the chosen page alone.
+/// sorted to choose the page, so the sort over every thread never carries
+/// a thread's title — which is its first prompt and can run to a megabyte.
+/// The outer select reads, and orders, the full rows of that page alone (at
+/// most `?1` of them).
 fn newest_rowids(columns: &HashSet<String>, filter: &str) -> String {
     let has = |column: &str| columns.contains(column);
     let updated = match (has("updated_at_ms"), has("updated_at")) {
