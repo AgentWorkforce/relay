@@ -66,7 +66,9 @@ pub fn send(
         return InjectOutcome::Refused("Invalid Copilot session id.".into());
     }
     let thread = format!("{sid}:{binding}");
-    let claim_id = format!("{thread}:{message_id}");
+    // Claim identity survives registration replacement; only its takeable
+    // thread is registration-scoped. A delivered message can never become Free.
+    let claim_id = format!("{sid}:{message_id}");
     match config.inbox.claimed(&claim_id) {
         Claimed::Hook { at_ms } => {
             if recorded(config, sid, message_id) {
@@ -82,6 +84,7 @@ pub fn send(
                 "The Copilot delivery claim is unavailable or belongs to another route.".into(),
             )
         }
+        Claimed::Free if recorded(config, sid, message_id) => return InjectOutcome::Delivered,
         _ => {}
     }
     if sessions::session(config, table, uid, sid).is_none() {

@@ -53,7 +53,7 @@ fn trusted_runtime(
     if !args.iter().any(|a| a == "--headless")
         || !args.iter().any(|a| a == "--stdio")
         || args.iter().any(|a| a.starts_with("--inspect"))
-        || !table.is_trusted_vscode(exe)
+        || !table.is_trusted_vscode(process.pid, exe)
     {
         return None;
     }
@@ -61,7 +61,7 @@ fn trusted_runtime(
     let host_exe = table.executable(host.pid)?;
     if host.uid != process.uid
         || host_exe != root.join("Frameworks/Code Helper.app/Contents/MacOS/Code Helper")
-        || !table.is_trusted_vscode(&host_exe)
+        || !table.is_trusted_vscode(host.pid, &host_exe)
         || !table
             .arguments(host.pid)
             .iter()
@@ -81,7 +81,7 @@ fn trusted_main(table: &dyn ProcessTable, pid: i32, uid: u32, root: &Path) -> Op
     let main_exe = table.executable(main.pid)?;
     if main.uid != uid
         || main_exe != root.join("MacOS/Code")
-        || !table.is_trusted_vscode(&main_exe)
+        || !table.is_trusted_vscode(main.pid, &main_exe)
         || !table.environment_readable(main.pid)
         || table
             .environment_var(main.pid, "ELECTRON_RUN_AS_NODE")
@@ -94,7 +94,9 @@ fn trusted_main(table: &dyn ProcessTable, pid: i32, uid: u32, root: &Path) -> Op
     {
         return None;
     }
-    Some(main)
+    table
+        .is_trusted_vscode_bundle(root.parent()?)
+        .then_some(main)
 }
 
 /// Native IDs from descriptors, with the current directory entry's inode birth
@@ -135,7 +137,7 @@ pub fn held(config: &CopilotConfig, table: &dyn ProcessTable, pid: i32, uid: u32
     }
     sessions.sort();
     sessions.dedup();
-    if table.process(pid) == Some(process) {
+    if table.process(pid) == Some(process) && !table.zombie(pid) {
         sessions
     } else {
         Vec::new()
@@ -173,6 +175,16 @@ pub(crate) mod tests {
         std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
         std::fs::write(&lock, "").unwrap();
         let table = FakeProcesses::default();
+        table
+            .trusted_vscode_bundles
+            .lock()
+            .unwrap()
+            .insert(Path::new(ROOT).parent().unwrap().into());
+        table
+            .trusted_relay_helpers
+            .lock()
+            .unwrap()
+            .insert("/opt/agent-relay-desktop-probe".into());
         for (pid, parent, suffix, args) in [
             (100, 1, "MacOS/Code", vec![]),
             (101, 100, "Frameworks/Code Helper.app/Contents/MacOS/Code Helper", vec!["--type=utility"]),
@@ -256,6 +268,12 @@ pub(crate) mod tests {
             .open_files
             .clear();
         assert!(lock.exists());
+        assert!(held(&config, &table, 102, 501).is_empty());
+    }
+    #[test]
+    fn a_signed_executable_with_an_invalid_enclosing_bundle_is_rejected() {
+        let (_home, config, table, _) = fixture();
+        table.trusted_vscode_bundles.lock().unwrap().clear();
         assert!(held(&config, &table, 102, 501).is_empty());
     }
     #[test]

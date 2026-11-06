@@ -65,6 +65,7 @@ fn exact_hook_claim_survives_reopen_and_requires_native_acceptance() {
         "a second hook cannot take the same claim"
     );
     let reopened = CopilotConfig::from_env(&|_| None, &config.home);
+    reopened.set_helper("/opt/agent-relay-desktop-probe".into());
     assert!(
         matches!(
             send(
@@ -132,7 +133,7 @@ fn wrong_hook_identity_never_creates_a_discoverable_session() {
         .unwrap();
     let payload = json!({"sessionId":"69e50b90-b873-4de0-a36d-c9152a45e772","relayEvent":"start"});
     assert!(hook_answer(&config, &table, 501, 103, &payload).is_none());
-    assert!(discover(&config, &table, 501).is_empty());
+    assert!(discover(&config, &table, 501).unwrap().is_empty());
 }
 
 #[test]
@@ -184,7 +185,7 @@ fn a_direct_mcp_child_or_wrong_event_is_not_the_configured_hook() {
 }
 
 #[test]
-fn an_offer_cannot_cross_a_replaced_registration_binding() {
+fn an_offer_is_scoped_to_its_literal_registration_binding() {
     let (_home, config, table, _) = proof::tests::fixture();
     CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into())
         .set_enabled(true)
@@ -229,11 +230,8 @@ fn idle_polls_expose_nothing_and_cannot_take_an_offer_without_native_proof() {
         .unwrap();
     let sid = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
     let payload = json!({"sessionId":sid,"relayEvent":"stop","relayBinding":"binding","stopReason":"end_turn"});
-    assert_eq!(
-        hook_answer(&config, &table, 501, 9999, &payload),
-        Some(json!({}))
-    );
-    assert!(discover(&config, &table, 501).is_empty());
+    assert!(hook_answer(&config, &table, 501, 9999, &payload).is_none());
+    assert!(discover(&config, &table, 501).unwrap().is_empty());
     config.prepare().unwrap();
     config
         .inbox
@@ -241,4 +239,137 @@ fn idle_polls_expose_nothing_and_cannot_take_an_offer_without_native_proof() {
         .unwrap();
     assert!(hook_answer(&config, &table, 501, 9999, &payload).is_none());
     assert!(config.inbox.has_offered(&format!("{sid}:binding")));
+}
+
+#[test]
+fn modified_owned_hook_settings_are_never_overwritten_or_enabled() {
+    for (key, value) in [
+        ("unexpected", json!(true)),
+        ("hooks", json!({"agentStop":[]})),
+    ] {
+        let (_home, config, _table, _) = proof::tests::fixture();
+        let settings = CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into());
+        settings.set_enabled(true).unwrap();
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(config.hooks_file()).unwrap()).unwrap();
+        document[key] = value;
+        let bytes = serde_json::to_vec(&document).unwrap();
+        std::fs::write(config.hooks_file(), &bytes).unwrap();
+        assert!(!settings.enabled());
+        assert!(settings.set_enabled(true).is_err());
+        assert!(settings.set_enabled(false).is_err());
+        assert_eq!(std::fs::read(config.hooks_file()).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn unreadable_or_corrupt_state_is_unavailable_and_never_replaced() {
+    let (_home, config, table, _) = proof::tests::fixture();
+    CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into())
+        .set_enabled(true)
+        .unwrap();
+    named_hook(&table, "start");
+    let sid = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
+    config.prepare().unwrap();
+    let path = config.state().join(format!("{sid}.json"));
+    std::fs::write(&path, b"damaged state").unwrap();
+    let payload = json!({"sessionId":sid,"relayEvent":"start"});
+    assert!(hook_answer(&config, &table, 501, 103, &payload).is_none());
+    assert!(discover(&config, &table, 501).is_none());
+    assert_eq!(std::fs::read(&path).unwrap(), b"damaged state");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(hook_answer(&config, &table, 501, 103, &payload).is_none());
+    assert!(discover(&config, &table, 501).is_none());
+}
+
+#[test]
+fn an_idle_hook_exits_after_its_observed_runtime_is_gone() {
+    let (_home, config, table, _) = proof::tests::fixture();
+    CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into())
+        .set_enabled(true)
+        .unwrap();
+    named_hook(&table, "start");
+    let mut payload =
+        json!({"sessionId":"1069773c-0824-4fad-b7f9-d3dc3c4ed148","relayEvent":"start"});
+    hook_answer(&config, &table, 501, 103, &payload).unwrap();
+    named_hook(&table, "stop");
+    payload["relayEvent"] = json!("stop");
+    assert_eq!(
+        hook_answer(&config, &table, 501, 103, &payload),
+        Some(json!({}))
+    );
+    table.processes.lock().unwrap().remove(&102);
+    assert!(hook_answer(&config, &table, 501, 103, &payload).is_none());
+}
+
+#[test]
+fn a_matching_helper_path_without_our_program_identity_is_rejected() {
+    let (_home, config, table, _) = proof::tests::fixture();
+    CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into())
+        .set_enabled(true)
+        .unwrap();
+    named_hook(&table, "start");
+    table.trusted_relay_helpers.lock().unwrap().clear();
+    assert!(hook_answer(
+        &config,
+        &table,
+        501,
+        103,
+        &json!({"sessionId":"1069773c-0824-4fad-b7f9-d3dc3c4ed148","relayEvent":"start"})
+    )
+    .is_none());
+}
+
+#[test]
+fn registration_replacement_cannot_replay_a_claimed_message() {
+    let (_home, config, table, _) = proof::tests::fixture();
+    CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into())
+        .set_enabled(true)
+        .unwrap();
+    named_hook(&table, "start");
+    let sid = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
+    let mut payload = json!({"sessionId":sid,"relayEvent":"start","relayBinding":"old"});
+    hook_answer(&config, &table, 501, 103, &payload).unwrap();
+    let message = "stable-message";
+    let text = format!(
+        "[via Agent Relay ref {}]\nMessage",
+        crate::relay::delivery::policy::MessageRef::of(message)
+    );
+    assert!(matches!(
+        send(&config, &table, 501, sid, "old", message, &text),
+        InjectOutcome::Waiting(_)
+    ));
+    named_hook(&table, "stop");
+    payload["relayEvent"] = json!("stop");
+    payload["stopReason"] = json!("end_turn");
+    let answer = hook_answer(&config, &table, 501, 103, &payload).unwrap();
+    assert_eq!(answer["decision"], "block");
+    assert!(matches!(
+        send(&config, &table, 501, sid, "replacement", message, &text),
+        InjectOutcome::Accepted(_)
+    ));
+    assert!(!config.inbox.has_offered(&format!("{sid}:replacement")));
+    std::fs::write(
+        config.sessions().join(sid).join("events.jsonl"),
+        format!(
+            "{}\n",
+            json!({"type":"user.message","data":{"content":answer["reason"]}})
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        send(&config, &table, 501, sid, "replacement", message, &text),
+        InjectOutcome::Delivered
+    );
+}
+
+#[test]
+fn hook_metadata_errors_are_not_reported_as_absence() {
+    let (_home, config, _table, _) = proof::tests::fixture();
+    let settings = CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into());
+    std::fs::create_dir_all(&config.data_dir).unwrap();
+    std::os::unix::fs::symlink("hooks", config.data_dir.join("hooks")).unwrap();
+    assert!(settings.set_enabled(false).is_err());
+    assert!(settings.set_enabled(true).is_err());
 }

@@ -163,7 +163,14 @@ impl FakeSessions {
 impl SessionDirectory for FakeSessions {
     fn copilot_hook(&self, pid: i32, input: &Value) -> Option<Value> {
         let caller = self.1.lock().unwrap().get(&pid)?.clone();
-        if caller.target.kind != SessionKind::Copilot || input["sessionId"] != caller.target.id {
+        if caller.target.kind != SessionKind::Copilot
+            || input["sessionId"] != caller.target.id
+            || !agent_relay_node::relay::store::is_uuid(&caller.target.id)
+            || !matches!(
+                input["relayEvent"].as_str(),
+                Some("start" | "before" | "tool" | "stop")
+            )
+        {
             return None;
         }
         self.9.lock().unwrap().push(input.clone());

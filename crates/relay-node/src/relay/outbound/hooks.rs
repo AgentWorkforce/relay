@@ -1,5 +1,5 @@
 //! The session-socket routes Agent Relay's own agent hooks ask: the Codex
-//! stop hook and the Claude Code attestation hook.
+//! stop hook, native Copilot lifecycle hooks and Claude Code attestation hook.
 use super::{payload, Outbound, OutboundError, Purpose, Request};
 use serde_json::Value;
 

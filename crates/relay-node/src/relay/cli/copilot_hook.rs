@@ -28,7 +28,11 @@ pub fn copilot_hook(development: bool, event: &str) -> Result<()> {
             "POST",
             "/copilot/hook",
             &input,
-            Duration::from_secs(if event == "before" { 18 } else { 8 }),
+            Duration::from_secs(if matches!(event, "before" | "start") {
+                18
+            } else {
+                8
+            }),
         );
         let Ok((status, bytes)) = response else {
             break;

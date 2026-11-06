@@ -20,8 +20,8 @@ pub fn is_claude_process(table: &dyn ProcessTable, pid: i32) -> bool {
     executable || crate::relay::claude_dirs::is_claude_code(table, pid)
 }
 
-/// Whether `pid` is GitHub Copilot CLI: the `copilot` binary, or its npm
-/// package under Node.
+/// Whether `pid` is Copilot CLI (native or npm under Node), or VS Code
+/// Copilot's native `copilot-runtime`. Both are caller-attribution boundaries.
 pub fn is_copilot_process(table: &dyn ProcessTable, pid: i32) -> bool {
     let named = table.executable(pid).is_some_and(|path| {
         path.file_name()

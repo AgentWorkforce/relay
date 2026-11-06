@@ -288,9 +288,11 @@ impl LocalSessions {
             SessionPartition::Pi => self.pi_sessions(),
             SessionPartition::OpenCode => self.opencode_sessions(),
             SessionPartition::Devin => self.devin_sessions(),
-            SessionPartition::Copilot => {
-                crate::relay::copilot::discover(&self.config.copilot, &*self.scans, self.config.uid)
-            }
+            SessionPartition::Copilot => crate::relay::copilot::discover(
+                &self.config.copilot,
+                &*self.scans,
+                self.config.uid,
+            )?,
             SessionPartition::CursorCli => {
                 cursor_cli::discover(&self.config.cursor, &*self.scans, self.config.uid)
             }

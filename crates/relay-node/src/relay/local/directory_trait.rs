@@ -4,6 +4,10 @@ mod mobile_claude_roots;
 mod session_activity;
 
 impl SessionDirectory for LocalSessions {
+    fn configure_copilot_helper(&self, executable: PathBuf) {
+        self.config.copilot.set_helper(executable);
+    }
+
     fn copilot_hook(&self, pid: i32, payload: &serde_json::Value) -> Option<serde_json::Value> {
         crate::relay::copilot::hook_answer(
             &self.config.copilot,

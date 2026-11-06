@@ -99,6 +99,86 @@ fn core_foundation_url(path: &Path) -> Option<core_foundation::url::CFURL> {
     core_foundation::url::CFURL::from_path(path, false)
 }
 
+const MICROSOFT: &str = "anchor apple generic and certificate leaf[subject.OU] = \"UBF8T346G9\"";
+
+/// Bind validation to the live process, not a signed file replacing its path.
+pub(super) fn trusted_vscode_process(pid: i32) -> bool {
+    trusted_process(pid, MICROSOFT)
+}
+
+fn trusted_process(pid: i32, requirement: &str) -> bool {
+    use security_framework::os::macos::code_signing::{
+        Flags, GuestAttributes, SecCode, SecRequirement,
+    };
+    let Ok(requirement) = requirement.parse::<SecRequirement>() else {
+        return false;
+    };
+    let mut attributes = GuestAttributes::new();
+    attributes.set_pid(pid);
+    SecCode::copy_guest_with_attribues(None, &attributes, Flags::NONE)
+        .and_then(|code| code.check_validity(Flags::STRICT_VALIDATE, &requirement))
+        .is_ok()
+}
+
+/// Check sealed application resources as well as the runtime executable. This
+/// intentionally bypasses the executable cache: resources have separate inodes.
+pub(super) fn trusted_vscode_bundle(bundle: &Path) -> bool {
+    use security_framework::os::macos::code_signing::{Flags, SecRequirement, SecStaticCode};
+    if !installed_app_file(bundle) {
+        return false;
+    }
+    let Some(url) = core_foundation::url::CFURL::from_path(bundle, true) else {
+        return false;
+    };
+    let Ok(code) = SecStaticCode::from_path(&url, Flags::NONE) else {
+        return false;
+    };
+    let Ok(requirement) =
+        format!("{MICROSOFT} and identifier \"com.microsoft.VSCode\"").parse::<SecRequirement>()
+    else {
+        return false;
+    };
+    code.check_validity(
+        Flags::STRICT_VALIDATE | Flags::CHECK_NESTED_CODE | Flags::CHECK_ALL_ARCHITECTURES,
+        &requirement,
+    )
+    .is_ok()
+}
+
+/// The helper is a copy of this program. Validate both live code objects
+/// against this program's designated requirement; a matching basename or an
+/// unrelated signed executable is insufficient.
+pub(super) fn trusted_relay_helper(pid: i32) -> bool {
+    static REQUIREMENT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    REQUIREMENT
+        .get_or_init(own_requirement)
+        .as_deref()
+        .is_some_and(|r| trusted_process(pid, r))
+}
+
+fn own_requirement() -> Option<String> {
+    use security_framework::os::macos::code_signing::{Flags, SecCode, SecRequirement};
+    let executable = std::env::current_exe().ok()?;
+    let output = std::process::Command::new("/usr/bin/codesign")
+        .args(["--display", "--requirements", "-"])
+        .arg(executable)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = std::str::from_utf8(&output.stdout).ok()?;
+    let requirement = text
+        .lines()
+        .find_map(|line| line.strip_prefix("designated => "))?;
+    let parsed = requirement.parse::<SecRequirement>().ok()?;
+    SecCode::for_self(Flags::NONE)
+        .ok()?
+        .check_validity(Flags::STRICT_VALIDATE, &parsed)
+        .ok()?;
+    Some(requirement.into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

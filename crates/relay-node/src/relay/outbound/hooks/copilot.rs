@@ -38,7 +38,12 @@ impl Outbound {
         };
         let target = Target::new(SessionKind::Copilot, sid);
         match fields.get("relayEvent").and_then(Value::as_str) {
-            Some("start") => {}
+            Some("start") => {
+                self.copilot_identities
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(sid);
+            }
             Some("tool") => return Ok(self.copilot_identity(&target, answer)),
             _ => return Ok(answer),
         }
@@ -77,29 +82,41 @@ impl Outbound {
         if self.core.workspace().is_none() {
             return answer;
         }
-        let identity = self.core.store.read(|store| {
-            store.registration_for(target).map(|r| {
+        let (identity, active) = self.core.store.read(|store| {
+            let active: std::collections::HashSet<_> = store
+                .registrations
+                .iter()
+                .filter(|r| r.target.kind == SessionKind::Copilot && r.missing_since.is_none())
+                .map(|r| r.target.id.clone())
+                .collect();
+            let identity = store.registration_for(target).map(|r| {
                 (
                     r.display_name().to_owned(),
                     r.current_address(&self.core.machine_prefix),
+                    r.link_address(&self.core.machine_prefix),
                     format!("{}:{}", r.agent_id, r.registered_at),
                 )
-            })
+            });
+            (identity, active)
         });
-        let Some((name, address, binding)) = identity else {
+        let Some((name, address, link, binding)) = identity else {
             return answer;
         };
-        let key = format!("{binding}:{address}:{name}");
+        let key = format!("{binding}:{address}:{link}:{name}");
         let mut seen = self
             .copilot_identities
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        seen.retain(|sid, _| active.contains(sid));
+        if seen.len() >= 512 && !seen.contains_key(&target.id) {
+            seen.clear();
+        }
         if seen.get(&target.id) == Some(&key) {
             return answer;
         }
         seen.insert(target.id.clone(), key);
         let context = format!(
-            "This Copilot chat is on Agent Relay as @{name}, desktop address {address}. Use the agent-relay MCP tools for messaging. First call join_relay with desktop_address=\"{address}\" and no hosted participant name. Then use send_relay_message and the other Relay tools as this chat. The runtime serves multiple chats: do not borrow another chat's address or use a separate terminal's identity. {}",
+            "This Copilot chat is on Agent Relay as @{name}, desktop address {address}. Use the agent-relay MCP tools for messaging. First call join_relay with desktop_address=\"{link}\" and no hosted participant name. Then use send_relay_message and the other Relay tools as this chat. The runtime serves multiple chats: do not borrow another chat's address or use a separate terminal's identity. {}",
             crate::relay::hosted_mcp::NORM
         );
         let message = answer["additionalContext"].as_str().unwrap_or("");

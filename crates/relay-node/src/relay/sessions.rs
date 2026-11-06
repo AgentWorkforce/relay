@@ -107,6 +107,9 @@ impl SessionPartition {
 }
 
 pub trait SessionDirectory: Send + Sync + 'static {
+    /// The trusted command-line helper selected by the embedding application.
+    fn configure_copilot_helper(&self, _executable: std::path::PathBuf) {}
+
     /// A peer-authenticated Copilot hook; ordinary callers cannot name chats
     /// held by a multiplexing runtime.
     fn copilot_hook(&self, _pid: i32, _payload: &serde_json::Value) -> Option<serde_json::Value> {

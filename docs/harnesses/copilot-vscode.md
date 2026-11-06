@@ -6,13 +6,19 @@ routes. Hosted MCP configuration and native Copilot history remain available
 on other platforms; verified messaging and wake support are unavailable there.
 
 Provider setup installs one owned `~/.copilot/hooks/agent-relay.json` file
-(`$COPILOT_HOME` replaces `~/.copilot`). Existing user hooks remain unchanged.
+(`$COPILOT_HOME` replaces `~/.copilot`). Other hook files remain unchanged.
+If this exact file contains unrecognized content, setup refuses to overwrite or
+remove it. Back it up and reconcile or move it before repairing Relay setup.
+Desktop's provider installer owns this setup path; the public core exposes the
+adapter for that installer rather than a separate `settings.set` toggle.
 Start a new Copilot chat to load the hooks and MCP connection. Hooks do not
 alter model approval or tool permission settings. History is acquired by
 RelayHistory's existing `copilot` provider from the runtime's native journal.
 Sharing and uploads retain the person's normal consent and scheduling.
 
-The SessionStart and post-tool hooks identify the chat by its native
+The native [sessionStart output](https://docs.github.com/en/copilot/reference/hooks-reference)
+uses top-level `additionalContext`, as does post-tool context; the older Local
+harness wrapper is not used. The SessionStart and post-tool hooks identify the chat by its native
 `sessionId`. The stop hook waits up to 59 minutes after a completed turn,
 without model calls, and returns `decision: block` with the next message as its
 `reason`. This resumes the same chat. Post-tool delivery uses top-level
@@ -30,12 +36,15 @@ sessions in one process. A filename alone is not evidence.
 
 Before discovering a chat or returning message data the core verifies the peer
 UID and immediate runtime parent, the installed Microsoft-signed runtime, its VS Code utility host and
-main executable, process start times, the native session ID and the open
+main executable and live code objects, strict validation of its sealed app bundle, process start times, the native session ID and the open
 inode's birth against the current hold path. A copied path, replaced hold,
 recycled PID, ordinary tool child or multiplexed MCP process cannot name a
 chat. A hook-observed record gates discovery and is rechecked before delivery.
-Idle stop polls with no offer return only `{}` and do not perform the expensive
-descriptor scan or create a discovery record. Code deliberately running as this
+Idle stop polls with no offer return only `{}` after checking the observed parent
+runtime incarnation; they exit when it is gone and do not perform the expensive
+descriptor scan or create a discovery record. The helper path comes from the
+Desktop host and its live code must satisfy the core program’s designated
+signature requirement. Code deliberately running as this
 user is outside this proof's threat model,
 as it is for the other local hook routes.
 

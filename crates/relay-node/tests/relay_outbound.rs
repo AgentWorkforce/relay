@@ -5278,8 +5278,47 @@ async fn copilot_verified_hook_gets_late_identity_once_and_only_core_registratio
         expected
     );
     assert_eq!(
-        h.call(4500, "POST", "/copilot/hook", body).await.unwrap(),
+        h.call(4500, "POST", "/copilot/hook", body.clone())
+            .await
+            .unwrap(),
         json!({})
     );
+    // A newly verified start must re-send identity for a resumed chat/runtime.
+    body["relayEvent"] = json!("start");
+    assert!(h
+        .call(4500, "POST", "/copilot/hook", body.clone())
+        .await
+        .unwrap()["additionalContext"]
+        .as_str()
+        .unwrap()
+        .contains("join_relay"));
+    body["relayEvent"] = json!("invalid");
+    assert_eq!(
+        code(h.call(4500, "POST", "/copilot/hook", body.clone()).await).0,
+        403
+    );
+    body["relayEvent"] = json!("tool");
+    h.core
+        .store
+        .update(|store| {
+            let mut registration = store.registration_for(&chat.target).unwrap().clone();
+            registration.alias = Some(agent_relay_node::relay::store::AgentAlias {
+                name: "copilot-renamed".into(),
+                agent_id: "renamed-agent".into(),
+                token: agent_relay_node::relay::workspace::Secret::new("test-alias-token"),
+                registered_at: registration.registered_at.clone(),
+            });
+            store.update(registration);
+        })
+        .unwrap();
+    let link = h.core.store.read(|s| {
+        s.registration_for(&chat.target)
+            .unwrap()
+            .link_address(&h.core.machine_prefix)
+    });
+    let context = h.call(4500, "POST", "/copilot/hook", body).await.unwrap();
+    let context = context["additionalContext"].as_str().unwrap();
+    assert!(context.contains("@copilot-renamed"));
+    assert!(context.contains(&format!("desktop_address=\"{link}\"")));
     h.stop().await;
 }

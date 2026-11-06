@@ -278,7 +278,18 @@ impl Core {
         posts: &[Delivery],
     ) {
         let injector = self.plugins.injector.clone();
-        let registered = registration.clone();
+        let Some(registered) = self
+            .store
+            .read(|store| crate::relay::copilot::delivery_registration(store, registration))
+        else {
+            let workspace = self.relaycast_registration_scope(registration, token);
+            let settle = Settle::new(registration, token, &workspace, posts);
+            self.posts_failed(
+                &settle,
+                "The Copilot registration changed before delivery.".into(),
+            );
+            return;
+        };
         let (delivery_id, key, text) = (pin.delivery_id.clone(), pin.key.clone(), pin.text.clone());
         let (reply_post, outcome) = match pin.reply_delivery(registration.target.kind, posts) {
             Ok(reply_post) => {

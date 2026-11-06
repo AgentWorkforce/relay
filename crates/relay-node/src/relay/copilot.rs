@@ -2,7 +2,7 @@
 //! History acquisition remains in RelayHistory's `copilot` provider.
 use crate::relay::codex::turn_hook::TurnInbox;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 pub mod proof;
 mod settings;
 pub use settings::CopilotSettings;
@@ -17,6 +17,7 @@ pub struct CopilotConfig {
     pub data_dir: PathBuf,
     pub development: bool,
     inbox: Arc<TurnInbox>,
+    helper: Arc<RwLock<PathBuf>>,
 }
 impl std::fmt::Debug for CopilotConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -39,6 +40,9 @@ impl CopilotConfig {
             data_dir,
             development: false,
             inbox: Arc::new(TurnInbox::default()),
+            helper: Arc::new(RwLock::new(
+                std::env::current_exe().unwrap_or_else(|_| PathBuf::from("agent-relay-node")),
+            )),
         }
         .development(false)
     }
@@ -66,8 +70,18 @@ impl CopilotConfig {
             "agent-relay.json"
         })
     }
+    /// The embedder chooses the installed helper, independently of user hook JSON.
+    pub fn set_helper(&self, executable: PathBuf) {
+        *self.helper.write().unwrap_or_else(|e| e.into_inner()) = executable;
+    }
+    fn helper(&self) -> PathBuf {
+        self.helper
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
     pub fn enabled(&self) -> bool {
-        settings::installed(&self.hooks_file())
+        settings::installed_state(self).unwrap_or(false)
     }
     fn prepare(&self) -> std::io::Result<()> {
         crate::platform::fs::create_private_dir_all(&self.state())
@@ -76,3 +90,19 @@ impl CopilotConfig {
 
 #[cfg(test)]
 mod tests;
+
+/// Aliases share their owner's hook inbox. A replaced registration is not an
+/// alias and cannot acquire the replacement's delivery binding.
+pub(crate) fn delivery_registration(
+    store: &crate::relay::store::Store,
+    registration: &crate::relay::store::Registration,
+) -> Option<crate::relay::store::Registration> {
+    if registration.target.kind != crate::relay::store::SessionKind::Copilot {
+        return Some(registration.clone());
+    }
+    let owner = store.registration_for(&registration.target)?;
+    owner
+        .agent_ids()
+        .contains(&registration.agent_id)
+        .then(|| owner.clone())
+}
