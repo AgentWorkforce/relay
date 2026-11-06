@@ -101,7 +101,12 @@ fn read_hook<A: DeserializeOwned>(reader: impl Read) -> Option<Hook<A>> {
 fn input(reader: impl Read, event: &str) -> Option<Value> {
     let mut fields = if event == "before" {
         let hook = read_hook::<Value>(reader)?;
-        let name = hook.tool_name.as_deref()?.strip_prefix("agent-relay-")?;
+        let raw_name = hook.tool_name.as_deref()?;
+        // New Copilot installations use an unambiguous managed server ID.
+        // Forward legacy names too; Desktop decides which calls it can sign.
+        let name = raw_name
+            .strip_prefix("agentrelay-")
+            .or_else(|| raw_name.strip_prefix("agent-relay-"))?;
         if name.is_empty() {
             return None;
         }
@@ -138,6 +143,46 @@ fn waits(value: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn before_forwards_new_and_legacy_names_with_exact_arguments() {
+        let args = json!({"text":"fixture reply","nested":{"number":1.0},"_meta":{"fixture":true}});
+        for name in [
+            "agentrelay-send_relay_message",
+            "agent-relay-send_relay_message",
+        ] {
+            let payload =
+                json!({"sessionId":"native-id","cwd":"/fixture","toolName":name,"toolArgs":args});
+            let value = input(serde_json::to_vec(&payload).unwrap().as_slice(), "before").unwrap();
+            assert_eq!(value["toolName"], name);
+            assert_eq!(value["toolArgs"], args);
+            assert_eq!(value["sessionId"], "native-id");
+            assert_eq!(value["relayEvent"], "before");
+        }
+    }
+    #[test]
+    fn before_rejects_empty_and_unrelated_names_without_creating_a_call() {
+        for name in [
+            "agentrelay-",
+            "agent-relay-",
+            "other-send_relay_message",
+            "agentrelay_other-send_relay_message",
+        ] {
+            let payload = json!({"sessionId":"native-id","toolName":name,"toolArgs":{}});
+            assert!(input(serde_json::to_vec(&payload).unwrap().as_slice(), "before").is_none());
+        }
+    }
+    #[test]
+    fn before_keeps_the_serialized_argument_limit_for_both_namespaces() {
+        let overhead = serde_json::to_vec(&json!({"text":""})).unwrap().len();
+        for prefix in ["agentrelay-", "agent-relay-"] {
+            let mut payload = json!({"sessionId":"native-id","toolName":format!("{prefix}send_relay_message"),
+                "toolArgs":{"text":"x".repeat(32 * 1024 - overhead)}});
+            let value = input(serde_json::to_vec(&payload).unwrap().as_slice(), "before").unwrap();
+            assert_eq!(value["toolArgs"], payload["toolArgs"]);
+            payload["toolArgs"]["text"] = json!("x".repeat(32 * 1024 - overhead + 1));
+            assert!(input(serde_json::to_vec(&payload).unwrap().as_slice(), "before").is_none());
+        }
+    }
     #[test]
     fn hook_forwards_identity_without_large_tool_results_or_client_binding() {
         let payload = json!({"sessionId":"native-id","cwd":"/fixture","initialPrompt":"x".repeat(1000),"toolResult":"x".repeat(5 * 1024 * 1024),"toolArgs":{"patch":"x".repeat(5 * 1024 * 1024)},"relayBinding":"forged"});
