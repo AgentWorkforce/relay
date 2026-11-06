@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "id": "gitlab-released-product-pins",
+  "kind": "bugfix",
+  "title": "Consume released GitLab metadata and listener CLI surfaces",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/gitlab-released-product-pins/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "stale_product_sdks" },
+    "head": { "outcome": "fixed", "signature": "released_product_sdks_consumed" }
+  }
+}

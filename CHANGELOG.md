@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `agents.integrations.subscribe` and session socket subscriptions exclude leftover provider events after the last subscription is removed.
+- `agent-relay file` accepts private JSON integration metadata files on Unix.
+- `agent-relay flows` reports GitLab setup requirements and resumes human-approved repository runs with their original access.
 
 ## [17.2.0] - 2026-11-06
 
@@ -27,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agent-relay-node` refreshes the running shared daemon's already-approved Codex hooks at startup or when enabling hook delivery.
 - `relay init`'s Codex hooks keep a subagent from receiving its parent chat's pending messages or registration guidance.
 
 ## [17.0.0] - 2026-11-05

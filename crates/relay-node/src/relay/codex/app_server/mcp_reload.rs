@@ -104,7 +104,7 @@ pub fn connected_server(response: &Value, name: &str) -> bool {
         })
 }
 
-fn loaded(client: &mut Client<'_>, deadline: Instant) -> io::Result<BTreeSet<String>> {
+pub(super) fn loaded(client: &mut Client<'_>, deadline: Instant) -> io::Result<BTreeSet<String>> {
     let mut threads = BTreeSet::new();
     let mut cursor = None;
     for page in 0..20 {
