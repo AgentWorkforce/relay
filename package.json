@@ -141,7 +141,7 @@
     "@relaycast/sdk": "^8.0.7",
     "@relayfile/adapter-github": "0.5.9",
     "@relayfile/relay-helpers": "^0.4.6",
-    "@relayflows/sdk": "2.0.64",
+    "@relayflows/sdk": "2.0.65",
     "@testing-library/jest-dom": "^6.9.1",
     "@types/node": "^22.19.3",
     "@types/ssh2": "^1.15.5",

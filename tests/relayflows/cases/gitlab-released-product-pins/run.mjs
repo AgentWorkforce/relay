@@ -1,11 +1,11 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
@@ -60,7 +60,8 @@ function run(command, args, cwd = target, input) {
 
 // Drive the mounted production flows command with a deliberately closed transport.
 // The preload replaces only fetch: loading, auth resolution, preflight, refusal
-// parsing and rendering all run in the actual published SDK. No network is used.
+// parsing and rendering all run in the actual published SDK. Dependencies come
+// from npm; provider API requests stay inside the closed transport.
 function flowsRefusals(cli) {
   const sdk = path.dirname(
     fileURLToPath(
@@ -78,12 +79,18 @@ function flowsRefusals(cli) {
   ).trim();
   const fixture = mkdtempSync(path.join(privateHome, 'project-'));
   mkdirSync(path.join(fixture, 'node_modules/@relayflows'), { recursive: true });
-  symlinkSync(
-    path.dirname(path.dirname(fileURLToPath(surfaceEntry))),
-    path.join(fixture, 'node_modules/@relayflows/surface'),
-    'dir'
-  );
   writeFileSync(path.join(fixture, 'package.json'), JSON.stringify({ type: 'module' }));
+  const surfacePackage = JSON.parse(readFileSync(
+    path.join(path.dirname(path.dirname(fileURLToPath(surfaceEntry))), 'package.json'),
+    'utf8'
+  ));
+  run('npm', [
+    'install', '--prefix', fixture, '--ignore-scripts', '--no-save', '--package-lock=false',
+    `@relayflows/surface@${surfacePackage.version}`,
+  ]);
+  if (lstatSync(path.join(fixture, 'node_modules/@relayflows/surface')).isSymbolicLink()) {
+    throw new Error('Proof fixture must use a real published surface installation');
+  }
   try {
     const source = path.join(fixture, 'listener.flow.ts');
     writeFileSync(
@@ -223,7 +230,7 @@ try {
     metadataFile &&
     filePatch !== null &&
     Number(filePatch[1]) >= 77 &&
-    versions.flows === '2.0.64' &&
+    versions.flows === '2.0.65' &&
     refusals.selection &&
     refusals.ingress;
   const observation = {
