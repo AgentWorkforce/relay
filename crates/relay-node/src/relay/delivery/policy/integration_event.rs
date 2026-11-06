@@ -59,15 +59,23 @@ impl IntegrationEvent {
         path: Option<&str>,
         resource_ref: Option<&str>,
     ) -> bool {
+        let legacy_glob = if held.path_glob.is_none() {
+            super::relayfile_glob(&held.provider, &held.resource)
+        } else {
+            None
+        };
         self.provider
             .as_deref()
             .is_some_and(|provider| provider.eq_ignore_ascii_case(&held.provider))
             && path.or(self.path.as_deref()).is_some_and(|path| {
-                held.path_glob.as_deref().is_some_and(|glob| {
-                    path_matches(glob, path)
-                        || (held.provider == "github"
-                            && numeric_pull_matches(glob, path, resource_ref))
-                })
+                held.path_glob
+                    .as_deref()
+                    .or(legacy_glob.as_deref())
+                    .is_some_and(|glob| {
+                        path_matches(glob, path)
+                            || (held.provider == "github"
+                                && numeric_pull_matches(glob, path, resource_ref))
+                    })
             })
     }
 
@@ -116,12 +124,14 @@ pub fn decide_for_agent_with_integrations(
         !held.effective_event_types().is_empty() && event.matches_resource(held, path, resource_ref)
     });
     // An unrelated broad subscription must not authorize a rejected filtered
-    // resource. Preserve legacy broad routing only outside any filtered scope.
+    // resource, including after cleanup removes its record. Path-bearing events
+    // need a ready matching scope; pathless legacy messages retain old routing.
     let legacy_broad = !relevant_filter
         && integrations.iter().any(|held| {
             held.ready == Some(true)
                 && held.terminal != Some(true)
                 && held.effective_event_types().is_empty()
+                && path.or(event.path.as_deref()).is_none()
         });
     let accepted = legacy_broad
         || integrations
@@ -441,7 +451,17 @@ mod tests {
                 "agent",
                 None,
                 Some("events"),
-                &[held.clone(), unrelated_broad]
+                &[held.clone(), unrelated_broad.clone()]
+            ),
+            Decision::Skip(_)
+        ));
+        assert!(matches!(
+            decide_for_agent_with_integrations(
+                &delivery,
+                "agent",
+                None,
+                Some("events"),
+                &[unrelated_broad]
             ),
             Decision::Skip(_)
         ));
@@ -457,6 +477,8 @@ mod tests {
         held.terminal = None;
         let mut broad = held.clone();
         broad.event_types = Some(vec![]);
+        broad.path_glob = None;
+
         assert_eq!(
             decide_for_agent_with_integrations(
                 &delivery,

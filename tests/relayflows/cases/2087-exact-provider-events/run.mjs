@@ -45,8 +45,12 @@ try {
     // The public Core subscription/drain harness creates real loopback
     // subscriptions, checks persisted status, and exercises delivery admission.
     const workflow = cargo(['--test', 'relay_agents', 'integration']);
-    if (!workflow.includes('test integration_events_wait_for_setup_and_redrive_only_after_success ... ok')) {
-      throw new Error('The filtered subscription and delivery workflow did not run');
+    const requiredWorkflows = [
+      'integration_events_wait_for_setup_and_redrive_only_after_success',
+      'rejected_integration_events_stay_excluded_after_cleanup_removes_the_filter',
+    ];
+    if (requiredWorkflows.some((name) => !workflow.includes(`test ${name} ... ok`))) {
+      throw new Error('The filtered subscription and delivery workflows did not run');
     }
     for (const filter of [
       'event_filters',

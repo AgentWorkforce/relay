@@ -4085,6 +4085,90 @@ async fn hello_lists_the_agent_methods_and_topics() {
     h.stop().await;
 }
 
+/// Cleanup can remove a rejected filter before its already-queued events are
+/// read. An unrelated broad subscription must not authorize those leftovers.
+#[tokio::test]
+async fn rejected_integration_events_stay_excluded_after_cleanup_removes_the_filter() {
+    let h = Harness::signed_in().await;
+    let cloud = h.cloud.clone().unwrap();
+    cloud.answer(
+        "GET",
+        "/workspaces/rw_fake/integrations",
+        Ok(json!({"integrations":[{"provider":"jira", "status":"connected"}]})),
+    );
+    cloud.answer("POST", "/workspaces/rw_fake/relayfile/delegated-token", Ok(json!({"relayfileToken":"fixture", "relayfileUrl":h.fake.base_url, "relayfileWorkspaceId":"rw_fake"})));
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    h.core
+        .subscribe_integration("codex-api", "jira", "/jira/issues/**")
+        .await
+        .unwrap();
+    let channel = h.store()["registrations"][0]["integrationChannelID"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let release_reads = h.fake.hold("GET /v1/deliveries");
+    eventually("queue read paused before excluded event", || {
+        h.fake.held("GET /v1/deliveries") > 0
+    })
+    .await;
+    let release_setup = h.fake.hold("POST /v1/subscriptions");
+    h.fake.set_api_error(
+        "POST /v1/subscriptions",
+        Some((503, "fixture_setup_failure")),
+    );
+    let setting_up = {
+        let core = h.core.clone();
+        tokio::spawn(async move {
+            core.subscribe_integration_events(
+                "codex-api",
+                "jira",
+                "/jira/projects/**",
+                &["comment.created".into()],
+            )
+            .await
+        })
+    };
+    eventually("filtered setup held", || {
+        h.fake.held("POST /v1/subscriptions") > 0
+    })
+    .await;
+    h.fake.seed_agent("__relay_webhook__", "service", json!({}));
+    let (excluded, excluded_message) = h.fake.queue("codex-api", "message", Some(&channel), "__relay_webhook__", "Jira comment.created\nexcluded project\nRelayfile path: /jira/projects/PRJ-1/comments/9.json");
+    let (included, included_message) = h.fake.queue("codex-api", "message", Some(&channel), "__relay_webhook__", "Jira comment.created\nlegitimate issue\nRelayfile path: /jira/issues/KAN-1/comments/10.json");
+    release_setup.send(true).unwrap();
+    assert!(setting_up.await.unwrap().is_err());
+    h.core
+        .unsubscribe_integration("codex-api", "jira", "/jira/projects/**")
+        .await
+        .unwrap();
+    eventually("rejected filter removed before queue redrive", || {
+        let stored = h.store();
+        let entries = stored["registrations"][0]["integrations"].as_array();
+        entries.is_some_and(|entries| {
+            entries.len() == 1
+                && entries[0]["resource"] == "/jira/issues/**"
+                && entries[0]["ready"] == true
+        })
+    })
+    .await;
+    release_reads.send(true).unwrap();
+    eventually("both queued events settled", || {
+        delivered(&h.fake, &excluded).as_deref() == Some("acked")
+            && delivered(&h.fake, &included).as_deref() == Some("acked")
+    })
+    .await;
+    let injected = h.injector.injected();
+    assert!(injected
+        .iter()
+        .any(|entry| entry.message_id == included_message));
+    assert!(injected
+        .iter()
+        .all(|entry| entry.message_id != excluded_message));
+    h.stop().await;
+}
+
 /// A provider can publish before the final local ready save. Keep that event
 /// queued across the setup barrier, then use the committed result on redrive.
 #[tokio::test]
