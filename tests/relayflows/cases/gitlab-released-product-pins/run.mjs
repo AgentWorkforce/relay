@@ -80,12 +80,16 @@ function flowsRefusals(cli) {
   const fixture = mkdtempSync(path.join(privateHome, 'project-'));
   mkdirSync(path.join(fixture, 'node_modules/@relayflows'), { recursive: true });
   writeFileSync(path.join(fixture, 'package.json'), JSON.stringify({ type: 'module' }));
-  const surfacePackage = JSON.parse(readFileSync(
-    path.join(path.dirname(path.dirname(fileURLToPath(surfaceEntry))), 'package.json'),
-    'utf8'
-  ));
+  const surfacePackage = JSON.parse(
+    readFileSync(path.join(path.dirname(path.dirname(fileURLToPath(surfaceEntry))), 'package.json'), 'utf8')
+  );
   run('npm', [
-    'install', '--prefix', fixture, '--ignore-scripts', '--no-save', '--package-lock=false',
+    'install',
+    '--prefix',
+    fixture,
+    '--ignore-scripts',
+    '--no-save',
+    '--package-lock=false',
     `@relayflows/surface@${surfacePackage.version}`,
   ]);
   if (lstatSync(path.join(fixture, 'node_modules/@relayflows/surface')).isSymbolicLink()) {
