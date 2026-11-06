@@ -100,15 +100,8 @@ pub fn hook_answer(
     let old = read(config, sid);
     // Refuse a different live runtime, rather than let two hosts take turns
     // claiming a copied native identity.
-    if let Some(old) = &old {
-        if old.pid != runtime.pid
-            && table.process(old.pid).is_some_and(|p| p.start == old.start)
-            && proof::held(config, table, old.pid, uid)
-                .iter()
-                .any(|id| id == sid)
-        {
-            return None;
-        }
+    if other_live_runtime(config, table, uid, sid, old.as_ref(), runtime.pid) {
+        return None;
     }
     let title = record_title(old.as_ref(), payload);
     let record = Record {
@@ -167,5 +160,22 @@ fn record_title(old: Option<&Record>, payload: &Value) -> String {
             .filter(|c| !c.is_control())
             .take(96)
             .collect()
+    })
+}
+
+fn other_live_runtime(
+    config: &CopilotConfig,
+    table: &dyn ProcessTable,
+    uid: u32,
+    sid: &str,
+    old: Option<&Record>,
+    pid: i32,
+) -> bool {
+    old.is_some_and(|old| {
+        old.pid != pid
+            && table.process(old.pid).is_some_and(|p| p.start == old.start)
+            && proof::held(config, table, old.pid, uid)
+                .iter()
+                .any(|id| id == sid)
     })
 }
