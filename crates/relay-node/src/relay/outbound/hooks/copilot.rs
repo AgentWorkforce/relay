@@ -161,7 +161,27 @@ impl Outbound {
         })
         .await
         .unwrap_or(false);
-        if self.core.workspace() != Some(workspace) {
+        if self.core.workspace().as_ref() != Some(&workspace) {
+            return json!({});
+        }
+        let current = self.core.store.read(|store| {
+            store
+                .registration_for(target)
+                .filter(|r| {
+                    r.missing_since.is_none()
+                        && r.base_url == workspace.base_url
+                        && self.core.key_for(r).as_ref() == Some(&workspace.key)
+                })
+                .map(|r| {
+                    (
+                        r.display_name().to_owned(),
+                        r.current_address(&self.core.machine_prefix),
+                        r.link_address(&self.core.machine_prefix),
+                        format!("{}:{}", r.agent_id, r.registered_at),
+                    )
+                })
+        });
+        if current != Some((name, address, link, binding)) {
             return json!({});
         }
         if accepted {

@@ -27,22 +27,53 @@ pub fn is_copilot_process(table: &dyn ProcessTable, pid: i32) -> bool {
         path.file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| {
-                matches!(
-                    name,
-                    "copilot" | "copilot.exe" | "copilot-runtime" | "copilot-runtime.exe"
-                )
+                [
+                    "copilot",
+                    "copilot.exe",
+                    "copilot-runtime",
+                    "copilot-runtime.exe",
+                ]
+                .iter()
+                .any(|expected| name.eq_ignore_ascii_case(expected))
             })
     });
     let node = table.executable(pid).is_some_and(|path| {
         path.file_name()
-            .is_some_and(|name| name == "node" || name == "node.exe")
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.eq_ignore_ascii_case("node") || name.eq_ignore_ascii_case("node.exe")
+            })
     });
     named
         || (node
-            && table.arguments(pid).get(1).is_some_and(|argument| {
+            && node_script(&table.arguments(pid)).is_some_and(|argument| {
                 let parts: Vec<_> = argument.split(['/', '\\']).collect();
                 parts.windows(2).any(|pair| pair == ["@github", "copilot"])
             }))
+}
+
+// Only the Node entry point establishes identity. Later user arguments can
+// contain package paths too, so skip Node options without scanning script args.
+fn node_script(arguments: &[String]) -> Option<&str> {
+    let mut args = arguments.iter().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-e" | "--eval" | "-p" | "--print" => return None,
+            "--" => return args.next().map(String::as_str),
+            "-r"
+            | "--require"
+            | "--import"
+            | "--loader"
+            | "--experimental-loader"
+            | "--conditions"
+            | "-C" => {
+                args.next()?;
+            }
+            _ if arg.starts_with('-') => {}
+            _ => return Some(arg),
+        }
+    }
+    None
 }
 
 /// Whether `pid` is an agent other than Claude Code that runs hooks
@@ -95,5 +126,23 @@ mod copilot_tests {
             },
         );
         assert!(is_copilot_process(&table, 2));
+        let mut node = table.processes.lock().unwrap().get(&2).unwrap().clone();
+        node.executable = Some("/opt/Node.EXE".into());
+        node.arguments.insert(1, "--no-warnings".into());
+        table.insert(3, node);
+        assert!(is_copilot_process(&table, 3));
+        table.insert(
+            4,
+            FakeProcess {
+                executable: Some("/opt/node".into()),
+                arguments: vec![
+                    "node".into(),
+                    "other-script.js".into(),
+                    "/opt/node_modules/@github/copilot/index.js".into(),
+                ],
+                ..Default::default()
+            },
+        );
+        assert!(!is_copilot_process(&table, 4));
     }
 }

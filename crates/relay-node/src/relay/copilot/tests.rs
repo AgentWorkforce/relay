@@ -487,3 +487,38 @@ fn an_unclaimed_offer_moves_to_the_replacement_binding_atomically() {
     .unwrap();
     assert_eq!(answer["decision"], "block");
 }
+
+#[test]
+fn legacy_relative_managed_hooks_are_disabled_but_can_be_removed() {
+    let (_home, config, _table, _) = proof::tests::fixture();
+    let settings = CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into());
+    settings.set_enabled(true).unwrap();
+    let text = std::fs::read_to_string(config.hooks_file())
+        .unwrap()
+        .replace("/opt/agent-relay-desktop-probe", "agent-relay-probe");
+    std::fs::write(config.hooks_file(), text).unwrap();
+    config.set_helper("agent-relay-probe".into());
+    assert!(!settings.enabled());
+    settings.set_enabled(false).unwrap();
+    assert!(!config.hooks_file().exists());
+}
+#[test]
+fn an_unreadable_native_journal_cannot_reset_the_identity_receipt_epoch() {
+    let (_home, config, table, _) = proof::tests::fixture();
+    CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into())
+        .set_enabled(true)
+        .unwrap();
+    named_hook(&table, "start");
+    let sid = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
+    let path = config.sessions().join(sid).join("events.jsonl");
+    std::os::unix::fs::symlink("events.jsonl", &path).unwrap();
+    assert!(hook_answer(
+        &config,
+        &table,
+        501,
+        103,
+        &json!({"sessionId":sid,"relayEvent":"start"})
+    )
+    .is_none());
+    assert!(!config.state().join(format!("{sid}.json")).exists());
+}

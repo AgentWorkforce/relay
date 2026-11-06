@@ -5278,6 +5278,10 @@ async fn copilot_verified_hook_gets_late_identity_once_and_only_core_registratio
         h.sessions.9.lock().unwrap().last().unwrap()["relayBinding"],
         expected
     );
+    h.sessions.10.lock().unwrap().insert((
+        "69e50b90-b873-4de0-a36d-c9152a45e772".into(),
+        context.trim_end().to_owned(),
+    ));
     let retry = h
         .call(4500, "POST", "/copilot/hook", body.clone())
         .await
@@ -5290,7 +5294,7 @@ async fn copilot_verified_hook_gets_late_identity_once_and_only_core_registratio
         .10
         .lock()
         .unwrap()
-        .insert(context.trim_end().to_owned());
+        .insert((sid.into(), context.trim_end().to_owned()));
     assert_eq!(
         h.call(4500, "POST", "/copilot/hook", body.clone())
             .await

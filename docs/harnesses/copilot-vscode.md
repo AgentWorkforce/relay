@@ -68,7 +68,10 @@ receipt reader does not replace RelayHistory’s transcript ingestion.
 
 Delivery uses a chat-scoped durable claim in the core's running-turn journal.
 The hook claims before the response is sent. Claimed submission tombstones are
-retained across long sleeps; no message text is kept in those tombstones.
+retained across long sleeps; no message text is kept in those tombstones. They
+are intentionally not discarded merely after native receipt: the bounded
+receipt tail can later roll past a buffered delivery. Safe compaction needs a
+durable signal that its outer delivery can no longer replay.
 Offers and identity context require the active registration workspace, with
 workspace/account-generation checks around asynchronous verification. A native queued user message
 confirms a stop follow-up; a successful

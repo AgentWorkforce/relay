@@ -37,12 +37,26 @@ pub fn context_accepted(config: &CopilotConfig, sid: &str, needle: &str) -> bool
         .and_then(|after| tail(config, sid, after))
         .is_some_and(|bytes| events(&bytes).any(|event| context(&event, needle)))
 }
+fn attributed(text: &str, marker: &str) -> bool {
+    // The core can prepend its own one-line identity to post-tool delivery.
+    let text = if text.starts_with("This Copilot chat is on Agent Relay as @") {
+        text.split_once('\n').map_or("", |(_, message)| message)
+    } else {
+        text
+    };
+    crate::relay::delivery::policy::MessageRef::in_text(text)
+        .is_some_and(|reference| format!("ref {reference}]") == marker)
+}
 fn received(event: &Value, marker: &str) -> bool {
     (event["type"] == "user.message"
         && event["data"]["content"]
             .as_str()
-            .is_some_and(|s| s.contains(marker)))
-        || (event["data"]["hookType"] == "postToolUse" && context(event, marker))
+            .is_some_and(|s| attributed(s, marker)))
+        || (event["data"]["hookType"] == "postToolUse"
+            && context(event, marker)
+            && event["data"]["output"]["additionalContext"]
+                .as_str()
+                .is_some_and(|s| attributed(s, marker)))
 }
 pub(super) fn recorded(config: &CopilotConfig, sid: &str, message_id: &str) -> bool {
     let marker = format!(
@@ -105,7 +119,7 @@ mod tests {
         let path = config.sessions().join(SID).join("events.jsonl");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let mut rows = vec![
-            json!({"type":"user.message","data":{"content":"[via Agent Relay ref abc123] Request"}}),
+            json!({"type":"user.message","data":{"content":"[via Agent Relay ref abcdef123456]\nRequest"}}),
             json!({"type":"assistant.message","data":{"content":"Working","turnId":"1","toolRequests":[{"name":"read"}]}}),
             json!({"type":"assistant.turn_end","data":{"turnId":"1"}}),
             json!({"type":"assistant.message","data":{"content":"Final response","turnId":"2","phase":"final_answer","toolRequests":[]}}),
@@ -118,24 +132,30 @@ mod tests {
             .unwrap()
         };
         write(&rows);
-        assert!(final_answer(&config, SID, "abc123").is_none());
+        assert!(final_answer(&config, SID, "abcdef123456").is_none());
         rows.push(json!({"type":"assistant.turn_end","data":{"turnId":"wrong"}}));
         write(&rows);
-        assert!(final_answer(&config, SID, "abc123").is_none());
+        assert!(final_answer(&config, SID, "abcdef123456").is_none());
         rows.pop();
         rows.push(json!({"type":"assistant.turn_end","data":{"turnId":"2"}}));
         write(&rows);
         assert_eq!(
-            final_answer(&config, SID, "abc123").as_deref(),
+            final_answer(&config, SID, "abcdef123456").as_deref(),
             Some("Final response")
         );
         assert!(final_answer(&config, SID, "different").is_none());
+        let genuine = rows[0].clone();
+        rows[0]["data"]["content"] = json!("Explain the quoted ref abcdef123456] from before");
+        write(&rows);
+        assert!(final_answer(&config, SID, "abcdef123456").is_none());
+        rows[0] = genuine;
+        assert!(attributed("This Copilot chat is on Agent Relay as @fixture.\n[via Agent Relay ref abcdef123456]\nRequest", "ref abcdef123456]"));
         rows.insert(
             3,
             json!({"type":"user.message","data":{"content":"Unrelated question"}}),
         );
         write(&rows);
-        assert!(final_answer(&config, SID, "abc123").is_none());
+        assert!(final_answer(&config, SID, "abcdef123456").is_none());
     }
     #[test]
     fn identity_receipts_before_the_current_start_do_not_suppress_recovery() {

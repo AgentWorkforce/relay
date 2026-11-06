@@ -76,9 +76,13 @@ fn managed_value(config: &CopilotConfig, executable: &Path) -> Value {
 /// Only a missing file is absent. Other errors must keep discovery unavailable
 /// and must never authorize replacing an existing file.
 pub(super) fn installed_state(config: &CopilotConfig) -> io::Result<bool> {
+    if !config.helper().is_absolute() {
+        return Ok(false);
+    }
     Ok(document(config)?.is_some_and(|value| value == managed_value(config, &config.helper())))
 }
-// Setup can repair or remove an old managed helper, but discovery and calls
+// Setup can repair or remove an old managed helper (including a legacy
+// relative path that is never accepted for discovery), but discovery and calls
 // still require the exact helper the host currently selected.
 fn owned_state(config: &CopilotConfig) -> io::Result<bool> {
     let Some(value) = document(config)? else {
@@ -90,7 +94,7 @@ fn owned_state(config: &CopilotConfig) -> io::Result<bool> {
     let Ok(args) = shell_words::split(command) else {
         return Ok(false);
     };
-    let Some(helper) = args.get(1).map(Path::new).filter(|p| p.is_absolute()) else {
+    let Some(helper) = args.get(1).filter(|p| !p.is_empty()).map(Path::new) else {
         return Ok(false);
     };
     let mut expected = managed_value(config, helper);

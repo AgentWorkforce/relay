@@ -219,9 +219,11 @@ fn observe(
                 .as_ref()
                 .is_none_or(|r| r.pid != runtime.pid || r.start != runtime.start)
         {
-            std::fs::metadata(config.sessions().join(sid).join("events.jsonl"))
-                .map(|m| m.len())
-                .unwrap_or(0)
+            match std::fs::metadata(config.sessions().join(sid).join("events.jsonl")) {
+                Ok(metadata) if metadata.is_file() => metadata.len(),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+                _ => return None,
+            }
         } else {
             old.as_ref().map_or(0, |r| r.context_after)
         },
