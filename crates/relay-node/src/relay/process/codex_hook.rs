@@ -3,12 +3,20 @@
 
 use super::*;
 
+/// Capture the trusted writer ancestry, rejecting a separately established
+/// caller thread that contradicts the requested target. A missing caller id
+/// remains eligible for the independent held-rollout/active-turn proof.
 fn writer_chain(
     table: &dyn ProcessTable,
     pid: i32,
     uid: u32,
     thread: &str,
 ) -> Option<Vec<ProcessInfo>> {
+    if codex_caller_thread(table, pid, uid)
+        .is_some_and(|caller| !caller.eq_ignore_ascii_case(thread))
+    {
+        return None;
+    }
     let mut chain = Vec::new();
     let mut current = pid;
     for _ in 0..MAX_ANCESTRY {
@@ -28,6 +36,7 @@ fn writer_chain(
     None
 }
 
+/// Confirm that every captured ancestor still has the same owner/start time.
 fn unchanged(table: &dyn ProcessTable, chain: &[ProcessInfo]) -> bool {
     chain
         .iter()
@@ -52,6 +61,7 @@ pub(crate) fn has_unambiguous_codex_hook_writer(
     locks.len() == 1 && locks.contains(&thread.to_lowercase()) && unchanged(table, &chain)
 }
 
+/// Match a kernel-held rollout's captured birth timestamp and canonical path.
 fn holds_rollout(table: &dyn ProcessTable, writer: i32, path: &Path, birth: i128) -> bool {
     table.opened_files(writer).iter().any(|file| {
         file.birth_ns == Some(birth) && file.path.canonicalize().ok().as_deref() == Some(path)

@@ -260,7 +260,7 @@ pub trait SessionDirectory: Send + Sync + 'static {
 
     /// Whether the requested thread's locally resolved, kernel-held rollout
     /// records this active turn, with trusted writer/uid/start/lock proof.
-    /// Consuming hooks cannot use an inherited parent session id alone.
+    /// Consuming hooks cannot use an inherited parent session id alone. May block.
     fn codex_hook_turn_matches(&self, _pid: i32, _thread: &str, _turn: &str) -> bool {
         false
     }

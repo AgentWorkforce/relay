@@ -190,6 +190,13 @@ async fn consuming_hook_thread_affinity_preserves_parent_and_child_offers() {
             .codex_stop_hook(CHILD_PID, outbound.uid, &child_hook_claiming_parent(event))
             .await
             .is_err());
+        // Even the parent's correct active turn cannot contradict the
+        // kernel-established caller thread while both locks are held.
+        assert!(outbound
+            .codex_stop_hook(CHILD_PID, outbound.uid, &fields(PARENT, event))
+            .await
+            .is_err());
+        assert!(inbox.turns().has_offered(PARENT));
         // Hooks can inherit the launcher's parent thread environment too.
         // Their actual child turn must independently prevent consumption.
         table
@@ -219,6 +226,14 @@ async fn consuming_hook_thread_affinity_preserves_parent_and_child_offers() {
                 .unwrap(),
             json!({})
         );
+        table
+            .processes
+            .lock()
+            .unwrap()
+            .get_mut(&CHILD_PID)
+            .unwrap()
+            .environment
+            .insert("CODEX_THREAD_ID".into(), CHILD.into());
         let child = outbound
             .codex_stop_hook(CHILD_PID, outbound.uid, &fields(CHILD, event))
             .await
@@ -350,6 +365,27 @@ async fn consuming_hook_thread_affinity_keeps_kernel_writer_checks() {
         .await
         .unwrap();
     assert!(answer.to_string().contains("fresh fixture"));
+
+    // Fresh SessionStart has neither THREAD nor resume arguments. Its sole
+    // held lock is enough; exercise the actual Outbound route, not a helper.
+    let (_temp, outbound, _inbox, table) = fixture(false).unwrap();
+    {
+        let mut processes = table.processes.lock().unwrap();
+        processes
+            .get_mut(&PARENT_PID)
+            .unwrap()
+            .environment
+            .remove("CODEX_THREAD_ID");
+        let writer = processes.get_mut(&10).unwrap();
+        assert_eq!(writer.arguments, ["codex", "app-server"]);
+        writer
+            .open_files
+            .retain(|path| path.to_string_lossy().contains(PARENT));
+    }
+    assert!(outbound
+        .codex_stop_hook(PARENT_PID, outbound.uid, &fields(PARENT, "SessionStart"))
+        .await
+        .is_ok());
 
     // Older terminal Codex identifies its one thread through `resume`, not
     // CODEX_THREAD_ID. Retain that route and case-insensitive UUID matching,
