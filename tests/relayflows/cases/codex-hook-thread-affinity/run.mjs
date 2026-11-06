@@ -26,6 +26,14 @@ await rm(resultPath, { force: true });
 if (sha(target) !== expected || sha(harness) !== process.env.RELAY_PR_PROOF_HEAD_SHA) {
   throw new Error('Target or harness is not the exact expected revision');
 }
+for (const [cwd, revision] of [
+  [target, expected],
+  [harness, process.env.RELAY_PR_PROOF_HEAD_SHA],
+]) {
+  const clean = spawnSync('git', ['diff', '--quiet', revision, '--'], { cwd });
+  if (clean.error) throw clean.error;
+  if (clean.status !== 0) throw new Error('Target or harness has modified tracked inputs');
+}
 
 // Apply only the same regression harness to each arm. Production authorization
 // remains the target revision's implementation, including on the base arm.
@@ -39,7 +47,9 @@ const originalFixture = await readFile(fixtureFile).catch((error) => {
   if (error.code === 'ENOENT') return null;
   throw error;
 });
-const fixture = await readFile(path.join(harness, fixturePath));
+const fixture = execFileSync('git', ['show', `${process.env.RELAY_PR_PROOF_HEAD_SHA}:${fixturePath}`], {
+  cwd: harness,
+});
 let result;
 try {
   await mkdir(path.dirname(fixtureFile), { recursive: true });
