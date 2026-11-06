@@ -134,6 +134,10 @@ pub fn decide_for_agent_with_integrations(
                 && held.effective_event_types().is_empty()
                 && (path.or(event.path.as_deref()).is_none()
                     || (held.path_glob.is_none()
+                        && event
+                            .provider
+                            .as_deref()
+                            .is_some_and(|provider| provider.eq_ignore_ascii_case(&held.provider))
                         && super::relayfile_glob(&held.provider, &held.resource).is_none()))
         });
     let accepted = legacy_broad
@@ -288,6 +292,20 @@ mod tests {
             ),
             Decision::Inject
         );
+        let other_provider = Delivery {
+            text: Some("GitHub issue_comment.created\nRelayfile path: /github/repos/acme/api/issues/42/comments/9.json".into()),
+            ..event.clone()
+        };
+        assert!(matches!(
+            decide_for_agent_with_integrations(
+                &other_provider,
+                "agent",
+                None,
+                Some("events"),
+                std::slice::from_ref(&legacy)
+            ),
+            Decision::Skip(_)
+        ));
         legacy.resource = "/jira/projects/**".into();
         assert!(matches!(
             decide_for_agent_with_integrations(&event, "agent", None, Some("events"), &[legacy]),
