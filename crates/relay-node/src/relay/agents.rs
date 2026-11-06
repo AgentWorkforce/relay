@@ -1233,11 +1233,7 @@ impl Core {
                     .integrations
                     .iter()
                     .flatten()
-                    .map(|i| AgentIntegration {
-                        provider: i.provider.clone(),
-                        resource: i.resource.clone(),
-                        ready: i.ready == Some(true),
-                    })
+                    .map(AgentIntegration::from)
                     .collect(),
                 push: agent_push(&status.push, r),
                 // Under any name still delivering, retired ones included.

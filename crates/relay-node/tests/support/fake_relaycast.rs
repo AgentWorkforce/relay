@@ -1522,10 +1522,17 @@ fn route(
         ("POST", ["v1", "workspaces", _, "webhooks"]) => {
             world.next += 1;
             let id = format!("rf_{}", world.next);
-            let row = json!({"id": id, "url": body["url"], "pathGlobs": body["pathGlobs"]});
+            let mut row = json!({"id": id, "url": body["url"], "pathGlobs": body["pathGlobs"]});
+            let mut response = json!({"subscriptionId": id});
+            if let Some(event_types) = body.get("eventTypes") {
+                row["eventTypes"] = event_types.clone();
+                response["eventTypes"] = event_types.clone();
+            }
             world.relayfile.insert(id.clone(), row);
-            (200, json!({"subscriptionId": id}))
+            (200, response)
         }
+        ("GET", ["v1", "workspaces", _, "webhooks"]) if query == "capabilities=eventTypes" =>
+            (200, json!({"eventTypes": true})),
         ("GET", ["v1", "workspaces", _, "webhooks"]) => (
             200,
             json!({"subscriptions": world.relayfile.values().cloned().collect::<Vec<_>>()}),

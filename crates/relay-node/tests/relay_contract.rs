@@ -114,6 +114,14 @@ async fn every_registered_method_reaches_a_handler() {
             spec.name
         );
     }
+    // Recovery accepts copied filter metadata; ordinary unsubscribe stays
+    // resource-only. An unknown registration proves cleanup reached the core.
+    let filtered = json!({"name":"missing", "provider":"jira", "resource":"/jira/issues/**", "event_types":["comment.created"]});
+    let refused = answer(call("agents.integrations.unsubscribe", filtered.clone())).await;
+    assert_eq!(refused["error"]["data"]["kind"], "invalid_params");
+    let cleanup = answer(call("agents.integrations.clean_up", filtered)).await;
+    assert_eq!(cleanup["error"]["data"]["kind"], "not_found");
+
     let unknown = answer(call("no.such.method", json!({}))).await;
     assert_eq!(unknown["error"]["data"]["kind"], "method_not_found");
 

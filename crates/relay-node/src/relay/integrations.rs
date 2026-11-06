@@ -28,6 +28,11 @@ use std::collections::HashSet;
 use std::time::Duration;
 use url::Url;
 
+mod create;
+mod event_filters;
+use create::SubscriptionIntent;
+pub(crate) use event_filters::normalize_event_types;
+
 pub const PROVIDERS: [&str; 4] = ["github", "linear", "slack", "jira"];
 
 /// How long a subscription waits for a person to connect the provider in
@@ -164,28 +169,6 @@ impl Relayfile {
         }
     }
 
-    /// Sends provider events under `globs` to `url`; returns its id.
-    async fn create_subscription(
-        &self,
-        url: &str,
-        globs: &[String],
-        secret: &Secret,
-    ) -> Result<String, RpcError> {
-        let value = self
-            .call(
-                "POST",
-                "/webhooks".into(),
-                Some(json!({"url": url, "pathGlobs": globs, "secret": secret.expose()})),
-            )
-            .await?;
-        let inner = Relayfile::inner(&value);
-        inner["subscriptionId"]
-            .as_str()
-            .or(inner["id"].as_str())
-            .map(str::to_string)
-            .ok_or_else(|| failed("Unreadable subscription from relayfile."))
-    }
-
     async fn subscriptions(&self) -> Result<Vec<Value>, RpcError> {
         let value = self.call("GET", "/webhooks".into(), None).await?;
         let rows = match &value {
@@ -235,7 +218,7 @@ fn can_subscribe(registration: &Registration, provider: &str, glob: &str) -> Res
         return Err(RpcError::new(
             ErrorKind::Conflict,
             format!(
-                "@{} is already subscribed to that {provider} resource.",
+                "@{} is already subscribed to that {provider} resource. Unsubscribe before changing event_types.",
                 registration.name
             ),
         ));
@@ -554,6 +537,19 @@ impl Core {
         provider: &str,
         resource: &str,
     ) -> Result<IntegrationChange, RpcError> {
+        self.subscribe_integration_events(name, provider, resource, &[])
+            .await
+    }
+
+    /// Subscribe to exact normalized provider event names; empty keeps all events.
+    pub async fn subscribe_integration_events(
+        &self,
+        name: &str,
+        provider: &str,
+        resource: &str,
+        event_types: &[String],
+    ) -> Result<IntegrationChange, RpcError> {
+        let event_types = normalize_event_types(provider, event_types)?;
         let resource = resource.trim();
         if !PROVIDERS.contains(&provider) || resource.is_empty() {
             return Err(RpcError::invalid_params(
@@ -568,6 +564,7 @@ impl Core {
             })
         })?;
         let (registration, key) = self.integration_target(name)?;
+        event_filters::require_terminal_event(provider, &glob, &event_types)?;
         can_subscribe(&registration, provider, &glob)?;
         let workspace = self.relayfile_workspace(&registration, &key).await?;
         // Connecting the provider waits for the person in the browser (up to
@@ -591,67 +588,18 @@ impl Core {
             ));
         }
         can_subscribe(&registration, provider, &glob)?;
-        let files = self.relayfile(&workspace).await?;
-        let base = &registration.base_url;
-        let agent_id = &registration.agent_id;
-        let mut entry = Integration::new(provider, resource, &workspace);
-        entry.path_glob = Some(glob.clone());
-        // Journaled before even the shared channel is created; its name is
-        // derived from the agent, so cleanup can recover a lost answer.
-        self.save_integration(agent_id, &entry)?;
-        let http = sdk_gaps::http(base, &key)
-            .map_err(|e| relaycast(&e, "Could not reach Agent Relay."))?;
-        let channel = sdk_gaps::subscription_channel(&http, name, agent_id)
-            .await
-            .map_err(|e| relaycast(&e, "The agent's event channel did not verify."))?;
-        self.store
-            .update(|store| {
-                if let Some(mut current) = store.registration_named(name).cloned() {
-                    current.integration_channel_id = Some(channel.id.clone());
-                    current.integration_channel_name = Some(channel.name.clone());
-                    store.update(current);
-                }
-            })
-            .map_err(|e| RpcError::store(&e))?;
-        let (writeback_url, writeback_secret) = files.writeback_secret(&channel.name).await?;
-        let inbound = sdk_gaps::relayfile_inbound_target(&http, &channel.name, provider, &glob)
-            .await
-            .map_err(|e| relaycast(&e, "Could not create the inbound target."))?;
-        let unsafe_url =
-            || failed("relayfile or Agent Relay returned an address that is not https.");
-        entry.inbound_url = Some(attempt_url(&inbound.url, &entry.id).ok_or_else(unsafe_url)?);
-        entry.writeback_url = Some(attempt_url(&writeback_url, &entry.id).ok_or_else(unsafe_url)?);
-        self.save_integration(agent_id, &entry)?;
-        let inbound_url = entry.inbound_url.clone().unwrap_or_default();
-        entry.cloud_subscription_id = Some(
-            files
-                .create_subscription(&inbound_url, std::slice::from_ref(&glob), &inbound.secret)
-                .await?,
-        );
-        self.save_integration(agent_id, &entry)?;
-        let writeback = entry.writeback_url.clone().unwrap_or_default();
-        entry.subscription_id = Some(
-            client::create_reply_subscription(
-                base,
-                &key,
-                &channel.name,
-                &writeback,
-                &writeback_secret,
-            )
-            .await
-            .map_err(|e| relaycast(&e, "Could not create the reply subscription."))?,
-        );
-        entry.ready = Some(true);
-        self.save_integration(agent_id, &entry)?;
-        self.request_drain(name);
-        self.hub.invalidated(Listing::Agents);
-        Ok(IntegrationChange {
-            subscribed: true,
-            provider: provider.into(),
-            resource: resource.into(),
-            path_glob: Some(glob),
-            already_unsubscribed: false,
-        })
+        self.finish_subscription(
+            &registration,
+            &key,
+            SubscriptionIntent {
+                provider: provider.into(),
+                resource: resource.into(),
+                workspace,
+                glob,
+                event_types,
+            },
+        )
+        .await
     }
 
     /// Undoes every step of a subscription (or of an unfinished one),
@@ -700,6 +648,7 @@ impl Core {
         else {
             return Ok(IntegrationChange {
                 subscribed: false,
+                event_types: Vec::new(),
                 provider: provider.into(),
                 resource: resource.into(),
                 path_glob: None,
@@ -805,7 +754,11 @@ impl Core {
             client::leave_channel(base, &token, &channel_name)
                 .await
                 .map_err(|e| relaycast(&e, "Could not leave the integration channel."))?;
-            current.integration_channel_id = None;
+            // Keep the reserved channel identity as a routing tombstone: queue
+            // reads already in flight (and later leftover pages) must still
+            // take integration admission rather than ordinary post batching.
+            // A new subscription always calls subscription_channel again to
+            // verify/rejoin membership before marking its filter ready.
             current.integration_channel_name = Some(channel_name);
             current.integrations = None;
         }
@@ -815,6 +768,7 @@ impl Core {
         self.hub.invalidated(Listing::Agents);
         Ok(IntegrationChange {
             subscribed: false,
+            event_types: entry.effective_event_types().to_vec(),
             provider: provider.into(),
             resource: resource.into(),
             path_glob: None,

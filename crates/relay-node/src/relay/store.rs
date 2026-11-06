@@ -47,6 +47,8 @@ use crate::relay::workspace::{Secret, DEFAULT_BASE_URL};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 mod date_fields;
+mod integration;
+pub use integration::Integration;
 mod session_kind;
 use date_fields::{null_as_default, optional_timestamp, optional_timestamps, timestamp};
 use serde_json::{Map, Value};
@@ -167,75 +169,6 @@ impl Webhook {
                 format!("{}{suffix}", base.chars().take(room).collect::<String>())
             }
         }
-    }
-}
-
-/// A relayfile subscription, journaled before anything external is created
-/// and kept until setup or cleanup finishes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Integration {
-    pub id: String,
-    pub provider: String,
-    pub resource: String,
-    #[serde(rename = "workspaceID")]
-    pub workspace_id: String,
-    #[serde(rename = "pathGlob", default, skip_serializing_if = "Option::is_none")]
-    pub path_glob: Option<String>,
-    #[serde(
-        rename = "inboundURL",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub inbound_url: Option<String>,
-    #[serde(
-        rename = "writebackURL",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub writeback_url: Option<String>,
-    #[serde(rename = "webhookID", default, skip_serializing_if = "Option::is_none")]
-    pub webhook_id: Option<String>,
-    #[serde(
-        rename = "cloudSubscriptionID",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub cloud_subscription_id: Option<String>,
-    #[serde(
-        rename = "subscriptionID",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub subscription_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ready: Option<bool>,
-    /// A terminal provider event was delivered; cleanup must converge even
-    /// if its first cloud request or the process stops before `ready` flips.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub terminal: Option<bool>,
-}
-
-impl Integration {
-    pub fn new(provider: &str, resource: &str, workspace_id: &str) -> Integration {
-        Integration {
-            id: random_uuid(),
-            provider: provider.into(),
-            resource: resource.into(),
-            workspace_id: workspace_id.into(),
-            path_glob: None,
-            inbound_url: None,
-            writeback_url: None,
-            webhook_id: None,
-            cloud_subscription_id: None,
-            subscription_id: None,
-            ready: None,
-            terminal: None,
-        }
-    }
-
-    /// The Relaycast webhook name earlier versions created per subscription.
-    pub fn webhook_name(&self) -> String {
-        format!("desktop-integration-{}", self.id)
     }
 }
 
@@ -392,9 +325,7 @@ impl Registration {
     }
 
     pub fn has_integrations(&self) -> bool {
-        self.integrations
-            .as_ref()
-            .is_some_and(|list| !list.is_empty())
+        !self.integrations.as_deref().unwrap_or_default().is_empty()
     }
 }
 

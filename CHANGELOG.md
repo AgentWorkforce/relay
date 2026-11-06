@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `agents.integrations.subscribe` and session socket subscriptions exclude leftover provider events after the last subscription is removed.
 - `agent-relay file` accepts private JSON integration metadata files on Unix.
 - `agent-relay flows` reports GitLab setup requirements and resumes human-approved repository runs with their original access.
 
@@ -22,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `agents.integrations.subscribe` and session socket subscriptions accept an `event_types` filter for exact provider events, such as Jira `comment_created`; the core refuses servers that cannot enforce it.
 - `agent-relay-node` can deliver messages to registered VS Code Copilot chats on macOS and resume the same chat while it waits.
 - Copilot messages with uncertain delivery stay pending confirmation and are never blindly submitted again.
 

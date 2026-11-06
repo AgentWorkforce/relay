@@ -46,10 +46,17 @@ fn settings_values(settings: Map<String, Value>) -> Result<SettingsValues, RpcEr
     })
 }
 
+/// Keep ordinary unsubscribe resource-only while recovery accepts copied filter metadata.
 async fn unsubscribe(
     core: &Arc<Core>,
     request: IntegrationParams,
+    cleaning_up: bool,
 ) -> Result<IntegrationChange, RpcError> {
+    if !cleaning_up && !request.event_types.is_empty() {
+        return Err(RpcError::invalid_params(
+            "Unsubscribe by provider and resource, without event_types.",
+        ));
+    }
     core.unsubscribe_integration(&request.name, &request.provider, &request.resource)
         .await
 }
@@ -121,16 +128,18 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
         }
         method::AgentsIntegrationsSubscribe::NAME => {
             answer::<method::AgentsIntegrationsSubscribe, _>(raw, |r| async move {
-                core.subscribe_integration(&r.name, &r.provider, &r.resource)
+                core.subscribe_integration_events(&r.name, &r.provider, &r.resource, &r.event_types)
                     .await
             })
             .await
         }
         method::AgentsIntegrationsUnsubscribe::NAME => {
-            answer::<method::AgentsIntegrationsUnsubscribe, _>(raw, |r| unsubscribe(core, r)).await
+            answer::<method::AgentsIntegrationsUnsubscribe, _>(raw, |r| unsubscribe(core, r, false))
+                .await
         }
         method::AgentsIntegrationsCleanUp::NAME => {
-            answer::<method::AgentsIntegrationsCleanUp, _>(raw, |r| unsubscribe(core, r)).await
+            answer::<method::AgentsIntegrationsCleanUp, _>(raw, |r| unsubscribe(core, r, true))
+                .await
         }
         method::SettingsGet::NAME => {
             answer::<method::SettingsGet, _>(raw, |_| async { settings_values(core.settings()) })
