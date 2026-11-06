@@ -49,8 +49,9 @@ fn settings_values(settings: Map<String, Value>) -> Result<SettingsValues, RpcEr
 async fn unsubscribe(
     core: &Arc<Core>,
     request: IntegrationParams,
+    cleaning_up: bool,
 ) -> Result<IntegrationChange, RpcError> {
-    if !request.event_types.is_empty() {
+    if !cleaning_up && !request.event_types.is_empty() {
         return Err(RpcError::invalid_params(
             "Unsubscribe by provider and resource, without event_types.",
         ));
@@ -132,10 +133,12 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
             .await
         }
         method::AgentsIntegrationsUnsubscribe::NAME => {
-            answer::<method::AgentsIntegrationsUnsubscribe, _>(raw, |r| unsubscribe(core, r)).await
+            answer::<method::AgentsIntegrationsUnsubscribe, _>(raw, |r| unsubscribe(core, r, false))
+                .await
         }
         method::AgentsIntegrationsCleanUp::NAME => {
-            answer::<method::AgentsIntegrationsCleanUp, _>(raw, |r| unsubscribe(core, r)).await
+            answer::<method::AgentsIntegrationsCleanUp, _>(raw, |r| unsubscribe(core, r, true))
+                .await
         }
         method::SettingsGet::NAME => {
             answer::<method::SettingsGet, _>(raw, |_| async { settings_values(core.settings()) })

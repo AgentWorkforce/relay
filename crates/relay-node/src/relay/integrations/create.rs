@@ -29,7 +29,7 @@ impl Core {
         let agent_id = &registration.agent_id;
         let mut entry = Integration::new(provider, resource, &workspace);
         entry.path_glob = Some(glob.clone());
-        entry.event_types = event_types.clone();
+        entry.event_types = Some(event_types.clone());
         // Journaled before even the shared channel is created; its name is
         // derived from the agent, so cleanup can recover a lost answer.
         self.save_integration(agent_id, &entry)?;
@@ -64,6 +64,10 @@ impl Core {
                     std::slice::from_ref(&glob),
                     &inbound.secret,
                     &event_types,
+                    |id| {
+                        entry.cloud_subscription_id = Some(id.into());
+                        self.save_integration(agent_id, &entry)
+                    },
                 )
                 .await?,
         );
@@ -92,5 +96,47 @@ impl Core {
             path_glob: Some(glob),
             already_unsubscribed: false,
         })
+    }
+}
+
+impl Relayfile {
+    /// Sends provider events under `globs` to `url`; returns its id.
+    pub(super) async fn create_subscription<F>(
+        &self,
+        url: &str,
+        globs: &[String],
+        secret: &Secret,
+        event_types: &[String],
+        journal_created: F,
+    ) -> Result<String, RpcError>
+    where
+        F: FnOnce(&str) -> Result<(), RpcError>,
+    {
+        if !event_types.is_empty() {
+            let capabilities = self
+                .call("GET", "/webhooks?capabilities=eventTypes".into(), None)
+                .await?;
+            event_filters::require_event_filter_support(Relayfile::inner(&capabilities))?;
+        }
+        let mut body = json!({"url": url, "pathGlobs": globs, "secret": secret.expose()});
+        if !event_types.is_empty() {
+            body["eventTypes"] = json!(event_types);
+        }
+        let value = self.call("POST", "/webhooks".into(), Some(body)).await?;
+        let inner = Relayfile::inner(&value);
+        let id = inner["subscriptionId"]
+            .as_str()
+            .or(inner["id"].as_str())
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| failed("Unreadable subscription from relayfile."))?;
+        // Record the external ID even when confirmation or cleanup fails.
+        // A rejected response must never leave an untracked broad webhook.
+        let accepted = journal_created(id)
+            .and_then(|_| event_filters::require_confirmed_filter(inner, event_types));
+        if let Err(error) = accepted {
+            self.delete_subscription(id).await?;
+            return Err(error);
+        }
+        Ok(id.to_string())
     }
 }

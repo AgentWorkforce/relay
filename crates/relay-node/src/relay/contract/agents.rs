@@ -226,7 +226,7 @@ impl From<&crate::relay::store::Integration> for AgentIntegration {
         Self {
             provider: value.provider.clone(),
             resource: value.resource.clone(),
-            event_types: value.event_types.clone(),
+            event_types: value.effective_event_types().to_vec(),
             ready: value.ready == Some(true),
         }
     }

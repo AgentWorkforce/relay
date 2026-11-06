@@ -2,6 +2,8 @@
 //! the text a session is given.
 
 pub mod frame;
+mod integration_event;
+pub use integration_event::{decide_for_agent_with_integrations, IntegrationEvent};
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -180,6 +182,8 @@ pub struct Delivery {
     pub thread_id: Option<String>,
     /// The relayfile record a provider event is about.
     pub relayfile_path: Option<String>,
+    /// Stable provider identity forwarded by the authenticated inbound bridge.
+    pub relayfile_resource_ref: Option<String>,
     /// The files the message carries.
     pub attachments: Vec<Attachment>,
     /// When the message was sent, in milliseconds since the epoch.
@@ -227,6 +231,7 @@ impl Delivery {
             text: message["text"].as_str().map(str::to_string),
             thread_id: string(&message["thread_id"]),
             relayfile_path: string(&message["metadata"]["relayfile"]["path"]),
+            relayfile_resource_ref: string(&message["metadata"]["relayfile"]["resource_ref"]),
             attachments: Attachment::list(&[message, item]),
             created_at_ms: sent_at(message),
         })
@@ -274,6 +279,7 @@ impl Delivery {
                     text: message["text"].as_str().map(str::to_string),
                     thread_id: None,
                     relayfile_path: None,
+                    relayfile_resource_ref: None,
                     attachments: Attachment::list(&[message, body]),
                     created_at_ms: sent_at(message),
                 })
@@ -290,6 +296,7 @@ impl Delivery {
                 text: body["text"].as_str().map(str::to_string),
                 thread_id: string(&body["thread_id"]),
                 relayfile_path: None,
+                relayfile_resource_ref: None,
                 attachments: Attachment::list(&[body, &body["message"]]),
                 created_at_ms: sent_at(body).or_else(|| sent_at(&body["message"])),
             }),
@@ -384,6 +391,15 @@ pub fn decide(
     webhook_channel_id: Option<&str>,
     integration_channel_id: Option<&str>,
 ) -> Decision {
+    decide_with_requested(delivery, webhook_channel_id, integration_channel_id, false)
+}
+/// Apply routing and suppress broad-subscription noise unless requested exactly.
+fn decide_with_requested(
+    delivery: &Delivery,
+    webhook_channel_id: Option<&str>,
+    integration_channel_id: Option<&str>,
+    explicitly_requested: bool,
+) -> Decision {
     let from =
         |channel: Option<&str>| channel.is_some() && delivery.channel_id.as_deref() == channel;
     let from_webhook = from(webhook_channel_id);
@@ -403,7 +419,7 @@ pub fn decide(
     if text.is_none() && delivery.attachments.is_empty() {
         return Decision::Skip("the message has no text".into());
     }
-    if from_integration {
+    if from_integration && !explicitly_requested {
         if let Some(noise) = text.and_then(|text| IntegrationEvent::parse(text).noise_reason()) {
             return Decision::Skip(noise);
         }
@@ -441,8 +457,29 @@ pub fn decide_for_agent(
     webhook_channel_id: Option<&str>,
     integration_channel_id: Option<&str>,
 ) -> Decision {
+    decide_for_agent_with_requested(
+        delivery,
+        agent_name,
+        webhook_channel_id,
+        integration_channel_id,
+        false,
+    )
+}
+/// Preserve channel-post and sender rules while honoring exact provider events.
+pub fn decide_for_agent_with_requested(
+    delivery: &Delivery,
+    agent_name: &str,
+    webhook_channel_id: Option<&str>,
+    integration_channel_id: Option<&str>,
+    explicitly_requested: bool,
+) -> Decision {
     if !is_channel_post(delivery, webhook_channel_id, integration_channel_id) {
-        return decide(delivery, webhook_channel_id, integration_channel_id);
+        return decide_with_requested(
+            delivery,
+            webhook_channel_id,
+            integration_channel_id,
+            explicitly_requested,
+        );
     }
     if delivery.sender.as_deref() == Some(agent_name) {
         return Decision::Skip("this agent's own channel post".into());
@@ -569,57 +606,6 @@ pub(crate) fn is_control_or_newline(c: char) -> bool {
             '\u{85}' | '\u{AD}' | '\u{2028}' | '\u{2029}' | '\u{FEFF}'
             | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
             | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}')
-}
-
-/// A provider event as relayfile posts it into an agent's events channel:
-/// `"<Provider> <event type>"` on the first line, then the record, then
-/// `Relayfile path: <path>`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IntegrationEvent {
-    pub provider: Option<String>,
-    /// e.g. `pull_request.opened`, `issue_comment.created`, `update`.
-    pub kind: Option<String>,
-    pub path: Option<String>,
-}
-
-impl IntegrationEvent {
-    pub fn parse(text: &str) -> IntegrationEvent {
-        let lines: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
-        let mut head = lines.first().copied().unwrap_or_default().splitn(2, ' ');
-        let provider = head.next().filter(|p| !p.is_empty()).map(str::to_string);
-        let kind = head.next().map(|k| k.trim().to_string());
-        let path = lines
-            .iter()
-            .rev()
-            .find_map(|line| line.strip_prefix("Relayfile path: "))
-            .map(|path| path.trim().to_string());
-        IntegrationEvent {
-            provider,
-            kind,
-            path,
-        }
-    }
-
-    /// Why this event is not worth a turn, or `None` when it is. A
-    /// whole-repository subscription otherwise delivers every record sync:
-    /// index rewrites, generic updates that repeat a typed event, edits to
-    /// bot comments, and pushes.
-    pub fn noise_reason(&self) -> Option<String> {
-        if let Some(path) = self.path.as_deref().filter(|p| p.ends_with("/_index.json")) {
-            return Some(format!("index update ({path})"));
-        }
-        let kind = self.kind.as_deref()?;
-        if kind == "update" {
-            return Some("record sync that repeats a typed event".into());
-        }
-        if kind.ends_with(".edited") {
-            return Some(format!("edit ({kind})"));
-        }
-        if kind == "push" {
-            return Some("push".into());
-        }
-        None
-    }
 }
 
 /// `owner/repo#123` for a github.com pull-request address, the form

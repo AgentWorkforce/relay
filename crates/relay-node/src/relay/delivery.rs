@@ -64,7 +64,7 @@ use crate::relay::store::{SessionKind, Target};
 use crate::relay::workspace::Secret;
 use cadence::{claim_due, heartbeat_interval, is_due, queue_poll_interval};
 use futures_util::{future::BoxFuture, stream, StreamExt};
-use policy::{decide_for_agent, Attachment, Decision, Delivery};
+use policy::{decide_for_agent_with_integrations, Attachment, Decision, Delivery};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -1133,11 +1133,12 @@ impl Core {
         }
         let webhook_channel = registration.webhook.as_ref().map(|w| w.channel_id.as_str());
         let integration_channel = registration.integration_channel_id.as_deref();
-        let decision = decide_for_agent(
+        let decision = decide_for_agent_with_integrations(
             delivery,
             &registration.name,
             webhook_channel,
             integration_channel,
+            registration.integrations.as_deref().unwrap_or_default(),
         );
         if let Decision::Skip(reason) = decision {
             let _ = self

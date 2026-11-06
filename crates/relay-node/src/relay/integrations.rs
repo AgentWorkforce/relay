@@ -169,36 +169,6 @@ impl Relayfile {
         }
     }
 
-    /// Sends provider events under `globs` to `url`; returns its id.
-    async fn create_subscription(
-        &self,
-        url: &str,
-        globs: &[String],
-        secret: &Secret,
-        event_types: &[String],
-    ) -> Result<String, RpcError> {
-        if !event_types.is_empty() {
-            let capabilities = self
-                .call("GET", "/webhooks?capabilities=eventTypes".into(), None)
-                .await?;
-            event_filters::require_event_filter_support(Relayfile::inner(&capabilities))?;
-        }
-        let value = self
-            .call(
-                "POST",
-                "/webhooks".into(),
-                Some(json!({"url": url, "pathGlobs": globs, "secret": secret.expose(), "eventTypes": event_types})),
-            )
-            .await?;
-        let inner = Relayfile::inner(&value);
-        event_filters::require_confirmed_filter(inner, event_types)?;
-        inner["subscriptionId"]
-            .as_str()
-            .or(inner["id"].as_str())
-            .map(str::to_string)
-            .ok_or_else(|| failed("Unreadable subscription from relayfile."))
-    }
-
     async fn subscriptions(&self) -> Result<Vec<Value>, RpcError> {
         let value = self.call("GET", "/webhooks".into(), None).await?;
         let rows = match &value {
@@ -248,7 +218,7 @@ fn can_subscribe(registration: &Registration, provider: &str, glob: &str) -> Res
         return Err(RpcError::new(
             ErrorKind::Conflict,
             format!(
-                "@{} is already subscribed to that {provider} resource.",
+                "@{} is already subscribed to that {provider} resource. Unsubscribe before changing event_types.",
                 registration.name
             ),
         ));
@@ -594,6 +564,7 @@ impl Core {
             })
         })?;
         let (registration, key) = self.integration_target(name)?;
+        event_filters::require_terminal_event(provider, &glob, &event_types)?;
         can_subscribe(&registration, provider, &glob)?;
         let workspace = self.relayfile_workspace(&registration, &key).await?;
         // Connecting the provider waits for the person in the browser (up to
@@ -793,7 +764,7 @@ impl Core {
         self.hub.invalidated(Listing::Agents);
         Ok(IntegrationChange {
             subscribed: false,
-            event_types: entry.event_types.clone(),
+            event_types: entry.effective_event_types().to_vec(),
             provider: provider.into(),
             resource: resource.into(),
             path_glob: None,

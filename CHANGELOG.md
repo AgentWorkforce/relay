@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Provider subscriptions accept exact event filters, including Jira `comment_created` and `issue_created`, and refuse servers that cannot enforce them.
+- `agents.integrations.subscribe` and session socket subscriptions accept an `event_types` filter for exact provider events, such as Jira `comment_created`; the core refuses servers that cannot enforce it.
 
 ## [17.0.0] - 2026-11-05
 

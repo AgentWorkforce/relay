@@ -3870,6 +3870,11 @@ async fn webhooks_belong_to_the_registered_caller() {
             "{body}"
         );
     }
+    let error = h.call(IN_CODEX, "POST", "/integrations/subscribe", json!({"provider":"jira", "resource":"/jira/issues/**", "event_types":["version_released"]})).await.unwrap_err();
+    assert!(
+        error.message.contains("Unsupported Jira event_types"),
+        "{error:?}"
+    );
     h.stop().await;
 }
 

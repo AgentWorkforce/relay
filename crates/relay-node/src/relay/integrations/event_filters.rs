@@ -2,6 +2,7 @@
 use crate::relay::protocol::RpcError;
 use serde_json::Value;
 
+/// A legacy server must refuse exact filters before webhook creation.
 pub(super) fn require_event_filter_support(value: &Value) -> Result<(), RpcError> {
     if value.get("eventTypes") == Some(&Value::Bool(true)) {
         return Ok(());
@@ -9,6 +10,7 @@ pub(super) fn require_event_filter_support(value: &Value) -> Result<(), RpcError
     Err(super::failed("Relayfile cannot enforce exact event filters. Upgrade Relayfile before subscribing to exact events."))
 }
 
+/// Require the creation response to echo the complete canonical filter.
 pub(super) fn require_confirmed_filter(value: &Value, expected: &[String]) -> Result<(), RpcError> {
     if expected.is_empty() || value.get("eventTypes") == Some(&serde_json::json!(expected)) {
         return Ok(());
@@ -16,6 +18,7 @@ pub(super) fn require_confirmed_filter(value: &Value, expected: &[String]) -> Re
     Err(super::failed("Relayfile did not confirm the requested event filter. Upgrade Relayfile before subscribing to exact events."))
 }
 
+/// Validate exact event names and map only Jira aliases supported by its relay.
 pub(crate) fn normalize_event_types(
     provider: &str,
     values: &[String],
@@ -37,15 +40,22 @@ pub(crate) fn normalize_event_types(
             ));
         }
         let value = if provider == "jira" {
-            let native = value.strip_prefix("jira:").unwrap_or(value);
-            match native.rsplit_once('_') {
-                Some((object, action))
-                    if ["created", "updated", "deleted", "started", "closed"].contains(&action) =>
-                {
-                    format!("{object}.{action}")
-                }
-                _ => native.to_string(),
-            }
+            let lowercase = value.to_ascii_lowercase();
+            let native = lowercase.strip_prefix("jira:").unwrap_or(&lowercase);
+            let aliases = [
+                ("issue_created", "issue.created"),
+                ("issue_updated", "issue.updated"),
+                ("issue_deleted", "issue.deleted"),
+                ("comment_created", "comment.created"),
+                ("comment_updated", "comment.updated"),
+                ("comment_deleted", "comment.deleted"),
+                ("sprint_created", "sprint.created"),
+                ("sprint_updated", "sprint.updated"),
+                ("sprint_started", "sprint.started"),
+                ("sprint_closed", "sprint.closed"),
+                ("sprint_deleted", "sprint.deleted"),
+            ];
+            aliases.iter().find(|(alias,canonical)|native==*alias || native==*canonical).map(|(_,canonical)|canonical.to_string()).ok_or_else(||RpcError::invalid_params("Unsupported Jira event_types. Choose a registered issue, comment or sprint lifecycle event."))?
         } else {
             value.clone()
         };
@@ -59,6 +69,29 @@ pub(crate) fn normalize_event_types(
     normalized.sort();
     normalized.dedup();
     Ok(normalized)
+}
+
+/// Finite PR subscriptions rely on the terminal event to remove their resources.
+/// Refuse incompatible filters before connecting or creating anything; never
+/// silently add an event the caller did not request.
+pub(super) fn require_terminal_event(
+    provider: &str,
+    glob: &str,
+    event_types: &[String],
+) -> Result<(), RpcError> {
+    let parts: Vec<_> = glob.split('/').filter(|part| !part.is_empty()).collect();
+    let finite = provider == "github"
+        && parts.len() == 7
+        && parts[4] == "pulls"
+        && parts[5].bytes().all(|ch| ch.is_ascii_digit())
+        && parts[6] == "**";
+    if finite
+        && !event_types.is_empty()
+        && !event_types.iter().any(|kind| kind == "pull_request.closed")
+    {
+        return Err(RpcError::invalid_params("Filtered pull-request subscriptions must include pull_request.closed so terminal cleanup can finish."));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -90,6 +123,39 @@ mod tests {
         }
     }
     #[test]
+    fn jira_aliases_are_explicit_and_filtered_prs_keep_terminal_cleanup() {
+        assert_eq!(
+            normalize_event_types("jira", &["Comment_Created".into()]).unwrap(),
+            vec!["comment.created"]
+        );
+        for unsupported in [
+            "comment__created",
+            "project_soft_deleted",
+            "version_released",
+            "board_configuration_changed",
+        ] {
+            assert!(normalize_event_types("jira", &[unsupported.into()]).is_err());
+        }
+        assert!(require_terminal_event(
+            "github",
+            "/github/repos/acme/api/pulls/42/**",
+            &["issue_comment.created".into()]
+        )
+        .is_err());
+        assert!(require_terminal_event(
+            "github",
+            "/github/repos/acme/api/pulls/42/**",
+            &["pull_request.closed".into()]
+        )
+        .is_ok());
+        assert!(
+            require_terminal_event("github", "/github/repos/acme/api/pulls/42/**", &[]).is_ok()
+        );
+        assert!(
+            require_terminal_event("github", "/github/repos/acme/api/**", &["push".into()]).is_ok()
+        );
+    }
+    #[test]
     fn old_servers_cannot_silently_ignore_filters() {
         let wanted = vec!["comment.created".into()];
         assert!(
@@ -118,11 +184,22 @@ mod http_tests {
     use std::io::{Read, Write};
 
     fn server(responses: Vec<Value>) -> (String, std::thread::JoinHandle<Vec<Value>>) {
+        server_with_status(
+            responses
+                .into_iter()
+                .map(|response| (200, response))
+                .collect(),
+        )
+    }
+
+    fn server_with_status(
+        responses: Vec<(u16, Value)>,
+    ) -> (String, std::thread::JoinHandle<Vec<Value>>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
             let mut requests = Vec::new();
-            for response in responses {
+            for (status, response) in responses {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -150,7 +227,7 @@ mod http_tests {
                 };
                 requests.push(json!({"route":head.lines().next().unwrap(),"body":serde_json::from_str::<Value>(&body).unwrap_or(Value::Null)}));
                 let response = response.to_string();
-                write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",response.len(),response).unwrap();
+                write!(stream,"HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",response.len(),response).unwrap();
             }
             requests
         });
@@ -175,7 +252,8 @@ mod http_tests {
                     "https://hook.test",
                     &["/jira/**".into()],
                     &Secret::new("fixture"),
-                    &wanted
+                    &wanted,
+                    |_| Ok(()),
                 )
                 .await
                 .unwrap(),
@@ -205,7 +283,8 @@ mod http_tests {
                 "https://hook.test",
                 &["/jira/**".into()],
                 &Secret::new("fixture"),
-                &["comment.created".into()]
+                &["comment.created".into()],
+                |_| Ok(()),
             )
             .await
             .is_err());
@@ -226,15 +305,111 @@ mod http_tests {
                     "https://hook.test",
                     &["/jira/**".into()],
                     &Secret::new("fixture"),
-                    &[]
+                    &[],
+                    |_| Ok(()),
                 )
                 .await
                 .unwrap(),
             "wh_legacy"
         );
-        assert!(server.join().unwrap()[0]["route"]
+        let requests = server.join().unwrap();
+        assert!(requests[0]["route"].as_str().unwrap().starts_with("POST "));
+        assert!(requests[0]["body"].get("eventTypes").is_none());
+    }
+    #[tokio::test]
+    async fn failed_immediate_cleanup_keeps_the_created_id_for_recovery() {
+        let (base_url, server) = server_with_status(vec![
+            (200, json!({"eventTypes":true})),
+            (
+                200,
+                json!({"subscriptionId":"wh_retry","eventTypes":["issue.created"]}),
+            ),
+            (500, json!({"error":"temporary"})),
+        ]);
+        let files = Relayfile {
+            base_url,
+            token: Secret::new("fixture"),
+            workspace: "rw_test".into(),
+        };
+        let mut journaled = None;
+        assert!(files
+            .create_subscription(
+                "https://hook.test",
+                &["/jira/**".into()],
+                &Secret::new("fixture"),
+                &["comment.created".into()],
+                |id| {
+                    journaled = Some(id.to_string());
+                    Ok(())
+                }
+            )
+            .await
+            .is_err());
+        assert_eq!(journaled.as_deref(), Some("wh_retry"));
+        assert!(server.join().unwrap()[2]["route"]
             .as_str()
             .unwrap()
-            .starts_with("POST "));
+            .contains("DELETE /v1/workspaces/rw_test/webhooks/wh_retry "));
+    }
+
+    #[tokio::test]
+    async fn a_journal_failure_also_deletes_the_created_subscription() {
+        let (base_url, server) = server(vec![
+            json!({"subscriptionId":"wh_unsaved"}),
+            json!({"deleted":true}),
+        ]);
+        let files = Relayfile {
+            base_url,
+            token: Secret::new("fixture"),
+            workspace: "rw_test".into(),
+        };
+        assert!(files
+            .create_subscription(
+                "https://hook.test",
+                &["/jira/**".into()],
+                &Secret::new("fixture"),
+                &[],
+                |_| Err(super::super::failed("fixture journal failure"))
+            )
+            .await
+            .is_err());
+        assert!(server.join().unwrap()[1]["route"]
+            .as_str()
+            .unwrap()
+            .starts_with("DELETE "));
+    }
+
+    #[tokio::test]
+    async fn rejected_confirmation_is_journaled_then_deleted_immediately() {
+        let (base_url, server) = server(vec![
+            json!({"eventTypes":true}),
+            json!({"subscriptionId":"wh_unconfirmed"}),
+            json!({"deleted":true}),
+        ]);
+        let files = Relayfile {
+            base_url,
+            token: Secret::new("fixture"),
+            workspace: "rw_test".into(),
+        };
+        let mut journaled = None;
+        let result = files
+            .create_subscription(
+                "https://hook.test",
+                &["/jira/**".into()],
+                &Secret::new("fixture"),
+                &["comment.created".into()],
+                |id| {
+                    journaled = Some(id.to_string());
+                    Ok(())
+                },
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(journaled.as_deref(), Some("wh_unconfirmed"));
+        let requests = server.join().unwrap();
+        assert!(requests[2]["route"]
+            .as_str()
+            .unwrap()
+            .starts_with("DELETE /v1/workspaces/rw_test/webhooks/wh_unconfirmed "));
     }
 }

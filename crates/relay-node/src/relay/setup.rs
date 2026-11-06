@@ -713,7 +713,7 @@ impl Setup {
             "integrations": registration
                 .iter()
                 .flat_map(|r| r.integrations.iter().flatten())
-                .map(|i| json!({"provider": i.provider, "resource": i.resource, "event_types": i.event_types, "ready": i.ready == Some(true)}))
+                .map(|i| json!({"provider": i.provider, "resource": i.resource, "event_types": i.effective_event_types(), "ready": i.ready == Some(true)}))
                 .collect::<Vec<_>>(),
             "unreadable_session_files": unreadable_session_files,
         });
@@ -958,7 +958,7 @@ mod tests {
         };
         let held = holding(Some(true), None);
         let mut filtered = held.clone();
-        filtered.integrations.as_mut().unwrap()[0].event_types = vec!["issue.created".into()];
+        filtered.integrations.as_mut().unwrap()[0].event_types = Some(vec!["issue.created".into()]);
         assert!(held_subscription(&filtered, "github", "acme/api#42").is_none());
         assert!(integration_requests::held_subscription_events(
             &filtered,

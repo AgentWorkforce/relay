@@ -19,7 +19,7 @@ impl Setup {
             .keys()
             .any(|key| !["provider", "resource", "event_types"].contains(&key.as_str()))
             || resource.is_empty()
-            || !["github", "linear", "slack", "jira"].contains(&provider)
+            || !crate::relay::integrations::PROVIDERS.contains(&provider)
         {
             return Err(invalid_integration());
         }
@@ -30,7 +30,7 @@ impl Setup {
             .map_err(|_| invalid_integration())?
             .unwrap_or_default();
         let event_types = crate::relay::integrations::normalize_event_types(provider, &event_types)
-            .map_err(|_| invalid_integration())?;
+            .map_err(|error| OutboundError::new(400, "invalid_integration", error.message))?;
         let registration = registration.ok_or_else(|| {
             OutboundError::new(
                 403,
@@ -84,7 +84,7 @@ pub(super) fn held_subscription_events(
         .any(|held| {
             held.provider == provider
                 && held.path_glob.as_deref() == Some(glob.as_str())
-                && held.event_types == event_types
+                && held.effective_event_types() == event_types
                 && held.ready == Some(true)
                 && held.terminal != Some(true)
         })
