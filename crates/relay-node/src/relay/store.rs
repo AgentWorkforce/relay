@@ -325,9 +325,7 @@ impl Registration {
     }
 
     pub fn has_integrations(&self) -> bool {
-        self.integrations
-            .as_ref()
-            .is_some_and(|list| !list.is_empty())
+        !self.integrations.as_deref().unwrap_or_default().is_empty()
     }
 }
 

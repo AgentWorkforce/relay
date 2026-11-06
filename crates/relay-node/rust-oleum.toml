@@ -57,7 +57,7 @@ rust_roots = ["src"]
 "src/relay/people.rs" = 514
 "src/relay/process.rs" = 1000
 "src/relay/setup.rs" = 728
-"src/relay/store.rs" = 1815
+"src/relay/store.rs" = 1814
 "src/relay/telemetry.rs" = 823
 
 [baseline.cyclomatic]
