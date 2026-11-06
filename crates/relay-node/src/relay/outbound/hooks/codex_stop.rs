@@ -27,6 +27,10 @@ const JOIN_WAIT: Duration = Duration::from_secs(5);
 /// How often that wait looks again.
 const JOIN_POLL: Duration = Duration::from_millis(250);
 
+#[cfg(test)]
+#[path = "codex_stop/affinity.rs"]
+mod affinity;
+
 fn registration_context(socket: &std::path::Path) -> Option<Value> {
     let command = super::super::probe_socket_command_with_body(
         socket,

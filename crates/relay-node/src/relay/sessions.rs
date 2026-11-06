@@ -251,10 +251,10 @@ pub trait SessionDirectory: Send + Sync + 'static {
         Err(CallerMiss::NotASession)
     }
 
-    /// Whether the process `pid` runs below the trusted Codex of this user's
-    /// that holds `thread`'s writer lock, as a Codex hook that Codex started
-    /// for that thread does (`codex::stop_hook`). From the kernel's evidence
-    /// alone. May block.
+    /// Whether `pid` belongs to this exact Codex thread, with its trusted
+    /// ancestor and held writer lock verified from kernel evidence. A shared
+    /// app-server holding both parent and child locks cannot authorize one
+    /// thread's hook to consume the other's messages. May block.
     fn holds_codex_thread(&self, _pid: i32, _thread: &str) -> bool {
         false
     }

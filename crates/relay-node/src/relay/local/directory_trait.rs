@@ -318,7 +318,8 @@ impl SessionDirectory for LocalSessions {
             pid,
             self.config.uid,
             thread,
-        )
+        ) && crate::relay::process::codex_caller_thread(&*self.table, pid, self.config.uid)
+            .is_some_and(|caller| caller.eq_ignore_ascii_case(thread))
     }
 
     fn unreadable_session_files(&self) -> Vec<UnreadableSessionFile> {
