@@ -94,11 +94,7 @@ describe('deprecateCommand', () => {
 
   it('still runs the original action', async () => {
     const { program, cloud, ran } = programWithCloud();
-    deprecateCommand(
-      cloud.commands.find((c) => c.name() === 'run')!,
-      NOTICE,
-      { warn: () => {} }
-    );
+    deprecateCommand(cloud.commands.find((c) => c.name() === 'run')!, NOTICE, { warn: () => {} });
 
     await program.parseAsync(['cloud', 'run', 'flow.yaml'], { from: 'user' });
 
@@ -108,11 +104,7 @@ describe('deprecateCommand', () => {
   it('warns once, with the full invocation path', async () => {
     const { program, cloud } = programWithCloud();
     const warn = vi.fn();
-    deprecateCommand(
-      cloud.commands.find((c) => c.name() === 'run')!,
-      NOTICE,
-      { warn }
-    );
+    deprecateCommand(cloud.commands.find((c) => c.name() === 'run')!, NOTICE, { warn });
 
     await program.parseAsync(['cloud', 'run', 'flow.yaml'], { from: 'user' });
 
@@ -122,11 +114,7 @@ describe('deprecateCommand', () => {
 
   it('hides the command from the parent help but leaves its siblings', () => {
     const { cloud } = programWithCloud();
-    deprecateCommand(
-      cloud.commands.find((c) => c.name() === 'run')!,
-      NOTICE,
-      { warn: () => {} }
-    );
+    deprecateCommand(cloud.commands.find((c) => c.name() === 'run')!, NOTICE, { warn: () => {} });
 
     const help = cloud.helpInformation();
     expect(help).not.toMatch(/^\s+run\b/m);
@@ -138,16 +126,8 @@ describe('deprecateCommand', () => {
     // would let the second call replace the first and un-hide `run`.
     const { cloud } = programWithCloud();
     const warn = () => {};
-    deprecateCommand(
-      cloud.commands.find((c) => c.name() === 'run')!,
-      NOTICE,
-      { warn }
-    );
-    deprecateCommand(
-      cloud.commands.find((c) => c.name() === 'schedule')!,
-      NOTICE,
-      { warn }
-    );
+    deprecateCommand(cloud.commands.find((c) => c.name() === 'run')!, NOTICE, { warn });
+    deprecateCommand(cloud.commands.find((c) => c.name() === 'schedule')!, NOTICE, { warn });
 
     const help = cloud.helpInformation();
     expect(help).not.toMatch(/^\s+run\b/m);
@@ -167,11 +147,7 @@ describe('deprecateCommand', () => {
   it('does not warn when a non-deprecated sibling runs', async () => {
     const { program, cloud } = programWithCloud();
     const warn = vi.fn();
-    deprecateCommand(
-      cloud.commands.find((c) => c.name() === 'run')!,
-      NOTICE,
-      { warn }
-    );
+    deprecateCommand(cloud.commands.find((c) => c.name() === 'run')!, NOTICE, { warn });
 
     await program.parseAsync(['cloud', 'login'], { from: 'user' });
 

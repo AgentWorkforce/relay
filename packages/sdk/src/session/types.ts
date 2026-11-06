@@ -10,7 +10,8 @@ export type ObservabilityFidelity = 'exact' | 'inferred';
 export type ObservabilitySource = 'ai-sdk' | 'pty-structured' | 'pty-terminal' | 'broker';
 
 export type ObservabilitySupport =
-  { available: true; fidelities: readonly ObservabilityFidelity[] } | { available: false };
+  | { available: true; fidelities: readonly ObservabilityFidelity[] }
+  | { available: false };
 
 export const OBSERVABILITY_UNAVAILABLE = { available: false } as const satisfies ObservabilitySupport;
 export const EXACT_OBSERVABILITY = {
@@ -123,7 +124,12 @@ export type MessageAttachmentCapability = 'text' | 'image';
 export type AgentSessionDeliveryMode = 'immediate' | 'next-message' | 'next-tool-call' | 'on-idle' | 'manual';
 
 export type MessageDeliveryReason =
-  'message' | 'mention' | 'dm' | 'thread-reply' | 'action-result' | 'notification';
+  | 'message'
+  | 'mention'
+  | 'dm'
+  | 'thread-reply'
+  | 'action-result'
+  | 'notification';
 
 export interface MessageContext {
   id: string;
