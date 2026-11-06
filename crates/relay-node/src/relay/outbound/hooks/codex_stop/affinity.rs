@@ -12,7 +12,7 @@ use crate::relay::{
     local::{LocalConfig, LocalSessions},
     outbound::{RelaySend, ServingPath},
     paths::CorePaths,
-    process::{FakeProcess, FakeProcesses},
+    process::{FakeProcess, FakeProcesses, ProcessTable},
     push::PushTiming,
     setup::DirectDelivery,
     workspace::{Secret, Workspace, WorkspaceSource},
@@ -63,7 +63,14 @@ fn fixture(
             &rollout,
             format!(
                 "{}\n{}\n",
-                json!({"type":"session_meta","payload":{"id":thread}}),
+                if thread == CHILD {
+                    json!({"type":"session_meta","payload":{
+                        "id":thread, "parent_thread_id":PARENT, "thread_source":"subagent",
+                        "source":{"subagent":{"thread_spawn":{"parent_thread_id":PARENT}}}
+                    }})
+                } else {
+                    json!({"type":"session_meta","payload":{"id":thread}})
+                },
                 json!({"type":"event_msg","payload":{"type":"task_started","turn_id":turn}})
             ),
         )?;
@@ -226,14 +233,8 @@ async fn consuming_hook_thread_affinity_preserves_parent_and_child_offers() {
                 .unwrap(),
             json!({})
         );
-        table
-            .processes
-            .lock()
-            .unwrap()
-            .get_mut(&CHILD_PID)
-            .unwrap()
-            .environment
-            .insert("CODEX_THREAD_ID".into(), CHILD.into());
+        // A valid child turn remains usable with its inherited parent env;
+        // its held rollout explicitly proves that parent-child relationship.
         let child = outbound
             .codex_stop_hook(CHILD_PID, outbound.uid, &fields(CHILD, event))
             .await
@@ -282,14 +283,6 @@ async fn consuming_hook_thread_affinity_preserves_registration_guidance() {
         .is_err());
     assert!(inbox.needs_registration_guidance(PARENT));
     for (pid, thread) in [(PARENT_PID, PARENT), (CHILD_PID, CHILD)] {
-        table
-            .processes
-            .lock()
-            .unwrap()
-            .get_mut(&pid)
-            .unwrap()
-            .environment
-            .insert("CODEX_THREAD_ID".into(), thread.into());
         assert!(outbound
             .codex_stop_hook(pid, outbound.uid, &fields(thread, "SessionStart"))
             .await
@@ -351,6 +344,65 @@ async fn consuming_hook_thread_affinity_keeps_kernel_writer_checks() {
             .await
             .is_err());
         assert!(inbox.turns().has_offered(PARENT));
+    }
+
+    // An inherited parent id needs a proven held ancestry chain, in addition
+    // to the child's correct active turn and its own held writer/rollout.
+    for invalid in ["missing", "invalid", "unrelated", "held_parent"] {
+        let (temp, outbound, inbox, table) = fixture(false).unwrap();
+        table
+            .processes
+            .lock()
+            .unwrap()
+            .get_mut(&CHILD_PID)
+            .unwrap()
+            .environment
+            .insert("CODEX_THREAD_ID".into(), PARENT.into());
+        if invalid == "held_parent" {
+            let mut files = table.opened_files(10);
+            for file in &mut files {
+                if file.path.extension().is_some_and(|ext| ext == "jsonl")
+                    && file.path.to_string_lossy().contains(PARENT)
+                {
+                    file.birth_ns = Some(-1);
+                }
+            }
+            table
+                .processes
+                .lock()
+                .unwrap()
+                .get_mut(&10)
+                .unwrap()
+                .opened_files = Some(files);
+        } else {
+            let other = "550e8400-e29b-41d4-a716-446655440002";
+            let payload = match invalid {
+                "missing" => json!({"id":CHILD}),
+                "invalid" => json!({"id":CHILD,"thread_source":"subagent",
+                    "parent_thread_id":PARENT,
+                    "source":{"subagent":{"thread_spawn":{"parent_thread_id":other}}}}),
+                _ => json!({"id":CHILD,"thread_source":"subagent",
+                    "parent_thread_id":other,
+                    "source":{"subagent":{"thread_spawn":{"parent_thread_id":other}}}}),
+            };
+            std::fs::write(temp.path().join(".codex/sessions")
+                .join(format!("rollout-fixture-{CHILD}.jsonl")), format!("{}\n{}\n",
+                json!({"type":"session_meta","payload":payload}),
+                json!({"type":"event_msg","payload":{"type":"task_started","turn_id":"child-turn"}})
+            )).unwrap();
+        }
+        inbox
+            .turns()
+            .offer(CHILD, "child-proof", "not delivered")
+            .unwrap();
+        assert!(
+            outbound
+                .codex_stop_hook(CHILD_PID, outbound.uid, &fields(CHILD, "PostToolUse"))
+                .await
+                .is_err(),
+            "{invalid}"
+        );
+        assert!(inbox.turns().has_offered(CHILD));
     }
 
     // A fresh app-server hook can have no thread environment and no resume

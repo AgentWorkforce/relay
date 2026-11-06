@@ -4,7 +4,8 @@
 use super::*;
 
 /// Capture the trusted writer ancestry, rejecting a separately established
-/// caller thread that contradicts the requested target. A missing caller id
+/// caller thread that contradicts the requested target. An inherited ancestor
+/// id needs an existing held-rollout parent-chain proof; a missing caller id
 /// remains eligible for the independent held-rollout/active-turn proof.
 fn writer_chain(
     table: &dyn ProcessTable,
@@ -12,11 +13,6 @@ fn writer_chain(
     uid: u32,
     thread: &str,
 ) -> Option<Vec<ProcessInfo>> {
-    if codex_caller_thread(table, pid, uid)
-        .is_some_and(|caller| !caller.eq_ignore_ascii_case(thread))
-    {
-        return None;
-    }
     let mut chain = Vec::new();
     let mut current = pid;
     for _ in 0..MAX_ANCESTRY {
@@ -29,7 +25,14 @@ fn writer_chain(
             .executable(current)
             .is_some_and(|exe| table.is_trusted_codex(&exe))
         {
-            return has_codex_writer_for_caller(table, pid, uid, thread).then_some(chain);
+            let caller_agrees = codex_caller_thread(table, pid, uid).is_none_or(|caller| {
+                caller.eq_ignore_ascii_case(thread)
+                    || held_descendant_of(table, current, thread, &caller)
+            });
+            return (caller_agrees
+                && has_codex_writer_for_caller(table, pid, uid, thread)
+                && unchanged(table, &chain))
+            .then_some(chain);
         }
         current = process.parent;
     }
@@ -66,6 +69,42 @@ fn holds_rollout(table: &dyn ProcessTable, writer: i32, path: &Path, birth: i128
     table.opened_files(writer).iter().any(|file| {
         file.birth_ns == Some(birth) && file.path.canonicalize().ok().as_deref() == Some(path)
     })
+}
+
+/// Verify that a captured held file still names the same live rollout.
+fn held_file_matches(table: &dyn ProcessTable, writer: i32, file: &OpenedFile) -> bool {
+    let Some(birth) = file.birth_ns else {
+        return false;
+    };
+    let Some(path) = file.path.canonicalize().ok() else {
+        return false;
+    };
+    file_birth_ns(&file.path) == Some(birth) && holds_rollout(table, writer, &path, birth)
+}
+
+/// An inherited ancestor id may name a descendant hook only when the existing
+/// parser proves every parent link inside this writer's held thread locks.
+/// Never allow the reverse direction, unrelated threads or unheld/stale files.
+fn held_descendant_of(table: &dyn ProcessTable, writer: i32, thread: &str, ancestor: &str) -> bool {
+    let locked = codex_locked_threads(table, writer);
+    let thread = thread.to_lowercase();
+    let ancestor = ancestor.to_lowercase();
+    if !locked.contains(&thread) || !locked.contains(&ancestor) {
+        return false;
+    }
+    let files: Vec<OpenedFile> = table
+        .opened_files(writer)
+        .into_iter()
+        .filter(|file| rollout_thread_of_path(&file.path).is_some_and(|id| locked.contains(&id)))
+        .filter(|file| held_file_matches(table, writer, file))
+        .collect();
+    let paths: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
+    let proofs = open_rollout_proofs(&paths);
+    subagent_chain_reaches(&thread, &ancestor, &locked, &proofs)
+        && proofs.contains_key(&ancestor)
+        && files
+            .iter()
+            .all(|file| held_file_matches(table, writer, file))
 }
 
 /// Read only a locally resolved rollout, while the same trusted writer holds
