@@ -393,6 +393,40 @@ fn missed_start_is_recovered_by_a_verified_idle_stop() {
     );
     assert!(session(&config, &table, 501, sid).is_some());
 }
+
+#[test]
+fn a_stale_runtime_record_is_recovered_only_with_full_native_proof() {
+    for old_pid in [102, 999] {
+        let (_home, config, table, _) = proof::tests::fixture();
+        CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into())
+            .set_enabled(true)
+            .unwrap();
+        named_hook(&table, "stop");
+        let sid = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
+        config.prepare().unwrap();
+        let path = config.state().join(format!("{sid}.json"));
+        let stale = json!({"pid":old_pid,"start":1,"title":"Earlier runtime","cwd":null});
+        std::fs::write(&path, serde_json::to_vec(&stale).unwrap()).unwrap();
+        let payload = json!({"sessionId":sid,"relayEvent":"stop","stopReason":"end_turn"});
+        assert!(session(&config, &table, 501, sid).is_none());
+
+        let trusted = table.trusted_vscode.lock().unwrap().clone();
+        table.trusted_vscode.lock().unwrap().clear();
+        assert!(hook_answer(&config, &table, 501, 103, &payload).is_none());
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path).unwrap()).unwrap(),
+            stale,
+            "unverified recovery must not replace the previous record"
+        );
+        *table.trusted_vscode.lock().unwrap() = trusted;
+        assert_eq!(
+            hook_answer(&config, &table, 501, 103, &payload),
+            Some(json!({}))
+        );
+        assert!(session(&config, &table, 501, sid).is_some());
+    }
+}
+
 #[test]
 fn relative_helpers_are_rejected_before_writing_hooks() {
     let (_home, config, _table, _) = proof::tests::fixture();

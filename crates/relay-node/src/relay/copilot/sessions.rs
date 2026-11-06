@@ -150,13 +150,13 @@ pub fn hook_answer(
     // A previously verified runtime's incarnation is enough to stop orphaned
     // empty polls. A descriptor/signature scan still precedes every data claim.
     if idle_stop(config, payload, sid, event) {
-        if let Some(record) = read(config, sid).ok()? {
-            return (record.pid == runtime.pid
-                && record.start == runtime.start
-                && table.process(pid) == Some(hook))
-            .then(|| json!({}));
+        if read(config, sid)
+            .ok()?
+            .is_some_and(|record| record.pid == runtime.pid && record.start == runtime.start)
+        {
+            return (table.process(pid) == Some(hook)).then(|| json!({}));
         }
-        // Recover a missed SessionStart once, with full native proof below.
+        // Recover a missed SessionStart or stale incarnation with full native proof below.
     }
     if !proof::hook_holds(config, table, pid, uid, sid)
         || table.process(pid) != Some(hook)
