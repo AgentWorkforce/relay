@@ -231,11 +231,27 @@ fn codex_hook_upgrade_acknowledgment_is_not_readiness() -> anyhow::Result<()> {
 
 #[test]
 fn codex_hook_upgrade_without_own_shared_daemon_stays_functional() -> anyhow::Result<()> {
-    for mode in ["none", "stdio", "other_home", "other_user", "untrusted"] {
+    for mode in [
+        "none",
+        "stdio",
+        "other_home",
+        "other_user",
+        "untrusted",
+        "zombie",
+    ] {
         let f = fixture(true)?;
         match mode {
             "none" => f.table.remove(10),
             "untrusted" => f.table.trusted_codex.lock().unwrap().clear(),
+            "zombie" => {
+                f.table
+                    .processes
+                    .lock()
+                    .unwrap()
+                    .get_mut(&10)
+                    .unwrap()
+                    .zombie = true
+            }
             _ => {
                 let mut processes = f.table.processes.lock().unwrap();
                 let daemon = processes.get_mut(&10).unwrap();
@@ -246,6 +262,9 @@ fn codex_hook_upgrade_without_own_shared_daemon_stays_functional() -> anyhow::Re
                             "CODEX_HOME".into(),
                             f._temp.path().to_string_lossy().into_owned(),
                         );
+                        daemon
+                            .environment
+                            .insert("CODEX_SQLITE_HOME".into(), "/missing/sqlite-home".into());
                     }
                     _ => daemon.uid = UID + 1,
                 }
@@ -286,7 +305,7 @@ fn codex_hook_upgrade_already_trusted_is_not_reloaded() -> anyhow::Result<()> {
 
 #[test]
 fn codex_hook_upgrade_rejects_ambiguous_or_changed_owner() -> anyhow::Result<()> {
-    for mode in ["ambiguous", "unreadable", "changed"] {
+    for mode in ["ambiguous", "unreadable", "changed", "zombie", "sqlite"] {
         let f = fixture(true)?;
         match mode {
             "ambiguous" => {
@@ -297,10 +316,26 @@ fn codex_hook_upgrade_rejects_ambiguous_or_changed_owner() -> anyhow::Result<()>
             "unreadable" => {
                 f.table.unreadable_environment.lock().unwrap().insert(10);
             }
+            "sqlite" => {
+                f.table
+                    .processes
+                    .lock()
+                    .unwrap()
+                    .get_mut(&10)
+                    .unwrap()
+                    .environment
+                    .insert("CODEX_SQLITE_HOME".into(), "/missing/sqlite-home".into());
+            }
             _ => {
                 let table = f.table.clone();
                 *f.runner.on_proxy.lock().unwrap() = Some(Box::new(move || {
-                    table.processes.lock().unwrap().get_mut(&10).unwrap().start += 1;
+                    let mut processes = table.processes.lock().unwrap();
+                    let owner = processes.get_mut(&10).unwrap();
+                    if mode == "zombie" {
+                        owner.zombie = true;
+                    } else {
+                        owner.start += 1;
+                    }
                 }));
             }
         }
@@ -441,6 +476,34 @@ fn codex_hook_upgrade_refreshes_old_loaded_definitions() -> anyhow::Result<()> {
                 .filter(|r| r["method"] == "config/batchWrite")
                 .count(),
             1
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn codex_hook_upgrade_requires_stable_loaded_snapshot() -> anyhow::Result<()> {
+    for initially_ready in [false, true] {
+        let f = fixture(true)?;
+        f.live_trusted.store(initially_ready, Ordering::SeqCst);
+        let seen = f.seen.clone();
+        mutate_response(&f, "thread/loaded/list", move |_, response| {
+            // A second chat appears while the old chat is being inspected.
+            if seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|r| r["params"]["threadId"] == THREAD)
+                .count()
+                >= if initially_ready { 1 } else { 2 }
+            {
+                response["result"]["data"] = json!([THREAD, "newly-loaded-chat"]);
+            }
+        })?;
+        settings(&f)?.refresh();
+        assert!(
+            !f.inbox.is_ready(),
+            "loaded set changed; initially ready: {initially_ready}"
         );
     }
     Ok(())

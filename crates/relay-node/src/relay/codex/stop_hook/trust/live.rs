@@ -70,7 +70,8 @@ pub(in crate::relay::codex::stop_hook) fn refresh_with(
 impl Owner {
     /// A recycled pid or replaced executable is no longer the selected owner.
     fn current(&self, table: &dyn ProcessTable) -> bool {
-        table.process(self.process.pid) == Some(self.process)
+        !table.zombie(self.process.pid)
+            && table.process(self.process.pid) == Some(self.process)
             && table.executable(self.process.pid).as_deref() == Some(&self.executable)
             && table.is_trusted_codex(&self.executable)
             && processes::is_proxied_app_server(table, self.process.pid)
@@ -88,11 +89,11 @@ fn absolute(value: String) -> Result<PathBuf, String> {
 }
 
 /// Use the inspectable kernel environment, retaining Codex's home defaults.
-fn process_homes(
+fn process_home(
     table: &dyn ProcessTable,
     pid: i32,
     default_user_home: Option<&Path>,
-) -> Result<(PathBuf, PathBuf), String> {
+) -> Result<PathBuf, String> {
     if !table.environment_readable(pid) {
         return Err("The running Codex's home cannot be inspected".into());
     }
@@ -110,14 +111,18 @@ fn process_homes(
             absolute(user_home.join(".codex").to_string_lossy().into_owned())?
         }
     };
-    let sqlite = match table
+    Ok(home)
+}
+
+/// Resolve SQLite state only for the matching owner, never an unrelated home.
+fn sqlite_home(table: &dyn ProcessTable, pid: i32, home: &Path) -> Result<PathBuf, String> {
+    match table
         .environment_var(pid, "CODEX_SQLITE_HOME")
         .filter(|v| !v.trim().is_empty())
     {
-        Some(sqlite) => absolute(sqlite)?,
-        None => home.clone(),
-    };
-    Ok((home, sqlite))
+        Some(sqlite) => absolute(sqlite),
+        None => Ok(home.to_path_buf()),
+    }
 }
 
 /// Select one trusted owner for this home; uncertainty is not absence.
@@ -135,21 +140,21 @@ fn owner(
         let Some(process) = table.process(pid).filter(|p| p.uid == uid) else {
             continue;
         };
-        if !processes::is_proxied_app_server(table, pid) {
+        if table.zombie(pid) || !processes::is_proxied_app_server(table, pid) {
             continue;
         }
         let Some(executable) = table.executable(pid).filter(|p| table.is_trusted_codex(p)) else {
             continue;
         };
-        let (home, sqlite_home) = process_homes(table, pid, default_user_home)?;
+        let home = process_home(table, pid, default_user_home)?;
         if home != wanted {
             continue;
         }
         let candidate = Owner {
             process,
             executable,
+            sqlite_home: sqlite_home(table, pid, &home)?,
             home,
-            sqlite_home,
         };
         if !candidate.current(table) {
             return Err("Codex's hook owner changed during discovery".into());

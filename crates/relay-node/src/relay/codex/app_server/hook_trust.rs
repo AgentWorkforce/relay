@@ -37,7 +37,7 @@ pub(crate) fn refresh_hook_trust(
     let loaded = super::mcp_reload::loaded(&mut client, deadline)?;
     let (approved, version) = approved_config(&mut client, home, deadline)?;
     approved_definition(&mut client, &spec, &approved, deadline)?;
-    if verified(&mut client, &loaded, &spec, &approved, deadline)? {
+    if stable_verified(&mut client, &loaded, &spec, &approved, deadline)? {
         return Ok(());
     }
     // Only an actual refresh could migrate unrelated legacy approvals.
@@ -73,7 +73,7 @@ pub(crate) fn refresh_hook_trust(
     if !loaded.is_subset(&after_loaded) {
         return Err(refused("Codex's loaded chats changed during hook refresh"));
     }
-    if !verified(&mut client, &after_loaded, &spec, &approved, deadline)? {
+    if !stable_verified(&mut client, &after_loaded, &spec, &approved, deadline)? {
         return Err(refused(
             "Codex still reports an unready Relay hook after refresh",
         ));
@@ -150,6 +150,23 @@ fn listed_hooks(response: &Value) -> io::Result<&[Value]> {
         .as_array()
         .map(Vec::as_slice)
         .ok_or_else(|| refused("Codex did not report its hook definitions"))
+}
+
+/// A chat arriving during verification requires a new attempt, not readiness.
+fn stable_verified(
+    client: &mut Client<'_>,
+    loaded: &BTreeSet<String>,
+    spec: &HookSpec<'_>,
+    approved: &Value,
+    deadline: Instant,
+) -> io::Result<bool> {
+    let ready = verified(client, loaded, spec, approved, deadline)?;
+    if super::mcp_reload::loaded(client, deadline)? != *loaded {
+        return Err(refused(
+            "Codex's loaded chats changed during hook verification",
+        ));
+    }
+    Ok(ready)
 }
 
 /// Inspect each exact loaded thread on this same owner connection.

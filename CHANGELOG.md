@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Codex hook upgrades refresh the running shared daemon's already-approved hook state before reporting delivery ready.
+- `agent-relay-node` refreshes the running shared daemon's already-approved Codex hooks at startup or when enabling hook delivery.
 - `relay init`'s Codex hooks keep a subagent from receiving its parent chat's pending messages or registration guidance.
 
 ## [17.0.0] - 2026-11-05
