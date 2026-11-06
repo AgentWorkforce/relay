@@ -112,6 +112,7 @@ pub(super) fn preserve_filters(result: &mut super::Store, sources: &[&super::Sto
 mod tests {
     use super::*;
     #[test]
+    /// Round-trip exact filters while preserving the meaning of a legacy omitted field.
     fn event_filters_survive_storage_and_legacy_entries_remain_broad() {
         let mut integration = Integration::new("jira", "/jira/issues/**", "rw_test");
         integration.event_types = Some(vec!["comment.created".into()]);
@@ -128,9 +129,17 @@ mod tests {
             .is_none());
     }
     #[test]
+    /// Cover both merge fast paths, concurrent writes, explicit clearing and removal.
     fn merge_preserves_omitted_filters_but_respects_explicit_empty_and_removal() {
         use super::super::{Registration, SessionKind, Store, Target};
-        let registration:Registration=serde_json::from_value(serde_json::json!({"name":"agent","agentID":"a1","target":serde_json::to_value(Target::new(SessionKind::Codex,"session")).unwrap(),"baseURL":"https://relay.test","registeredAt":"2026-11-05T00:00:00Z"})).unwrap();
+        let registration: Registration = serde_json::from_value(serde_json::json!({
+            "name": "agent",
+            "agentID": "a1",
+            "target": serde_json::to_value(Target::new(SessionKind::Codex,"session")).unwrap(),
+            "baseURL": "https://relay.test",
+            "registeredAt": "2026-11-05T00:00:00Z",
+        }))
+        .unwrap();
         let mut base = Store::default();
         let mut registration = registration;
         let mut integration = Integration::new("jira", "/jira/**", "rw_test");

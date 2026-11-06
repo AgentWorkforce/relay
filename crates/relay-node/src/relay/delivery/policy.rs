@@ -466,6 +466,9 @@ pub fn decide_for_agent(
     )
 }
 /// Preserve channel-post and sender rules while honoring exact provider events.
+/// `explicitly_requested` exempts an event matching a ready exact filter from
+/// integration noise rules. Derive it with `IntegrationEvent::explicitly_requested`;
+/// false keeps generic push/edit suppression on integration channels.
 pub fn decide_for_agent_with_requested(
     delivery: &Delivery,
     agent_name: &str,

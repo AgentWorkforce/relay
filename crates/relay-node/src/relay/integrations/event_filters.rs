@@ -2,7 +2,7 @@
 use crate::relay::protocol::RpcError;
 use serde_json::Value;
 
-/// A legacy server must refuse exact filters before webhook creation.
+/// Make the core refuse filtered creation unless the server advertises support.
 pub(super) fn require_event_filter_support(value: &Value) -> Result<(), RpcError> {
     if value.get("eventTypes") == Some(&Value::Bool(true)) {
         return Ok(());
@@ -55,7 +55,15 @@ pub(crate) fn normalize_event_types(
                 ("sprint_closed", "sprint.closed"),
                 ("sprint_deleted", "sprint.deleted"),
             ];
-            aliases.iter().find(|(alias,canonical)|native==*alias || native==*canonical).map(|(_,canonical)|canonical.to_string()).ok_or_else(||RpcError::invalid_params("Unsupported Jira event_types. Choose a registered issue, comment or sprint lifecycle event."))?
+            aliases
+                .iter()
+                .find(|(alias, canonical)| native == *alias || native == *canonical)
+                .map(|(_, canonical)| canonical.to_string())
+                .ok_or_else(|| {
+                    RpcError::invalid_params(
+                        "Unsupported Jira event_types. Choose a registered issue, comment or sprint lifecycle event.",
+                    )
+                })?
         } else {
             value.clone()
         };
@@ -98,6 +106,7 @@ pub(super) fn require_terminal_event(
 mod tests {
     use super::*;
     #[test]
+    /// Pin native aliases to canonical exact types and reject malformed or broad input.
     fn jira_native_names_are_exact_and_canonical() {
         assert_eq!(
             normalize_event_types(
@@ -123,6 +132,7 @@ mod tests {
         }
     }
     #[test]
+    /// Reject unsupported Jira aliases and require callers to request finite-PR closure explicitly.
     fn jira_aliases_are_explicit_and_filtered_prs_keep_terminal_cleanup() {
         assert_eq!(
             normalize_event_types("jira", &["Comment_Created".into()]).unwrap(),
@@ -156,6 +166,7 @@ mod tests {
         );
     }
     #[test]
+    /// Require advertised support and a complete filter echo instead of silently widening scope.
     fn old_servers_cannot_silently_ignore_filters() {
         let wanted = vec!["comment.created".into()];
         assert!(
@@ -235,6 +246,7 @@ mod http_tests {
     }
 
     #[tokio::test]
+    /// Observe the capability request and exact creation payload over loopback HTTP.
     async fn filtered_creation_preflights_support_and_sends_exact_events() {
         let wanted = vec!["comment.created".to_string()];
         let (base_url, server) = server(vec![
@@ -271,6 +283,7 @@ mod http_tests {
     }
 
     #[tokio::test]
+    /// An unsupported server must receive no creation POST for an exact filter.
     async fn old_server_never_receives_a_filtered_creation_request() {
         let (base_url, server) = server(vec![json!([])]);
         let files = Relayfile {
@@ -292,6 +305,7 @@ mod http_tests {
     }
 
     #[tokio::test]
+    /// Legacy path-only creation omits eventTypes and does not require capabilities.
     async fn path_only_creation_remains_compatible_with_old_servers() {
         let (base_url, server) = server(vec![json!({"subscriptionId":"wh_legacy"})]);
         let files = Relayfile {
@@ -317,6 +331,7 @@ mod http_tests {
         assert!(requests[0]["body"].get("eventTypes").is_none());
     }
     #[tokio::test]
+    /// A failed DELETE must leave the returned subscription ID available to recovery.
     async fn failed_immediate_cleanup_keeps_the_created_id_for_recovery() {
         let (base_url, server) = server_with_status(vec![
             (200, json!({"eventTypes":true})),
@@ -353,6 +368,7 @@ mod http_tests {
     }
 
     #[tokio::test]
+    /// Failure to record an external ID cannot leave the new subscription active.
     async fn a_journal_failure_also_deletes_the_created_subscription() {
         let (base_url, server) = server(vec![
             json!({"subscriptionId":"wh_unsaved"}),
@@ -380,6 +396,7 @@ mod http_tests {
     }
 
     #[tokio::test]
+    /// Unconfirmed external resources are recorded before the immediate deletion attempt.
     async fn rejected_confirmation_is_journaled_then_deleted_immediately() {
         let (base_url, server) = server(vec![
             json!({"eventTypes":true}),

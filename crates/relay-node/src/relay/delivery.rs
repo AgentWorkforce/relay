@@ -42,6 +42,7 @@ mod channel;
 pub mod channel_text;
 pub mod final_answer;
 mod inbox_watch;
+mod integration_routing;
 pub mod policy;
 pub(crate) mod session_text;
 mod stuck;
@@ -64,7 +65,7 @@ use crate::relay::store::{SessionKind, Target};
 use crate::relay::workspace::Secret;
 use cadence::{claim_due, heartbeat_interval, is_due, queue_poll_interval};
 use futures_util::{future::BoxFuture, stream, StreamExt};
-use policy::{decide_for_agent_with_integrations, Attachment, Decision, Delivery};
+use policy::{Attachment, Delivery};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -1131,27 +1132,15 @@ impl Core {
                 .await;
             return;
         }
+        let Some(current) = self
+            .admit_delivery(registration, delivery, &workspace, token)
+            .await
+        else {
+            return;
+        };
+        let registration = &current;
         let webhook_channel = registration.webhook.as_ref().map(|w| w.channel_id.as_str());
         let integration_channel = registration.integration_channel_id.as_deref();
-        let decision = decide_for_agent_with_integrations(
-            delivery,
-            &registration.name,
-            webhook_channel,
-            integration_channel,
-            registration.integrations.as_deref().unwrap_or_default(),
-        );
-        if let Decision::Skip(reason) = decision {
-            let _ = self
-                .relaycast_ack(&workspace, base, token, &delivery.id)
-                .await;
-            self.record(
-                registration,
-                delivery,
-                DeliveryOutcome::Skipped,
-                Some(reason),
-            );
-            return;
-        }
         // The owner's reply to a live app-server request is a protocol
         // answer, not a new user turn (`spawn::drive`).
         if self

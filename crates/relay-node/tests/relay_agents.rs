@@ -4085,6 +4085,126 @@ async fn hello_lists_the_agent_methods_and_topics() {
     h.stop().await;
 }
 
+/// A provider can publish before the final local ready save. Keep that event
+/// queued across the setup barrier, then use the committed result on redrive.
+#[tokio::test]
+async fn integration_events_wait_for_setup_and_redrive_only_after_success() {
+    for (provider, resource, event_type, text, terminal) in [
+        (
+            "jira",
+            "/jira/issues/**",
+            "comment.created",
+            "Jira comment.created\nnew provider comment\nRelayfile path: /jira/issues/KAN-1/comments/9.json",
+            false,
+        ),
+        (
+            "github",
+            "acme/api#1",
+            "pull_request.closed",
+            "GitHub pull_request.closed\nclosed provider pull\nRelayfile path: /github/repos/acme/api/pulls/1__Done/meta.json",
+            true,
+        ),
+    ] {
+        for fail_setup in [false, true] {
+            let h = Harness::signed_in().await;
+            let cloud = h.cloud.clone().unwrap();
+            cloud.answer(
+                "GET",
+                "/workspaces/rw_fake/integrations",
+                Ok(json!({"integrations":[{"provider":provider,"status":"connected"}]})),
+            );
+            cloud.answer("POST", "/workspaces/rw_fake/relayfile/delegated-token", Ok(json!({"relayfileToken":"fixture", "relayfileUrl":h.fake.base_url, "relayfileWorkspaceId":"rw_fake"})));
+            let mut client = h.client().await;
+            h.register(&mut client, "codex", CODEX, Some("codex-api"))
+                .await;
+            let release = h.fake.hold("POST /v1/subscriptions");
+            if fail_setup {
+                h.fake.set_api_error(
+                    "POST /v1/subscriptions",
+                    Some((503, "fixture_setup_failure")),
+                );
+            }
+            let setting_up = {
+                let core = h.core.clone();
+                tokio::spawn(async move {
+                    core.subscribe_integration_events(
+                        "codex-api",
+                        provider,
+                        resource,
+                        &[event_type.into()],
+                    )
+                    .await
+                })
+            };
+            eventually("setup paused after provider webhook creation", || {
+                h.fake.held("POST /v1/subscriptions") > 0
+            })
+            .await;
+            assert_eq!(h.fake.relayfile_subscriptions().len(), 1);
+            let store = h.store();
+            assert_ne!(store["registrations"][0]["integrations"][0]["ready"], true);
+            let channel = store["registrations"][0]["integrationChannelID"]
+                .as_str()
+                .unwrap();
+            h.fake.seed_agent("__relay_webhook__", "service", json!({}));
+            let (event, message) = h.fake.queue("codex-api", "message", Some(channel), "__relay_webhook__", text);
+            let (dm, _) = h.fake.queue(
+                "codex-api",
+                "dm",
+                None,
+                "__relay_webhook__",
+                "independent dm",
+            );
+            let (mention, _) = h.fake.queue(
+                "codex-api",
+                "mention",
+                Some("unrelated-channel"),
+                "__relay_webhook__",
+                "independent mention",
+            );
+            eventually(
+                "DM and unrelated channel admitted while setup is paused",
+                || {
+                    delivered(&h.fake, &dm).as_deref() == Some("acked")
+                        && delivered(&h.fake, &mention).as_deref() == Some("acked")
+                },
+            )
+            .await;
+            assert_ne!(delivered(&h.fake, &event).as_deref(), Some("acked"));
+            assert!(h
+                .injector
+                .injected()
+                .iter()
+                .all(|entry| entry.message_id != message));
+            release.send(true).unwrap();
+            assert_eq!(setting_up.await.unwrap().is_err(), fail_setup);
+            eventually("provider event settled after setup result", || {
+                delivered(&h.fake, &event).as_deref() == Some("acked")
+            })
+            .await;
+            assert_eq!(
+                h.injector
+                    .injected()
+                    .iter()
+                    .any(|entry| entry.message_id == message),
+                !fail_setup
+            );
+            if !terminal && !fail_setup {
+                assert_eq!(h.store()["registrations"][0]["integrations"][0]["eventTypes"], json!([event_type]));
+                let listed = client.ok("agents.list", json!({})).await;
+                assert_eq!(listed["agents"][0]["integrations"][0]["event_types"], json!([event_type]));
+                let (excluded, excluded_message) = h.fake.queue("codex-api", "message", Some(channel), "__relay_webhook__", "Jira comment.updated\nexcluded edit\nRelayfile path: /jira/issues/KAN-1/comments/9.json");
+                eventually("nonmatching event acknowledged without injection", || delivered(&h.fake, &excluded).as_deref() == Some("acked")).await;
+                assert!(h.injector.injected().iter().all(|entry| entry.message_id != excluded_message));
+            }
+            if terminal && !fail_setup {
+                eventually("fresh ready state drives terminal cleanup", || h.store()["registrations"][0].get("integrations").is_none()).await;
+            }
+            h.stop().await;
+        }
+    }
+}
+
 #[tokio::test]
 async fn an_integration_subscribes_and_cleans_up_through_relayfile() {
     let h = Harness::signed_in().await;

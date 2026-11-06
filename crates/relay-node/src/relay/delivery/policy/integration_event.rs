@@ -11,6 +11,7 @@ pub struct IntegrationEvent {
 }
 
 impl IntegrationEvent {
+    /// Read the provider header and final RelayFile path from its canonical message envelope.
     pub fn parse(text: &str) -> IntegrationEvent {
         let lines: Vec<&str> = text.lines().filter(|l| !l.is_empty()).collect();
         let mut head = lines.first().copied().unwrap_or_default().splitn(2, ' ');
@@ -252,6 +253,7 @@ mod tests {
     use super::super::{decide_for_agent_with_requested, Decision, Delivery};
     use super::*;
     #[test]
+    /// Keep local noise exemptions aligned with backend interior and legacy wildcard semantics.
     fn resource_globs_agree_with_backend_segment_and_legacy_prefix_semantics() {
         for (glob, path, expected) in [
             (
@@ -317,6 +319,7 @@ mod tests {
     }
 
     #[test]
+    /// PR title changes and stable references retain exact identity without crossing repositories.
     fn numeric_pull_filters_follow_canonical_titles_and_trusted_stable_references() {
         let mut held = Integration::new("github", "acme/api#42", "rw_test");
         held.path_glob = Some("/github/repos/acme/api/pulls/42/**".into());
@@ -408,6 +411,7 @@ mod tests {
     }
 
     #[test]
+    /// Pending, terminal and mismatched scopes cannot borrow an unrelated ready authorization.
     fn rejected_and_unmatched_events_cannot_enter_the_shared_channel() {
         let mut held = Integration::new("jira", "/jira/issues/**", "rw_test");
         held.path_glob = Some("/jira/issues/**".into());
@@ -479,13 +483,20 @@ mod tests {
         ));
     }
     #[test]
+    /// Only requested noisy events from a matching ready resource are injected.
     fn explicit_push_and_edits_bypass_only_the_matching_ready_filter() {
         for kind in ["push", "issue_comment.edited"] {
             let mut held = Integration::new("github", "acme/api", "rw_test");
             held.ready = Some(true);
             held.path_glob = Some("/github/repos/acme/api/**".into());
             held.event_types = Some(vec![kind.into()]);
-            let mut delivery=Delivery{text:Some(format!("GitHub {kind}\nRelayfile path: /github/repos/acme/api/issues/42/comments/9.json")),channel_id:Some("events".into()),..Delivery::default()};
+            let mut delivery = Delivery {
+                text: Some(format!(
+                    "GitHub {kind}\nRelayfile path: /github/repos/acme/api/issues/42/comments/9.json"
+                )),
+                channel_id: Some("events".into()),
+                ..Delivery::default()
+            };
             let event = IntegrationEvent::parse(delivery.text.as_deref().unwrap());
             assert!(event.explicitly_requested(&[held.clone()], None, None));
             assert!(matches!(

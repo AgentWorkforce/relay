@@ -3,6 +3,7 @@ use super::{invalid_integration, OutboundError, Registration, Setup};
 use crate::relay::delivery::policy::relayfile_glob;
 use serde_json::{json, Map, Value};
 impl Setup {
+    /// Validate session-scoped subscription input and preserve specific filter errors.
     pub(super) async fn integration_request(
         &self,
         request: &Map<String, Value>,
@@ -70,6 +71,7 @@ impl Setup {
     }
 }
 
+/// Treat a ready subscription as idempotent only when resource and exact filters agree.
 pub(super) fn held_subscription_events(
     registration: &Registration,
     provider: &str,

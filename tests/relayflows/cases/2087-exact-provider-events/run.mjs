@@ -42,7 +42,18 @@ try {
   if (!line) throw new Error('Runtime probe produced no observation');
   observation = JSON.parse(line[1]);
   if (observation.retained) {
-    for (const filter of ['event_filters', 'integration_event', 'store::integration']) {
+    // The public Core subscription/drain harness creates real loopback
+    // subscriptions, checks persisted status, and exercises delivery admission.
+    const workflow = cargo(['--test', 'relay_agents', 'integration']);
+    if (!workflow.includes('test integration_events_wait_for_setup_and_redrive_only_after_success ... ok')) {
+      throw new Error('The filtered subscription and delivery workflow did not run');
+    }
+    for (const filter of [
+      'event_filters',
+      'integration_event',
+      'integration_routing',
+      'store::integration',
+    ]) {
       cargo(['--lib', filter]);
     }
   }

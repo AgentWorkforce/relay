@@ -8,6 +8,7 @@ pub(super) struct SubscriptionIntent {
     pub event_types: Vec<String>,
 }
 impl Core {
+    /// Journal each external resource and mark the filter ready only after all setup succeeds.
     pub(super) async fn finish_subscription(
         &self,
         registration: &Registration,

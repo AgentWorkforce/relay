@@ -46,6 +46,7 @@ fn settings_values(settings: Map<String, Value>) -> Result<SettingsValues, RpcEr
     })
 }
 
+/// Keep ordinary unsubscribe resource-only while recovery accepts copied filter metadata.
 async fn unsubscribe(
     core: &Arc<Core>,
     request: IntegrationParams,

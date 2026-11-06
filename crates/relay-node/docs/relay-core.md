@@ -921,5 +921,7 @@ the issue, comment, and sprint lifecycle events registered by `jira-relay`:
 `issue.created/updated/deleted`, `comment.created/updated/deleted`, and
 `sprint.created/updated/started/closed/deleted`. Native underscore names and the
 `jira:` prefix are aliases; other Jira actions fail with a specific validation
-message. An unconfirmed webhook is journaled and deleted immediately; pending
-filtered subscriptions cannot authorize delivery on the shared event channel.
+message. An unconfirmed webhook is journaled and deleted immediately; events
+received during setup stay queued until its result is committed. Failed or
+rejected filtered subscriptions cannot authorize delivery on the shared event
+channel.
