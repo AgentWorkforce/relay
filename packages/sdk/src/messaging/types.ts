@@ -627,10 +627,7 @@ export type RelayPlacementRejectReason =
   | 'unmapped_repo';
 
 export type RelayPlacementReconcileReason =
-  | 'no_eligible_node'
-  | 'target_offline'
-  | 'unmapped_repo'
-  | 'sandbox_policy_mismatch';
+  'no_eligible_node' | 'target_offline' | 'unmapped_repo' | 'sandbox_policy_mismatch';
 
 export interface RelayPlacementReconcileEvent {
   action: 'queued' | 'failed';
@@ -761,9 +758,7 @@ export interface RelayWorkspaceInfo {
  * status).
  */
 export type InboxItemState =
-  | Extract<wire.DeliveryStatus, 'queued' | 'delivered' | 'failed'>
-  | 'deferred'
-  | 'read';
+  Extract<wire.DeliveryStatus, 'queued' | 'delivered' | 'failed'> | 'deferred' | 'read';
 
 export interface InboxItem {
   id: string;

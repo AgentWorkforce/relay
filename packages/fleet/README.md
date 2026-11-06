@@ -59,9 +59,7 @@ export default defineNode({
     'AgentWorkforce/factory': '/srv/repos/factory',
     'AgentWorkforce/relay': '/srv/repos/relay',
   },
-  capabilities: {
-    /* … */
-  },
+  capabilities: {/* … */},
 });
 ```
 
@@ -79,9 +77,7 @@ import { defineNode, serveNode, startServeNode } from '@agent-relay/fleet';
 
 const definition = defineNode({
   name: 'builder',
-  capabilities: {
-    /* … */
-  },
+  capabilities: {/* … */},
 });
 const connection = { url: 'http://127.0.0.1:8787' }; // broker HTTP API base URL (apiKey optional)
 
