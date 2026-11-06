@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Integration cleanup keeps queued provider events subject to subscription filters after the last subscription is removed.
+- `agents.integrations.subscribe` and session socket subscriptions exclude leftover provider events after the last subscription is removed.
 
 ## [17.2.0] - 2026-11-06
 
