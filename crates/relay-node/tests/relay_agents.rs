@@ -4269,6 +4269,124 @@ async fn rejected_integration_events_stay_excluded_after_cleanup_removes_the_fil
     h.stop().await;
 }
 
+/// Cleanup must not turn an old provider queue item into an ordinary channel
+/// batch, including reads started after cleanup. Re-subscribing must rejoin.
+#[tokio::test]
+async fn last_integration_cleanup_keeps_queued_events_excluded_and_resubscribe_rejoins() {
+    let h = Harness::signed_in().await;
+    let cloud = h.cloud.clone().unwrap();
+    cloud.answer(
+        "GET",
+        "/workspaces/rw_fake/integrations",
+        Ok(json!({"integrations":[{"provider":"jira", "status":"connected"}]})),
+    );
+    cloud.answer("POST", "/workspaces/rw_fake/relayfile/delegated-token", Ok(json!({"relayfileToken":"fixture", "relayfileUrl":h.fake.base_url, "relayfileWorkspaceId":"rw_fake"})));
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("codex-api"))
+        .await;
+    let release_reads = h.fake.hold("GET /v1/deliveries");
+    eventually("queue read paused before setup", || {
+        h.fake.held("GET /v1/deliveries") > 0
+    })
+    .await;
+    h.fake.set_api_error(
+        "POST /v1/subscriptions",
+        Some((503, "fixture_setup_failure")),
+    );
+    assert!(h
+        .core
+        .subscribe_integration_events(
+            "codex-api",
+            "jira",
+            "/jira/issues/**",
+            &["comment.created".into()]
+        )
+        .await
+        .is_err());
+    let stored = h.store();
+    let channel = stored["registrations"][0]["integrationChannelID"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let channel_name = stored["registrations"][0]["integrationChannelName"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    h.fake.seed_agent("__relay_webhook__", "service", json!({}));
+    let text = "Jira comment.created\nrejected setup event\nRelayfile path: /jira/issues/KAN-1/comments/9.json";
+    let (excluded, excluded_message) = h.fake.queue(
+        "codex-api",
+        "message",
+        Some(&channel),
+        "__relay_webhook__",
+        text,
+    );
+    h.core
+        .unsubscribe_integration("codex-api", "jira", "/jira/issues/**")
+        .await
+        .unwrap();
+    assert!(h.fake.channel_members(&channel_name).is_empty());
+    release_reads.send(true).unwrap();
+    eventually("in-flight queue event settled after last cleanup", || {
+        delivered(&h.fake, &excluded).as_deref() == Some("acked")
+    })
+    .await;
+    let (late, late_message) = h.fake.queue(
+        "codex-api",
+        "message",
+        Some(&channel),
+        "__relay_webhook__",
+        text,
+    );
+    h.core.request_drain("codex-api");
+    eventually("new queue read settles leftover event", || {
+        delivered(&h.fake, &late).as_deref() == Some("acked")
+    })
+    .await;
+    assert!(
+        h.injector
+            .injected()
+            .iter()
+            .all(|entry| entry.message_id != excluded_message && entry.message_id != late_message),
+        "removed provider events must not enter channel batching"
+    );
+    h.fake.set_api_error("POST /v1/subscriptions", None);
+    h.core
+        .subscribe_integration_events(
+            "codex-api",
+            "jira",
+            "/jira/issues/**",
+            &["comment.created".into()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(h.fake.channel_members(&channel_name), vec!["codex-api"]);
+    assert_eq!(
+        h.fake
+            .calls("POST", "/v1/agents/codex-api/subscription-channel")
+            .len(),
+        2
+    );
+    let (wanted, wanted_message) = h.fake.queue(
+        "codex-api",
+        "message",
+        Some(&channel),
+        "__relay_webhook__",
+        text,
+    );
+    h.core.request_drain("codex-api");
+    eventually("rejoined subscription delivers", || {
+        delivered(&h.fake, &wanted).as_deref() == Some("acked")
+    })
+    .await;
+    assert!(h
+        .injector
+        .injected()
+        .iter()
+        .any(|entry| entry.message_id == wanted_message));
+    h.stop().await;
+}
+
 /// A provider can publish before the final local ready save. Keep that event
 /// queued across the setup barrier, then use the committed result on redrive.
 #[tokio::test]

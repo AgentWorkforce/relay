@@ -754,7 +754,11 @@ impl Core {
             client::leave_channel(base, &token, &channel_name)
                 .await
                 .map_err(|e| relaycast(&e, "Could not leave the integration channel."))?;
-            current.integration_channel_id = None;
+            // Keep the reserved channel identity as a routing tombstone: queue
+            // reads already in flight (and later leftover pages) must still
+            // take integration admission rather than ordinary post batching.
+            // A new subscription always calls subscription_channel again to
+            // verify/rejoin membership before marking its filter ready.
             current.integration_channel_name = Some(channel_name);
             current.integrations = None;
         }

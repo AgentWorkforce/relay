@@ -48,6 +48,7 @@ try {
     const requiredWorkflows = [
       'integration_events_wait_for_setup_and_redrive_only_after_success',
       'rejected_integration_events_stay_excluded_after_cleanup_removes_the_filter',
+      'last_integration_cleanup_keeps_queued_events_excluded_and_resubscribe_rejoins',
       'integration_events_retry_while_another_agents_setup_holds_the_lock',
     ];
     if (

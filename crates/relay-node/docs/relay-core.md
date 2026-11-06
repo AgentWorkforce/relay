@@ -913,7 +913,7 @@ subscription into extra chat turns.
 Filtered GitHub pull-request subscriptions must explicitly include
 `pull_request.closed` so terminal cleanup can finish; incompatible filters fail
 before setup. Recovery through `agents.integrations.clean_up` accepts copied
-`event_types` metadata; ordinary unsubscribe is by provider and resource.
+`event_types` metadata; ordinary unsubscribe is by provider and resource. After the last unsubscribe, the reserved channel identity remains for excluding leftover queued events; a later subscription verifies channel membership again before becoming ready.
 Explicitly requested push/edit events bypass broad-subscription
 noise suppression only for a matching ready resource. Unfiltered subscriptions
 keep the existing noise rules. Jira aliases are case-insensitive and limited to
