@@ -75,12 +75,7 @@ export type CloudRelayfileRepositoryMaterializeOptions = CloudFleetSandboxReques
 };
 
 export type CloudFleetSandboxProviderId =
-  | 'daytona'
-  | 'e2b'
-  | 'vercel'
-  | 'freestyle'
-  | 'agent37'
-  | 'microsandbox';
+  'daytona' | 'e2b' | 'vercel' | 'freestyle' | 'agent37' | 'microsandbox';
 
 /** Safe aggregate provider-capacity detail returned before allocation. */
 export type CloudFleetSandboxCapacityExhaustion = {
@@ -200,9 +195,7 @@ export type EnsureCloudFleetSandboxInput = {
 };
 
 export type CloudFleetSandboxWorkloadProfile =
-  | 'standard'
-  | 'long-running-agent'
-  | 'standard-long-running-agent';
+  'standard' | 'long-running-agent' | 'standard-long-running-agent';
 
 const CLOUD_FLEET_SANDBOX_PROVIDER_IDS: readonly CloudFleetSandboxProviderId[] = [
   'daytona',
@@ -284,9 +277,7 @@ export type CloudFleetSandboxProvisioningTimeout =
     });
 
 export type EnsureCloudFleetSandboxResult =
-  | CloudFleetSandboxReady
-  | CloudFleetSandboxReused
-  | CloudFleetSandboxProvisioningTimeout;
+  CloudFleetSandboxReady | CloudFleetSandboxReused | CloudFleetSandboxProvisioningTimeout;
 
 export type DeleteCloudFleetSandboxInput = {
   cloudWorkspaceId: string;

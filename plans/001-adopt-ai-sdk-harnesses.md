@@ -94,8 +94,7 @@ type ObservabilityFidelity = 'exact' | 'inferred';
 type ObservabilitySource = 'ai-sdk' | 'pty-structured' | 'pty-terminal' | 'broker';
 
 type ObservabilitySupport =
-  | { available: true; fidelities: readonly ObservabilityFidelity[] }
-  | { available: false };
+  { available: true; fidelities: readonly ObservabilityFidelity[] } | { available: false };
 ```
 
 Relaycast publishes `agent.activity.changed` with agent id, current and previous activity, reason, turn id, sequence, timestamp, source, fidelity, and optional tool/approval details. `waiting` always includes a reason such as `tool_approval`, `turn_suspended`, or `external_dependency`.

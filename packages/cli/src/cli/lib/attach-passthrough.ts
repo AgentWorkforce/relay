@@ -233,8 +233,7 @@ function isStringObject(value: unknown): value is Record<string, unknown> {
  *  queue in passthrough session, so those events (which the broker doesn't
  *  emit while the worker is in `auto_inject`) would be `other`. */
 export type PassthroughWsEvent =
-  | { kind: 'worker_stream'; chunk: string; offset?: number }
-  | { kind: 'other' };
+  { kind: 'worker_stream'; chunk: string; offset?: number } | { kind: 'other' };
 
 /**
  * Inspect a single WebSocket frame and classify it relative to the
