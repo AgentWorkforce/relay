@@ -5,10 +5,12 @@
 //! now. Only a registered native spawn may resume an unloaded thread.
 
 mod delivery;
+mod hook_trust;
 mod mcp_reload;
 pub mod recovery;
 mod websocket;
 pub use delivery::{send_if_loaded, send_spawned, send_to_spawned};
+pub(crate) use hook_trust::refresh_hook_trust;
 pub use mcp_reload::{connected_server, refresh_mcp, reload_mcp, McpReloadReport};
 use websocket::control_frame;
 pub use websocket::{frame, upgrade_request, Decoder, Malformed};
@@ -75,6 +77,14 @@ struct ClientState {
 impl<'a> Client<'a> {
     /// Upgrades the proxy to WebSocket and initializes, by `deadline`.
     fn open(stream: &'a mut dyn ProxyStream, deadline: Instant) -> io::Result<Client<'a>> {
+        Self::open_with_experimental(stream, deadline, false)
+    }
+
+    fn open_with_experimental(
+        stream: &'a mut dyn ProxyStream,
+        deadline: Instant,
+        experimental: bool,
+    ) -> io::Result<Client<'a>> {
         stream.write_all(&upgrade_request(&random()?), deadline)?;
         let mut client = Client {
             stream,
@@ -86,12 +96,13 @@ impl<'a> Client<'a> {
         while !client.decoder.is_upgraded() {
             client.read(deadline)?;
         }
-        client.send(
-            &json!({"method": "initialize", "id": 1, "params": {"clientInfo": {
-                "name": "agent-relay-desktop", "title": "Agent Relay", "version": crate::VERSION,
-            }}}),
-            deadline,
-        )?;
+        let mut initialize = json!({"method": "initialize", "id": 1, "params": {"clientInfo": {
+            "name": "agent-relay-desktop", "title": "Agent Relay", "version": crate::VERSION,
+        }}});
+        if experimental {
+            initialize["params"]["capabilities"] = json!({"experimentalApi":true});
+        }
+        client.send(&initialize, deadline)?;
         client.send(&json!({"method": "initialized", "params": {}}), deadline)?;
         Ok(client)
     }

@@ -421,6 +421,27 @@ the bridge socket is for UIs, the relay-send socket for sessions
   `subscribe-channel`;
   `relay::session_cli`), each of which fixes its own method and route, so
   the Codex and Claude rules that allow them reach nothing else.
+- **Codex hook upgrades.** Setup records Codex's hook approval on disk, then
+  reconciles an already-running shared daemon for that exact Codex home. It
+  checks the owner's user, executable, start time and home before connecting
+  with that daemon's own connect-only proxy. A normal empty-edit
+  `config/batchWrite` with `reloadUserConfig: true` and Codex's authoritative
+  config version reloads existing approved state when a loaded chat is stale.
+  Approval of the current disk definition is checked separately, so an old
+  loaded command or hash can be replaced without authorizing a new definition.
+  For a matching shared daemon, live readiness requires enabled, trusted
+  Relay hooks on a stable set of loaded chats; an
+  acknowledgment alone is insufficient, no new trust hashes are authorized,
+  and configuration bytes must remain unchanged. This uses Codex's normal
+  loaded-thread configuration refresh, which can refresh its other already
+  approved runtime settings too. No shared daemon is started just to probe or
+  refresh it. Standalone CLI setup retains disk approval when no matching
+  daemon is running. Its existing ready flag then means disk-approved hook
+  setup, not verified live delivery or a live-chat inspection; ordinary CLI
+  hooks remain available. Private stdio/custom-socket servers are not treated as
+  the shared owner. An ambiguous or unverifiable live owner, different-home
+  response, unavailable status API or failed verification leaves hook
+  delivery unready rather than silently claiming a successful upgrade.
 - **Registration.** Every registration (`agents.register`, auto-activation,
   `POST /register`) reads fleet ownership fresh
   (`SessionDirectory::fleet_owned`) and refuses (`fleet_unavailable`; HTTP 503
