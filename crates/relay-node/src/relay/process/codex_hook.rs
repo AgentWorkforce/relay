@@ -71,40 +71,54 @@ fn holds_rollout(table: &dyn ProcessTable, writer: i32, path: &Path, birth: i128
     })
 }
 
-/// Verify that a captured held file still names the same live rollout.
-fn held_file_matches(table: &dyn ProcessTable, writer: i32, file: &OpenedFile) -> bool {
-    let Some(birth) = file.birth_ns else {
-        return false;
-    };
-    let Some(path) = file.path.canonicalize().ok() else {
-        return false;
-    };
-    file_birth_ns(&file.path) == Some(birth) && holds_rollout(table, writer, &path, birth)
+/// Index birth-validated rollout paths from one kernel open-file snapshot.
+fn held_rollouts(files: &[OpenedFile], locked: &BTreeSet<String>) -> BTreeMap<PathBuf, i128> {
+    files
+        .iter()
+        .filter_map(|file| {
+            let thread = rollout_thread_of_path(&file.path)?;
+            let birth = file.birth_ns?;
+            if !locked.contains(&thread) || file_birth_ns(&file.path) != Some(birth) {
+                return None;
+            }
+            Some((file.path.canonicalize().ok()?, birth))
+        })
+        .collect()
 }
 
 /// An inherited ancestor id may name a descendant hook only when the existing
 /// parser proves every parent link inside this writer's held thread locks.
-/// Never allow the reverse direction, unrelated threads or unheld/stale files.
+/// Use one kernel file snapshot before header reads and one afterward, never
+/// a full OS file scan per rollout. Reverse, unrelated and stale proofs deny.
 fn held_descendant_of(table: &dyn ProcessTable, writer: i32, thread: &str, ancestor: &str) -> bool {
-    let locked = codex_locked_threads(table, writer);
+    let before = table.opened_files(writer);
+    let locked = before
+        .iter()
+        .filter_map(|file| codex_thread_of_lock(&file.path))
+        .collect::<BTreeSet<_>>();
     let thread = thread.to_lowercase();
     let ancestor = ancestor.to_lowercase();
     if !locked.contains(&thread) || !locked.contains(&ancestor) {
         return false;
     }
-    let files: Vec<OpenedFile> = table
-        .opened_files(writer)
-        .into_iter()
-        .filter(|file| rollout_thread_of_path(&file.path).is_some_and(|id| locked.contains(&id)))
-        .filter(|file| held_file_matches(table, writer, file))
-        .collect();
-    let paths: Vec<PathBuf> = files.iter().map(|file| file.path.clone()).collect();
+    let rollouts = held_rollouts(&before, &locked);
+    let paths: Vec<PathBuf> = rollouts.keys().cloned().collect();
     let proofs = open_rollout_proofs(&paths);
-    subagent_chain_reaches(&thread, &ancestor, &locked, &proofs)
-        && proofs.contains_key(&ancestor)
-        && files
+    if !subagent_chain_reaches(&thread, &ancestor, &locked, &proofs)
+        || !proofs.contains_key(&ancestor)
+    {
+        return false;
+    }
+    let after = table.opened_files(writer);
+    let after_locks = after
+        .iter()
+        .filter_map(|file| codex_thread_of_lock(&file.path))
+        .collect::<BTreeSet<_>>();
+    let after_rollouts = held_rollouts(&after, &after_locks);
+    locked.is_subset(&after_locks)
+        && rollouts
             .iter()
-            .all(|file| held_file_matches(table, writer, file))
+            .all(|(path, birth)| after_rollouts.get(path) == Some(birth))
 }
 
 /// Read only a locally resolved rollout, while the same trusted writer holds
@@ -140,3 +154,7 @@ pub(crate) fn with_codex_hook_rollout(
         && has_codex_writer_for_caller(table, pid, uid, thread)
         && unchanged(table, &chain)
 }
+
+#[cfg(test)]
+#[path = "codex_hook/scaling.rs"]
+mod scaling;
