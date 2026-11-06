@@ -2442,3 +2442,26 @@ fn complete_archived_classification_survives_recent_list_trimming_and_store_merg
         "Unchanged archive contents must retain their immutable snapshot across normal saves"
     );
 }
+
+#[test]
+fn copilot_alias_uses_its_owner_binding_and_cannot_borrow_a_replacement() {
+    let mut store = Store::default();
+    let session = Target::new(SessionKind::Copilot, THREAD);
+    let owner = aliased("copilot-owner", "copilot-alias", session.clone());
+    assert!(store.add(owner.clone(), token("at_original")));
+    let (view, _) = store.credential_named("copilot-alias").unwrap();
+    assert_ne!(view.agent_id, owner.agent_id);
+    let routed = crate::relay::copilot::delivery_registration(&store, &view).unwrap();
+    assert_eq!(routed.agent_id, owner.agent_id);
+    assert_eq!(routed.registered_at, owner.registered_at);
+    let mut reused = owner.clone();
+    reused.registered_at = "2026-11-06T01:00:00Z".into();
+    store.update(reused);
+    assert!(
+        crate::relay::copilot::delivery_registration(&store, &owner).is_none(),
+        "the same remote agent ID still needs the same registration epoch"
+    );
+    assert!(store.add(registration("replacement", session), token("at_replaced")));
+    assert!(crate::relay::copilot::delivery_registration(&store, &view).is_none());
+    assert!(crate::relay::copilot::delivery_registration(&store, &owner).is_none());
+}

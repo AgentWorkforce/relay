@@ -78,7 +78,9 @@ impl Core {
         };
         let (reply, unsubscribe) = (command(None), command(Some(false)));
         // Only join_relay reads it.
-        let web_address = (kind == SessionKind::ClaudeCloud && socket.is_none()).then(|| {
+        let web_address = (matches!(kind, SessionKind::ClaudeCloud | SessionKind::Copilot)
+            && socket.is_none())
+        .then(|| {
             self.store
                 .read(|store| store.link_address_for(registration, &self.machine_prefix))
         });
@@ -132,7 +134,11 @@ impl Core {
         let link_address = self
             .store
             .read(|store| store.link_address_for(registration, &self.machine_prefix));
-        if registration.target.kind == SessionKind::ClaudeCloud && socket.is_none() {
+        if matches!(
+            registration.target.kind,
+            SessionKind::ClaudeCloud | SessionKind::Copilot
+        ) && socket.is_none()
+        {
             return hosted_mcp::web_reply_hint(
                 access,
                 &recipient,

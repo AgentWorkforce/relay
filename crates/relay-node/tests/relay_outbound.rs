@@ -5220,3 +5220,218 @@ async fn setup_status_answers_with_no_account() {
     assert_eq!(status["cloud_identity_sync"], Value::Null, "{status}");
     h.stop().await;
 }
+
+#[tokio::test]
+async fn copilot_verified_hook_gets_late_identity_once_and_only_core_registration_binding() {
+    let h = Harness::start().await;
+    h.core.rediscover_workspace();
+    let sid = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
+    let chat = session(SessionKind::Copilot, sid, "/fixture/copilot-vscode");
+    h.sessions.0.lock().unwrap().push(chat.clone());
+    h.sessions.call_from(4500, chat.clone());
+    let mut body = json!({"sessionId":sid,"relayEvent":"start","relayBinding":"forged"});
+    assert_eq!(
+        h.call(4500, "POST", "/copilot/hook", body.clone())
+            .await
+            .unwrap(),
+        json!({})
+    );
+    assert!(h.sessions.9.lock().unwrap().last().unwrap()["relayBinding"].is_null());
+    assert_eq!(
+        code(h.call(OUTSIDE, "POST", "/copilot/hook", body.clone()).await).0,
+        403
+    );
+    assert_eq!(
+        code(
+            h.call_as(4500, h.me + 1, "POST", "/copilot/hook", body.clone())
+                .await
+        )
+        .0,
+        403
+    );
+    h.core
+        .register_session(&chat, Some("copilot-proof"), None, false)
+        .await
+        .unwrap();
+    // An identity preamble must not end the idle stop wait.
+    body["relayEvent"] = json!("stop");
+    body["stopReason"] = json!("end_turn");
+    assert_eq!(
+        h.call(4500, "POST", "/copilot/hook", body.clone())
+            .await
+            .unwrap(),
+        json!({})
+    );
+    body["relayEvent"] = json!("tool");
+    let answer = h
+        .call(4500, "POST", "/copilot/hook", body.clone())
+        .await
+        .unwrap();
+    let context = answer["additionalContext"].as_str().unwrap();
+    assert!(context.contains("copilot-proof@"));
+    assert!(context.contains("join_relay"));
+    let expected = h.core.store.read(|s| {
+        let r = s.registration_for(&chat.target).unwrap();
+        format!("{}:{}", r.agent_id, r.registered_at)
+    });
+    assert_eq!(
+        h.sessions.9.lock().unwrap().last().unwrap()["relayBinding"],
+        expected
+    );
+    h.sessions.10.lock().unwrap().insert((
+        "69e50b90-b873-4de0-a36d-c9152a45e772".into(),
+        context.trim_end().to_owned(),
+    ));
+    let retry = h
+        .call(4500, "POST", "/copilot/hook", body.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        retry["additionalContext"], answer["additionalContext"],
+        "lost context is retried"
+    );
+    h.sessions
+        .10
+        .lock()
+        .unwrap()
+        .insert((sid.into(), context.trim_end().to_owned()));
+    assert_eq!(
+        h.call(4500, "POST", "/copilot/hook", body.clone())
+            .await
+            .unwrap(),
+        json!({})
+    );
+    // A newly verified start must re-send identity for a resumed chat/runtime.
+    h.sessions.10.lock().unwrap().clear();
+    body["relayEvent"] = json!("start");
+    assert!(h
+        .call(4500, "POST", "/copilot/hook", body.clone())
+        .await
+        .unwrap()["additionalContext"]
+        .as_str()
+        .unwrap()
+        .contains("join_relay"));
+    body["relayEvent"] = json!("invalid");
+    assert_eq!(
+        code(h.call(4500, "POST", "/copilot/hook", body.clone()).await).0,
+        403
+    );
+    body["relayEvent"] = json!("tool");
+    h.core
+        .store
+        .update(|store| {
+            let mut registration = store.registration_for(&chat.target).unwrap().clone();
+            registration.alias = Some(agent_relay_node::relay::store::AgentAlias {
+                name: "copilot-renamed".into(),
+                agent_id: "renamed-agent".into(),
+                token: agent_relay_node::relay::workspace::Secret::new("test-alias-token"),
+                registered_at: registration.registered_at.clone(),
+            });
+            store.update(registration);
+        })
+        .unwrap();
+    let link = h.core.store.read(|s| {
+        s.registration_for(&chat.target)
+            .unwrap()
+            .link_address(&h.core.machine_prefix)
+    });
+    let context = h
+        .call(4500, "POST", "/copilot/hook", body.clone())
+        .await
+        .unwrap();
+    let context = context["additionalContext"].as_str().unwrap();
+    assert!(context.contains("@copilot-renamed"));
+    assert!(context.contains(&format!("desktop_address=\"{link}\"")));
+    h.core
+        .store
+        .update(|store| {
+            let mut registration = store.registration_for(&chat.target).unwrap().clone();
+            registration.workspace_key = Some(agent_relay_node::relay::workspace::Secret::new(
+                "rk_other_workspace",
+            ));
+            store.update(registration);
+        })
+        .unwrap();
+    let response = h.call(4500, "POST", "/copilot/hook", body).await.unwrap();
+    assert_eq!(
+        response,
+        json!({}),
+        "another workspace gets no identity or offers"
+    );
+    assert!(h.sessions.9.lock().unwrap().last().unwrap()["relayBinding"].is_null());
+    h.stop().await;
+}
+
+#[tokio::test]
+async fn copilot_claimed_message_survives_rename_and_same_workspace_replacement() {
+    for replace in [false, true] {
+        let h = Harness::start().await;
+        h.core.rediscover_workspace();
+        let sid = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
+        let chat = session(SessionKind::Copilot, sid, "/fixture/copilot-vscode");
+        h.sessions.0.lock().unwrap().push(chat.clone());
+        h.sessions.call_from(4500, chat.clone());
+        h.core
+            .register_session(&chat, Some("copilot-proof"), None, false)
+            .await
+            .unwrap();
+        let claimed =
+            json!({"additionalContext":"[via Agent Relay ref abcdef123456]\nClaimed delivery"});
+        *h.sessions.12.lock().unwrap() = claimed.clone();
+        let (entered, receipt_started) = std::sync::mpsc::channel();
+        let (resume, receipt_resume) = std::sync::mpsc::channel();
+        *h.sessions.11.lock().unwrap() = Some(support::bridge::CopilotReceiptGate {
+            entered,
+            resume: receipt_resume,
+        });
+        let body = json!({"sessionId":sid,"relayEvent":"tool"});
+        let change_registration = async {
+            tokio::task::spawn_blocking(move || {
+                receipt_started
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
+            })
+            .await
+            .unwrap();
+            h.core
+                .store
+                .update(|store| {
+                    let mut registration = store.registration_for(&chat.target).unwrap().clone();
+                    if replace {
+                        registration.registered_at = "2026-11-06T01:00:00Z".into();
+                    } else {
+                        registration.alias = Some(agent_relay_node::relay::store::AgentAlias {
+                            name: "renamed-during-receipt".into(),
+                            agent_id: "renamed-agent".into(),
+                            token: Secret::new("test-alias-token"),
+                            registered_at: registration.registered_at.clone(),
+                        });
+                    }
+                    store.update(registration);
+                })
+                .unwrap();
+            resume.send(()).unwrap();
+        };
+        let (response, ()) = tokio::join!(
+            h.call(4500, "POST", "/copilot/hook", body.clone()),
+            change_registration
+        );
+        assert_eq!(
+            response.unwrap(),
+            claimed,
+            "an already-claimed answer is preserved"
+        );
+
+        // The stale identity was not cached or appended. A later callback
+        // supplies the identity now registered for this same native chat.
+        *h.sessions.12.lock().unwrap() = Value::Null;
+        let next = h.call(4500, "POST", "/copilot/hook", body).await.unwrap();
+        let context = next["additionalContext"].as_str().unwrap();
+        assert!(context.contains(if replace {
+            "@copilot-proof"
+        } else {
+            "@renamed-during-receipt"
+        }));
+        h.stop().await;
+    }
+}

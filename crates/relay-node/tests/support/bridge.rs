@@ -11,7 +11,7 @@ use agent_relay_node::relay::managed_sessions::ManagedAuthority;
 use agent_relay_node::relay::sessions::{
     CallerMiss, DiscoveredSession, SessionDirectory, UnreadableSessionFile,
 };
-use agent_relay_node::relay::store::Target;
+use agent_relay_node::relay::store::{SessionKind, Target};
 use agent_relay_node::relay::transport::{CoreReadHalf, CoreStream, CoreWriteHalf};
 use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
@@ -117,7 +117,20 @@ pub struct FakeSessions(
     /// Sessions the per-session activation check (`auto_activates`) admits,
     /// when they are live and in a known folder.
     pub Mutex<HashSet<Target>>,
+    /// Inputs accepted by the fake kernel-authenticated Copilot hook.
+    pub Mutex<Vec<Value>>,
+    /// Identity contexts the pretend native runtime acknowledged.
+    pub Mutex<HashSet<(String, String)>>,
+    /// Pauses a native receipt lookup after the hook has returned its claim.
+    pub Mutex<Option<CopilotReceiptGate>>,
+    /// The native hook's already-claimed message, when a fixture supplies one.
+    pub Mutex<Value>,
 );
+
+pub struct CopilotReceiptGate {
+    pub entered: std::sync::mpsc::Sender<()>,
+    pub resume: std::sync::mpsc::Receiver<()>,
+}
 
 impl Default for FakeSessions {
     fn default() -> FakeSessions {
@@ -131,6 +144,10 @@ impl FakeSessions {
             Mutex::new(sessions),
             Mutex::default(),
             Mutex::new(Ok(Vec::new())),
+            Mutex::default(),
+            Mutex::default(),
+            Mutex::default(),
+            Mutex::default(),
             Mutex::default(),
             Mutex::default(),
             Mutex::default(),
@@ -158,6 +175,35 @@ impl FakeSessions {
 }
 
 impl SessionDirectory for FakeSessions {
+    fn copilot_context_accepted(&self, sid: &str, context: &str) -> bool {
+        let gate = self.11.lock().unwrap().take();
+        if let Some(gate) = gate {
+            gate.entered.send(()).unwrap();
+            gate.resume.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        self.10
+            .lock()
+            .unwrap()
+            .contains(&(sid.into(), context.into()))
+    }
+
+    fn copilot_hook(&self, pid: i32, input: &Value) -> Option<Value> {
+        let caller = self.1.lock().unwrap().get(&pid)?.clone();
+        if caller.target.kind != SessionKind::Copilot
+            || input["sessionId"] != caller.target.id
+            || !agent_relay_node::relay::store::is_uuid(&caller.target.id)
+            || !matches!(
+                input["relayEvent"].as_str(),
+                Some("start" | "before" | "tool" | "stop")
+            )
+        {
+            return None;
+        }
+        self.9.lock().unwrap().push(input.clone());
+        let answer = self.12.lock().unwrap().clone();
+        Some(if answer.is_null() { json!({}) } else { answer })
+    }
+
     fn sessions(&self) -> Vec<DiscoveredSession> {
         let delay = *self.5.lock().unwrap();
         if !delay.is_zero() {

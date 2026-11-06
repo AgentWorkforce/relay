@@ -1,9 +1,10 @@
 //! The session-socket routes Agent Relay's own agent hooks ask: the Codex
-//! stop hook and the Claude Code attestation hook.
+//! stop hook, native Copilot lifecycle hooks and Claude Code attestation hook.
 use super::{payload, Outbound, OutboundError, Purpose, Request};
 use serde_json::Value;
 
 mod codex_stop;
+mod copilot;
 
 impl Outbound {
     pub(super) async fn hook_route(
@@ -25,6 +26,9 @@ impl Outbound {
             ));
         }
         let fields = payload(request, Purpose::Json)?;
+        if request.path == "/copilot/hook" {
+            return self.copilot_hook(pid, uid, &fields).await;
+        }
         self.codex_stop_hook(pid, uid, &fields).await
     }
 }

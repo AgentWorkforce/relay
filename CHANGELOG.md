@@ -5,7 +5,12 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased - Minor]
+
+### Added
+
+- `agent-relay-node` can deliver messages to registered VS Code Copilot chats on macOS and resume the same chat while it waits.
+- Copilot messages with uncertain delivery stay pending confirmation and are never blindly submitted again.
 
 ## [17.0.0] - 2026-11-05
 
