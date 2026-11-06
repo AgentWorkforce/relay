@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Copilot hooks forward calls from the managed `agentrelay` MCP server to Desktop for chat identity verification, while retaining legacy server-name compatibility.
+- `agent-relay file` accepts private JSON integration metadata files on Unix.
+- `agent-relay flows` reports GitLab listener configuration and ingress refusals precisely.
 
 ## [17.1.0] - 2026-11-06
 
