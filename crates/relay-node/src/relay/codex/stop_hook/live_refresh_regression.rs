@@ -19,13 +19,38 @@ const COMMAND: &str = "'/test/agent-relay-node' codex-stop-hook";
 struct Runner {
     stream: Mutex<Option<FakeAppServer>>,
     proxies: AtomicUsize,
+    expected_executable: PathBuf,
+    expected_home: PathBuf,
+    on_proxy: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 impl CodexRunner for Runner {
     fn run(&self, _: &Path, _: &[String], _: Duration) -> RunOutcome {
         RunOutcome::NotStarted("No daemon or CLI may be started in this test".into())
     }
     fn proxy(&self, _: &Path) -> std::io::Result<Box<dyn ProxyStream>> {
+        Err(std::io::Error::other("unscoped proxy is forbidden"))
+    }
+    fn proxy_in_home(
+        &self,
+        executable: &Path,
+        home: &Path,
+        sqlite: &Path,
+    ) -> std::io::Result<Box<dyn ProxyStream>> {
+        if executable != self.expected_executable
+            || home != self.expected_home
+            || sqlite != self.expected_home
+        {
+            return Err(std::io::Error::other("wrong executable or home"));
+        }
         self.proxies.fetch_add(1, Ordering::Relaxed);
+        if let Some(change) = self
+            .on_proxy
+            .lock()
+            .map_err(|_| std::io::Error::other("fixture poisoned"))?
+            .take()
+        {
+            change();
+        }
         self.stream
             .lock()
             .map_err(|_| std::io::Error::other("fixture poisoned"))?
@@ -114,7 +139,7 @@ fn fixture(refresh_works: bool) -> anyhow::Result<Fixture> {
             parent: 1,
             uid: UID,
             start: 10,
-            executable: Some(executable),
+            executable: Some(executable.clone()),
             arguments: vec![
                 "codex".into(),
                 "app-server".into(),
@@ -127,12 +152,15 @@ fn fixture(refresh_works: bool) -> anyhow::Result<Fixture> {
     );
     Ok(Fixture {
         _temp: temp,
-        home,
+        home: home.clone(),
         table,
         inbox: Arc::new(StopHookInbox::default()),
         runner: Arc::new(Runner {
             stream: Mutex::new(Some(server)),
             proxies: AtomicUsize::new(0),
+            expected_executable: executable,
+            expected_home: home.canonicalize()?,
+            on_proxy: Mutex::new(None),
         }),
         live_trusted,
         seen,
@@ -140,9 +168,13 @@ fn fixture(refresh_works: bool) -> anyhow::Result<Fixture> {
 }
 
 fn settings(f: &Fixture) -> anyhow::Result<CodexStopHookSettings> {
-    let mut settings =
-        CodexStopHookSettings::new(f.home.clone(), COMMAND.into(), None, f.inbox.clone())
-            .with_trust(|_, _| Ok(()));
+    let mut settings = CodexStopHookSettings::new(
+        f.home.clone(),
+        COMMAND.into(),
+        Some("/old-path-cli/codex".into()),
+        f.inbox.clone(),
+    )
+    .with_trust(|_, _| Ok(()));
     // BEGIN_LIVE_RUNTIME_CONTEXT: the old setup had no live reconciliation stage.
     let table = f.table.clone();
     let runner = f.runner.clone();
@@ -166,11 +198,11 @@ fn codex_hook_upgrade_reconciles_loaded_approved_snapshot() -> anyhow::Result<()
     let settings = settings(&f)?;
     let before = std::fs::read(f.home.join("config.toml"))?;
     settings.refresh();
+    assert!(f.inbox.is_ready(), "disk approval did not complete");
     assert!(
         f.live_trusted.load(Ordering::SeqCst),
         "approved disk hook left stale on the live daemon"
     );
-    assert!(f.inbox.is_ready());
     assert_eq!(before, std::fs::read(f.home.join("config.toml"))?);
     let seen = f.seen.lock().unwrap();
     assert_eq!(
@@ -220,6 +252,143 @@ fn codex_hook_upgrade_without_own_shared_daemon_stays_functional() -> anyhow::Re
         settings(&f)?.refresh();
         assert!(f.inbox.is_ready(), "{mode}");
         assert_eq!(f.runner.proxies.load(Ordering::Relaxed), 0, "{mode}");
+    }
+    Ok(())
+}
+
+#[test]
+fn codex_hook_upgrade_already_trusted_is_not_reloaded() -> anyhow::Result<()> {
+    let f = fixture(true)?;
+    f.live_trusted.store(true, Ordering::SeqCst);
+    settings(&f)?.refresh();
+    assert!(f.inbox.is_ready());
+    assert!(!f
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|r| r["method"] == "config/batchWrite"));
+    Ok(())
+}
+
+#[test]
+fn codex_hook_upgrade_rejects_ambiguous_or_changed_owner() -> anyhow::Result<()> {
+    for mode in ["ambiguous", "unreadable", "changed"] {
+        let f = fixture(true)?;
+        match mode {
+            "ambiguous" => {
+                let mut process = f.table.processes.lock().unwrap().get(&10).unwrap().clone();
+                process.start = 11;
+                f.table.insert(11, process);
+            }
+            "unreadable" => {
+                f.table.unreadable_environment.lock().unwrap().insert(10);
+            }
+            _ => {
+                let table = f.table.clone();
+                *f.runner.on_proxy.lock().unwrap() = Some(Box::new(move || {
+                    table.processes.lock().unwrap().get_mut(&10).unwrap().start += 1;
+                }));
+            }
+        }
+        settings(&f)?.refresh();
+        assert!(!f.inbox.is_ready(), "{mode}");
+        assert!(f.seen.lock().unwrap().is_empty(), "{mode}");
+    }
+    Ok(())
+}
+
+/// Mutate a scripted provider reply using the production frame decoder.
+fn mutate_response(
+    f: &Fixture,
+    method: &'static str,
+    edit: impl Fn(&mut Value) + Send + 'static,
+) -> anyhow::Result<()> {
+    use crate::relay::codex::app_server::{tests::UPGRADED, Decoder};
+    let mut guard = f
+        .runner
+        .stream
+        .lock()
+        .map_err(|_| anyhow::anyhow!("fixture poisoned"))?;
+    let server = guard
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("missing fixture server"))?;
+    let original = std::mem::replace(&mut server.answer, Box::new(|_| None));
+    server.answer = Box::new(move |request| {
+        let bytes = original(request)?;
+        if request["method"] != method {
+            return Some(bytes);
+        }
+        let mut decoder = Decoder::default();
+        decoder.consume(UPGRADED).ok()?;
+        let payload = decoder.consume(&bytes).ok()?.pop()?;
+        let mut response: Value = serde_json::from_slice(&payload).ok()?;
+        edit(&mut response);
+        Some(server_frame(&response))
+    });
+    Ok(())
+}
+
+#[test]
+fn codex_hook_upgrade_preserves_approval_and_configuration_boundaries() -> anyhow::Result<()> {
+    for mode in [
+        "other_home",
+        "version",
+        "approval",
+        "disabled",
+        "legacy",
+        "rpc_error",
+        "bytes",
+    ] {
+        let f = fixture(true)?;
+        let method = if matches!(mode, "rpc_error" | "bytes") {
+            "config/batchWrite"
+        } else {
+            "config/read"
+        };
+        let key = format!("{}:0", f.home.join("hooks.json").display());
+        let config = f.home.join("config.toml");
+        mutate_response(&f, method, move |response| {
+            if mode == "rpc_error" {
+                response.as_object_mut().unwrap().remove("result");
+                response["error"] = json!({"code":-32000,"message":"private provider detail"});
+                return;
+            }
+            if mode == "bytes" {
+                std::fs::write(&config, "concurrent configuration change\n").unwrap();
+                return;
+            }
+            let layer = &mut response["result"]["layers"][0];
+            match mode {
+                "other_home" => layer["name"]["file"] = json!("/unrelated/config.toml"),
+                "version" => {
+                    layer.as_object_mut().unwrap().remove("version");
+                }
+                "approval" => {
+                    layer["config"]["hooks"]["state"][&key]["trusted_hash"] = json!("unapproved")
+                }
+                "disabled" => layer["config"]["hooks"]["state"][&key]["enabled"] = json!(false),
+                "legacy" => {
+                    layer["config"]["hooks"]["state"]["other-plugin"] =
+                        json!({"trusted_hash":"declaration/content"})
+                }
+                _ => unreachable!("covered fixture mode"),
+            }
+        })?;
+        settings(&f)?.refresh();
+        assert!(!f.inbox.is_ready(), "{mode}");
+        let writes = f
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r["method"] == "config/batchWrite")
+            .count();
+        assert_eq!(
+            writes,
+            usize::from(matches!(mode, "rpc_error" | "bytes")),
+            "{mode}"
+        );
     }
     Ok(())
 }
