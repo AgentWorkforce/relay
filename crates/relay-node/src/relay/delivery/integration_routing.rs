@@ -58,6 +58,46 @@ impl Core {
         Some((current, decision))
     }
 
+    /// Coalesce a whole deferred queue page into one timer for this identity.
+    /// Replacing an identity under the same name can schedule its own retry.
+    fn retry_integration_later(self: &Arc<Self>, registration: &Registration) -> bool {
+        {
+            let Ok(mut state) = self.delivery.lock() else {
+                return false;
+            };
+            if state.integration_retries.get(&registration.name) == Some(&registration.agent_id) {
+                return false;
+            }
+            state
+                .integration_retries
+                .insert(registration.name.clone(), registration.agent_id.clone());
+        }
+        let core = self.clone();
+        let registration = registration.clone();
+        let delay = self.config.delivery_timing.retry_unit;
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            if core.take_integration_retry(&registration) && core.current(&registration) {
+                core.request_drain(&registration.name);
+            }
+        });
+        true
+    }
+
+    /// Clear only this timer's pending flag; an older timer cannot cancel a
+    /// replacement identity's retry after removal or re-registration.
+    fn take_integration_retry(&self, registration: &Registration) -> bool {
+        let Ok(mut state) = self.delivery.lock() else {
+            return false;
+        };
+        let owns =
+            state.integration_retries.get(&registration.name) == Some(&registration.agent_id);
+        if owns {
+            state.integration_retries.remove(&registration.name);
+        }
+        owns
+    }
+
     /// Settle a definite skip, admit an injection, or defer without settlement
     /// while integration setup/cleanup owns the routing state.
     pub(super) async fn admit_delivery(
@@ -71,7 +111,7 @@ impl Core {
         else {
             // A push wake may have been consumed while another agent owns
             // setup. Retry independently of the long live-push safety poll.
-            self.drain_later(registration, 1.0);
+            self.retry_integration_later(registration);
             return None;
         };
         let Decision::Skip(reason) = decision else {
@@ -179,6 +219,21 @@ mod tests {
             .unwrap();
         assert_eq!(decision, Decision::Inject);
         assert_eq!(fresh.integrations.unwrap()[0].ready, Some(true));
+        // A batch shares one retry, and an old timer cannot clear a newer
+        // immutable identity's flag under the same name.
+        assert!(core.retry_integration_later(&old));
+        for _ in 0..20 {
+            assert!(!core.retry_integration_later(&old));
+        }
+        let mut replacement = old.clone();
+        replacement.agent_id = "a2".into();
+        assert!(core.retry_integration_later(&replacement));
+        assert!(!core.take_integration_retry(&old));
+        assert!(core.take_integration_retry(&replacement));
+        assert!(!core.take_integration_retry(&replacement));
+        assert!(core.retry_integration_later(&replacement));
+        core.forget_agent(&replacement.name);
+        assert!(!core.take_integration_retry(&replacement));
         current.integration_channel_id = None;
         current.integrations = None;
         core.store.update(|store| store.update(current)).unwrap();

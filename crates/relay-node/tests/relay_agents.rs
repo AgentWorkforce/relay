@@ -4154,13 +4154,9 @@ async fn integration_events_retry_while_another_agents_setup_holds_the_lock() {
     })
     .await;
     h.fake.seed_agent("__relay_webhook__", "service", json!({}));
-    let (event, _) = h.fake.queue(
-        "ready-agent",
-        "message",
-        Some(channel),
-        "__relay_webhook__",
-        "Jira comment.created\nRelayfile path: /jira/issues/KAN-1/comments/9.json",
-    );
+    let events: Vec<_> = (0..12).map(|index| {
+        h.fake.queue("ready-agent", "message", Some(channel), "__relay_webhook__", &format!("Jira comment.created\ncomment {index}\nRelayfile path: /jira/issues/KAN-1/comments/{index}.json")).0
+    }).collect();
     let authorization = format!("Bearer {}", h.fake.agent("ready-agent").unwrap().token);
     let reads = || {
         h.fake
@@ -4175,11 +4171,15 @@ async fn integration_events_retry_while_another_agents_setup_holds_the_lock() {
         reads() > before + 1
     })
     .await;
-    assert_ne!(delivered(&h.fake, &event).as_deref(), Some("acked"));
+    assert!(events
+        .iter()
+        .all(|event| delivered(&h.fake, event).as_deref() != Some("acked")));
     release.send(true).unwrap();
     assert!(setting_up.await.unwrap().is_ok());
     eventually("deferred ready agent delivers without a new wake", || {
-        delivered(&h.fake, &event).as_deref() == Some("acked")
+        events
+            .iter()
+            .all(|event| delivered(&h.fake, event).as_deref() == Some("acked"))
     })
     .await;
     h.stop().await;
