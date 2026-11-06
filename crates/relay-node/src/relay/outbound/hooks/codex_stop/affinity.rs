@@ -282,6 +282,14 @@ async fn consuming_hook_thread_affinity_preserves_registration_guidance() {
         .is_err());
     assert!(inbox.needs_registration_guidance(PARENT));
     for (pid, thread) in [(PARENT_PID, PARENT), (CHILD_PID, CHILD)] {
+        table
+            .processes
+            .lock()
+            .unwrap()
+            .get_mut(&pid)
+            .unwrap()
+            .environment
+            .insert("CODEX_THREAD_ID".into(), thread.into());
         assert!(outbound
             .codex_stop_hook(pid, outbound.uid, &fields(thread, "SessionStart"))
             .await
