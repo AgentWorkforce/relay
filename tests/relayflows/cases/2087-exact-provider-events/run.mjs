@@ -27,7 +27,7 @@ function cargo(args) {
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
   process.stdout.write(output);
   if (result.error) throw result.error;
-  if (result.status !== 0 || !/test result: ok\. [1-9]\d* passed/.test(output)) {
+  if (result.status !== 0 || !/test result:\s*ok\.\s+[1-9]\d*\s+passed/.test(output)) {
     throw new Error(`Runtime probe failed (${result.status})`);
   }
   return output;
@@ -48,8 +48,13 @@ try {
     const requiredWorkflows = [
       'integration_events_wait_for_setup_and_redrive_only_after_success',
       'rejected_integration_events_stay_excluded_after_cleanup_removes_the_filter',
+      'integration_events_retry_while_another_agents_setup_holds_the_lock',
     ];
-    if (requiredWorkflows.some((name) => !workflow.includes(`test ${name} ... ok`))) {
+    if (
+      requiredWorkflows.some(
+        (name) => !new RegExp(String.raw`\btest\s+(?:\w+::)*${name}\s*\.{3}\s*ok\b`).test(workflow)
+      )
+    ) {
       throw new Error('The filtered subscription and delivery workflows did not run');
     }
     for (const filter of [

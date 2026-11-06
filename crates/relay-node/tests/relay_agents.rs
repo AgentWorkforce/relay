@@ -4085,6 +4085,106 @@ async fn hello_lists_the_agent_methods_and_topics() {
     h.stop().await;
 }
 
+/// A global setup mutation must not strand another agent's consumed wake
+/// until a safety poll. Retries run even when all periodic reads are far away.
+#[tokio::test]
+async fn integration_events_retry_while_another_agents_setup_holds_the_lock() {
+    const OTHER_CODEX: &str = "11111111-2222-3333-4444-555555555555";
+    let h = Harness::start_with_timing(
+        |fake| Some(signed_in(fake)),
+        |_, _| {},
+        DeliveryTiming {
+            safety_poll: Duration::from_secs(3600),
+            fast_poll: Duration::from_secs(3600),
+            heartbeat: Duration::from_secs(3600),
+            retry_unit: Duration::from_millis(20),
+            ..DeliveryTiming::default()
+        },
+    )
+    .await;
+    h.sessions
+        .0
+        .lock()
+        .unwrap()
+        .push(session(SessionKind::Codex, OTHER_CODEX, "/Users/me/other"));
+    let cloud = h.cloud.clone().unwrap();
+    cloud.answer(
+        "GET",
+        "/workspaces/rw_fake/integrations",
+        Ok(json!({"integrations":[{"provider":"jira", "status":"connected"}]})),
+    );
+    cloud.answer("POST", "/workspaces/rw_fake/relayfile/delegated-token", Ok(json!({"relayfileToken":"fixture", "relayfileUrl":h.fake.base_url, "relayfileWorkspaceId":"rw_fake"})));
+    let mut client = h.client().await;
+    h.register(&mut client, "codex", CODEX, Some("ready-agent"))
+        .await;
+    h.register(&mut client, "codex", OTHER_CODEX, Some("changing-agent"))
+        .await;
+    h.core
+        .subscribe_integration_events(
+            "ready-agent",
+            "jira",
+            "/jira/issues/**",
+            &["comment.created".into()],
+        )
+        .await
+        .unwrap();
+    let stored = h.store();
+    let registration = stored["registrations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["name"] == "ready-agent")
+        .unwrap();
+    let channel = registration["integrationChannelID"].as_str().unwrap();
+    let release = h.fake.hold("POST /v1/subscriptions");
+    let setting_up = {
+        let core = h.core.clone();
+        tokio::spawn(async move {
+            core.subscribe_integration_events(
+                "changing-agent",
+                "jira",
+                "/jira/projects/**",
+                &["comment.created".into()],
+            )
+            .await
+        })
+    };
+    eventually("other agent setup paused", || {
+        h.fake.held("POST /v1/subscriptions") > 0
+    })
+    .await;
+    h.fake.seed_agent("__relay_webhook__", "service", json!({}));
+    let (event, _) = h.fake.queue(
+        "ready-agent",
+        "message",
+        Some(channel),
+        "__relay_webhook__",
+        "Jira comment.created\nRelayfile path: /jira/issues/KAN-1/comments/9.json",
+    );
+    let authorization = format!("Bearer {}", h.fake.agent("ready-agent").unwrap().token);
+    let reads = || {
+        h.fake
+            .calls("GET", "/v1/deliveries")
+            .iter()
+            .filter(|call| call.authorization.as_deref() == Some(authorization.as_str()))
+            .count()
+    };
+    let before = reads();
+    h.core.request_drain("ready-agent");
+    eventually("deferred agent retries before any safety poll", || {
+        reads() > before + 1
+    })
+    .await;
+    assert_ne!(delivered(&h.fake, &event).as_deref(), Some("acked"));
+    release.send(true).unwrap();
+    assert!(setting_up.await.unwrap().is_ok());
+    eventually("deferred ready agent delivers without a new wake", || {
+        delivered(&h.fake, &event).as_deref() == Some("acked")
+    })
+    .await;
+    h.stop().await;
+}
+
 /// Cleanup can remove a rejected filter before its already-queued events are
 /// read. An unrelated broad subscription must not authorize those leftovers.
 #[tokio::test]

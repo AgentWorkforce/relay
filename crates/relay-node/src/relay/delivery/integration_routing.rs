@@ -1,6 +1,7 @@
 //! Route integration deliveries only after setup or cleanup has settled.
 use super::policy::{decide_for_agent, decide_for_agent_with_integrations, Decision};
 use super::{Core, Delivery, DeliveryOutcome, Registration, Secret, WorkspaceScope};
+use std::sync::Arc;
 
 impl Core {
     /// A busy integration mutation leaves the delivery queued. Re-read under
@@ -60,13 +61,19 @@ impl Core {
     /// Settle a definite skip, admit an injection, or defer without settlement
     /// while integration setup/cleanup owns the routing state.
     pub(super) async fn admit_delivery(
-        &self,
+        self: &Arc<Self>,
         registration: &Registration,
         delivery: &Delivery,
         workspace: &WorkspaceScope,
         token: &Secret,
     ) -> Option<Registration> {
-        let (current, decision) = self.integration_delivery_decision(registration, delivery)?;
+        let Some((current, decision)) = self.integration_delivery_decision(registration, delivery)
+        else {
+            // A push wake may have been consumed while another agent owns
+            // setup. Retry independently of the long live-push safety poll.
+            self.drain_later(registration, 1.0);
+            return None;
+        };
         let Decision::Skip(reason) = decision else {
             return Some(current);
         };
