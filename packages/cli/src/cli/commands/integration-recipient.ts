@@ -157,8 +157,7 @@ export async function resolveSubscriptionAgentChannel(
   );
   if (!response.ok) {
     const detail = (await response.json().catch(() => undefined)) as
-      | { error?: { code?: unknown } }
-      | undefined;
+      { error?: { code?: unknown } } | undefined;
     const code =
       typeof detail?.error?.code === 'string' && /^[a-zA-Z0-9_-]{1,100}$/.test(detail.error.code)
         ? ` ${detail.error.code}`

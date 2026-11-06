@@ -1028,8 +1028,7 @@ async function verifyMetadataLanded(
   }
 
   const record = agents.find((agent) => (agent as { name?: string } | null)?.name === name) as
-    | { metadata?: Record<string, unknown> }
-    | undefined;
+    { metadata?: Record<string, unknown> } | undefined;
 
   if (!record) {
     return {
