@@ -5224,6 +5224,7 @@ async fn setup_status_answers_with_no_account() {
 #[tokio::test]
 async fn copilot_verified_hook_gets_late_identity_once_and_only_core_registration_binding() {
     let h = Harness::start().await;
+    h.core.rediscover_workspace();
     let sid = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
     let chat = session(SessionKind::Copilot, sid, "/fixture/copilot-vscode");
     h.sessions.0.lock().unwrap().push(chat.clone());
@@ -5277,6 +5278,19 @@ async fn copilot_verified_hook_gets_late_identity_once_and_only_core_registratio
         h.sessions.9.lock().unwrap().last().unwrap()["relayBinding"],
         expected
     );
+    let retry = h
+        .call(4500, "POST", "/copilot/hook", body.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        retry["additionalContext"], answer["additionalContext"],
+        "lost context is retried"
+    );
+    h.sessions
+        .10
+        .lock()
+        .unwrap()
+        .insert(context.trim_end().to_owned());
     assert_eq!(
         h.call(4500, "POST", "/copilot/hook", body.clone())
             .await
@@ -5284,6 +5298,7 @@ async fn copilot_verified_hook_gets_late_identity_once_and_only_core_registratio
         json!({})
     );
     // A newly verified start must re-send identity for a resumed chat/runtime.
+    h.sessions.10.lock().unwrap().clear();
     body["relayEvent"] = json!("start");
     assert!(h
         .call(4500, "POST", "/copilot/hook", body.clone())
@@ -5316,9 +5331,29 @@ async fn copilot_verified_hook_gets_late_identity_once_and_only_core_registratio
             .unwrap()
             .link_address(&h.core.machine_prefix)
     });
-    let context = h.call(4500, "POST", "/copilot/hook", body).await.unwrap();
+    let context = h
+        .call(4500, "POST", "/copilot/hook", body.clone())
+        .await
+        .unwrap();
     let context = context["additionalContext"].as_str().unwrap();
     assert!(context.contains("@copilot-renamed"));
     assert!(context.contains(&format!("desktop_address=\"{link}\"")));
+    h.core
+        .store
+        .update(|store| {
+            let mut registration = store.registration_for(&chat.target).unwrap().clone();
+            registration.workspace_key = Some(agent_relay_node::relay::workspace::Secret::new(
+                "rk_other_workspace",
+            ));
+            store.update(registration);
+        })
+        .unwrap();
+    let response = h.call(4500, "POST", "/copilot/hook", body).await.unwrap();
+    assert_eq!(
+        response,
+        json!({}),
+        "another workspace gets no identity or offers"
+    );
+    assert!(h.sessions.9.lock().unwrap().last().unwrap()["relayBinding"].is_null());
     h.stop().await;
 }

@@ -373,3 +373,117 @@ fn hook_metadata_errors_are_not_reported_as_absence() {
     assert!(settings.set_enabled(false).is_err());
     assert!(settings.set_enabled(true).is_err());
 }
+
+#[test]
+fn missed_start_is_recovered_by_a_verified_idle_stop() {
+    let (_home, config, table, _) = proof::tests::fixture();
+    let settings = CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into());
+    settings.set_enabled(true).unwrap();
+    named_hook(&table, "stop");
+    let sid = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
+    assert_eq!(
+        hook_answer(
+            &config,
+            &table,
+            501,
+            103,
+            &json!({"sessionId":sid,"relayEvent":"stop","stopReason":"end_turn"})
+        ),
+        Some(json!({}))
+    );
+    assert!(session(&config, &table, 501, sid).is_some());
+}
+#[test]
+fn relative_helpers_are_rejected_before_writing_hooks() {
+    let (_home, config, _table, _) = proof::tests::fixture();
+    assert!(CopilotSettings::new(&config, "agent-relay-probe".into())
+        .set_enabled(true)
+        .is_err());
+    assert!(!config.hooks_file().exists());
+}
+
+#[test]
+fn a_long_sleep_cannot_expire_a_copilot_submission_claim() {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("claims.json");
+    let clock = Arc::new(AtomicI64::new(1000));
+    let first_clock = clock.clone();
+    let first = TurnInbox::open(path.clone())
+        .retain_claims()
+        .with_clock(move || first_clock.load(Ordering::SeqCst));
+    first.offer("chat", "message", "text").unwrap();
+    first.answer("chat", crate::relay::codex::turn_hook::HookEvent::Stop);
+    clock.store(3 * 24 * 60 * 60 * 1000, Ordering::SeqCst);
+    let reopened = TurnInbox::open(path)
+        .retain_claims()
+        .with_clock(move || clock.load(Ordering::SeqCst));
+    assert!(matches!(
+        reopened.claimed("message"),
+        crate::relay::codex::turn_hook::Claimed::Hook { .. }
+    ));
+}
+
+#[test]
+fn managed_hooks_can_be_repaired_or_removed_after_the_helper_moves() {
+    let (_home, config, _table, _) = proof::tests::fixture();
+    CopilotSettings::new(&config, "/opt/old-agent-relay-probe".into())
+        .set_enabled(true)
+        .unwrap();
+    let current = CopilotSettings::new(&config, "/opt/new-agent-relay-probe".into());
+    assert!(!current.enabled());
+    current.set_enabled(true).unwrap();
+    assert!(current.enabled());
+    let next = CopilotSettings::new(&config, "/opt/another-agent-relay-probe".into());
+    assert!(!next.enabled());
+    next.set_enabled(false).unwrap();
+    assert!(!config.hooks_file().exists());
+}
+#[test]
+fn an_unclaimed_offer_moves_to_the_replacement_binding_atomically() {
+    let (_home, config, table, _) = proof::tests::fixture();
+    CopilotSettings::new(&config, "/opt/agent-relay-desktop-probe".into())
+        .set_enabled(true)
+        .unwrap();
+    named_hook(&table, "start");
+    let sid = "1069773c-0824-4fad-b7f9-d3dc3c4ed148";
+    hook_answer(
+        &config,
+        &table,
+        501,
+        103,
+        &json!({"sessionId":sid,"relayEvent":"start"}),
+    )
+    .unwrap();
+    send(
+        &config,
+        &table,
+        501,
+        sid,
+        "old",
+        "pending-message",
+        "Message",
+    );
+    assert!(config.inbox.has_offered(&format!("{sid}:old")));
+    send(
+        &config,
+        &table,
+        501,
+        sid,
+        "new",
+        "pending-message",
+        "Message",
+    );
+    assert!(!config.inbox.has_offered(&format!("{sid}:old")));
+    assert!(config.inbox.has_offered(&format!("{sid}:new")));
+    named_hook(&table, "stop");
+    let answer = hook_answer(
+        &config,
+        &table,
+        501,
+        103,
+        &json!({"sessionId":sid,"relayEvent":"stop","stopReason":"end_turn","relayBinding":"new"}),
+    )
+    .unwrap();
+    assert_eq!(answer["decision"], "block");
+}

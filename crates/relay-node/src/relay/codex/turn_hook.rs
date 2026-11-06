@@ -110,6 +110,7 @@ pub enum Taken {
 pub struct TurnInbox {
     /// `None` keeps nothing on disk, so nothing is offered.
     path: Option<PathBuf>,
+    permanent_claims: bool,
     offers: Mutex<HashMap<String, Offer>>,
     now_ms: Box<dyn Fn() -> i64 + Send + Sync>,
 }
@@ -118,6 +119,7 @@ impl Default for TurnInbox {
     fn default() -> TurnInbox {
         TurnInbox {
             path: None,
+            permanent_claims: false,
             offers: Mutex::default(),
             now_ms: Box::new(crate::relay::state::now_ms),
         }
@@ -131,6 +133,14 @@ impl TurnInbox {
             path: Some(path),
             ..TurnInbox::default()
         }
+    }
+
+    /// Keep completed/uncertain claims when provider delivery can resume after
+    /// the transport's TTL (for example, after a machine sleeps). Text stays
+    /// transient; only claim identity and status are retained.
+    pub fn retain_claims(mut self) -> Self {
+        self.permanent_claims = true;
+        self
     }
 
     #[cfg(test)]
@@ -192,9 +202,10 @@ impl TurnInbox {
         };
         let now = (self.now_ms)();
         let before = journal.claims.len();
-        journal
-            .claims
-            .retain(|_, claim| now.saturating_sub(claim.at_ms) < LIFETIME_MS);
+        journal.claims.retain(|_, claim| {
+            (self.permanent_claims && claim.route != Route::Offered)
+                || now.saturating_sub(claim.at_ms) < LIFETIME_MS
+        });
         let (result, changed) = change(&mut journal, now);
         if changed || journal.claims.len() != before {
             let bytes = serde_json::to_vec(&journal).map_err(std::io::Error::other)?;
@@ -224,24 +235,29 @@ impl TurnInbox {
     /// Offers `text` to `thread`'s hook, or keeps the offer with its current
     /// text. Only a message no route has claimed, or one already offered.
     pub fn offer(&self, thread: &str, message_id: &str, text: &str) -> std::io::Result<()> {
-        let offered = self.edit(|journal, now| {
-            match journal.claims.get(message_id).map(|claim| claim.route) {
-                Some(Route::Offered) => (true, false),
-                Some(_) => (false, false),
-                None => {
-                    let order = journal.next;
-                    journal.next += 1;
-                    journal.claims.insert(
-                        message_id.to_string(),
-                        Claim {
-                            thread: thread.to_lowercase(),
-                            route: Route::Offered,
-                            at_ms: now,
-                            order,
-                        },
-                    );
-                    (true, true)
+        let offered = self.edit(|journal, now| match journal.claims.get_mut(message_id) {
+            Some(claim) if claim.route == Route::Offered => {
+                let rebound = self.permanent_claims && claim.thread != thread.to_lowercase();
+                if rebound {
+                    claim.thread = thread.to_lowercase();
+                    claim.at_ms = now;
                 }
+                (true, rebound)
+            }
+            Some(_) => (false, false),
+            None => {
+                let order = journal.next;
+                journal.next += 1;
+                journal.claims.insert(
+                    message_id.to_string(),
+                    Claim {
+                        thread: thread.to_lowercase(),
+                        route: Route::Offered,
+                        at_ms: now,
+                        order,
+                    },
+                );
+                (true, true)
             }
         })?;
         if !offered {

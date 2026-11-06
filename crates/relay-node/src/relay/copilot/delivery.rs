@@ -1,52 +1,11 @@
 //! Durable claims reuse the core's running-turn journal. A lost hook response
 //! stays in doubt unless Copilot's own journal records acceptance of its ref.
+use super::receipts::recorded;
 use super::{sessions, CopilotConfig};
 use crate::relay::codex::turn_hook::Claimed;
 use crate::relay::inject::InjectOutcome;
 use crate::relay::process::ProcessTable;
-use serde_json::Value;
-use std::io::{Read, Seek, SeekFrom};
 use std::time::Duration;
-
-fn recorded(config: &CopilotConfig, sid: &str, message_id: &str) -> bool {
-    let Ok(mut file) = std::fs::File::open(config.sessions().join(sid).join("events.jsonl")) else {
-        return false;
-    };
-    let Ok(size) = file.metadata().map(|m| m.len()) else {
-        return false;
-    };
-    let start = size.saturating_sub(8 << 20);
-    if file.seek(SeekFrom::Start(start)).is_err() {
-        return false;
-    }
-    let mut bytes = Vec::new();
-    if file.take(8 << 20).read_to_end(&mut bytes).is_err() {
-        return false;
-    }
-    let marker = format!(
-        "ref {}]",
-        crate::relay::delivery::policy::MessageRef::of(message_id)
-    );
-    bytes
-        .split(|b| *b == b'\n')
-        .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
-        .any(|v| {
-            let data = &v["data"];
-            // A stop hook's returned decision alone does not prove acceptance:
-            // the runtime can refuse more consecutive blocks. Its queued user
-            // message is the proof that this follow-up actually entered chat.
-            (v["type"] == "user.message"
-                && data["content"]
-                    .as_str()
-                    .is_some_and(|s| s.contains(&marker)))
-                || (v["type"] == "hook.end"
-                    && data["hookType"] == "postToolUse"
-                    && data["success"] == true
-                    && data["output"]["additionalContext"]
-                        .as_str()
-                        .is_some_and(|s| s.contains(&marker)))
-        })
-}
 
 pub fn send(
     config: &CopilotConfig,

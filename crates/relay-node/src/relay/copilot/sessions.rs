@@ -15,6 +15,8 @@ struct Record {
     start: u64,
     title: String,
     cwd: Option<String>,
+    #[serde(default)]
+    context_after: u64,
 }
 fn read(config: &CopilotConfig, sid: &str) -> io::Result<Option<Record>> {
     if !is_uuid(sid) {
@@ -27,6 +29,9 @@ fn read(config: &CopilotConfig, sid: &str) -> io::Result<Option<Record>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
+}
+pub(super) fn context_after(config: &CopilotConfig, sid: &str) -> Option<u64> {
+    Some(read(config, sid).ok()??.context_after)
 }
 fn discovered(sid: &str, record: Record) -> DiscoveredSession {
     DiscoveredSession {
@@ -145,11 +150,13 @@ pub fn hook_answer(
     // A previously verified runtime's incarnation is enough to stop orphaned
     // empty polls. A descriptor/signature scan still precedes every data claim.
     if idle_stop(config, payload, sid, event) {
-        let record = read(config, sid).ok()??;
-        return (record.pid == runtime.pid
-            && record.start == runtime.start
-            && table.process(pid) == Some(hook))
-        .then(|| json!({}));
+        if let Some(record) = read(config, sid).ok()? {
+            return (record.pid == runtime.pid
+                && record.start == runtime.start
+                && table.process(pid) == Some(hook))
+            .then(|| json!({}));
+        }
+        // Recover a missed SessionStart once, with full native proof below.
     }
     if !proof::hook_holds(config, table, pid, uid, sid)
         || table.process(pid) != Some(hook)
@@ -207,6 +214,17 @@ fn observe(
     let record = Record {
         pid: runtime.pid,
         start: runtime.start,
+        context_after: if payload["relayEvent"] == "start"
+            || old
+                .as_ref()
+                .is_none_or(|r| r.pid != runtime.pid || r.start != runtime.start)
+        {
+            std::fs::metadata(config.sessions().join(sid).join("events.jsonl"))
+                .map(|m| m.len())
+                .unwrap_or(0)
+        } else {
+            old.as_ref().map_or(0, |r| r.context_after)
+        },
         title: record_title(old.as_ref(), payload),
         cwd: payload["cwd"]
             .as_str()

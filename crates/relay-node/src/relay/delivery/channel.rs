@@ -283,7 +283,12 @@ impl Core {
             .read(|store| crate::relay::copilot::delivery_registration(store, registration))
         else {
             let workspace = self.relaycast_registration_scope(registration, token);
-            let settle = Settle::new(registration, token, &workspace, posts);
+            let settle = Settle {
+                routes: &pin.routes,
+                pin_key: Some(&pin.key),
+                members: &pin.members,
+                ..Settle::new(registration, token, &workspace, posts)
+            };
             self.posts_failed(
                 &settle,
                 "The Copilot registration changed before delivery.".into(),

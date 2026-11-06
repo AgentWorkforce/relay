@@ -12,6 +12,8 @@ impl Outbound {
         if uid != self.uid {
             return Err(OutboundError::not_this_user());
         }
+        let workspace = self.core.workspace();
+        let generation = self.core.plugins.cloud.identity_sync_generation();
         let directory = self.core.plugins.sessions.clone();
         let mut payload = Value::Object(fields.clone());
         // The registration binding is chosen by the core, never by hook input.
@@ -20,10 +22,14 @@ impl Outbound {
             .get("sessionId")
             .and_then(Value::as_str)
             .and_then(|sid| {
-                self.core.workspace()?;
+                let workspace = workspace.as_ref()?;
                 self.core.store.read(|store| {
                     store
                         .registration_for(&Target::new(SessionKind::Copilot, sid))
+                        .filter(|r| {
+                            r.base_url == workspace.base_url
+                                && self.core.key_for(r).as_ref() == Some(&workspace.key)
+                        })
                         .map(|r| format!("{}:{}", r.agent_id, r.registered_at))
                 })
             });
@@ -33,6 +39,11 @@ impl Outbound {
             .ok()
             .flatten()
             .ok_or_else(OutboundError::not_a_session)?;
+        if self.core.workspace() != workspace
+            || self.core.plugins.cloud.identity_sync_generation() != generation
+        {
+            return Err(OutboundError::not_a_session());
+        }
         let Some(sid) = fields.get("sessionId").and_then(Value::as_str) else {
             return Ok(json!({}));
         };
@@ -44,7 +55,15 @@ impl Outbound {
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(sid);
             }
-            Some("tool") => return Ok(self.copilot_identity(&target, answer)),
+            Some("tool") => {
+                let answer = self.copilot_identity(&target, answer).await;
+                if self.core.workspace() != workspace
+                    || self.core.plugins.cloud.identity_sync_generation() != generation
+                {
+                    return Err(OutboundError::not_a_session());
+                }
+                return Ok(answer);
+            }
             _ => return Ok(answer),
         }
         // The same normal auto-activation consent and excluded-directory rules
@@ -72,16 +91,22 @@ impl Outbound {
                 }
             }
         }
-        Ok(self.copilot_identity(&target, answer))
+        let answer = self.copilot_identity(&target, answer).await;
+        if self.core.workspace() != workspace
+            || self.core.plugins.cloud.identity_sync_generation() != generation
+        {
+            return Err(OutboundError::not_a_session());
+        }
+        Ok(answer)
     }
 
     // Registration can finish after SessionStart's bounded wait. The next
     // verified tool hook supplies the identity once it exists, without repeating
     // the preamble on every tool result or releasing a waiting stop hook.
-    fn copilot_identity(&self, target: &Target, mut answer: Value) -> Value {
-        if self.core.workspace().is_none() {
+    async fn copilot_identity(&self, target: &Target, mut answer: Value) -> Value {
+        let Some(workspace) = self.core.workspace() else {
             return answer;
-        }
+        };
         let (identity, active) = self.core.store.read(|store| {
             let active: std::collections::HashSet<_> = store
                 .registrations
@@ -89,36 +114,63 @@ impl Outbound {
                 .filter(|r| r.target.kind == SessionKind::Copilot && r.missing_since.is_none())
                 .map(|r| r.target.id.clone())
                 .collect();
-            let identity = store.registration_for(target).map(|r| {
-                (
-                    r.display_name().to_owned(),
-                    r.current_address(&self.core.machine_prefix),
-                    r.link_address(&self.core.machine_prefix),
-                    format!("{}:{}", r.agent_id, r.registered_at),
-                )
-            });
+            let identity = store
+                .registration_for(target)
+                .filter(|r| {
+                    r.missing_since.is_none()
+                        && r.base_url == workspace.base_url
+                        && self.core.key_for(r).as_ref() == Some(&workspace.key)
+                })
+                .map(|r| {
+                    (
+                        r.display_name().to_owned(),
+                        r.current_address(&self.core.machine_prefix),
+                        r.link_address(&self.core.machine_prefix),
+                        format!("{}:{}", r.agent_id, r.registered_at),
+                    )
+                });
             (identity, active)
         });
         let Some((name, address, link, binding)) = identity else {
             return answer;
         };
         let key = format!("{binding}:{address}:{link}:{name}");
-        let mut seen = self
-            .copilot_identities
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        seen.retain(|sid, _| active.contains(sid));
-        if seen.len() >= 512 && !seen.contains_key(&target.id) {
-            seen.clear();
-        }
-        if seen.get(&target.id) == Some(&key) {
-            return answer;
-        }
-        seen.insert(target.id.clone(), key);
         let context = format!(
             "This Copilot chat is on Agent Relay as @{name}, desktop address {address}. Use the agent-relay MCP tools for messaging. First call join_relay with desktop_address=\"{link}\" and no hosted participant name. Then use send_relay_message and the other Relay tools as this chat. The runtime serves multiple chats: do not borrow another chat's address or use a separate terminal's identity. {}",
             crate::relay::hosted_mcp::NORM
         );
+        let cached = {
+            let mut seen = self
+                .copilot_identities
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            seen.retain(|sid, _| active.contains(sid));
+            if seen.len() >= 512 && !seen.contains_key(&target.id) {
+                seen.clear();
+            }
+            seen.get(&target.id) == Some(&key)
+        };
+        if cached {
+            return answer;
+        }
+        let directory = self.core.plugins.sessions.clone();
+        let sid = target.id.clone();
+        let expected = context.clone();
+        let accepted = tokio::task::spawn_blocking(move || {
+            directory.copilot_context_accepted(&sid, &expected)
+        })
+        .await
+        .unwrap_or(false);
+        if self.core.workspace() != Some(workspace) {
+            return json!({});
+        }
+        if accepted {
+            self.copilot_identities
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(target.id.clone(), key);
+            return answer;
+        }
         let message = answer["additionalContext"].as_str().unwrap_or("");
         answer["additionalContext"] = json!(format!("{context}\n{message}"));
         answer

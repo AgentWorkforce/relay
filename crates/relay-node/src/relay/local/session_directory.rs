@@ -108,6 +108,9 @@ impl LocalSessions {
     fn all(&self) -> Vec<DiscoveredSession> {
         self.collect_partitions(|partition| {
             self.provider_sessions(partition).unwrap_or_else(|| {
+                if partition != SessionPartition::Codex {
+                    return Vec::new();
+                }
                 self.codex_threads
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())

@@ -2,7 +2,7 @@
 use super::{proof, CopilotConfig};
 use serde_json::{json, Value};
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 const OWNER: &str = "agent-relay-desktop";
 const EVENTS: &[(&str, &str)] = &[
     ("sessionStart", "start"),
@@ -16,7 +16,7 @@ pub struct CopilotSettings {
 }
 impl CopilotSettings {
     pub fn new(config: &CopilotConfig, executable: PathBuf) -> Self {
-        config.set_helper(executable.clone());
+        config.set_helper(executable);
         Self {
             config: config.clone(),
         }
@@ -28,13 +28,16 @@ impl CopilotSettings {
         if enabled && !proof::SUPPORTED {
             return Err("Copilot chat delivery is currently available only in VS Code on macOS. Hosted MCP setup is available on this platform.".into());
         }
+        if enabled && !self.config.helper().is_absolute() {
+            return Err("Copilot requires an absolute managed helper path.".into());
+        }
         let path = self.config.hooks_file();
         let exists = match std::fs::symlink_metadata(&path) {
             Ok(_) => true,
             Err(error) if error.kind() == io::ErrorKind::NotFound => false,
             Err(_) => return Err("Could not inspect Copilot hooks.".into()),
         };
-        if exists && !installed_state(&self.config).map_err(|_| "Could not read Copilot hooks.")? {
+        if exists && !owned_state(&self.config).map_err(|_| "Could not read Copilot hooks.")? {
             return Err("Copilot's Agent Relay hooks file contains unrecognized settings and was left unchanged.".into());
         }
         if !enabled {
@@ -43,7 +46,7 @@ impl CopilotSettings {
             }
             return Ok(());
         }
-        let bytes = serde_json::to_vec_pretty(&managed_value(&self.config))
+        let bytes = serde_json::to_vec_pretty(&managed_value(&self.config, &self.config.helper()))
             .map_err(|_| "Could not encode Copilot hooks.")?;
         if exists && std::fs::read(&path).map_err(|_| "Could not read Copilot hooks.")? == bytes {
             return Ok(());
@@ -56,12 +59,12 @@ impl CopilotSettings {
             .map_err(|_| "Could not save Copilot hooks.".into())
     }
 }
-fn managed_value(config: &CopilotConfig) -> Value {
+fn managed_value(config: &CopilotConfig, executable: &Path) -> Value {
     let mut hooks = serde_json::Map::new();
     for (event, flag) in EVENTS {
         let command = format!(
             "exec {} copilot-hook --event {}{}",
-            crate::relay::outbound::shell_quote(&config.helper().to_string_lossy()),
+            crate::relay::outbound::shell_quote(&executable.to_string_lossy()),
             flag,
             if config.development { " --dev" } else { "" }
         );
@@ -73,21 +76,47 @@ fn managed_value(config: &CopilotConfig) -> Value {
 /// Only a missing file is absent. Other errors must keep discovery unavailable
 /// and must never authorize replacing an existing file.
 pub(super) fn installed_state(config: &CopilotConfig) -> io::Result<bool> {
+    Ok(document(config)?.is_some_and(|value| value == managed_value(config, &config.helper())))
+}
+// Setup can repair or remove an old managed helper, but discovery and calls
+// still require the exact helper the host currently selected.
+fn owned_state(config: &CopilotConfig) -> io::Result<bool> {
+    let Some(value) = document(config)? else {
+        return Ok(false);
+    };
+    let Some(command) = value["hooks"]["sessionStart"][0]["command"].as_str() else {
+        return Ok(false);
+    };
+    let Ok(args) = shell_words::split(command) else {
+        return Ok(false);
+    };
+    let Some(helper) = args.get(1).map(Path::new).filter(|p| p.is_absolute()) else {
+        return Ok(false);
+    };
+    let mut expected = managed_value(config, helper);
+    if value == expected {
+        return Ok(true);
+    }
+    // The initial adapter used a 10-second start timeout.
+    expected["hooks"]["sessionStart"][0]["timeoutSec"] = json!(10);
+    Ok(value == expected)
+}
+fn document(config: &CopilotConfig) -> io::Result<Option<Value>> {
     let path = config.hooks_file();
     let metadata = match std::fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
     if !metadata.is_file()
         || !crate::platform::fs::owned_by_current_user(&metadata)
         || !crate::platform::fs::private_to_owner(&metadata, 0o022)
     {
-        return Ok(false);
+        return Ok(None);
     }
-    let bytes = std::fs::read(path)?;
-    let value: Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-    Ok(value == managed_value(config))
+    serde_json::from_slice(&std::fs::read(path)?)
+        .map(Some)
+        .map_err(io::Error::other)
 }
 
 /// The socket peer must be the configured hook executable, running its exact

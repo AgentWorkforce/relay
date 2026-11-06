@@ -119,6 +119,8 @@ pub struct FakeSessions(
     pub Mutex<HashSet<Target>>,
     /// Inputs accepted by the fake kernel-authenticated Copilot hook.
     pub Mutex<Vec<Value>>,
+    /// Identity contexts the pretend native runtime acknowledged.
+    pub Mutex<HashSet<String>>,
 );
 
 impl Default for FakeSessions {
@@ -133,6 +135,7 @@ impl FakeSessions {
             Mutex::new(sessions),
             Mutex::default(),
             Mutex::new(Ok(Vec::new())),
+            Mutex::default(),
             Mutex::default(),
             Mutex::default(),
             Mutex::default(),
@@ -161,6 +164,10 @@ impl FakeSessions {
 }
 
 impl SessionDirectory for FakeSessions {
+    fn copilot_context_accepted(&self, _sid: &str, context: &str) -> bool {
+        self.10.lock().unwrap().contains(context)
+    }
+
     fn copilot_hook(&self, pid: i32, input: &Value) -> Option<Value> {
         let caller = self.1.lock().unwrap().get(&pid)?.clone();
         if caller.target.kind != SessionKind::Copilot

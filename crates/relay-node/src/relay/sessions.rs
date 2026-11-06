@@ -108,6 +108,10 @@ impl SessionPartition {
 
 pub trait SessionDirectory: Send + Sync + 'static {
     /// The trusted command-line helper selected by the embedding application.
+    fn copilot_context_accepted(&self, _sid: &str, _context: &str) -> bool {
+        false
+    }
+
     fn configure_copilot_helper(&self, _executable: std::path::PathBuf) {}
 
     /// A peer-authenticated Copilot hook; ordinary callers cannot name chats

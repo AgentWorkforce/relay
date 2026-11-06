@@ -1771,6 +1771,9 @@ impl Injector for LocalInjector {
 
     fn final_answer(&self, target: &Target, message_ref: &str) -> Option<String> {
         match target.kind {
+            SessionKind::Copilot => {
+                crate::relay::copilot::final_answer(&self.config.copilot, &target.id, message_ref)
+            }
             SessionKind::OpenClaw | SessionKind::Hermes => self.gateway_answer(target, message_ref),
             SessionKind::Codex if is_uuid(&target.id) => {
                 codex::final_answer(&self.config.codex, &target.id, message_ref)

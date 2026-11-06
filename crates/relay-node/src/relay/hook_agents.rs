@@ -33,11 +33,16 @@ pub fn is_copilot_process(table: &dyn ProcessTable, pid: i32) -> bool {
                 )
             })
     });
+    let node = table.executable(pid).is_some_and(|path| {
+        path.file_name()
+            .is_some_and(|name| name == "node" || name == "node.exe")
+    });
     named
-        || table
-            .arguments(pid)
-            .iter()
-            .any(|argument| argument.contains("@github/copilot"))
+        || (node
+            && table.arguments(pid).get(1).is_some_and(|argument| {
+                let parts: Vec<_> = argument.split(['/', '\\']).collect();
+                parts.windows(2).any(|pair| pair == ["@github", "copilot"])
+            }))
 }
 
 /// Whether `pid` is an agent other than Claude Code that runs hooks
@@ -56,4 +61,39 @@ pub fn is_other_agent(table: &dyn ProcessTable, pid: i32) -> bool {
         || table
             .executable(pid)
             .is_some_and(|exe| table.is_trusted_codex(&exe))
+}
+
+#[cfg(test)]
+mod copilot_tests {
+    use super::*;
+    use crate::relay::process::{FakeProcess, FakeProcesses};
+    #[test]
+    fn message_arguments_do_not_make_a_relay_client_a_copilot_process() {
+        let table = FakeProcesses::default();
+        table.insert(
+            1,
+            FakeProcess {
+                executable: Some("/opt/agent-relay-node".into()),
+                arguments: vec![
+                    "agent-relay-node".into(),
+                    "--body".into(),
+                    "Please update @github/copilot".into(),
+                ],
+                ..Default::default()
+            },
+        );
+        assert!(!is_copilot_process(&table, 1));
+        table.insert(
+            2,
+            FakeProcess {
+                executable: Some("/opt/node".into()),
+                arguments: vec![
+                    "node".into(),
+                    "/opt/node_modules/@github/copilot/index.js".into(),
+                ],
+                ..Default::default()
+            },
+        );
+        assert!(is_copilot_process(&table, 2));
+    }
 }

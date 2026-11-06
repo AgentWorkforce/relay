@@ -50,7 +50,8 @@ as it is for the other local hook routes.
 
 Ordinary VS Code terminal tools do not carry a Copilot chat ID, and the runtime
 holds several chats. They therefore cannot identify a chat on the session
-socket. Relay's SessionStart context tells the chat its registered desktop
+socket. Relay's SessionStart context, retried on tool hooks until native acceptance,
+tells the chat its registered desktop
 address for `join_relay` through the hosted MCP. It never chooses another held
 chat or supplies a misleading socket reply command. The private Desktop plugin
 uses the verified `preToolUse` callback to sign the native chat, installation,
@@ -60,16 +61,25 @@ Cloud verifies and spends the nonce before dispatch; a connection ID or
 model-provided desktop address alone grants no identity. Until the service
 advertises Copilot proof support, setup reports messaging unavailable.
 
+Automatic final replies use the completed native final-answer turn after the
+specific delivery receipt; intermediate tool turns and unrelated human turns
+cannot answer it. MCP tools can also send explicit replies. This control-path
+receipt reader does not replace RelayHistory’s transcript ingestion.
+
 Delivery uses a chat-scoped durable claim in the core's running-turn journal.
-The hook claims before the response is sent. A native queued user message
+The hook claims before the response is sent. Claimed submission tombstones are
+retained across long sleeps; no message text is kept in those tombstones.
+Offers and identity context require the active registration workspace, with
+workspace/account-generation checks around asynchronous verification. A native queued user message
 confirms a stop follow-up; a successful
 `postToolUse` output confirms added context. Both must contain the exact Relay
 message reference. A stop decision alone is insufficient because Copilot can
 limit consecutive stop blocks. A lost response remains
 in doubt until native acceptance is observed and is never blindly retried.
 Receipt inspection is bounded to the final 8 MiB; lack of proof remains
-uncertainty rather than permission to resubmit. Restarting the core preserves
-claims while fresh, unclaimed offers are reconstructed by the delivery loop.
+an in-doubt terminal failure rather than permission to resubmit; Relay reports
+that the message was not resent. Restarting the core preserves
+claimed tombstones; fresh, unclaimed offers are reconstructed by the delivery loop.
 
 ## Verification
 

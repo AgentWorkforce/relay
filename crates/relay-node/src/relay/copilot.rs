@@ -8,6 +8,8 @@ mod settings;
 pub use settings::CopilotSettings;
 mod sessions;
 pub use sessions::{discover, hook_answer, session};
+mod receipts;
+pub use receipts::{context_accepted, final_answer};
 mod delivery;
 pub use delivery::send;
 
@@ -48,7 +50,7 @@ impl CopilotConfig {
     }
     pub fn development(mut self, development: bool) -> Self {
         self.development = development;
-        self.inbox = Arc::new(TurnInbox::open(self.state().join("claims.json")));
+        self.inbox = Arc::new(TurnInbox::open(self.state().join("claims.json")).retain_claims());
         self
     }
     pub fn sessions(&self) -> PathBuf {
@@ -101,6 +103,10 @@ pub(crate) fn delivery_registration(
         return Some(registration.clone());
     }
     let owner = store.registration_for(&registration.target)?;
+    if registration.agent_id == owner.agent_id && registration.registered_at != owner.registered_at
+    {
+        return None;
+    }
     owner
         .agent_ids()
         .contains(&registration.agent_id)
