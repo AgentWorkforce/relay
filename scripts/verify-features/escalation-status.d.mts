@@ -1,10 +1,5 @@
 export type EscalationChannel =
-  | 'infra'
-  | 'posthog'
-  | 'github_issue'
-  | 'draft_pr'
-  | 'slack_primary'
-  | 'slack_followup';
+  'infra' | 'posthog' | 'github_issue' | 'draft_pr' | 'slack_primary' | 'slack_followup';
 
 export type EscalationState = 'delivered' | 'failed' | 'disabled' | 'not_applicable' | 'pending';
 

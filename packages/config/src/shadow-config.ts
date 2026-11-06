@@ -22,11 +22,7 @@ import path from 'node:path';
 
 /** Triggers for when a shadow agent should speak */
 export type SpeakOnTrigger =
-  | 'ALL_MESSAGES'
-  | 'EXPLICIT_ASK'
-  | 'SESSION_END'
-  | 'CODE_WRITTEN'
-  | 'REVIEW_REQUEST';
+  'ALL_MESSAGES' | 'EXPLICIT_ASK' | 'SESSION_END' | 'CODE_WRITTEN' | 'REVIEW_REQUEST';
 
 /** Shadow role definition */
 export interface ShadowRoleConfig {

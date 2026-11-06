@@ -84,11 +84,10 @@ alwaysApply: true
 paths:
   - **/*.ts
 ---
-
 # ✅ CORRECT - quote glob patterns
 ---
 paths:
-  - "**/*.ts"
+  - '**/*.ts'
 ---
 ```
 

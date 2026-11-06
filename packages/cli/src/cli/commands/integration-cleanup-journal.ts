@@ -40,10 +40,7 @@ import { formatBrokerNotFoundError, getBrokerBinaryPath } from '@agent-relay/har
  */
 
 export type PendingCleanupKind =
-  | 'relayfile-webhook-subscription'
-  | 'relay-webhook'
-  | 'relay-subscription'
-  | 'subscribe-attempt';
+  'relayfile-webhook-subscription' | 'relay-webhook' | 'relay-subscription' | 'subscribe-attempt';
 
 export interface PendingCleanupOwner {
   pid: number;

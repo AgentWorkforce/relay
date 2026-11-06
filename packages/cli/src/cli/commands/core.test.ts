@@ -2320,8 +2320,7 @@ describe('registerCoreCommands', () => {
 
     const onSignalMock = deps.onSignal as unknown as { mock: { calls: unknown[][] } };
     const sigintHandler = onSignalMock.mock.calls.find((call) => call[0] === 'SIGINT')?.[1] as
-      | (() => Promise<void>)
-      | undefined;
+      (() => Promise<void>) | undefined;
     expect(sigintHandler).toBeDefined();
     const sigint = sigintHandler as () => Promise<void>;
 
@@ -2368,8 +2367,7 @@ describe('registerCoreCommands', () => {
 
     const onSignalMock = deps.onSignal as unknown as { mock: { calls: unknown[][] } };
     const sigtermHandler = onSignalMock.mock.calls.find((call) => call[0] === 'SIGTERM')?.[1] as
-      | (() => Promise<void>)
-      | undefined;
+      (() => Promise<void>) | undefined;
     expect(sigtermHandler).toBeDefined();
 
     await expect((sigtermHandler as () => Promise<void>)()).rejects.toMatchObject({ code: 0 });

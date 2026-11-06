@@ -255,23 +255,21 @@ describe('SessionClient', () => {
 
   it('announces an aged-out Relaycast boundary instead of returning a confident partial replay', async () => {
     const backend = relayhistoryBackend();
-    const bySessionRef = vi.fn(
-      async (sessionRef: string): Promise<SessionMessagesResult> => ({
-        sessionRef,
-        availability: 'aged_out',
-        reason: 'outside_retention_window',
-        retention: {
-          policy: 'window',
-          messageTtlDays: 30,
-          retainedSince: '2026-07-14T08:00:00.000Z',
-          source: 'deployment_default',
-        },
-        sessionStartedAt: '2026-06-01T08:00:00.000Z',
-        sessionLastMessageAt: '2026-06-01T09:00:00.000Z',
-        messages: [],
-        page: { nextCursor: null, hasMore: false },
-      })
-    );
+    const bySessionRef = vi.fn(async (sessionRef: string): Promise<SessionMessagesResult> => ({
+      sessionRef,
+      availability: 'aged_out',
+      reason: 'outside_retention_window',
+      retention: {
+        policy: 'window',
+        messageTtlDays: 30,
+        retainedSince: '2026-07-14T08:00:00.000Z',
+        source: 'deployment_default',
+      },
+      sessionStartedAt: '2026-06-01T08:00:00.000Z',
+      sessionLastMessageAt: '2026-06-01T09:00:00.000Z',
+      messages: [],
+      page: { nextCursor: null, hasMore: false },
+    }));
     const client = testClient(backend.fetch, { relaycast: { bySessionRef } });
     const session = await client.createSession({ cli: 'codex', node: 'origin-node', owner: OWNER });
 
