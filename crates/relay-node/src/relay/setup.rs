@@ -30,12 +30,12 @@
 //! in docs/relay-core.md.
 
 mod account_status;
+mod integration_requests;
 mod policy;
 use policy::managed_policy;
 mod uploader_cache;
 
 use crate::relay::daemon::Core;
-use crate::relay::delivery::policy::relayfile_glob;
 use crate::relay::outbound::OutboundError;
 use crate::relay::protocol::{ErrorKind, RpcError};
 use crate::relay::server;
@@ -596,43 +596,8 @@ impl Setup {
                 Ok(json!({"created": false, "already_deleted": already_deleted}))
             }
             "POST /integrations/subscribe" | "DELETE /integrations/subscribe" => {
-                let provider = request.get("provider").and_then(Value::as_str);
-                let resource = request.get("resource").and_then(Value::as_str);
-                let (Some(provider), Some(resource)) = (provider, resource) else {
-                    return Err(invalid_integration());
-                };
-                let resource = resource.trim();
-                if request.len() != 2
-                    || resource.is_empty()
-                    || !["github", "linear", "slack", "jira"].contains(&provider)
-                {
-                    return Err(invalid_integration());
-                }
-                let registration = require_registration("subscribing it")?;
-                let subscribing = route.starts_with("POST");
-                if subscribing {
-                    if let Some(glob) = held_subscription(&registration, provider, resource) {
-                        return Ok(json!({
-                            "subscribed": true,
-                            "provider": provider,
-                            "resource": resource,
-                            "path_glob": glob,
-                            "already_subscribed": true,
-                        }));
-                    }
-                }
-                let result = if subscribing {
-                    self.core
-                        .subscribe_integration(&registration.name, provider, resource)
-                        .await
-                } else {
-                    self.core
-                        .unsubscribe_integration(&registration.name, provider, resource)
-                        .await
-                };
-                result
-                    .map(|change| serde_json::to_value(change).unwrap_or_default())
-                    .map_err(|error| OutboundError::from_rpc(&error, "integration_failed"))
+                self.integration_request(&request, registration.as_ref(), route.starts_with("POST"))
+                    .await
             }
             _ => Err(OutboundError::new(
                 404,
@@ -748,7 +713,7 @@ impl Setup {
             "integrations": registration
                 .iter()
                 .flat_map(|r| r.integrations.iter().flatten())
-                .map(|i| json!({"provider": i.provider, "resource": i.resource, "ready": i.ready == Some(true)}))
+                .map(|i| json!({"provider": i.provider, "resource": i.resource, "event_types": i.event_types, "ready": i.ready == Some(true)}))
                 .collect::<Vec<_>>(),
             "unreadable_session_files": unreadable_session_files,
         });
@@ -923,23 +888,13 @@ fn preparing(account: &Value) -> Value {
 /// succeeds: an agent subscribes after every pull request it opens, and a
 /// retried command must not read as a failure. A subscription still being
 /// made or ended is not held; the core decides that request.
+#[cfg(test)]
 fn held_subscription(
     registration: &Registration,
     provider: &str,
     resource: &str,
 ) -> Option<String> {
-    let glob = relayfile_glob(provider, resource)?;
-    registration
-        .integrations
-        .iter()
-        .flatten()
-        .any(|held| {
-            held.provider == provider
-                && held.path_glob.as_deref() == Some(glob.as_str())
-                && held.ready == Some(true)
-                && held.terminal != Some(true)
-        })
-        .then_some(glob)
+    integration_requests::held_subscription_events(registration, provider, resource, &[])
 }
 
 #[cfg(test)]
@@ -1002,6 +957,23 @@ mod tests {
             registration
         };
         let held = holding(Some(true), None);
+        let mut filtered = held.clone();
+        filtered.integrations.as_mut().unwrap()[0].event_types = vec!["issue.created".into()];
+        assert!(held_subscription(&filtered, "github", "acme/api#42").is_none());
+        assert!(integration_requests::held_subscription_events(
+            &filtered,
+            "github",
+            "acme/api#42",
+            &["issue.created".into()]
+        )
+        .is_some());
+        assert!(integration_requests::held_subscription_events(
+            &held,
+            "github",
+            "acme/api#42",
+            &["issue.created".into()]
+        )
+        .is_none());
         // Every spelling of the pull request names the one subscription.
         for resource in [
             "acme/api#42",

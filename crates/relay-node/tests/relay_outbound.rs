@@ -3857,6 +3857,9 @@ async fn webhooks_belong_to_the_registered_caller() {
         json!({"provider": "gitlab", "resource": "a/b"}),
         json!({"provider": "github", "resource": " "}),
         json!({"provider": "github", "resource": "a/b", "to": "x"}),
+        json!({"provider": "jira", "resource": "/jira/issues/**", "event_types": "comment.created"}),
+        json!({"provider": "jira", "resource": "/jira/issues/**", "event_types": ["comment.*"]}),
+        json!({"provider": "jira", "resource": "/jira/issues/**", "event_types": [""]}),
     ] {
         assert_eq!(
             code(

@@ -28,6 +28,11 @@ use std::collections::HashSet;
 use std::time::Duration;
 use url::Url;
 
+mod create;
+mod event_filters;
+use create::SubscriptionIntent;
+pub(crate) use event_filters::normalize_event_types;
+
 pub const PROVIDERS: [&str; 4] = ["github", "linear", "slack", "jira"];
 
 /// How long a subscription waits for a person to connect the provider in
@@ -170,15 +175,23 @@ impl Relayfile {
         url: &str,
         globs: &[String],
         secret: &Secret,
+        event_types: &[String],
     ) -> Result<String, RpcError> {
+        if !event_types.is_empty() {
+            let capabilities = self
+                .call("GET", "/webhooks?capabilities=eventTypes".into(), None)
+                .await?;
+            event_filters::require_event_filter_support(Relayfile::inner(&capabilities))?;
+        }
         let value = self
             .call(
                 "POST",
                 "/webhooks".into(),
-                Some(json!({"url": url, "pathGlobs": globs, "secret": secret.expose()})),
+                Some(json!({"url": url, "pathGlobs": globs, "secret": secret.expose(), "eventTypes": event_types})),
             )
             .await?;
         let inner = Relayfile::inner(&value);
+        event_filters::require_confirmed_filter(inner, event_types)?;
         inner["subscriptionId"]
             .as_str()
             .or(inner["id"].as_str())
@@ -554,6 +567,19 @@ impl Core {
         provider: &str,
         resource: &str,
     ) -> Result<IntegrationChange, RpcError> {
+        self.subscribe_integration_events(name, provider, resource, &[])
+            .await
+    }
+
+    /// Subscribe to exact normalized provider event names; empty keeps all events.
+    pub async fn subscribe_integration_events(
+        &self,
+        name: &str,
+        provider: &str,
+        resource: &str,
+        event_types: &[String],
+    ) -> Result<IntegrationChange, RpcError> {
+        let event_types = normalize_event_types(provider, event_types)?;
         let resource = resource.trim();
         if !PROVIDERS.contains(&provider) || resource.is_empty() {
             return Err(RpcError::invalid_params(
@@ -591,67 +617,18 @@ impl Core {
             ));
         }
         can_subscribe(&registration, provider, &glob)?;
-        let files = self.relayfile(&workspace).await?;
-        let base = &registration.base_url;
-        let agent_id = &registration.agent_id;
-        let mut entry = Integration::new(provider, resource, &workspace);
-        entry.path_glob = Some(glob.clone());
-        // Journaled before even the shared channel is created; its name is
-        // derived from the agent, so cleanup can recover a lost answer.
-        self.save_integration(agent_id, &entry)?;
-        let http = sdk_gaps::http(base, &key)
-            .map_err(|e| relaycast(&e, "Could not reach Agent Relay."))?;
-        let channel = sdk_gaps::subscription_channel(&http, name, agent_id)
-            .await
-            .map_err(|e| relaycast(&e, "The agent's event channel did not verify."))?;
-        self.store
-            .update(|store| {
-                if let Some(mut current) = store.registration_named(name).cloned() {
-                    current.integration_channel_id = Some(channel.id.clone());
-                    current.integration_channel_name = Some(channel.name.clone());
-                    store.update(current);
-                }
-            })
-            .map_err(|e| RpcError::store(&e))?;
-        let (writeback_url, writeback_secret) = files.writeback_secret(&channel.name).await?;
-        let inbound = sdk_gaps::relayfile_inbound_target(&http, &channel.name, provider, &glob)
-            .await
-            .map_err(|e| relaycast(&e, "Could not create the inbound target."))?;
-        let unsafe_url =
-            || failed("relayfile or Agent Relay returned an address that is not https.");
-        entry.inbound_url = Some(attempt_url(&inbound.url, &entry.id).ok_or_else(unsafe_url)?);
-        entry.writeback_url = Some(attempt_url(&writeback_url, &entry.id).ok_or_else(unsafe_url)?);
-        self.save_integration(agent_id, &entry)?;
-        let inbound_url = entry.inbound_url.clone().unwrap_or_default();
-        entry.cloud_subscription_id = Some(
-            files
-                .create_subscription(&inbound_url, std::slice::from_ref(&glob), &inbound.secret)
-                .await?,
-        );
-        self.save_integration(agent_id, &entry)?;
-        let writeback = entry.writeback_url.clone().unwrap_or_default();
-        entry.subscription_id = Some(
-            client::create_reply_subscription(
-                base,
-                &key,
-                &channel.name,
-                &writeback,
-                &writeback_secret,
-            )
-            .await
-            .map_err(|e| relaycast(&e, "Could not create the reply subscription."))?,
-        );
-        entry.ready = Some(true);
-        self.save_integration(agent_id, &entry)?;
-        self.request_drain(name);
-        self.hub.invalidated(Listing::Agents);
-        Ok(IntegrationChange {
-            subscribed: true,
-            provider: provider.into(),
-            resource: resource.into(),
-            path_glob: Some(glob),
-            already_unsubscribed: false,
-        })
+        self.finish_subscription(
+            &registration,
+            &key,
+            SubscriptionIntent {
+                provider: provider.into(),
+                resource: resource.into(),
+                workspace,
+                glob,
+                event_types,
+            },
+        )
+        .await
     }
 
     /// Undoes every step of a subscription (or of an unfinished one),
@@ -700,6 +677,7 @@ impl Core {
         else {
             return Ok(IntegrationChange {
                 subscribed: false,
+                event_types: Vec::new(),
                 provider: provider.into(),
                 resource: resource.into(),
                 path_glob: None,
@@ -815,6 +793,7 @@ impl Core {
         self.hub.invalidated(Listing::Agents);
         Ok(IntegrationChange {
             subscribed: false,
+            event_types: entry.event_types.clone(),
             provider: provider.into(),
             resource: resource.into(),
             path_glob: None,

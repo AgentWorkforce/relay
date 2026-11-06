@@ -417,17 +417,20 @@ public struct AgentActivity: Codable, Equatable, Hashable, Sendable {
 }
 
 public struct AgentIntegration: Codable, Equatable, Hashable, Sendable {
+    public let eventTypes: [String]?
     public let provider: String
     public let ready: Bool
     public let resource: String
 
-    public init(provider: String, ready: Bool, resource: String) {
+    public init(eventTypes: [String]? = nil, provider: String, ready: Bool, resource: String) {
+        self.eventTypes = eventTypes
         self.provider = provider
         self.ready = ready
         self.resource = resource
     }
 
     enum CodingKeys: String, CodingKey {
+        case eventTypes = "event_types"
         case provider
         case ready
         case resource
@@ -435,6 +438,7 @@ public struct AgentIntegration: Codable, Equatable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.eventTypes = try c.decodeIfPresent([String].self, forKey: .eventTypes)
         self.provider = try c.decode(String.self, forKey: .provider)
         self.ready = try c.decode(Bool.self, forKey: .ready)
         self.resource = try c.decode(String.self, forKey: .resource)
@@ -442,6 +446,7 @@ public struct AgentIntegration: Codable, Equatable, Hashable, Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(self.eventTypes, forKey: .eventTypes)
         try c.encode(self.provider, forKey: .provider)
         try c.encode(self.ready, forKey: .ready)
         try c.encode(self.resource, forKey: .resource)
@@ -1941,14 +1946,17 @@ public struct InboxStall: Codable, Equatable, Hashable, Sendable {
 public struct IntegrationChange: Codable, Equatable, Hashable, Sendable {
     /// Nothing was left to undo.
     public let alreadyUnsubscribed: Bool?
+    /// Effective exact provider event filter; omitted means all events.
+    public let eventTypes: [String]?
     /// The relayfile paths a subscription delivers.
     public let pathGlob: String?
     public let provider: String
     public let resource: String
     public let subscribed: Bool
 
-    public init(alreadyUnsubscribed: Bool? = nil, pathGlob: String? = nil, provider: String, resource: String, subscribed: Bool) {
+    public init(alreadyUnsubscribed: Bool? = nil, eventTypes: [String]? = nil, pathGlob: String? = nil, provider: String, resource: String, subscribed: Bool) {
         self.alreadyUnsubscribed = alreadyUnsubscribed
+        self.eventTypes = eventTypes
         self.pathGlob = pathGlob
         self.provider = provider
         self.resource = resource
@@ -1957,6 +1965,7 @@ public struct IntegrationChange: Codable, Equatable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case alreadyUnsubscribed = "already_unsubscribed"
+        case eventTypes = "event_types"
         case pathGlob = "path_glob"
         case provider
         case resource
@@ -1966,6 +1975,7 @@ public struct IntegrationChange: Codable, Equatable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.alreadyUnsubscribed = try c.decodeIfPresent(Bool.self, forKey: .alreadyUnsubscribed)
+        self.eventTypes = try c.decodeIfPresent([String].self, forKey: .eventTypes)
         self.pathGlob = try c.decodeIfPresent(String.self, forKey: .pathGlob)
         self.provider = try c.decode(String.self, forKey: .provider)
         self.resource = try c.decode(String.self, forKey: .resource)
@@ -1975,6 +1985,7 @@ public struct IntegrationChange: Codable, Equatable, Hashable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeIfPresent(self.alreadyUnsubscribed, forKey: .alreadyUnsubscribed)
+        try c.encodeIfPresent(self.eventTypes, forKey: .eventTypes)
         try c.encodeIfPresent(self.pathGlob, forKey: .pathGlob)
         try c.encode(self.provider, forKey: .provider)
         try c.encode(self.resource, forKey: .resource)
@@ -1983,17 +1994,21 @@ public struct IntegrationChange: Codable, Equatable, Hashable, Sendable {
 }
 
 public struct IntegrationParams: Codable, Equatable, Hashable, Sendable {
+    /// Exact provider event names for subscribe; omitted means all events.
+    public let eventTypes: [String]?
     public let name: String
     public let provider: String
     public let resource: String
 
-    public init(name: String, provider: String, resource: String) {
+    public init(eventTypes: [String]? = nil, name: String, provider: String, resource: String) {
+        self.eventTypes = eventTypes
         self.name = name
         self.provider = provider
         self.resource = resource
     }
 
     enum CodingKeys: String, CodingKey {
+        case eventTypes = "event_types"
         case name
         case provider
         case resource
@@ -2001,6 +2016,7 @@ public struct IntegrationParams: Codable, Equatable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.eventTypes = try c.decodeIfPresent([String].self, forKey: .eventTypes)
         self.name = try c.decode(String.self, forKey: .name)
         self.provider = try c.decode(String.self, forKey: .provider)
         self.resource = try c.decode(String.self, forKey: .resource)
@@ -2008,6 +2024,7 @@ public struct IntegrationParams: Codable, Equatable, Hashable, Sendable {
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(self.eventTypes, forKey: .eventTypes)
         try c.encode(self.name, forKey: .name)
         try c.encode(self.provider, forKey: .provider)
         try c.encode(self.resource, forKey: .resource)

@@ -50,6 +50,11 @@ async fn unsubscribe(
     core: &Arc<Core>,
     request: IntegrationParams,
 ) -> Result<IntegrationChange, RpcError> {
+    if !request.event_types.is_empty() {
+        return Err(RpcError::invalid_params(
+            "Unsubscribe by provider and resource, without event_types.",
+        ));
+    }
     core.unsubscribe_integration(&request.name, &request.provider, &request.resource)
         .await
 }
@@ -121,7 +126,7 @@ pub async fn call(core: &Arc<Core>, method: &str, raw: Value) -> Option<Result<V
         }
         method::AgentsIntegrationsSubscribe::NAME => {
             answer::<method::AgentsIntegrationsSubscribe, _>(raw, |r| async move {
-                core.subscribe_integration(&r.name, &r.provider, &r.resource)
+                core.subscribe_integration_events(&r.name, &r.provider, &r.resource, &r.event_types)
                     .await
             })
             .await
