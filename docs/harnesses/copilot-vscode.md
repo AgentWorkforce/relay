@@ -16,6 +16,11 @@ alter model approval or tool permission settings. History is acquired by
 RelayHistory's existing `copilot` provider from the runtime's native journal.
 Sharing and uploads retain the person's normal consent and scheduling.
 
+The hook forwards `agentrelay-<tool>` and legacy `agent-relay-<tool>` calls to
+Desktop. Tool names are retained up to 256 characters; longer names are
+truncated. Desktop remains the authority for per-call attestation; forwarding
+a name does not make it eligible for signing.
+
 The native [sessionStart output](https://docs.github.com/en/copilot/reference/hooks-reference)
 uses top-level `additionalContext`, as does post-tool context; the older Local
 harness wrapper is not used. The SessionStart and post-tool hooks identify the chat by its native
