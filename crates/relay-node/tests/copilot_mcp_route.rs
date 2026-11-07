@@ -141,7 +141,7 @@ async fn native_mcp_initialization_reaches_the_account_through_the_outer_router(
         .unwrap();
     assert_eq!(reply["id"], "native-init");
     assert_eq!(reply["result"]["protocolVersion"], "2025-03-26");
-    for (pid, uid) in [(1235, current_uid()), (1234, current_uid() + 1)] {
+    for (pid, uid) in [(1235, current_uid()), (1234, current_uid().wrapping_add(1))] {
         let error = outbound
             .handle(pid, uid, &request("POST"))
             .await
