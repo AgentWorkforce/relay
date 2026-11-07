@@ -26,11 +26,11 @@ const JSON_OUTPUT = args.includes('--json');
 // Test Configuration
 // ============================================
 const CONFIG = {
-  concurrentClients: 10,      // Reduced for CI reliability
-  messagesPerClient: 50,      // Reduced for CI reliability
-  workspaceCycles: 30,        // Reduced for CI reliability
-  eventBurstSize: 200,        // Reduced for CI reliability
-  testTimeout: 30000,         // 30 second max per test
+  concurrentClients: 10, // Reduced for CI reliability
+  messagesPerClient: 50, // Reduced for CI reliability
+  workspaceCycles: 30, // Reduced for CI reliability
+  eventBurstSize: 200, // Reduced for CI reliability
+  testTimeout: 30000, // 30 second max per test
 };
 
 // ============================================
@@ -253,9 +253,7 @@ class StressTestRunner {
     const start = performance.now();
 
     // Send messages from all clients
-    const results = await Promise.all(
-      clients.map(client => this.floodClient(client, messagesPerClient))
-    );
+    const results = await Promise.all(clients.map((client) => this.floodClient(client, messagesPerClient)));
 
     const elapsed = performance.now() - start;
 
@@ -264,8 +262,7 @@ class StressTestRunner {
     const expectedTotal = clients.length * messagesPerClient;
 
     // Success if we sent all messages and received at least 90% of responses
-    const passed = totalMessages >= expectedTotal * 0.95 &&
-                   totalReceived >= totalMessages * 0.9;
+    const passed = totalMessages >= expectedTotal * 0.95 && totalReceived >= totalMessages * 0.9;
 
     this.results.webSocketFlood = {
       passed,
@@ -274,8 +271,8 @@ class StressTestRunner {
       messages_per_client: messagesPerClient,
       total_sent: totalMessages,
       total_received: totalReceived,
-      send_rate: (totalMessages >= expectedTotal * 0.95),
-      receive_rate: (totalReceived / totalMessages),
+      send_rate: totalMessages >= expectedTotal * 0.95,
+      receive_rate: totalReceived / totalMessages,
     };
 
     if (!passed) this.failures++;
@@ -428,9 +425,11 @@ class StressTestRunner {
     // Simulate rapid health checks
     for (let i = 0; i < checkCount; i++) {
       const stats = this.orchestrator.stats();
-      if (typeof stats.workspaces === 'number' &&
-          typeof stats.agents === 'number' &&
-          typeof stats.clients === 'number') {
+      if (
+        typeof stats.workspaces === 'number' &&
+        typeof stats.agents === 'number' &&
+        typeof stats.clients === 'number'
+      ) {
         validResponses++;
       }
     }
@@ -505,12 +504,14 @@ class StressTestRunner {
       // Send all messages
       for (let i = 0; i < count; i++) {
         if (client.ws.readyState === WebSocket.OPEN) {
-          client.ws.send(JSON.stringify({
-            type: 'test',
-            clientId: client.id,
-            seq: i,
-            timestamp: Date.now(),
-          }));
+          client.ws.send(
+            JSON.stringify({
+              type: 'test',
+              clientId: client.id,
+              seq: i,
+              timestamp: Date.now(),
+            })
+          );
           sent++;
         }
       }
@@ -528,7 +529,7 @@ class StressTestRunner {
 // Main
 // ============================================
 function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function main() {
@@ -578,7 +579,7 @@ async function main() {
   process.exit(finalResults.passed ? 0 : 1);
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error('Fatal error:', err);
   process.exit(1);
 });

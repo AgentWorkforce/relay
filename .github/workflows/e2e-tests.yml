@@ -4,19 +4,25 @@ on:
   push:
     branches: [main]
     paths:
-      - 'src/**'
       - 'packages/**'
+      - '!packages/sdk-swift/**'
+      - 'crates/**'
+      - '!crates/relay-node/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'scripts/e2e-test.sh'
-      - 'scripts/e2e-sdk-lifecycle.mjs'
       - 'package.json'
       - '.github/workflows/e2e-tests.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'src/**'
       - 'packages/**'
+      - '!packages/sdk-swift/**'
+      - 'crates/**'
+      - '!crates/relay-node/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'scripts/e2e-test.sh'
-      - 'scripts/e2e-sdk-lifecycle.mjs'
       - 'package.json'
       - '.github/workflows/e2e-tests.yml'
   # Allow manual trigger for on-demand testing
@@ -31,12 +37,13 @@ env:
 
 jobs:
   e2e-test:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: E2E Integration Test
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node-version: [20]
+        node-version: [22.14.0]
       fail-fast: false
 
     env:
@@ -52,6 +59,14 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
 
+      # Runner images don't reliably ship Rust; without it the build skips the
+      # local broker and the macOS job finds no broker binary.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+
       - name: Install dependencies
         run: npm ci
 
@@ -62,7 +77,7 @@ jobs:
         run: npm run build
 
       - name: Link CLI for local testing
-        run: npm link
+        run: cd packages/cli && npm link
 
       - name: Verify CLI is available
         run: agent-relay --version
@@ -86,66 +101,6 @@ jobs:
           echo "$HOME/.npm-global/bin" >> $GITHUB_PATH
           export PATH="$HOME/.npm-global/bin:$PATH"
           claude --version || echo "Claude CLI ready"
-
-      - name: Download dashboard binary
-        run: |
-          # Determine platform and architecture
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            BINARY_NAME="relay-dashboard-server-linux-x64"
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            # Check architecture
-            if [ "$(uname -m)" = "arm64" ]; then
-              BINARY_NAME="relay-dashboard-server-darwin-arm64"
-            else
-              BINARY_NAME="relay-dashboard-server-darwin-x64"
-            fi
-          else
-            echo "Unsupported OS: ${{ runner.os }}"
-            exit 1
-          fi
-
-          echo "Downloading dashboard binary: $BINARY_NAME"
-
-          # Get latest release from relay-dashboard repo
-          RELEASE_URL="https://github.com/AgentWorkforce/relay-dashboard/releases/latest/download/${BINARY_NAME}.gz"
-          echo "URL: $RELEASE_URL"
-
-          # Install to user local bin (no sudo required)
-          mkdir -p ~/.local/bin
-
-          # Download with retry logic (transient 504s from GitHub releases are common)
-          MAX_RETRIES=3
-          RETRY_DELAY=5
-          for attempt in $(seq 1 $MAX_RETRIES); do
-            echo "Download attempt $attempt of $MAX_RETRIES..."
-            if curl -fsSL --retry 3 --retry-delay 2 "$RELEASE_URL" | gunzip > ~/.local/bin/relay-dashboard-server 2>/dev/null; then
-              echo "Download succeeded on attempt $attempt"
-              break
-            fi
-            if [ "$attempt" -eq "$MAX_RETRIES" ]; then
-              echo "::warning::Failed to download dashboard binary after $MAX_RETRIES attempts — continuing without it"
-              rm -f ~/.local/bin/relay-dashboard-server
-              exit 0
-            fi
-            echo "Attempt $attempt failed, retrying in ${RETRY_DELAY}s..."
-            sleep $RETRY_DELAY
-            RETRY_DELAY=$((RETRY_DELAY * 2))
-          done
-
-          if [ -f ~/.local/bin/relay-dashboard-server ]; then
-            chmod +x ~/.local/bin/relay-dashboard-server
-          fi
-
-          # Add to PATH for this workflow
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-          # Verify
-          if [ -f ~/.local/bin/relay-dashboard-server ]; then
-            echo "Installed dashboard binary:"
-            ~/.local/bin/relay-dashboard-server --version || echo "Binary installed (version check may not be supported)"
-          else
-            echo "Dashboard binary not available — tests will run without it"
-          fi
 
       - name: Check for API key
         id: check-key

@@ -1,0 +1,101 @@
+{
+  "name": "agent-relay",
+  "version": "17.2.1",
+  "description": "Real-time agent-to-agent communication system",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "scripts/build-cjs.mjs",
+    "LICENSE",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.cjs",
+      "import": "./dist/index.js",
+      "default": "./dist/index.cjs"
+    },
+    "./mcp": {
+      "types": "./dist/cli/agent-relay-mcp.d.ts",
+      "import": "./dist/cli/agent-relay-mcp.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "agent-relay": "dist/cli/index.js",
+    "relay": "dist/cli/index.js"
+  },
+  "bundledDependencies": [],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc && npm run postbuild",
+    "postbuild": "chmod +x dist/cli/bootstrap.js dist/cli/index.js && npm run build:cjs",
+    "build:cjs": "node ./scripts/build-cjs.mjs",
+    "prepack": "if [ -d ../../node_modules ]; then npm --prefix ../.. run build:cli; else echo 'node_modules not found, skipping prepack build'; fi",
+    "start": "node dist/cli/index.js",
+    "lint": "eslint src",
+    "audit:deps": "echo 'No bundled dependency audit is required for the simplified CLI package.'",
+    "pack:validate": "npm pack --dry-run"
+  },
+  "dependencies": {
+    "@agent-relay/cli-surface": "17.2.1",
+    "@agent-relay/cloud": "17.2.1",
+    "@agent-relay/config": "17.2.1",
+    "@agent-relay/fleet": "17.2.1",
+    "@agent-relay/harness-driver": "17.2.1",
+    "@agent-relay/harnesses": "17.2.1",
+    "@agent-relay/sdk": "17.2.1",
+    "@agent-relay/session": "17.2.1",
+    "@agent-relay/utils": "17.2.1",
+    "@clack/prompts": "^1.8.1",
+    "@modelcontextprotocol/sdk": "^1.23.0",
+    "@relayfile/client": "^0.10.27",
+    "@relayfile/sdk": "^0.10.77",
+    "@relayflows/cli": "1.1.10",
+    "@relayflows/sdk": "2.0.65",
+    "@xterm/headless": "^6.0.0",
+    "ai-hist": "^0.18.1",
+    "commander": "^12.1.0",
+    "dotenv": "^17.2.3",
+    "jiti": "^2.6.1",
+    "posthog-node": "^5.29.2",
+    "ws": "^8.18.3",
+    "zod": "^4.4.3"
+  },
+  "optionalDependencies": {
+    "ai-hist-native": "^0.4.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.2"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "keywords": [
+    "agent",
+    "ai",
+    "communication",
+    "relay",
+    "real-time",
+    "claude",
+    "codex",
+    "gemini"
+  ],
+  "author": "AgentWorkforce <hello@agentrelay.com>",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AgentWorkforce/relay.git",
+    "directory": "packages/cli"
+  },
+  "bugs": {
+    "url": "https://github.com/AgentWorkforce/relay/issues"
+  },
+  "homepage": "https://github.com/AgentWorkforce/relay#readme",
+  "bundleDependencies": []
+}

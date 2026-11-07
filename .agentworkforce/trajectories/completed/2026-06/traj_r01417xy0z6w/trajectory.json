@@ -1,0 +1,56 @@
+{
+  "id": "traj_r01417xy0z6w",
+  "version": 1,
+  "task": {
+    "title": "Rewrite v8 SDK docs to new API"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-03T05:44:23.865Z",
+  "completedAt": "2026-06-03T05:54:58.669Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-03T05:49:20.524Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_akwk1skqtp6d",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-03T05:49:20.524Z",
+      "endedAt": "2026-06-03T05:54:58.669Z",
+      "events": [
+        {
+          "ts": 1780465760525,
+          "type": "reflection",
+          "content": "HIGH-priority pages rewritten (event-handlers, actions, migration, typescript-sdk, sending-messages, quickstart, messaging). Now MEDIUM pages.",
+          "raw": {
+            "confidence": 0.8
+          },
+          "significance": "high",
+          "tags": ["confidence:0.8"]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Rewrote 20 web/content/docs/*.mdx pages from old Agent Relay API to v8: register-returns-client, agent-scoped sendMessage/reply/react, messageId, addListener, fire-and-forget registerAction, relay.webhooks, createHuman/defineHarness, optional release. Fixed /docs/8.0.0 links in edited pages.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": ["e40e0eef"],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_r01417xy0z6w/trajectory.json",
+    "CHANGELOG.md",
+    "tests/integration/sdk/v8-api-smoke.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "86ccb27dc1ca11ad9f48a1b77fa445317fffd342",
+    "endRef": "e40e0eef6b165bda9244e030444767b072f08d1c",
+    "traceId": "d8de755b-a962-41ac-af5b-8d874e59aa2e"
+  }
+}

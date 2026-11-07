@@ -1,0 +1,31 @@
+{
+  "id": "relay-feature-guardian",
+  "intent": "relay-orchestrator",
+  "tags": ["relay", "verification", "proactive", "health"],
+  "description": "Traverses the Relay feature catalog hourly to exercise the manifest/model/state chain, recording healthy traversal as log-only evidence without claiming per-feature E2E verification; genuine run failures surface through deployment monitoring.",
+  "cloud": true,
+  "harness": "opencode",
+  "model": "deepseek-v4-flash-free",
+  "harnessSettings": {
+    "reasoning": "low",
+    "timeoutSeconds": 300
+  },
+  "integrations": {
+    "github": {
+      "scope": {
+        "repo": "AgentWorkforce/relay"
+      },
+      "relayfileMount": {
+        "requiredReadPaths": ["/github/repos/AgentWorkforce/relay/.agentworkforce/features/**"],
+        "writeOnlyPaths": []
+      }
+    }
+  },
+  "inputs": {},
+  "memory": {
+    "enabled": true,
+    "scopes": ["workspace"],
+    "ttlDays": 14
+  },
+  "onEvent": "./agent.ts"
+}

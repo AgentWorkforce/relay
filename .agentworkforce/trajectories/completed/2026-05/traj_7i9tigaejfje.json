@@ -1,0 +1,53 @@
+{
+  "id": "traj_7i9tigaejfje",
+  "version": 1,
+  "task": {
+    "title": "Clarify headless app-server harness terminology"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T16:34:21.397Z",
+  "completedAt": "2026-05-25T16:34:33.412Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-25T16:34:29.105Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_vz66cc5xfiai",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-25T16:34:29.105Z",
+      "endedAt": "2026-05-25T16:34:33.412Z",
+      "events": [
+        {
+          "ts": 1779726869106,
+          "type": "decision",
+          "content": "Collapsed app-server into headless runtime driver: Collapsed app-server into headless runtime driver",
+          "raw": {
+            "question": "Collapsed app-server into headless runtime driver",
+            "chosen": "Collapsed app-server into headless runtime driver",
+            "alternatives": [],
+            "reasoning": "App-server and provider command workers have the same non-PTY broker capability surface; keeping app_server as a separate public runtime made docs and API shape more confusing."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Clarified app-server as a headless harness driver instead of a separate public runtime.",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/private/tmp/relay-harness-runtime-plans",
+  "tags": [],
+  "_trace": {
+    "startRef": "84d87355ef3a727947607690dd0df7bb0e158f5d",
+    "endRef": "84d87355ef3a727947607690dd0df7bb0e158f5d"
+  }
+}

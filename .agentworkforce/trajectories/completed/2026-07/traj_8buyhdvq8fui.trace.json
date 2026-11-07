@@ -1,0 +1,57 @@
+{
+  "version": "1.0.0",
+  "id": "09e68981-9974-45b2-83c1-5f8cb17c6d6b",
+  "timestamp": "2026-07-13T14:16:13.432Z",
+  "trajectory": "traj_8buyhdvq8fui",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_8buyhdvq8fui/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 19,
+              "revision": "90ca71a3720eb059d766f67a1fb25b74047c0954"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 9,
+              "end_line": 279,
+              "revision": "90ca71a3720eb059d766f67a1fb25b74047c0954"
+            },
+            {
+              "start_line": 285,
+              "end_line": 328,
+              "revision": "90ca71a3720eb059d766f67a1fb25b74047c0954"
+            },
+            {
+              "start_line": 340,
+              "end_line": 346,
+              "revision": "90ca71a3720eb059d766f67a1fb25b74047c0954"
+            },
+            {
+              "start_line": 351,
+              "end_line": 372,
+              "revision": "90ca71a3720eb059d766f67a1fb25b74047c0954"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

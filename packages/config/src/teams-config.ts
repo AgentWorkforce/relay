@@ -4,7 +4,7 @@
  *
  * teams.json can be placed in:
  * - Project root: ./teams.json
- * - Agent-relay dir: ./.agent-relay/teams.json
+ * - Agent-relay dir: ./.agentworkforce/relay/teams.json
  */
 
 import fs from 'node:fs';
@@ -24,8 +24,18 @@ let configCache: TeamsConfigCache | null = null;
 export interface TeamAgentConfig {
   /** Agent name (used for spawn and validation) */
   name: string;
-  /** CLI command to use (e.g., 'claude', 'claude:opus', 'codex') */
+  /**
+   * CLI command (e.g., 'claude', 'codex', 'claude --model opus').
+   * Inline --model/-m takes precedence over model. Prefer the model field:
+   * cli is also used as a harness name when advertising node capacity.
+   */
   cli: string;
+  /**
+   * Model for harnesses accepting --model, including claude, codex, and opencode.
+   * Passed through to the broker without name validation (e.g., 'opus',
+   * 'openai/gpt-5.2'); the broker owns harness-specific model handling.
+   */
+  model?: string;
   /** Agent role (e.g., 'coordinator', 'developer', 'reviewer') */
   role?: string;
   /** Initial task/prompt to inject when spawning */
@@ -47,13 +57,13 @@ export interface TeamsConfig {
  */
 function getTeamsConfigPaths(projectRoot: string): string[] {
   return [
-    path.join(projectRoot, '.agent-relay', 'teams.json'),
+    path.join(projectRoot, '.agentworkforce/relay', 'teams.json'),
     path.join(projectRoot, 'teams.json'),
   ];
 }
 
 /**
- * Load teams.json from project root or .agent-relay directory
+ * Load teams.json from project root or .agentworkforce/relay directory
  * Returns null if no config found.
  * Results are cached and only reloaded when the file changes.
  */
@@ -106,7 +116,9 @@ export function loadTeamsConfig(projectRoot: string): TeamsConfig | null {
 
     // Validate required fields
     if (!config.team || typeof config.team !== 'string') {
-      console.error(`[teams-config] Invalid teams.json at ${foundConfigPath}: missing or invalid 'team' field`);
+      console.error(
+        `[teams-config] Invalid teams.json at ${foundConfigPath}: missing or invalid 'team' field`
+      );
       configCache = { config: null, projectRoot, configPath: foundConfigPath, mtime: foundMtime };
       return null;
     }
@@ -128,10 +140,26 @@ export function loadTeamsConfig(projectRoot: string): TeamsConfig | null {
         console.warn(`[teams-config] Agent '${agent.name}' missing 'cli' field, defaulting to 'claude'`);
         agent.cli = 'claude';
       }
-      validAgents.push(agent);
+      let model: string | undefined;
+      if (agent.model !== undefined) {
+        if (typeof agent.model === 'string' && agent.model.trim()) {
+          model = agent.model.trim();
+        } else {
+          console.warn(`[teams-config] Agent '${agent.name}' has invalid 'model' field, ignoring it`);
+        }
+      }
+      validAgents.push({
+        name: agent.name,
+        cli: agent.cli,
+        ...(agent.role !== undefined ? { role: agent.role } : {}),
+        ...(agent.task !== undefined ? { task: agent.task } : {}),
+        ...(model ? { model } : {}),
+      });
     }
 
-    console.log(`[teams-config] Loaded team '${config.team}' from ${foundConfigPath} (${validAgents.length} agents)`);
+    console.log(
+      `[teams-config] Loaded team '${config.team}' from ${foundConfigPath} (${validAgents.length} agents)`
+    );
 
     const result: TeamsConfig = {
       team: config.team,
@@ -175,7 +203,7 @@ export function isValidAgentName(projectRoot: string, agentName: string): boolea
     return true;
   }
 
-  return config.agents.some(a => a.name === agentName);
+  return config.agents.some((a) => a.name === agentName);
 }
 
 /**
@@ -185,7 +213,7 @@ export function getAgentConfig(projectRoot: string, agentName: string): TeamAgen
   const config = loadTeamsConfig(projectRoot);
   if (!config) return null;
 
-  return config.agents.find(a => a.name === agentName) ?? null;
+  return config.agents.find((a) => a.name === agentName) ?? null;
 }
 
 /**

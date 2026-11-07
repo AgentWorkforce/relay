@@ -127,9 +127,7 @@ export class FrameParser {
     const headerSize = this.legacyMode ? LEGACY_HEADER_SIZE : 5;
 
     while (this.buffer.length >= headerSize) {
-      const length = this.legacyMode
-        ? this.buffer.readUInt32BE(0)
-        : this.buffer.readUInt32BE(1);
+      const length = this.legacyMode ? this.buffer.readUInt32BE(0) : this.buffer.readUInt32BE(1);
 
       if (length > MAX_FRAME_BYTES) {
         throw new Error(`Frame too large: ${length} > ${MAX_FRAME_BYTES}`);

@@ -26,19 +26,107 @@ git push origin main  # NO!
 
 This ensures the user maintains control over what goes into the main branch.
 
-## Changelog Style
+## Changelog
+
+Curate `[Unreleased]` in `CHANGELOG.md` as you land PRs. The root changelog is
+the cross-package, user-facing release narrative for Relay. It follows
+[Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and Semantic
+Versioning.
+
+An empty post-release changelog starts with `[Unreleased]`. The first pending
+user-visible change must set the heading to `[Unreleased - Patch]`,
+`[Unreleased - Minor]`, or `[Unreleased - Major]` according to its SemVer
+impact. The pending release level is monotonic (`Patch < Minor < Major`):
+raise the heading when a higher-impact change arrives; never lower it for a
+later lower-impact change, and leave it unchanged for another change at the
+same level. When a release is cut, move the pending entries under the released
+version and restore an empty `[Unreleased]` heading with no release level.
 
 Changelog entries should be concise and impact-first. Prefer one short bullet
-per user-visible change: name the command, API, or schema touched and the
-practical effect. Drop issue/PR links, internal review notes, implementation
-backstory, and "foundation for..." phrasing unless that text clearly explains
-the shipped impact.
+per user-visible change: name the command, API, schema, or package touched and
+the practical effect. Drop issue/PR links, internal review notes,
+implementation backstory, release-only entries, and "foundation for..." phrasing
+unless that text clearly explains the shipped impact.
+
+Use Keep a Changelog sections (`Added`, `Changed`, `Deprecated`, `Removed`,
+`Fixed`, `Security`), plus `Breaking Changes` and `Migration Guidance` when a
+SemVer-major change needs explicit callouts. Do not use generated perspective
+sections such as "Product Perspective", "Technical Perspective", or "Releases".
+Do not add web-only changes to the changelog. Omit unpublished or withdrawn
+versions as release headings; move their shipped user-visible changes into the
+corrected published release.
+
+Do not add `relay-feature-guardian` changes to the changelog. It is an internal
+Slack feature-check agent (`.agentworkforce/agents/relay-feature-guardian/`),
+not a user-facing Relay surface, so its fixes never belong in the release
+narrative. The release workflow also skips these commits automatically.
 
 ## .trajectories Must Be Tracked
 
-**CRITICAL: Never add `.trajectories/` to `.gitignore`.**
+**CRITICAL: Never add `.agentworkforce/trajectories/` to `.gitignore`.**
 
-The `.trajectories/` directory must remain tracked in git. It contains trajectory records from the `trail` tool that provide valuable context for future agents and humans about past decisions, reasoning, and work history.
+The `.agentworkforce/trajectories/` directory must remain tracked in git. It contains trajectory records from the `trail` tool that provide valuable context for future agents and humans about past decisions, reasoning, and work history.
+
+## Resident lead
+
+The resident `relay` agent is this repo's lead. Reports to **chief**
+(Will → chief → relay; no engineering department is seated yet). One
+writer: the resident is sole writer of this repo while online; delegates
+use worktrees off origin/main (others — including Khaliq and bots — work
+this repo in parallel). Session start: this file, `git log --oneline -15`,
+relay inbox. ACK / progress / DONE with evidence on every assignment.
+Publishing (npm, crates, GitHub releases) is gated on chief green-light.
+
+### Standing board (2026-07-29 — delete entries as they close)
+
+- Telemetry identity-leak cluster: merged as PR #1363; CLI stayed 11.2.0
+  (no release cut yet — release-train needs chief green-light).
+- Secrets fix train (issue #1379): PR A = #1380 (CLI output/error masking,
+  key off argv) + required companion relayfile#380 which must merge and
+  release FIRST (relayfile scrapes raw secrets from CLI output and error
+  text). PR B (Rust file modes) and PR C (--mcp-config argv→file; must
+  also update .claude/rules/mcp-injection.md) are unstarted — full spec
+  in #1379. #1380 unblocks the fleet-wide credential rotation.
+- Open issue batch: #1378 (fresh `node up` silently mints a workspace),
+  #1381 (teams.json per-agent model pinning gap; `claude:opus` doc syntax
+  is dead), #1382 (attach pairs broker URL/key from different sources;
+  delete chief's orgchart env-unset workaround when fixed), #1383
+  (non-Error rejections render as `[object Object]`).
+- Also pending: 64 dependabot alerts on main (1 critical); skills repo
+  relay-team/relay-pipeline/relay-fanout SKILL.mds still instruct printing
+  raw observer URLs — unsatisfiable once #1380 lands.
+
+<!-- PRPM_MANIFEST_START -->
+
+<skills_system priority="1">
+<usage>
+When users ask you to perform tasks, check if any of the available skills below can help complete the task more effectively. Skills provide specialized capabilities and domain knowledge.
+
+How to use skills (loaded into main context):
+
+- Use the <path> from the skill entry below
+- Invoke: Bash("cat <path>")
+- The skill content will load into your current context
+- Example: Bash("cat .openskills/backend-architect/SKILL.md")
+
+Usage notes:
+
+- Skills share your context window
+- Do not invoke a skill that is already loaded in your context
+  </usage>
+
+<available_skills>
+
+<skill activation="lazy">
+<name>writing-relayflows</name>
+<description>Use when authoring a Relayflows flow (@relayflows/surface / @relayflows/sdk, the v2 journal-based engine, CLI `flows`) in TypeScript or YAML/JSON. Covers the run/llm/agent ladder, human/dispatch/done, verification gates, cli/model resolution, flows.json, and flows check/run/resume refusal shapes. Not for the older @relayflows/core WorkflowBuilder (chained .pattern(&apos;dag&apos;)/.agent()/.step() calls) — see writing-agent-relay-workflows / migrating-persona-to-relayflow instead.</description>
+<path>.openskills/writing-relayflows/SKILL.md</path>
+</skill>
+
+</available_skills>
+</skills_system>
+
+<!-- PRPM_MANIFEST_END -->
 
 <!-- prpm:snippet:start @agent-workforce/trail-snippet@1.1.2 -->
 

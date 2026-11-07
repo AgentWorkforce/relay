@@ -1,0 +1,65 @@
+{
+  "id": "traj_ry2kv7evf4eb",
+  "version": 1,
+  "task": {
+    "title": "Fix drive-mode delivery hold swallowing cross-node replies (Ctrl+] toggle + flush through interactive hold)"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-15T19:32:54.669Z",
+  "completedAt": "2026-07-15T19:33:17.146Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-15T19:33:06.976Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_5jngi76o5i5s",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-15T19:33:06.976Z",
+      "endedAt": "2026-07-15T19:33:17.146Z",
+      "events": [
+        {
+          "ts": 1784143986978,
+          "type": "decision",
+          "content": "Root-caused the two-computer 'reply never injected' report to drive-mode manual_flush, not cloud routing: Root-caused the two-computer 'reply never injected' report to drive-mode manual_flush, not cloud routing",
+          "raw": {
+            "question": "Root-caused the two-computer 'reply never injected' report to drive-mode manual_flush, not cloud routing",
+            "chosen": "Root-caused the two-computer 'reply never injected' report to drive-mode manual_flush, not cloud routing",
+            "alternatives": [],
+            "reasoning": "Three parallel investigations (relay broker, relaycast engine, relaycast-cloud) showed the reply was persisted and a delivery row created; the deterministic drop is local: drive attach flips the worker to manual_flush and #1249's interactive hold freezes injection pops, so a driven agent can never receive messages. Cross-node engine/cloud routing was ruled out for this repro (the kjg-lead->claude direction worked)."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1784143988505,
+          "type": "decision",
+          "content": "Chose an explicit Ctrl+] mode toggle plus a hold-piercing flush frame over changing the drive default: Chose an explicit Ctrl+] mode toggle plus a hold-piercing flush frame over changing the drive default",
+          "raw": {
+            "question": "Chose an explicit Ctrl+] mode toggle plus a hold-piercing flush frame over changing the drive default",
+            "chosen": "Chose an explicit Ctrl+] mode toggle plus a hold-piercing flush frame over changing the drive default",
+            "alternatives": [],
+            "reasoning": "The manual_flush-during-drive hold is deliberate (anti-splice, merged 2 days prior in #1249). Ctrl+] gives an in-band, human-initiated release using existing mode-transition plumbing (drain + set_interactive_hold false), and a one-shot flush_injections worker frame makes 'agent message flush' actually inject through the hold instead of parking messages in a second frozen queue."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Drive mode no longer black-holes inbound relay messages: Ctrl+] toggles held/live delivery in-session (status line shows mode + pending + hint), the pending counter survives partial drains, and POST /flush sends a flush_injections frame so explicit flushes inject through the interactive hold. Covered by CLI vitest + broker unit tests; full broker suite green.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "e93e5c7b8f94b35d718057baec5e4242d198dfb7",
+    "endRef": "e93e5c7b8f94b35d718057baec5e4242d198dfb7"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "traj_c60wda02p633",
+  "version": 1,
+  "task": {
+    "title": "Orchestrate full dependency audit - delegate to worker, collect results, clean up"
+  },
+  "status": "abandoned",
+  "startedAt": "2026-06-12T11:49:07.474Z",
+  "completedAt": "2026-06-12T12:26:08.492Z",
+  "agents": [],
+  "chapters": [],
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "5dc86d330ddc0ad0f422cee601465fc6c27eecf2",
+    "endRef": "5dc86d330ddc0ad0f422cee601465fc6c27eecf2"
+  }
+}

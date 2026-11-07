@@ -4,12 +4,27 @@ use std::{
 };
 
 use crate::relaycast::{
-    configure_relaycast_mcp_with_token, RelaycastHttpClient, RelaycastRegistrationError,
+    configure_agent_relay_mcp_launch, retry_agent_registration_create_only, RegRetryOutcome,
+    RelaycastHttpClient, RelaycastRegistrationError, MAX_AGENT_REGISTRATION_ELAPSED,
+    MAX_AGENT_REGISTRATION_OUTER_TIMEOUT,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::McpArgsCommand;
+
+// The registration helper (`retry_agent_registration_create_only`) already
+// enforces its own `MAX_AGENT_REGISTRATION_ELAPSED` bounded-retry budget and
+// its `register_new_spawn_identity` implementation has a separate defensive
+// `MAX_AGENT_REGISTRATION_OUTER_TIMEOUT` guard. This wrapper timeout is a
+// final backstop only (e.g. against a future regression in that helper), so it
+// is derived from the helper's outer guard plus explicit slack rather than a
+// magic number. It must stay strictly larger than the helper's outer guard so
+// it can never race the helper and swallow its typed exhausted/fatal diagnostic.
+const MCP_ARGS_REGISTER_TIMEOUT_SLACK: Duration = Duration::from_secs(30);
+const MCP_ARGS_REGISTER_TIMEOUT: Duration = Duration::from_secs(
+    MAX_AGENT_REGISTRATION_OUTER_TIMEOUT.as_secs() + MCP_ARGS_REGISTER_TIMEOUT_SLACK.as_secs(),
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,6 +32,13 @@ struct McpArgsOutput {
     args: Vec<String>,
     side_effect_files: Vec<PathBuf>,
     agent_token: Option<String>,
+    /// Names (never values) of the credential variables the harness config
+    /// references. File-based harnesses (Cursor, OpenCode, Gemini, Grok) keep
+    /// credentials out of project files, so the caller must set each of these
+    /// on the agent process environment (`RELAY_AGENT_TOKEN` is `agentToken`
+    /// when `--register` minted it).
+    #[serde(default)]
+    required_env: Vec<String>,
 }
 
 struct RegisteredMcpArgsToken {
@@ -47,7 +69,7 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
     }
 
     // Validate all local inputs BEFORE touching the network. `--register`
-    // rotates the agent's relaycast token (POST /v1/agents/spawn), which is
+    // rotates the agent's relaycast token (POST /v1/agents), which is
     // an observable side effect on an external system — we should not mint
     // or rotate a token if the request is going to fail locally anyway
     // (e.g. malformed --existing-args JSON or an unresolvable --cwd).
@@ -102,7 +124,7 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         .default_workspace
         .or_else(|| std::env::var("RELAY_DEFAULT_WORKSPACE").ok());
 
-    let args = configure_relaycast_mcp_with_token(
+    let launch = configure_agent_relay_mcp_launch(
         &cli,
         &agent_name,
         api_key.as_deref(),
@@ -112,8 +134,11 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         agent_token.as_deref(),
         workspaces_json.as_deref(),
         default_workspace.as_deref(),
+        None,
     )
     .await?;
+    let args = launch.args;
+    let required_env = launch.env.into_iter().map(|(key, _)| key).collect();
 
     let side_effect_files = side_effect_files_for(&cli, &existing_args, &cwd)?;
 
@@ -121,6 +146,7 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         args,
         side_effect_files,
         agent_token: registered.map(|registered| registered.agent_token),
+        required_env,
     })
 }
 
@@ -129,6 +155,23 @@ async fn register_agent_token_for_mcp_args(
     agent_name: &str,
     api_key: Option<String>,
     base_url: Option<String>,
+) -> Result<RegisteredMcpArgsToken> {
+    register_agent_token_for_mcp_args_with_timeout(
+        cli,
+        agent_name,
+        api_key,
+        base_url,
+        MCP_ARGS_REGISTER_TIMEOUT,
+    )
+    .await
+}
+
+async fn register_agent_token_for_mcp_args_with_timeout(
+    cli: &str,
+    agent_name: &str,
+    api_key: Option<String>,
+    base_url: Option<String>,
+    timeout: Duration,
 ) -> Result<RegisteredMcpArgsToken> {
     let api_key = api_key
         .or_else(|| std::env::var("RELAY_API_KEY").ok())
@@ -144,21 +187,43 @@ async fn register_agent_token_for_mcp_args(
         })?;
     let cli_lower = detect_cli_name_for_mcp_args(cli).to_lowercase();
     let client = RelaycastHttpClient::new(
-        base_url.clone(),
+        Some(base_url.clone()),
         api_key.clone(),
         agent_name.to_string(),
         cli_lower.clone(),
     );
 
     let agent_token = match tokio::time::timeout(
-        Duration::from_secs(10),
-        client.register_agent_token(agent_name, Some(&cli_lower)),
+        timeout,
+        retry_agent_registration_create_only(&client, agent_name, Some(&cli_lower)),
     )
     .await
     {
         Ok(Ok(token)) => token,
-        Ok(Err(error)) => return Err(map_register_agent_token_error(error)),
-        Err(error) => bail!("register timed out after 10s: {error}"),
+        Ok(Err(RegRetryOutcome::RetryableExhausted(error)))
+        | Ok(Err(RegRetryOutcome::Fatal(error))) => {
+            return Err(map_register_agent_token_error(error));
+        }
+        // The helper's own bounded retry and defensive outer guard should
+        // always resolve before this final, larger backstop can fire. If it
+        // ever does fire, still surface a typed, correlated diagnostic (agent
+        // name + elapsed budget) through the same classifier used for the
+        // helper's own errors, instead of a generic "timed out" string that
+        // would lose structured classification.
+        Err(_elapsed) => {
+            return Err(map_register_agent_token_error(
+                RelaycastRegistrationError::Transport {
+                    agent_name: agent_name.to_string(),
+                    detail: format!(
+                        "register outer safety timeout exceeded after {timeout:?}; this exceeds \
+                         the {inner:?} bounded-retry budget and {guard:?} helper guard, indicating \
+                         a regression rather than a legitimate exhausted retry",
+                        inner = MAX_AGENT_REGISTRATION_ELAPSED,
+                        guard = MAX_AGENT_REGISTRATION_OUTER_TIMEOUT,
+                    ),
+                },
+            ));
+        }
     };
 
     Ok(RegisteredMcpArgsToken {
@@ -253,7 +318,7 @@ fn home_dir_from_env() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use crate::relaycast::configure_relaycast_mcp_with_token;
+    use crate::relaycast::configure_agent_relay_mcp_with_token;
     use httpmock::{Method::POST, MockServer};
     use serde_json::{json, Value};
     use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -274,6 +339,9 @@ mod tests {
         "RELAY_AGENT_TOKEN",
         "RELAY_WORKSPACES_JSON",
         "RELAY_DEFAULT_WORKSPACE",
+        "AGENT_RELAY_MCP_COMMAND",
+        "AGENT_RELAY_INSTALL_DIR",
+        "AGENT_RELAY_BIN_DIR",
     ];
 
     /// RAII guard that (1) holds the env mutex so parallel tests don't race,
@@ -319,7 +387,7 @@ mod tests {
             cli: cli.to_string(),
             agent_name: "test-agent".to_string(),
             api_key: Some("rk_live_test".to_string()),
-            base_url: Some("https://api.test.relaycast.dev".to_string()),
+            base_url: Some("https://relay.example.com".to_string()),
             agent_token: Some("at_live_test".to_string()),
             register: false,
             workspaces_json: Some(r#"{"workspaces":[]}"#.to_string()),
@@ -335,7 +403,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn claude_output_contains_mcp_config_json() {
+    async fn devin_defers_private_mcp_configuration_to_the_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = compute_mcp_args_output(command("devin", temp.path()))
+            .await
+            .unwrap();
+        assert!(
+            output.args.is_empty(),
+            "no trust or permission bypass flags"
+        );
+        assert!(output.side_effect_files.is_empty());
+        assert!(
+            !temp.path().join(".devin").exists(),
+            "never write shared project state"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_output_contains_resolved_mcp_config_json() {
+        // The broker must render the same local executable it preflights, rather
+        // than handing Claude `npx -y agent-relay mcp`. The latter silently
+        // selected a separate cache/package version and let Claude start without
+        // the coordination tools advertised in the injected reminder.
+        let _env = EnvGuard::all();
+        std::env::remove_var("AGENT_RELAY_MCP_COMMAND");
+        std::env::remove_var("AGENT_RELAY_INSTALL_DIR");
+        std::env::remove_var("AGENT_RELAY_BIN_DIR");
+
         let temp = tempdir().expect("tempdir");
         let output = compute_mcp_args_output(command("claude", temp.path()))
             .await
@@ -353,25 +447,50 @@ mod tests {
         let config: Value = serde_json::from_str(config_json).expect("valid mcp config json");
 
         assert!(config
-            .pointer("/mcpServers/relaycast")
+            .pointer("/mcpServers/agent-relay")
             .is_some_and(Value::is_object));
+        let server = &config["mcpServers"]["agent-relay"];
+        assert_ne!(
+            server["command"].as_str(),
+            Some("npx"),
+            "Claude's rendered MCP config must use the resolved local agent-relay executable"
+        );
+        assert_eq!(
+            server["args"]
+                .as_array()
+                .and_then(|args| args.last())
+                .and_then(Value::as_str),
+            Some("mcp"),
+            "the rendered command must invoke the MCP subcommand"
+        );
         assert!(output.side_effect_files.is_empty());
     }
 
     #[tokio::test]
-    async fn codex_output_contains_relaycast_config_args() {
+    async fn codex_output_contains_agent_relay_config_args() {
+        // Clear the MCP resolution env vars so the expected command/args
+        // below match the default resolution path regardless of what the
+        // ambient test environment (e.g. a harness-provided override) sets.
+        let _env = EnvGuard::all();
+        std::env::remove_var("AGENT_RELAY_MCP_COMMAND");
+        std::env::remove_var("AGENT_RELAY_INSTALL_DIR");
+        std::env::remove_var("AGENT_RELAY_BIN_DIR");
+
         let temp = tempdir().expect("tempdir");
         let output = compute_mcp_args_output(command("codex", temp.path()))
             .await
             .expect("compute mcp args");
 
         assert!(output.args.contains(&"--config".to_string()));
+        let command = output
+            .args
+            .iter()
+            .find(|arg| arg.starts_with("mcp_servers.agent-relay.command="))
+            .expect("agent-relay MCP command config");
+        assert_ne!(command, "mcp_servers.agent-relay.command=\"npx\"");
         assert!(output
             .args
-            .contains(&"mcp_servers.relaycast.command=\"npx\"".to_string()));
-        assert!(output
-            .args
-            .contains(&"mcp_servers.relaycast.args=[\"-y\", \"@relaycast/mcp\"]".to_string()));
+            .contains(&"mcp_servers.agent-relay.args=[\"mcp\"]".to_string()));
         assert!(output.side_effect_files.is_empty());
     }
 
@@ -382,7 +501,7 @@ mod tests {
             .await
             .expect("compute mcp args");
 
-        assert_eq!(output.args, vec!["--agent", "relaycast"]);
+        assert_eq!(output.args, vec!["--agent", "agent-relay"]);
         assert_eq!(
             output.side_effect_files,
             vec![temp.path().canonicalize().unwrap().join("opencode.json")]
@@ -525,21 +644,18 @@ mod tests {
         let server = MockServer::start();
         let register_mock = server.mock(|when, then| {
             when.method(POST)
-                .path("/v1/agents/spawn")
+                .path("/v1/agents")
                 .body_contains("\"name\":\"test-agent\"")
                 .body_contains("\"cli\":\"claude\"");
             then.status(200).json_body(json!({
                 "ok": true,
                 "data": {
                     "id": "agent_register_test",
+                    "workspace_id": "ws_register_test",
                     "name": "test-agent",
                     "token": "at_live_register_test_token",
-                    "cli": "claude",
-                    "task": "relay worker session for test-agent",
-                    "channel": null,
                     "status": "online",
-                    "created_at": "2026-01-01T00:00:00.000Z",
-                    "already_existed": false
+                    "created_at": "2026-01-01T00:00:00.000Z"
                 }
             }));
         });
@@ -575,9 +691,174 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn register_retries_transient_overload_before_surface_terminal_diagnostics() {
+        let _env = EnvGuard::all();
+        std::env::remove_var("RELAY_API_KEY");
+        std::env::remove_var("RELAY_BASE_URL");
+        std::env::remove_var("RELAY_AGENT_TOKEN");
+
+        let server = MockServer::start();
+        let register_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(503)
+                .header("x-request-id", "mcp-args-374")
+                .header("retry-after", "5")
+                .json_body(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "registration_backend_overloaded",
+                        "message": "deterministic registration failure"
+                    }
+                }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let mut cmd = command("codex", temp.path());
+        cmd.register = true;
+        cmd.base_url = Some(server.base_url());
+        cmd.api_key = Some("rk_live_test".to_string());
+        cmd.agent_token = None;
+
+        let error = compute_mcp_args_output(cmd)
+            .await
+            .expect_err("the controlled registration error must surface");
+        let message = error.to_string();
+
+        for marker in [
+            "(503)",
+            "registration_backend_overloaded",
+            "deterministic registration failure",
+            "request_id: mcp-args-374",
+            "attempts: 3",
+        ] {
+            assert!(message.contains(marker), "missing {marker}: {message}");
+        }
+        // The broker-owned retry budget handles the typed transient overload;
+        // the terminal diagnostic must report the total broker attempts.
+        register_mock.assert_hits(3);
+    }
+
+    #[tokio::test]
+    async fn register_timeout_remains_bounded() {
+        let server = MockServer::start();
+        let register_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(200)
+                // Native-root discovery can take tens of milliseconds on a
+                // cold machine. Leave enough room to prove the request was
+                // sent while keeping the server response beyond the bound.
+                .delay(Duration::from_secs(2))
+                .json_body(json!({
+                    "ok": true,
+                    "data": {
+                        "id": "agent_too_slow",
+                        "workspace_id": "ws_register_test",
+                        "name": "test-agent",
+                        "token": "at_live_too_slow",
+                        "status": "online",
+                        "created_at": "2026-01-01T00:00:00.000Z"
+                    }
+                }));
+        });
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            register_agent_token_for_mcp_args_with_timeout(
+                "codex",
+                "test-agent",
+                Some("rk_live_test".to_string()),
+                Some(server.base_url()),
+                Duration::from_secs(1),
+            ),
+        )
+        .await
+        .expect("the injected 1s registration bound must finish within the outer guard");
+        let error = match outcome {
+            Ok(_) => panic!("the delayed registration must time out"),
+            Err(error) => error,
+        };
+
+        let message = error.to_string();
+        for marker in ["register transport error", "1s"] {
+            assert!(message.contains(marker), "missing {marker}: {message}");
+        }
+        register_mock.assert_hits(1);
+    }
+
+    /// The wrapper timeout must always be strictly larger than both the
+    /// helper's bounded-retry budget and its separate outer guard, plus a
+    /// non-zero slack margin. If this regresses, the wrapper's
+    /// `tokio::time::timeout` can fire first and discard the helper's typed
+    /// exhaustion/fatal diagnostic.
+    #[test]
+    fn wrapper_timeout_never_races_the_helpers_own_budget() {
+        assert!(
+            MCP_ARGS_REGISTER_TIMEOUT > MAX_AGENT_REGISTRATION_ELAPSED,
+            "the CLI wrapper timeout ({MCP_ARGS_REGISTER_TIMEOUT:?}) must exceed the helper's \
+             own bounded-retry budget ({MAX_AGENT_REGISTRATION_ELAPSED:?})"
+        );
+        assert!(
+            MCP_ARGS_REGISTER_TIMEOUT > MAX_AGENT_REGISTRATION_OUTER_TIMEOUT,
+            "the CLI wrapper timeout ({MCP_ARGS_REGISTER_TIMEOUT:?}) must exceed the helper's \
+             defensive outer guard ({MAX_AGENT_REGISTRATION_OUTER_TIMEOUT:?})"
+        );
+        assert_eq!(
+            MCP_ARGS_REGISTER_TIMEOUT,
+            MAX_AGENT_REGISTRATION_OUTER_TIMEOUT + MCP_ARGS_REGISTER_TIMEOUT_SLACK,
+            "the wrapper timeout must be derived from the helper's outer guard plus explicit \
+             slack, not a magic number that can silently drift out of sync"
+        );
+    }
+
+    #[tokio::test]
+    async fn register_uses_full_default_timeout_and_surfaces_typed_error_not_generic_timeout() {
+        // Regression test for the exact-head finding: with the *real* default
+        // `MCP_ARGS_REGISTER_TIMEOUT` (derived from the helper's defensive
+        // `MAX_AGENT_REGISTRATION_OUTER_TIMEOUT` plus slack), a fast-failing
+        // fatal registration error must surface as the helper's own typed
+        // diagnostic through `map_register_agent_token_error`, never as the
+        // outer wrapper's generic "register timed out" fallback. This proves
+        // the default timeout no longer races the helper for realistic
+        // (non-hanging) failures.
+        let server = MockServer::start();
+        let register_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(401).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "unauthorized",
+                    "message": "bad api key"
+                }
+            }));
+        });
+
+        let error = register_agent_token_for_mcp_args_with_timeout(
+            "codex",
+            "test-agent",
+            Some("rk_live_test".to_string()),
+            Some(server.base_url()),
+            MCP_ARGS_REGISTER_TIMEOUT,
+        )
+        .await
+        .map(|_| ())
+        .expect_err("a fatal 401 must surface as an error");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("register auth error"),
+            "expected the helper's typed auth-error classification, got: {message}"
+        );
+        assert!(
+            !message.starts_with("register timed out after"),
+            "the default timeout must never race the helper's own bounded retry: {message}"
+        );
+        register_mock.assert_hits(1);
+    }
+
+    #[tokio::test]
     async fn register_does_not_hit_network_when_local_validation_fails() {
         // Locally-invalid input (malformed --existing-args JSON) must fail
-        // BEFORE the spawn endpoint is called. A POST /v1/agents/spawn
+        // BEFORE the register endpoint is called. A POST /v1/agents
         // rotates the agent's token, so firing it for a request that was
         // going to fail locally anyway is an unintended external side
         // effect.
@@ -588,19 +869,16 @@ mod tests {
 
         let server = MockServer::start();
         let spawn_mock = server.mock(|when, then| {
-            when.method(POST).path("/v1/agents/spawn");
+            when.method(POST).path("/v1/agents");
             then.status(200).json_body(json!({
                 "ok": true,
                 "data": {
                     "id": "agent_should_not_be_called",
+                    "workspace_id": "ws_should_not_be_called",
                     "name": "test-agent",
                     "token": "at_live_should_not_mint",
-                    "cli": "claude",
-                    "task": "relay worker session for test-agent",
-                    "channel": null,
                     "status": "online",
-                    "created_at": "2026-01-01T00:00:00.000Z",
-                    "already_existed": false
+                    "created_at": "2026-01-01T00:00:00.000Z"
                 }
             }));
         });
@@ -621,7 +899,7 @@ mod tests {
             .to_string()
             .contains("--existing-args must be a JSON array of strings"));
         // The spawn endpoint must NOT have been hit — token rotation is a
-        // real side effect on the relaycast backend.
+        // real side effect on the Relaycast backend.
         assert_eq!(spawn_mock.hits(), 0);
     }
 
@@ -646,11 +924,11 @@ mod tests {
             .await
             .expect("compute mcp args");
 
-        let expected = configure_relaycast_mcp_with_token(
+        let expected = configure_agent_relay_mcp_with_token(
             "claude",
             "test-agent",
             Some("rk_live_test"),
-            Some("https://api.test.relaycast.dev"),
+            Some("https://relay.example.com"),
             &[],
             &temp.path().canonicalize().unwrap(),
             Some("at_live_test"),
@@ -671,11 +949,11 @@ mod tests {
             .await
             .expect("compute mcp args");
 
-        let expected = configure_relaycast_mcp_with_token(
+        let expected = configure_agent_relay_mcp_with_token(
             "codex",
             "test-agent",
             Some("rk_live_test"),
-            Some("https://api.test.relaycast.dev"),
+            Some("https://relay.example.com"),
             &[],
             &temp.path().canonicalize().unwrap(),
             Some("at_live_test"),
@@ -702,7 +980,7 @@ mod tests {
         // there's no risk of state leaking even on panic.
         let _env = EnvGuard::all();
         std::env::set_var("RELAY_API_KEY", "rk_live_from_env");
-        std::env::set_var("RELAY_BASE_URL", "https://api.env.relaycast.dev");
+        std::env::set_var("RELAY_BASE_URL", "https://relay.example.com");
         std::env::set_var("RELAY_AGENT_TOKEN", "at_live_from_env");
         std::env::set_var("RELAY_WORKSPACES_JSON", r#"{"workspaces":["env-ws"]}"#);
         std::env::set_var("RELAY_DEFAULT_WORKSPACE", "env-default-workspace");
@@ -739,7 +1017,7 @@ mod tests {
         // so if env fallback works the sentinel values show up in the env
         // block or the RELAY_API_KEY that claude's injection path writes.
         assert!(
-            config_json.contains("https://api.env.relaycast.dev"),
+            config_json.contains("https://relay.example.com"),
             "base url from env missing in claude config: {config_json}"
         );
         assert!(

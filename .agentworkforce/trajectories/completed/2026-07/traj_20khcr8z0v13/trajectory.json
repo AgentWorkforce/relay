@@ -1,0 +1,53 @@
+{
+  "id": "traj_20khcr8z0v13",
+  "version": 1,
+  "task": {
+    "title": "Remove model-provider expansion from AI SDK harness plan"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-15T23:45:48.510Z",
+  "completedAt": "2026-07-15T23:46:15.388Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-15T23:46:15.002Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_asvpcmcj8lyu",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-15T23:46:15.002Z",
+      "endedAt": "2026-07-15T23:46:15.388Z",
+      "events": [
+        {
+          "ts": 1784159175003,
+          "type": "decision",
+          "content": "Limit AI SDK adoption to coding-harness adapters: Limit AI SDK adoption to coding-harness adapters",
+          "raw": {
+            "question": "Limit AI SDK adoption to coding-harness adapters",
+            "chosen": "Limit AI SDK adoption to coding-harness adapters",
+            "alternatives": [],
+            "reasoning": "The user confirmed that model-provider support and a Relay-owned ToolLoopAgent are not desired. Keep the roadmap focused on official HarnessV1 adapters, with PTY fallback for unsupported external harnesses."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Removed the model-provider expansion plan and reconciled the remaining roadmap around coding-harness adapters only.",
+    "approach": "Standard approach",
+    "confidence": 0.99
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "765e42535063b9d61262a537b1fd364d3e965000",
+    "endRef": "765e42535063b9d61262a537b1fd364d3e965000"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "id": "codex-hook-live-trust-upgrade",
+  "kind": "bugfix",
+  "title": "Verify approved hook upgrades on the existing Codex daemon",
+  "runner": { "command": ["node", "tests/relayflows/cases/codex-hook-live-trust-upgrade/run.mjs"] },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": { "outcome": "bug", "signature": "loaded_codex_hook_snapshot_stays_stale" },
+    "head": { "outcome": "fixed", "signature": "loaded_codex_hook_snapshot_verified" }
+  }
+}

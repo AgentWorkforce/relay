@@ -1,6 +1,6 @@
 ---
 paths:
-  - 'src/cli/**/*.ts'
+  - 'packages/cli/src/cli/**/*.ts'
 ---
 
 # CLI Module Conventions
@@ -13,7 +13,7 @@ paths:
 
 ## Entry Point
 
-- `src/cli/bootstrap.ts` is the CLI entry point (NOT `src/cli/index.ts`)
+- `packages/cli/src/cli/bootstrap.ts` is the CLI entry point (NOT `packages/cli/src/cli/index.ts`)
 - `bootstrap.ts` registers all command modules and wires up the Commander program
 
 ## Command Module Pattern
@@ -37,7 +37,7 @@ export function registerFooCommands(program: Command, overrides: Partial<FooDepe
 
 ## Command Modules
 
-Located in `src/cli/commands/`:
+Located in `packages/cli/src/cli/commands/`:
 
 - `agent-management.ts` — spawn, release, agents, who, shadow
 - `messaging.ts` — send, inbox, channels, DMs
@@ -49,7 +49,7 @@ Located in `src/cli/commands/`:
 
 ## Shared Helpers
 
-Located in `src/cli/lib/`:
+Located in `packages/cli/src/cli/lib/`:
 
 - `client-factory.ts` — creates AgentRelayClient instances
 - `broker-lifecycle.ts` — broker start/stop helpers

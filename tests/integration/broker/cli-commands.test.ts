@@ -38,9 +38,9 @@ function resolveCliBin(): string[] | null {
     return [process.env.AGENT_RELAY_CLI_BIN];
   }
 
-  // 2. Compiled dist/src/cli/index.js relative to repo root
+  // 2. Compiled packages/cli/dist/cli/index.js relative to repo root
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
-  const cliEntrypoint = path.join(repoRoot, 'dist', 'src', 'cli', 'index.js');
+  const cliEntrypoint = path.join(repoRoot, 'packages', 'cli', 'dist', 'cli', 'index.js');
   if (fs.existsSync(cliEntrypoint)) {
     return [process.execPath, cliEntrypoint];
   }

@@ -3,7 +3,7 @@ name: Track GitHub Stars in PostHog
 on:
   schedule:
     # Every 6 hours
-    - cron: "15 */6 * * *"
+    - cron: '15 */6 * * *'
   workflow_dispatch:
 
 permissions:

@@ -4,11 +4,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: [
-      'src/__tests__/**/*.test.ts',
-      'src/workflows/__tests__/**/*.test.ts',
-      'src/provisioner/__tests__/presets.test.ts',
-    ],
+    include: ['src/__tests__/**/*.test.ts'],
     exclude: ['src/__tests__/unit.test.ts'],
   },
 });

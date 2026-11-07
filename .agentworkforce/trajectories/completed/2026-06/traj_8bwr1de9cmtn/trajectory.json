@@ -1,0 +1,25 @@
+{
+  "id": "traj_8bwr1de9cmtn",
+  "version": 1,
+  "task": {
+    "title": "Add 4 new eval scenarios: t01-thread-reply, r05-check-inbox, r06-group-dm, r07-list-agents"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-12T09:44:48.270Z",
+  "completedAt": "2026-06-12T09:45:54.853Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Added 4 new eval scenarios to the broker eval suite: t01-thread-reply (channel thread reply stimulus), r05-check-inbox (proactive inbox polling), r06-group-dm (multi-recipient DM), r07-list-agents (team roster lookup). Updated scenarios/index.ts to register all four. Build passes clean.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "7cca70aa5440500cb315cfa1c863c768d56be3c9",
+    "endRef": "7cca70aa5440500cb315cfa1c863c768d56be3c9"
+  }
+}

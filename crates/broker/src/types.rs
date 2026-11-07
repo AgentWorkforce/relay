@@ -1,5 +1,9 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+use crate::ids::{
+    AgentId, DeliveryId, EventId, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId,
+};
 use crate::protocol::MessageInjectionMode;
 
 /// Per-worker inbound delivery mode controlling how inbound relay messages are
@@ -63,18 +67,18 @@ pub struct PendingRelayMessage {
     /// name, or sentinel like `"thread"`. Used as the `target` arg to
     /// `queue_and_try_delivery_raw` on drain so the re-injected
     /// message matches the original routing.
-    pub target: String,
+    pub target: MessageTarget,
     /// Original thread id, when the inbound was a thread reply.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread_id: Option<String>,
+    pub thread_id: Option<ThreadId>,
     /// Original workspace id, when known. Channel + DM routing both
     /// depend on this; dropping it would attribute the flushed
     /// message to the wrong workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<String>,
+    pub workspace_id: Option<WorkspaceId>,
     /// Original workspace alias (display name), when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_alias: Option<String>,
+    pub workspace_alias: Option<WorkspaceAlias>,
     /// Original delivery priority. 0 = P0, …, 4 = P4. Defaults to 2
     /// (P2) when the source didn't carry a priority.
     #[serde(default = "default_priority")]
@@ -88,7 +92,21 @@ pub struct PendingRelayMessage {
     /// Inbound event_id when the source carried one. Preserved for
     /// telemetry / dedup parity with the auto-inject path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub event_id: Option<String>,
+    pub event_id: Option<EventId>,
+    /// Relaycast delivery metadata for messages received over node control.
+    /// Manual-flush messages retain this receipt until PTY injection so the
+    /// broker can advance the cumulative ACK only across an injected prefix.
+    #[serde(skip)]
+    pub relaycast_receipt: Option<RelaycastDeliveryReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelaycastDeliveryReceipt {
+    pub agent: WorkerName,
+    pub agent_id: AgentId,
+    pub delivery_id: DeliveryId,
+    pub msg_id: EventId,
+    pub seq: u64,
 }
 
 fn default_priority() -> u8 {
@@ -138,50 +156,66 @@ pub enum SenderKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboundRelayEvent {
-    pub event_id: String,
-    pub workspace_id: String,
+    pub event_id: EventId,
+    pub workspace_id: WorkspaceId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_alias: Option<String>,
+    pub workspace_alias: Option<WorkspaceAlias>,
     pub kind: InboundKind,
     pub from: String,
-    pub sender_agent_id: Option<String>,
+    pub sender_agent_id: Option<AgentId>,
     pub sender_kind: SenderKind,
-    pub target: String,
+    pub target: MessageTarget,
     pub text: String,
-    pub thread_id: Option<String>,
+    pub thread_id: Option<ThreadId>,
     pub priority: RelayPriority,
-}
-
-/// A command invocation event received over WebSocket.
-/// Relaycast emits these as `type: "command.invoked"` when an agent invokes
-/// a registered command (e.g. `/spawn`, `/release`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BrokerCommandEvent {
-    /// The slash command name (e.g. "/spawn", "/release").
-    pub command: String,
-    pub workspace_id: String,
-    pub workspace_alias: Option<String>,
-    /// Channel the command was invoked in.
-    pub channel: String,
-    /// Agent ID or name of the invoker.
-    pub invoked_by: String,
-    /// Target command handler agent ID, when provided by Relaycast.
-    pub handler_agent_id: Option<String>,
-    /// Structured parameters for the command.
-    pub payload: BrokerCommandPayload,
+    /// File attachments carried by the message (empty for non-message events).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<crate::attachments::InboundAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpawnParams {
-    pub name: String,
+    pub name: WorkerName,
     pub cli: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Optional dispatch context for the worker process.
+    ///
+    /// Absent context is a strict no-op so existing spawn callers do not gain
+    /// git configuration or commit-message behavior.
+    #[serde(default)]
+    pub metadata: SpawnMetadata,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpawnMetadata {
+    /// Public commit-attribution values supplied by the dispatcher. The broker
+    /// uses these for ledger trailers when this complete value is present.
+    /// Session trailers are derived independently from the resolved harness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<CommitAttestation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitAttestation {
+    pub jti: String,
+    pub agent_id: String,
+    pub sponsor_id: String,
+    /// Optional dispatcher hint for the ai-hist session UUID. Active worker
+    /// spawns prefer the session resolved by the broker and inject it as
+    /// `RELAY_ATTEST_SESSION_ID` so the embedded `prepare-commit-msg` hook can
+    /// stamp a `Session-Id:` git trailer on every commit.
+    ///
+    /// This remains useful to legacy spawn paths and as a fallback when the
+    /// broker already receives a stable session reference from its dispatcher.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReleaseParams {
-    pub name: String,
+    pub name: WorkerName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,11 +227,11 @@ pub enum BrokerCommandPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InjectRequest {
     pub id: String,
-    pub workspace_id: String,
+    pub workspace_id: WorkspaceId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_alias: Option<String>,
+    pub workspace_alias: Option<WorkspaceAlias>,
     pub from: String,
-    pub target: String,
+    pub target: MessageTarget,
     pub body: String,
     pub priority: RelayPriority,
     pub attempts: u32,
@@ -211,7 +245,35 @@ pub struct InjectRequest {
 #[derive(Debug, Default)]
 pub struct InboundDeliveryState {
     pub mode: InboundDeliveryMode,
+    /// Monotonic generation advanced by every successful mode write, including
+    /// same-value writes. Detach restores compare this generation so an ABA
+    /// sequence cannot make a concurrent session look unchanged.
+    pub revision: u64,
     pub pending: std::collections::VecDeque<PendingRelayMessage>,
+}
+
+/// Per-spawn structured result callback configuration. The broker generates a
+/// token for agents spawned with a result contract and injects this into that
+/// agent's MCP server environment.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentResultMcpConfig {
+    pub callback_url: String,
+    pub token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+}
+
+impl AgentResultMcpConfig {
+    pub fn env_pairs(&self) -> Vec<(&'static str, String)> {
+        let mut pairs = vec![
+            ("AGENT_RELAY_RESULT_URL", self.callback_url.clone()),
+            ("AGENT_RELAY_RESULT_TOKEN", self.token.clone()),
+        ];
+        if let Some(schema) = &self.schema {
+            pairs.push(("AGENT_RELAY_RESULT_SCHEMA", schema.to_string()));
+        }
+        pairs
+    }
 }
 
 /// Per-worker cap on the pending queue. Prevents unbounded growth when a
@@ -239,21 +301,74 @@ impl InboundDeliveryState {
     pub fn new(mode: InboundDeliveryMode) -> Self {
         Self {
             mode,
+            revision: 0,
             pending: std::collections::VecDeque::new(),
         }
     }
 
+    /// Apply a mode write and advance its generation even when the enum value
+    /// is unchanged. Returning the prior mode keeps transition side effects at
+    /// the broker runtime boundary.
+    pub fn set_mode(&mut self, mode: InboundDeliveryMode) -> InboundDeliveryMode {
+        let previous = self.mode;
+        self.mode = mode;
+        self.revision = self
+            .revision
+            .checked_add(1)
+            .expect("inbound delivery mode revision exhausted");
+        previous
+    }
+
+    /// Whether a detach restore still owns the exact mode generation it set.
+    pub fn matches_mode_guard(&self, mode: InboundDeliveryMode, revision: u64) -> bool {
+        self.mode == mode && self.revision == revision
+    }
+
+    fn fleet_predecessor_insertion_index(&self, msg: &PendingRelayMessage) -> Option<usize> {
+        msg.relaycast_receipt.as_ref().and_then(|receipt| {
+            self.pending.iter().position(|pending| {
+                pending.relaycast_receipt.as_ref().is_some_and(|candidate| {
+                    candidate.agent_id == receipt.agent_id && candidate.seq > receipt.seq
+                })
+            })
+        })
+    }
+
+    /// Whether a full queue may temporarily admit this missing fleet
+    /// predecessor without evicting an unACKed successor. Only one overflow
+    /// slot is allowed; after it is restored the now-ACKable head can drain.
+    pub(crate) fn can_restore_fleet_predecessor(&self, msg: &PendingRelayMessage) -> bool {
+        self.pending.len() == MAX_PENDING_PER_WORKER
+            && self.fleet_predecessor_insertion_index(msg).is_some()
+    }
+
     /// Push a pending message, evicting the oldest entry when the
-    /// per-worker cap would be exceeded. Returns whether an eviction
-    /// happened plus the evicted message's `from` field (for logging).
+    /// per-worker cap would be exceeded. A recovered fleet predecessor may
+    /// temporarily occupy one extra slot so repairing a full blocked queue
+    /// never requires losing one of its successors. Returns whether an
+    /// eviction happened plus the evicted message's `from` field.
     fn push_pending(&mut self, msg: PendingRelayMessage) -> Option<String> {
+        let insertion_index = self.fleet_predecessor_insertion_index(&msg);
         let mut evicted_from = None;
-        if self.pending.len() >= MAX_PENDING_PER_WORKER {
+        if self.pending.len() >= MAX_PENDING_PER_WORKER
+            && !(self.pending.len() == MAX_PENDING_PER_WORKER && insertion_index.is_some())
+        {
             if let Some(dropped) = self.pending.pop_front() {
                 evicted_from = Some(dropped.from);
             }
         }
-        self.pending.push_back(msg);
+        // A fleet redelivery can repair a received-but-unACKed hole after the
+        // broker lost local custody of the missing frame. Relaycast may replay
+        // that lower sequence after later frames are already parked in
+        // `manual_flush`; appending it would leave the queue permanently
+        // headed by an unACKable successor. Reinsert only relative to later
+        // receipts for the same immutable identity. Local messages and other
+        // identities keep their existing FIFO positions.
+        if let Some(index) = insertion_index {
+            self.pending.insert(index, msg);
+        } else {
+            self.pending.push_back(msg);
+        }
         evicted_from
     }
 
@@ -290,6 +405,11 @@ impl InboundDeliveryState {
     pub fn pending_snapshot(&self) -> Vec<PendingRelayMessage> {
         self.pending.iter().cloned().collect()
     }
+
+    /// Number of queued inbound messages waiting to reach the worker.
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
 }
 
 #[cfg(test)]
@@ -303,7 +423,7 @@ mod inbound_delivery_tests {
             // Target defaults to the sender's name in tests that don't
             // care about routing — the gating logic only inspects mode
             // / queue length, not the routing fields.
-            target: "worker".to_string(),
+            target: MessageTarget::new("worker"),
             thread_id: None,
             workspace_id: None,
             workspace_alias: None,
@@ -311,7 +431,22 @@ mod inbound_delivery_tests {
             mode: MessageInjectionMode::Wait,
             queued_at_ms: 0,
             event_id: None,
+            relaycast_receipt: None,
         }
+    }
+
+    #[test]
+    fn mode_revision_rejects_an_aba_restore() {
+        let mut state = InboundDeliveryState::new(InboundDeliveryMode::AutoInject);
+        state.set_mode(InboundDeliveryMode::ManualFlush);
+        let session_revision = state.revision;
+        assert!(state.matches_mode_guard(InboundDeliveryMode::ManualFlush, session_revision));
+
+        state.set_mode(InboundDeliveryMode::AutoInject);
+        state.set_mode(InboundDeliveryMode::ManualFlush);
+
+        assert_eq!(state.mode, InboundDeliveryMode::ManualFlush);
+        assert!(!state.matches_mode_guard(InboundDeliveryMode::ManualFlush, session_revision));
     }
 
     #[test]
@@ -346,14 +481,15 @@ mod inbound_delivery_tests {
         let queued = PendingRelayMessage {
             from: "Bob".to_string(),
             body: "ship it".to_string(),
-            target: "#general".to_string(),
-            thread_id: Some("thr_abc".to_string()),
-            workspace_id: Some("ws_demo".to_string()),
-            workspace_alias: Some("Demo".to_string()),
+            target: MessageTarget::new("#general"),
+            thread_id: Some(ThreadId::new("thr_abc")),
+            workspace_id: Some(WorkspaceId::new("ws_demo")),
+            workspace_alias: Some(WorkspaceAlias::new("Demo")),
             priority: 1,
             mode: MessageInjectionMode::Steer,
             queued_at_ms: 123_456,
-            event_id: Some("evt_xyz".to_string()),
+            event_id: Some(EventId::new("evt_xyz")),
+            relaycast_receipt: None,
         };
         let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
         state.accept_inbound(queued.clone());
@@ -461,5 +597,40 @@ mod inbound_delivery_tests {
             InboundDeliveryMode::ManualFlush.as_wire_str(),
             "manual_flush"
         );
+    }
+
+    #[test]
+    fn replayed_fleet_predecessor_is_restored_ahead_of_parked_successors() {
+        let mut state = InboundDeliveryState::new(InboundDeliveryMode::ManualFlush);
+        let fleet_msg = |seq: u64| PendingRelayMessage {
+            from: "lead".to_string(),
+            body: format!("message {seq}"),
+            target: MessageTarget::new("worker"),
+            thread_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            priority: 2,
+            mode: MessageInjectionMode::Wait,
+            queued_at_ms: seq,
+            event_id: Some(EventId::new(format!("message-{seq}"))),
+            relaycast_receipt: Some(RelaycastDeliveryReceipt {
+                agent: WorkerName::new("worker"),
+                agent_id: AgentId::new("agent-worker"),
+                delivery_id: DeliveryId::new(format!("delivery-{seq}")),
+                msg_id: EventId::new(format!("message-{seq}")),
+                seq,
+            }),
+        };
+
+        state.accept_inbound(fleet_msg(90));
+        state.accept_inbound(fleet_msg(91));
+        state.accept_inbound(fleet_msg(89));
+
+        let sequences = state
+            .pending_snapshot()
+            .into_iter()
+            .map(|message| message.relaycast_receipt.unwrap().seq)
+            .collect::<Vec<_>>();
+        assert_eq!(sequences, vec![89, 90, 91]);
     }
 }

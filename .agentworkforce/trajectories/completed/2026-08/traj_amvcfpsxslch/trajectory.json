@@ -1,0 +1,57 @@
+{
+  "id": "traj_amvcfpsxslch",
+  "version": 1,
+  "task": {
+    "title": "Fix PR #1619 accepted placement logging exception",
+    "source": {
+      "system": "plain",
+      "id": "relay#1619"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-26T20:10:39.773Z",
+  "completedAt": "2026-08-26T20:12:27.497Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-26T20:12:12.424Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_cubki8sa0bgb",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-26T20:12:12.424Z",
+      "endedAt": "2026-08-26T20:12:27.497Z",
+      "events": [
+        {
+          "ts": 1787775132425,
+          "type": "decision",
+          "content": "Isolate placementLog at accepted-placement roster refresh: Isolate placementLog at accepted-placement roster refresh",
+          "raw": {
+            "question": "Isolate placementLog at accepted-placement roster refresh",
+            "chosen": "Isolate placementLog at accepted-placement roster refresh",
+            "alternatives": [],
+            "reasoning": "commands.invoke has already committed the remote spawn; observability exceptions must not convert success into a retryable rejection. Regression ablation failed 1/28 specifically with observability sink down; restored source passed 28/28."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Isolated placementLog failures after an accepted automatic dispatch and added a regression proving roster-refresh plus logger failures cannot reject committed work. Source-revert ablation failed 1/28 for the expected observability exception; restored source passed 28/28. The SDK-only CI command npm run -w @agent-relay/sdk check (tsc -p tsconfig.json --noEmit) passed; this does not claim the broader root typecheck, SDK build, or test:types scopes.",
+    "approach": "Standard approach",
+    "confidence": 0.99
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "b86e33e23ac3c3d80c7bda7a49b4fb47c6515da5",
+    "endRef": "b86e33e23ac3c3d80c7bda7a49b4fb47c6515da5"
+  }
+}

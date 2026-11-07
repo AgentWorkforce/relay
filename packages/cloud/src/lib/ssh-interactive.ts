@@ -161,32 +161,63 @@ export async function runInteractiveSession(
     const { Client } = ssh2;
     const sshClient = new Client();
     let sshReady = false;
-    const tunnel: { server: ReturnType<typeof createServer> | null } = { server: null };
+    // OAuth callback tunnel. The provider CLI runs *inside the sandbox* and
+    // advertises a loopback redirect (e.g. codex prints
+    // redirect_uri=http://localhost:1455/auth/callback). We listen on the same
+    // port locally and forward each connection over SSH into the sandbox, so
+    // the browser's callback reaches the provider CLI and login completes.
+    //
+    // Two loopback-family mismatches have to be handled, on opposite ends:
+    //
+    //  1. LOCAL listener — bind BOTH families. macOS resolves `localhost` to
+    //     ::1 *and* 127.0.0.1 and browsers frequently try ::1 first; binding
+    //     IPv4 only let the callback hit a closed ::1 port locally. Bind
+    //     127.0.0.1 as the primary (its listen/EADDRINUSE result gates
+    //     readiness) and ::1 best-effort.
+    //
+    //  2. REMOTE forward target — forward to `127.0.0.1` explicitly, NOT the
+    //     hostname `localhost`. codex binds its callback server on
+    //     `127.0.0.1:1455` (IPv4 loopback only — verified via `ss -tlnp`), but
+    //     the Daytona sandbox resolves `localhost` to `::1` first (its
+    //     /etc/hosts lists the IPv6 entry and getent returns ::1). Forwarding
+    //     to `localhost` therefore dialed `::1:1455` inside the sandbox, where
+    //     nothing listens, so every callback was refused and login hung
+    //     forever. Dialing the IPv4 address directly always lands on codex.
+    const tunnel: { servers: Array<ReturnType<typeof createServer>> } = { servers: [] };
+
+    const makeTunnelServer = () =>
+      runtime.createServer((localSocket) => {
+        sshClient.forwardOut('127.0.0.1', tunnelPort, '127.0.0.1', tunnelPort, (err, stream) => {
+          if (err) {
+            localSocket.end();
+            return;
+          }
+          localSocket.pipe(stream).pipe(localSocket);
+        });
+      });
 
     const sshReadyPromise = new Promise<void>((resolve, reject) => {
       sshClient.on('ready', () => {
         sshReady = true;
 
-        tunnel.server = runtime.createServer((localSocket) => {
-          sshClient.forwardOut('127.0.0.1', tunnelPort, 'localhost', tunnelPort, (err, stream) => {
-            if (err) {
-              localSocket.end();
-              return;
-            }
-            localSocket.pipe(stream).pipe(localSocket);
-          });
-        });
-
-        tunnel.server.on('error', (err: NodeJS.ErrnoException) => {
+        const tunnelV4 = makeTunnelServer();
+        tunnel.servers.push(tunnelV4);
+        tunnelV4.on('error', (err: NodeJS.ErrnoException) => {
           if (err.code === 'EADDRINUSE') {
             io.log(color.dim(`Note: Port ${tunnelPort} in use, OAuth callbacks may not work.`));
           }
           resolve();
         });
-
-        tunnel.server.listen(tunnelPort, '127.0.0.1', () => {
+        tunnelV4.listen(tunnelPort, '127.0.0.1', () => {
           resolve();
         });
+
+        // IPv6 loopback (::1) — best effort; never blocks readiness or surfaces
+        // errors (e.g. hosts without IPv6, or ::1 already bound).
+        const tunnelV6 = makeTunnelServer();
+        tunnel.servers.push(tunnelV6);
+        tunnelV6.on('error', () => {});
+        tunnelV6.listen(tunnelPort, '::1', () => {});
       });
 
       sshClient.on('error', (err) => {
@@ -218,7 +249,7 @@ export async function runInteractiveSession(
       ]);
     } catch (err) {
       io.error(color.red(`Failed to connect via SSH: ${err instanceof Error ? err.message : String(err)}`));
-      if (tunnel.server) tunnel.server.close();
+      tunnel.servers.forEach((s) => s.close());
       sshClient.end();
       throw err;
     }
@@ -446,7 +477,7 @@ export async function runInteractiveSession(
       io.log('');
       io.error(color.red(`Remote auth command failed: ${execError.message}`));
     } finally {
-      if (tunnel.server) tunnel.server.close();
+      tunnel.servers.forEach((s) => s.close());
       sshClient.end();
     }
   } else {

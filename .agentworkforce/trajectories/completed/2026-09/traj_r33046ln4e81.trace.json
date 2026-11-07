@@ -1,0 +1,242 @@
+{
+  "version": "1.0.0",
+  "id": "274686cb-af85-44af-8d6b-8dd8799b9d51",
+  "timestamp": "2026-09-03T02:27:09.646Z",
+  "trajectory": "traj_r33046ln4e81",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/completed/2026-09/traj_z726m5ax09e9.trace.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 13,
+              "end_line": 20,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 49,
+              "end_line": 52,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/escalate-infra.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 20,
+              "end_line": 29,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 94,
+              "end_line": 100,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/run-artifacts.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 5,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 40,
+              "end_line": 65,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 102,
+              "end_line": 109,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 147,
+              "end_line": 161,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/slack-alert.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 123,
+              "end_line": 134,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/verify-features-escalation.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 43,
+              "end_line": 50,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 95,
+              "end_line": 101,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 108,
+              "end_line": 118,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 158,
+              "end_line": 164,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 170,
+              "end_line": 178,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 181,
+              "end_line": 190,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 408,
+              "end_line": 453,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 475,
+              "end_line": 481,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 845,
+              "end_line": 863,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1642-verify-features-escalation/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 207,
+              "end_line": 229,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 395,
+              "end_line": 486,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 545,
+              "end_line": 552,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "workflows/verify-features.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 90,
+              "end_line": 96,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 287,
+              "end_line": 298,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 1887,
+              "end_line": 1893,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 2581,
+              "end_line": 2587,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 2618,
+              "end_line": 2625,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 2668,
+              "end_line": 2674,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 2678,
+              "end_line": 2684,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 2726,
+              "end_line": 2750,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            },
+            {
+              "start_line": 2757,
+              "end_line": 2772,
+              "revision": "7ccefae41e07834238e33e05fa448ba8339a3454"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

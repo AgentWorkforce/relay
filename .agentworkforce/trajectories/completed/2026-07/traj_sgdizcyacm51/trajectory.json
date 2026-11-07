@@ -1,0 +1,53 @@
+{
+  "id": "traj_sgdizcyacm51",
+  "version": 1,
+  "task": {
+    "title": "Persist up workspace key per-project; resolve it in CWD; add --wk to up"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-15T19:28:16.051Z",
+  "completedAt": "2026-07-15T19:28:23.602Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-15T19:28:17.148Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_a1d3oh6mby93",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-15T19:28:17.148Z",
+      "endedAt": "2026-07-15T19:28:23.602Z",
+      "events": [
+        {
+          "ts": 1784143697150,
+          "type": "decision",
+          "content": "Persist workspace key per-project on up; resolve below flag/env above global store: Persist workspace key per-project on up; resolve below flag/env above global store",
+          "raw": {
+            "question": "Persist workspace key per-project on up; resolve below flag/env above global store",
+            "chosen": "Persist workspace key per-project on up; resolve below flag/env above global store",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "up persists project workspace key; CWD resolution; --wk on up",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "ff4b2773aabaa2c2ec3cbf2d9856b8bce77022e4",
+    "endRef": "ff4b2773aabaa2c2ec3cbf2d9856b8bce77022e4"
+  }
+}

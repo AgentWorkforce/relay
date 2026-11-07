@@ -1,0 +1,53 @@
+{
+  "id": "traj_ei1zajpyq584",
+  "version": 1,
+  "task": {
+    "title": "Rename SDK spawn provider terminology"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-27T12:49:51.440Z",
+  "completedAt": "2026-05-27T12:57:01.785Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-27T12:49:55.778Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_6kshcl1sbi15",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-27T12:49:55.778Z",
+      "endedAt": "2026-05-27T12:57:01.785Z",
+      "events": [
+        {
+          "ts": 1779886195779,
+          "type": "decision",
+          "content": "Rename SDK provider spawn vocabulary to cli/headless: Rename SDK provider spawn vocabulary to cli/headless",
+          "raw": {
+            "question": "Rename SDK provider spawn vocabulary to cli/headless",
+            "chosen": "Rename SDK provider spawn vocabulary to cli/headless",
+            "alternatives": [],
+            "reasoning": "The broker payload already uses cli, and provider is stale terminology now that harness configs represent the execution harness. Because this is a major release, the SDK can remove the legacy SpawnProviderInput/spawnProvider surface instead of layering aliases."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Renamed the SDK spawn API from provider terminology to CLI terminology for the major release: AgentRelayClient.spawnProvider -> spawnCli, SpawnProviderInput -> SpawnCliInput, SpawnHeadlessInput.provider -> cli, lifecycle kind provider -> cli/headless, with docs, changelog migration notes, gateway type update, and tests.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "f54552b5ac225df762bacbbad08cb66ef46ae5f7",
+    "endRef": "f54552b5ac225df762bacbbad08cb66ef46ae5f7"
+  }
+}

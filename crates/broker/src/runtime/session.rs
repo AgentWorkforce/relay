@@ -3,20 +3,20 @@ use super::*;
 /// Shared Relaycast connection state used by run_init and run_wrap.
 #[derive(Clone)]
 pub(crate) struct RelayWorkspace {
-    pub(crate) workspace_id: String,
-    pub(crate) workspace_alias: Option<String>,
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) workspace_alias: Option<WorkspaceAlias>,
     pub(crate) relay_workspace_key: String,
     pub(crate) self_name: String,
-    pub(crate) self_agent_id: String,
+    pub(crate) self_agent_id: AgentId,
     pub(crate) self_names: HashSet<String>,
-    pub(crate) self_agent_ids: HashSet<String>,
+    pub(crate) self_agent_ids: HashSet<AgentId>,
     pub(crate) http_client: RelaycastHttpClient,
     pub(crate) ws_control_tx: mpsc::Sender<WsControl>,
 }
 
 pub(crate) struct RelaySession {
-    pub(crate) http_base: String,
-    pub(crate) default_workspace_id: Option<String>,
+    pub(crate) configured_base: Option<String>,
+    pub(crate) default_workspace_id: Option<WorkspaceId>,
     pub(crate) workspaces: Vec<RelayWorkspace>,
     pub(crate) ws_inbound_rx: mpsc::Receiver<WorkspaceInboundMessage>,
 }
@@ -25,12 +25,13 @@ pub(crate) struct RelaySession {
 pub(crate) struct RelayReadyState {
     pub(super) workspace_key: String,
     pub(super) memberships: Vec<WorkspaceMembershipSummary>,
-    pub(super) default_workspace_id: Option<String>,
+    pub(super) default_workspace_id: Option<WorkspaceId>,
 }
 
 pub(crate) async fn serve_startup_api_until_ready(
     listener: tokio::net::TcpListener,
     relay_ready: Arc<Notify>,
+    local_only: bool,
 ) -> tokio::net::TcpListener {
     loop {
         tokio::select! {
@@ -40,7 +41,7 @@ pub(crate) async fn serve_startup_api_until_ready(
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _addr)) => {
-                        tokio::spawn(handle_startup_api_connection(stream));
+                        tokio::spawn(handle_startup_api_connection(stream, local_only));
                     }
                     Err(error) => {
                         tracing::warn!(error = %error, "startup API accept failed");
@@ -52,7 +53,10 @@ pub(crate) async fn serve_startup_api_until_ready(
     }
 }
 
-pub(crate) async fn handle_startup_api_connection(mut stream: tokio::net::TcpStream) {
+pub(crate) async fn handle_startup_api_connection(
+    mut stream: tokio::net::TcpStream,
+    local_only: bool,
+) {
     let mut buffer = [0_u8; 1024];
     let read = match timeout(Duration::from_secs(5), stream.read(&mut buffer)).await {
         Ok(Ok(read)) => read,
@@ -70,11 +74,15 @@ pub(crate) async fn handle_startup_api_connection(mut stream: tokio::net::TcpStr
         .and_then(|line| line.split_whitespace().nth(1))
         .unwrap_or("/");
     let (status, content_type, body) = if path == "/health" {
-        (
-            "200 OK",
-            "application/json",
-            listen_api::listen_api_health_payload(None, vec![]).to_string(),
-        )
+        ("200 OK", "application/json", {
+            let mut payload = listen_api::listen_api_health_payload(None, vec![]);
+            if local_only {
+                payload["status"] = json!("degraded");
+                payload["mode"] = json!("local_only");
+                payload["relaycastConnected"] = json!(false);
+            }
+            payload.to_string()
+        })
     } else {
         (
             "503 Service Unavailable",
@@ -93,13 +101,42 @@ pub(crate) async fn handle_startup_api_connection(mut stream: tokio::net::TcpStr
 
 /// Build the standard env-var array passed to every spawned child agent.
 pub(crate) fn normalize_initial_task(task: Option<String>) -> Option<String> {
-    task.and_then(|value| {
-        if value.trim().is_empty() {
-            None
-        } else {
-            Some(value)
+    task.filter(|value| !value.trim().is_empty())
+}
+
+const EXIT_AFTER_TASK_INSTRUCTION: &str = "## Post-task exit\n\
+When the requested task is fully complete and you have reported the final outcome, output `/exit` on its own line so the Agent Relay harness exits cleanly. Do not output `/exit` before the task is complete.";
+
+pub(crate) fn apply_exit_after_task_instruction(task: Option<String>) -> String {
+    match normalize_initial_task(task) {
+        Some(task) => format!("{task}\n\n{EXIT_AFTER_TASK_INSTRUCTION}"),
+        None => EXIT_AFTER_TASK_INSTRUCTION.to_string(),
+    }
+}
+
+/// Resolve a spawn request's effective `exit_after_task` lifecycle flag from its
+/// `spawn_mode` selector and any explicit `exit_after_task` boolean.
+///
+/// Shared by the local HTTP spawn API and the engine-dispatched node spawn so
+/// task-exit semantics are identical on both paths: a `spawn_mode` of
+/// `task_exit`/`single_shot` — or an explicit `exit_after_task: true` — makes
+/// the agent exit once its task is done; `interactive`/absent keeps it running.
+/// An unrecognized `spawn_mode` is rejected with a caller-facing message.
+pub(crate) fn resolve_exit_after_task(
+    spawn_mode: Option<&str>,
+    exit_after_task: Option<bool>,
+) -> Result<bool, String> {
+    let normalized = spawn_mode.map(|value| value.trim().to_ascii_lowercase());
+    let spawn_mode_exit_after_task = match normalized.as_deref() {
+        None | Some("") | Some("interactive") => false,
+        Some("task_exit" | "task-exit" | "single_shot" | "single-shot") => true,
+        Some(other) => {
+            return Err(format!(
+                "unsupported spawnMode '{other}' (expected 'interactive' or 'task_exit')"
+            ));
         }
-    })
+    };
+    Ok(exit_after_task.unwrap_or(false) || spawn_mode_exit_after_task)
 }
 
 pub(crate) struct RelaySessionOptions<'a> {
@@ -110,20 +147,152 @@ pub(crate) struct RelaySessionOptions<'a> {
     pub(crate) agent_type: Option<&'a str>,
     /// Read .mcp.json for additional self-name identities
     pub(crate) read_mcp_identity: bool,
-    /// Write relaycast server entry to .mcp.json
-    pub(crate) ensure_mcp_config: bool,
     pub(crate) runtime_cwd: &'a Path,
+}
+
+/// Default timeout for the initial Relaycast handshake
+/// (`startup_session_set_with_options`). The underlying SDK bootstrap calls
+/// (`create_workspace` / agent registration) build a timeout-less reqwest
+/// client, so a stalled connection to the relay backend would otherwise hang
+/// startup indefinitely — long enough for an external supervisor (the CLI's
+/// `down --force`, a test watchdog) to reap the broker, which surfaces to the
+/// SDK as an opaque "broker exited with code null during initial handshake".
+/// This must exceed the auth client's typed `workspace_busy` retry window: that
+/// helper owns the admission cooldown and must be allowed to return its typed
+/// exhaustion/takeover result instead of being cancelled into a generic timeout.
+/// A single outer attempt is intentional; replaying the whole registration
+/// would restart the inner queue budget and can duplicate an ambiguous POST.
+const HANDSHAKE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(44);
+const HANDSHAKE_MAX_ATTEMPTS: u32 = 1;
+/// Base backoff between handshake attempts; doubles each retry, capped.
+const HANDSHAKE_BACKOFF_BASE: Duration = Duration::from_millis(250);
+const HANDSHAKE_BACKOFF_MAX: Duration = Duration::from_secs(2);
+/// Aggregate ceiling for the handshake. The auth client's typed
+/// `workspace_busy` retry deadline is 40s; the four-second margin below is
+/// reserved for its final response and the broker's error propagation before
+/// the harness SDK's 45s startup deadline.
+const HANDSHAKE_TOTAL_TIMEOUT: Duration = Duration::from_secs(44);
+#[cfg(test)]
+const HANDSHAKE_POST_ANNOUNCEMENT_RESERVE: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const HANDSHAKE_AUTH_RETRY_MARGIN: Duration = Duration::from_secs(3);
+
+/// Per-attempt handshake timeout, overridable via
+/// `AGENT_RELAY_HANDSHAKE_TIMEOUT_MS` (must be > 0).
+fn handshake_attempt_timeout() -> Duration {
+    parse_handshake_timeout(
+        std::env::var("AGENT_RELAY_HANDSHAKE_TIMEOUT_MS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// Max handshake attempts, overridable via `AGENT_RELAY_HANDSHAKE_ATTEMPTS`
+/// (must be >= 1).
+fn handshake_max_attempts() -> u32 {
+    parse_handshake_attempts(
+        std::env::var("AGENT_RELAY_HANDSHAKE_ATTEMPTS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// Parse the per-attempt timeout from an optional raw string (e.g. an env var),
+/// falling back to [`HANDSHAKE_ATTEMPT_TIMEOUT`] for missing/empty/invalid/zero
+/// values. Pure so it can be unit-tested without mutating process env.
+fn parse_handshake_timeout(raw: Option<&str>) -> Duration {
+    raw.and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(HANDSHAKE_ATTEMPT_TIMEOUT)
+}
+
+/// Parse the max attempt count from an optional raw string (e.g. an env var),
+/// falling back to [`HANDSHAKE_MAX_ATTEMPTS`] for missing/empty/invalid/zero
+/// values. Pure so it can be unit-tested without mutating process env.
+fn parse_handshake_attempts(raw: Option<&str>) -> u32 {
+    raw.and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|&attempts| attempts >= 1)
+        .unwrap_or(HANDSHAKE_MAX_ATTEMPTS)
+}
+
+/// Cap the next attempt to the aggregate handshake time that remains. Returning
+/// `None` means the broker has no time left to start another request.
+fn handshake_attempt_timeout_within_budget(
+    attempt_timeout: Duration,
+    elapsed: Duration,
+) -> Option<Duration> {
+    let remaining = HANDSHAKE_TOTAL_TIMEOUT.saturating_sub(elapsed);
+    (!remaining.is_zero()).then_some(attempt_timeout.min(remaining))
+}
+
+fn handshake_retry_fits_within_budget(elapsed: Duration, backoff: Duration) -> bool {
+    HANDSHAKE_TOTAL_TIMEOUT.saturating_sub(elapsed) > backoff
+}
+
+fn format_handshake_timeout_error(
+    attempts: u32,
+    attempt_timeout: Duration,
+    elapsed: Duration,
+) -> String {
+    format!(
+        "relaycast startup handshake received no response before its deadlines after {attempts} \
+         attempt(s) (up to {}ms per attempt, {}ms total elapsed; {}ms aggregate limit); \
+         registration was not confirmed and may still have completed server-side after the client \
+         stopped waiting",
+        attempt_timeout.as_millis(),
+        elapsed.as_millis(),
+        HANDSHAKE_TOTAL_TIMEOUT.as_millis()
+    )
+}
+
+async fn await_no_key_startup<T, F>(
+    startup: F,
+    attempt_timeout: Duration,
+    handshake_deadline: tokio::time::Instant,
+    handshake_started: Instant,
+) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    match tokio::time::timeout_at(handshake_deadline, startup).await {
+        Ok(result) => result.context("failed to initialize relaycast session"),
+        Err(_) => anyhow::bail!(format_handshake_timeout_error(
+            1,
+            attempt_timeout,
+            handshake_started.elapsed()
+        )),
+    }
+}
+
+fn startup_has_preconfigured_workspace_key() -> bool {
+    [
+        "RELAY_WORKSPACES_JSON",
+        "AGENT_RELAY_WORKSPACE_KEY",
+        "RELAY_WORKSPACE_KEY",
+        "RELAY_API_KEY",
+    ]
+    .iter()
+    .any(|name| {
+        std::env::var(name)
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty())
+    })
 }
 
 pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<RelaySession> {
     let startup_debug = startup_debug_enabled();
     let connect_started = Instant::now();
-    let http_base = std::env::var("RELAYCAST_BASE_URL")
+    // Resolve the destination before constructing any authenticated client.
+    // This reads the credential-to-origin binding written by `relay init`, so
+    // a self-hosted key cannot silently fall through to the hosted default.
+    let configured_base = crate::transport::resolve_relaycast_base_url()?;
+    // WS override (rare); else the SDK derives wss from the base.
+    let configured_ws: Option<String> = std::env::var("RELAYCAST_WS_URL")
         .ok()
-        .or_else(|| std::env::var("RELAY_BASE_URL").ok())
-        .unwrap_or_else(|| DEFAULT_RELAYCAST_BASE_URL.to_string());
-    let ws_base = std::env::var("RELAYCAST_WS_URL")
-        .unwrap_or_else(|_| derive_ws_base_url_from_http(&http_base));
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| configured_base.clone());
 
     log_startup_phase(
         startup_debug,
@@ -134,15 +303,124 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
             opts.channels.join(",")
         ),
     );
-    let auth = AuthClient::new(http_base.clone());
-    let sessions = auth
-        .startup_session_set_with_options(
-            Some(opts.requested_name),
-            opts.strict_name,
-            opts.agent_type,
+    let auth = AuthClient::new(configured_base.clone());
+    // Bound the handshake so a hung relay connection can't stall startup. The
+    // SDK bootstrap calls (`create_workspace` / agent registration) build a
+    // timeout-less reqwest client, so without this a stalled backend hangs
+    // startup indefinitely until an external supervisor reaps the broker
+    // (reported to the SDK as an opaque code-null exit). We ONLY retry on
+    // timeout: a returned error is a definite server response, and replaying
+    // `startup_session_set_with_options` would re-run workspace creation and
+    // agent registration from scratch — risking duplicate Relaycast resources —
+    // so returned errors surface immediately (preserving the pre-retry
+    // behavior). The residual for a timeout retry is narrow (the backend both
+    // completed the request AND failed to answer within the deadline); the
+    // multi-workspace registration runs concurrently, so each membership can
+    // use the auth client's typed admission budget without serially consuming
+    // the broker's aggregate startup deadline. The final attempt is shortened
+    // to whatever remains of HANDSHAKE_TOTAL_TIMEOUT so environment overrides
+    // cannot move exhaustion past the SDK startup deadline.
+    // Do not let a caller-provided legacy timeout override cancel the auth
+    // client's longer typed admission retry contract. Larger values remain
+    // harmless because the aggregate handshake ceiling below still applies.
+    let attempt_timeout = handshake_attempt_timeout().max(HANDSHAKE_ATTEMPT_TIMEOUT);
+    let max_attempts = handshake_max_attempts();
+    let mut backoff = HANDSHAKE_BACKOFF_BASE;
+    let handshake_started = Instant::now();
+    let handshake_deadline = tokio::time::Instant::now() + HANDSHAKE_TOTAL_TIMEOUT;
+    // Prove this is the SAME node restarting, not a different one squatting
+    // the name: honor an explicit override, else fall back to a value stable
+    // across restarts of this node's own persisted state directory. Without
+    // this, a node killed and restarted before its stale registration is
+    // reaped would collide on its own name and be fail-closed rejected —
+    // the spawn-admission gate can't tell "myself, restarting" from "a
+    // stranger" unless something proves it.
+    let derived_identity_key =
+        agent_identity_key().unwrap_or_else(|| stable_node_identity_key(&opts.paths.state));
+    // This is one logical startup handshake even when a hung HTTP request
+    // causes the outer handshake timer to replay it. Keep the queue waiter
+    // stable across those replays so Relaycast does not allocate a fresh
+    // admission slot for each timed-out attempt.
+    let startup_waiter_id = format!("relay-register:{}", Uuid::new_v4());
+    let sessions = if startup_has_preconfigured_workspace_key() {
+        let mut attempt: u32 = 0;
+        loop {
+            let Some(current_attempt_timeout) = handshake_attempt_timeout_within_budget(
+                attempt_timeout,
+                handshake_started.elapsed(),
+            ) else {
+                anyhow::bail!(format_handshake_timeout_error(
+                    attempt,
+                    attempt_timeout,
+                    handshake_started.elapsed()
+                ));
+            };
+            attempt += 1;
+            match timeout(
+                current_attempt_timeout,
+                auth.startup_session_set_with_identity_and_waiter(
+                    Some(opts.requested_name),
+                    opts.strict_name,
+                    opts.agent_type,
+                    Some(derived_identity_key.as_str()),
+                    Some(startup_waiter_id.as_str()),
+                    Some(handshake_deadline),
+                ),
+            )
+            .await
+            {
+                // Success, or a definite failure from the backend: return
+                // immediately in both cases (never replay a returned error).
+                Ok(result) => {
+                    break result.context("failed to initialize relaycast session")?;
+                }
+                Err(_elapsed) => {
+                    let handshake_elapsed = handshake_started.elapsed();
+                    if attempt >= max_attempts
+                        || !handshake_retry_fits_within_budget(handshake_elapsed, backoff)
+                    {
+                        anyhow::bail!(format_handshake_timeout_error(
+                            attempt,
+                            attempt_timeout,
+                            handshake_elapsed
+                        ));
+                    }
+                    tracing::warn!(
+                        attempt,
+                        max_attempts,
+                        timeout_ms = current_attempt_timeout.as_millis() as u64,
+                        "relaycast startup handshake received no response before deadline; retrying"
+                    );
+                    log_startup_phase(
+                        startup_debug,
+                        connect_started,
+                        format!(
+                            "handshake attempt {attempt}/{max_attempts} received no response within {}ms; retrying in {}ms",
+                            current_attempt_timeout.as_millis(),
+                            backoff.as_millis()
+                        ),
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(HANDSHAKE_BACKOFF_MAX);
+                }
+            }
+        }
+    } else {
+        await_no_key_startup(
+            auth.startup_fresh_workspace_session_set(
+                Some(opts.requested_name),
+                opts.strict_name,
+                opts.agent_type,
+                Some(derived_identity_key.as_str()),
+                Some(startup_waiter_id.as_str()),
+                Some(handshake_deadline),
+            ),
+            attempt_timeout,
+            handshake_deadline,
+            handshake_started,
         )
-        .await
-        .context("failed to initialize relaycast session")?;
+        .await?
+    };
     log_startup_phase(
         startup_debug,
         connect_started,
@@ -156,7 +434,6 @@ pub(crate) async fn connect_relay(opts: RelaySessionOptions<'_>) -> Result<Relay
         .default_session()
         .or_else(|| sessions.memberships.first())
         .context("no relaycast memberships were initialized")?;
-    let relay_workspace_key = default_session.credentials.api_key.clone();
     let self_agent_id = default_session.credentials.agent_id.clone();
     let agent_name = default_session
         .credentials
@@ -199,25 +476,14 @@ timestamp='{}'
         );
     }
 
-    if opts.ensure_mcp_config {
-        if let Err(error) = ensure_relaycast_mcp_config(
-            opts.runtime_cwd,
-            Some(relay_workspace_key.as_str()),
-            Some(http_base.as_str()),
-            None,
-        ) {
-            tracing::warn!("failed to ensure .mcp.json: {error}");
-        }
-    }
-
     log_startup_phase(
         startup_debug,
         connect_started,
         "MultiWorkspaceSession::new begin",
     );
     let mut multi = MultiWorkspaceSession::new(
-        http_base.clone(),
-        ws_base,
+        configured_base.clone(),
+        configured_ws,
         auth,
         sessions,
         opts.channels,
@@ -253,9 +519,185 @@ timestamp='{}'
         .collect();
 
     Ok(RelaySession {
-        http_base,
+        configured_base,
         default_workspace_id,
         workspaces,
         ws_inbound_rx: multi.inbound_rx,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These exercise the pure parse helpers directly rather than mutating
+    // process-global env (`std::env::set_var`/`remove_var` are unsound under the
+    // parallel test runner: other threads may be reading the environment
+    // concurrently).
+
+    #[test]
+    fn parse_handshake_attempts_defaults_and_overrides() {
+        assert_eq!(parse_handshake_attempts(None), HANDSHAKE_MAX_ATTEMPTS);
+        assert_eq!(parse_handshake_attempts(Some("")), HANDSHAKE_MAX_ATTEMPTS);
+        assert_eq!(
+            parse_handshake_attempts(Some("0")),
+            HANDSHAKE_MAX_ATTEMPTS,
+            "zero attempts is rejected in favor of the default"
+        );
+        assert_eq!(
+            parse_handshake_attempts(Some("not-a-number")),
+            HANDSHAKE_MAX_ATTEMPTS
+        );
+        assert_eq!(parse_handshake_attempts(Some(" 7 ")), 7);
+    }
+
+    #[test]
+    fn parse_handshake_timeout_defaults_and_overrides() {
+        assert_eq!(parse_handshake_timeout(None), HANDSHAKE_ATTEMPT_TIMEOUT);
+        assert_eq!(parse_handshake_timeout(Some("")), HANDSHAKE_ATTEMPT_TIMEOUT);
+        assert_eq!(
+            parse_handshake_timeout(Some("0")),
+            HANDSHAKE_ATTEMPT_TIMEOUT,
+            "zero ms is rejected in favor of the default"
+        );
+        assert_eq!(
+            parse_handshake_timeout(Some("nope")),
+            HANDSHAKE_ATTEMPT_TIMEOUT
+        );
+        assert_eq!(
+            parse_handshake_timeout(Some("1234")),
+            Duration::from_millis(1234)
+        );
+    }
+
+    #[test]
+    fn default_handshake_budget_accepts_measured_latency_and_stays_inside_sdk_deadline() {
+        // Production returned successful workspace creates in as much as 9.5s.
+        // A default below that latency abandons a request the backend is about
+        // to answer, so the first attempt must still be alive at that point.
+        let attempt_timeout = parse_handshake_timeout(None);
+        let measured_success_latency = Duration::from_millis(9_500);
+        assert!(
+            measured_success_latency < attempt_timeout,
+            "a backend responding successfully in 9.5s must beat the default per-attempt deadline"
+        );
+
+        // packages/harness-driver/src/spawn-config.ts defaults
+        // startupTimeoutMs to 45_000, and client.ts uses that as the post-bind
+        // handshake polling budget. Include every retry backoff so a backend
+        // that never responds still fails before the SDK gives up.
+        let max_attempts = parse_handshake_attempts(None);
+        let mut never_responds_budget = attempt_timeout.saturating_mul(max_attempts);
+        let mut backoff = HANDSHAKE_BACKOFF_BASE;
+        for _ in 1..max_attempts {
+            never_responds_budget = never_responds_budget.saturating_add(backoff);
+            backoff = (backoff * 2).min(HANDSHAKE_BACKOFF_MAX);
+        }
+        let sdk_startup_budget = Duration::from_secs(45);
+        assert!(never_responds_budget <= HANDSHAKE_TOTAL_TIMEOUT);
+        assert!(
+            never_responds_budget < sdk_startup_budget,
+            "a backend that never responds must exhaust the default handshake budget before the SDK's 45s deadline"
+        );
+    }
+
+    #[test]
+    fn multi_membership_default_budget_stays_inside_sdk_deadline() {
+        // Membership registration is concurrent, so two typed 40-second
+        // admission budgets fit within one unchanged 44-second aggregate
+        // handshake attempt rather than being added serially.
+        let attempt_timeout = parse_handshake_timeout(None);
+        let max_attempts = parse_handshake_attempts(None);
+        let mut never_responds_budget = Duration::ZERO;
+        let mut backoff = HANDSHAKE_BACKOFF_BASE;
+        let mut attempt_deadlines = Vec::new();
+        for attempt in 0..max_attempts {
+            let Some(current_attempt_timeout) =
+                handshake_attempt_timeout_within_budget(attempt_timeout, never_responds_budget)
+            else {
+                break;
+            };
+            attempt_deadlines.push(current_attempt_timeout);
+            never_responds_budget = never_responds_budget.saturating_add(current_attempt_timeout);
+            if attempt + 1 >= max_attempts
+                || !handshake_retry_fits_within_budget(never_responds_budget, backoff)
+            {
+                break;
+            }
+            never_responds_budget = never_responds_budget.saturating_add(backoff);
+            backoff = (backoff * 2).min(HANDSHAKE_BACKOFF_MAX);
+        }
+
+        assert_eq!(
+            attempt_deadlines,
+            vec![Duration::from_secs(44)],
+            "the single outer attempt owns the full budget so the inner typed retry can exhaust"
+        );
+        assert_eq!(never_responds_budget, HANDSHAKE_TOTAL_TIMEOUT);
+        assert!(
+            never_responds_budget < Duration::from_secs(45),
+            "parallel membership retries must still exhaust before the SDK deadline"
+        );
+    }
+
+    #[test]
+    fn aggregate_budget_reserves_post_announcement_setup_time() {
+        // The SDK starts its 45s polling deadline as soon as the broker prints
+        // the bound API port. A small amount of connection-file and startup API
+        // setup happens before connect_relay starts its own clock, so the
+        // handshake cannot consume all but one second of the outer deadline.
+        let sdk_startup_budget = Duration::from_secs(45);
+        assert!(
+            HANDSHAKE_TOTAL_TIMEOUT
+                <= sdk_startup_budget.saturating_sub(HANDSHAKE_POST_ANNOUNCEMENT_RESERVE),
+            "the aggregate handshake limit must leave explicit time for setup after API announcement"
+        );
+    }
+
+    #[test]
+    fn outer_handshake_budget_exceeds_typed_auth_retry_budget() {
+        assert_eq!(
+            HANDSHAKE_TOTAL_TIMEOUT,
+            crate::relaycast::auth::WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE
+                + HANDSHAKE_AUTH_RETRY_MARGIN
+                + HANDSHAKE_POST_ANNOUNCEMENT_RESERVE,
+            "the outer timer must leave room for typed workspace_busy exhaustion and final setup"
+        );
+        assert!(
+            HANDSHAKE_TOTAL_TIMEOUT > crate::relaycast::auth::WORKSPACE_BUSY_STARTUP_RETRY_DEADLINE
+        );
+    }
+
+    #[test]
+    fn handshake_timeout_diagnostic_reports_an_unconfirmed_response() {
+        let message = format_handshake_timeout_error(
+            3,
+            Duration::from_secs(12),
+            Duration::from_millis(36_750),
+        );
+        assert!(message.contains("received no response before its deadlines"));
+        assert!(message.contains("44000ms aggregate limit"));
+        assert!(message.contains("may still have completed server-side"));
+        assert!(
+            !message.contains("was unreachable"),
+            "deadline exhaustion cannot prove that the backend was unreachable"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_key_startup_future_is_bounded_by_the_handshake_deadline() {
+        let handshake_started = Instant::now();
+        let error = await_no_key_startup(
+            std::future::pending::<Result<()>>(),
+            HANDSHAKE_ATTEMPT_TIMEOUT,
+            tokio::time::Instant::now() + HANDSHAKE_TOTAL_TIMEOUT,
+            handshake_started,
+        )
+        .await
+        .expect_err("a pending no-key startup must hit the aggregate deadline");
+
+        let message = format!("{error:#}");
+        assert!(message.contains("received no response before its deadlines"));
+        assert!(message.contains("44000ms aggregate limit"));
+    }
 }

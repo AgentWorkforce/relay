@@ -1,0 +1,108 @@
+{
+  "id": "compact_3c7bhne088tg",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-02T05:23:13.627Z",
+  "sourceTrajectories": [
+    "traj_2zcybmcp5e7a"
+  ],
+  "dateRange": {
+    "start": "2026-09-02T01:55:36.248Z",
+    "end": "2026-09-02T01:57:25.154Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 2,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Keep wrap injections single-flight until each PTY write acknowledgement settles",
+          "chosen": "Keep wrap injections single-flight until each PTY write acknowledgement settles",
+          "reasoning": "Deferring MCP reminder accounting until write confirmation is correct only if a second delivery cannot make its reminder decision during the first Claude injection's 250 ms acknowledgement window.",
+          "fromTrajectory": "traj_2zcybmcp5e7a"
+        },
+        {
+          "question": "Fix the race by reverting deferred reminder accounting, or by adding a concurrency guard?",
+          "chosen": "Add the guard; keep accounting deferred to write confirmation.",
+          "reasoning": "The deferred-accounting design is the desired semantics, so the missing concurrency invariant should be enforced rather than unwinding the write-confirmation model.",
+          "fromTrajectory": "traj_2zcybmcp5e7a"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    "crates/broker/src/wrap.rs"
+  ],
+  "commits": [
+    "ab63f122b"
+  ],
+  "narrative": "A single short session (≈2 minutes, one lead agent, commit `ab63f122b`) applied a review-driven hotfix to `crates/broker/src/wrap.rs` for PR #1634, on branch `fix/claude-injection-submit-0902`. The change makes wrap injections single-flight: a delivery's PTY write must be acknowledged before the next wrap injection is allowed to proceed. This sits on top of a recent run of broker delivery-path work visible in the branch history (`99d4836a6` reject queued stale PTY echoes, `31519a156` preserve activity before write ack, `ae164c1ae` share delivery verification policy), so the session is the tail of a broker injection/acknowledgement hardening train rather than standalone work. The defect motivating the fix was a race in MCP reminder throttling. Reminder accounting had been deferred until PTY write confirmation, which is only sound if no second delivery can evaluate its own reminder decision while the first Claude injection is still inside its ~250 ms acknowledgement window. Under burst delivery that overlap is reachable, so two deliveries could each independently decide to attach a reminder (or otherwise mis-account throttle state). Serializing injections behind the acknowledgement closes the window without altering the existing FIFO write ordering — the fix was deliberately scoped to concurrency admission, not to the write shape. Verification was the full broker unit suite plus the integration suite, both reported green; the trajectory records no findings and no follow-up work items, and the retrospective is a plain single-decision record. Confidence is reasonable but the evidence trail is thin: there is no record of a targeted regression test that reproduces the overlapping-window race, no timing/latency measurement of the serialization's effect on burst throughput, and the trajectory does not state whether the 250 ms acknowledgement window is a constant in `wrap.rs` or inherited from the shared delivery verification policy introduced in `ae164c1ae`.",
+  "decisions": [
+    {
+      "question": "Should wrap injections be allowed to overlap, or serialized until each PTY write acknowledgement settles?",
+      "chosen": "Single-flight: hold subsequent wrap injections until the in-flight PTY write acknowledgement settles.",
+      "reasoning": "Deferring MCP reminder accounting until write confirmation is only correct if no second delivery can make its reminder decision during the first Claude injection's ~250 ms acknowledgement window. Burst deliveries can enter that window, so the throttle decision must be serialized rather than the accounting moved back earlier.",
+      "impact": "Closes the reminder-throttle race in `crates/broker/src/wrap.rs` while leaving the established FIFO write ordering untouched; burst deliveries now pay acknowledgement latency serially instead of pipelining."
+    },
+    {
+      "question": "Fix the race by reverting deferred reminder accounting, or by adding a concurrency guard?",
+      "chosen": "Add the guard; keep accounting deferred to write confirmation.",
+      "reasoning": "The deferred-accounting design (from the surrounding train: `31519a156` preserve activity before write ack, `ae164c1ae` shared delivery verification policy) is the desired semantics — only its concurrency assumption was unenforced.",
+      "impact": "Preserves the recently-landed delivery verification model rather than unwinding it; the fix is additive and narrow (single file, single commit)."
+    }
+  ],
+  "conventions": [
+    {
+      "pattern": "State the concurrency invariant a deferred-accounting design depends on, then enforce it in code rather than assuming it holds.",
+      "rationale": "Deferring a decision (reminder throttle) until an async confirmation (PTY write ack) silently introduces a window in which a concurrent actor can make the same decision with stale state.",
+      "scope": "Broker delivery/injection paths — `crates/broker/src/wrap.rs` and the shared delivery verification policy."
+    },
+    {
+      "pattern": "Scope concurrency fixes to admission control; do not reshape the write ordering.",
+      "rationale": "FIFO write semantics are load-bearing for injection ordering; changing them to fix a throttle race would widen blast radius across the whole delivery path.",
+      "scope": "crates/broker delivery/wrap code."
+    },
+    {
+      "pattern": "Gate the hotfix on both the broker unit suite and the integration suite before claiming green.",
+      "rationale": "Injection races surface at the PTY boundary, which unit tests alone do not exercise.",
+      "scope": "Any change to broker injection/acknowledgement behavior."
+    },
+    {
+      "pattern": "Record the fix as a `trail decision` with the invariant spelled out in the reasoning, then compact the trajectory (`trail compact --discard-sources`) after the work lands.",
+      "rationale": "Repo convention in CLAUDE.md; the compact step keeps `.agentworkforce/trajectories/index.json` focused while retaining the durable why.",
+      "scope": "All work in this repo."
+    }
+  ],
+  "lessons": [
+    {
+      "lesson": "A code-review pass caught a live concurrency race that the passing broker + integration suites did not.",
+      "context": "The reminder-throttle overlap was surfaced by review of PR #1634, not by a failing test; the suites were already green both before and after.",
+      "recommendation": "Treat suite-green as necessary, not sufficient, for timing-window bugs. Per the repo's standing order, prove the guard bites: remove or invert the single-flight check and capture the failing transcript before calling this fixed."
+    },
+    {
+      "lesson": "Async acknowledgement windows create decision races even when the queue itself is FIFO.",
+      "context": "FIFO write ordering was correct throughout; the bug was that two deliveries could evaluate reminder throttle state concurrently inside the ~250 ms Claude injection ack window.",
+      "recommendation": "When auditing the broker delivery path, ask separately (a) is ordering preserved and (b) can two actors read the same mutable decision state inside an in-flight window — ordering guarantees do not answer (b)."
+    },
+    {
+      "lesson": "This fix is the fourth in a tightly-coupled sequence touching the same acknowledgement boundary.",
+      "context": "`ae164c1ae` → `31519a156` → `99d4836a6` → `ab63f122b` all adjust delivery verification / write-ack behavior within the same branch.",
+      "recommendation": "Before the next change here, read the four commits as one design rather than patching in isolation; the repeated churn suggests the ack-window contract deserves an explicit documented invariant (and a cancel-safety note, per `.claude/rules/rust.md`)."
+    }
+  ],
+  "openQuestions": [
+    "Is there a regression test that actually reproduces two deliveries racing inside the acknowledgement window, or does coverage rely on the pre-existing suites passing?",
+    "What is the burst-throughput cost of serializing injections behind a ~250 ms ack — can a queue of deliveries now stall behind a slow or never-arriving acknowledgement, and is there a timeout/escape hatch?",
+    "Where does the 250 ms acknowledgement window live — a constant in `wrap.rs`, or the shared delivery verification policy from `ae164c1ae` — and is it harness-specific to Claude or applied to all wrappers (cf. `e9bc2666d` Claude wrapper executable support)?",
+    "Does the single-flight guard interact with the stale-queued-echo rejection landed in `99d4836a6` (can a rejected echo leave the guard held)?",
+    "PR #1634 status: was the fix merged, and does it need a `[Unreleased - Patch]` CHANGELOG.md entry under the repo's changelog rules?"
+  ]
+}

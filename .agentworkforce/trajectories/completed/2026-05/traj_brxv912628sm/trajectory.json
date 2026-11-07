@@ -1,0 +1,25 @@
+{
+  "id": "traj_brxv912628sm",
+  "version": 1,
+  "task": {
+    "title": "Iterate README product API direction"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-28T13:52:33.505Z",
+  "completedAt": "2026-05-28T14:08:51.239Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Expanded README target contracts after Quick Start: messaging records, listener predicates/event handlers, delivery policies, harness delivery adapters, and harness observability events.",
+    "approach": "Standard approach",
+    "confidence": 0.84
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "44beabbc821b783c413ff6c7c95c4e62516cc47d",
+    "endRef": "44beabbc821b783c413ff6c7c95c4e62516cc47d"
+  }
+}

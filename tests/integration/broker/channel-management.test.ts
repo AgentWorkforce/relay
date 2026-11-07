@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 
-import type { BrokerEvent } from '@agent-relay/sdk';
+import type { BrokerEvent, SendMessageResult } from '@agent-relay/harness-driver';
 import { BrokerHarness, checkPrerequisites, uniqueSuffix } from './utils/broker-harness.js';
 import { assertAgentExists, eventsForAgent } from './utils/assert-helpers.js';
 
@@ -42,7 +42,7 @@ async function sendMessageOrSkip(
   t: TestContext,
   harness: BrokerHarness,
   input: { to: string; text: string; from?: string }
-): Promise<{ event_id: string; targets: string[] }> {
+): Promise<SendMessageResult> {
   try {
     const result = await harness.sendMessage(input);
     if (result.event_id === 'unsupported_operation') {
@@ -101,7 +101,8 @@ test('broker: channel management subscribe, mute, unmute, and unsubscribe flow',
     await harness.waitForEvent(
       'channel_muted',
       10_000,
-      (event) => isNamedChannelEvent(event, 'channel_muted') && event.name === agentName && event.channel === 'ch-a'
+      (event) =>
+        isNamedChannelEvent(event, 'channel_muted') && event.name === agentName && event.channel === 'ch-a'
     ).promise;
 
     harness.clearEvents();
@@ -147,7 +148,11 @@ test('broker: channel management subscribe, mute, unmute, and unsubscribe flow',
     ).promise;
 
     agent = await assertAgentExists(harness, agentName);
-    assert.deepEqual(agent.channels, ['ch-a'], 'agent should only remain subscribed to ch-a after unsubscribe');
+    assert.deepEqual(
+      agent.channels,
+      ['ch-a'],
+      'agent should only remain subscribed to ch-a after unsubscribe'
+    );
   } finally {
     try {
       await harness.releaseAgent(agentName);

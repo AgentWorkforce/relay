@@ -7,7 +7,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 BIN_DIR="$ROOT_DIR/bin"
-DIST_DIR="$ROOT_DIR/dist"
+DIST_DIR="$ROOT_DIR/packages/cli/dist"
 BUILD_DIR="$ROOT_DIR/.build-standalone"
 
 cd "$ROOT_DIR"
@@ -23,11 +23,11 @@ success() { echo -e "${GREEN}[✓]${NC} $1"; }
 warn() { echo -e "${YELLOW}[warn]${NC} $1"; }
 
 # Get version from package.json
-VERSION=$(node -p "require('./package.json').version")
+VERSION=$(node -p "require('./packages/cli/package.json').version")
 info "Building version: $VERSION"
 
 # Ensure TypeScript is compiled
-if [ ! -f "$DIST_DIR/src/cli/index.js" ]; then
+if [ ! -f "$DIST_DIR/cli/index.js" ]; then
     info "Building TypeScript..."
     npm run build
 fi
@@ -40,7 +40,7 @@ mkdir -p "$BUILD_DIR"
 # Externalize native modules that can't be bundled
 info "Bundling with esbuild..."
 
-npx esbuild "$DIST_DIR/src/cli/index.js" \
+npx esbuild "$DIST_DIR/cli/index.js" \
     --bundle \
     --platform=node \
     --target=node18 \

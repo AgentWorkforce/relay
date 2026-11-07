@@ -1,0 +1,116 @@
+{
+  "version": "1.0.0",
+  "id": "78ff1abf-75ad-4192-96fc-b616b35201dd",
+  "timestamp": "2026-07-15T18:48:09.513Z",
+  "trajectory": "traj_g5ubb84ezn4n",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_g5ubb84ezn4n/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 46,
+              "revision": "701e875340f24196057cf483c8edceef68334261"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 13,
+              "end_line": 19,
+              "revision": "701e875340f24196057cf483c8edceef68334261"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/attach-view.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 2,
+              "end_line": 8,
+              "revision": "701e875340f24196057cf483c8edceef68334261"
+            },
+            {
+              "start_line": 171,
+              "end_line": 244,
+              "revision": "701e875340f24196057cf483c8edceef68334261"
+            },
+            {
+              "start_line": 424,
+              "end_line": 461,
+              "revision": "701e875340f24196057cf483c8edceef68334261"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/lib/attach-view.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 7,
+              "end_line": 19,
+              "revision": "701e875340f24196057cf483c8edceef68334261"
+            },
+            {
+              "start_line": 233,
+              "end_line": 349,
+              "revision": "701e875340f24196057cf483c8edceef68334261"
+            },
+            {
+              "start_line": 385,
+              "end_line": 399,
+              "revision": "701e875340f24196057cf483c8edceef68334261"
+            },
+            {
+              "start_line": 435,
+              "end_line": 441,
+              "revision": "701e875340f24196057cf483c8edceef68334261"
+            },
+            {
+              "start_line": 446,
+              "end_line": 452,
+              "revision": "701e875340f24196057cf483c8edceef68334261"
+            },
+            {
+              "start_line": 463,
+              "end_line": 469,
+              "revision": "701e875340f24196057cf483c8edceef68334261"
+            },
+            {
+              "start_line": 486,
+              "end_line": 492,
+              "revision": "701e875340f24196057cf483c8edceef68334261"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

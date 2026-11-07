@@ -1,0 +1,53 @@
+{
+  "id": "compact_zfl63h0yd3t4",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-17T16:25:07.810Z",
+  "sourceTrajectories": [
+    "traj_p75horlg3ofh"
+  ],
+  "dateRange": {
+    "start": "2026-09-17T16:22:38.217Z",
+    "end": "2026-09-17T16:24:44.669Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 2,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Repair the existing proof case using exact-SHA broker artifacts without changing the cleanup implementation",
+          "chosen": "Repair the existing proof case using exact-SHA broker artifacts without changing the cleanup implementation",
+          "reasoning": "Failed hosted runs show cargo ENOENT and chained-symlink bootstrap failure. The old case accepted any Cargo error as base red. Current base and existing head binaries reproduce bug/fixed through the public release API with the same persisted retired-generation fixture. Branch divergence is conflict-free and does not require rebasing.",
+          "fromTrajectory": "traj_p75horlg3ofh"
+        }
+      ]
+    },
+    {
+      "category": "architecture",
+      "decisions": [
+        {
+          "question": "Preserve existing main history and use a task-specific trajectory directory",
+          "chosen": "Preserve existing main history and use a task-specific trajectory directory",
+          "reasoning": "git merge-tree exited 0 with no conflicts; this case uses trusted current-main infrastructure without a merge. The default Trail directory has another task active, so its record is left untouched.",
+          "fromTrajectory": "traj_p75horlg3ofh"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    "tests/relayflows/cases/1710-owned-local-release-cleanup/case.json",
+    "tests/relayflows/cases/1710-owned-local-release-cleanup/run.mjs"
+  ],
+  "commits": [
+    "bcc2b468d"
+  ]
+}

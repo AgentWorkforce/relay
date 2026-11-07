@@ -5,17 +5,49 @@ pub(crate) struct RuntimePaths {
     pub(super) persist: bool,
     pub(super) state: PathBuf,
     pub(super) pending: PathBuf,
+    /// Terminally-failed deliveries retained for `redeliver`.
+    pub(super) dead_letters: PathBuf,
+    /// Inbound-event dedup cache snapshot, so a restart that replays the
+    /// persisted pending file cannot re-inject duplicates.
+    pub(super) dedup: PathBuf,
+    /// Directory of per-delivery write-ahead receipts for the native
+    /// existing-session delivery lane.
+    /// These are persisted independently from ordinary inbox deliveries because
+    /// a transport timeout after a native session write must never authorize a
+    /// resend on broker restart.
+    pub(super) native_delivery_receipts: PathBuf,
     /// Held for process lifetime to prevent concurrent broker instances (persist mode only).
     #[allow(dead_code)]
     pub(super) _lock: Option<std::fs::File>,
 }
 
+fn safe_broker_name(broker_name: &str) -> String {
+    broker_name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// Return the persistent state file used by a named broker under `root`.
+///
+/// Recovery must derive its identity from this exact path because normal
+/// startup hashes `RuntimePaths::state`, not a shared `state.json` file.
+pub(crate) fn persistent_broker_state_path(root: &Path, broker_name: &str) -> PathBuf {
+    root.join(format!("state-{}.json", safe_broker_name(broker_name)))
+}
+
 /// Returns the continuity directory path derived from the state file path.
-/// State path is always `{cwd}/.agent-relay/state.json`, so parent is `{cwd}/.agent-relay/`.
+/// State path is always `{cwd}/.agentworkforce/relay/state.json`, so parent is `{cwd}/.agentworkforce/relay/`.
 pub(crate) fn continuity_dir(state_path: &Path) -> PathBuf {
     state_path
         .parent()
-        .expect("state_path always has a parent (.agent-relay/)")
+        .expect("state_path always has a parent (.agentworkforce/relay/)")
         .join("continuity")
 }
 
@@ -35,16 +67,7 @@ pub(crate) fn continuity_dir(state_path: &Path) -> PathBuf {
 /// Single-instance enforcement is unnecessary here because each SDK client
 /// manages its own child process.
 pub(crate) fn ensure_ephemeral_paths(_cwd: &Path, broker_name: &str) -> Result<RuntimePaths> {
-    let safe_name: String = broker_name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
+    let safe_name = safe_broker_name(broker_name);
     let safe_name = if safe_name.is_empty() {
         "broker".to_string()
     } else {
@@ -63,6 +86,9 @@ pub(crate) fn ensure_ephemeral_paths(_cwd: &Path, broker_name: &str) -> Result<R
         persist: false,
         state: root.join("state.json"),
         pending: root.join("pending.json"),
+        dead_letters: root.join("dead-letters.json"),
+        dedup: root.join("dedup.json"),
+        native_delivery_receipts: root.join("native-delivery-receipts"),
         _lock: None,
     })
 }
@@ -74,21 +100,12 @@ pub(crate) fn ensure_runtime_paths(
 ) -> Result<RuntimePaths> {
     let root = state_dir
         .map(PathBuf::from)
-        .unwrap_or_else(|| cwd.join(".agent-relay"));
+        .unwrap_or_else(|| cwd.join(".agentworkforce/relay"));
     std::fs::create_dir_all(&root)
         .with_context(|| format!("failed to create runtime dir {}", root.display()))?;
 
-    // Sanitise name for use in filenames — keep only alphanumeric and hyphens
-    let safe_name: String = broker_name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
+    // Single filename transform shared with the recovery identity path.
+    let safe_name = safe_broker_name(broker_name);
 
     // Lock and PID files are per-broker-name so concurrent workflows can coexist.
     let lock_path = root.join(format!("broker-{safe_name}.lock"));
@@ -137,8 +154,12 @@ pub(crate) fn ensure_runtime_paths(
                     // Successfully recovered — PID is written via connection.json at API start
                     return Ok(RuntimePaths {
                         persist: true,
-                        state: root.join(format!("state-{safe_name}.json")),
+                        state: persistent_broker_state_path(&root, broker_name),
                         pending: root.join(format!("pending-{safe_name}.json")),
+                        dead_letters: root.join(format!("dead-letters-{safe_name}.json")),
+                        dedup: root.join(format!("dedup-{safe_name}.json")),
+                        native_delivery_receipts: root
+                            .join(format!("native-delivery-receipts-{safe_name}")),
                         _lock: Some(lock_file),
                     });
                 } else {
@@ -150,7 +171,7 @@ pub(crate) fn ensure_runtime_paths(
                 }
             }
             // PID file missing or unreadable while lock is held — treat as stale.
-            // This happens when the user deletes .agent-relay/ while an old broker
+            // This happens when the user deletes .agentworkforce/relay/ while an old broker
             // is still alive, or during the shutdown race (PID deleted before flock
             // released).
             tracing::warn!(
@@ -173,8 +194,12 @@ pub(crate) fn ensure_runtime_paths(
             }
             return Ok(RuntimePaths {
                 persist: true,
-                state: root.join(format!("state-{safe_name}.json")),
+                state: persistent_broker_state_path(&root, broker_name),
                 pending: root.join(format!("pending-{safe_name}.json")),
+                dead_letters: root.join(format!("dead-letters-{safe_name}.json")),
+                dedup: root.join(format!("dedup-{safe_name}.json")),
+                native_delivery_receipts: root
+                    .join(format!("native-delivery-receipts-{safe_name}")),
                 _lock: Some(lock_file),
             });
         }
@@ -184,19 +209,11 @@ pub(crate) fn ensure_runtime_paths(
 
     Ok(RuntimePaths {
         persist: true,
-        state: root.join(format!("state-{safe_name}.json")),
+        state: persistent_broker_state_path(&root, broker_name),
         pending: root.join(format!("pending-{safe_name}.json")),
+        dead_letters: root.join(format!("dead-letters-{safe_name}.json")),
+        dedup: root.join(format!("dedup-{safe_name}.json")),
+        native_delivery_receipts: root.join(format!("native-delivery-receipts-{safe_name}")),
         _lock: Some(lock_file),
     })
-}
-
-pub(crate) fn derive_ws_base_url_from_http(http_base: &str) -> String {
-    let trimmed = http_base.trim();
-    if let Some(rest) = trimmed.strip_prefix("https://") {
-        format!("wss://{rest}")
-    } else if let Some(rest) = trimmed.strip_prefix("http://") {
-        format!("ws://{rest}")
-    } else {
-        trimmed.to_string()
-    }
 }

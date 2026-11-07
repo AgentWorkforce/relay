@@ -1,0 +1,47 @@
+{
+  "id": "traj_l7osjf9vxe8d",
+  "version": 1,
+  "task": {
+    "title": "Refresh Relaycast SDK lock after 4.1.2 publish"
+  },
+  "status": "completed",
+  "startedAt": "2026-06-19T13:02:40.128Z",
+  "completedAt": "2026-06-19T13:05:00.755Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-06-19T13:03:57.433Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_qhhall28xz1i",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-06-19T13:03:57.433Z",
+      "endedAt": "2026-06-19T13:05:00.755Z",
+      "events": [
+        {
+          "ts": 1781874237434,
+          "type": "decision",
+          "content": "Bumped Relaycast SDK range instead of pinning: Bumped Relaycast SDK range instead of pinning",
+          "raw": {
+            "question": "Bumped Relaycast SDK range instead of pinning",
+            "chosen": "Bumped Relaycast SDK range instead of pinning",
+            "alternatives": [],
+            "reasoning": "@relaycast/types@4.1.2 is now published, so the repo can keep caret semantics while requiring the fixed Relaycast SDK release."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Updated agent-relay and @agent-relay/sdk to require @relaycast/sdk ^4.1.2 after the matching @relaycast/types 4.1.2 package became available, preserving caret ranges instead of pinning.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "projectId": "AgentWorkforce/relay",
+  "tags": []
+}

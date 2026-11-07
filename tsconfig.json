@@ -5,8 +5,6 @@
     "moduleResolution": "NodeNext",
     "lib": ["ES2022"],
     "types": ["node"],
-    "outDir": "./dist",
-    "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
@@ -14,29 +12,13 @@
     "resolveJsonModule": true,
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true,
-    "baseUrl": ".",
-    "paths": {
-      "@agent-relay/config": ["packages/config/dist/index.d.ts"],
-      "@agent-relay/config/*": ["packages/config/dist/*"],
-      "@agent-relay/trajectory": ["packages/trajectory/dist/index.d.ts"],
-      "@agent-relay/trajectory/*": ["packages/trajectory/dist/*"],
-      "@agent-relay/hooks": ["packages/hooks/dist/index.d.ts"],
-      "@agent-relay/hooks/*": ["packages/hooks/dist/*"],
-      "@agent-relay/policy": ["packages/policy/dist/index.d.ts"],
-      "@agent-relay/policy/*": ["packages/policy/dist/*"],
-      "@agent-relay/memory": ["packages/memory/dist/index.d.ts"],
-      "@agent-relay/memory/*": ["packages/memory/dist/*"],
-      "@agent-relay/sdk": ["packages/sdk/dist/index.d.ts"],
-      "@agent-relay/sdk/*": ["packages/sdk/dist/*"],
-      "@agent-relay/utils": ["packages/utils/dist/index.d.ts"],
-      "@agent-relay/utils/*": ["packages/utils/dist/*"],
-      "@agent-relay/cloud": ["packages/cloud/dist/index.d.ts"],
-      "@agent-relay/cloud/*": ["packages/cloud/dist/*"],
-      "@agent-relay/user-directory": ["packages/user-directory/dist/index.d.ts"],
-      "@agent-relay/user-directory/*": ["packages/user-directory/dist/*"]
-    }
+    "sourceMap": true
+    // No `paths` for @agent-relay/* on purpose: the npm workspace symlinks them
+    // into node_modules, so tsc resolves their `.d.ts` and bundlers (bun,
+    // esbuild) resolve their `.js`. Mapping them to `dist/index.d.ts` here made
+    // bundlers inline the declaration files (no runtime exports), so the
+    // compiled CLI lost every workspace export at runtime.
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "packages/**/*"]
+  "files": [],
+  "include": []
 }

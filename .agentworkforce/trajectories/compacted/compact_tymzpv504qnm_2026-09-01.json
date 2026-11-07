@@ -1,0 +1,41 @@
+{
+  "id": "compact_tymzpv504qnm",
+  "version": 1,
+  "type": "compacted",
+  "status": "completed",
+  "compactedAt": "2026-09-01T22:24:05.881Z",
+  "sourceTrajectories": [
+    "traj_wh6jh3z1d8s8"
+  ],
+  "dateRange": {
+    "start": "2026-09-01T22:23:16.686Z",
+    "end": "2026-09-01T22:23:56.152Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "tooling",
+      "decisions": [
+        {
+          "question": "Anchor the isolated builder in the staged source directory",
+          "chosen": "Anchor the isolated builder in the staged source directory",
+          "reasoning": "The dedicated UID cannot traverse runner-home ancestors. An absolute manifest path passed today, but changing the trusted shell cwd before setpriv removes the inherited inaccessible cwd dependency; the source contract will pin both that ordering and the toolchain provisioning copy.",
+          "fromTrajectory": "traj_wh6jh3z1d8s8"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    ".github/workflows/relayflow-pr-proof-broker.yml",
+    "tests/fixtures/pr-proof-contract.test.ts"
+  ],
+  "commits": []
+}

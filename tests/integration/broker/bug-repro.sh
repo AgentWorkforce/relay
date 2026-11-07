@@ -119,25 +119,25 @@ fi
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Test 11 — Cursor MCP: relaycast must appear in cursor's MCP config
+# Test 11 — Cursor MCP: agent-relay must appear in cursor's MCP config
 #
 # Bug (investigation finding): cursor was normalized to "agent" in
-#   crates/broker/src/helpers.rs:36-46, then configure_relaycast_mcp_with_token() had
+#   crates/broker/src/helpers.rs:36-46, then configure_agent_relay_mcp_with_token() had
 #   branches for claude/codex/gemini|droid/opencode but NOT for "agent"/cursor.
 #   Result: zero MCP injection for cursor agents.
-# Fix required: add is_cursor branch in configure_relaycast_mcp_with_token()
+# Fix required: add is_cursor branch in configure_agent_relay_mcp_with_token()
 #   that calls ensure_cursor_mcp_config() with full credentials.
 # ─────────────────────────────────────────────────────────────────────────────
 echo ""
-echo "=== Test 11: Cursor MCP config — verify relaycast MCP is injected ==="
+echo "=== Test 11: Cursor MCP config — verify Agent Relay MCP is injected ==="
 
-# Check 11a: is_cursor branch exists in configure_relaycast_mcp_with_token
-CONFIGURE_FN=$(awk '/^pub async fn configure_relaycast_mcp_with_token/,/^\}/' "$BROKER_SRC_DIR/snippets.rs" | head -120)
+# Check 11a: is_cursor branch exists in configure_agent_relay_mcp_with_token
+CONFIGURE_FN=$(awk '/^pub async fn configure_agent_relay_mcp_with_token/,/^\}/' "$BROKER_SRC_DIR/snippets.rs" | head -120)
 
 if echo "$CONFIGURE_FN" | grep -qE 'is_cursor'; then
-    pass "Test 11a: configure_relaycast_mcp_with_token has is_cursor branch"
+    pass "Test 11a: configure_agent_relay_mcp_with_token has is_cursor branch"
 else
-    fail "Test 11a: configure_relaycast_mcp_with_token has NO is_cursor branch — cursor gets zero MCP injection (bug: crates/broker/src/snippets.rs)"
+    fail "Test 11a: configure_agent_relay_mcp_with_token has NO is_cursor branch — cursor gets zero MCP injection (bug: crates/broker/src/snippets.rs)"
 fi
 
 # Check 11b: the cursor branch calls ensure_cursor_mcp_config

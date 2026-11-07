@@ -1,0 +1,25 @@
+{
+  "id": "traj_fiygtgr3tfey",
+  "version": 1,
+  "task": {
+    "title": "Fix harness config clippy issues"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T18:31:39.975Z",
+  "completedAt": "2026-05-25T18:34:10.562Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Fixed broker clippy failures by boxing AgentSpec in large protocol enum variants, replacing a manual iter-any check with contains, and moving runtime util tests after all non-test items.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "c2629f897d674166d1614651c41003893b8c0eb8",
+    "endRef": "c2629f897d674166d1614651c41003893b8c0eb8"
+  }
+}

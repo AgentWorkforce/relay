@@ -1,0 +1,53 @@
+{
+  "id": "traj_f8bgcpr32y71",
+  "version": 1,
+  "task": {
+    "title": "Add --wk shorthand for --workspace-key on SDK commands"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-15T18:57:06.368Z",
+  "completedAt": "2026-07-15T18:57:13.746Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-15T18:57:07.613Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_pz1ubxwwsf70",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-15T18:57:07.613Z",
+      "endedAt": "2026-07-15T18:57:13.746Z",
+      "events": [
+        {
+          "ts": 1784141827614,
+          "type": "decision",
+          "content": "Fold --wk into workspaceKey via a Commander preAction hook in addSdkOptions: Fold --wk into workspaceKey via a Commander preAction hook in addSdkOptions",
+          "raw": {
+            "question": "Fold --wk into workspaceKey via a Commander preAction hook in addSdkOptions",
+            "chosen": "Fold --wk into workspaceKey via a Commander preAction hook in addSdkOptions",
+            "alternatives": [],
+            "reasoning": "Single choke point normalizes the alias for every reader; Commander v12 can't alias two long flags to one attribute"
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added --wk alias for --workspace-key via preAction hook in addSdkOptions",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "e93e5c7b8f94b35d718057baec5e4242d198dfb7",
+    "endRef": "e93e5c7b8f94b35d718057baec5e4242d198dfb7"
+  }
+}

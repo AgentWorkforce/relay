@@ -9,22 +9,6 @@
   "homepage": "https://agentrelay.com",
   "packages": [
     {
-      "name": "adding-swarm-patterns",
-      "version": "1.0.0",
-      "description": "Use when implementing custom swarm coordination patterns for multi-agent systems - covers pattern design, implementation strategies, and integration with existing agent orchestration",
-      "format": "claude",
-      "subtype": "skill",
-      "tags": [
-        "swarm-patterns",
-        "multi-agent",
-        "orchestration",
-        "coordination",
-        "architecture",
-        "workflow-design"
-      ],
-      "files": ["skills/adding-swarm-patterns/SKILL.md"]
-    },
-    {
       "name": "shadow-agents",
       "version": "1.0.0",
       "description": "Shadow agent profiles for code review, session auditing, and active monitoring - assign to spawned agents for oversight",
@@ -58,7 +42,7 @@
       "description": "Gemini CLI extension for Agent Relay - MCP server, lifecycle hooks, custom commands, and multi-agent skills",
       "format": "generic",
       "subtype": "plugin",
-      "tags": ["gemini-cli", "extension", "multi-agent", "relaycast", "mcp", "hooks"],
+      "tags": ["gemini-cli", "extension", "multi-agent", "agent-relay", "mcp", "hooks"],
       "files": [
         "plugins/gemini-relay-extension/gemini-extension.json",
         "plugins/gemini-relay-extension/relay-server.js",

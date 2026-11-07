@@ -1,0 +1,53 @@
+{
+  "id": "traj_s5ojo1f4srz4",
+  "version": 1,
+  "task": {
+    "title": "Remove unused user-directory package"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-22T16:27:44.927Z",
+  "completedAt": "2026-05-22T16:36:20.545Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-22T16:28:21.876Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_5ocas3ube8kr",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-22T16:28:21.876Z",
+      "endedAt": "2026-05-22T16:36:20.545Z",
+      "events": [
+        {
+          "ts": 1779467301877,
+          "type": "decision",
+          "content": "Remove user-directory as orphaned package: Remove user-directory as orphaned package",
+          "raw": {
+            "question": "Remove user-directory as orphaned package",
+            "chosen": "Remove user-directory as orphaned package",
+            "alternatives": [],
+            "reasoning": "Exhaustive search found no imports outside the package itself; current SSH auth duplicates the only active behavior by creating /data/users/{userId} and setting HOME directly, while provider credential paths now live in @agent-relay/config and have drifted from user-directory's stale mappings."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Removed the unused @agent-relay/user-directory workspace package, its root dependency/build script, TypeScript path aliases, Vitest workspace alias, and stale lockfile entries. Confirmed no remaining imports or symbol references; current SSH auth already owns the active /data/users/{userId} HOME behavior while credential paths live in @agent-relay/config.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/private/tmp/relay-remove-user-directory",
+  "tags": [],
+  "_trace": {
+    "startRef": "f953d0f9d920b832418141c1c5e42e1056a64488",
+    "endRef": "f953d0f9d920b832418141c1c5e42e1056a64488"
+  }
+}

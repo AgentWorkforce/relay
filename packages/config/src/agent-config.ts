@@ -75,10 +75,7 @@ export function findAgentConfig(agentName: string, projectRoot?: string): AgentC
   const lowerName = agentName.toLowerCase();
 
   // Directories to search
-  const searchDirs = [
-    path.join(root, '.claude', 'agents'),
-    path.join(root, '.openagents'),
-  ];
+  const searchDirs = [path.join(root, '.claude', 'agents'), path.join(root, '.openagents')];
 
   for (const dir of searchDirs) {
     if (!fs.existsSync(dir)) {
@@ -103,7 +100,7 @@ export function findAgentConfig(agentName: string, projectRoot?: string): AgentC
             configPath,
             model: frontmatter.model,
             description: frontmatter.description,
-            allowedTools: frontmatter['allowed-tools']?.split(',').map(t => t.trim()),
+            allowedTools: frontmatter['allowed-tools']?.split(',').map((t) => t.trim()),
             agentType: frontmatter.agentType,
             role: frontmatter.role,
           };

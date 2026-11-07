@@ -87,7 +87,7 @@ impl ConversationLog {
         let msg_type = match event.kind {
             crate::types::InboundKind::DmReceived => "DM".to_string(),
             crate::types::InboundKind::GroupDmReceived => "Group DM".to_string(),
-            crate::types::InboundKind::MessageCreated => event.target.clone(),
+            crate::types::InboundKind::MessageCreated => event.target.as_str().to_string(),
             crate::types::InboundKind::ThreadReply => format!(
                 "Thread {}",
                 short_id(event.thread_id.as_deref().unwrap_or("?"))
@@ -204,6 +204,7 @@ mod tests {
             text: "hey there".into(),
             thread_id: None,
             priority: RelayPriority::P2,
+            attachments: Vec::new(),
         });
         log.log_inbound(&InboundRelayEvent {
             event_id: "e2".into(),
@@ -217,6 +218,7 @@ mod tests {
             text: "hello team".into(),
             thread_id: None,
             priority: RelayPriority::P3,
+            attachments: Vec::new(),
         });
 
         let body = fs::read_to_string(&path).expect("read");

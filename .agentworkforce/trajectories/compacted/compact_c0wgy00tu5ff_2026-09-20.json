@@ -1,0 +1,48 @@
+{
+  "id": "compact_c0wgy00tu5ff",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-20T05:55:47.761Z",
+  "sourceTrajectories": [
+    "traj_dcxgossuw06x"
+  ],
+  "dateRange": {
+    "start": "2026-09-20T05:41:06.719Z",
+    "end": "2026-09-20T05:55:47.571Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 2,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "security",
+      "decisions": [
+        {
+          "question": "Handle Devin word-wrapped idle placeholders after confirming installed CLI at 40 columns; use cache-only wrap credential handoff",
+          "chosen": "Handle Devin word-wrapped idle placeholders after confirming installed CLI at 40 columns; use cache-only wrap credential handoff",
+          "reasoning": "Live 3000.10.31 output wraps the exact prompt onto an indented continuation row. SDK registration already short-circuits seeded credentials, but explicit cache-only access eliminates takeover fallback even on a missing cache entry.",
+          "fromTrajectory": "traj_dcxgossuw06x"
+        }
+      ]
+    },
+    {
+      "category": "api",
+      "decisions": [
+        {
+          "question": "Count wrap retries only when injectable; override inherited worker opt-out and restrict native Devin spelling to devin/devin.exe",
+          "chosen": "Count wrap retries only when injectable; override inherited worker opt-out and restrict native Devin spelling to devin/devin.exe",
+          "reasoning": "Validated retry budget was spent on busy deferrals and stale parent RELAY_SKIP_PROMPT could disable requested MCP. portable-pty directly launches programs, so unimplemented Windows batch launchers are no longer claimed as supported.",
+          "fromTrajectory": "traj_dcxgossuw06x"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

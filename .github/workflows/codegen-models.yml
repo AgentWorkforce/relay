@@ -3,16 +3,15 @@ name: Codegen Models
 on:
   push:
     paths:
-      - 'packages/shared/cli-registry.yaml'
-    branches:
-      - main
-      - 'feature/**'
+      - 'packages/utils/cli-registry.yaml'
+    branches: [main]
   pull_request:
     paths:
-      - 'packages/shared/cli-registry.yaml'
+      - 'packages/utils/cli-registry.yaml'
 
 jobs:
   codegen:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -23,7 +22,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22.14.0'
           cache: 'npm'
 
       - name: Install dependencies
@@ -35,7 +34,7 @@ jobs:
       - name: Check for changes
         id: changes
         run: |
-          if git diff --quiet packages/config/src/cli-registry.generated.ts packages/sdk-py/src/agent_relay/models.py; then
+          if git diff --quiet packages/config/src/cli-registry.generated.ts; then
             echo "changed=false" >> $GITHUB_OUTPUT
           else
             echo "changed=true" >> $GITHUB_OUTPUT
@@ -46,7 +45,7 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add packages/config/src/cli-registry.generated.ts packages/sdk-py/src/agent_relay/models.py
+          git add packages/config/src/cli-registry.generated.ts
           git commit -m "chore: regenerate models from cli-registry.yaml [skip ci]"
           git push
 

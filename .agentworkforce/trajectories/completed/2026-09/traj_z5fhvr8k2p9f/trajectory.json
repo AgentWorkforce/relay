@@ -1,0 +1,62 @@
+{
+  "id": "traj_z5fhvr8k2p9f",
+  "version": 1,
+  "task": {
+    "title": "Fix publish ERESOLVE on major bump vs @relayflows/sdk peer <13"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-30T16:43:42.828Z",
+  "completedAt": "2026-09-30T16:44:08.169Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-30T16:43:43.007Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_7vjqlr15oq9c",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-30T16:43:43.007Z",
+      "endedAt": "2026-09-30T16:44:08.169Z",
+      "events": [
+        {
+          "ts": 1790786623007,
+          "type": "decision",
+          "content": "Pin @relayflows/sdk optional peers via npm overrides during publish version bump: Pin @relayflows/sdk optional peers via npm overrides during publish version bump",
+          "raw": {
+            "question": "Pin @relayflows/sdk optional peers via npm overrides during publish version bump",
+            "chosen": "Pin @relayflows/sdk optional peers via npm overrides during publish version bump",
+            "alternatives": [],
+            "reasoning": "Publish major to 13.0.0 failed ERESOLVE because @relayflows/sdk@2.0.36 peerOptional caps @agent-relay/sdk at <13. Override forces workspace versions so clean reinstall after bump succeeds without waiting on a flows peer-range release."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Publish major bump failed ERESOLVE on @relayflows/sdk optional peer <13; publish version bump now pins those peers via npm overrides. PR #1868.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": [
+    "2bee676c1"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_z5fhvr8k2p9f/trajectory.json",
+    ".agentworkforce/trajectories/completed/2026-09/traj_a5b8spueklgc/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_a5b8spueklgc/trajectory.json",
+    ".github/workflows/publish.yml",
+    "packages/cli/src/cli/publish-workflow.test.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "c1480c3177f5b9f91cd8c9218daa69b177eb1242",
+    "endRef": "2bee676c1beed2f04cc511dcda65b7bc66601cee",
+    "traceId": "3fea77a9-97d5-45b6-93ea-ad67509a9da9"
+  }
+}

@@ -1,0 +1,99 @@
+{
+  "id": "traj_wsqage1z48l4",
+  "version": 1,
+  "task": {
+    "title": "Fix fleet spawn task submission in Claude"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-02T01:08:36.291Z",
+  "completedAt": "2026-09-02T01:36:25.125Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-02T01:08:36.922Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_doshtrd35ej2",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-02T01:08:36.922Z",
+      "endedAt": "2026-09-02T01:36:25.125Z",
+      "events": [
+        {
+          "ts": 1788311316923,
+          "type": "decision",
+          "content": "Use an atomic delayed follow-up Enter for Claude multiline injections",
+          "raw": {
+            "question": "Use an atomic delayed follow-up Enter for Claude multiline injections",
+            "chosen": "Use an atomic delayed follow-up Enter for Claude multiline injections",
+            "alternatives": [],
+            "reasoning": "Claude Code 2.1.236 reproducibly leaves a multiline brief in the composer when body and Enter arrive in one injection burst; sending the body, then one Enter as a distinct write after 250 ms submits it. The follow-up must remain inside one PTY FIFO command so terminal replies or human input cannot splice between the brief and submit."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788311870000,
+          "type": "decision",
+          "content": "Raised the pending changelog heading to [Unreleased - Patch]",
+          "raw": {
+            "question": "Raised the pending changelog heading to [Unreleased - Patch]",
+            "chosen": "Raised the pending changelog heading to [Unreleased - Patch]",
+            "alternatives": [],
+            "reasoning": "PR #1634 is a user-visible bug fix and AGENTS.md requires the first pending change after release to declare its SemVer level."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788312511113,
+          "type": "reflection",
+          "content": "Exact local RelayFlow proof reproduces the 11.10.0 bug at a 0ms body/Enter boundary and validates the fixed broker at 260ms; review-driven ack handling now waits for both writes, requeues failures, and closes the echo-before-ack race.",
+          "raw": {
+            "focalPoints": [
+              "red-green proof",
+              "write acknowledgement",
+              "echo race"
+            ],
+            "adjustments": "Added exact base/head proof case and delayed verification until compound PTY acknowledgement",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:red-green proof",
+            "focal:write acknowledgement",
+            "focal:echo race",
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed Claude multiline fleet task submission with an atomic delayed Enter, honest PTY write acknowledgements, echo-race handling, Windows shim coverage, and exact base/head RelayFlow proof.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [
+    "81a2bd7dd",
+    "32c727d09",
+    "aee898b37"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_wsqage1z48l4/trajectory.json",
+    "CHANGELOG.md",
+    "crates/broker/src/pty_worker.rs",
+    "crates/broker/src/wrap.rs",
+    "crates/relay-pty/src/pty.rs",
+    "tests/relayflows/cases/1634-claude-multiline-task-submit/case.json",
+    "tests/relayflows/cases/1634-claude-multiline-task-submit/run.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "6d5199ff103cb5f4ff6adf0a3fa32a788646a9bc",
+    "endRef": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a",
+    "traceId": "52531508-652c-4679-b1d1-58d5d0c57f64"
+  }
+}

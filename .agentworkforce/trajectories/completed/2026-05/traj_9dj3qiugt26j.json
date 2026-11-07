@@ -1,0 +1,53 @@
+{
+  "id": "traj_9dj3qiugt26j",
+  "version": 1,
+  "task": {
+    "title": "Fix harness runtime review issues"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T17:41:16.384Z",
+  "completedAt": "2026-05-25T17:53:06.394Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-25T17:52:56.230Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_h9qfyvlzhsw1",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-25T17:52:56.230Z",
+      "endedAt": "2026-05-25T17:53:06.394Z",
+      "events": [
+        {
+          "ts": 1779731576231,
+          "type": "decision",
+          "content": "Keep app-server plans attach-only for now: Keep app-server plans attach-only for now",
+          "raw": {
+            "question": "Keep app-server plans attach-only for now",
+            "chosen": "Keep app-server plans attach-only for now",
+            "alternatives": [],
+            "reasoning": "The Rust broker can execute durable JSON plans and report an attached host PID, but broker-owned app-server supervision would need explicit lifecycle ownership; rejecting broker-owned host plans avoids a half-supported mode."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed harness runtime review issues: broker now tracks harness PID separately from worker wrapper PID, validates app-server plans at spawn, extends app-server release grace, avoids app-server delivery_verified overclaiming, and updates SDK/docs examples around env allowlists, permission flags, and attached app-server hosts.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "29c9e3af3bda02dd5e601dd1f648bab4cbf1384a",
+    "endRef": "29c9e3af3bda02dd5e601dd1f648bab4cbf1384a"
+  }
+}

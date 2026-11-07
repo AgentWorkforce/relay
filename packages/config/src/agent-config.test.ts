@@ -24,14 +24,17 @@ describe('agent-config', () => {
     it('finds config in .claude/agents/', () => {
       const agentsDir = path.join(tempDir, '.claude', 'agents');
       fs.mkdirSync(agentsDir, { recursive: true });
-      fs.writeFileSync(path.join(agentsDir, 'lead.md'), `---
+      fs.writeFileSync(
+        path.join(agentsDir, 'lead.md'),
+        `---
 name: lead
 model: haiku
 description: Test agent
 ---
 
 # Lead Agent
-`);
+`
+      );
 
       const result = findAgentConfig('Lead', tempDir);
       expect(result).not.toBeNull();
@@ -43,11 +46,14 @@ description: Test agent
     it('finds config case-insensitively', () => {
       const agentsDir = path.join(tempDir, '.claude', 'agents');
       fs.mkdirSync(agentsDir, { recursive: true });
-      fs.writeFileSync(path.join(agentsDir, 'MyAgent.md'), `---
+      fs.writeFileSync(
+        path.join(agentsDir, 'MyAgent.md'),
+        `---
 name: MyAgent
 model: opus
 ---
-`);
+`
+      );
 
       const result = findAgentConfig('myagent', tempDir);
       expect(result).not.toBeNull();
@@ -58,11 +64,14 @@ model: opus
     it('finds config in .openagents/', () => {
       const agentsDir = path.join(tempDir, '.openagents');
       fs.mkdirSync(agentsDir, { recursive: true });
-      fs.writeFileSync(path.join(agentsDir, 'worker.md'), `---
+      fs.writeFileSync(
+        path.join(agentsDir, 'worker.md'),
+        `---
 name: worker
 model: sonnet
 ---
-`);
+`
+      );
 
       const result = findAgentConfig('Worker', tempDir);
       expect(result).not.toBeNull();
@@ -76,14 +85,20 @@ model: sonnet
       fs.mkdirSync(claudeDir, { recursive: true });
       fs.mkdirSync(openDir, { recursive: true });
 
-      fs.writeFileSync(path.join(claudeDir, 'agent.md'), `---
+      fs.writeFileSync(
+        path.join(claudeDir, 'agent.md'),
+        `---
 model: haiku
 ---
-`);
-      fs.writeFileSync(path.join(openDir, 'agent.md'), `---
+`
+      );
+      fs.writeFileSync(
+        path.join(openDir, 'agent.md'),
+        `---
 model: opus
 ---
-`);
+`
+      );
 
       const result = findAgentConfig('agent', tempDir);
       expect(result?.model).toBe('haiku'); // Claude takes precedence
@@ -92,11 +107,14 @@ model: opus
     it('parses allowed-tools from frontmatter', () => {
       const agentsDir = path.join(tempDir, '.claude', 'agents');
       fs.mkdirSync(agentsDir, { recursive: true });
-      fs.writeFileSync(path.join(agentsDir, 'test.md'), `---
+      fs.writeFileSync(
+        path.join(agentsDir, 'test.md'),
+        `---
 name: test
 allowed-tools: Read, Grep, Glob
 ---
-`);
+`
+      );
 
       const result = findAgentConfig('test', tempDir);
       expect(result?.allowedTools).toEqual(['Read', 'Grep', 'Glob']);
@@ -126,13 +144,16 @@ allowed-tools: Read, Grep, Glob
     it('detects role when config exists with description', () => {
       const agentsDir = path.join(tempDir, '.claude', 'agents');
       fs.mkdirSync(agentsDir, { recursive: true });
-      fs.writeFileSync(path.join(agentsDir, 'backend.md'), `---
+      fs.writeFileSync(
+        path.join(agentsDir, 'backend.md'),
+        `---
 name: backend
 description: Backend development agent - handles server-side tasks
 model: sonnet
 ---
 # Backend Agent
-`);
+`
+      );
 
       // Simulate wrapper auto-detect pattern
       const configTask: string | undefined = undefined; // No explicit task
@@ -150,10 +171,13 @@ model: sonnet
     it('uses explicit task when provided', () => {
       const agentsDir = path.join(tempDir, '.claude', 'agents');
       fs.mkdirSync(agentsDir, { recursive: true });
-      fs.writeFileSync(path.join(agentsDir, 'worker.md'), `---
+      fs.writeFileSync(
+        path.join(agentsDir, 'worker.md'),
+        `---
 description: Config description
 ---
-`);
+`
+      );
 
       // Simulate wrapper auto-detect pattern with explicit task
       const configTask = 'Explicit task override';
@@ -185,12 +209,15 @@ description: Config description
     it('handles config without description gracefully', () => {
       const agentsDir = path.join(tempDir, '.claude', 'agents');
       fs.mkdirSync(agentsDir, { recursive: true });
-      fs.writeFileSync(path.join(agentsDir, 'nodesc.md'), `---
+      fs.writeFileSync(
+        path.join(agentsDir, 'nodesc.md'),
+        `---
 name: nodesc
 model: haiku
 ---
 # Agent without description
-`);
+`
+      );
 
       // Simulate wrapper auto-detect pattern
       const configTask: string | undefined = undefined;
@@ -215,11 +242,14 @@ model: haiku
     it('adds --model and --agent when config found', () => {
       const agentsDir = path.join(tempDir, '.claude', 'agents');
       fs.mkdirSync(agentsDir, { recursive: true });
-      fs.writeFileSync(path.join(agentsDir, 'lead.md'), `---
+      fs.writeFileSync(
+        path.join(agentsDir, 'lead.md'),
+        `---
 name: lead
 model: haiku
 ---
-`);
+`
+      );
 
       const args = buildClaudeArgs('Lead', [], tempDir);
       expect(args).toContain('--model');
@@ -231,13 +261,16 @@ model: haiku
     it('does not duplicate --model if already present', () => {
       const agentsDir = path.join(tempDir, '.claude', 'agents');
       fs.mkdirSync(agentsDir, { recursive: true });
-      fs.writeFileSync(path.join(agentsDir, 'lead.md'), `---
+      fs.writeFileSync(
+        path.join(agentsDir, 'lead.md'),
+        `---
 model: haiku
 ---
-`);
+`
+      );
 
       const args = buildClaudeArgs('Lead', ['--model', 'opus'], tempDir);
-      const modelCount = args.filter(a => a === '--model').length;
+      const modelCount = args.filter((a) => a === '--model').length;
       expect(modelCount).toBe(1);
       expect(args).toContain('opus'); // Original preserved
     });

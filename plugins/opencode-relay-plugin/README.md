@@ -10,15 +10,15 @@ opencode plugin add agent-relay
 
 ## Tools
 
-| Tool | Description |
-|------|-------------|
-| `relay_connect` | Connect to an Agent Relay workspace |
-| `relay_send` | Send a DM to another agent |
-| `relay_inbox` | Check for new messages |
-| `relay_agents` | List online agents |
-| `relay_post` | Post to a channel |
-| `relay_spawn` | Spawn a new OpenCode worker instance |
-| `relay_dismiss` | Stop and release a spawned worker |
+| Tool            | Description                          |
+| --------------- | ------------------------------------ |
+| `relay_connect` | Connect to an Agent Relay workspace  |
+| `relay_send`    | Send a DM to another agent           |
+| `relay_inbox`   | Check for new messages               |
+| `relay_agents`  | List online agents                   |
+| `relay_post`    | Post to a channel                    |
+| `relay_spawn`   | Spawn a new OpenCode worker instance |
+| `relay_dismiss` | Stop and release a spawned worker    |
 
 ## Quick Start
 
@@ -38,10 +38,10 @@ opencode plugin add agent-relay
 
 ## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `RELAY_WORKSPACE` | Workspace key passed to spawned workers (via env, never in prompts) |
-| `RELAY_AGENT_NAME` | Agent name passed to spawned workers |
+| Variable           | Description                                                         |
+| ------------------ | ------------------------------------------------------------------- |
+| `RELAY_WORKSPACE`  | Workspace key passed to spawned workers (via env, never in prompts) |
+| `RELAY_AGENT_NAME` | Agent name passed to spawned workers                                |
 
 ## Architecture
 

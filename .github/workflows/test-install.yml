@@ -2,14 +2,17 @@ name: Test Install Script
 
 on:
   push:
+    branches: [main]
     paths:
       - 'install.sh'
       - 'install.test.sh'
+      - 'scripts/test-install-atomic.sh'
       - '.github/workflows/test-install.yml'
   pull_request:
     paths:
       - 'install.sh'
       - 'install.test.sh'
+      - 'scripts/test-install-atomic.sh'
       - '.github/workflows/test-install.yml'
   workflow_dispatch:
     inputs:
@@ -18,11 +21,18 @@ on:
         required: false
         type: string
 
+# A new push to a PR replaces its earlier runs; every other run (main pushes,
+# manual runs) gets its own group so it is never cancelled or dropped.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   AGENT_RELAY_TELEMETRY_DISABLED: 1
 
 jobs:
   test-install:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Test on ${{ matrix.os }} (${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -49,8 +59,8 @@ jobs:
             node: 'no-node'
             arch: x64
 
-          # Ubuntu - Old LTS (20.04)
-          - os: ubuntu-20.04
+          # Ubuntu - Old LTS (22.04; GitHub retired the 20.04 image, so jobs on it never start)
+          - os: ubuntu-22.04
             node: 'with-node'
             arch: x64
 
@@ -62,7 +72,7 @@ jobs:
         if: matrix.node == 'with-node'
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22.14.0'
 
       - name: Remove Node.js (if testing no-node)
         if: matrix.node == 'no-node'
@@ -101,6 +111,11 @@ jobs:
         run: |
           ./install.test.sh
           echo "✓ Version parsing tests passed"
+
+      - name: Run atomic install tests
+        run: |
+          bash scripts/test-install-atomic.sh
+          echo "✓ Atomic install tests passed"
 
       - name: Test install script with Node.js
         if: matrix.node == 'with-node'
@@ -174,6 +189,7 @@ jobs:
 
   # Test fallback when gunzip is not available
   test-no-gunzip:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Test without gunzip
     runs-on: ubuntu-latest
 
@@ -218,6 +234,7 @@ jobs:
           '
 
   test-install-alpine:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Test on Alpine Linux
     runs-on: ubuntu-latest
 
@@ -257,6 +274,7 @@ jobs:
           '
 
   test-install-fedora:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Test on Fedora
     runs-on: ubuntu-latest
 
@@ -292,6 +310,7 @@ jobs:
 
   # Test script syntax and edge cases
   test-script-quality:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Script Quality Checks
     runs-on: ubuntu-latest
 
@@ -304,7 +323,7 @@ jobs:
 
       - name: Run shellcheck
         run: |
-          shellcheck -e SC2034,SC2086 install.sh || true
+          shellcheck -e SC2034,SC2086 install.sh scripts/test-install-atomic.sh || true
           echo "✓ Shellcheck completed"
 
       - name: Test all helper functions exist
@@ -324,7 +343,7 @@ jobs:
       - name: Test error messages are helpful
         run: |
           # Verify helpful error messages exist
-          MESSAGES="Node.js 18+ is required|nvm|brew install node|apt-get install"
+          MESSAGES="Node\\.js 22\\+ is required|nvm|brew install node|apt-get install"
 
           for msg in $MESSAGES; do
             if grep -qE "$msg" install.sh; then
@@ -338,7 +357,9 @@ jobs:
     name: Test Summary
     needs: [test-install, test-install-alpine, test-install-fedora, test-no-gunzip, test-script-quality]
     runs-on: ubuntu-latest
-    if: always()
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (always())
 
     steps:
       - name: Summary

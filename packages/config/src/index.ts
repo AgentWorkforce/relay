@@ -4,6 +4,7 @@ export * from './bridge-utils.js';
 export * from './teams-config.js';
 export * from './shadow-config.js';
 export * from './trajectory-config.js';
+export * from './reflex-config.js';
 export * from './agent-config.js';
 export * from './cli-auth-config.js';
 export * from './cloud-config.js';

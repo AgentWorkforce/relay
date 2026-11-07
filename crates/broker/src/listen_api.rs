@@ -6,12 +6,20 @@
 
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use crate::{
-    protocol::MessageInjectionMode,
+    fleet_wire::AgentRegistrationMetadata,
+    ids::{
+        ChannelName, DeliveryId, MessageTarget, ThreadId, WorkerName, WorkspaceAlias, WorkspaceId,
+    },
+    native_delivery::{
+        NativeDeliveryError, NativeExistingSessionDelivery, NativeExistingSessionReconcile,
+    },
+    protocol::{MessageInjectionMode, ResolvedHarnessConfig},
     relaycast::WorkspaceMembershipSummary,
     replay_buffer::ReplayBuffer,
     types::{InboundDeliveryMode, PendingRelayMessage},
@@ -25,6 +33,7 @@ use uuid::Uuid;
 use crate::worker_request::{RequestWorkerError, DEFAULT_REQUEST_TIMEOUT};
 
 const LISTEN_API_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+const HEALTH_STATUS_TIMEOUT: Duration = Duration::from_millis(100);
 
 type PtyInputSerializers = Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>;
 
@@ -32,66 +41,105 @@ type PtyInputSerializers = Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::syn
 // Request / State types
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::large_enum_variant)]
 pub enum ListenApiRequest {
     Spawn {
-        name: String,
+        name: WorkerName,
         cli: String,
         transport: Option<String>,
         model: Option<String>,
         args: Vec<String>,
         task: Option<String>,
-        channels: Vec<String>,
+        registration_metadata: AgentRegistrationMetadata,
+        channels: Option<Vec<ChannelName>>,
         cwd: Option<String>,
         team: Option<String>,
-        shadow_of: Option<String>,
+        shadow_of: Option<WorkerName>,
         shadow_mode: Option<String>,
         continue_from: Option<String>,
         idle_threshold_secs: Option<u64>,
+        exit_after_task: bool,
         skip_relay_prompt: bool,
         restart_policy: Box<Option<Value>>,
+        harness_config: Option<ResolvedHarnessConfig>,
         agent_token: Option<String>,
+        agent_result_schema: Option<Value>,
+        /// Shared agent-event replay store. The runtime resets the previous
+        /// generation immediately before launching this worker, rather than
+        /// racing startup events with the later `agent_spawned` broadcast.
+        replay_buffer: ReplayBuffer,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     SetModel {
-        name: String,
+        name: WorkerName,
         model: String,
         timeout_ms: Option<u64>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     Release {
-        name: String,
+        name: WorkerName,
         reason: Option<String>,
+        expected_generation: Option<String>,
+        delete_identity: bool,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     List {
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    DeliverNativeExistingSession {
+        delivery: NativeExistingSessionDelivery,
+        reply: tokio::sync::oneshot::Sender<Result<Value, NativeDeliveryError>>,
+    },
+    ReconcileNativeExistingSession {
+        delivery: NativeExistingSessionReconcile,
+        reply: tokio::sync::oneshot::Sender<Result<Value, NativeDeliveryError>>,
+    },
+    /// `GET /api/fleet-inventory` — snapshot of the in-process `fleet_inventory`
+    /// map (what the broker last published to the engine via `inventory.sync`).
+    /// Callers use this alongside `List` to detect the workers-vs-inventory
+    /// divergence documented in #1539 — an agent live in the PTY map that was
+    /// never (or is no longer) present in what the engine sees.
+    FleetInventory {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     Threads {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     Send {
-        to: String,
+        to: MessageTarget,
         text: String,
         from: Option<String>,
-        thread_id: Option<String>,
-        workspace_id: Option<String>,
-        workspace_alias: Option<String>,
+        thread_id: Option<ThreadId>,
+        workspace_id: Option<WorkspaceId>,
+        workspace_alias: Option<WorkspaceAlias>,
         mode: MessageInjectionMode,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
+    /// `POST /api/input/{name}` and the input WebSocket. The reply is held
+    /// until the worker confirms the PTY write landed (or failed): the broker
+    /// ships a `write_pty` frame with a fresh `request_id`, parks this reply in
+    /// `pending_requests`, and fulfils it from the worker's `write_pty_response`
+    /// (or the deadline / worker-exit sweep). Acking only after a confirmed
+    /// write is what makes a client's `PtyInputStream.send()` reject on failure.
     SendInput {
-        name: String,
+        name: WorkerName,
         data: String,
-        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, RequestWorkerError>>,
     },
     CheckPtyInputTarget {
-        name: String,
+        name: WorkerName,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     ResizePty {
-        name: String,
+        name: WorkerName,
         rows: u16,
         cols: u16,
+        /// Optional client-generated session id for the single-resizer
+        /// policy (#1247). `None` preserves legacy always-apply behaviour.
+        session_id: Option<String>,
+        /// When `true`, the owning `session_id` releases resize ownership
+        /// (sent on detach) instead of applying a resize.
+        release: bool,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     /// Generic worker request/response RPC: park a oneshot in the
@@ -104,7 +152,7 @@ pub enum ListenApiRequest {
     /// Fire-and-forget routes (`send_input`, `resize_pty`) keep their
     /// existing single-arm channel pattern.
     WorkerRequest {
-        name: String,
+        name: WorkerName,
         /// Outbound frame `type`, e.g. `"snapshot_pty"`. The worker is
         /// expected to reply with `"{kind}_response"`.
         kind: String,
@@ -117,7 +165,7 @@ pub enum ListenApiRequest {
         reply: tokio::sync::oneshot::Sender<Result<Value, RequestWorkerError>>,
     },
     GetMetrics {
-        agent: Option<String>,
+        agent: Option<WorkerName>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     GetStatus {
@@ -126,18 +174,30 @@ pub enum ListenApiRequest {
     GetCrashInsights {
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
+    /// `GET /api/dead-letters` — list terminally-failed deliveries retained
+    /// in the dead-letter queue.
+    GetDeadLetters {
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
+    /// `POST /api/dead-letters/redeliver` — requeue dead-letter entries
+    /// through the normal delivery path with a reset retry count. `id: None`
+    /// redelivers every entry whose recipient is currently running.
+    RedeliverDeadLetters {
+        id: Option<DeliveryId>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+    },
     Preflight {
         agents: Vec<PreflightEntry>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     SubscribeChannels {
-        name: String,
-        channels: Vec<String>,
+        name: WorkerName,
+        channels: Vec<ChannelName>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     UnsubscribeChannels {
-        name: String,
-        channels: Vec<String>,
+        name: WorkerName,
+        channels: Vec<ChannelName>,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
     Shutdown {
@@ -149,31 +209,58 @@ pub enum ListenApiRequest {
     /// `GET /api/spawned/{name}/delivery-mode` — read the current inbound
     /// delivery mode.
     GetInboundDeliveryMode {
-        name: String,
+        name: WorkerName,
         reply: tokio::sync::oneshot::Sender<Result<InboundDeliveryMode, DeliveryRouteError>>,
     },
     /// `PUT /api/spawned/{name}/delivery-mode` — set the inbound delivery mode.
     /// On a `manual_flush → auto_inject` transition the broker drains the pending
     /// queue into the worker (via the existing inject path) before
     /// replying; `flushed` reports how many messages were injected.
+    ///
+    /// `expected_mode` and `expected_revision` are optional compare-and-set
+    /// guards. Detach restores send both so a concurrent write is detected even
+    /// when the enum value changes away and back (ABA).
     SetInboundDeliveryMode {
-        name: String,
+        name: WorkerName,
         mode: InboundDeliveryMode,
+        expected_mode: Option<InboundDeliveryMode>,
+        expected_revision: Option<u64>,
         reply: tokio::sync::oneshot::Sender<Result<SetInboundDeliveryModeOk, DeliveryRouteError>>,
     },
     /// `GET /api/spawned/{name}/pending` — snapshot the per-worker
     /// pending-message queue (FIFO, head first). Auto-inject workers usually
     /// report an empty queue because they drain in the same broker turn.
     GetPending {
-        name: String,
+        name: WorkerName,
         reply: tokio::sync::oneshot::Sender<Result<Vec<PendingRelayMessage>, DeliveryRouteError>>,
     },
     /// `POST /api/spawned/{name}/flush` — drain the pending queue and
     /// inject every message into the worker via the existing
     /// fire-and-forget inject path. Does *not* change the mode.
     FlushPending {
-        name: String,
-        reply: tokio::sync::oneshot::Sender<Result<usize, DeliveryRouteError>>,
+        name: WorkerName,
+        reply: tokio::sync::oneshot::Sender<Result<FlushPendingOk, DeliveryRouteError>>,
+    },
+    /// `POST /api/agent-result` — accepts structured result payloads from the
+    /// per-agent MCP tool using a callback token minted at spawn time.
+    SubmitAgentResult {
+        token: String,
+        name: Option<WorkerName>,
+        data: Value,
+        final_result: bool,
+        metadata: Option<Value>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, AgentResultRouteError>>,
+    },
+    /// `POST /api/observer-token` — mint a scoped, read-only Relaycast
+    /// observer token (`ot_live_...`) for the resolved workspace. Used by
+    /// local dashboard clients (e.g. Pear's "Join as observer" link) so they
+    /// stop embedding the full `rk_live_...` workspace key, which grants
+    /// full read/write/spawn access, in shareable links.
+    CreateObserverToken {
+        workspace_id: Option<WorkspaceId>,
+        workspace_alias: Option<WorkspaceAlias>,
+        name: Option<String>,
+        reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
 }
 
@@ -184,13 +271,15 @@ pub enum ListenApiRequest {
 /// so they don't need a variant here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeliveryRouteError {
+    CapabilityDisabled,
     /// No worker with that name is currently registered with the broker.
-    WorkerNotFound(String),
+    WorkerNotFound(WorkerName),
 }
 
 impl std::fmt::Display for DeliveryRouteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            DeliveryRouteError::CapabilityDisabled => write!(f, "DEGRADED: manual flush is unavailable in local-only mode; local deliveries use the durable automatic queue"),
             DeliveryRouteError::WorkerNotFound(name) => {
                 write!(f, "agent_not_found: no worker named '{name}'")
             }
@@ -200,13 +289,82 @@ impl std::fmt::Display for DeliveryRouteError {
 
 impl std::error::Error for DeliveryRouteError {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentResultRouteError {
+    InvalidToken,
+    Retryable,
+    Conflict,
+}
+
+impl std::fmt::Display for AgentResultRouteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AgentResultRouteError::InvalidToken => write!(f, "invalid_result_token"),
+            AgentResultRouteError::Retryable => write!(f, "task_receipt_pending"),
+            AgentResultRouteError::Conflict => write!(f, "task_result_conflict"),
+        }
+    }
+}
+
+impl std::error::Error for AgentResultRouteError {}
+
 /// Reply payload for [`ListenApiRequest::SetInboundDeliveryMode`]. `flushed`
 /// is the number of pending messages drained during the transition
 /// (always `0` unless we transitioned `manual_flush → auto_inject`).
+///
+/// `matched` is `true` on an applied set. It is `false` when either compare-and-
+/// set guard misses, in which case `mode` and `revision` report the current
+/// unchanged state and `flushed` is `0`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetInboundDeliveryModeOk {
     pub mode: InboundDeliveryMode,
     pub flushed: usize,
+    /// Parked messages dead-lettered rather than injected during a
+    /// `manual_flush → auto_inject` drain. Reported alongside `flushed` so the
+    /// caller is not told `flushed: 0` about a queue that did in fact change.
+    pub dead_lettered: usize,
+    pub matched: bool,
+    pub revision: u64,
+    pub blocked_reason: Option<String>,
+    pub blocked_reason_code: Option<&'static str>,
+    pub head_sequence: Option<u64>,
+    pub acked_up_to_sequence: Option<u64>,
+    pub received_up_to_sequence: Option<u64>,
+    pub next_ackable_sequence: Option<u64>,
+    /// Recovery step started by the broker, if any.
+    pub reconciliation_action: Option<&'static str>,
+}
+
+/// Outcome of `POST /api/spawned/{name}/flush`.
+///
+/// `flushed` alone cannot distinguish "the queue was empty" from "the queue is
+/// jammed and I injected nothing", and that ambiguity is what made relay#1593
+/// expensive to diagnose — a bare `{"flushed": 0}` was read as a null result
+/// when it was a swallowed failure. The other three fields say which.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FlushPendingOk {
+    /// Messages injected into the worker by this call.
+    pub flushed: usize,
+    /// Messages removed from the queue and dead-lettered instead of injected,
+    /// because their Relaycast identity no longer holds the worker's name.
+    /// Inspect them with `agent-relay node deadletters`.
+    pub dead_lettered: usize,
+    /// Messages still parked in the queue when the flush stopped.
+    pub held: usize,
+    /// Why the flush stopped short, when it did.
+    pub blocked_reason: Option<String>,
+    /// Stable machine-readable classification for `blocked_reason`.
+    pub blocked_reason_code: Option<&'static str>,
+    /// Sequence at the head of the parked queue.
+    pub head_sequence: Option<u64>,
+    /// Last sequence cumulatively acknowledged to Relaycast.
+    pub acked_up_to_sequence: Option<u64>,
+    /// Highest contiguous sequence received into broker custody.
+    pub received_up_to_sequence: Option<u64>,
+    /// Predecessor that must reconcile before the head can be acknowledged.
+    pub next_ackable_sequence: Option<u64>,
+    /// Recovery step started by the broker, if any.
+    pub reconciliation_action: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -243,6 +401,7 @@ impl SnapshotFormat {
 
 #[derive(Clone)]
 struct ListenApiState {
+    local_only: bool,
     tx: mpsc::Sender<ListenApiRequest>,
     events_tx: broadcast::Sender<String>,
     broker_api_key: Option<String>,
@@ -251,12 +410,31 @@ struct ListenApiState {
     /// endpoint so the dashboard can bootstrap Relaycast calls without a
     /// relaycast.json or env var.
     workspace_key: Option<String>,
+    /// Relaycast HTTP base URL that owns the workspace key.
+    relay_base_url: Option<String>,
     memberships: Vec<WorkspaceMembershipSummary>,
-    default_workspace_id: Option<String>,
+    default_workspace_id: Option<WorkspaceId>,
     /// Broker version string (from Cargo.toml)
     broker_version: String,
+    /// The node id this broker registered as the `broker` provider. Capability
+    /// providers (served by the CLI) attach to the same node with this id.
+    node_id: String,
+    /// The node's name (the target others address).
+    node_name: String,
+    /// The node's shared `nt_live_` token, returned so local providers can attach
+    /// to this node without a pre-enrolled token (the broker mints its own). Held
+    /// behind a shared handle so a re-mint is reflected in later session reads.
+    node_token: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     /// Whether the broker is in persist mode
     persist: bool,
+    /// Direct receipt lookup used only when the runtime reply channel drops,
+    /// so the HTTP contract can distinguish pre-reservation failure from an
+    /// already committed or in-doubt delivery.
+    native_delivery_receipts: PathBuf,
+    /// Node-control inbound introspection. Held directly (rather than reached
+    /// through `tx`) so `GET /api/node-delivery` answers even when the runtime
+    /// event loop is wedged — the case the endpoint exists to diagnose.
+    node_delivery_probe: std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
     /// When the broker started
     started_at: std::time::Instant,
     input_serializers: PtyInputSerializers,
@@ -281,13 +459,22 @@ impl ListenReplayQuery {
 // ---------------------------------------------------------------------------
 
 pub struct ListenApiConfig {
+    pub local_only: bool,
     pub tx: mpsc::Sender<ListenApiRequest>,
     pub events_tx: broadcast::Sender<String>,
     pub replay_buffer: ReplayBuffer,
     pub workspace_key: Option<String>,
+    pub relay_base_url: Option<String>,
     pub memberships: Vec<WorkspaceMembershipSummary>,
-    pub default_workspace_id: Option<String>,
+    pub default_workspace_id: Option<WorkspaceId>,
+    pub node_id: String,
+    pub node_name: String,
+    pub node_token: std::sync::Arc<std::sync::RwLock<Option<String>>>,
     pub persist: bool,
+    pub native_delivery_receipts: PathBuf,
+    /// Node-control inbound introspection, read directly by
+    /// `GET /api/node-delivery`. See [`crate::node_delivery_probe`].
+    pub node_delivery_probe: std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
 }
 
 pub fn listen_api_router(config: ListenApiConfig) -> axum::Router {
@@ -301,13 +488,14 @@ fn configured_broker_api_key() -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn listen_api_router_with_auth(
+pub(crate) fn listen_api_router_with_auth(
     config: ListenApiConfig,
     broker_api_key: Option<String>,
 ) -> axum::Router {
     use axum::{middleware, routing, Router};
 
     let state = ListenApiState {
+        local_only: config.local_only,
         tx: config.tx,
         events_tx: config.events_tx,
         broker_api_key: broker_api_key
@@ -318,19 +506,46 @@ fn listen_api_router_with_auth(
             .workspace_key
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
+        relay_base_url: config
+            .relay_base_url
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
         memberships: config.memberships,
         default_workspace_id: config.default_workspace_id,
         broker_version: crate::util::version::broker_version().to_string(),
+        node_id: config.node_id,
+        node_name: config.node_name,
+        node_token: config.node_token,
         persist: config.persist,
+        native_delivery_receipts: config.native_delivery_receipts,
+        node_delivery_probe: config.node_delivery_probe,
         started_at: std::time::Instant::now(),
         input_serializers: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
     };
+
+    spawn_input_serializer_pruner(
+        state.tx.clone(),
+        state.events_tx.subscribe(),
+        state.input_serializers.clone(),
+    );
 
     let protected = Router::new()
         .route("/api/session", routing::get(listen_api_session))
         .route("/api/session/renew", routing::post(listen_api_renew_lease))
         .route("/api/spawn", routing::post(listen_api_spawn))
+        .route(
+            "/api/native-delivery/existing-session",
+            routing::post(listen_api_deliver_native_existing_session),
+        )
+        .route(
+            "/api/native-delivery/existing-session/reconcile",
+            routing::post(listen_api_reconcile_native_existing_session),
+        )
         .route("/api/spawned", routing::get(listen_api_list))
+        .route(
+            "/api/fleet-inventory",
+            routing::get(listen_api_fleet_inventory),
+        )
         .route(
             "/api/spawned/{name}/model",
             routing::post(listen_api_set_model),
@@ -343,6 +558,10 @@ fn listen_api_router_with_auth(
             routing::post(listen_api_interrupt),
         )
         .route("/api/send", routing::post(listen_api_send))
+        .route(
+            "/api/observer-token",
+            routing::post(listen_api_create_observer_token),
+        )
         .route("/api/input/{name}", routing::post(listen_api_send_input))
         .route(
             "/api/input/{name}/stream",
@@ -352,6 +571,14 @@ fn listen_api_router_with_auth(
         .route(
             "/api/spawned/{name}/snapshot",
             routing::get(listen_api_snapshot),
+        )
+        .route(
+            "/api/spawned/{name}/agent-events/history",
+            routing::get(listen_api_agent_event_history),
+        )
+        .route(
+            "/api/spawned/{name}/native-harness/command",
+            routing::post(listen_api_native_harness_command),
         )
         .route(
             "/api/spawned/{name}/delivery-mode",
@@ -371,6 +598,12 @@ fn listen_api_router_with_auth(
         .route(
             "/api/crash-insights",
             routing::get(listen_api_crash_insights),
+        )
+        .route("/api/node-delivery", routing::get(listen_api_node_delivery))
+        .route("/api/dead-letters", routing::get(listen_api_dead_letters))
+        .route(
+            "/api/dead-letters/redeliver",
+            routing::post(listen_api_redeliver_dead_letters),
         )
         .route("/api/preflight", routing::post(listen_api_preflight))
         .route("/api/shutdown", routing::post(listen_api_shutdown))
@@ -393,6 +626,7 @@ fn listen_api_router_with_auth(
 
     Router::new()
         .route("/health", routing::get(listen_api_health))
+        .route("/api/agent-result", routing::post(listen_api_agent_result))
         .merge(protected)
         .with_state(state.clone())
 }
@@ -402,7 +636,7 @@ fn listen_api_router_with_auth(
 // ---------------------------------------------------------------------------
 
 pub(crate) fn listen_api_health_payload(
-    default_workspace_id: Option<String>,
+    default_workspace_id: Option<WorkspaceId>,
     memberships: Vec<WorkspaceMembershipSummary>,
 ) -> Value {
     let startup_error_code = std::env::var("AGENT_RELAY_STARTUP_ERROR_CODE").ok();
@@ -414,7 +648,7 @@ pub(crate) fn listen_api_health_payload(
                 .first()
                 .map(|membership| membership.workspace_id.clone())
         })
-        .unwrap_or_else(|| "ws_unknown".to_string());
+        .unwrap_or_else(|| WorkspaceId::new("ws_unknown"));
 
     json!({
         "status": status,
@@ -426,19 +660,91 @@ pub(crate) fn listen_api_health_payload(
         "memberships": memberships,
         "agentCount": 0,
         "pendingDeliveryCount": 0,
+        "deadLetterCount": 0,
         "wsConnections": 0,
         "memoryMb": 0,
         "relaycastConnected": startup_error_code.is_none(),
+        "nodeConnected": false,
+        "nodeDelivery": {
+            "tokenPresent": false,
+            "connected": false,
+        },
     })
 }
 
 async fn listen_api_health(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
 ) -> axum::Json<Value> {
-    axum::Json(listen_api_health_payload(
-        state.default_workspace_id,
-        state.memberships,
-    ))
+    let local_only = state.local_only;
+    let mut payload = listen_api_health_payload(state.default_workspace_id, state.memberships);
+    if local_only {
+        payload["status"] = json!("degraded");
+        payload["mode"] = json!("local_only");
+        payload["relaycastConnected"] = json!(false);
+    }
+    if let Some(status) = fetch_status_for_health(&state.tx).await {
+        merge_status_into_health_payload(&mut payload, &status);
+    }
+    axum::Json(payload)
+}
+
+async fn fetch_status_for_health(tx: &mpsc::Sender<ListenApiRequest>) -> Option<Value> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    tx.try_send(ListenApiRequest::GetStatus { reply: reply_tx })
+        .ok()?;
+    timeout(HEALTH_STATUS_TIMEOUT, reply_rx)
+        .await
+        .ok()?
+        .ok()?
+        .ok()
+}
+
+fn merge_status_into_health_payload(payload: &mut Value, status: &Value) {
+    let Some(object) = payload.as_object_mut() else {
+        return;
+    };
+    if status.get("mode").and_then(Value::as_str) == Some("local_only") {
+        object.insert("status".into(), json!("degraded"));
+        object.insert("mode".into(), json!("local_only"));
+        object.insert("relaycastConnected".into(), json!(false));
+        object.insert("degraded".into(), status["degraded"].clone());
+    }
+    if let Some(agent_count) = status.get("agent_count").and_then(Value::as_u64) {
+        object.insert("agentCount".to_string(), json!(agent_count));
+    }
+    if let Some(pending_count) = status.get("pending_delivery_count").and_then(Value::as_u64) {
+        object.insert("pendingDeliveryCount".to_string(), json!(pending_count));
+    }
+    if let Some(dead_letter_count) = status.get("dead_letter_count").and_then(Value::as_u64) {
+        object.insert("deadLetterCount".to_string(), json!(dead_letter_count));
+    }
+    let token_present = status
+        .get("node_delivery")
+        .and_then(|value| value.get("token_present"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let connected = status
+        .get("node_connected")
+        .and_then(Value::as_bool)
+        .or_else(|| {
+            status
+                .get("node_delivery")
+                .and_then(|value| value.get("connected"))
+                .and_then(Value::as_bool)
+        })
+        .unwrap_or(false);
+    object.insert("nodeConnected".to_string(), json!(connected));
+    object.insert(
+        "nodeDelivery".to_string(),
+        json!({
+            "tokenPresent": token_present,
+            "connected": connected,
+        }),
+    );
+    object.insert(
+        "wsConnections".to_string(),
+        json!(if connected { 1 } else { 0 }),
+    );
 }
 
 /// Authenticated endpoint that returns broker configuration, including the
@@ -449,9 +755,17 @@ async fn listen_api_session(
 ) -> axum::Json<Value> {
     axum::Json(json!({
         "broker_version": state.broker_version,
+        "spawn_capabilities": {"explicit_empty_channels": true, "create_only_identity": true},
         "protocol_version": 2,
+        "operation_mode": if state.local_only { "local_only" } else { "normal" },
+        "degraded": state.local_only,
         "workspace_key": state.workspace_key,
+        "relay_base_url": state.relay_base_url,
         "default_workspace_id": state.default_workspace_id,
+        "node_id": state.node_id,
+        "node_name": state.node_name,
+        "node_token": state.node_token.read().ok().and_then(|token| token.clone()),
+        "node_control_health": state.node_delivery_probe.node_control_health(),
         "mode": if state.persist { "persist" } else { "ephemeral" },
         "uptime_secs": state.started_at.elapsed().as_secs(),
     }))
@@ -483,13 +797,222 @@ async fn listen_api_replay(
     axum::extract::Query(query): axum::extract::Query<ListenReplayQuery>,
 ) -> axum::Json<Value> {
     let since_seq = query.since_seq();
+    // Snapshot the cutoff before draining so a client that only wants the
+    // current sequence position (to open a live WS without replaying stale
+    // durable events) can read it cheaply, e.g. with `sinceSeq` set beyond
+    // everything retained.
+    let current_seq = state.replay_buffer.current_seq();
     let (entries, gap_oldest) = state.replay_buffer.replay_since(since_seq).await;
     let events: Vec<Value> = entries.into_iter().map(|entry| entry.event).collect();
     axum::Json(json!({
         "events": events,
         "gap": gap_oldest.is_some(),
         "oldestAvailable": gap_oldest.unwrap_or(since_seq),
+        "droppedCount": gap_oldest
+            .map(|oldest| dropped_event_count(since_seq, oldest))
+            .unwrap_or(0),
+        "currentSeq": current_seq,
     }))
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct AgentEventHistoryQuery {
+    #[serde(rename = "sinceSequence")]
+    since_sequence_camel: Option<u64>,
+    #[serde(rename = "since_sequence")]
+    since_sequence_snake: Option<u64>,
+}
+
+impl AgentEventHistoryQuery {
+    fn since_sequence(&self) -> u64 {
+        self.since_sequence_camel
+            .or(self.since_sequence_snake)
+            .unwrap_or(0)
+    }
+}
+
+async fn listen_api_agent_event_history(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::extract::Query(query): axum::extract::Query<AgentEventHistoryQuery>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::List { reply: reply_tx })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    let agents = match reply_rx.await {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => {
+            return api_error(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                error,
+            )
+        }
+        Err(_) => return internal_error(),
+    };
+    let agent = agents
+        .get("agents")
+        .and_then(Value::as_array)
+        .and_then(|agents| {
+            agents
+                .iter()
+                .find(|agent| agent.get("name").and_then(Value::as_str) == Some(name.as_str()))
+        });
+    let Some(agent) = agent else {
+        return api_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "agent_not_found",
+            format!("no worker named '{name}'"),
+        );
+    };
+    if agent.get("runtime_kind").and_then(Value::as_str) != Some("native") {
+        return api_error(
+            axum::http::StatusCode::CONFLICT,
+            "unsupported_runtime",
+            format!("worker '{name}' does not expose agent-event history"),
+        );
+    }
+    let snapshot = state
+        .replay_buffer
+        .replay_agent_events_since(&name, query.since_sequence())
+        .await;
+    (
+        axum::http::StatusCode::OK,
+        axum::Json(json!({
+            "protocol_version": 1,
+            "name": name,
+            "events": snapshot.events,
+            "high_water_sequence": snapshot.high_water_sequence,
+            "oldest_available_sequence": snapshot.oldest_available_sequence,
+            "gap": snapshot.gap,
+        })),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+struct NativeHarnessCommandBody {
+    protocol_version: u64,
+    kind: String,
+    idempotency_key: String,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    approval_id: Option<String>,
+    #[serde(default)]
+    instructions: Option<String>,
+}
+
+async fn listen_api_native_harness_command(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    axum::Json(body): axum::Json<NativeHarnessCommandBody>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    if body.protocol_version != 1 {
+        return api_error(
+            axum::http::StatusCode::CONFLICT,
+            "unsupported_protocol_version",
+            format!(
+                "native harness protocol version {} is unsupported (expected 1)",
+                body.protocol_version
+            ),
+        );
+    }
+    if body.idempotency_key.trim().is_empty() {
+        return api_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid_idempotency_key",
+            "native harness command idempotency_key must not be empty",
+        );
+    }
+    let valid_kind = matches!(
+        body.kind.as_str(),
+        "submit_user_message"
+            | "interrupt"
+            | "approve_tool"
+            | "reject_tool"
+            | "compact"
+            | "release"
+    );
+    if !valid_kind {
+        return api_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid_native_harness_command",
+            format!("unsupported native harness command '{}'", body.kind),
+        );
+    }
+    if body.kind == "submit_user_message"
+        && body
+            .text
+            .as_deref()
+            .is_none_or(|text| text.trim().is_empty())
+    {
+        return api_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid_native_harness_input",
+            "submit_user_message requires non-empty text",
+        );
+    }
+    if matches!(body.kind.as_str(), "approve_tool" | "reject_tool")
+        && body
+            .approval_id
+            .as_deref()
+            .is_none_or(|approval_id| approval_id.trim().is_empty())
+    {
+        return api_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid_native_harness_approval",
+            "approve_tool and reject_tool require a non-empty approval_id",
+        );
+    }
+    if body
+        .mode
+        .as_deref()
+        .is_some_and(|mode| !matches!(mode, "auto" | "active" | "idle"))
+    {
+        return api_error(
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid_native_harness_input_mode",
+            "native harness input mode must be auto, active, or idle",
+        );
+    }
+
+    let payload = json!({
+        "protocol_version": body.protocol_version,
+        "kind": body.kind,
+        "idempotency_key": body.idempotency_key,
+        "text": body.text,
+        "mode": body.mode,
+        "approval_id": body.approval_id,
+        "instructions": body.instructions,
+    });
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::WorkerRequest {
+            name: WorkerName::new(name),
+            kind: "native_harness_command".to_string(),
+            payload,
+            timeout: DEFAULT_REQUEST_TIMEOUT,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(error)) => worker_request_error_to_response(&error),
+        Err(_) => internal_error(),
+    }
 }
 
 fn unauthorized_error_envelope() -> Value {
@@ -501,6 +1024,17 @@ fn unauthorized_error_envelope() -> Value {
             "statusCode": 401,
         }
     })
+}
+
+fn bearer_token(value: &str) -> Option<&str> {
+    let mut parts = value.trim().splitn(2, char::is_whitespace);
+    let scheme = parts.next()?;
+    let token = parts.next()?.trim();
+    if scheme.eq_ignore_ascii_case("bearer") && !token.is_empty() {
+        Some(token)
+    } else {
+        None
+    }
 }
 
 async fn listen_api_auth_middleware(
@@ -524,9 +1058,7 @@ async fn listen_api_auth_middleware(
                 .headers()
                 .get("authorization")
                 .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.strip_prefix("Bearer "))
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
+                .and_then(bearer_token)
         });
 
     if provided != Some(expected) {
@@ -537,6 +1069,24 @@ async fn listen_api_auth_middleware(
     }
 
     Ok(next.run(request).await)
+}
+
+fn parse_harness_config_value(value: Value) -> Result<ResolvedHarnessConfig, String> {
+    serde_json::from_value::<ResolvedHarnessConfig>(value)
+        .map_err(|error| format!("Invalid harnessConfig: {error}"))
+}
+
+fn extract_harness_config(body: &Value) -> Result<Option<ResolvedHarnessConfig>, String> {
+    match body
+        .get("harness_config")
+        .or_else(|| body.get("harnessConfig"))
+        .or_else(|| body.get("harness_plan"))
+        .or_else(|| body.get("harnessPlan"))
+        .cloned()
+    {
+        Some(value) => parse_harness_config_value(value).map(Some),
+        None => Ok(None),
+    }
 }
 
 async fn listen_api_spawn(
@@ -570,16 +1120,22 @@ async fn listen_api_spawn(
         })
         .unwrap_or_default();
     let task = body.get("task").and_then(Value::as_str).map(String::from);
-    let channels: Vec<String> = body
-        .get("channels")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(Value::as_str)
-                .map(String::from)
-                .collect()
-        })
-        .unwrap_or_default();
+    let registration_metadata = AgentRegistrationMetadata::from_spawn_input(&body, task.as_deref());
+    let channels: Option<Vec<ChannelName>> = match body.get("channels") {
+        None => None,
+        Some(Value::Array(values)) if values.iter().all(Value::is_string) => Some(
+            values
+                .iter()
+                .map(|value| ChannelName::from(value.as_str().unwrap()))
+                .collect(),
+        ),
+        Some(_) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({"error": "channels must be an array of strings"})),
+            )
+        }
+    };
     let cwd = body.get("cwd").and_then(Value::as_str).map(String::from);
     let team = body.get("team").and_then(Value::as_str).map(String::from);
     let shadow_of = body
@@ -601,6 +1157,24 @@ async fn listen_api_spawn(
         .get("idle_threshold_secs")
         .or_else(|| body.get("idleThresholdSecs"))
         .and_then(Value::as_u64);
+    let spawn_mode = body
+        .get("spawn_mode")
+        .or_else(|| body.get("spawnMode"))
+        .and_then(Value::as_str);
+    let explicit_exit_after_task = body
+        .get("exit_after_task")
+        .or_else(|| body.get("exitAfterTask"))
+        .and_then(Value::as_bool);
+    let exit_after_task =
+        match crate::runtime::resolve_exit_after_task(spawn_mode, explicit_exit_after_task) {
+            Ok(value) => value,
+            Err(error) => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    axum::Json(json!({ "success": false, "error": error })),
+                );
+            }
+        };
     let skip_relay_prompt = body
         .get("skip_relay_prompt")
         .or_else(|| body.get("skipRelayPrompt"))
@@ -611,11 +1185,41 @@ async fn listen_api_spawn(
             .or_else(|| body.get("restartPolicy"))
             .cloned(),
     );
+    if body
+        .get("harness_id")
+        .or_else(|| body.get("harnessId"))
+        .is_some()
+    {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(json!({
+                "success": false,
+                "error": "harnessId is not supported by the broker API; send harnessConfig"
+            })),
+        );
+    }
+    let harness_config = match extract_harness_config(&body) {
+        Ok(config) => config,
+        Err(error) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({
+                    "success": false,
+                    "error": error
+                })),
+            );
+        }
+    };
     let agent_token = body
         .get("agent_token")
         .or_else(|| body.get("agentToken"))
         .and_then(Value::as_str)
         .map(String::from);
+    let agent_result_schema = body
+        .get("agent_result_schema")
+        .or_else(|| body.get("agentResultSchema"))
+        .or_else(|| body.get("resultSchema"))
+        .cloned();
 
     if name.is_empty() {
         return (
@@ -628,22 +1232,27 @@ async fn listen_api_spawn(
     if state
         .tx
         .send(ListenApiRequest::Spawn {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             cli,
             transport,
             model,
             args,
             task,
+            registration_metadata,
             channels,
             cwd,
             team,
-            shadow_of,
+            shadow_of: shadow_of.map(WorkerName::from),
             shadow_mode,
             continue_from,
             idle_threshold_secs,
+            exit_after_task,
             skip_relay_prompt,
             restart_policy,
+            harness_config,
             agent_token,
+            agent_result_schema,
+            replay_buffer: state.replay_buffer.clone(),
             reply: reply_tx,
         })
         .await
@@ -686,6 +1295,130 @@ async fn listen_api_list(
     }
 }
 
+async fn listen_api_deliver_native_existing_session(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::Json(delivery): axum::Json<NativeExistingSessionDelivery>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    let dropped_reply_delivery = delivery.clone();
+    if state
+        .tx
+        .send(ListenApiRequest::DeliverNativeExistingSession {
+            delivery,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(error)) => native_delivery_error_to_response(&error),
+        Err(_) if !state.persist => native_delivery_error_to_response(
+            &NativeDeliveryError::ReceiptUnavailable(
+                "runtime reply dropped before a durable receipt could be confirmed; retry the same deliveryId"
+                    .to_string(),
+            ),
+        ),
+        Err(_) => match tokio::task::spawn_blocking({
+            let receipt_root = state.native_delivery_receipts.clone();
+            move || crate::native_delivery::existing_outcome(&receipt_root, &dropped_reply_delivery)
+        })
+        .await
+        {
+            Err(error) => native_delivery_error_to_response(&NativeDeliveryError::InDoubt(
+                format!("runtime reply dropped and receipt lookup task failed: {error}"),
+            )),
+            Ok(Ok(Some(outcome))) => (
+                axum::http::StatusCode::OK,
+                axum::Json(json!({
+                    "receiptId": outcome.receipt_id,
+                    "status": "duplicate",
+                    "state": outcome.state.as_str(),
+                })),
+            ),
+            Ok(Ok(None)) => native_delivery_error_to_response(
+                &NativeDeliveryError::ReceiptUnavailable(
+                    "runtime reply dropped before durable reservation; retry the same deliveryId"
+                        .to_string(),
+                ),
+            ),
+            Ok(Err(NativeDeliveryError::ReceiptUnavailable(error))) => {
+                native_delivery_error_to_response(&NativeDeliveryError::InDoubt(format!(
+                    "runtime reply dropped and receipt lookup is unavailable: {error}"
+                )))
+            }
+            Ok(Err(error)) => native_delivery_error_to_response(&error),
+        },
+    }
+}
+
+async fn listen_api_reconcile_native_existing_session(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::Json(delivery): axum::Json<NativeExistingSessionReconcile>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::ReconcileNativeExistingSession {
+            delivery,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(error)) => native_delivery_error_to_response(&error),
+        Err(_) => internal_error(),
+    }
+}
+
+fn native_delivery_error_to_response(
+    error: &NativeDeliveryError,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    use axum::http::StatusCode;
+    let status = match error {
+        NativeDeliveryError::Invalid(_) => StatusCode::BAD_REQUEST,
+        NativeDeliveryError::Conflict | NativeDeliveryError::Unauthorized(_) => {
+            StatusCode::CONFLICT
+        }
+        NativeDeliveryError::ReceiptUnavailable(_) | NativeDeliveryError::InDoubt(_) => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
+    };
+    (
+        status,
+        axum::Json(json!({
+            "success": false,
+            "code": error.code(),
+            "error": error.to_string(),
+            "committed": error.committed(),
+        })),
+    )
+}
+
+async fn listen_api_fleet_inventory(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> axum::Json<Value> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::FleetInventory { reply: reply_tx })
+        .await
+        .is_err()
+    {
+        return axum::Json(json!({ "success": false, "agents": [] }));
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => axum::Json(val),
+        _ => axum::Json(json!({ "success": false, "agents": [] })),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ListenApiSetModelPayload {
     model: String,
@@ -710,7 +1443,7 @@ async fn listen_api_set_model(
     if state
         .tx
         .send(ListenApiRequest::SetModel {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             model: model.clone(),
             timeout_ms: body.timeout_ms,
             reply: reply_tx,
@@ -755,18 +1488,138 @@ async fn listen_api_threads(
     }
 }
 
+async fn listen_api_agent_result(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    headers: axum::http::HeaderMap,
+    axum::Json(body): axum::Json<Value>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let token = headers
+        .get("x-agent-result-token")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(String::from)
+        .or_else(|| {
+            headers
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .and_then(bearer_token)
+                .map(String::from)
+        });
+    let Some(token) = token else {
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            axum::Json(json!({ "success": false, "error": "missing_result_token" })),
+        );
+    };
+
+    let Some(data) = body.get("data").or_else(|| body.get("result")).cloned() else {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(json!({ "success": false, "error": "Missing required field: data" })),
+        );
+    };
+    let name = body
+        .get("name")
+        .or_else(|| body.get("agent"))
+        .and_then(Value::as_str)
+        .map(String::from);
+    let final_result = body
+        .get("final")
+        .or_else(|| body.get("final_result"))
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let metadata = body.get("metadata").cloned();
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::SubmitAgentResult {
+            token,
+            name: name.map(WorkerName::from),
+            data,
+            final_result,
+            metadata,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal channel closed" })),
+        );
+    }
+
+    match reply_rx.await {
+        Ok(Ok(value)) => (axum::http::StatusCode::OK, axum::Json(value)),
+        Ok(Err(AgentResultRouteError::Retryable)) => (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(
+                json!({ "success": false, "error": "task_receipt_pending", "retryable": true }),
+            ),
+        ),
+        Ok(Err(AgentResultRouteError::Conflict)) => (
+            axum::http::StatusCode::CONFLICT,
+            axum::Json(json!({ "success": false, "error": "task_result_conflict" })),
+        ),
+        Ok(Err(AgentResultRouteError::InvalidToken)) => (
+            axum::http::StatusCode::UNAUTHORIZED,
+            axum::Json(json!({ "success": false, "error": "invalid_result_token" })),
+        ),
+        Err(_) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
+        ),
+    }
+}
+
 async fn listen_api_release(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
     body: Option<axum::Json<Value>>,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
-    let reason = body.and_then(|b| b.get("reason").and_then(|v| v.as_str()).map(String::from));
+    let reason = body
+        .as_ref()
+        .and_then(|b| b.get("reason").and_then(|v| v.as_str()).map(String::from));
+    let expected_generation = match body.as_ref().and_then(|b| b.get("expected_generation")) {
+        None => None,
+        Some(Value::String(value)) if !value.is_empty() => Some(value.clone()),
+        Some(_) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(
+                    json!({ "success": false, "error": "expected_generation must be a nonempty string" }),
+                ),
+            )
+        }
+    };
+    let delete_identity = match body.as_ref().and_then(|b| b.get("delete_identity")) {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                axum::Json(json!({"success": false, "error": "delete_identity must be a boolean"})),
+            )
+        }
+    };
+    if delete_identity && expected_generation.is_none() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            axum::Json(
+                json!({"success": false, "error": "delete_identity requires expected_generation"}),
+            ),
+        );
+    }
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
         .tx
         .send(ListenApiRequest::Release {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             reason,
+            expected_generation,
+            delete_identity,
             reply: reply_tx,
         })
         .await
@@ -897,12 +1750,12 @@ async fn listen_api_send(
     if state
         .tx
         .send(ListenApiRequest::Send {
-            to: to.clone(),
+            to: MessageTarget::new(to.clone()),
             text,
             from,
-            thread_id,
-            workspace_id,
-            workspace_alias,
+            thread_id: thread_id.map(ThreadId::from),
+            workspace_id: workspace_id.map(WorkspaceId::from),
+            workspace_alias: workspace_alias.map(WorkspaceAlias::from),
             mode,
             reply: reply_tx,
         })
@@ -997,6 +1850,124 @@ async fn listen_api_send(
     }
 }
 
+/// `POST /api/observer-token` — mint a scoped, read-only observer token for
+/// the resolved workspace so local dashboard clients (e.g. Pear's "Join as
+/// observer" link) never have to embed the full workspace API key.
+async fn listen_api_create_observer_token(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    body: axum::body::Bytes,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    // Parse raw bytes instead of using the `Json`/`Option<Json<_>>` extractor:
+    // dashboard clients may send `Content-Type: application/json` with an
+    // empty body (every field here is optional), and axum still attempts to
+    // parse that body and rejects the request before this handler runs.
+    let body: Value = if body.is_empty() {
+        Value::Null
+    } else {
+        match serde_json::from_slice::<Value>(&body) {
+            Ok(value) => value,
+            Err(err) => {
+                return (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    axum::Json(json!({
+                        "success": false,
+                        "error": format!("invalid JSON body: {err}"),
+                    })),
+                );
+            }
+        }
+    };
+
+    // Extract an optional string field, rejecting the request with 400 if a
+    // field is present but not a string, rather than silently treating a
+    // malformed selector as absent (which could mint a token for the wrong
+    // workspace on this credential-minting endpoint).
+    let string_field =
+        |keys: &[&str]| -> Result<Option<String>, (axum::http::StatusCode, axum::Json<Value>)> {
+            for key in keys {
+                let Some(raw) = body.get(*key) else {
+                    continue;
+                };
+                if raw.is_null() {
+                    continue;
+                }
+                let Some(value) = raw.as_str() else {
+                    return Err((
+                        axum::http::StatusCode::BAD_REQUEST,
+                        axum::Json(json!({
+                            "success": false,
+                            "error": format!("field '{key}' must be a string"),
+                        })),
+                    ));
+                };
+                let value = value.trim();
+                return Ok((!value.is_empty()).then(|| value.to_string()));
+            }
+            Ok(None)
+        };
+    let workspace_id = match string_field(&["workspaceId", "workspace_id"]) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let workspace_alias = match string_field(&["workspaceAlias", "workspace_alias"]) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let name = match string_field(&["name"]) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::CreateObserverToken {
+            workspace_id: workspace_id.map(WorkspaceId::from),
+            workspace_alias: workspace_alias.map(WorkspaceAlias::from),
+            name,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal channel closed" })),
+        );
+    }
+
+    match timeout(LISTEN_API_SEND_TIMEOUT, reply_rx).await {
+        Ok(Ok(Ok(val))) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Ok(Err(err))) => {
+            let raw_error = err.to_string();
+            let status = if raw_error.starts_with("ambiguous_workspace:")
+                || raw_error.starts_with("workspace_not_found:")
+            {
+                axum::http::StatusCode::BAD_REQUEST
+            } else {
+                axum::http::StatusCode::BAD_GATEWAY
+            };
+            let error = raw_error
+                .strip_prefix("ambiguous_workspace:")
+                .or_else(|| raw_error.strip_prefix("workspace_not_found:"))
+                .unwrap_or(&raw_error)
+                .to_string();
+            (
+                status,
+                axum::Json(json!({ "success": false, "error": error })),
+            )
+        }
+        Ok(Err(_)) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "success": false, "error": "internal reply dropped" })),
+        ),
+        Err(_) => (
+            axum::http::StatusCode::GATEWAY_TIMEOUT,
+            axum::Json(json!({ "success": false, "error": "broker request timed out" })),
+        ),
+    }
+}
+
 async fn listen_api_history_stats() -> axum::Json<Value> {
     axum::Json(json!({
         "messageCount": 0,
@@ -1043,9 +2014,25 @@ fn classify_error(err: &str) -> (axum::http::StatusCode, &'static str) {
         // is with the resource's current capabilities.
         (axum::http::StatusCode::CONFLICT, "unsupported_runtime")
     } else if err.starts_with("worker_timeout") {
-        // Worker died or stalled between accepting the frame and
-        // replying. This is a server-side fault, not a bad request.
+        // The worker didn't ack before the deadline. This does NOT mean the
+        // worker died — a confirmed-dead worker is reaped independently
+        // (`fail_for_worker`) and surfaces as `worker_disappeared`, not this.
+        // `worker_timeout` also fires for a worker that is simply busy and
+        // hasn't drained its stdin yet (relay#1544); see
+        // `pty_input_error_is_connection_fatal`, which callers on the PTY
+        // input path use to avoid treating this code as transport death.
         (axum::http::StatusCode::GATEWAY_TIMEOUT, "worker_timeout")
+    } else if err.starts_with("pty_write_queue_full") {
+        // The worker refused ONE write because its bounded drainer queue is
+        // full — the child is alive but momentarily not draining its stdin
+        // (a TUI harness mid-tool-call, whose terminal-query replies and
+        // injected messages share the same queue). Flow control, not
+        // transport death: 503 with a distinct code so the PTY input path can
+        // keep the connection open (`pty_input_error_is_connection_fatal`).
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "pty_write_queue_full",
+        )
     } else if err.starts_with("internal_error") {
         (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -1056,6 +2043,32 @@ fn classify_error(err: &str) -> (axum::http::StatusCode, &'static str) {
     } else {
         (axum::http::StatusCode::BAD_REQUEST, "request_failed")
     }
+}
+
+/// Whether a `write_pty` failure (as classified by [`classify_error`]) should
+/// tear down the whole PTY input connection.
+///
+/// `worker_timeout` means one write's ack didn't arrive before
+/// `PTY_INPUT_ACK_TIMEOUT` — the worker may simply be busy (not draining its
+/// stdin promptly while rendering/thinking), not dead. A confirmed-dead
+/// worker is reaped independently and reaches [`handle_pty_input_ws`] as
+/// `worker_disappeared` (or the target never existed at all:
+/// `agent_not_found` / `unsupported_runtime`), which are genuinely
+/// connection-fatal. Closing the connection on a mere timeout manufactures a
+/// transport failure out of a healthy-but-slow worker, which is exactly what
+/// forced the client-side reconnect loop in relay#1544.
+///
+/// `pty_write_queue_full` is exempt for the same reason and is strictly
+/// stronger evidence of liveness: the worker answered, and its answer was "I
+/// refused this one write because my drainer queue is full". Nothing about the
+/// socket is broken. Tearing it down produced the `input stream lost … /
+/// reconnected after 1 attempt(s)` flap operators hit when driving a busy
+/// agent, and reconnecting cannot help — the queue drains when the child
+/// resumes reading, not when a new socket opens. Note the queue is shared with
+/// terminal-query replies, injected messages and auto-responder writes, so the
+/// human whose keystroke is refused is usually not the one who filled it.
+fn pty_input_error_is_connection_fatal(code: &str) -> bool {
+    !matches!(code, "worker_timeout" | "pty_write_queue_full")
 }
 
 fn internal_error() -> (axum::http::StatusCode, axum::Json<Value>) {
@@ -1162,8 +2175,15 @@ async fn handle_pty_input_ws(
                         let (status, code) = classify_error(&err);
                         let _ =
                             send_pty_input_ws_error(&mut socket, code, err, status.as_u16()).await;
-                        let _ = socket.send(axum::extract::ws::Message::Close(None)).await;
-                        break;
+                        if pty_input_error_is_connection_fatal(code) {
+                            let _ = socket.send(axum::extract::ws::Message::Close(None)).await;
+                            break;
+                        }
+                        // `worker_timeout`: this one write didn't get an ack in
+                        // time, but the worker hasn't been confirmed dead. Keep
+                        // the connection open so the next keystroke gets a fresh
+                        // chance instead of forcing the client into a reconnect
+                        // it doesn't need (relay#1544).
                     }
                 }
             }
@@ -1189,6 +2209,103 @@ async fn handle_pty_input_ws(
     tracing::info!(agent = %name, "PTY input WS client disconnected");
 }
 
+/// Narrow projection of a broadcast event used by the input-serializer pruner.
+/// Broadcast payloads are dominated by high-frequency `worker_stream` chunks
+/// carrying large terminal-output strings; deserializing each one into a full
+/// `serde_json::Value` just to read `kind` would allocate a tree for all of
+/// that. serde ignores unknown fields, so deserializing into this struct skips
+/// the large payload fields without allocating them (mirrors the
+/// `MessageSeq`/`extract_seq` precedent).
+#[derive(Deserialize)]
+struct PrunerEvent {
+    kind: String,
+    name: Option<String>,
+}
+
+/// Per-agent entries in `input_serializers` are created lazily on first PTY
+/// input (HTTP POST or WS stream) and, absent this, are never removed —
+/// unbounded growth over a broker's lifetime as agents come and go. Watch the
+/// broadcast event stream and drop an agent's serializer once it is released
+/// or exits, mirroring how other per-worker maps (e.g. `delivery_states`) are
+/// pruned on the same events.
+fn spawn_input_serializer_pruner(
+    tx: mpsc::Sender<ListenApiRequest>,
+    mut events_rx: broadcast::Receiver<String>,
+    input_serializers: PtyInputSerializers,
+) {
+    tokio::spawn(async move {
+        loop {
+            match events_rx.recv().await {
+                Ok(json) => {
+                    let Ok(event) = serde_json::from_str::<PrunerEvent>(&json) else {
+                        continue;
+                    };
+                    if !matches!(event.kind.as_str(), "agent_released" | "agent_exited") {
+                        continue;
+                    }
+                    if let Some(name) = event.name {
+                        input_serializers.lock().await.remove(&name);
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    // `agent_released` / `agent_exited` fire exactly once per
+                    // worker, so a lag burst (e.g. heavy `worker_stream` traffic
+                    // on this channel) can drop the very event this pruner needs
+                    // and leak that worker's serializer forever. Recover by
+                    // reconciling against the broker's current live worker set
+                    // instead of relying on the missed event. Removing an entry
+                    // for a still-live agent is harmless — it is recreated
+                    // lazily on that agent's next PTY input.
+                    reconcile_input_serializers(&tx, &input_serializers).await;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
+/// Sweep `input_serializers` against the broker's current live worker set,
+/// dropping any entry whose worker is gone. Recovery path for when the pruner's
+/// broadcast receiver lags and may have missed an `agent_released` /
+/// `agent_exited` event. Best-effort: if the live set can't be fetched the map
+/// is left untouched (a later event or lag will retry). Non-racy by design —
+/// dropping an entry for a live agent only forces it to be recreated lazily on
+/// that agent's next PTY input.
+async fn reconcile_input_serializers(
+    tx: &mpsc::Sender<ListenApiRequest>,
+    input_serializers: &PtyInputSerializers,
+) {
+    let Some(live) = fetch_live_worker_names(tx).await else {
+        return;
+    };
+    input_serializers
+        .lock()
+        .await
+        .retain(|name, _| live.contains(name));
+}
+
+/// Query the broker for the set of currently registered worker names via the
+/// same `List` request that backs `GET /api/spawned`. Returns `None` if the
+/// broker channel is closed or the reply is dropped, so callers can no-op
+/// rather than prune against an empty set.
+async fn fetch_live_worker_names(
+    tx: &mpsc::Sender<ListenApiRequest>,
+) -> Option<std::collections::HashSet<String>> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    tx.send(ListenApiRequest::List { reply: reply_tx })
+        .await
+        .ok()?;
+    let value = reply_rx.await.ok()?.ok()?;
+    let agents = value.get("agents")?.as_array()?;
+    Some(
+        agents
+            .iter()
+            .filter_map(|agent| agent.get("name").and_then(Value::as_str))
+            .map(String::from)
+            .collect(),
+    )
+}
+
 async fn send_pty_input_serialized(
     tx: &mpsc::Sender<ListenApiRequest>,
     input_serializers: &PtyInputSerializers,
@@ -1212,7 +2329,7 @@ async fn check_pty_input_target(
 ) -> Result<Value, String> {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     tx.send(ListenApiRequest::CheckPtyInputTarget {
-        name: name.to_string(),
+        name: WorkerName::from(name),
         reply: reply_tx,
     })
     .await
@@ -1229,15 +2346,20 @@ async fn send_pty_input_frame(
 ) -> Result<Value, String> {
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     tx.send(ListenApiRequest::SendInput {
-        name: name.to_string(),
+        name: WorkerName::from(name),
         data,
         reply: reply_tx,
     })
     .await
     .map_err(|_| "internal_error: internal channel closed".to_string())?;
+    // The reply now fires only after the worker confirms the PTY write (see
+    // `ListenApiRequest::SendInput`). Map the typed error to the stringly form
+    // `classify_error` understands so both the HTTP route and the input WS keep
+    // producing stable status codes / `pty_input_error` frames.
     reply_rx
         .await
         .map_err(|_| "internal_error: internal reply dropped".to_string())?
+        .map_err(|err| err.to_string())
 }
 
 enum PtyInputFrame {
@@ -1302,13 +2424,18 @@ async fn send_pty_input_ws_error(
     message: impl Into<String>,
     status_code: u16,
 ) -> bool {
+    // `retryable` tells the client whether this connection is still usable:
+    // `worker_timeout` is the one code the WS loop doesn't close the socket
+    // for (see `pty_input_error_is_connection_fatal`), so it's the one code
+    // that's actually retryable on THIS stream rather than requiring reopen.
+    let retryable = !pty_input_error_is_connection_fatal(code);
     send_pty_input_ws_payload(
         socket,
         json!({
             "type": "pty_input_error",
             "code": code,
             "message": message.into(),
-            "retryable": false,
+            "retryable": retryable,
             "statusCode": status_code,
         }),
     )
@@ -1317,8 +2444,23 @@ async fn send_pty_input_ws_error(
 
 #[derive(Deserialize)]
 struct ResizePtyBody {
+    /// Target dimensions. Defaulted to zero so a pure ownership release
+    /// (`release: true`) doesn't have to carry dummy dimensions — the handler
+    /// skips the resize when a release carries no real size. A release that
+    /// *does* carry dimensions applies them before dropping ownership, so an
+    /// attach client can hand back a reserved status row in one request.
+    #[serde(default)]
     rows: u16,
+    #[serde(default)]
     cols: u16,
+    /// Optional client session id for the single-resizer policy (#1247).
+    /// Additive: legacy clients omit it and keep always-apply behaviour.
+    #[serde(default)]
+    session_id: Option<String>,
+    /// When `true`, releases resize ownership held by `session_id` (sent on
+    /// detach) rather than applying a resize.
+    #[serde(default)]
+    release: bool,
 }
 
 async fn listen_api_resize_pty(
@@ -1330,9 +2472,13 @@ async fn listen_api_resize_pty(
     if state
         .tx
         .send(ListenApiRequest::ResizePty {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             rows: body.rows,
             cols: body.cols,
+            // Normalise empty/whitespace to absent so it can't act as a shared
+            // owner key that unrelated clients collide on.
+            session_id: body.session_id.filter(|sid| !sid.trim().is_empty()),
+            release: body.release,
             reply: reply_tx,
         })
         .await
@@ -1383,7 +2529,7 @@ async fn listen_api_snapshot(
     if state
         .tx
         .send(ListenApiRequest::WorkerRequest {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             kind: "snapshot_pty".to_string(),
             payload: json!({ "format": format.as_wire_str() }),
             timeout: DEFAULT_REQUEST_TIMEOUT,
@@ -1420,7 +2566,7 @@ async fn listen_api_get_inbound_delivery_mode(
     if state
         .tx
         .send(ListenApiRequest::GetInboundDeliveryMode {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             reply: reply_tx,
         })
         .await
@@ -1441,6 +2587,15 @@ async fn listen_api_get_inbound_delivery_mode(
 #[derive(Debug, Deserialize)]
 struct SetInboundDeliveryModePayload {
     mode: String,
+    /// Optional compare-and-set guard: when present the set is applied only if
+    /// the worker's current mode still equals this value (see the request enum
+    /// docs). Absent for unconditional sets (backward compatible).
+    #[serde(default)]
+    expected_mode: Option<String>,
+    /// Decimal string rather than a JSON number so revisions remain exact
+    /// across JavaScript clients beyond `Number.MAX_SAFE_INTEGER`.
+    #[serde(default)]
+    expected_revision: Option<String>,
 }
 
 /// `PUT /api/spawned/{name}/delivery-mode` — body
@@ -1466,12 +2621,44 @@ async fn listen_api_set_inbound_delivery_mode(
         );
     };
 
+    let expected_mode = match body.expected_mode.as_deref() {
+        None => None,
+        Some(raw) => match InboundDeliveryMode::parse(raw) {
+            Some(parsed) => Some(parsed),
+            None => {
+                return api_error(
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "invalid_mode",
+                    format!(
+                        "unsupported expected_mode '{raw}' (expected 'auto_inject' or 'manual_flush')"
+                    ),
+                );
+            }
+        },
+    };
+
+    let expected_revision = match body.expected_revision.as_deref() {
+        None => None,
+        Some(raw) => match raw.parse::<u64>() {
+            Ok(parsed) => Some(parsed),
+            Err(_) => {
+                return api_error(
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "invalid_revision",
+                    format!("unsupported expected_revision '{raw}' (expected an unsigned decimal string)"),
+                );
+            }
+        },
+    };
+
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     if state
         .tx
         .send(ListenApiRequest::SetInboundDeliveryMode {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             mode,
+            expected_mode,
+            expected_revision,
             reply: reply_tx,
         })
         .await
@@ -1485,6 +2672,16 @@ async fn listen_api_set_inbound_delivery_mode(
             axum::Json(json!({
                 "mode": ok.mode.as_wire_str(),
                 "flushed": ok.flushed,
+                "dead_lettered": ok.dead_lettered,
+                "matched": ok.matched,
+                "revision": ok.revision.to_string(),
+                "blocked_reason": ok.blocked_reason,
+                "blocked_reason_code": ok.blocked_reason_code,
+                "head_sequence": ok.head_sequence,
+                "acked_up_to_sequence": ok.acked_up_to_sequence,
+                "received_up_to_sequence": ok.received_up_to_sequence,
+                "next_ackable_sequence": ok.next_ackable_sequence,
+                "reconciliation_action": ok.reconciliation_action,
             })),
         ),
         Ok(Err(err)) => delivery_route_error_to_response(&err),
@@ -1503,7 +2700,7 @@ async fn listen_api_get_pending(
     if state
         .tx
         .send(ListenApiRequest::GetPending {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             reply: reply_tx,
         })
         .await
@@ -1526,19 +2723,28 @@ async fn listen_api_get_pending(
                     });
                     let obj = payload.as_object_mut().expect("payload object built above");
                     if let Some(thread_id) = m.thread_id {
-                        obj.insert("thread_id".to_string(), Value::String(thread_id));
+                        obj.insert(
+                            "thread_id".to_string(),
+                            Value::String(thread_id.into_string()),
+                        );
                     }
                     if let Some(workspace_id) = m.workspace_id {
-                        obj.insert("workspace_id".to_string(), Value::String(workspace_id));
+                        obj.insert(
+                            "workspace_id".to_string(),
+                            Value::String(workspace_id.into_string()),
+                        );
                     }
                     if let Some(workspace_alias) = m.workspace_alias {
                         obj.insert(
                             "workspace_alias".to_string(),
-                            Value::String(workspace_alias),
+                            Value::String(workspace_alias.into_string()),
                         );
                     }
                     if let Some(event_id) = m.event_id {
-                        obj.insert("event_id".to_string(), Value::String(event_id));
+                        obj.insert(
+                            "event_id".to_string(),
+                            Value::String(event_id.into_string()),
+                        );
                     }
                     payload
                 })
@@ -1555,10 +2761,19 @@ async fn listen_api_get_pending(
 
 /// `POST /api/spawned/{name}/flush` → `{ "flushed": N }`.
 ///
-/// Drains the queue and injects each message into the worker in order
-/// using the existing fire-and-forget inject path. The inbound delivery mode is
-/// *not* changed — a caller still in `manual_flush` delivery mode will continue
-/// to queue newly-arriving messages.
+/// Responds `{ "flushed", "dead_lettered", "held", "blocked_reason" }`.
+///
+/// Injects queued messages into the worker in FIFO order and stops at the first
+/// failure, retaining that message and its suffix for a later attempt. A
+/// message whose Relaycast identity no longer holds this worker's name is
+/// dead-lettered rather than injected and counts in `dead_lettered`, never
+/// `flushed`. `held` is what remained parked and `blocked_reason` says why the
+/// flush stopped, so a jammed queue is distinguishable from an empty one. The
+/// inbound delivery mode is *not* changed — a caller still in `manual_flush`
+/// delivery mode will continue to queue newly-arriving messages. When a drive
+/// session's interactive hold is active, the broker follows the handoff with a
+/// one-shot `flush_injections` worker frame so the flushed backlog is injected
+/// through the hold instead of freezing in the worker's queue until detach.
 async fn listen_api_flush_pending(
     axum::extract::State(state): axum::extract::State<ListenApiState>,
     axum::extract::Path(name): axum::extract::Path<String>,
@@ -1567,7 +2782,7 @@ async fn listen_api_flush_pending(
     if state
         .tx
         .send(ListenApiRequest::FlushPending {
-            name: name.clone(),
+            name: WorkerName::new(name.clone()),
             reply: reply_tx,
         })
         .await
@@ -1576,9 +2791,20 @@ async fn listen_api_flush_pending(
         return internal_error();
     }
     match reply_rx.await {
-        Ok(Ok(flushed)) => (
+        Ok(Ok(result)) => (
             axum::http::StatusCode::OK,
-            axum::Json(json!({ "flushed": flushed })),
+            axum::Json(json!({
+                "flushed": result.flushed,
+                "dead_lettered": result.dead_lettered,
+                "held": result.held,
+                "blocked_reason": result.blocked_reason,
+                "blocked_reason_code": result.blocked_reason_code,
+                "head_sequence": result.head_sequence,
+                "acked_up_to_sequence": result.acked_up_to_sequence,
+                "received_up_to_sequence": result.received_up_to_sequence,
+                "next_ackable_sequence": result.next_ackable_sequence,
+                "reconciliation_action": result.reconciliation_action,
+            })),
         ),
         Ok(Err(err)) => delivery_route_error_to_response(&err),
         Err(_) => internal_error(),
@@ -1592,6 +2818,11 @@ fn delivery_route_error_to_response(
     err: &DeliveryRouteError,
 ) -> (axum::http::StatusCode, axum::Json<Value>) {
     match err {
+        DeliveryRouteError::CapabilityDisabled => api_error(
+            axum::http::StatusCode::CONFLICT,
+            "capability_disabled",
+            err.to_string(),
+        ),
         DeliveryRouteError::WorkerNotFound(_) => api_error(
             axum::http::StatusCode::NOT_FOUND,
             "agent_not_found",
@@ -1656,7 +2887,7 @@ async fn listen_api_metrics(
     if state
         .tx
         .send(ListenApiRequest::GetMetrics {
-            agent: query.agent,
+            agent: query.agent.map(WorkerName::from),
             reply: reply_tx,
         })
         .await
@@ -1710,6 +2941,96 @@ async fn listen_api_crash_insights(
         Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
         Err(_) => internal_error(),
         Ok(Err(err)) => api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "error", err),
+    }
+}
+
+/// `GET /api/node-delivery` — introspection for the node-control inbound path.
+///
+/// Deliberately answered straight from the shared probe rather than by posting
+/// a [`ListenApiRequest`] to the runtime. Every other route here round-trips
+/// through the event loop, but a wedged event loop is one of the conditions
+/// that makes an agent go silent, and a diagnostic that hangs in exactly the
+/// case it was built for is worthless. When the loop is stuck, the frame
+/// counters keep climbing while `cursors_published_at_ms` stops advancing.
+async fn listen_api_node_delivery(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let token_present = state
+        .node_token
+        .read()
+        .map(|token| token.is_some())
+        .unwrap_or(false);
+    // `connected` is reported by the probe's own connect/disconnect counters
+    // rather than the runtime's flag, for the same no-round-trip reason.
+    (
+        axum::http::StatusCode::OK,
+        axum::Json(state.node_delivery_probe.snapshot_with_token(token_present)),
+    )
+}
+
+async fn listen_api_dead_letters(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::GetDeadLetters { reply: reply_tx })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => api_error(axum::http::StatusCode::INTERNAL_SERVER_ERROR, "error", err),
+        Err(_) => internal_error(),
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct RedeliverBody {
+    /// Dead-letter delivery id to requeue; omit (with `all: true`) to
+    /// requeue everything.
+    id: Option<String>,
+    #[serde(default)]
+    all: bool,
+}
+
+async fn listen_api_redeliver_dead_letters(
+    axum::extract::State(state): axum::extract::State<ListenApiState>,
+    axum::Json(body): axum::Json<RedeliverBody>,
+) -> (axum::http::StatusCode, axum::Json<Value>) {
+    let id = match (&body.id, body.all) {
+        (Some(id), false) => Some(DeliveryId::from(id.as_str())),
+        (None, true) => None,
+        _ => {
+            return api_error(
+                axum::http::StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "provide exactly one of 'id' or 'all: true'".to_string(),
+            );
+        }
+    };
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    if state
+        .tx
+        .send(ListenApiRequest::RedeliverDeadLetters {
+            id,
+            reply: reply_tx,
+        })
+        .await
+        .is_err()
+    {
+        return internal_error();
+    }
+    match reply_rx.await {
+        Ok(Ok(val)) => (axum::http::StatusCode::OK, axum::Json(val)),
+        Ok(Err(err)) => api_error(
+            axum::http::StatusCode::NOT_FOUND,
+            "dead_letter_not_found",
+            err,
+        ),
+        Err(_) => internal_error(),
     }
 }
 
@@ -1813,8 +3134,8 @@ async fn listen_api_subscribe_channels(
     if state
         .tx
         .send(ListenApiRequest::SubscribeChannels {
-            name: name.clone(),
-            channels: body.channels,
+            name: WorkerName::new(name.clone()),
+            channels: body.channels.into_iter().map(ChannelName::from).collect(),
             reply: reply_tx,
         })
         .await
@@ -1838,8 +3159,8 @@ async fn listen_api_unsubscribe_channels(
     if state
         .tx
         .send(ListenApiRequest::UnsubscribeChannels {
-            name: name.clone(),
-            channels: body.channels,
+            name: WorkerName::new(name.clone()),
+            channels: body.channels.into_iter().map(ChannelName::from).collect(),
             reply: reply_tx,
         })
         .await
@@ -1871,6 +3192,107 @@ async fn listen_api_ws(
     })
 }
 
+/// Minimal shape used to peek the `seq` field of a broadcast message without
+/// paying for a full `serde_json::Value` parse. Broadcast payloads (e.g.
+/// `worker_stream` chunks) can carry large terminal-output strings; parsing
+/// into a `Value` would allocate a full tree for all of that just to read
+/// one field. Deserializing into this struct instead lets serde_json skip
+/// unknown fields (including large string values) without allocating them.
+#[derive(Deserialize)]
+struct MessageSeq {
+    seq: Option<u64>,
+}
+
+/// Extract the optional `seq` field from a broadcast message's JSON text
+/// without materializing the rest of the payload.
+fn extract_seq(msg: &str) -> Option<u64> {
+    serde_json::from_str::<MessageSeq>(msg)
+        .ok()
+        .and_then(|parsed| parsed.seq)
+}
+
+/// Number of durable events that are unrecoverably lost between
+/// `requested_since_seq` (exclusive) and `oldest_available` (inclusive of
+/// everything at/after it being retained). Used to give a `replay_gap`
+/// consumer a concrete sense of how large a gap it needs to resync around,
+/// beyond the boolean fact that a gap exists at all.
+fn dropped_event_count(requested_since_seq: u64, oldest_available: u64) -> u64 {
+    oldest_available
+        .saturating_sub(requested_since_seq)
+        .saturating_sub(1)
+}
+
+/// Build the `replay_gap` notification frame sent to a dashboard WS client
+/// when events it needs are no longer retained anywhere the broker can serve
+/// them from (neither the live broadcast nor the replay buffer). `seq` is the
+/// broker's current sequence cutoff at the moment the gap was detected, so
+/// the client knows every event up to and including that seq is either being
+/// forwarded now or was already delivered.
+fn build_replay_gap_frame(requested_since_seq: u64, oldest_available: u64, seq: u64) -> Value {
+    json!({
+        "kind": "replay_gap",
+        "requestedSinceSeq": requested_since_seq,
+        "oldestAvailable": oldest_available,
+        "seq": seq,
+        "droppedCount": dropped_event_count(requested_since_seq, oldest_available),
+    })
+}
+
+/// Recover from a `broadcast::error::RecvError::Lagged` on a dashboard WS
+/// client's live event subscription.
+///
+/// Tokio's `broadcast` channel is bounded independently of the replay
+/// buffer. A burst of high-frequency ephemeral events (chiefly
+/// `worker_stream`, which is intentionally excluded from the replay buffer
+/// but still flows over the same broadcast channel) can overflow that
+/// channel's ring for a client that's briefly slow to read, causing
+/// `recv()` to silently skip whatever it couldn't buffer. Previously this
+/// was only logged server-side — the client had no idea anything was
+/// dropped, and (unlike a reconnect) nothing prompted it to resync.
+///
+/// Because the replay buffer independently retains durable events (and,
+/// post-hardening, does not have to share capacity with `worker_stream`
+/// churn), it can usually backfill exactly what the broadcast channel
+/// dropped. When it can't (the durable event has also aged out of the
+/// replay buffer), this returns an explicit `replay_gap` frame instead of
+/// staying silent.
+///
+/// Returns the frames to forward to the socket, in order, and the new
+/// high-water `seq` the caller is caught up through.
+///
+/// `cutoff_seq` is derived from the entries `replay_since` actually
+/// returned (the last entry's `seq`), rather than from a separate
+/// `replay_buffer.current_seq()` call taken before it. Reading
+/// `current_seq()` first and `replay_since()` second is a TOCTOU race: a
+/// durable event pushed (or an eviction) in between would make that
+/// earlier snapshot stale relative to what `replay_since` saw, which could
+/// pair a `replay_gap` frame's `seq` with a mismatched `oldestAvailable`, or
+/// cause a `seq <= cutoff_seq` filter to wrongly drop entries `replay_since`
+/// had already committed to returning. Deriving the cutoff from the
+/// snapshot itself keeps everything internally consistent by construction.
+async fn catch_up_after_lag(
+    replay_buffer: &ReplayBuffer,
+    last_forwarded_seq: u64,
+) -> (Vec<Value>, u64) {
+    let (entries, gap_oldest) = replay_buffer.replay_since(last_forwarded_seq).await;
+    let cutoff_seq = entries
+        .last()
+        .map(|entry| entry.seq)
+        .unwrap_or(last_forwarded_seq);
+
+    let mut frames = Vec::with_capacity(entries.len() + 1);
+    if let Some(oldest_available) = gap_oldest {
+        frames.push(build_replay_gap_frame(
+            last_forwarded_seq,
+            oldest_available,
+            cutoff_seq,
+        ));
+    }
+    frames.extend(entries.into_iter().map(|entry| entry.event));
+
+    (frames, cutoff_seq)
+}
+
 async fn handle_dashboard_ws(
     mut socket: axum::extract::ws::WebSocket,
     mut rx: broadcast::Receiver<String>,
@@ -1881,12 +3303,7 @@ async fn handle_dashboard_ws(
     let replay_cutoff_seq = replay_buffer.current_seq();
     let (replay_events, gap_oldest) = replay_buffer.replay_since(since_seq).await;
     if let Some(oldest_available) = gap_oldest {
-        let replay_gap = json!({
-            "kind": "replay_gap",
-            "requestedSinceSeq": since_seq,
-            "oldestAvailable": oldest_available,
-            "seq": replay_cutoff_seq,
-        });
+        let replay_gap = build_replay_gap_frame(since_seq, oldest_available, replay_cutoff_seq);
         if let Ok(msg) = serde_json::to_string(&replay_gap) {
             let _ = socket
                 .send(axum::extract::ws::Message::Text(msg.into()))
@@ -1907,17 +3324,22 @@ async fn handle_dashboard_ws(
             }
         }
     }
+
+    // High-water mark for the last durable (seq-bearing) event this client
+    // is known to be caught up through. Starts at the connect-time cutoff
+    // and advances as durable events are forwarded live; used both to
+    // de-duplicate against the initial replay and, on a broadcast lag, to
+    // ask the replay buffer for exactly what was missed.
+    let mut last_forwarded_seq = replay_cutoff_seq;
+
     let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
     loop {
         tokio::select! {
             result = rx.recv() => {
                 match result {
                     Ok(msg) => {
-                        let is_duplicate = serde_json::from_str::<Value>(&msg)
-                            .ok()
-                            .and_then(|value| value.get("seq").and_then(Value::as_u64))
-                            .is_some_and(|seq| seq <= replay_cutoff_seq);
-                        if is_duplicate {
+                        let msg_seq = extract_seq(&msg);
+                        if msg_seq.is_some_and(|seq| seq <= last_forwarded_seq) {
                             continue;
                         }
                         if socket
@@ -1927,9 +3349,35 @@ async fn handle_dashboard_ws(
                         {
                             break;
                         }
+                        if let Some(seq) = msg_seq {
+                            last_forwarded_seq = seq;
+                        }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(skipped = n, "dashboard WS client lagged, skipped messages");
+                        tracing::warn!(
+                            skipped = n,
+                            "dashboard WS client lagged, recovering from replay buffer"
+                        );
+                        let (frames, new_high_water) =
+                            catch_up_after_lag(&replay_buffer, last_forwarded_seq).await;
+                        last_forwarded_seq = new_high_water;
+                        let mut send_failed = false;
+                        for frame in frames {
+                            let Ok(msg) = serde_json::to_string(&frame) else {
+                                continue;
+                            };
+                            if socket
+                                .send(axum::extract::ws::Message::Text(msg.into()))
+                                .await
+                                .is_err()
+                            {
+                                send_failed = true;
+                                break;
+                            }
+                        }
+                        if send_failed {
+                            break;
+                        }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
@@ -2130,6 +3578,516 @@ mod tests {
             Err(broadcast::error::TryRecvError::Empty)
         ));
     }
+
+    /// Regression test for the durability gap this change hardens against:
+    /// a burst of high-frequency `worker_stream` PTY-output chunks must not
+    /// evict an earlier, low-frequency `relay_inbound` event from the replay
+    /// buffer. Before `worker_stream`/`delivery_active` were excluded from
+    /// replay-buffer storage, a large enough flood (bigger than
+    /// `DEFAULT_REPLAY_CAPACITY`) would silently push `relay_inbound` out of
+    /// the ring, so a reconnecting dashboard client would never see it
+    /// replayed — exactly the bug reported against Pear.
+    #[tokio::test]
+    async fn worker_stream_flood_does_not_evict_earlier_relay_inbound() {
+        let (tx, _rx) = broadcast::channel::<String>(DEFAULT_REPLAY_CAPACITY * 4);
+        // Deliberately small capacity: if worker_stream shared this capacity
+        // with durable events, a flood many times larger than it would
+        // evict the relay_inbound pushed before the flood.
+        let replay_buffer = ReplayBuffer::new(16);
+
+        let relay_inbound = json!({
+            "kind": "relay_inbound",
+            "from": "Worker",
+            "target": "#general",
+            "body": "the important message",
+        });
+        broadcast_if_relevant(&tx, &replay_buffer, &relay_inbound).await;
+
+        // Flood far more worker_stream chunks than the replay buffer's
+        // capacity, simulating an actively-printing agent.
+        for i in 0..10_000 {
+            let chunk = json!({
+                "kind": "worker_stream",
+                "name": "Worker",
+                "data": format!("chunk-{i}"),
+            });
+            broadcast_if_relevant(&tx, &replay_buffer, &chunk).await;
+        }
+
+        let (events, gap) = replay_buffer.replay_since(0).await;
+        assert!(
+            gap.is_none(),
+            "relay_inbound should still be the oldest (and only) durable entry, no gap expected"
+        );
+        assert_eq!(
+            events.len(),
+            1,
+            "worker_stream events must never be stored in the replay buffer"
+        );
+        assert_eq!(events[0].event["kind"], "relay_inbound");
+        assert_eq!(events[0].event["body"], "the important message");
+    }
+
+    /// `delivery_active` is the other high-frequency ephemeral kind excluded
+    /// from replay-buffer storage (see `broadcast_if_relevant`); make sure a
+    /// flood of it is equally harmless to durable events.
+    #[tokio::test]
+    async fn delivery_active_flood_does_not_evict_earlier_relay_inbound() {
+        let (tx, _rx) = broadcast::channel::<String>(DEFAULT_REPLAY_CAPACITY * 4);
+        let replay_buffer = ReplayBuffer::new(16);
+
+        broadcast_if_relevant(
+            &tx,
+            &replay_buffer,
+            &json!({"kind": "relay_inbound", "from": "Worker", "target": "#general", "body": "hi"}),
+        )
+        .await;
+
+        for _ in 0..5_000 {
+            broadcast_if_relevant(
+                &tx,
+                &replay_buffer,
+                &json!({"kind": "delivery_active", "name": "Worker"}),
+            )
+            .await;
+        }
+
+        let (events, gap) = replay_buffer.replay_since(0).await;
+        assert!(gap.is_none());
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event["kind"], "relay_inbound");
+    }
+}
+
+#[cfg(test)]
+mod input_serializer_pruner_tests {
+    use std::sync::Arc;
+
+    use serde_json::json;
+    use tokio::sync::{broadcast, mpsc, Mutex};
+
+    use super::{
+        reconcile_input_serializers, spawn_input_serializer_pruner, ListenApiRequest,
+        PtyInputSerializers,
+    };
+
+    /// The pruner's happy path never touches the broker channel; a closed
+    /// receiver end lets us construct a `Sender` without a live broker loop.
+    fn dummy_broker_tx() -> mpsc::Sender<ListenApiRequest> {
+        let (tx, _rx) = mpsc::channel::<ListenApiRequest>(8);
+        tx
+    }
+
+    fn serializers_with(names: &[&str]) -> PtyInputSerializers {
+        let map = std::collections::HashMap::new();
+        let serializers = Arc::new(Mutex::new(map));
+        {
+            let mut guard = serializers.try_lock().expect("uncontended");
+            for name in names {
+                guard.insert((*name).to_string(), Arc::new(Mutex::new(())));
+            }
+        }
+        serializers
+    }
+
+    async fn wait_until<F: Fn() -> bool>(check: F) {
+        for _ in 0..200 {
+            if check() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("condition was never met");
+    }
+
+    #[tokio::test]
+    async fn prunes_entry_on_agent_released() {
+        let (events_tx, _keep_alive) = broadcast::channel::<String>(8);
+        let input_serializers = serializers_with(&["Worker"]);
+
+        spawn_input_serializer_pruner(
+            dummy_broker_tx(),
+            events_tx.subscribe(),
+            input_serializers.clone(),
+        );
+
+        events_tx
+            .send(json!({"kind": "agent_released", "name": "Worker"}).to_string())
+            .unwrap();
+
+        wait_until(|| {
+            input_serializers
+                .try_lock()
+                .map(|m| m.is_empty())
+                .unwrap_or(false)
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn prunes_entry_on_agent_exited() {
+        let (events_tx, _keep_alive) = broadcast::channel::<String>(8);
+        let input_serializers = serializers_with(&["Worker"]);
+
+        spawn_input_serializer_pruner(
+            dummy_broker_tx(),
+            events_tx.subscribe(),
+            input_serializers.clone(),
+        );
+
+        events_tx
+            .send(json!({"kind": "agent_exited", "name": "Worker", "code": 0}).to_string())
+            .unwrap();
+
+        wait_until(|| {
+            input_serializers
+                .try_lock()
+                .map(|m| m.is_empty())
+                .unwrap_or(false)
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn leaves_unrelated_agents_and_kinds_untouched() {
+        let (events_tx, _keep_alive) = broadcast::channel::<String>(8);
+        let input_serializers = serializers_with(&["Worker"]);
+
+        spawn_input_serializer_pruner(
+            dummy_broker_tx(),
+            events_tx.subscribe(),
+            input_serializers.clone(),
+        );
+
+        events_tx
+            .send(json!({"kind": "agent_spawned", "name": "Worker"}).to_string())
+            .unwrap();
+        events_tx
+            .send(json!({"kind": "agent_released", "name": "OtherWorker"}).to_string())
+            .unwrap();
+        // Give the pruner a chance to process both frames before asserting
+        // the entry is still present.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        assert!(input_serializers.lock().await.contains_key("Worker"));
+    }
+
+    /// The Lagged-recovery reconciliation drops serializers for workers no
+    /// longer in the broker's live set while retaining live ones — this is the
+    /// path that catches an `agent_released` / `agent_exited` event dropped by
+    /// a broadcast lag burst.
+    #[tokio::test]
+    async fn reconcile_drops_dead_workers_and_keeps_live_ones() {
+        let (tx, mut rx) = mpsc::channel::<ListenApiRequest>(8);
+        // Broker stub: report only `LiveWorker` as registered.
+        let responder = tokio::spawn(async move {
+            if let Some(ListenApiRequest::List { reply }) = rx.recv().await {
+                let _ = reply.send(Ok(json!({ "agents": [{ "name": "LiveWorker" }] })));
+            }
+        });
+
+        let input_serializers = serializers_with(&["LiveWorker", "DeadWorker"]);
+        reconcile_input_serializers(&tx, &input_serializers).await;
+
+        let guard = input_serializers.lock().await;
+        assert!(guard.contains_key("LiveWorker"));
+        assert!(!guard.contains_key("DeadWorker"));
+        drop(guard);
+        responder.await.expect("responder should complete");
+    }
+
+    /// If the broker channel is unavailable the reconciliation is a no-op — it
+    /// must not prune against an empty set and wipe live serializers.
+    #[tokio::test]
+    async fn reconcile_is_noop_when_broker_unavailable() {
+        let (tx, rx) = mpsc::channel::<ListenApiRequest>(8);
+        drop(rx); // No broker loop: `List` send fails.
+
+        let input_serializers = serializers_with(&["Worker"]);
+        reconcile_input_serializers(&tx, &input_serializers).await;
+
+        assert!(input_serializers.lock().await.contains_key("Worker"));
+    }
+}
+
+#[cfg(test)]
+mod replay_gap_tests {
+    use super::{build_replay_gap_frame, catch_up_after_lag, dropped_event_count, extract_seq};
+    use crate::replay_buffer::ReplayBuffer;
+    use serde_json::{json, Value};
+
+    #[test]
+    fn extract_seq_reads_the_seq_field_without_full_value_parse() {
+        assert_eq!(
+            extract_seq(r#"{"kind":"relay_inbound","seq":42}"#),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn extract_seq_ignores_unrelated_and_large_fields() {
+        // A worker_stream-shaped payload with a large `data` string and no
+        // `seq` at all (ephemeral events never get one from the replay
+        // buffer) should just yield None, not fail to parse.
+        let big_chunk = "x".repeat(64 * 1024);
+        let msg = format!(r#"{{"kind":"worker_stream","name":"Worker","data":"{big_chunk}"}}"#);
+        assert_eq!(extract_seq(&msg), None);
+    }
+
+    #[test]
+    fn extract_seq_returns_none_for_missing_or_invalid_json() {
+        assert_eq!(extract_seq(r#"{"kind":"agent_spawned"}"#), None);
+        assert_eq!(extract_seq("not json"), None);
+    }
+
+    #[test]
+    fn dropped_event_count_is_zero_when_nothing_was_actually_lost() {
+        // Requested seq 5, oldest available is 6: nothing between them was
+        // dropped (the client just needs 6..).
+        assert_eq!(dropped_event_count(5, 6), 0);
+    }
+
+    #[test]
+    fn dropped_event_count_reports_the_lost_range() {
+        // Requested seq 1, oldest available is 3: seq 2 was evicted.
+        assert_eq!(dropped_event_count(1, 3), 1);
+        // Requested seq 0, oldest available is 3: seq 1 and 2 were evicted.
+        assert_eq!(dropped_event_count(0, 3), 2);
+    }
+
+    #[test]
+    fn build_replay_gap_frame_has_expected_shape() {
+        let frame = build_replay_gap_frame(1, 3, 10);
+        assert_eq!(frame["kind"], "replay_gap");
+        assert_eq!(frame["requestedSinceSeq"], 1);
+        assert_eq!(frame["oldestAvailable"], 3);
+        assert_eq!(frame["seq"], 10);
+        assert_eq!(frame["droppedCount"], 1);
+    }
+
+    #[tokio::test]
+    async fn catch_up_after_lag_backfills_from_replay_buffer_without_a_gap_frame() {
+        // The replay buffer's capacity comfortably covers what a broadcast-
+        // channel lag would have dropped, so recovery should be silent: no
+        // replay_gap frame, just the missed durable events forwarded.
+        let replay_buffer = ReplayBuffer::new(100);
+        replay_buffer
+            .push(json!({"kind": "relay_inbound", "body": "first"}))
+            .await
+            .unwrap();
+        replay_buffer
+            .push(json!({"kind": "relay_inbound", "body": "second"}))
+            .await
+            .unwrap();
+
+        // Client was caught up through seq 0 (nothing yet) when it lagged.
+        let (frames, new_high_water) = catch_up_after_lag(&replay_buffer, 0).await;
+
+        assert_eq!(
+            frames.len(),
+            2,
+            "both missed durable events should be backfilled"
+        );
+        assert!(
+            frames.iter().all(|frame| frame["kind"] != "replay_gap"),
+            "no gap frame expected when the replay buffer still has everything"
+        );
+        assert_eq!(frames[0]["body"], "first");
+        assert_eq!(frames[1]["body"], "second");
+        assert_eq!(new_high_water, 2);
+    }
+
+    #[tokio::test]
+    async fn catch_up_after_lag_emits_gap_frame_when_replay_buffer_also_aged_out() {
+        // Tiny capacity: by the time we try to recover, even the replay
+        // buffer no longer has the range the client needs.
+        let replay_buffer = ReplayBuffer::new(2);
+        for i in 0..5 {
+            replay_buffer
+                .push(json!({"kind": "relay_inbound", "body": format!("msg-{i}")}))
+                .await
+                .unwrap();
+        }
+
+        // Client was caught up through seq 0, far behind the buffer's
+        // current oldest (seq 4, since only the last 2 of 5 are retained).
+        let (frames, new_high_water) = catch_up_after_lag(&replay_buffer, 0).await;
+
+        assert!(!frames.is_empty());
+        assert_eq!(
+            frames[0]["kind"], "replay_gap",
+            "first frame should be the gap notification"
+        );
+        assert_eq!(frames[0]["requestedSinceSeq"], 0);
+        assert_eq!(frames[0]["oldestAvailable"], 4);
+        assert_eq!(frames[0]["droppedCount"], 3);
+        // Remaining frames are the events still available in the buffer.
+        assert_eq!(frames.len(), 1 + 2);
+        assert_eq!(new_high_water, 5);
+    }
+
+    #[tokio::test]
+    async fn catch_up_after_lag_is_noop_when_nothing_new_happened() {
+        let replay_buffer = ReplayBuffer::new(10);
+        replay_buffer
+            .push(json!({"kind": "relay_inbound", "body": "only"}))
+            .await
+            .unwrap();
+
+        let (frames, new_high_water) = catch_up_after_lag(&replay_buffer, 1).await;
+
+        assert!(
+            frames.is_empty(),
+            "client was already caught up, lag must have been ephemeral-only traffic"
+        );
+        assert_eq!(new_high_water, 1);
+    }
+
+    /// Regression test for a TOCTOU race flagged in review: `catch_up_after_lag`
+    /// used to snapshot `replay_buffer.current_seq()` *before* calling
+    /// `replay_since()`, so a durable event pushed in between those two calls
+    /// would leave the returned cutoff stale relative to the entries actually
+    /// returned. The fix derives `cutoff_seq` from the entries snapshot
+    /// itself (its last entry's `seq`), so it is always internally
+    /// consistent with what was actually forwarded — even when more durable
+    /// events land after the caller decided `last_forwarded_seq` but before
+    /// recovery runs (exactly the interleaving that made the old
+    /// `current_seq()`-first approach stale).
+    #[tokio::test]
+    async fn catch_up_after_lag_cutoff_is_consistent_with_returned_entries() {
+        let replay_buffer = ReplayBuffer::new(50);
+        replay_buffer
+            .push(json!({"kind": "relay_inbound", "body": "a"}))
+            .await
+            .unwrap();
+        // These land after the client's last_forwarded_seq was decided (0)
+        // but are still present by the time catch_up_after_lag's single
+        // replay_since call runs — they must be reflected in the cutoff.
+        replay_buffer
+            .push(json!({"kind": "relay_inbound", "body": "b"}))
+            .await
+            .unwrap();
+        replay_buffer
+            .push(json!({"kind": "relay_inbound", "body": "c"}))
+            .await
+            .unwrap();
+
+        let (frames, new_high_water) = catch_up_after_lag(&replay_buffer, 0).await;
+
+        assert_eq!(
+            frames.len(),
+            3,
+            "all three durable events should be forwarded"
+        );
+        assert!(frames.iter().all(|f| f["kind"] != "replay_gap"));
+        let max_forwarded_seq = frames
+            .iter()
+            .filter_map(|frame| frame.get("seq").and_then(Value::as_u64))
+            .max()
+            .expect("forwarded entries carry a seq field");
+        assert_eq!(
+            new_high_water, max_forwarded_seq,
+            "cutoff must exactly match the highest seq actually forwarded, not a stale snapshot"
+        );
+        assert_eq!(new_high_water, 3);
+    }
+
+    /// Directly exercises the TOCTOU hazard the previous test didn't: here a
+    /// durable event is pushed *for real, concurrently, from a separate
+    /// task* strictly between when a `current_seq()`-first cutoff would be
+    /// snapshotted and when `replay_since()` actually runs — using a
+    /// two-phase oneshot handshake so the interleaving is deterministic
+    /// rather than timing-dependent (per review feedback that the earlier
+    /// test never actually raced anything, since all its pushes landed
+    /// before `catch_up_after_lag` was even called).
+    ///
+    /// `catch_up_after_lag`'s fix *removes* the separate `current_seq()`
+    /// step entirely (cutoff is derived from `replay_since`'s own returned
+    /// entries), so there is no longer a window inside it to deterministically
+    /// race against without adding test-only instrumentation to production
+    /// code. Instead, this test reconstructs the pre-fix computation inline
+    /// (snapshot `current_seq()`, race a push in via a real concurrent task,
+    /// then call `replay_since()` and re-apply the old `seq <= cutoff`
+    /// filter) to prove, under genuine concurrency rather than just
+    /// sequential ordering, that the old shape really does produce a
+    /// stale/inconsistent result. It then confirms `catch_up_after_lag`,
+    /// run against the resulting buffer state, does not lose the event that
+    /// raced in.
+    #[tokio::test]
+    async fn a_push_racing_between_cutoff_read_and_replay_since_produces_a_stale_cutoff() {
+        let replay_buffer = ReplayBuffer::new(50);
+        replay_buffer
+            .push(json!({"kind": "relay_inbound", "body": "a"}))
+            .await
+            .unwrap();
+
+        let (snapshot_taken_tx, snapshot_taken_rx) = tokio::sync::oneshot::channel::<()>();
+        let (push_landed_tx, push_landed_rx) = tokio::sync::oneshot::channel::<()>();
+
+        // "Reader" task: reproduces the pre-fix `catch_up_after_lag` shape
+        // (current_seq() snapshot, *then* replay_since()), but pauses in
+        // between on a handshake so a concurrent push is guaranteed to land
+        // in the window the old code was vulnerable in.
+        let reader_buffer = replay_buffer.clone();
+        let reader = tokio::spawn(async move {
+            let stale_cutoff = reader_buffer.current_seq(); // pre-fix snapshot, == 1
+            snapshot_taken_tx
+                .send(())
+                .expect("test setup: writer must still be waiting");
+            push_landed_rx
+                .await
+                .expect("writer must signal after its push completes");
+            let (entries, _gap) = reader_buffer.replay_since(0).await;
+            (stale_cutoff, entries)
+        });
+
+        // "Writer" task: waits for the reader's snapshot, then pushes a new
+        // durable event — landing exactly between the reader's stale
+        // snapshot and its later `replay_since()` call.
+        let writer_buffer = replay_buffer.clone();
+        let writer = tokio::spawn(async move {
+            snapshot_taken_rx
+                .await
+                .expect("reader must signal after taking its snapshot");
+            writer_buffer
+                .push(json!({"kind": "relay_inbound", "body": "b"}))
+                .await
+                .unwrap();
+            push_landed_tx
+                .send(())
+                .expect("test setup: reader must still be waiting");
+        });
+
+        let (stale_cutoff, entries) = reader.await.expect("reader task panicked");
+        writer.await.expect("writer task panicked");
+
+        assert_eq!(stale_cutoff, 1, "snapshot was taken before the racing push");
+        assert_eq!(
+            entries.len(),
+            2,
+            "replay_since itself correctly sees both events, including the racing one"
+        );
+
+        // This is the actual pre-fix bug: filtering by the now-stale
+        // snapshot wrongly excludes the event that raced in.
+        let old_buggy_filtered_count = entries.iter().filter(|e| e.seq <= stale_cutoff).count();
+        assert_eq!(
+            old_buggy_filtered_count, 1,
+            "a current_seq()-first cutoff wrongly excludes the event that raced in concurrently"
+        );
+
+        // catch_up_after_lag itself, run against the same (now-settled)
+        // buffer state, must not reproduce that inconsistency: its cutoff
+        // comes from replay_since's own returned entries, so it has no
+        // separate stale snapshot to race against in the first place.
+        let (frames, new_high_water) = catch_up_after_lag(&replay_buffer, 0).await;
+        assert_eq!(
+            frames.len(),
+            2,
+            "catch_up_after_lag must forward both durable events"
+        );
+        assert_eq!(new_high_water, 2);
+    }
 }
 
 #[cfg(test)]
@@ -2144,9 +4102,10 @@ mod auth_tests {
     use tower::ServiceExt;
 
     use super::{
-        listen_api_router_with_auth, DeliveryRouteError, ListenApiConfig, ListenApiRequest,
-        PtyInputFrame, SetInboundDeliveryModeOk,
+        listen_api_router_with_auth, AgentRegistrationMetadata, DeliveryRouteError,
+        ListenApiConfig, ListenApiRequest, PtyInputFrame, SetInboundDeliveryModeOk,
     };
+    use crate::ids::{EventId, MessageTarget, ThreadId, WorkspaceAlias, WorkspaceId};
     use crate::protocol::MessageInjectionMode;
     use crate::types::{InboundDeliveryMode, PendingRelayMessage};
     use crate::worker_request::RequestWorkerError;
@@ -2154,24 +4113,147 @@ mod auth_tests {
     fn test_router(
         broker_api_key: Option<&str>,
     ) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
+        test_router_with_mode(broker_api_key, false)
+    }
+
+    fn test_router_with_mode(
+        broker_api_key: Option<&str>,
+        local_only: bool,
+    ) -> (axum::Router, mpsc::Receiver<ListenApiRequest>) {
+        let (router, rx, _) = test_router_with_probe_mode(broker_api_key, local_only);
+        (router, rx)
+    }
+
+    fn test_router_with_probe(
+        broker_api_key: Option<&str>,
+    ) -> (
+        axum::Router,
+        mpsc::Receiver<ListenApiRequest>,
+        std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
+    ) {
+        test_router_with_probe_mode(broker_api_key, false)
+    }
+
+    fn test_router_with_probe_mode(
+        broker_api_key: Option<&str>,
+        local_only: bool,
+    ) -> (
+        axum::Router,
+        mpsc::Receiver<ListenApiRequest>,
+        std::sync::Arc<crate::node_delivery_probe::NodeDeliveryProbe>,
+    ) {
         let (tx, rx) = mpsc::channel(8);
         let (events_tx, _events_rx) = broadcast::channel(8);
         let replay_buffer = ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY);
+        let node_delivery_probe =
+            std::sync::Arc::new(crate::node_delivery_probe::NodeDeliveryProbe::new());
         (
             listen_api_router_with_auth(
                 ListenApiConfig {
+                    local_only,
                     tx,
                     events_tx,
                     replay_buffer,
                     workspace_key: None,
+                    relay_base_url: Some("https://relay.test".to_string()),
                     memberships: vec![],
                     default_workspace_id: None,
+                    node_id: "node_test".to_string(),
+                    node_name: "test-node".to_string(),
+                    node_token: std::sync::Arc::new(std::sync::RwLock::new(None)),
                     persist: false,
+                    native_delivery_receipts: std::env::temp_dir().join(format!(
+                        "agent-relay-listen-api-test-receipts-{}",
+                        uuid::Uuid::new_v4()
+                    )),
+                    node_delivery_probe: node_delivery_probe.clone(),
                 },
                 broker_api_key.map(ToString::to_string),
             ),
             rx,
+            node_delivery_probe,
         )
+    }
+
+    /// The report names every agent on the broker and their delivery cursors.
+    /// That is operational detail, not public data, so the route must sit
+    /// behind the same API-key gate as the rest of `/api/*` — only `/health`
+    /// and `/api/agent-result` are unauthenticated.
+    #[tokio::test]
+    async fn node_delivery_route_requires_the_api_key_when_auth_is_enabled() {
+        let (router, _rx, _probe) = test_router_with_probe(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/node-delivery")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should answer");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// The endpoint must report what the probe recorded, and — critically —
+    /// must do so WITHOUT posting a request to the runtime. A wedged runtime
+    /// event loop is one of the conditions that makes an agent go deaf, so a
+    /// diagnostic that round-trips through it would hang in exactly the case
+    /// it exists to diagnose. `rx` is left undrained here on purpose: it
+    /// stands in for a runtime that is not answering.
+    #[tokio::test]
+    async fn node_delivery_route_answers_without_the_runtime() {
+        use crate::node_delivery_probe::DeliverDisposition;
+
+        let (router, mut rx, probe) = test_router_with_probe(None);
+        probe.record_connected();
+        probe.record_text_frame();
+        let deliver = crate::fleet_wire::Deliver {
+            v: crate::fleet_wire::FleetWireVersion,
+            agent: "worker-a".to_string(),
+            agent_id: "ag_1".to_string(),
+            delivery_id: "del_1".to_string(),
+            msg_id: "msg_1".to_string(),
+            seq: 7,
+            mode: crate::fleet_wire::DeliveryMode::Wait,
+            payload: json!({ "type": "dm.received" }),
+        };
+        probe.record_frame(&crate::fleet_wire::RelaycastToBroker::Deliver(
+            deliver.clone(),
+        ));
+        probe.record_decision(
+            &deliver,
+            &crate::node_control::DeliveryDecision::Deliver { up_to_seq: 7 },
+        );
+        probe.record_disposition(&deliver, DeliverDisposition::QueuedForInjection);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/node-delivery")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("router should answer");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+
+        assert_eq!(body["connected"], true);
+        assert_eq!(body["frames"]["deliver"], 1);
+        assert_eq!(body["socket"]["text_frames"], 1);
+        assert_eq!(body["recent_delivers"][0]["agent"], "worker-a");
+        assert_eq!(body["recent_delivers"][0]["seq"], 7);
+        assert_eq!(body["recent_delivers"][0]["decision"], "deliver");
+        assert_eq!(
+            body["recent_delivers"][0]["disposition"],
+            "queued_for_injection"
+        );
+
+        // Nothing was asked of the runtime.
+        assert!(
+            rx.try_recv().is_err(),
+            "the introspection route must not depend on the runtime event loop"
+        );
     }
 
     async fn response_json(response: axum::response::Response) -> Value {
@@ -2179,6 +4261,26 @@ mod auth_tests {
             .await
             .expect("response body should be readable");
         serde_json::from_slice(&body).expect("response body should be json")
+    }
+
+    #[tokio::test]
+    async fn local_only_health_stays_degraded_without_a_runtime_status_reply() {
+        let (router, rx) = test_router_with_mode(Some("test"), true);
+        drop(rx);
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["status"], "degraded");
+        assert_eq!(body["mode"], "local_only");
+        assert_eq!(body["relaycastConnected"], false);
     }
 
     #[tokio::test]
@@ -2196,6 +4298,21 @@ mod auth_tests {
             .expect("request should succeed");
 
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn health_payload_surfaces_dead_letter_count_from_runtime_status() {
+        let mut payload = super::listen_api_health_payload(None, vec![]);
+        super::merge_status_into_health_payload(
+            &mut payload,
+            &json!({
+                "pending_delivery_count": 0,
+                "dead_letter_count": 353,
+            }),
+        );
+
+        assert_eq!(payload["pendingDeliveryCount"], 0);
+        assert_eq!(payload["deadLetterCount"], 353);
     }
 
     #[tokio::test]
@@ -2256,6 +4373,368 @@ mod auth_tests {
     }
 
     #[tokio::test]
+    async fn native_existing_session_delivery_requires_the_api_key() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/existing-session")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "relayAgentName": "worker-a",
+                            "sessionId": "native-session-1",
+                            "deliveryId": "delivery-1",
+                            "lineageId": "lineage-1",
+                            "headSha": "a".repeat(40),
+                            "message": "continue"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn native_existing_session_delivery_dispatches_typed_request_and_receipt() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            let Some(ListenApiRequest::DeliverNativeExistingSession { delivery, reply }) =
+                rx.recv().await
+            else {
+                panic!("expected native existing-session delivery");
+            };
+            assert_eq!(delivery.relay_agent_name, "worker-a");
+            assert_eq!(delivery.session_id, "native-session-1");
+            assert_eq!(delivery.delivery_id, "delivery-1");
+            let _ = reply.send(Ok(json!({
+                "receiptId": "ndr_receipt",
+                "status": "queued"
+            })));
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/existing-session")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "secret")
+                    .body(Body::from(
+                        json!({
+                            "relayAgentName": "worker-a",
+                            "sessionId": "native-session-1",
+                            "deliveryId": "delivery-1",
+                            "lineageId": "lineage-1",
+                            "headSha": "a".repeat(40),
+                            "message": "continue"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["receiptId"], "ndr_receipt");
+        replier.await.expect("delivery replier should complete");
+    }
+
+    #[tokio::test]
+    async fn dropped_native_delivery_reply_without_a_receipt_is_not_reported_committed() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            let Some(ListenApiRequest::DeliverNativeExistingSession { reply, .. }) =
+                rx.recv().await
+            else {
+                panic!("expected native existing-session delivery");
+            };
+            drop(reply);
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/existing-session")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "secret")
+                    .body(Body::from(
+                        json!({
+                            "relayAgentName": "worker-a",
+                            "sessionId": "native-session-1",
+                            "deliveryId": "delivery-dropped-before-reservation",
+                            "lineageId": "lineage-1",
+                            "headSha": "a".repeat(40),
+                            "message": "continue"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_json(response).await;
+        assert_eq!(body["committed"], false);
+        assert_eq!(body["code"], "native_delivery_receipt_unavailable");
+        replier.await.expect("delivery replier should complete");
+    }
+
+    #[tokio::test]
+    async fn dropped_native_delivery_reply_reconciles_an_in_doubt_receipt() {
+        let receipt_dir = tempfile::tempdir().expect("receipt root");
+        let receipt_path = receipt_dir.path().join("native-delivery-receipts");
+        let (tx, mut rx) = mpsc::channel(8);
+        let (events_tx, _events_rx) = broadcast::channel(8);
+        let router = listen_api_router_with_auth(
+            ListenApiConfig {
+                local_only: false,
+                tx,
+                events_tx,
+                replay_buffer: ReplayBuffer::new(DEFAULT_REPLAY_CAPACITY),
+                workspace_key: None,
+                relay_base_url: Some("https://relay.test".to_string()),
+                memberships: vec![],
+                default_workspace_id: None,
+                node_id: "node_test".to_string(),
+                node_name: "test-node".to_string(),
+                node_token: std::sync::Arc::new(std::sync::RwLock::new(None)),
+                persist: true,
+                native_delivery_receipts: receipt_path.clone(),
+                node_delivery_probe: std::sync::Arc::new(
+                    crate::node_delivery_probe::NodeDeliveryProbe::new(),
+                ),
+            },
+            Some("secret".to_string()),
+        );
+        let replier = tokio::spawn(async move {
+            let Some(ListenApiRequest::DeliverNativeExistingSession { delivery, reply }) =
+                rx.recv().await
+            else {
+                panic!("expected native existing-session delivery");
+            };
+            let result =
+                crate::native_delivery::reserve_and_deliver(&receipt_path, &delivery, |_| async {
+                    anyhow::bail!("fixture write failed")
+                })
+                .await;
+            assert!(matches!(
+                result,
+                Err(crate::native_delivery::NativeDeliveryError::InDoubt(_))
+            ));
+            drop(reply);
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/existing-session")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "secret")
+                    .body(Body::from(
+                        json!({
+                            "relayAgentName": "worker-a",
+                            "sessionId": "native-session-1",
+                            "deliveryId": "delivery-dropped-after-reservation",
+                            "lineageId": "lineage-1",
+                            "headSha": "a".repeat(40),
+                            "message": "continue"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_json(response).await;
+        assert_eq!(body["committed"], true);
+        assert_eq!(body["code"], "native_delivery_in_doubt");
+        replier.await.expect("delivery replier should complete");
+    }
+
+    #[tokio::test]
+    async fn native_existing_session_reconcile_dispatches_without_a_message() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            let Some(ListenApiRequest::ReconcileNativeExistingSession { delivery, reply }) =
+                rx.recv().await
+            else {
+                panic!("expected native existing-session reconciliation");
+            };
+            assert_eq!(delivery.delivery_id, "delivery-1");
+            let _ = reply.send(Ok(json!({ "receiptId": null })));
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/native-delivery/existing-session/reconcile")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .header("x-api-key", "secret")
+                    .body(Body::from(
+                        json!({
+                            "relayAgentName": "worker-a",
+                            "sessionId": "native-session-1",
+                            "deliveryId": "delivery-1",
+                            "lineageId": "lineage-1",
+                            "headSha": "a".repeat(40)
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response_json(response).await["receiptId"].is_null());
+        replier.await.expect("reconcile replier should complete");
+    }
+
+    #[tokio::test]
+    async fn api_route_accepts_lowercase_bearer_scheme() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let list_replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::List { reply }) = rx.recv().await {
+                let _ = reply.send(Ok(json!({ "agents": [] })));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned")
+                    .method("GET")
+                    .header("authorization", "bearer secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        list_replier.await.expect("list replier should complete");
+    }
+
+    #[tokio::test]
+    async fn fleet_inventory_route_forwards_and_returns_agents() {
+        // Must-fire: when the runtime reply carries an agents array, the HTTP
+        // response mirrors it verbatim. This is the diagnostic surface for
+        // #1553 / #1539 — an agent present in this map but absent from
+        // `/api/spawned` is exactly the divergence the CLI must flag.
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::FleetInventory { reply }) = rx.recv().await {
+                let _ = reply.send(Ok(json!({
+                    "node_name": "test-node",
+                    "agents": [
+                        {
+                            "agent_id": "ag_1",
+                            "name": "worker-a",
+                            "invocation_id": "inv_1"
+                        }
+                    ]
+                })));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/fleet-inventory")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["node_name"], "test-node");
+        assert_eq!(body["agents"][0]["name"], "worker-a");
+        assert_eq!(body["agents"][0]["agent_id"], "ag_1");
+
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn fleet_inventory_route_returns_empty_agents_on_channel_close() {
+        // Must-not-fire: an unreachable runtime cannot invent phantom agents.
+        // Empty must not be conflated with "unknown" — the CLI relies on
+        // `success:false` + empty agents to distinguish this from a genuinely
+        // empty inventory.
+        let (router, rx) = test_router(Some("secret"));
+        drop(rx);
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/fleet-inventory")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["success"], false);
+        assert_eq!(body["agents"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn spawn_channels_preserve_omitted_and_explicit_empty() {
+        for (body, expected) in [
+            (json!({"name":"worker"}), None),
+            (json!({"name":"worker","channels":[]}), Some(vec![])),
+        ] {
+            let (router, mut rx) = test_router(Some("secret"));
+            let reply_task = tokio::spawn(async move {
+                match rx.recv().await {
+                    Some(ListenApiRequest::Spawn {
+                        channels, reply, ..
+                    }) => {
+                        assert_eq!(channels, expected);
+                        let _ = reply.send(Ok(json!({"success":true})));
+                    }
+                    _ => panic!("spawn expected"),
+                }
+            });
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/spawn")
+                        .method("POST")
+                        .header("x-api-key", "secret")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            reply_task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
     async fn spawn_route_forwards_extended_fields() {
         let (router, mut rx) = test_router(Some("secret"));
         let spawn_replier = tokio::spawn(async move {
@@ -2267,6 +4746,7 @@ mod auth_tests {
                     model,
                     args,
                     task,
+                    registration_metadata,
                     channels,
                     cwd,
                     team,
@@ -2274,27 +4754,44 @@ mod auth_tests {
                     shadow_mode,
                     continue_from,
                     idle_threshold_secs,
+                    exit_after_task,
                     skip_relay_prompt: _,
                     restart_policy: _,
+                    harness_config,
                     agent_token: _,
+                    agent_result_schema,
+                    replay_buffer: _,
                     reply,
                 }) => {
                     assert_eq!(name, "worker-a");
                     assert_eq!(cli, "codex");
-                    assert_eq!(transport.as_deref(), Some("headless"));
+                    assert_eq!(transport.as_deref(), Some("pty"));
                     assert_eq!(model.as_deref(), Some("o3"));
                     assert_eq!(args, vec!["--fast".to_string()]);
                     assert_eq!(task.as_deref(), Some("Ship it"));
                     assert_eq!(
-                        channels,
-                        vec!["general".to_string(), "engineering".to_string()]
+                        registration_metadata,
+                        AgentRegistrationMetadata {
+                            organization: Some("Agent Workforce".to_string()),
+                            project: Some("Relay".to_string()),
+                            workstream: Some("fleet-metadata".to_string()),
+                            role: Some("implementation".to_string()),
+                            objective: Some("Publish registration metadata".to_string()),
+                        }
                     );
+                    assert_eq!(channels, Some(vec!["general".into(), "engineering".into()]));
                     assert_eq!(cwd.as_deref(), Some("/tmp/project"));
                     assert_eq!(team.as_deref(), Some("core"));
                     assert_eq!(shadow_of.as_deref(), Some("Lead"));
                     assert_eq!(shadow_mode.as_deref(), Some("subagent"));
                     assert_eq!(continue_from.as_deref(), Some("worker-prev"));
                     assert_eq!(idle_threshold_secs, Some(30));
+                    assert!(exit_after_task);
+                    assert!(harness_config.is_some());
+                    assert_eq!(
+                        agent_result_schema,
+                        Some(json!({"type": "object", "properties": {"ok": {"type": "boolean"}}}))
+                    );
                     let _ = reply.send(Ok(
                         json!({ "success": true, "name": "worker-a", "pid": 42 }),
                     ));
@@ -2314,10 +4811,17 @@ mod auth_tests {
                         json!({
                             "name": "worker-a",
                             "cli": "codex",
-                            "transport": "headless",
+                            "transport": "pty",
                             "model": "o3",
                             "args": ["--fast"],
                             "task": "Ship it",
+                            "metadata": {
+                                "organization": "Agent Workforce",
+                                "project": "Relay",
+                                "workstream": "fleet-metadata",
+                                "role": "implementation",
+                                "objective": "Publish registration metadata"
+                            },
                             "channels": ["general", "engineering"],
                             "cwd": "/tmp/project",
                             "team": "core",
@@ -2325,6 +4829,13 @@ mod auth_tests {
                             "shadowMode": "subagent",
                             "continueFrom": "worker-prev",
                             "idleThresholdSecs": 30,
+                            "spawnMode": "task_exit",
+                            "harnessConfig": {
+                                "runtime": "pty",
+                                "command": "codex",
+                                "args": ["--fast"]
+                            },
+                            "resultSchema": {"type": "object", "properties": {"ok": {"type": "boolean"}}},
                         })
                         .to_string(),
                     ))
@@ -2338,6 +4849,139 @@ mod auth_tests {
         assert_eq!(body["success"], json!(true));
 
         spawn_replier.await.expect("spawn replier should complete");
+    }
+
+    #[tokio::test]
+    async fn spawn_route_rejects_unsupported_spawn_mode() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawn")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "name": "worker-a",
+                            "cli": "codex",
+                            "spawnMode": "detached"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert!(body["error"]
+            .as_str()
+            .expect("error should be a string")
+            .contains("unsupported spawnMode 'detached'"));
+    }
+
+    #[tokio::test]
+    async fn spawn_route_rejects_harness_id() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawn")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "name": "worker-a",
+                            "cli": "company-claude",
+                            "harnessId": "company-claude"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert!(body["error"]
+            .as_str()
+            .expect("error should be a string")
+            .contains("harnessId is not supported"));
+    }
+
+    #[tokio::test]
+    async fn agent_result_route_accepts_callback_token_without_broker_auth() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::SubmitAgentResult {
+                    token,
+                    name,
+                    data,
+                    final_result,
+                    metadata,
+                    reply,
+                }) => {
+                    assert_eq!(token, "arr_test");
+                    assert_eq!(name.as_deref(), Some("worker-a"));
+                    assert_eq!(data, json!({"ok": true}));
+                    assert!(final_result);
+                    assert_eq!(metadata, Some(json!({"source": "test"})));
+                    let _ = reply.send(Ok(json!({"success": true, "result_id": "ar_1"})));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/agent-result")
+                    .method("POST")
+                    .header("authorization", "bearer arr_test")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "agent": "worker-a",
+                            "data": {"ok": true},
+                            "metadata": {"source": "test"}
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["result_id"], json!("ar_1"));
+
+        replier.await.expect("result replier should complete");
+    }
+
+    #[tokio::test]
+    async fn agent_result_route_rejects_missing_callback_token() {
+        let (router, _rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/agent-result")
+                    .method("POST")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"data": {"ok": true}}).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -2486,6 +5130,156 @@ mod auth_tests {
     }
 
     #[tokio::test]
+    async fn observer_token_route_accepts_empty_body_with_json_content_type() {
+        // Dashboard clients may send `Content-Type: application/json` with an
+        // empty body since every field on this endpoint is optional; it must
+        // not be rejected before the handler runs (regression test for the
+        // `Json`/`Option<Json<_>>` extractor pitfall).
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::CreateObserverToken {
+                    workspace_id,
+                    workspace_alias,
+                    name,
+                    reply,
+                }) => {
+                    assert_eq!(workspace_id, None);
+                    assert_eq!(workspace_alias, None);
+                    assert_eq!(name, None);
+                    let _ = reply.send(Ok(json!({
+                        "success": true,
+                        "id": "ot_1",
+                        "token": "ot_live_abc",
+                        "name": "pear-dashboard-observer",
+                        "scopes": ["stream:read"],
+                        "workspace_id": "ws_1",
+                        "workspace_alias": null,
+                    })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/observer-token")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn observer_token_route_accepts_missing_body_entirely() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            if let Some(ListenApiRequest::CreateObserverToken { reply, .. }) = rx.recv().await {
+                let _ = reply.send(Ok(json!({ "success": true, "id": "ot_1" })));
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/observer-token")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn observer_token_route_rejects_non_string_workspace_id() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/observer-token")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "workspaceId": 123 }).to_string()))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["success"], json!(false));
+        assert!(
+            rx.try_recv().is_err(),
+            "malformed workspaceId should not enqueue a request"
+        );
+    }
+
+    #[tokio::test]
+    async fn observer_token_route_rejects_non_string_name() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/observer-token")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "name": ["not", "a", "string"] }).to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            rx.try_recv().is_err(),
+            "malformed name should not enqueue a request"
+        );
+    }
+
+    #[tokio::test]
+    async fn observer_token_route_rejects_malformed_json_body() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/observer-token")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{not json"))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            rx.try_recv().is_err(),
+            "unparseable body should not enqueue a request"
+        );
+    }
+
+    #[tokio::test]
     async fn ws_route_rejects_missing_api_key_when_auth_enabled() {
         let (router, _rx) = test_router(Some("secret"));
         let response = router
@@ -2603,6 +5397,54 @@ mod auth_tests {
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    #[tokio::test]
+    async fn release_rejects_invalid_generation_without_dispatch() {
+        for generation in [json!(null), json!(""), json!(123)] {
+            let (router, mut rx) = test_router(Some("secret"));
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/spawned/owned-worker")
+                        .method("DELETE")
+                        .header("x-api-key", "secret")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({"expected_generation": generation}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    // ----- New endpoint tests (session, lease, status, metrics, crash-insights, preflight, shutdown, input, resize) -----
+
+    #[tokio::test]
+    async fn release_rejects_non_boolean_identity_deletion_without_dispatch() {
+        for deletion in [json!(null), json!("true"), json!(123)] {
+            let (router, mut rx) = test_router(Some("secret"));
+            let response = router
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/spawned/owned-worker")
+                        .method("DELETE")
+                        .header("x-api-key", "secret")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            json!({"expected_generation": "owned-generation", "delete_identity": deletion}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
     // ----- New endpoint tests (session, lease, status, metrics, crash-insights, preflight, shutdown, input, resize) -----
 
     #[tokio::test]
@@ -2624,7 +5466,35 @@ mod auth_tests {
         let body = response_json(response).await;
         assert!(body["broker_version"].is_string());
         assert_eq!(body["protocol_version"], 2);
+        assert_eq!(body["relay_base_url"], "https://relay.test");
         assert_eq!(body["mode"], "ephemeral");
+        assert_eq!(body["node_control_health"]["state"], "connecting");
+    }
+
+    #[tokio::test]
+    async fn session_route_surfaces_terminal_node_token_proof_conflict() {
+        let (router, _rx, probe) = test_router_with_probe(Some("secret"));
+        probe.record_node_token_proof_conflict_terminal();
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/session")
+                    .method("GET")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["node_control_health"]["state"], "terminal");
+        assert_eq!(
+            body["node_control_health"]["reason"],
+            "node_token_proof_required"
+        );
     }
 
     #[tokio::test]
@@ -2824,11 +5694,15 @@ mod auth_tests {
                     name,
                     rows,
                     cols,
+                    session_id,
+                    release,
                     reply,
                 }) => {
                     assert_eq!(name, "worker-a");
                     assert_eq!(rows, 40);
                     assert_eq!(cols, 120);
+                    assert_eq!(session_id, None);
+                    assert!(!release);
                     let _ = reply.send(Ok(json!({ "resized": true })));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
@@ -2851,6 +5725,134 @@ mod auth_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         assert_eq!(body["resized"], json!(true));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn resize_pty_route_release_without_dimensions() {
+        // A pure release carries no rows/cols; serde defaults them to 0 and the
+        // route still forwards `release: true` with a normalised session id.
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::ResizePty {
+                    rows,
+                    cols,
+                    session_id,
+                    release,
+                    reply,
+                    ..
+                }) => {
+                    assert_eq!(rows, 0);
+                    assert_eq!(cols, 0);
+                    assert_eq!(session_id.as_deref(), Some("sess-1"));
+                    assert!(release);
+                    let _ = reply.send(Ok(json!({ "released": true })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/resize/worker-a")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "session_id": "sess-1", "release": true }).to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn resize_pty_route_release_forwards_restore_dimensions() {
+        // An attach that reserved a status row hands it back on the release
+        // itself, so the route must forward rows/cols alongside `release: true`
+        // rather than dropping them as it would for a pure release.
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::ResizePty {
+                    rows,
+                    cols,
+                    session_id,
+                    release,
+                    reply,
+                    ..
+                }) => {
+                    assert_eq!(rows, 30);
+                    assert_eq!(cols, 100);
+                    assert_eq!(session_id.as_deref(), Some("sess-1"));
+                    assert!(release);
+                    let _ = reply.send(Ok(json!({ "released": true, "resized": true })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/resize/worker-a")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "rows": 30, "cols": 100, "session_id": "sess-1", "release": true })
+                            .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["resized"], json!(true));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn resize_pty_route_normalises_blank_session_id() {
+        // A whitespace-only session id must arrive as `None`, never as a shared
+        // empty owner key.
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::ResizePty {
+                    session_id, reply, ..
+                }) => {
+                    assert_eq!(session_id, None, "blank session id must normalise to None");
+                    let _ = reply.send(Ok(json!({ "applied": true })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/resize/worker-a")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "rows": 40, "cols": 120, "session_id": "   " }).to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
         replier.await.expect("replier should complete");
     }
 
@@ -3207,6 +6209,89 @@ mod auth_tests {
     }
 
     // -----------------------------------------------------------------
+    // relay#1544: a busy-but-alive worker must not tear down the PTY input
+    // WebSocket just because one write's ack was slow. `worker_timeout` is
+    // the one `write_pty` failure code that does NOT mean the worker is
+    // confirmed dead (that's `worker_disappeared`, reaped independently),
+    // so `handle_pty_input_ws` must keep the connection open for it and
+    // close for everything else. See `pty_input_error_is_connection_fatal`.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn worker_timeout_does_not_close_the_pty_input_connection() {
+        // MUST-FIRE: this is the exact code a busy worker's slow write_pty
+        // ack produces (classify_error, api.rs PTY_INPUT_ACK_TIMEOUT). If
+        // this ever flips to `true`, `handle_pty_input_ws` starts closing
+        // the socket on every busy-but-healthy worker again — relay#1544's
+        // flap. Reverting the fix (`code != "worker_timeout"`, i.e. always
+        // fatal) makes this assertion fail.
+        assert!(!super::pty_input_error_is_connection_fatal(
+            "worker_timeout"
+        ));
+    }
+
+    #[test]
+    fn queue_full_does_not_close_the_pty_input_connection() {
+        // relay#1597 MUST-FIRE: a worker that answers "my drainer queue is
+        // full" has proved it is alive, and the write it refused is the only
+        // casualty. Closing the socket here produced one
+        // `input stream lost … / reconnected after 1 attempt(s)` flap per
+        // keystroke against any busy agent, and reconnecting cannot help — the
+        // queue drains when the child resumes reading, not when a new socket
+        // opens. Revert to `code != "worker_timeout"` and this fails.
+        assert!(!super::pty_input_error_is_connection_fatal(
+            "pty_write_queue_full"
+        ));
+        // The client is told the stream is still usable.
+        assert!(!super::pty_input_error_is_connection_fatal(
+            "worker_timeout"
+        ));
+    }
+
+    #[test]
+    fn queue_full_is_classified_as_its_own_retryable_code() {
+        // The code must survive classification intact: `classify_error` used to
+        // collapse it into the catch-all `request_failed`, which is fatal, so
+        // the exemption above could never be reached from a real worker error.
+        let (status, code) = super::classify_error(
+            "pty_write_queue_full: pty write queue full (128 writes pending; drainer wedged behind child not reading stdin)",
+        );
+        assert_eq!(code, "pty_write_queue_full");
+        assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn a_broken_pty_write_is_still_fatal() {
+        // relay#1597 MUST-NOT-FIRE: only the queue-full code is exempt.
+        // `pty_write_failed` covers a confirmed I/O error or an exited drainer
+        // — real loss, which must still close the socket so the client's
+        // reconnect-and-verify recovery runs.
+        assert!(super::pty_input_error_is_connection_fatal(
+            "pty_write_failed"
+        ));
+        let (status, code) = super::classify_error("pty_write_failed: broken pipe");
+        assert_eq!(code, "request_failed");
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn confirmed_dead_or_missing_worker_still_closes_the_pty_input_connection() {
+        // MUST-NOT-FIRE: a genuinely dead/missing/unusable target must still
+        // be treated as connection-fatal so the client's existing
+        // reconnect-on-close recovery still runs for a real outage.
+        for code in [
+            "worker_disappeared",
+            "agent_not_found",
+            "unsupported_runtime",
+        ] {
+            assert!(
+                super::pty_input_error_is_connection_fatal(code),
+                "{code} must still close the PTY input connection"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
     // Inbound delivery mode: four routes that back the `agent-relay drive`
     // client. The HTTP layer only forwards typed requests over the
     // broker channel — these tests cover the request shaping and
@@ -3277,12 +6362,30 @@ mod auth_tests {
         let (router, mut rx) = test_router(Some("secret"));
         let replier = tokio::spawn(async move {
             match rx.recv().await {
-                Some(ListenApiRequest::SetInboundDeliveryMode { name, mode, reply }) => {
+                Some(ListenApiRequest::SetInboundDeliveryMode {
+                    name,
+                    mode,
+                    expected_mode,
+                    expected_revision,
+                    reply,
+                }) => {
                     assert_eq!(name, "worker-a");
                     assert_eq!(mode, InboundDeliveryMode::AutoInject);
+                    assert_eq!(expected_mode, None);
+                    assert_eq!(expected_revision, None);
                     let _ = reply.send(Ok(SetInboundDeliveryModeOk {
                         mode: InboundDeliveryMode::AutoInject,
                         flushed: 3,
+                        dead_lettered: 0,
+                        matched: true,
+                        revision: 1,
+                        blocked_reason: None,
+                        blocked_reason_code: None,
+                        head_sequence: None,
+                        acked_up_to_sequence: None,
+                        received_up_to_sequence: None,
+                        next_ackable_sequence: None,
+                        reconciliation_action: None,
                     }));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
@@ -3304,8 +6407,161 @@ mod auth_tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
-        assert_eq!(body, json!({ "mode": "auto_inject", "flushed": 3 }));
+        assert_eq!(
+            body,
+            json!({
+                "mode": "auto_inject",
+                "flushed": 3,
+                "dead_lettered": 0,
+                "matched": true,
+                "revision": "1",
+                "blocked_reason": null,
+                "blocked_reason_code": null,
+                "head_sequence": null,
+                "acked_up_to_sequence": null,
+                "received_up_to_sequence": null,
+                "next_ackable_sequence": null,
+                "reconciliation_action": null,
+            })
+        );
         replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn set_inbound_delivery_mode_route_forwards_expected_mode_for_compare_and_set() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::SetInboundDeliveryMode {
+                    name,
+                    mode,
+                    expected_mode,
+                    expected_revision,
+                    reply,
+                }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(mode, InboundDeliveryMode::AutoInject);
+                    assert_eq!(expected_mode, Some(InboundDeliveryMode::ManualFlush));
+                    assert_eq!(expected_revision, Some(7));
+                    // Simulate a compare-and-set miss: current mode differs from
+                    // `expected_mode`, so the broker no-ops and reports the
+                    // current mode with `matched: false`.
+                    let _ = reply.send(Ok(SetInboundDeliveryModeOk {
+                        mode: InboundDeliveryMode::AutoInject,
+                        flushed: 0,
+                        dead_lettered: 0,
+                        matched: false,
+                        revision: 8,
+                        blocked_reason: None,
+                        blocked_reason_code: None,
+                        head_sequence: None,
+                        acked_up_to_sequence: None,
+                        received_up_to_sequence: None,
+                        next_ackable_sequence: None,
+                        reconciliation_action: None,
+                    }));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/delivery-mode")
+                    .method("PUT")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "mode": "auto_inject",
+                            "expected_mode": "manual_flush",
+                            "expected_revision": "7"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(
+            body,
+            json!({
+                "mode": "auto_inject",
+                "flushed": 0,
+                "dead_lettered": 0,
+                "matched": false,
+                "revision": "8",
+                "blocked_reason": null,
+                "blocked_reason_code": null,
+                "head_sequence": null,
+                "acked_up_to_sequence": null,
+                "received_up_to_sequence": null,
+                "next_ackable_sequence": null,
+                "reconciliation_action": null,
+            })
+        );
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn set_inbound_delivery_mode_route_rejects_invalid_expected_mode() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/delivery-mode")
+                    .method("PUT")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "mode": "auto_inject", "expected_mode": "drive" }).to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("invalid_mode"));
+        assert!(
+            rx.try_recv().is_err(),
+            "invalid expected_mode should not enqueue request"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_inbound_delivery_mode_route_rejects_invalid_expected_revision() {
+        let (router, mut rx) = test_router(Some("secret"));
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/delivery-mode")
+                    .method("PUT")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({ "mode": "auto_inject", "expected_revision": "not-a-number" })
+                            .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = response_json(response).await;
+        assert_eq!(body["code"], json!("invalid_revision"));
+        assert!(
+            rx.try_recv().is_err(),
+            "invalid expected_revision should not enqueue request"
+        );
     }
 
     #[tokio::test]
@@ -3396,19 +6652,20 @@ mod auth_tests {
                         PendingRelayMessage {
                             from: "Alice".to_string(),
                             body: "one".to_string(),
-                            target: "#general".to_string(),
-                            thread_id: Some("thr_42".to_string()),
-                            workspace_id: Some("ws_demo".to_string()),
-                            workspace_alias: Some("Demo".to_string()),
+                            target: MessageTarget::new("#general"),
+                            thread_id: Some(ThreadId::new("thr_42")),
+                            workspace_id: Some(WorkspaceId::new("ws_demo")),
+                            workspace_alias: Some(WorkspaceAlias::new("Demo")),
                             priority: 1,
                             mode: MessageInjectionMode::Steer,
                             queued_at_ms: 100,
-                            event_id: Some("evt_1".to_string()),
+                            event_id: Some(EventId::new("evt_1")),
+                            relaycast_receipt: None,
                         },
                         PendingRelayMessage {
                             from: "Bob".to_string(),
                             body: "two".to_string(),
-                            target: "worker-a".to_string(),
+                            target: MessageTarget::new("worker-a"),
                             thread_id: None,
                             workspace_id: None,
                             workspace_alias: None,
@@ -3416,6 +6673,7 @@ mod auth_tests {
                             mode: MessageInjectionMode::Wait,
                             queued_at_ms: 200,
                             event_id: None,
+                            relaycast_receipt: None,
                         },
                     ]));
                 }
@@ -3498,7 +6756,13 @@ mod auth_tests {
             match rx.recv().await {
                 Some(ListenApiRequest::FlushPending { name, reply }) => {
                     assert_eq!(name, "worker-a");
-                    let _ = reply.send(Ok(5));
+                    let _ = reply.send(Ok(crate::listen_api::FlushPendingOk {
+                        flushed: 5,
+                        dead_lettered: 0,
+                        held: 0,
+                        blocked_reason: None,
+                        ..Default::default()
+                    }));
                 }
                 other => panic!("unexpected request: {:?}", other.map(|_| "other")),
             }
@@ -3518,7 +6782,85 @@ mod auth_tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
-        assert_eq!(body, json!({ "flushed": 5 }));
+        assert_eq!(
+            body,
+            json!({
+                "flushed": 5,
+                "dead_lettered": 0,
+                "held": 0,
+                "blocked_reason": null,
+                "blocked_reason_code": null,
+                "head_sequence": null,
+                "acked_up_to_sequence": null,
+                "received_up_to_sequence": null,
+                "next_ackable_sequence": null,
+                "reconciliation_action": null,
+            })
+        );
+        replier.await.expect("replier should complete");
+    }
+
+    /// The observability contract's load-bearing case: a flush that injected
+    /// nothing because the queue is jammed must be distinguishable from a
+    /// flush that injected nothing because the queue was empty.
+    #[tokio::test]
+    async fn flush_route_reports_a_blocked_queue_distinctly_from_an_empty_one() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::FlushPending { name, reply }) => {
+                    assert_eq!(name, "worker-a");
+                    let _ = reply.send(Ok(crate::listen_api::FlushPendingOk {
+                        flushed: 0,
+                        dead_lettered: 1,
+                        held: 3,
+                        blocked_reason: Some(
+                            "delivery sequence 7 for 'worker-a' is not the next ACKable receipt"
+                                .to_string(),
+                        ),
+                        blocked_reason_code: Some("missing_predecessor_ack"),
+                        head_sequence: Some(7),
+                        acked_up_to_sequence: Some(5),
+                        received_up_to_sequence: Some(9),
+                        next_ackable_sequence: Some(6),
+                        reconciliation_action: Some("predecessor_replayed"),
+                    }));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/flush")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .body(Body::empty())
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(
+            body,
+            json!({
+                "flushed": 0,
+                "dead_lettered": 1,
+                "held": 3,
+                "blocked_reason":
+                    "delivery sequence 7 for 'worker-a' is not the next ACKable receipt",
+                "blocked_reason_code": "missing_predecessor_ack",
+                "head_sequence": 7,
+                "acked_up_to_sequence": 5,
+                "received_up_to_sequence": 9,
+                "next_ackable_sequence": 6,
+                "reconciliation_action": "predecessor_replayed",
+            }),
+            "a jammed queue must not render identically to an empty one"
+        );
         replier.await.expect("replier should complete");
     }
 
@@ -3557,6 +6899,8 @@ mod auth_tests {
             ("PUT", "/api/spawned/worker-a/delivery-mode"),
             ("GET", "/api/spawned/worker-a/pending"),
             ("POST", "/api/spawned/worker-a/flush"),
+            ("GET", "/api/spawned/worker-a/agent-events/history"),
+            ("POST", "/api/spawned/worker-a/native-harness/command"),
         ] {
             let response = router
                 .clone()
@@ -3576,5 +6920,88 @@ mod auth_tests {
                 "{method} {path} should require auth"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn native_harness_command_route_forwards_versioned_idempotent_input() {
+        let (router, mut rx) = test_router(Some("secret"));
+        let replier = tokio::spawn(async move {
+            match rx.recv().await {
+                Some(ListenApiRequest::WorkerRequest {
+                    name,
+                    kind,
+                    payload,
+                    reply,
+                    ..
+                }) => {
+                    assert_eq!(name, "worker-a");
+                    assert_eq!(kind, "native_harness_command");
+                    assert_eq!(payload["protocol_version"], json!(1));
+                    assert_eq!(payload["kind"], json!("submit_user_message"));
+                    assert_eq!(payload["idempotency_key"], json!("input-1"));
+                    assert_eq!(payload["text"], json!("continue"));
+                    let _ = reply.send(Ok(json!({
+                        "protocol_version": 1,
+                        "request_id": "req-1",
+                        "idempotency_key": "input-1",
+                        "accepted": true
+                    })));
+                }
+                other => panic!("unexpected request: {:?}", other.map(|_| "other")),
+            }
+        });
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/native-harness/command")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "protocol_version": 1,
+                            "kind": "submit_user_message",
+                            "idempotency_key": "input-1",
+                            "text": "continue",
+                            "mode": "auto"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["accepted"], json!(true));
+        replier.await.expect("replier should complete");
+    }
+
+    #[tokio::test]
+    async fn native_harness_approval_command_requires_an_approval_id() {
+        let (router, _rx) = test_router(Some("secret"));
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/spawned/worker-a/native-harness/command")
+                    .method("POST")
+                    .header("x-api-key", "secret")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "protocol_version": 1,
+                            "kind": "approve_tool",
+                            "idempotency_key": "approval-1"
+                        })
+                        .to_string(),
+                    ))
+                    .expect("request should build"),
+            )
+            .await
+            .expect("request should succeed");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response_json(response).await["code"],
+            json!("invalid_native_harness_approval")
+        );
     }
 }

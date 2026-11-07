@@ -22,12 +22,14 @@ Implements dual-connection OAuth pattern: one for user identity (`github` integr
 GitHub has **two different authentication mechanisms** that serve different purposes:
 
 ### GitHub OAuth App (`github` integration)
+
 - **What it is**: Traditional OAuth for user identity
 - **What it gives you**: User profile (name, email, avatar, GitHub ID)
 - **What it DOESN'T give you**: Access to repositories
 - **Use for**: Login, "Sign in with GitHub"
 
 ### GitHub App (`github-app-oauth` integration)
+
 - **What it is**: Installable app with granular repo permissions
 - **What it gives you**: Access to specific repos the user installed it on
 - **What it DOESN'T give you**: User identity (it knows the installation, not who's using it)
@@ -49,16 +51,16 @@ This lets you answer: "User john@example.com can access repos X, Y, Z"
 
 ## Quick Reference
 
-| Connection Type | Nango Integration | Purpose | Stored In |
-|----------------|-------------------|---------|-----------|
-| User Login | `github` | Authentication, identity | `users.nangoConnectionId` |
-| Repo Access | `github-app-oauth` | PR operations, file access | `repos.nangoConnectionId` |
+| Connection Type | Nango Integration  | Purpose                    | Stored In                 |
+| --------------- | ------------------ | -------------------------- | ------------------------- |
+| User Login      | `github`           | Authentication, identity   | `users.nangoConnectionId` |
+| Repo Access     | `github-app-oauth` | PR operations, file access | `repos.nangoConnectionId` |
 
-| Flow | Endpoint | Webhook Type |
-|------|----------|--------------|
-| Login | `GET /auth/nango-session` | `auth` + `github` |
+| Flow         | Endpoint                       | Webhook Type                |
+| ------------ | ------------------------------ | --------------------------- |
+| Login        | `GET /auth/nango-session`      | `auth` + `github`           |
 | Repo Connect | `GET /auth/github-app-session` | `auth` + `github-app-oauth` |
-| Data Sync | N/A (scheduled) | `sync` |
+| Data Sync    | N/A (scheduled)                | `sync`                      |
 
 ## Implementation
 
@@ -72,7 +74,7 @@ export const users = pgTable('users', {
   githubUsername: text('github_username').notNull(),
   email: text('email'),
   avatarUrl: text('avatar_url'),
-  nangoConnectionId: text('nango_connection_id'),      // Permanent login connection
+  nangoConnectionId: text('nango_connection_id'), // Permanent login connection
   incomingConnectionId: text('incoming_connection_id'), // Temp polling connection
   pendingInstallationRequest: timestamp('pending_installation_request'), // Org approval wait
 });
@@ -84,14 +86,14 @@ export const repos = pgTable('repos', {
   fullName: text('full_name').notNull(),
   installationId: uuid('installation_id').references(() => githubInstallations.id),
   ownerId: uuid('owner_id').references(() => users.id),
-  nangoConnectionId: text('nango_connection_id'),  // App connection for this repo
+  nangoConnectionId: text('nango_connection_id'), // App connection for this repo
 });
 
 // github_installations - tracks app installations
 export const githubInstallations = pgTable('github_installations', {
   id: uuid('id').primaryKey().defaultRandom(),
   installationId: text('installation_id').unique().notNull(),
-  accountType: text('account_type'),   // 'user' | 'organization'
+  accountType: text('account_type'), // 'user' | 'organization'
   accountLogin: text('account_login'),
   installedById: uuid('installed_by_id').references(() => users.id),
 });
@@ -102,8 +104,8 @@ export const githubInstallations = pgTable('github_installations', {
 ```typescript
 // constants.ts
 export const NANGO_INTEGRATION = {
-  GITHUB_USER: 'github',              // Login only
-  GITHUB_APP_OAUTH: 'github-app-oauth' // Repo access
+  GITHUB_USER: 'github', // Login only
+  GITHUB_APP_OAUTH: 'github-app-oauth', // Repo access
 } as const;
 ```
 
@@ -245,7 +247,6 @@ async function handleAppOAuthWebhook(connectionId: string, endUser?: EndUser) {
 
     // Trigger Nango syncs
     await nangoService.triggerSync(connectionId, ['pull-requests', 'commits']);
-
   } catch (error) {
     if (error.status === 403) {
       // Org approval pending
@@ -270,9 +271,7 @@ app.post('/api/webhooks/nango', async (c) => {
   const body = await c.req.text();
 
   // Verify signature
-  const expectedSignature = createHmac('sha256', NANGO_SECRET_KEY)
-    .update(body)
-    .digest('hex');
+  const expectedSignature = createHmac('sha256', NANGO_SECRET_KEY).update(body).digest('hex');
 
   if (signature !== expectedSignature) {
     return c.json({ error: 'Invalid signature' }, 401);
@@ -371,14 +370,14 @@ DATA SYNCS (background):
 
 ## Common Mistakes
 
-| Mistake | Fix |
-|---------|-----|
+| Mistake                                         | Fix                                                                    |
+| ----------------------------------------------- | ---------------------------------------------------------------------- |
 | Using same connection for login and repo access | Use two integrations: `github` for login, `github-app-oauth` for repos |
-| Not handling org approval pending | Check for 403 error, set `pendingInstallationRequest` flag |
-| Missing `endUser.id` in connection | Always set in `createConnectSession`, update after user creation |
-| Polling wrong connection ID | Store `incomingConnectionId` separately for returning users |
-| Not verifying webhook signature | Always verify `X-Nango-Signature` with HMAC-SHA256 |
-| Keeping duplicate connections | Delete temp connection after returning user authenticates |
+| Not handling org approval pending               | Check for 403 error, set `pendingInstallationRequest` flag             |
+| Missing `endUser.id` in connection              | Always set in `createConnectSession`, update after user creation       |
+| Polling wrong connection ID                     | Store `incomingConnectionId` separately for returning users            |
+| Not verifying webhook signature                 | Always verify `X-Nango-Signature` with HMAC-SHA256                     |
+| Keeping duplicate connections                   | Delete temp connection after returning user authenticates              |
 
 ## Environment Variables
 

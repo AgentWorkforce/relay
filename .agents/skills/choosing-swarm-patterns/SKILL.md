@@ -5,15 +5,16 @@ description: Use when coordinating multiple AI agents with Agent Relay's workflo
 
 ### Overview
 
-The Agent Relay SDK (`@agent-relay/sdk`) supports 24 swarm patterns via a single `swarm.pattern` field. Patterns are configured declaratively in YAML or programmatically via the `workflow()` fluent builder — there are no standalone `fanOut(...)` / `hubAndSpoke(...)` helpers. Pick the simplest pattern that solves the problem; add complexity only when the system proves it's insufficient.
+### Overview
 
-### Two ways to run a pattern
+The Agent Relay SDK (`@agent-relay/sdk`) supports 24 swarm patterns via a single `swarm.pattern` field. Patterns are configured declaratively in YAML — there are no standalone `fanOut(...)` / `hubAndSpoke(...)` helpers. Pick the simplest pattern that solves the problem; add complexity only when the system proves it's insufficient.
 
-#### **1. YAML (portable):**
+### Run a pattern
+
+#### TypeScript SDK runner
 
 ```ts
 import { runWorkflow } from '@agent-relay/sdk/workflows';
-
 const run = await runWorkflow('workflows/feature-dev.yaml', {
   vars: { task: 'Add OAuth login' },
 });
@@ -21,32 +22,24 @@ const run = await runWorkflow('workflows/feature-dev.yaml', {
 
 ### Quick Decision Framework
 
-#### ```
-
-```
+```text
 Is the task independent per agent?
   YES → fan-out (parallel workers, hub collects)
-
 Does each step need the previous step's output?
   YES → Is it strictly linear?
     YES → pipeline
     NO  → dag (parallel where possible, `dependsOn` edges)
-
 Does a coordinator need to stay alive and adapt?
   YES → hub-spoke (single-level hub + workers)
         hierarchical (structurally identical in current impl; use for naming/intent)
-
 Is the task about making a decision?
   YES → Do agents need to argue opposing sides?
     YES → debate (adversarial, full mesh)
     NO  → consensus (cooperative, full mesh + coordination.consensusStrategy)
-
 Does the right specialist emerge during processing?
   YES → handoff (sequential chain, one active at a time)
-
 Do all agents need to freely collaborate?
   YES → mesh (full peer-to-peer edges)
-
 Is cost the primary concern?
   YES → cascade (chain of increasingly capable agents; each step's prompt
         decides whether to pass through or redo the prior output)
@@ -57,7 +50,7 @@ Is cost the primary concern?
 | #   | Pattern          | Topology (actual edges)                                                                                             | Best For                                                                    |
 | --- | ---------------- | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
 | 1   | **fan-out**      | Hub broadcasts to N workers; workers reply to hub only                                                              | Independent subtasks (reviews, research, tests)                             |
-| 2   | **pipeline**     | Linear chain (agent*i → agent*{i+1})                                                                                | Ordered stages (design → implement → test)                                  |
+| 2   | **pipeline**     | Linear chain (`agent_i` → `agent_{i+1}`)                                                                            | Ordered stages (design → implement → test)                                  |
 | 3   | **hub-spoke**    | Hub ↔ spokes (bidirectional); no spoke-to-spoke                                                                     | Dynamic coordination, lead reviews/adjusts                                  |
 | 4   | **consensus**    | Full mesh; decision via `coordination.consensusStrategy`                                                            | Architecture decisions, approval gates                                      |
 | 5   | **mesh**         | Full mesh (every agent ↔ every other)                                                                               | Brainstorming, collaborative debugging                                      |
@@ -72,7 +65,6 @@ Is cost the primary concern?
 ### Additional Patterns (role-driven)
 
 These 14 additional patterns exist in `SwarmPattern` (types.ts:114-139). The coordinator has role-based auto-selection heuristics (`coordinator.ts:51-165`), but they only fire when `swarm.pattern` is **omitted** — YAML validation requires it (`runner.ts:2105-2117`), so auto-selection is effectively a programmatic-API feature. In YAML, set `swarm.pattern` explicitly.
-
 Topology is still resolved per-pattern once selected; the "Triggering roles" column reflects what the coordinator looks for to shape edges (per `coordinator.ts:250-450`):
 
 | Pattern           | Roles the topology keys off                             | Topology                                       |
@@ -109,17 +101,21 @@ Topology is still resolved per-pattern once selected; the "Triggering roles" col
 
 ### Pattern Details
 
+The per-pattern YAML snippets below show only the pattern-relevant fields. A runnable YAML file also needs the required top-level `version` and `name`; see the [Complete YAML Example](#complete-yaml-example).
+
 #### 1. fan-out — Parallel Workers
 
-```ts
-await workflow('review')
-  .pattern('fan-out')
-  .agent('lead', { cli: 'claude', role: 'lead' })
-  .agent('auth-rev', { cli: 'claude', role: 'worker', interactive: false })
-  .agent('db-rev', { cli: 'claude', role: 'worker', interactive: false })
-  .step('review-auth', { agent: 'auth-rev', task: 'Review auth.ts' })
-  .step('review-db', { agent: 'db-rev', task: 'Review db.ts' })
-  .run();
+```yaml
+swarm: { pattern: fan-out }
+agents:
+  - { name: lead, cli: claude, role: lead }
+  - { name: auth-rev, cli: claude, role: worker, interactive: false }
+  - { name: db-rev, cli: claude, role: worker, interactive: false }
+workflows:
+  - name: review
+    steps:
+      - { name: review-auth, agent: auth-rev, task: 'Review auth.ts' }
+      - { name: review-db, agent: db-rev, task: 'Review db.ts' }
 ```
 
 #### 2. pipeline — Sequential Stages
@@ -150,17 +146,20 @@ workflows:
 
 #### 3. hub-spoke — Persistent Coordinator
 
-```ts
-await workflow('api-build')
-  .pattern('hub-spoke')
-  .channel('swarm-api')
-  .agent('lead', { cli: 'claude', role: 'lead' })
-  .agent('db-worker', { cli: 'claude', role: 'worker' }) // interactive by default — hub DMs it
-  .agent('api-worker', { cli: 'claude', role: 'worker' }) // interactive by default — hub DMs it
-  .step('models', { agent: 'db-worker', task: 'Build database models' })
-  .step('routes', { agent: 'api-worker', task: 'Build route handlers', dependsOn: ['models'] })
-  .step('review', { agent: 'lead', task: 'Review everything', dependsOn: ['routes'] })
-  .run();
+```yaml
+swarm:
+  pattern: hub-spoke
+  channel: swarm-api
+agents:
+  - { name: lead, cli: claude, role: lead }
+  - { name: db-worker, cli: claude, role: worker }
+  - { name: api-worker, cli: claude, role: worker }
+workflows:
+  - name: api-build
+    steps:
+      - { name: models, agent: db-worker, task: 'Build database models' }
+      - { name: routes, agent: api-worker, task: 'Build route handlers', dependsOn: [models] }
+      - { name: review, agent: lead, task: 'Review everything', dependsOn: [routes] }
 ```
 
 #### 4. consensus — Cooperative Voting
@@ -184,17 +183,20 @@ workflows:
 
 #### 5. mesh — Peer Collaboration
 
-```ts
-await workflow('debug-auth')
-  .pattern('mesh')
-  .channel('swarm-debug')
-  .agent('logs', { cli: 'claude' })
-  .agent('code', { cli: 'claude' })
-  .agent('repro', { cli: 'claude' })
-  .step('logs', { agent: 'logs', task: 'Check server logs' })
-  .step('code', { agent: 'code', task: 'Review auth code' })
-  .step('repro', { agent: 'repro', task: 'Write repro test' })
-  .run();
+```yaml
+swarm:
+  pattern: mesh
+  channel: swarm-debug
+agents:
+  - { name: logs, cli: claude }
+  - { name: code, cli: claude }
+  - { name: repro, cli: claude }
+workflows:
+  - name: debug-auth
+    steps:
+      - { name: logs, agent: logs, task: 'Check server logs' }
+      - { name: code, agent: code, task: 'Review auth code' }
+      - { name: repro, agent: repro, task: 'Write repro test' }
 ```
 
 #### 6. handoff — Dynamic Routing
@@ -215,38 +217,41 @@ workflows:
 
 #### 7. cascade — Cost-Aware Fallthrough
 
-```ts
-await workflow('answer')
-  .pattern('cascade')
-  .agent('haiku', { cli: 'claude', model: 'claude-haiku-4-5-20251001' })
-  .agent('sonnet', { cli: 'claude', model: 'claude-sonnet-4-6' })
-  .agent('opus', { cli: 'claude', model: 'claude-opus-4-7' })
-  .step('try-haiku', { agent: 'haiku', task: '{{question}}' })
-  .step('try-sonnet', {
-    agent: 'sonnet',
-    task: 'If this is a complete answer, echo it verbatim. Otherwise answer anew:\n{{steps.try-haiku.output}}',
-    dependsOn: ['try-haiku'],
-  })
-  .step('try-opus', {
-    agent: 'opus',
-    task: 'Final-tier answer, using prior attempts for context:\n{{steps.try-sonnet.output}}',
-    dependsOn: ['try-sonnet'],
-  })
-  .run();
+```yaml
+swarm: { pattern: cascade }
+agents:
+  - { name: haiku, cli: claude, model: claude-haiku-4-5-20251001 }
+  - { name: sonnet, cli: claude, model: claude-sonnet-4-6 }
+  - { name: opus, cli: claude, model: claude-opus-4-7 }
+workflows:
+  - name: answer
+    steps:
+      - { name: try-haiku, agent: haiku, task: '{{question}}' }
+      - name: try-sonnet
+        agent: sonnet
+        dependsOn: [try-haiku]
+        task: "If this is a complete answer, echo it verbatim. Otherwise answer anew:\n{{steps.try-haiku.output}}"
+      - name: try-opus
+        agent: opus
+        dependsOn: [try-sonnet]
+        task: "Final-tier answer, using prior attempts for context:\n{{steps.try-sonnet.output}}"
 ```
 
 #### 8. dag — Directed Acyclic Graph
 
-```ts
-await workflow('fullstack')
-  .pattern('dag')
-  .maxConcurrency(3)
-  .agent('dev', { cli: 'codex', role: 'worker' })
-  .step('scaffold', { agent: 'dev', task: 'Create project scaffold' })
-  .step('frontend', { agent: 'dev', task: 'Build React UI', dependsOn: ['scaffold'] })
-  .step('backend', { agent: 'dev', task: 'Build API', dependsOn: ['scaffold'] })
-  .step('integrate', { agent: 'dev', task: 'Wire together', dependsOn: ['frontend', 'backend'] })
-  .run();
+```yaml
+swarm:
+  pattern: dag
+  maxConcurrency: 3
+agents:
+  - { name: dev, cli: codex, role: worker }
+workflows:
+  - name: fullstack
+    steps:
+      - { name: scaffold, agent: dev, task: 'Create project scaffold' }
+      - { name: frontend, agent: dev, task: 'Build React UI', dependsOn: [scaffold] }
+      - { name: backend, agent: dev, task: 'Build API', dependsOn: [scaffold] }
+      - { name: integrate, agent: dev, task: 'Wire together', dependsOn: [frontend, backend] }
 ```
 
 #### 9. debate — Adversarial Refinement
@@ -264,20 +269,22 @@ coordination:
 
 #### 10. hierarchical — Multi-Level (structurally hub-spoke today)
 
-```ts
-await workflow('large-team')
-  .pattern('hierarchical')
-  .agent('lead', { cli: 'claude', role: 'lead' })
-  .agent('fe-coord', { cli: 'claude', role: 'coordinator' })
-  .agent('be-coord', { cli: 'claude', role: 'coordinator' })
-  .agent('fe-dev', { cli: 'codex', role: 'worker', interactive: false })
-  .agent('be-dev', { cli: 'codex', role: 'worker', interactive: false })
-  .step('plan', { agent: 'lead', task: 'Coordinate full-stack app' })
-  .step('fe-plan', { agent: 'fe-coord', task: 'Manage frontend', dependsOn: ['plan'] })
-  .step('be-plan', { agent: 'be-coord', task: 'Manage backend', dependsOn: ['plan'] })
-  .step('fe-impl', { agent: 'fe-dev', task: 'Build components', dependsOn: ['fe-plan'] })
-  .step('be-impl', { agent: 'be-dev', task: 'Build API', dependsOn: ['be-plan'] })
-  .run();
+```yaml
+swarm: { pattern: hierarchical }
+agents:
+  - { name: lead, cli: claude, role: lead }
+  - { name: fe-coord, cli: claude, role: coordinator }
+  - { name: be-coord, cli: claude, role: coordinator }
+  - { name: fe-dev, cli: codex, role: worker, interactive: false }
+  - { name: be-dev, cli: codex, role: worker, interactive: false }
+workflows:
+  - name: large-team
+    steps:
+      - { name: plan, agent: lead, task: 'Coordinate full-stack app' }
+      - { name: fe-plan, agent: fe-coord, task: 'Manage frontend', dependsOn: [plan] }
+      - { name: be-plan, agent: be-coord, task: 'Manage backend', dependsOn: [plan] }
+      - { name: fe-impl, agent: fe-dev, task: 'Build components', dependsOn: [fe-plan] }
+      - { name: be-impl, agent: be-dev, task: 'Build API', dependsOn: [be-plan] }
 ```
 
 ### Verification & Completion Signals
@@ -290,21 +297,25 @@ verification:
   value: DONE # or: PLAN_COMPLETE, IMPLEMENTATION_COMPLETE, REVIEW_COMPLETE
 ```
 
-### Relaycast MCP — Correct Tool Names
+### Agent Relay MCP — Correct Tool Names
 
-The skill previously referenced `mcp__relaycast__send` / `mcp__relaycast__dm` — those names are wrong. The real tools (the first three are cited in the workflow convention-injection at `relay-adapter.ts:31-35`; the rest are exposed by the live `relaycast` MCP server):
+The old category-expanded names are wrong. Current Agent Relay MCP tools are
+flat names. In a client that decorates MCP tools, the prefix comes from the
+configured server key. With the relay broker's `agent-relay` server key, Claude
+Code users commonly see `mcp__agent-relay__send_dm`; Codex and opencode users
+see the bare canonical name `send_dm`.
 
-| Purpose                  | Tool                                  | Source                |
-| ------------------------ | ------------------------------------- | --------------------- |
-| Send DM to another agent | `mcp__relaycast__message_dm_send`     | `relay-adapter.ts:31` |
-| Check inbox              | `mcp__relaycast__message_inbox_check` | `relay-adapter.ts:35` |
-| List agents              | `mcp__relaycast__agent_list`          | `relay-adapter.ts:35` |
-| Post to a channel        | `mcp__relaycast__message_post`        | relaycast MCP server  |
-| Reply in a thread        | `mcp__relaycast__message_reply`       | relaycast MCP server  |
-| Spawn sub-agent          | `mcp__relaycast__agent_add`           | relaycast MCP server  |
-| Remove sub-agent         | `mcp__relaycast__agent_remove`        | relaycast MCP server  |
+| Purpose                  | Canonical tool    | Claude Code form with `agent-relay` key |
+| ------------------------ | ----------------- | --------------------------------------- |
+| Send DM to another agent | `send_dm`         | `mcp__agent-relay__send_dm`             |
+| Check inbox              | `check_inbox`     | `mcp__agent-relay__check_inbox`         |
+| List agents              | `list_agents`     | `mcp__agent-relay__list_agents`         |
+| Post to a channel        | `post_message`    | `mcp__agent-relay__post_message`        |
+| Reply in a thread        | `reply_to_thread` | `mcp__agent-relay__reply_to_thread`     |
+| Spawn sub-agent          | `add_agent`       | `mcp__agent-relay__add_agent`           |
+| Remove sub-agent         | `remove_agent`    | `mcp__agent-relay__remove_agent`        |
 
-> `interactive: false` agents run as non-interactive subprocesses with no relay connection — they must NOT call any `mcp__relaycast__*` tool (validator warns on this at `validator.ts:138-150`, check `NONINTERACTIVE_RELAY`).
+> `interactive: false` agents run as non-interactive subprocesses with no relay connection. They must not call Relay MCP tools.
 
 ### Reflection (Trajectories)
 
@@ -320,27 +331,24 @@ trajectories:
 
 ### Common Mistakes
 
-| Mistake                                      | Why It Fails                                                                  | Fix                                                                                           |
-| -------------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| Using mesh/debate for everything             | Full-mesh blows up message volume past ~5 agents                              | Use hub-spoke or dag for most tasks                                                           |
-| Pipeline for independent work                | Sequential bottleneck                                                         | Use fan-out or dag                                                                            |
-| Hub-spoke for 2 agents                       | Hub is unnecessary overhead                                                   | Use pipeline or fan-out                                                                       |
-| Expecting `consensusStrategy` to tally votes | Runner has no vote-tally logic; field only affects coordinator auto-selection | Aggregate votes in a judge/lead step that reads `{{steps.*.output}}`                          |
-| Handoff with "routing = skip other branches" | Skipping only fires on upstream **failure**, not routing decisions            | Emit a routing token in triage output; downstream prompts self-no-op if token doesn't match   |
-| Cascade expecting skip-on-success            | Runner has no cascade skip logic; failed upstream skips downstream            | Chain downstream prompts to pass-through or redo based on `{{steps.previous.output}}`         |
-| Relying on `reflectOnBarriers`               | Config flag exists but runner never calls it                                  | Use `reflectOnConverge` for convergence reflection; use `reflection` pattern for critic loops |
-| `interactive: false` agent calling MCP       | Non-interactive subprocess has no relay                                       | Use `interactive: true` (default) or emit output on stdout                                    |
-| Relying on multi-level `hierarchical`        | Topology is single-level hub in current impl                                  | Use pattern for naming; model levels via `dependsOn` graph                                    |
-| Writing `mcp__relaycast__send(...)`          | Wrong tool name                                                               | Use `mcp__relaycast__message_post` or `message_dm_send`                                       |
+| Mistake                                      | Why It Fails                                                                  | Fix                                                                                              |
+| -------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Using mesh/debate for everything             | Full-mesh blows up message volume past ~5 agents                              | Use hub-spoke or dag for most tasks                                                              |
+| Pipeline for independent work                | Sequential bottleneck                                                         | Use fan-out or dag                                                                               |
+| Hub-spoke for 2 agents                       | Hub is unnecessary overhead                                                   | Use pipeline or fan-out                                                                          |
+| Expecting `consensusStrategy` to tally votes | Runner has no vote-tally logic; field only affects coordinator auto-selection | Aggregate votes in a judge/lead step that reads `{{steps.*.output}}`                             |
+| Handoff with "routing = skip other branches" | Skipping only fires on upstream **failure**, not routing decisions            | Emit a routing token in triage output; downstream prompts self-no-op if token doesn't match      |
+| Cascade expecting skip-on-success            | Runner has no cascade skip logic; failed upstream skips downstream            | Chain downstream prompts to pass-through or redo based on `{{steps.previous.output}}`            |
+| Relying on `reflectOnBarriers`               | Config flag exists but runner never calls it                                  | Use `reflectOnConverge` for convergence reflection; use `reflection` pattern for critic loops    |
+| `interactive: false` agent calling MCP       | Non-interactive subprocess has no relay                                       | Use `interactive: true` (default) or emit output on stdout                                       |
+| Relying on multi-level `hierarchical`        | Topology is single-level hub in current impl                                  | Use pattern for naming; model levels via `dependsOn` graph                                       |
+| Writing `mcp__relaycast__send(...)`          | Wrong tool name                                                               | Use `post_message` / `mcp__agent-relay__post_message` or `send_dm` / `mcp__agent-relay__send_dm` |
 
 ### Resume & Re-run
-
-#### ```ts
 
 ```ts
 // Resume a failed run:
 await runWorkflow('feature-dev.yaml', { resume: '<runId>' });
-
 // Skip ahead, re-using cached outputs from an earlier run:
 await runWorkflow('feature-dev.yaml', {
   startFrom: 'review',
@@ -349,8 +357,6 @@ await runWorkflow('feature-dev.yaml', {
 ```
 
 ### Complete YAML Example
-
-#### ```yaml
 
 ```yaml
 version: '1.0'
@@ -412,7 +418,6 @@ errorHandling:
 | Topology resolution per pattern                                   | `packages/sdk/src/workflows/coordinator.ts:240-450`                          |
 | Interactive-only topology edges                                   | `packages/sdk/src/workflows/coordinator.ts:218-237`                          |
 | Pattern auto-selection heuristics (programmatic API only)         | `packages/sdk/src/workflows/coordinator.ts:51-165`                           |
-| `WorkflowBuilder` fluent API                                      | `packages/sdk/src/workflows/builder.ts`                                      |
 | `runWorkflow(yamlPath, options)`                                  | `packages/sdk/src/workflows/run.ts`                                          |
 | YAML validation requires `version` + `name` + `swarm.pattern`     | `packages/sdk/src/workflows/runner.ts:2105-2117`                             |
 | MCP tool names cited in convention-injection                      | `packages/sdk/src/relay-adapter.ts:29-36`                                    |

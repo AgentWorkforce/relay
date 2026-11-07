@@ -1,0 +1,53 @@
+{
+  "id": "traj_q2r3c9dmdep7",
+  "version": 1,
+  "task": {
+    "title": "Rename harness plans to harness configs"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T18:00:40.591Z",
+  "completedAt": "2026-05-25T18:06:34.954Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-25T18:06:31.002Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_fqok6eor5g3t",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-25T18:06:31.002Z",
+      "endedAt": "2026-05-25T18:06:34.954Z",
+      "events": [
+        {
+          "ts": 1779732391003,
+          "type": "decision",
+          "content": "Rename harness plan API to harness config: Rename harness plan API to harness config",
+          "raw": {
+            "question": "Rename harness plan API to harness config",
+            "chosen": "Rename harness plan API to harness config",
+            "alternatives": [],
+            "reasoning": "The adapter output is declarative runtime configuration, not an execution plan; SDK and docs should expose harnessConfig/ResolvedHarnessConfig while the broker keeps legacy harnessPlan aliases for payload tolerance."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Renamed harness runtime terminology from plan to config across SDK, broker protocol, API payloads, tests, docs, and changelog. The broker now accepts harnessConfig as the primary field while retaining harnessPlan/harness_plan deserialization aliases for compatibility.",
+    "approach": "Standard approach",
+    "confidence": 0.88
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "8c429f257c346d3917c783b637d890eda045bbee",
+    "endRef": "8c429f257c346d3917c783b637d890eda045bbee"
+  }
+}

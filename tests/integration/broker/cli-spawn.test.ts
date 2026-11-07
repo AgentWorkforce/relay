@@ -21,7 +21,7 @@
 import assert from 'node:assert/strict';
 import test, { type TestContext } from 'node:test';
 
-import type { BrokerEvent } from '@agent-relay/sdk';
+import type { BrokerEvent } from '@agent-relay/harness-driver';
 import { BrokerHarness, checkPrerequisites, uniqueSuffix } from './utils/broker-harness.js';
 import { assertAgentExists, assertNoDroppedDeliveries } from './utils/assert-helpers.js';
 import { skipIfNotRealCli, skipIfCliMissing, sleep } from './utils/cli-helpers.js';
@@ -479,6 +479,42 @@ test('cli-spawn: duplicate name — second spawn with same name fails', { timeou
     await harness.stop();
   }
 });
+
+test(
+  'cli-spawn: missing CLI fails before success and leaves no listed agent',
+  { timeout: 30_000 },
+  async (t) => {
+    if (skipIfMissing(t)) return;
+
+    const harness = new BrokerHarness();
+    await harness.start();
+    const suffix = uniqueSuffix();
+    const agentName = `missing-cli-${suffix}`;
+    const missingCli = `agent-relay-missing-${suffix}`;
+
+    try {
+      // The wrapper exits before its CLI ever runs, so two rejection paths
+      // race: the stability-window check ("process exited during startup")
+      // and, if the wrapper's stdin closes before the broker writes the
+      // init_worker frame, an EPIPE from send_to_worker ("failed writing
+      // frame to worker"). Both are the correct rejection for this case, so
+      // accept either instead of pinning to whichever wins the race.
+      await assert.rejects(
+        () => harness.spawnAgent(agentName, missingCli, ['general']),
+        /process exited during startup|failed writing frame to worker/,
+        'a wrapper that cannot launch its CLI must reject the spawn request'
+      );
+
+      const agents = await harness.listAgents();
+      assert.ok(
+        !agents.some((agent) => agent.name === agentName),
+        'a rejected startup must not leave a stale agent in the broker list'
+      );
+    } finally {
+      await harness.stop();
+    }
+  }
+);
 
 // ── Cat Process Tests (lightweight, no real CLI needed) ────────────────────
 

@@ -1,0 +1,107 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import { RelaycastMessagingClient } from '../messaging/index.js';
+
+function createRelaycastMock() {
+  return {
+    agents: {
+      list: vi.fn(),
+      get: vi.fn(),
+      register: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+      presence: vi.fn(),
+    },
+    channels: { list: vi.fn(), get: vi.fn() },
+    messages: { list: vi.fn(), get: vi.fn(), thread: vi.fn(), reactions: vi.fn() },
+    webhooks: {
+      create: vi.fn(async (d: unknown) => ({ id: 'wh1', ...(d as object) })),
+      list: vi.fn(async () => [{ id: 'wh1', url: 'https://x' }]),
+      delete: vi.fn(async () => undefined),
+      trigger: vi.fn(async () => ({ ok: true })),
+    },
+    subscriptions: {
+      create: vi.fn(async (d: unknown) => ({ id: 'sub1', ...(d as object) })),
+      list: vi.fn(async () => [{ id: 'sub1', event: 'message.created' }]),
+      get: vi.fn(async (id: string) => ({ id })),
+      delete: vi.fn(async () => undefined),
+    },
+    actions: {
+      register: vi.fn(async (d: unknown) => ({ ...(d as object) })),
+      list: vi.fn(async () => [{ name: 'deploy', description: 'Ship it', handlerAgent: 'ops' }]),
+      get: vi.fn(async (name: string) => ({ name })),
+      delete: vi.fn(async () => undefined),
+    },
+    workspace: { info: vi.fn(async () => ({ id: 'ws1', name: 'Ops' })) },
+  };
+}
+
+describe('SDK integrations / capabilities / workspace passthrough', () => {
+  it('delegates webhook + subscription operations to relaycast', async () => {
+    const relaycast = createRelaycastMock();
+    const client = new RelaycastMessagingClient({ relaycast: relaycast as never });
+
+    // POST /v1/webhooks takes { channel, name? } and returns the generated URL.
+    // This previously asserted { url, event }, a shape the endpoint rejects.
+    const webhook = await client.integrations.webhooks.create({ channel: 'deploy-status' });
+    expect(webhook.id).toBe('wh1');
+    expect(relaycast.webhooks.create).toHaveBeenCalledWith({ channel: 'deploy-status' });
+
+    await client.integrations.webhooks.trigger('wh1', { hello: 'world' });
+    expect(relaycast.webhooks.trigger).toHaveBeenCalledWith('wh1', { hello: 'world' });
+
+    const subs = await client.integrations.subscriptions.list();
+    expect(subs).toHaveLength(1);
+  });
+
+  it('normalizes subscription event coverage without losing engine configuration', async () => {
+    const relaycast = createRelaycastMock();
+    relaycast.subscriptions.get.mockResolvedValue({
+      id: 'sub1',
+      event_types: ['thread.reply'],
+      is_active: false,
+    } as never);
+    const client = new RelaycastMessagingClient({ relaycast: relaycast as never });
+    expect(await client.integrations.subscriptions.get('sub1')).toMatchObject({
+      id: 'sub1',
+      events: ['thread.reply'],
+      is_active: false,
+    });
+    expect(await client.integrations.subscriptions.create({ event: 'thread.reply' })).toMatchObject({
+      id: 'sub1',
+      events: ['thread.reply'],
+    });
+    expect(await client.integrations.subscriptions.list()).toEqual([
+      { id: 'sub1', event: 'message.created', events: ['message.created'] },
+    ]);
+  });
+
+  it('delegates capability (command) operations to relaycast', async () => {
+    const relaycast = createRelaycastMock();
+    const client = new RelaycastMessagingClient({ relaycast: relaycast as never });
+
+    const caps = await client.commands.list();
+    expect(caps[0].command).toBe('deploy');
+
+    await client.commands.register({ command: 'deploy', description: 'Ship it', handlerAgent: 'ops' });
+    expect(relaycast.actions.register).toHaveBeenCalledWith({
+      name: 'deploy',
+      description: 'Ship it',
+      handlerAgent: 'ops',
+    });
+  });
+
+  it('exposes workspace.info()', async () => {
+    const relaycast = createRelaycastMock();
+    const client = new RelaycastMessagingClient({ relaycast: relaycast as never });
+    const info = await client.workspace.info();
+    expect(info.name).toBe('Ops');
+  });
+
+  it('throws a clear error when the relaycast surface is missing', async () => {
+    const relaycast = createRelaycastMock();
+    delete (relaycast as { webhooks?: unknown }).webhooks;
+    const client = new RelaycastMessagingClient({ relaycast: relaycast as never });
+    await expect(client.integrations.webhooks.list()).rejects.toThrow(/webhooks API/);
+  });
+});

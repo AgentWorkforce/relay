@@ -2,7 +2,7 @@ use super::*;
 
 pub(crate) async fn send_error(
     tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
-    request_id: Option<String>,
+    request_id: Option<RequestId>,
     code: &str,
     message: String,
     retryable: bool,
@@ -63,7 +63,7 @@ pub(crate) async fn emit_http_api_event_with_timeout(
 pub(crate) async fn send_frame(
     tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
     msg_type: &str,
-    request_id: Option<String>,
+    request_id: Option<RequestId>,
     payload: Value,
 ) -> Result<()> {
     tx.send(ProtocolEnvelope {

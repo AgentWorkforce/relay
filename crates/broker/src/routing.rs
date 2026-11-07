@@ -1,58 +1,12 @@
 use std::collections::HashSet;
 
-use crate::types::{InboundKind, InboundRelayEvent};
-
 use crate::runtime::normalize_channel;
 
 #[derive(Clone)]
 pub(crate) struct RoutingWorker<'a> {
     pub(crate) name: &'a str,
-    pub(crate) channels: &'a [String],
+    pub(crate) channels: &'a [crate::ids::ChannelName],
     pub(crate) workspace_id: Option<&'a str>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DeliveryPlan {
-    pub(crate) workspace_id: String,
-    pub(crate) targets: Vec<String>,
-    pub(crate) display_target: String,
-    pub(crate) needs_dm_resolution: bool,
-}
-
-pub(crate) fn is_self_echo(
-    event: &InboundRelayEvent,
-    self_names: &HashSet<String>,
-    self_agent_ids: &HashSet<String>,
-    has_local_target: bool,
-) -> bool {
-    let from_self = self_names.contains(&event.from)
-        || event
-            .sender_agent_id
-            .as_ref()
-            .is_some_and(|id| self_agent_ids.contains(id));
-    if !from_self {
-        return false;
-    }
-
-    // Messages emitted under our own identity but targeting local workers/channels
-    // are dashboard-originated and should be delivered.
-    if has_local_target {
-        tracing::debug!(
-            target = "broker::routing",
-            from = %event.from,
-            target_field = %event.target,
-            "self-echo allowed — local target detected"
-        );
-        return false;
-    }
-
-    tracing::debug!(
-        target = "broker::routing",
-        from = %event.from,
-        event_id = %event.event_id,
-        "filtering self-echo"
-    );
-    true
 }
 
 /// Returns true if a worker is eligible to receive events from the given workspace.
@@ -62,83 +16,6 @@ fn worker_matches_workspace(worker: &RoutingWorker<'_>, event_workspace_id: Opti
     match (worker.workspace_id, event_workspace_id) {
         (Some(worker_ws), Some(event_ws)) => worker_ws == event_ws,
         _ => true,
-    }
-}
-
-pub(crate) fn resolve_delivery_targets(
-    event: &InboundRelayEvent,
-    workers: &[RoutingWorker<'_>],
-) -> DeliveryPlan {
-    let ws_id = Some(event.workspace_id.as_str());
-
-    if event.target.starts_with('#') {
-        let targets = worker_names_for_channel_delivery(workers, &event.target, &event.from, ws_id);
-        tracing::debug!(
-            target = "broker::routing",
-            from = %event.from,
-            channel = %event.target,
-            workspace_id = %event.workspace_id,
-            recipients = ?targets,
-            "resolved channel delivery"
-        );
-        return DeliveryPlan {
-            workspace_id: event.workspace_id.clone(),
-            targets,
-            display_target: event.target.clone(),
-            needs_dm_resolution: false,
-        };
-    }
-
-    // Thread replies without a channel target are broadcast to all workers
-    // (except the sender) that belong to the same workspace. The WS only
-    // delivers thread.reply to channel subscribers so every matching local
-    // worker is a valid recipient.
-    if matches!(event.kind, InboundKind::ThreadReply) && event.target == "thread" {
-        let targets: Vec<String> = workers
-            .iter()
-            .filter(|w| {
-                !w.name.eq_ignore_ascii_case(&event.from) && worker_matches_workspace(w, ws_id)
-            })
-            .map(|w| w.name.to_string())
-            .collect();
-        tracing::debug!(
-            target = "broker::routing",
-            from = %event.from,
-            workspace_id = %event.workspace_id,
-            recipients = ?targets,
-            "resolved thread reply broadcast"
-        );
-        return DeliveryPlan {
-            workspace_id: event.workspace_id.clone(),
-            targets,
-            display_target: "thread".to_string(),
-            needs_dm_resolution: false,
-        };
-    }
-
-    let direct_targets = worker_names_for_direct_target(workers, &event.target, &event.from, ws_id);
-    let needs_dm_resolution = direct_targets.is_empty()
-        && matches!(
-            event.kind,
-            InboundKind::DmReceived | InboundKind::GroupDmReceived
-        );
-
-    tracing::debug!(
-        target = "broker::routing",
-        from = %event.from,
-        to = %event.target,
-        kind = ?event.kind,
-        workspace_id = %event.workspace_id,
-        recipients = ?direct_targets,
-        needs_dm_resolution = needs_dm_resolution,
-        "resolved direct/DM delivery"
-    );
-
-    DeliveryPlan {
-        workspace_id: event.workspace_id.clone(),
-        targets: direct_targets,
-        display_target: event.target.clone(),
-        needs_dm_resolution,
     }
 }
 
@@ -199,70 +76,24 @@ pub(crate) fn worker_names_for_direct_target(
         .collect()
 }
 
-pub(crate) fn worker_names_for_dm_participants(
-    workers: &[RoutingWorker<'_>],
-    participants: &[String],
-    from: &str,
-    workspace_id: Option<&str>,
-) -> Vec<String> {
-    workers
-        .iter()
-        .filter_map(|worker| {
-            if worker.name.eq_ignore_ascii_case(from) {
-                return None;
-            }
-            if !worker_matches_workspace(worker, workspace_id) {
-                return None;
-            }
-            if participants
-                .iter()
-                .any(|participant| participant.eq_ignore_ascii_case(worker.name))
-            {
-                Some(worker.name.to_string())
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-pub(crate) fn display_target_for_dashboard(
-    target: &str,
-    self_names: &HashSet<String>,
-    primary_name: &str,
-) -> String {
-    if self_names
-        .iter()
-        .any(|name| target.eq_ignore_ascii_case(name))
-    {
-        primary_name.to_string()
-    } else {
-        target.to_string()
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
-    use crate::types::{InboundKind, InboundRelayEvent, RelayPriority, SenderKind};
-
-    use super::{
-        display_target_for_dashboard, is_self_echo, resolve_delivery_targets,
-        worker_names_for_dm_participants, RoutingWorker,
-    };
+    use super::{worker_names_for_channel_delivery, worker_names_for_direct_target, RoutingWorker};
 
     #[derive(Debug)]
     struct WorkerFixture {
         name: String,
-        channels: Vec<String>,
+        channels: Vec<crate::ids::ChannelName>,
     }
 
     impl WorkerFixture {
         fn new(name: &str, channels: &[&str]) -> Self {
             Self {
                 name: name.to_string(),
-                channels: channels.iter().map(|channel| channel.to_string()).collect(),
+                channels: channels
+                    .iter()
+                    .map(|channel| crate::ids::ChannelName::from(*channel))
+                    .collect(),
             }
         }
     }
@@ -278,163 +109,37 @@ mod tests {
             .collect()
     }
 
-    fn inbound_event(kind: InboundKind, from: &str, target: &str) -> InboundRelayEvent {
-        let priority = if matches!(kind, InboundKind::DmReceived | InboundKind::GroupDmReceived) {
-            RelayPriority::P2
-        } else {
-            RelayPriority::P3
-        };
-
-        InboundRelayEvent {
-            event_id: "evt_1".to_string(),
-            workspace_id: "ws_test".to_string(),
-            workspace_alias: Some("test".to_string()),
-            kind,
-            from: from.to_string(),
-            sender_agent_id: None,
-            sender_kind: SenderKind::Agent,
-            target: target.to_string(),
-            text: "hello".to_string(),
-            thread_id: None,
-            priority,
-        }
-    }
-
     #[test]
-    fn self_echo_detected_by_name() {
-        let mut self_names = HashSet::new();
-        self_names.insert("Broker".to_string());
-        let self_agent_ids = HashSet::new();
-        let event = inbound_event(InboundKind::MessageCreated, "Broker", "#general");
-
-        assert!(is_self_echo(&event, &self_names, &self_agent_ids, false));
-    }
-
-    #[test]
-    fn self_echo_detected_by_agent_id() {
-        let self_names = HashSet::new();
-        let mut self_agent_ids = HashSet::new();
-        self_agent_ids.insert("agt_self".to_string());
-        let mut event = inbound_event(InboundKind::MessageCreated, "Other", "#general");
-        event.sender_agent_id = Some("agt_self".to_string());
-
-        assert!(is_self_echo(&event, &self_names, &self_agent_ids, false));
-    }
-
-    #[test]
-    fn self_echo_not_filtered_when_target_is_local() {
-        let mut self_names = HashSet::new();
-        self_names.insert("Broker".to_string());
-        let self_agent_ids = HashSet::new();
-        let event = inbound_event(InboundKind::DmReceived, "Broker", "WorkerA");
-
-        assert!(!is_self_echo(&event, &self_names, &self_agent_ids, true));
-    }
-
-    #[test]
-    fn self_echo_not_filtered_when_channel_has_local_targets() {
-        let mut self_names = HashSet::new();
-        self_names.insert("Broker".to_string());
-        let self_agent_ids = HashSet::new();
-        let event = inbound_event(InboundKind::MessageCreated, "Broker", "#general");
-
-        assert!(!is_self_echo(&event, &self_names, &self_agent_ids, true));
-    }
-
-    #[test]
-    fn self_echo_filtered_when_target_is_not_local() {
-        let mut self_names = HashSet::new();
-        self_names.insert("Broker".to_string());
-        let self_agent_ids = HashSet::new();
-        let event = inbound_event(InboundKind::DmReceived, "Broker", "ExternalUser");
-
-        assert!(is_self_echo(&event, &self_names, &self_agent_ids, false));
-    }
-
-    #[test]
-    fn resolve_delivery_targets_for_channel_message() {
+    fn channel_delivery_excludes_sender_and_non_members() {
         let workers = vec![
             WorkerFixture::new("Alpha", &["general"]),
             WorkerFixture::new("Bravo", &["ops"]),
             WorkerFixture::new("Charlie", &["general", "ops"]),
         ];
         let routing_workers = routing_workers(&workers);
-        let event = inbound_event(InboundKind::MessageCreated, "Alpha", "#general");
 
-        let plan = resolve_delivery_targets(&event, &routing_workers);
+        let targets = worker_names_for_channel_delivery(
+            &routing_workers,
+            "#general",
+            "Alpha",
+            Some("ws_test"),
+        );
 
-        assert_eq!(plan.targets, vec!["Charlie".to_string()]);
-        assert_eq!(plan.display_target, "#general".to_string());
-        assert!(!plan.needs_dm_resolution);
+        assert_eq!(targets, vec!["Charlie".to_string()]);
     }
 
     #[test]
-    fn resolve_delivery_targets_for_direct_message_is_case_insensitive() {
+    fn direct_target_routing_is_case_insensitive() {
         let workers = vec![
             WorkerFixture::new("Lead", &["general"]),
             WorkerFixture::new("AgentOne", &["general"]),
         ];
         let routing_workers = routing_workers(&workers);
-        let event = inbound_event(InboundKind::MessageCreated, "Lead", "@agentone");
-
-        let plan = resolve_delivery_targets(&event, &routing_workers);
-
-        assert_eq!(plan.targets, vec!["AgentOne".to_string()]);
-        assert!(!plan.needs_dm_resolution);
-    }
-
-    #[test]
-    fn dm_plan_marks_resolution_needed_when_direct_target_missing() {
-        let workers = vec![
-            WorkerFixture::new("Lead", &["general"]),
-            WorkerFixture::new("AgentOne", &["general"]),
-        ];
-        let routing_workers = routing_workers(&workers);
-        let event = inbound_event(InboundKind::DmReceived, "Lead", "conv_123");
-
-        let plan = resolve_delivery_targets(&event, &routing_workers);
-
-        assert!(plan.targets.is_empty());
-        assert!(plan.needs_dm_resolution);
-    }
-
-    #[test]
-    fn dm_participant_routing_is_case_insensitive() {
-        let workers = vec![
-            WorkerFixture::new("Alpha", &["general"]),
-            WorkerFixture::new("Bravo", &["general"]),
-            WorkerFixture::new("Charlie", &["general"]),
-        ];
-        let routing_workers = routing_workers(&workers);
-        let participants = vec!["bravo".to_string(), "alpha".to_string()];
 
         let targets =
-            worker_names_for_dm_participants(&routing_workers, &participants, "ALPHA", None);
+            worker_names_for_direct_target(&routing_workers, "@agentone", "Lead", Some("ws_test"));
 
-        assert_eq!(targets, vec!["Bravo".to_string()]);
-    }
-
-    #[test]
-    fn display_target_maps_self_name_case_insensitively() {
-        let mut self_names = HashSet::new();
-        self_names.insert("DashProbe".to_string());
-        self_names.insert("broker-951762d5".to_string());
-
-        assert_eq!(
-            display_target_for_dashboard("dashprobe", &self_names, "my-project"),
-            "my-project"
-        );
-    }
-
-    #[test]
-    fn display_target_keeps_non_self_target() {
-        let mut self_names = HashSet::new();
-        self_names.insert("DashProbe".to_string());
-
-        assert_eq!(
-            display_target_for_dashboard("Lead", &self_names, "my-project"),
-            "Lead".to_string()
-        );
+        assert_eq!(targets, vec!["AgentOne".to_string()]);
     }
 
     #[test]
@@ -443,7 +148,7 @@ mod tests {
             WorkerFixture::new("Alpha", &["general"]),
             WorkerFixture::new("Bravo", &["general"]),
         ];
-        // Alpha belongs to ws_a, Bravo belongs to ws_b
+        // Alpha belongs to ws_a, Bravo belongs to ws_b.
         let routing_workers: Vec<RoutingWorker<'_>> = vec![
             RoutingWorker {
                 name: &workers[0].name,
@@ -457,16 +162,23 @@ mod tests {
             },
         ];
 
-        // Event from ws_a should only reach Alpha (but Alpha is the sender, so no targets)
-        let mut event = inbound_event(InboundKind::MessageCreated, "External", "#general");
-        event.workspace_id = "ws_a".to_string();
-        let plan = resolve_delivery_targets(&event, &routing_workers);
-        assert_eq!(plan.targets, vec!["Alpha".to_string()]);
+        // Event from ws_a should only reach Alpha.
+        let targets = worker_names_for_channel_delivery(
+            &routing_workers,
+            "#general",
+            "External",
+            Some("ws_a"),
+        );
+        assert_eq!(targets, vec!["Alpha".to_string()]);
 
-        // Event from ws_b should only reach Bravo
-        event.workspace_id = "ws_b".to_string();
-        let plan = resolve_delivery_targets(&event, &routing_workers);
-        assert_eq!(plan.targets, vec!["Bravo".to_string()]);
+        // Event from ws_b should only reach Bravo.
+        let targets = worker_names_for_channel_delivery(
+            &routing_workers,
+            "#general",
+            "External",
+            Some("ws_b"),
+        );
+        assert_eq!(targets, vec!["Bravo".to_string()]);
     }
 
     #[test]
@@ -475,7 +187,7 @@ mod tests {
             WorkerFixture::new("Alpha", &["general"]),
             WorkerFixture::new("Bravo", &["general"]),
         ];
-        // Alpha has no workspace (legacy), Bravo belongs to ws_b
+        // Alpha has no workspace (legacy), Bravo belongs to ws_b.
         let routing_workers: Vec<RoutingWorker<'_>> = vec![
             RoutingWorker {
                 name: &workers[0].name,
@@ -489,15 +201,22 @@ mod tests {
             },
         ];
 
-        // Event from ws_a: Alpha matches (no ws filter), Bravo doesn't (ws_b != ws_a)
-        let mut event = inbound_event(InboundKind::MessageCreated, "External", "#general");
-        event.workspace_id = "ws_a".to_string();
-        let plan = resolve_delivery_targets(&event, &routing_workers);
-        assert_eq!(plan.targets, vec!["Alpha".to_string()]);
+        // Event from ws_a: Alpha matches (no ws filter), Bravo doesn't (ws_b != ws_a).
+        let targets = worker_names_for_channel_delivery(
+            &routing_workers,
+            "#general",
+            "External",
+            Some("ws_a"),
+        );
+        assert_eq!(targets, vec!["Alpha".to_string()]);
 
-        // Event from ws_b: both match
-        event.workspace_id = "ws_b".to_string();
-        let plan = resolve_delivery_targets(&event, &routing_workers);
-        assert_eq!(plan.targets, vec!["Alpha".to_string(), "Bravo".to_string()]);
+        // Event from ws_b: both match.
+        let targets = worker_names_for_channel_delivery(
+            &routing_workers,
+            "#general",
+            "External",
+            Some("ws_b"),
+        );
+        assert_eq!(targets, vec!["Alpha".to_string(), "Bravo".to_string()]);
     }
 }

@@ -5,7 +5,48 @@ export type StoredAuth = {
   accessToken: string;
   refreshToken: string;
   accessTokenExpiresAt: string;
+  refreshTokenExpiresAt?: string;
   apiUrl: string;
+};
+
+export type CloudAuthErrorCode =
+  | 'AUTH_REFRESH_TIMEOUT'
+  | 'AUTH_REFRESH_EXPIRED'
+  | 'AUTH_BROWSER_REQUIRED'
+  | 'AUTH_DEVICE_FLOW_FAILED'
+  | 'AUTH_ENV_REPROVISION_REQUIRED';
+
+export class CloudAuthError extends Error {
+  constructor(
+    public readonly code: CloudAuthErrorCode,
+    message: string,
+    options?: { cause?: unknown }
+  ) {
+    super(message, options);
+    this.name = 'CloudAuthError';
+  }
+}
+
+export type CloudSession = {
+  auth: StoredAuth;
+  client: import('./api-client.js').CloudApiClient;
+};
+
+export type CloudSessionOptions = {
+  apiUrl?: string;
+  /** Cancellation/deadline shared with the operation acquiring this session. */
+  signal?: AbortSignal;
+  force?: boolean;
+  interactive?: boolean;
+  /**
+   * Force the RFC 8628 device flow instead of the browser flow. Left unset,
+   * the device flow is still chosen automatically on a headless host.
+   */
+  device?: boolean;
+  refreshTimeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
+  /** Optional URL policy applied before login credentials are persisted or used, including refresh. */
+  validateApiUrl?: (apiUrl: string) => void;
 };
 
 export type WhoAmIResponse = {
@@ -19,19 +60,25 @@ export type WhoAmIResponse = {
     name: string | null;
     avatarUrl: string | null;
   };
+  /**
+   * Null when the user has no active workspace — cloud's `/auth/whoami` returns
+   * `currentOrganization: null, currentWorkspace: null, workspaceRequired: true`
+   * in that case.
+   */
   currentOrganization: {
     id: string;
     slug: string;
     name: string;
     role: string;
     status: string;
-  };
+  } | null;
   currentWorkspace: {
     id: string;
     organization_id: string;
     slug: string;
     name: string;
-  };
+  } | null;
+  workspaceRequired?: boolean;
 };
 
 export type AuthSessionResponse = {
@@ -73,6 +120,29 @@ export type WorkspaceTokenIssueResponse = {
   workspaceToken?: WorkspaceTokenRecord;
 };
 
+export type ActiveWorkspaceUrls = {
+  relayfileUrl?: string;
+  relaycronUrl?: string;
+  relaycastUrl?: string;
+  relayauthUrl?: string;
+  [key: string]: string | undefined;
+};
+
+export type ActiveWorkspaceDescriptor = {
+  name?: string;
+  key: string;
+  cloudWorkspaceId: string;
+  relaycastWorkspaceId: string;
+  relaycastApiKey?: string;
+  relayfileWorkspaceId: string;
+  relayauthWorkspaceId: string;
+  organizationId?: string;
+  slug?: string;
+  urls: ActiveWorkspaceUrls;
+  apiUrl: string;
+  provisioned?: boolean;
+};
+
 export type ProactiveDeploymentResponse = {
   deploymentId?: string;
   agentId?: string;
@@ -108,7 +178,8 @@ export type WorkspaceSecretRecord = {
   [key: string]: unknown;
 };
 
-export type WorkflowFileType = 'yaml' | 'ts' | 'py';
+export type WorkflowFileType = 'yaml' | 'ts';
+export type RelayflowVersion = 'v1' | 'v2';
 
 export type PathSubmission = {
   name: string;
@@ -123,6 +194,7 @@ export type PathSubmission = {
 export type RunWorkflowOptions = {
   apiUrl?: string;
   fileType?: WorkflowFileType;
+  relayflowVersion?: RelayflowVersion;
   syncCode?: boolean;
   resume?: string;
   startFrom?: string;
@@ -178,6 +250,7 @@ export type WorkflowSchedule = {
 export type ScheduleWorkflowOptions = {
   apiUrl?: string;
   fileType?: WorkflowFileType;
+  relayflowVersion?: 'v1';
   name?: string;
   description?: string;
   cron?: string;
@@ -207,11 +280,13 @@ export type GetPatchesResponse = {
 
 export const SUPPORTED_PROVIDERS = ['anthropic', 'openai', 'google', 'cursor', 'opencode', 'droid'] as const;
 
-export const REFRESH_WINDOW_MS = 60_000;
-export const AUTH_FILE_PATH = path.join(os.homedir(), '.agent-relay', 'cloud-auth.json');
+export const REFRESH_WINDOW_MS = 5 * 60_000;
+export const REFRESH_TOKEN_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const DEFAULT_REFRESH_TIMEOUT_MS = 10_000;
+export const AUTH_FILE_PATH = path.join(os.homedir(), '.agentworkforce/relay', 'cloud-auth.json');
 
-export function defaultApiUrl(): string {
-  return process.env.CLOUD_API_URL?.trim() || 'https://agentrelay.com/cloud';
+export function defaultApiUrl(env: NodeJS.ProcessEnv = process.env): string {
+  return env.CLOUD_API_URL?.trim() || 'https://agentrelay.com/cloud';
 }
 
 export function isSupportedProvider(provider: string): boolean {

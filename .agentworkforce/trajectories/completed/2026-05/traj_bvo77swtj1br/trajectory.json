@@ -1,0 +1,53 @@
+{
+  "id": "traj_bvo77swtj1br",
+  "version": 1,
+  "task": {
+    "title": "Surface AgentRelay provider and headless spawns"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-27T11:24:25.352Z",
+  "completedAt": "2026-05-27T11:24:34.780Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-27T11:24:30.208Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_fscokieqprhr",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-27T11:24:30.208Z",
+      "endedAt": "2026-05-27T11:24:34.780Z",
+      "events": [
+        {
+          "ts": 1779881070209,
+          "type": "decision",
+          "content": "Expose typed AgentRelay spawnProvider and spawnHeadless methods: Expose typed AgentRelay spawnProvider and spawnHeadless methods",
+          "raw": {
+            "question": "Expose typed AgentRelay spawnProvider and spawnHeadless methods",
+            "chosen": "Expose typed AgentRelay spawnProvider and spawnHeadless methods",
+            "alternatives": [],
+            "reasoning": "Issue 998 needs provider-backed and headless app-server agents to use the high-level facade lifecycle hooks, result contracts, channel handles, and harness resolution instead of dropping to AgentRelayClient."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added high-level AgentRelay.spawnProvider and AgentRelay.spawnHeadless facade methods, widened SpawnHeadlessInput for harness-backed provider metadata, documented the API, updated the changelog, and verified with SDK typecheck, build, formatting, and focused Vitest coverage.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "f904124865b9575c1def48d20e333298cc03a1f7",
+    "endRef": "f904124865b9575c1def48d20e333298cc03a1f7"
+  }
+}

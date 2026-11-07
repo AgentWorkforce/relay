@@ -1,37 +1,18 @@
-export * from './protocol.js';
-export * from './types.js';
+export * from './agent-relay.js';
+export * from './facade.js';
+export * from './listeners.js';
+export * from './capabilities.js';
+export * from './messaging/index.js';
+export * from './delivery/index.js';
+export * from './actions/index.js';
+export * from './session/index.js';
+export { RelayError, type RelayErrorCode } from '@relaycast/sdk';
 export {
-  BrokerTransport,
-  type BrokerTransportOptions,
-  AgentRelayProtocolError,
-  PtyInputStream,
-  type PtyInputStreamOptions,
-  type PtyInputWriteResult,
-} from './transport.js';
-export {
-  AgentRelayClient,
-  type AgentRelayBrokerInitArgs,
-  type AgentRelayClientOptions,
-  type AgentRelaySpawnOptions,
-  type SetInboundDeliveryModeResult,
-  type SessionInfo,
-  type WorkerStreamSubscriptionOptions,
-} from './client.js';
-export * from './models.js';
-export { RelayCast, RelayError, AgentClient } from '@relaycast/sdk';
-export type { RelayCastOptions, ClientOptions } from '@relaycast/sdk';
-export * from './pty.js';
-export * from './relay.js';
-export * from './logs.js';
-export * from './consensus.js';
-export * from './shadow.js';
-export * from './relay-adapter.js';
-export * from './workflows/index.js';
-export * from './spawn-from-env.js';
-export * from './cli-registry.js';
-export * from './cli-resolver.js';
-export * from './personas.js';
-export * as github from './github.js';
-export { createGitHubStep, GitHubClient } from './github.js';
-export * as slack from './slack.js';
-export { createSlackStep, SlackClient } from './slack.js';
+  INVALID_AGENT_TOKEN_CODE,
+  INVALID_AGENT_TOKEN_MESSAGE,
+  RELAY_SERVICE_FAILURE_MESSAGE,
+  agentTokenRecoveryMessage,
+  isInvalidAgentTokenError,
+  isInvalidAgentTokenToolResult,
+  safeRelayErrorMessage,
+} from './relaycast-errors.js';

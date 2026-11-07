@@ -4,17 +4,8 @@
     "rootDir": ".",
     "outDir": "dist",
     "tsBuildInfoFile": "dist/.tsbuildinfo",
-    "lib": [
-      "ES2022",
-      "DOM"
-    ],
-    "types": [
-      "node",
-      "vitest/globals"
-    ]
+    "lib": ["ES2022", "DOM"],
+    "types": ["node", "vitest/globals"]
   },
-  "include": [
-    "src/**/*.ts",
-    "tests/**/*.ts"
-  ]
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
 }

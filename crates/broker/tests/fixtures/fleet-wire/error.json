@@ -1,0 +1,8 @@
+{
+  "v": 1,
+  "type": "error",
+  "id": "req_node_register_001",
+  "ok": false,
+  "code": "node_name_conflict",
+  "message": "Node name \"builder-1\" is already enrolled"
+}

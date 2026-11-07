@@ -1,11 +1,7 @@
 ---
-name: creating-agent-skills-skill
+name: creating-agent-skills
 description: Use when creating Agent Skills packages (SKILL.md format) for Codex CLI, GitHub Copilot, or Amp - provides the agentskills.io specification with frontmatter constraints, directory structure, and validation rules
 ---
-
-# Creating Agent Skills
-
-Use when creating Agent Skills packages (SKILL.md format) for Codex CLI, GitHub Copilot, or Amp - provides the agentskills.io specification with frontmatter constraints, directory structure, and validation rules
 
 ### Overview
 
@@ -15,11 +11,11 @@ Agent Skills is an open standard for portable AI agent capabilities. One SKILL.m
 
 ### Installation Directories
 
-| Tool | Location |
-|------|----------|
-| **Codex CLI** | `.agents/skills/{skill-name}/SKILL.md` |
+| Tool               | Location                               |
+| ------------------ | -------------------------------------- |
+| **Codex CLI**      | `.agents/skills/{skill-name}/SKILL.md` |
 | **GitHub Copilot** | `.github/skills/{skill-name}/SKILL.md` |
-| **Amp** | `.agents/skills/{skill-name}/SKILL.md` |
+| **Amp**            | `.agents/skills/{skill-name}/SKILL.md` |
 
 ### Directory Structure
 
@@ -32,7 +28,6 @@ my-skill/                 # Must match frontmatter `name`
 ├── references/           # Optional - additional docs
 └── assets/               # Optional - static resources
 ```
-
 
 ### Frontmatter Specification
 
@@ -60,7 +55,6 @@ metadata:
 ---
 ```
 
-
 ### Name Validation
 
 #### ```
@@ -69,7 +63,6 @@ metadata:
 ✅ Valid: pdf-processing, code-review, data-analysis
 ❌ Invalid: PDF-Processing (uppercase), -pdf (leading hyphen), pdf--processing (consecutive hyphens)
 ```
-
 
 ### Description Best Practices
 
@@ -86,7 +79,6 @@ description: Extracts text from PDFs
 description: Extracts and processes PDF content. Use for document analysis, text extraction, and form data parsing.
 ```
 
-
 ### Body Content
 
 #### Markdown instructions after frontmatter. No format restrictions, but recommended sections:
@@ -98,20 +90,23 @@ description: Reviews code for best practices and security issues. Use when analy
 ---
 
 ## Overview
+
 Brief description of capabilities.
 
 ## Process
+
 1. Step-by-step workflow
 2. With clear actions
 
 ## Guidelines
+
 - Bullet points for rules
 - Best practices
 
 ## Examples
+
 Code samples showing usage.
 ```
-
 
 ### Progressive Disclosure
 
@@ -134,22 +129,15 @@ import sys
 # Self-contained with clear dependencies
 ```
 
-
 ### Complete Example
 
 #### Type Guard
 
 ```typescript
 function isUser(obj: unknown): obj is User {
-  return (
-    typeof obj === 'object' &&
-    obj !== null &&
-    'id' in obj &&
-    'name' in obj
-  );
+  return typeof obj === 'object' && obj !== null && 'id' in obj && 'name' in obj;
 }
 ```
-
 
 ### Validation
 
@@ -158,7 +146,6 @@ function isUser(obj: unknown): obj is User {
 ```bash
 skills-ref validate ./my-skill
 ```
-
 
 ### Quick Checklist
 

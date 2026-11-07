@@ -1,0 +1,52 @@
+{
+  "version": "1.0.0",
+  "id": "c815961d-7a7e-423b-ac93-8cae54b5c30a",
+  "timestamp": "2026-07-15T19:35:57.855Z",
+  "trajectory": "traj_ujwc2d7s9gqq",
+  "files": [
+    {
+      "path": "packages/cli/src/cost/pricing.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cost/tracker.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cost/tracker.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": []
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cost/types.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": []
+        }
+      ]
+    }
+  ]
+}

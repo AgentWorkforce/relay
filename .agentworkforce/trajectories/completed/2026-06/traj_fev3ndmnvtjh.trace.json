@@ -1,0 +1,96 @@
+{
+  "version": "1.0.0",
+  "id": "94bde1e6-eeae-489f-b4e5-9153818714ea",
+  "timestamp": "2026-06-16T12:05:03.489Z",
+  "trajectory": "traj_fev3ndmnvtjh",
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 19,
+              "end_line": 25,
+              "revision": "f6f7f8edd130d8a152c296c159cccaf456bc14da"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "packages/cli/src/cli/agent-relay-mcp.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1787,
+              "end_line": 1818,
+              "revision": "f6f7f8edd130d8a152c296c159cccaf456bc14da"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/integration/broker/evals/runner.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 88,
+              "end_line": 94,
+              "revision": "f6f7f8edd130d8a152c296c159cccaf456bc14da"
+            },
+            {
+              "start_line": 118,
+              "end_line": 124,
+              "revision": "f6f7f8edd130d8a152c296c159cccaf456bc14da"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/integration/broker/evals/scenarios/s09-cross-cli-spawn.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 20,
+              "end_line": 38,
+              "revision": "f6f7f8edd130d8a152c296c159cccaf456bc14da"
+            },
+            {
+              "start_line": 101,
+              "end_line": 107,
+              "revision": "f6f7f8edd130d8a152c296c159cccaf456bc14da"
+            },
+            {
+              "start_line": 170,
+              "end_line": 178,
+              "revision": "f6f7f8edd130d8a152c296c159cccaf456bc14da"
+            },
+            {
+              "start_line": 248,
+              "end_line": 256,
+              "revision": "f6f7f8edd130d8a152c296c159cccaf456bc14da"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,110 @@
+{
+  "id": "traj_q5vrj7jekfpm",
+  "version": 1,
+  "task": {
+    "title": "Node providers: broker demotion, fleet retarget, per-language node up (relay step 3)"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-09T11:57:18.399Z",
+  "completedAt": "2026-07-10T00:47:56.961Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-09T13:56:44.346Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_xkwjyn44a9kx",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-09T13:56:44.346Z",
+      "endedAt": "2026-07-10T00:47:56.961Z",
+      "events": [
+        {
+          "ts": 1783605404347,
+          "type": "decision",
+          "content": "Broker self-advertises spawn:<harness>/release capacity; implicit case serves no TS provider: Broker self-advertises spawn:<harness>/release capacity; implicit case serves no TS provider",
+          "raw": {
+            "question": "Broker self-advertises spawn:<harness>/release capacity; implicit case serves no TS provider",
+            "chosen": "Broker self-advertises spawn:<harness>/release capacity; implicit case serves no TS provider",
+            "alternatives": [],
+            "reasoning": "Engine placement matches exact capability names and capacityProviderName needs the broker to own the harness; §3.3 no-silent-bypass means an implicit spawn shadow would fail-fast when its TS provider is offline"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1783605404902,
+          "type": "decision",
+          "content": "Expose broker node_id/node_name via /api/session so the CLI attaches TS/Py providers to the same node: Expose broker node_id/node_name via /api/session so the CLI attaches TS/Py providers to the same node",
+          "raw": {
+            "question": "Expose broker node_id/node_name via /api/session so the CLI attaches TS/Py providers to the same node",
+            "chosen": "Expose broker node_id/node_name via /api/session so the CLI attaches TS/Py providers to the same node",
+            "alternatives": [],
+            "reasoning": "Engine rejects node.register on node_id mismatch; the broker is the authoritative resolver (pinned to machine seed)"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1783605405445,
+          "type": "decision",
+          "content": "Task D (Python NodeProvider.from_enrollment) blocked: relaycast-sdk PyPI 0.3.0 predates the NodeProvider (#243); reporting per instruction, not vendoring: Task D (Python NodeProvider.from_enrollment) blocked: relaycast-sdk PyPI 0.3.0 predates the NodeProvider (#243); reporting per instruction, not vendoring",
+          "raw": {
+            "question": "Task D (Python NodeProvider.from_enrollment) blocked: relaycast-sdk PyPI 0.3.0 predates the NodeProvider (#243); reporting per instruction, not vendoring",
+            "chosen": "Task D (Python NodeProvider.from_enrollment) blocked: relaycast-sdk PyPI 0.3.0 predates the NodeProvider (#243); reporting per instruction, not vendoring",
+            "alternatives": [],
+            "reasoning": ""
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Node providers step 3 (relay): broker demoted to the 'broker' capacity provider on /v1/node/ws; @agent-relay/fleet retargeted to @relaycast/sdk's node-provider client; node up serves agent-relay.{ts,py} providers; sidecar /api/fleet/ws protocol removed; Python NodeProvider.from_enrollment added. Live-verified end-to-end against a local relaycast engine. PR #1239.",
+    "approach": "Standard approach",
+    "confidence": 0.85
+  },
+  "commits": ["948ad813"],
+  "filesChanged": [
+    "CHANGELOG.md",
+    "crates/broker/src/fleet_wire.rs",
+    "crates/broker/src/listen_api.rs",
+    "crates/broker/src/node_control.rs",
+    "crates/broker/src/protocol.rs",
+    "crates/broker/src/runtime/api.rs",
+    "crates/broker/src/runtime/event_loop.rs",
+    "crates/broker/src/runtime/fleet.rs",
+    "crates/broker/src/runtime/init.rs",
+    "crates/broker/src/runtime/maintenance.rs",
+    "crates/broker/src/runtime/mod.rs",
+    "package-lock.json",
+    "packages/cli/package.json",
+    "packages/cli/src/cli/commands/fleet.ts",
+    "packages/cli/src/cli/lib/broker-lifecycle.test.ts",
+    "packages/cli/src/cli/lib/broker-lifecycle.ts",
+    "packages/cli/src/cli/lib/fleet-sidecar.test.ts",
+    "packages/cli/src/cli/lib/fleet-sidecar.ts",
+    "packages/cli/src/cli/lib/node-definition-loader.ts",
+    "packages/fleet/package.json",
+    "packages/fleet/src/index.test.ts",
+    "packages/fleet/src/index.ts",
+    "packages/fleet/src/serve-node.test.ts",
+    "packages/fleet/src/serve-node.ts",
+    "packages/harness-driver/src/client.ts",
+    "packages/harness-driver/src/protocol.test.ts",
+    "packages/harness-driver/src/protocol.ts",
+    "packages/sdk-py/pyproject.toml",
+    "packages/sdk-py/src/agent_relay/node.py",
+    "packages/sdk-py/tests/test_node.py",
+    "packages/sdk/package.json"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "58ec87cc2699877fe5bf3b8c54a38be13504e0be",
+    "endRef": "948ad813ec28e57a601d500dc98c726d92d92a46",
+    "traceId": "782c56ae-5958-45cf-ae09-9128d833af71"
+  }
+}

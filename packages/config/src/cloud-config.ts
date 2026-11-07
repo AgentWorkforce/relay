@@ -6,12 +6,8 @@ export interface CloudConfig {
   // Server
   port: number;
   publicUrl: string;
-  appUrl: string; // Dashboard app URL (e.g., app.agentrelay.com)
+  appUrl: string; // Hosted web app URL (e.g., app.agentrelay.com)
   sessionSecret: string;
-
-  // Local dashboard URL for channel API proxying (optional)
-  // When set, channel requests are proxied to this URL instead of the workspace
-  localDashboardUrl?: string;
 
   // Database
   databaseUrl: string;
@@ -104,9 +100,6 @@ export function loadConfig(): CloudConfig {
     publicUrl: process.env.PUBLIC_URL || 'http://localhost:4567',
     appUrl: process.env.APP_URL || process.env.PUBLIC_URL || 'http://localhost:4567',
     sessionSecret: requireEnv('SESSION_SECRET'),
-
-    // Local dashboard for channel API (auto-detected if not set)
-    localDashboardUrl: optionalEnv('LOCAL_DASHBOARD_URL'),
 
     databaseUrl: requireEnv('DATABASE_URL'),
     redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',

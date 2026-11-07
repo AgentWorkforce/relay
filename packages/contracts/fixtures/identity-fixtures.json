@@ -32,12 +32,7 @@
         "pattern": "broker-*"
       }
     ],
-    "invalid": [
-      "Broker",
-      "human:orchestrator",
-      "Lead",
-      "broker_951762d5"
-    ]
+    "invalid": ["Broker", "human:orchestrator", "Lead", "broker_951762d5"]
   },
   "wave0_identity_normalization": {
     "cases": [

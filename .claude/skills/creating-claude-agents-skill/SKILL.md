@@ -10,6 +10,7 @@ Use this skill when creating or improving Claude Code agents. Provides comprehen
 ## When to Use This Skill
 
 Activate this skill when:
+
 - User asks to create a new Claude Code agent
 - User wants to improve an existing agent
 - User needs help with agent frontmatter or structure
@@ -50,6 +51,7 @@ You are [persona definition - describe the agent's role and expertise].
 ### File Location
 
 **Required Path:**
+
 ```
 .claude/agents/*.md
 ```
@@ -60,27 +62,29 @@ Agents must be placed in `.claude/agents/` directory as markdown files.
 
 ### Required Fields
 
-| Field | Type | Description | Example |
-|-------|------|-------------|---------|
-| `name` | string | Agent identifier (lowercase, hyphens only) | `code-reviewer` |
+| Field         | Type   | Description                                   | Example                                                |
+| ------------- | ------ | --------------------------------------------- | ------------------------------------------------------ |
+| `name`        | string | Agent identifier (lowercase, hyphens only)    | `code-reviewer`                                        |
 | `description` | string | Brief overview of functionality and use cases | `Reviews code for best practices and potential issues` |
 
 ### Optional Fields
 
-| Field | Type | Description | Values |
-|-------|------|-------------|--------|
-| `allowed-tools` | string | Comma-separated list of available tools | `Read, Write, Bash, WebSearch` |
-| `model` | string | Claude model to use | `sonnet`, `opus`, `haiku`, `inherit` |
-| `agentType` | string | Explicit marker for format preservation | `agent` |
+| Field           | Type   | Description                             | Values                               |
+| --------------- | ------ | --------------------------------------- | ------------------------------------ |
+| `allowed-tools` | string | Comma-separated list of available tools | `Read, Write, Bash, WebSearch`       |
+| `model`         | string | Claude model to use                     | `sonnet`, `opus`, `haiku`, `inherit` |
+| `agentType`     | string | Explicit marker for format preservation | `agent`                              |
 
 ### Validation Rules
 
 **Name Field:**
+
 - Pattern: `^[a-z0-9-]+$` (lowercase letters, numbers, hyphens only)
 - Max length: 64 characters
 - Example: ✅ `code-reviewer` ❌ `Code_Reviewer`
 
 **Description Field:**
+
 - Max length: 1024 characters
 - Should clearly explain when to use the agent
 - Start with action words: "Reviews...", "Analyzes...", "Helps with..."
@@ -89,6 +93,7 @@ Agents must be placed in `.claude/agents/` directory as markdown files.
 Valid tools: `Read`, `Write`, `Edit`, `Grep`, `Glob`, `Bash`, `WebSearch`, `WebFetch`, `Task`, `Skill`, `SlashCommand`, `TodoWrite`, `AskUserQuestion`
 
 **Model Values:**
+
 - `sonnet` - Balanced, good for most agents (default)
 - `opus` - Complex reasoning, architectural decisions
 - `haiku` - Fast, simple tasks
@@ -105,6 +110,7 @@ The first line of content must be an H1 heading that serves as the agent's displ
 ```
 
 **Best Practices:**
+
 - Include an emoji icon for visual distinction
 - Use title case
 - Keep concise (2-5 words)
@@ -119,6 +125,7 @@ You are an expert code reviewer with deep knowledge of software engineering prin
 ```
 
 **Guidelines:**
+
 - Start with "You are..."
 - Define role and expertise clearly
 - Set expectations for the agent's capabilities
@@ -173,14 +180,14 @@ Agents must conform to the JSON schema at:
 
 ### Common Validation Errors
 
-| Error | Cause | Fix |
-|-------|-------|-----|
-| Missing required field 'name' | Frontmatter lacks name field | Add `name: agent-name` |
-| Missing required field 'description' | Frontmatter lacks description | Add `description: ...` |
-| Invalid name pattern | Name contains uppercase or special chars | Use lowercase and hyphens only |
-| Name too long | Name exceeds 64 characters | Shorten the name |
-| Invalid model value | Model not in enum | Use: `sonnet`, `opus`, `haiku`, or `inherit` |
-| Missing H1 heading | Content doesn't start with # | Add `# Agent Name` as first line |
+| Error                                | Cause                                    | Fix                                          |
+| ------------------------------------ | ---------------------------------------- | -------------------------------------------- |
+| Missing required field 'name'        | Frontmatter lacks name field             | Add `name: agent-name`                       |
+| Missing required field 'description' | Frontmatter lacks description            | Add `description: ...`                       |
+| Invalid name pattern                 | Name contains uppercase or special chars | Use lowercase and hyphens only               |
+| Name too long                        | Name exceeds 64 characters               | Shorten the name                             |
+| Invalid model value                  | Model not in enum                        | Use: `sonnet`, `opus`, `haiku`, or `inherit` |
+| Missing H1 heading                   | Content doesn't start with #             | Add `# Agent Name` as first line             |
 
 ## Tool Configuration
 
@@ -221,6 +228,7 @@ allowed-tools: Bash(git *), Read
 ```
 
 **Syntax:**
+
 - `Bash(git *)` - Only git commands
 - `Bash(npm test:*)` - Only npm test scripts
 - `Bash(git status:*)`, `Bash(git diff:*)` - Multiple specific commands
@@ -230,6 +238,7 @@ allowed-tools: Bash(git *), Read
 ### Sonnet (Most Agents)
 
 **Use for:**
+
 - Code review
 - Debugging
 - Data analysis
@@ -242,6 +251,7 @@ model: sonnet
 ### Opus (Complex Reasoning)
 
 **Use for:**
+
 - Architecture decisions
 - Complex refactoring
 - Deep security analysis
@@ -254,6 +264,7 @@ model: opus
 ### Haiku (Speed Matters)
 
 **Use for:**
+
 - Syntax checks
 - Simple formatting
 - Quick validations
@@ -266,6 +277,7 @@ model: haiku
 ### Inherit (Context-Dependent)
 
 **Use for:**
+
 - Agent should match user's model choice
 - Cost sensitivity
 
@@ -275,16 +287,16 @@ model: inherit
 
 ## Common Mistakes
 
-| Mistake | Problem | Solution |
-|---------|---------|----------|
-| Using `_` in name | Violates pattern constraint | Use hyphens: `code-reviewer` not `code_reviewer` |
-| Uppercase in name | Violates pattern constraint | Lowercase only: `debugger` not `Debugger` |
-| Missing persona | Agent lacks role definition | Add "You are..." after H1 |
-| No H1 heading | Content format invalid | Start content with `# Agent Name` |
-| Vague description | Agent won't activate correctly | Be specific about when to use |
-| Too many tools | Security risk, violates least privilege | Grant only necessary tools |
-| No agentType field | May lose type info in conversion | Add `agentType: agent` |
-| Generic agent name | Conflicts or unclear purpose | Use specific, descriptive names |
+| Mistake            | Problem                                 | Solution                                         |
+| ------------------ | --------------------------------------- | ------------------------------------------------ |
+| Using `_` in name  | Violates pattern constraint             | Use hyphens: `code-reviewer` not `code_reviewer` |
+| Uppercase in name  | Violates pattern constraint             | Lowercase only: `debugger` not `Debugger`        |
+| Missing persona    | Agent lacks role definition             | Add "You are..." after H1                        |
+| No H1 heading      | Content format invalid                  | Start content with `# Agent Name`                |
+| Vague description  | Agent won't activate correctly          | Be specific about when to use                    |
+| Too many tools     | Security risk, violates least privilege | Grant only necessary tools                       |
+| No agentType field | May lose type info in conversion        | Add `agentType: agent`                           |
+| Generic agent name | Conflicts or unclear purpose            | Use specific, descriptive names                  |
 
 ## Best Practices
 
@@ -293,13 +305,15 @@ model: inherit
 The description determines when Claude automatically invokes your agent.
 
 ✅ **Good:**
+
 ```yaml
 description: Reviews code changes for quality, security, and maintainability issues
 ```
 
 ❌ **Poor:**
+
 ```yaml
-description: A helpful agent  # Too vague
+description: A helpful agent # Too vague
 ```
 
 ### 2. Define Strong Personas
@@ -346,19 +360,19 @@ When reviewing error handling:
 ❌ **Bad - Silent failure:**
 \`\`\`typescript
 try {
-  await fetchData();
+await fetchData();
 } catch (error) {
-  console.log(error);
+console.log(error);
 }
 \`\`\`
 
 ✅ **Good - Proper error handling:**
 \`\`\`typescript
 try {
-  await fetchData();
+await fetchData();
 } catch (error) {
-  logger.error('Failed to fetch data', error);
-  throw new AppError('Data fetch failed', { cause: error });
+logger.error('Failed to fetch data', error);
+throw new AppError('Data fetch failed', { cause: error });
 }
 \`\`\`
 ```
@@ -380,10 +394,12 @@ Choose emojis that represent the agent's purpose:
 Each agent should excel at ONE specific task:
 
 ✅ **Good:**
+
 - `code-reviewer` - Reviews code for quality and security
 - `debugger` - Root cause analysis and minimal fixes
 
 ❌ **Poor:**
+
 - `code-helper` - Reviews, debugs, tests, refactors, documents (too broad)
 
 ### 7. Grant Minimal Tool Access
@@ -433,6 +449,7 @@ You are a code reviewer focused on catching common mistakes quickly.
 ## Instructions
 
 Review code for:
+
 - Syntax errors
 - Common anti-patterns
 - Missing error handling
@@ -487,15 +504,19 @@ You are a security expert specializing in application security, with expertise i
 **Security Score: X/10**
 
 ### Critical Issues (Fix Immediately)
+
 - [Vulnerability] (file:line) - [Explanation] - [CVE if applicable] - [Fix]
 
 ### High Priority
+
 - [Issue] (file:line) - [Explanation] - [Fix]
 
 ### Medium Priority
+
 - [Concern] (file:line) - [Explanation] - [Recommendation]
 
 ### Best Practices
+
 - [Positive security pattern observed]
 
 **Recommendation:** [Approve/Request Changes/Block]
@@ -506,13 +527,13 @@ You are a security expert specializing in application security, with expertise i
 
 ❌ **Vulnerable:**
 \`\`\`typescript
-const query = \`SELECT * FROM users WHERE id = \${userId}\`;
+const query = \`SELECT \* FROM users WHERE id = \${userId}\`;
 db.query(query);
 \`\`\`
 
 ✅ **Safe:**
 \`\`\`typescript
-const query = 'SELECT * FROM users WHERE id = $1';
+const query = 'SELECT \* FROM users WHERE id = $1';
 db.query(query, [userId]);
 \`\`\`
 ```
@@ -539,11 +560,13 @@ Before finalizing an agent:
 ## Schema Reference
 
 **Official Schema URL:**
+
 ```
 https://github.com/pr-pm/prpm/blob/main/packages/converters/schemas/claude-agent.schema.json
 ```
 
 **Local Schema Path:**
+
 ```
 /Users/khaliqgant/Projects/prpm/app/packages/converters/schemas/claude-agent.schema.json
 ```
@@ -558,6 +581,7 @@ https://github.com/pr-pm/prpm/blob/main/packages/converters/schemas/claude-agent
 ## Agents vs Skills vs Commands
 
 ### Use Agents When:
+
 - ✅ Long-running assistants with persistent context
 - ✅ Complex multi-step workflows
 - ✅ Specialized expertise needed
@@ -565,12 +589,14 @@ https://github.com/pr-pm/prpm/blob/main/packages/converters/schemas/claude-agent
 - ✅ Repeatable processes with quality standards
 
 ### Use Skills When:
+
 - ✅ Context-aware automatic activation
 - ✅ Reference documentation and patterns
 - ✅ Team standardization
 - ✅ No persistent state needed
 
 ### Use Slash Commands When:
+
 - ✅ Simple, focused prompts
 - ✅ Quick manual invocation
 - ✅ Personal productivity shortcuts
@@ -595,6 +621,7 @@ Need specialized AI assistant?
 **Problem:** Agent doesn't get invoked when expected
 
 **Solutions:**
+
 1. Make description more specific to match use case
 2. Verify file is in `.claude/agents/*.md`
 3. Check for frontmatter syntax errors
@@ -605,6 +632,7 @@ Need specialized AI assistant?
 **Problem:** Agent file doesn't validate against schema
 
 **Solutions:**
+
 1. Check name pattern (lowercase, hyphens only)
 2. Verify required fields (name, description)
 3. Ensure content starts with H1 heading
@@ -616,6 +644,7 @@ Need specialized AI assistant?
 **Problem:** Agent can't access needed tools
 
 **Solutions:**
+
 1. Add tools to `allowed-tools` in frontmatter
 2. Use correct capitalization (e.g., `Read`, not `read`)
 3. For Bash restrictions, use pattern syntax: `Bash(git *)`
@@ -626,6 +655,7 @@ Need specialized AI assistant?
 **Problem:** Agent produces inconsistent or low-quality results
 
 **Solutions:**
+
 1. Strengthen persona definition
 2. Add more specific process steps
 3. Include examples of good/bad patterns

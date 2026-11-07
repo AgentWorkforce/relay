@@ -179,6 +179,49 @@ describe('wrapWithLaunchCheckpoint', () => {
   });
 });
 
+describe('runInteractiveSession — OAuth callback tunnel', () => {
+  it('forwards callbacks to the sandbox IPv4 loopback, not the hostname `localhost`', async () => {
+    // Regression: codex binds its OAuth callback server on 127.0.0.1 only, but
+    // the Daytona sandbox resolves `localhost` to ::1 first. Forwarding to the
+    // hostname dialed ::1:1455 inside the sandbox where nothing listened, so
+    // every callback was refused and login hung. The forward destination must
+    // be the explicit IPv4 address so it always lands on codex.
+    const { fakeSSH2, getClient } = createFakeSSH2({
+      onWrite: (stream) => {
+        queueMicrotask(() => stream.emit('close'));
+      },
+    });
+
+    // Capture the per-connection handler the tunnel registers with createServer
+    // so we can simulate a browser callback hitting the local listener.
+    let connectionHandler: ((socket: unknown) => void) | undefined;
+    const opts = createOptions(fakeSSH2, []);
+    opts.runtime.createServer = ((handler: (socket: unknown) => void) => {
+      connectionHandler = handler;
+      return {
+        listen: (_port: number, _host: string, cb: () => void) => cb(),
+        close: vi.fn(),
+        on: vi.fn(),
+        // biome-ignore lint/suspicious/noExplicitAny: test runtime shim
+      } as any;
+      // biome-ignore lint/suspicious/noExplicitAny: test runtime shim
+    }) as any;
+
+    await withMockedStdio(async () => runInteractiveSession(opts));
+
+    expect(connectionHandler).toBeDefined();
+    // Simulate a browser callback arriving on the local tunnel listener.
+    const localSocket = { pipe: vi.fn(() => ({ pipe: vi.fn() })), end: vi.fn() };
+    connectionHandler!(localSocket);
+
+    const forwardOut = getClient().forwardOut;
+    expect(forwardOut).toHaveBeenCalled();
+    const [, , destHost, destPort] = forwardOut.mock.calls[0];
+    expect(destHost).toBe('127.0.0.1');
+    expect(destPort).toBe(1455);
+  });
+});
+
 describe('runInteractiveSession — handler-order and pattern gating', () => {
   it("attaches stream.on('data') before the first stream.write", async () => {
     const listenerCountsAtWrite: number[] = [];

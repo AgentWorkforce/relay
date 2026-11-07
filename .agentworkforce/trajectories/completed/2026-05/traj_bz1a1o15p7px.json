@@ -1,0 +1,53 @@
+{
+  "id": "traj_bz1a1o15p7px",
+  "version": 1,
+  "task": {
+    "title": "Fix PR 949 CI failure"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-22T16:56:55.021Z",
+  "completedAt": "2026-05-22T16:57:55.372Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-22T16:57:25.756Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_5zx4v4wnm7xr",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-22T16:57:25.756Z",
+      "endedAt": "2026-05-22T16:57:55.372Z",
+      "events": [
+        {
+          "ts": 1779469045757,
+          "type": "decision",
+          "content": "Remove stale CI and publish workflow references: Remove stale CI and publish workflow references",
+          "raw": {
+            "question": "Remove stale CI and publish workflow references",
+            "chosen": "Remove stale CI and publish workflow references",
+            "alternatives": [],
+            "reasoning": "PR 949 deleted @agent-relay/user-directory, but package-validation still smoke-imported it and publish.yml still listed it in package matrices; keeping those references would make CI and release automation fail after the package removal."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed PR 949 CI by removing stale @agent-relay/user-directory references from package-validation import smoke tests and publish matrices. Verified no remaining package references outside trajectory notes, workflow formatting, diff whitespace, and the CI key-import smoke test.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/private/tmp/relay-remove-user-directory",
+  "tags": [],
+  "_trace": {
+    "startRef": "de2169fc3786c5740249c71112da95831e720ddd",
+    "endRef": "de2169fc3786c5740249c71112da95831e720ddd"
+  }
+}

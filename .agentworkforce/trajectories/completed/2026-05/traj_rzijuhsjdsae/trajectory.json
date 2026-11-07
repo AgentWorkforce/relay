@@ -1,0 +1,25 @@
+{
+  "id": "traj_rzijuhsjdsae",
+  "version": 1,
+  "task": {
+    "title": "Clarify README harness contract example"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-28T15:26:08.275Z",
+  "completedAt": "2026-05-28T15:27:44.942Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Changed README harness section from implementation examples to interface-first target contract and removed leftover runtime-specific implementation details.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "d6ede0a8cb89bf8a63c7c5852d09c14ce9c909dd",
+    "endRef": "d6ede0a8cb89bf8a63c7c5852d09c14ce9c909dd"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "id": "traj_fot7xzqzwd5a",
+  "version": 1,
+  "task": {
+    "title": "Use Zod schemas in README actions"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-27T20:16:26.878Z",
+  "completedAt": "2026-05-27T20:17:37.842Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Updated root and SDK README action examples to use Zod input/output schemas and added zod to install snippets.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "614e3dba9c0a40edeba1751243cea4bbbf15bdcc",
+    "endRef": "614e3dba9c0a40edeba1751243cea4bbbf15bdcc"
+  }
+}

@@ -116,14 +116,11 @@ function getDataDir(): string {
   const platform = process.platform;
 
   if (platform === 'darwin') {
-    return join(homedir(), 'Library', 'Application Support', 'agent-relay');
+    return join(homedir(), 'Library', 'Application Support', 'agentworkforce', 'relay');
   } else if (platform === 'win32') {
-    return join(process.env.APPDATA || homedir(), 'agent-relay');
+    return join(process.env.APPDATA || homedir(), 'agentworkforce', 'relay');
   } else {
-    return join(
-      process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'),
-      'agent-relay'
-    );
+    return join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'agentworkforce', 'relay');
   }
 }
 
@@ -200,7 +197,7 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
     };
   }
 
-  // 4. Project-local socket (created by broker in project's .agent-relay directory)
+  // 4. Project-local socket (created by broker in project's .agentworkforce/relay directory)
   // This is the primary path for local development
   // First try cwd, then scan up to find project root
   const projectRoot = findProjectRoot(process.cwd());
@@ -210,11 +207,11 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
   }
 
   for (const dir of searchDirs) {
-    const projectLocalSocket = join(dir, '.agent-relay', 'relay.sock');
+    const projectLocalSocket = join(dir, '.agentworkforce/relay', 'relay.sock');
     if (existsSync(projectLocalSocket)) {
       // Read project ID from marker file if available
       let projectId = 'local';
-      const markerPath = join(dir, '.agent-relay', '.project');
+      const markerPath = join(dir, '.agentworkforce/relay', '.project');
       if (existsSync(markerPath)) {
         try {
           const marker = JSON.parse(readFileSync(markerPath, 'utf-8'));
@@ -282,10 +279,10 @@ export function discoverSocket(options: CloudConnectionOptions = {}): DiscoveryR
     }
   }
 
-  // 6. Check active broker marker file (~/.agent-relay/active-broker.json)
-  // This allows discovery when cwd doesn't contain .agent-relay/
+  // 6. Check active broker marker file (~/.agentworkforce/relay/active-broker.json)
+  // This allows discovery when cwd doesn't contain .agentworkforce/relay/
   try {
-    const markerCandidates = [join(homedir(), '.agent-relay', 'active-broker.json')];
+    const markerCandidates = [join(homedir(), '.agentworkforce/relay', 'active-broker.json')];
     for (const markerPath of markerCandidates) {
       if (!existsSync(markerPath)) {
         continue;
@@ -358,10 +355,7 @@ export async function getWorkspaceStatus(
   workspace: CloudWorkspace
 ): Promise<{ status: string; agents?: string[] } | null> {
   try {
-    const response = await cloudApiRequest(
-      workspace,
-      `/api/workspaces/${workspace.workspaceId}/status`
-    );
+    const response = await cloudApiRequest(workspace, `/api/workspaces/${workspace.workspaceId}/status`);
 
     if (!response.ok) {
       return null;
@@ -387,9 +381,7 @@ export async function getWorkspaceStatus(
  * @param options - Optional configuration overrides
  * @returns Connection info or null if broker not found
  */
-export function getConnectionInfo(
-  options: CloudConnectionOptions = {}
-): CloudConnectionInfo | null {
+export function getConnectionInfo(options: CloudConnectionOptions = {}): CloudConnectionInfo | null {
   const discovery = discoverSocket(options);
 
   if (!discovery) {
@@ -435,7 +427,7 @@ export function getCloudEnvironmentSummary(): Record<string, string | undefined>
  *
  * Priority order:
  * 1. RELAY_AGENT_NAME environment variable (explicit)
- * 2. Identity file in .agent-relay directory (written by wrapper)
+ * 2. Identity file in .agentworkforce/relay directory (written by wrapper)
  * 3. Scan outbox directories to find agent's outbox
  *
  * @param _discovery - Optional discovery result (reserved for future use)
@@ -448,7 +440,7 @@ export function discoverAgentName(_discovery?: DiscoveryResult | null): string |
     return envName;
   }
 
-  // 2. Identity file in .agent-relay directory
+  // 2. Identity file in .agentworkforce/relay directory
   // The wrapper creates this file with the agent name
   const projectRoot = findProjectRoot(process.cwd());
   const searchDirs = [process.cwd()];
@@ -457,7 +449,7 @@ export function discoverAgentName(_discovery?: DiscoveryResult | null): string |
   }
 
   for (const dir of searchDirs) {
-    const relayDir = join(dir, '.agent-relay');
+    const relayDir = join(dir, '.agentworkforce/relay');
     if (!existsSync(relayDir)) continue;
 
     // First check for per-process identity files
@@ -532,7 +524,7 @@ export function discoverAgentName(_discovery?: DiscoveryResult | null): string |
   // 3. Check outbox directories for a match
   // If only one agent's outbox exists, assume we're that agent
   for (const dir of searchDirs) {
-    const outboxDir = join(dir, '.agent-relay', 'outbox');
+    const outboxDir = join(dir, '.agentworkforce/relay', 'outbox');
     if (existsSync(outboxDir)) {
       try {
         const agents = readdirSync(outboxDir, { withFileTypes: true })

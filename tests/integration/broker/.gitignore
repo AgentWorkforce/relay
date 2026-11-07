@@ -1,0 +1,9 @@
+# Eval agent working files — agents that run scenarios create these locally
+.agentworkforce/
+.claude/
+.cursor/
+.gemini/
+*.sh
+*.csv
+*.py
+src/

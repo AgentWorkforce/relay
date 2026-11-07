@@ -20,4 +20,4 @@ Completion:
 - Send DONE before exiting.
 - Include evidence when relevant: files changed, commands run, tests executed, or decisions made.
 """
-mcp_servers = ["relaycast"]
+mcp_servers = ["agent-relay"]

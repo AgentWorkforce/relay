@@ -5,676 +5,2427 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Breaking Changes
-
-- Broker/SDK wire protocol is now version 2 for delivery terminal events and lifecycle event shape changes.
-- `relay.spawn({ task })` now returns `success: false` and terminates the agent when task delivery fails after retries.
-- `agent-relay send` now uses the orchestrator identity by default so `agent-relay replies <worker>` can correlate worker DMs.
-- The `relay_broker` Rust crate now exposes only `protocol`, `snippets`, and `run_cli`; broker implementation modules are crate-private.
-
-### Migration Guidance
-
-- Pass `--from` to `agent-relay send` when a script requires a specific sender identity.
-- Handle `success: false` from `relay.spawn()` calls that pass `task`; spawns without a task are unchanged.
-- Set `POSTHOG_PROJECT_KEY` in GitHub Actions repository variables before publishing telemetry-enabled artifacts.
-
-### Added
-
-- `agent-relay cloud connect claude` now reminds users to install `spawn-cloud-swarm` from the AgentWorkforce skills repo before repo-attached cloud swarms are used.
-- `agent-relay activity` tails broker-wide message, delivery, lifecycle, and worker output events in a human-readable stream with filters and JSON Lines output.
-- `agent-relay view <name>` streams a running agent's PTY without taking control or stopping the agent.
-- `agent-relay drive <name>` attaches interactively and queues inbound relay messages until the user flushes them.
-- `agent-relay passthrough <name>` attaches interactively while inbound relay messages continue to auto-inject.
-- `agent-relay new NAME CLI [args...]` starts broker-owned agents, with `--attach`, `--ephemeral`, and `-n` / `--name` spawn-and-attach forms.
-- `agent-relay rm <name>` releases broker-owned agents.
-- Broker `/api/spawned/{name}/delivery-mode`, `/pending`, and `/flush` routes manage per-agent inbound queues.
-- Broker `/api/input/{name}/stream` and SDK `openInputStream()` provide ordered websocket PTY input without one HTTP request per keystroke.
-- TypeScript SDK clients can read snapshots, stream worker output, set delivery mode, inspect pending queues, and flush queued messages.
-- `agent-relay replies <agent>` reads worker DM replies with JSON, unread, mark-read, sender identity, and cursor options.
-- `agent-relay history` and `agent-relay replies` accept message-id `--since` cursors for incremental reads.
-- `agent-relay who --json` returns structured status, PID, uptime, and memory fields for scripts.
-- `agent-relay agents:logs --plain` and `--json` return sanitized agent logs for scripts.
-- `packages/personas` includes a `nextjs-web-steward` persona and workforce v3 persona schema.
-- Preview cleanup tooling removes stale preview environments before CloudFront quota failures.
-- Docs navigation shows icons for the CLI reference and Broker HTTP / WS API pages.
-- `@agent-relay/cloud` exposes provider auth helpers for Daytona-backed `agent-relay cloud connect` flows.
-- `@agent-relay/sdk/workflows` exposes `runScriptWorkflow()` for running workflow scripts in-process.
-- CLI local auth supports SSH-based authentication.
-- Agent spawning supports multiple repositories in one operation.
-- Agents can switch provider or model at runtime.
-- Prerelease publishing supports staging releases.
-- Broker `--api-bind` configures the HTTP/WS bind address.
-- PTY workers accept `write_pty` messages and report bytes written or worker errors.
-- Broker events include delivery confirmation/failure and agent lifecycle health signals for subscribed orchestrators.
-
-### Changed
-
-- Broker inbound delivery now uses one per-agent queue so `auto_inject` and `manual_flush` handle ordering consistently.
-- Inbound delivery APIs use `/delivery-mode` with `auto_inject` and `manual_flush` names before their first release.
-- CLI attach commands share SDK-backed broker snapshots, delivery mode changes, streams, and flushes.
-- PTY terminal query replies use the live VT grid, so cursor-position responses reflect the actual screen.
-- PTY writes from user input and terminal query replies now pass through one FIFO writer.
-- Broker snapshot requests return consistent worker timeout and error-envelope responses.
-- Rust and TypeScript telemetry disable PostHog reporting when no `AGENT_RELAY_POSTHOG_KEY` is configured.
-- `agent-relay inbox` shows unread DM content and `direction` metadata, with terminal controls stripped from text summaries.
-- `agent-relay who` reports last activity, context budget, and working/idle/blocked-on-send state.
-- `agent-relay doctor` reports broker Relaycast auth state and stuck outbound delivery queues.
-- Relaycast MCP auto-registers workspace-key sessions as an orchestrator so read tools work without a manual register step.
+## [Unreleased - Patch]
 
 ### Fixed
 
-- Broker worker teardown now emits `message_delivery_failed` for dropped pending deliveries so SDK delivery waiters terminate.
-- SDK `sendAndWaitForDelivery` waits for `message_delivery_confirmed` or `message_delivery_failed` instead of treating `delivery_ack` as final.
-- Relaycast MCP startup ignores unresolved `${RELAY_*}` environment placeholders before auto-registering.
-- PTY context budget detection uses the latest percentage in output and can re-emit after the budget rises.
-- `agent-relay agents:logs` now cooks PTY redraws into line-oriented output by default and keeps raw terminal bytes behind `--raw`.
-- `agent-relay agents:logs --raw` preserves non-UTF-8 bytes, and follow mode keeps split escape/codepoint sequences intact.
-- `agent-relay up --no-dashboard` and `agent-relay down --force` now recover half-started brokers that stayed alive without readable connection metadata.
-- `agent-relay who` and `agent-relay agents` now fail clearly when broker queries fail instead of printing an empty agent list.
-- `agent-relay history` and `agent-relay replies` now resolve the project broker session even when `AGENT_RELAY_STATE_DIR` points elsewhere.
-- `agent-relay doctor` now fails with an actionable diagnostic for half-started, stale-connection, and unresolved-API-key-template brokers instead of reporting "healthy".
-- CLI readiness checks use the live VT grid and cursor position to avoid false ready states in alternate screens and menus.
-- `agent-relay history --from <agent>` returns the newest messages after chronological sorting.
-- `agent-relay replies --unread` prints nothing when there are no unread messages.
-- Messaging `--limit` values clamp invalid negative inputs.
-- Task delivery failures return an error, retry automatically, and clean up agents that never received their task.
-- Agent initialization no longer fails because of stale cache state.
-- Tests treat `better-sqlite3` as optional, improving CI reliability.
-- `agent-relay doctor` validates partial driver availability correctly.
-- SDK `sendInput` routes through the PTY worker protocol so input reaches the agent PTY.
-- DM delivery retries now end in a surfaced `message_delivery_failed` event instead of silently retrying forever.
-- The PTY watchdog marks agents with pending delivery work as blocked-on-send instead of idle.
-- PTY `worker_stream` events preserve multi-byte UTF-8 characters split across read chunks instead of emitting `U+FFFD` replacement glyphs.
+- `agent-relay-node` built for its own site (`AGENT_RELAY_SITE_URL`) no longer falls back to Agent Relay's public gateways: a sign-in whose site named no valid Relaycast URL, or a CLI workspace key with no recorded server or `RELAY_BASE_URL`, is refused with a reason naming the site, and `RELAYCAST_URL` is ignored in such a build.
+
+### Changed
+
+- `agent-relay cloud connect claude` now reminds users to install `spawn-cloud-swarm` from the AgentWorkforce skills repo before repo-attached cloud swarms are used.
+
+## [17.2.1] - 2026-11-07
+
+### Fixed
+
+- `agents.integrations.subscribe` and session socket subscriptions exclude leftover provider events after the last subscription is removed.
+- `agent-relay file` accepts private JSON integration metadata files on Unix.
+- `agent-relay flows` reports GitLab setup requirements and resumes human-approved repository runs with their original access.
+- `agent-relay` commands such as `cloud`, `fleet`, `agent`, `core`, `doctor`, `skills` and `update` print failures that are not `Error` objects as readable messages.
+- `agent-relay` command error output masks credentials, including tokens echoed in server error messages.
+
+## [17.2.0] - 2026-11-06
+
+### Fixed
+
+- Copilot hooks forward calls from the managed `agentrelay` MCP server to Desktop for chat identity verification, while retaining legacy server-name compatibility.
+
+## [17.1.0] - 2026-11-06
+
+### Added
+
+- `agents.integrations.subscribe` and session socket subscriptions accept an `event_types` filter for exact provider events, such as Jira `comment_created`; the core refuses servers that cannot enforce it.
+- `agent-relay-node` can deliver messages to registered VS Code Copilot chats on macOS and resume the same chat while it waits.
+- Copilot messages with uncertain delivery stay pending confirmation and are never blindly submitted again.
+
+### Changed
+
+- Codex SessionStart hooks skip the Relay preamble and early auto-activation for multi-chat app-server/IDE sessions and CLI roots holding live subagent locks.
+
+### Fixed
+
+- `agent-relay-node` refreshes the running shared daemon's already-approved Codex hooks at startup or when enabling hook delivery.
+- `relay init`'s Codex hooks keep a subagent from receiving its parent chat's pending messages or registration guidance.
+
+## [17.0.0] - 2026-11-05
+
+### Fixed
+
+- `agent-relay-node` keeps messages to registered Claude Code app chats, Anthropic Agent SDK sessions, `claude --print` and structured JSON runs on their ordinary inbox route when mobile continuation is enabled.
+- Updated Claude mobile plugins and cores explain recognized stopped-session and host-limit refusals; older counterparts retain generic failure notices. Refused and uncertain input is never replayed.
+- A rejected first Claude mobile submission no longer leaves provisional mobile control active.
+
+### Changed
+
+- The core is now `agent-relay-node`: `relay init` installs the version matching its CLI from the same `v<version>` release, and `AGENT_RELAY_NODE_PATH` points at a binary of your own.
+- The core's commands have no `relay` word (`agent-relay-node serve`, `agent-relay-node call status.get`). The hooks, Codex rules and Claude permission rules it installs use that form, and setup replaces the earlier `… relay …` entries.
+- The core is the messaging runtime: session discovery, delivery, spawning, harness setup and the bridge. Session history, uploads, Agent Relay Cloud sign-in and the Cloud provider methods are the desktop app's.
+
+### Removed
+
+- The account, uploader, tools, telemetry, chat, contractor, Cloud provider and `sessions.transcript` bridge methods: a core outside the desktop app answers them `method_not_found`.
+
+### Fixed
+
+- `agent-relay` installs beside `@agent-relay/sdk` and `@agent-relay/harness-driver` 17 without a dependency conflict.
+- `agent-relay cloud worker` no longer fails to start flows against a self-hosted Relay with `failed to initialize relaycast session`: flows no longer run on an old bundled broker.
+
+### Breaking Changes
+
+- `agent-relay-probe` is now `agent-relay-node`, without the `relay` subcommand: `agent-relay-probe relay call status.get` is `agent-relay-node call status.get`. `AGENT_RELAY_PROBE_PATH` is no longer read.
+- `@agent-relay/harness-driver` exports `RELAY_NODE_BINARY_NAME`, `RELAY_NODE_PATH_ENV` and `getCanonicalRelayNodePath` in place of the `PROBE` names.
+
+### Migration Guidance
+
+- Replace `AGENT_RELAY_PROBE_PATH` with `AGENT_RELAY_NODE_PATH`, and `agent-relay-probe relay <command>` with `agent-relay-node <command>` in scripts and launch entries.
+- Run `relay init` to install `agent-relay-node`. It leaves the old `agent-relay-probe` in the install directory's `bin`, and `relay init --uninstall` no longer removes a `~/.local/bin/agent-relay-probe` copy; delete them by hand when no desktop app uses them.
+
+## [16.0.0] - 2026-11-04
+
+### Added
+
+- `agent-relay cloud worker` can run Codex and Grok jobs with the workspace's subscription logins when the control plane provides them; the login files exist only while the run does.
+- `agent-relay cloud worker` saves refreshed Codex and Grok login tokens for later runs.
+- `agent-relay cloud worker` runs flows with `@relayflows/cli` 1.1.8, where a subscription login wins over an API key for its own CLI. Claude gets `CLAUDE_CODE_OAUTH_TOKEN` without `ANTHROPIC_API_KEY`, and Codex and Grok with a login file no longer see `OPENAI_API_KEY` or `XAI_API_KEY`.
+
+### Changed
+
+- `agent-relay-probe`: a successful spawn's launch result carries `worker_cwd`, the working folder the agent runs in: the one the caller named, or the machine default the spawn node applied when none was named, so a caller that left it out sees where its agent works.
+- The core (`agent-relay-probe`) talks to one Agent Relay site, fixed when it is built: `AGENT_RELAY_SITE_URL` at build time (`https://agentrelay.com` when unset; an https origin, or `http://localhost[:port]` / `http://127.0.0.1[:port]`), and a build for a site the core could not trust fails to build. Nothing changes the site at run time, in any build.
+- The core opens links of one scheme, fixed at build time from `AGENT_RELAY_URL_SCHEME` (`agentrelay` when unset; a web scheme such as `https` fails the build); the `agentrelay-dev://` rule for non-production sites is gone, and on Windows the link handler registers the build's scheme.
+- The site a build is made for is trusted beside `https://agentrelay.com` and loopback: it needs no `RELAYHISTORY_ALLOW_UNTRUSTED_CLOUD_BASE_URL`, which stays a development switch for any other origin.
+- `links.parse` opens links of the build's scheme only, and refuses a connect link for another site naming that site.
+- `agent-relay-probe cloud install`, `cloud rotate-key`, `status`, `stop` and the other install commands default `--site-url` to the build's site, as does `sharing status --account --workspace`; the Cloud API default, Relay Connect invite links and the Connect host sign-in are the build's site's.
+
+### Removed
+
+- `relay serve --site-url`: the core takes no site at start.
+- The `site_url` field of `account.sign_in` and of `links.parse` in the bridge contract (and the generated Swift contract).
+
+### Fixed
+
+- `agent-relay` installs beside `@agent-relay/sdk` and `@agent-relay/harness-driver` 16.0.0 without a dependency conflict.
+- `agent-relay-probe`: beside a site other than production, a 404 from the desktop-identities route means the site has none: the sync is reported once, at Info, and no longer every minute as a failure that counts against the sign-in.
+- The desktop spawn node asks Agent Relay for the same node id on every attempt of a first enrollment and keeps the alternate name it took, so a name another node holds is not asked for again; a node enrolled whose answer was lost, or an id another node has, is left behind for a fresh one under the same name.
+- A node token Agent Relay refuses three times in a row stops the spawn node with a status saying so, instead of retrying forever; turning Accept spawns from Agent Relay off and on, or signing in again, enrolls a new node.
+- `agent-relay-probe`: beside a self-hosted site the uploader accepts the https RelayHistory origin that site's control plane names (production still accepts only `history.agentrelay.com`), so a Desktop built for that site uploads sessions to it.
+- `agent-relay-probe`: a message link may name its site (`agentrelay://message?to=…&site=…`), as the dashboard's do; it opens when that is the build's site and says which site it is for otherwise.
+- `agent-relay-probe`: every build accepts an `ar_ws_…` workspace key from Cloud's workspace resolve, not only the `relay-cli` build, so a Desktop signs in to a self-hosted Relaycast on durable actors.
+
+### Breaking Changes
+
+- A core built for another site than `https://agentrelay.com` must be built with `AGENT_RELAY_SITE_URL`. `relay serve --site-url` is refused; a `site_url` in an `account.sign_in` or `links.parse` request is ignored, as any unknown field is, and the build's site applies.
+
+### Migration Guidance
+
+- Set `AGENT_RELAY_SITE_URL` (and `AGENT_RELAY_URL_SCHEME`, for a build registering its own links) in the environment of `cargo build`; a changed value rebuilds the crate. Leave both unset for production.
+- Drop `--site-url` from `relay serve` command lines and launch entries, and `site_url` from `account.sign_in` and `links.parse` requests: the build's site applies.
+
+## [15.1.1] - 2026-11-03
+
+### Fixed
+
+- GitLab event listeners work in both npm and standalone Relay 15.1 installs.
+- `f.gitlab` helpers read and write projects in nested GitLab groups.
+
+## [15.1.0] - 2026-11-03
+
+### Added
+
+- `relay init` sets up Cursor, so messages reach agents in the Cursor editor and Cursor CLI and wake an idle agent.
+- `relay init --uninstall` removes the Cursor setup it added.
+- `relay serve` now runs the same core as the desktop app: Oh My Pi sessions join the relay, and Relay Connect and mobile handoff work from the CLI.
+
+### Changed
+
+- On macOS and Linux, `relay init` starts the Agent Relay desktop app's own core when the app is installed and no core is running on the default socket, and starts the public core only if that one does not come up, with a warning saying how to switch to the desktop app's core.
+- The core has no account sign-in of its own: methods that need an account answer `method_not_found`, and spawn approvals are off, unless the core is built with an account. `agent-relay cloud login` keeps device sign-in for Relay Connect hosts.
+
+### Removed
+
+- `@agent-relay/policy` and `@agent-relay/brand` are no longer published; existing versions stay installable on npm.
+
+### Fixed
+
+- `cloud integration connect` identifies unsupported providers and points to catalog lookup on the same Cloud endpoint.
+- `relay serve` delivers messages to agents more reliably and finds their sessions more consistently.
+- Codex agents that `relay serve` spawns now run the installed Codex app-server build whenever there is one, instead of the `codex` command on `PATH`.
+- Follow-up messages to Codex agents that `relay serve` spawns reach them through that same Codex build.
+- A Claude Code session renamed on the relay is told its current name and address when it starts, not the name it first registered under.
+- Choosing to upload a session again no longer re-uploads its unchanged history after `relay serve` restarts.
+- Cursor CLI messaging hooks that setup installed before Cursor's first chat now show as installed and can be turned on or off.
+- Turning uploads Off for a session you connected yourself keeps it off after `relay serve` restarts.
+- A session whose upload was deleted from Cloud no longer rejoins the relay by itself.
+- Devin agents started on macOS with `relay fleet spawn devin` or an agent's spawn request now get every message; one that arrived a moment after its connection opened could be lost.
+
+## [15.0.2] - 2026-11-01
+
+### Fixed
+
+- T3 Code chats running Claude now join Relay by themselves on macOS and Linux (the `.deb` install and the AppImage). The core took them for automation, so they never appeared in `relay agent list`.
+
+## [15.0.1] - 2026-10-31
+
+### Fixed
+
+- With the desktop app on the machine, `relay init --hosted` and `relay workspace create` use `https://cast.agentrelay.com`, the only server its core serves, and `relay init --key` refuses an armadillo key instead of saving a workspace agents could not join.
+- `relay init` run through `npx` prints follow-up commands that also use `npx`, so they work without a global `relay` install.
+
+## [15.0.0] - 2026-10-31
+
+### Added
+
+- The broker now lives in `~/.agentworkforce/relay/bin` (or `$AGENT_RELAY_INSTALL_DIR/bin`, else `$AGENT_RELAY_HOME/bin`), however the CLI is installed; `install.sh` also puts the standalone CLI there. An npm-installed CLI stays in npm's global bin directory and copies only its broker there on first run. The copy is atomic and checksum-verified, and it never replaces a newer broker from `install.sh` or the desktop app. Set `AGENT_RELAY_SKIP_BROKER_INSTALL=1` to opt out.
+- `install.sh` installs the local Relaycast server (`relaycast-engine`) into the same directory when the pinned release publishes it for your platform. If it is not published, the step is skipped. Set `AGENT_RELAY_SKIP_RELAYCAST_ENGINE=1` to skip it.
+- `relay init` lets two agents communicate without an account: it starts a private Relaycast server on this machine and creates a workspace. `relay init --hosted` creates a hosted workspace and prints the one command other machines run to join, and `relay init --url <url> --key <key>` connects to your own server on any HTTPS port. See `docs/quickstart.md`.
+- `relay agent register` saves each agent's token, and `--as <name>` uses it on any messaging command, so agents no longer need `RELAY_AGENT_TOKEN` exported in every shell.
+- `relay init` is now a guided setup in a terminal: it asks where agents talk (this machine, hosted, or your own server), which agent tools to connect (Claude Code, Codex, OpenCode, Grok CLI, Pi and Devin, with the installed ones pre-checked), and whether to configure this project or every project, then adds the Relay MCP server to each tool through its own `mcp add` command or config file. `--tools`, `--scope` and `--yes` run it without prompts (the default when stdin is not a terminal), and `relay init --uninstall` removes only the entries it added.
+- `relay init` installs the `messaging-agents-on-the-relay` agent skill globally for every tool it injects into (Claude Code, Codex, OpenCode, Pi, Grok, Devin), so a new session can list who is on Agent Relay and message them with no setup. It is pinned to a commit of AgentWorkforce/skills and installed with `npx skills` without prompting. A copy already there is left alone, and a failed install only prints a warning. `relay init --uninstall` removes only the copies init installed, unless they were changed since.
+
+### Changed
+
+- `relay init --hosted` and `relay workspace create` now create workspaces on `https://armadillo.agentrelay.com`. Existing hosted workspaces stay on `cast.agentrelay.com`.
+- Armadillo workspace keys (`ar_ws_…`) and agent tokens (`ar_ag_…`) are accepted, masked in output, and sent only to armadillo.
+- Armadillo workspaces need the matching Agent Relay core and broker: older ones refuse the saved server file instead of guessing a server.
+- `relay init` now delivers messages by injecting them into running agent sessions instead of having agents poll an MCP inbox. It installs the Agent Relay core (`agent-relay-probe`, SHA-256-verified from a `probe-v<version>` GitHub release) into the install directory's `bin`, runs it in the background or attaches to the one the desktop app already runs, and turns on its delivery for each chosen tool: Claude Code's session inbox and SessionStart hook, Codex hooks, the OpenCode plugin, the Pi extension (installed only when Pi is chosen), Devin hooks and Grok's leader socket. These are per-user settings for every project. Re-running removes an MCP entry an earlier `relay init` added, so each session has one identity. `--delivery mcp` uses the MCP server instead and turns off the injection `relay init` had turned on for those tools; the MCP server is also the fallback for a tool the core cannot deliver to, so no tool is on both routes.
+- `relay init` replaces an older core it started earlier, and the line `relay init --hosted` prints for teammates no longer needs `--url` for an armadillo workspace key.
+- `relay init --hosted` and `relay init --key` after a solo `relay init` now switch this machine from the `local` workspace to the team one: the core serves it right away and running sessions move onto its roster. Any other saved workspace stays active, and a core run by the desktop app or a service is left alone; `relay init` warns with the command to run.
+- `relay init --stop` also stops the core `relay init` started (never the desktop app's), and `relay init --uninstall` turns off exactly the injection settings it turned on.
+- `install.sh` and `relay init` use Relaycast engine 11.1.0, which ships as a standalone binary: `install.sh` now installs `relaycast-engine` into `~/.agentworkforce/relay/bin`, so the local server no longer needs Node.js or a native addon.
+- The CLI and `@agent-relay/harness-driver` now resolve the broker in this order: `BROKER_BINARY_PATH` / `AGENT_RELAY_BIN`, then `~/.agentworkforce/relay/bin`, then the npm platform package, then `PATH`. A broker in the install directory now wins over one found on `PATH`.
+- `install.sh` honours `AGENT_RELAY_HOME` as the install root when `AGENT_RELAY_INSTALL_DIR` is not set. A relocated install exports its root from the `agent-relay` launcher.
+- `relay mcp` without `RELAY_AGENT_NAME` now registers each session as `<tool>-<project folder>` (for example `claude-myproject`, from the MCP client's name), adding a short suffix when another live session holds that name and taking the name back after a restart, instead of registering every session as `orchestrator`.
+- The probe daemon now picks its workspace the way the CLI does: a workspace-key environment variable, then the project's pinned key (`AGENT_RELAY_PROJECT`), then the active workspace in `workspaces.json`, each sent only to the server `relaycast-origins.json` binds it to. Your Cloud sign-in is used only when the CLI selects none, so local and self-hosted `relay init` workspaces work without signing in. If the CLI's workspace files are malformed, the probe reports why and uses no workspace instead of falling back to the Cloud one.
+
+### Removed
+
+- Python workflows, the `agent-relay.py` node provider, and the `agent-relay-sdk` package. Local workflows are YAML, TypeScript, JavaScript, or shell. Cloud and worker workflows are YAML or TypeScript. Node definitions are TypeScript or JavaScript. SDKs are TypeScript and Swift.
+
+### Fixed
+
+- Grok CLI sessions now join Relay after `relay init`. The core refused every open Grok session with "A signed-in owner is required for managed sessions." because release builds never attach a Cloud install; a Grok session now belongs to the signed-in account, or to this computer's OS user when nobody is signed in.
+- Broker: `spawn:<harness>` capabilities now declare `metadata.configured.node_kind: "broker"`, so Cloud keeps placing spawns on unclaimed CLI brokers instead of refusing them until `agent-relay node claim`. An already-declared kind (e.g. `desktop`) is preserved.
+- `relay init` downloads the standalone Relaycast server (`relaycast-engine`) for your platform into the install directory's `bin` when it is missing, verifying its SHA-256, so the local server now starts from an npm install on any Node.js version and with npm install scripts disabled. It falls back to the `@relaycast/engine` npm package only if the download fails.
+- After `relay init` sets up Pi or OpenCode, new Pi and OpenCode sessions now join Relay on their own and receive injected messages, like Codex and Claude Code. New core settings `pi_auto_activate` and `opencode_auto_activate` (off by default; `relay init` turns on the one for each tool you choose and `--uninstall` turns it off again) gate this, so turning on `auto_activate` alone still leaves Pi and OpenCode sessions joining only when added.
+- Codex 0.16x workers no longer dead-letter their initial task with `initial_injection_incomplete` when the composer scrolls long input. The broker now checks that the end of each typed chunk is visible and ignores Codex's `↑`/`↓` scroll markers.
+- `relay agent rotate <name>`, and `agent register` for a name that already exists, now issue a new token through the audited owner takeover instead of failing with "already exists", so a lost token can always be replaced.
+- `@agent-relay/sdk` docs for `workspace.register()` now say registration is create-only: an existing name fails with `name_conflict` (with or without `{ strict: true }`) and keeps its token. Resume an agent with `workspace.reconnect({ apiToken })`, and get a new token with `relay agent rotate <name>`.
+- `install.sh`'s source-build fallback no longer deletes the install root (and with it saved workspaces and Relaycast credentials); the checkout now lives in its `source/` subdirectory.
+- `agent-relay update` now updates the install that ran it: standalone installs through the release's verified `install.sh` (no npm needed, CLI and broker replaced together), npm installs with `npm install -g`. It verifies the new version and exits non-zero on failure instead of claiming success. It tracks the `latest` release.
+- `install.sh` no longer reports an unwritable `TMPDIR` as a failed verification or falls back to npm when it cannot create a temp file.
+- `install.sh` now also installs the short `relay` command next to `agent-relay` (same CLI), so `relay init` works right after a curl install. An existing `relay` from another tool is left alone with a warning, and `agent-relay uninstall` removes `relay` only when the installer wrote it.
+- `relay init` no longer switches the machine-wide active workspace away from one already in use: it saves the new workspace for the current project, keeps the existing active one, and prints `relay workspace switch <name>` to make it the default.
+- `relay init` asks nothing by default, in a terminal too: this machine (or `--hosted`, or `--url`/`--key`), every installed agent tool, global scope, then a summary of what it chose and the flag that changes each. `relay init --interactive` (`-i`) asks each step as before; `--yes` is still accepted and changes nothing.
+- `relay init --key <key>` joins the hosted workspace that key belongs to, under the name the server gives it (`--url` still selects your own server; a key bound to another server is refused). `relay init --hosted` names a new workspace after you and the folder unless you pass `--name`, and prints `npx -y agent-relay@next init --key '<key>'` for teammates (`agent-relay@<version>` from a stable release), which joins and sets up message injection in one step (the `relay workspace join` it printed only saved the workspace). Joining reports the hosted workspace instead of "your server", and `relay workspace join` now points at `relay init`.
+- `relay init` no longer writes npx's temporary cache path into agent tool configs. Project configs (`.mcp.json` and the like) run `agent-relay mcp` by name, or `npx -y agent-relay@<version> mcp` when Relay is not installed, so they work on teammates' machines. Re-running `relay init` updates entries it wrote earlier.
+- `relay init --scope project` now tells the truth about Codex: Codex loads `.codex/config.toml` only when that exact project is trusted in `~/.codex/config.toml` (a trusted parent folder does not count, and `codex exec` never asks). In a terminal, `relay init` offers to record that trust; with `--yes` it prints the lines to add.
+- The project workspace key file (`.agentworkforce/relay/workspace-key.json`) is no longer picked up by `git add -A`: any command that saves it adds `.agentworkforce/relay/` to `.git/info/exclude` (worktrees included), never to `.gitignore`.
+- `relay node up` now reports the actual workspace-key source when startup fails, including the repository's `.agentworkforce/relay/workspace-key.json` pin instead of mislabeling every key as `AGENT_RELAY_WORKSPACE_KEY`.
+- Codex sessions set up by `relay init` now read and answer relayed messages inside Codex's default sandbox with no approval prompt: the Codex hooks add `~/.codex/rules/agent-relay.rules`, which lets only the Agent Relay core's own socket client reach its session socket (no network access is granted), and reply commands are a single `agent-relay-probe relay send … --body` call.
+- Injected reply instructions now tell agents to answer only through this computer's Agent Relay route and never through another Agent Relay connector or app (such as Agent Relay in ChatGPT), which sends as a different identity.
+- A Claude Code session already on Agent Relay no longer hits an approval prompt before its first message: the SessionStart text now lists peers and sends with the Agent Relay core's own commands, which Claude's permission rules allow, instead of curl.
+- Claude Code sessions set up by `relay init` now read and answer relayed messages in Claude's default permission mode with no approval prompt: the SessionStart hook adds `permissions.allow` rules to `~/.claude/settings.json` that allow only the Agent Relay core's own read, reply, attachment-fetch and peer-list commands on its session socket, and Claude's reply hints are that single command instead of curl. The rules go when the hook is turned off; your own rules stay.
+- Codex sessions no longer ask to approve every relayed read and reply when the Agent Relay core's path contains spaces (always the case for the macOS desktop app). Codex rules only match an unquoted program, so while the Codex or Claude Code hook is on, the core keeps a private, space-free link at `~/.agentworkforce/desktop/bin/agent-relay-probe` and names it in the Codex and Claude rules and every reply hint. Turning the hooks off or `relay init --uninstall` removes it.
+- `relay init --uninstall` now removes a `~/.claude/settings.json` it created (or restores yours byte for byte) and the OpenCode plugin's `agent-relay.js.off` marker when init installed the plugin.
+- `relay init --uninstall` now removes the core's `~/.agentworkforce/desktop/pi-extension.off` marker and an empty `~/.pi/agent/extensions` folder when init installed the Pi extension, so the desktop app installs the extension and Pi sessions work again afterwards. A marker that was there before init is kept.
+- `relay init --uninstall` now leaves `~/.codex` as it found it: it removes a `hooks.json` it created (or restores yours byte for byte), its `.relay-desktop-backup`, the Codex hook-trust entries it added to `config.toml`, and its sandbox rules file. Your own hooks, trust entries and rules are kept.
+- `relay init` run in your home folder (or in a folder whose project resolves to `~`) no longer writes a project workspace pin into the Relay home (`~/.agentworkforce/relay`, where `workspaces.json` and your sign-in live) or project MCP files such as `~/opencode.json`: it stops and asks you to run it inside a project folder. Every project-pin writer refuses the Relay home (symlinks resolved), and the Relay home no longer makes `~` the project root of plain folders under it. `relay workspace switch`/`join` from `~` still change the machine-wide workspace, without a pin.
+- `relay init --uninstall` outside a project no longer reads global configs such as `~/.grok/config.toml` as project-scope files.
+- The Pi extension's banner now says the session joins Agent Relay automatically when `relay init` turned that on, instead of asking you to enable it.
+- A core started by `relay init` no longer copies itself to `~/.local/bin/agent-relay-probe`, and `relay init --uninstall` removes a copy an earlier core left there (only a byte-for-byte copy of its own core).
+- The Agent Relay core no longer creates empty OpenCode folders (`~/.config/opencode` and the rest) while checking OpenCode's version on machines where OpenCode was not set up.
+- New Codex sessions set up by `relay init` are told their Agent Relay name and the exact local commands to list agents and send a DM as they start (a SessionStart entry in Agent Relay's Codex hook), so a fresh session no longer reaches for the Agent Relay in ChatGPT connector before its first relayed message. Turning the hook off or `relay init --uninstall` removes it with the others.
+
+### Security
+
+- A relayed message can no longer get a Codex session to change Agent Relay settings or registration without asking: the core's Codex rules (and Claude Code permission rules) now allow only reply, read, peer-list, attachment and channel-subscription commands, and an upgrade replaces the older rules.
+- `agent-relay` no longer sends a self-hosted workspace key or agent token to the hosted service when `RELAY_BASE_URL` is unset in a later shell. A credential used with a self-hosted server is remembered (as a one-way fingerprint in `~/.agentworkforce/relay/relaycast-origins.json`, path prefix included) and sent back only to that server, and a persisted project route can no longer redirect it; `workspace create` now honours `RELAY_BASE_URL`; and a malformed `RELAY_BASE_URL` or `--base-url` is an error instead of a silent fallback to `https://cast.agentrelay.com`.
+- The Rust broker now enforces the same saved self-hosted credential route before making authenticated HTTPS or WebSocket connections, passes that resolved route to spawned agents, and trusts operating-system roots plus `SSL_CERT_FILE` for private certificate authorities.
+- Spawned Cursor, OpenCode, Gemini, and Grok agents no longer get the workspace key, agent token, or `RELAY_WORKSPACES_JSON` written into their config files (`.cursor/mcp.json`, `opencode.json`, `.gemini/settings.json`, `~/.grok/config.toml`). The files name each credential by environment variable, and the broker sets the values on the agent process. A later commit of the project can no longer publish live Relay credentials. The broker refuses to write a credential-shaped value into a project file, and it adds each project file it writes to `.git/info/exclude`. Rotate any key or token that an earlier version may have written into a repository.
+- Muse workers' Relay MCP settings move from `<project>/.agent-relay/` to `~/.agentworkforce/relay/sessions/` (or `$AGENT_RELAY_HOME/sessions/`), and the broker removes them when the worker is released. A Muse worker that uses `RELAY_MUSE_ISOLATED_AUTH` has to log in again once.
+- `agent-relay-broker mcp-args` output adds `requiredEnv`, which lists the credential variables (names only) that the caller must set on the agent process.
+
+## [14.0.0] - 2026-10-13
+
+### Changed
+
+- `fleet spawn --sandbox` inside a repository starts from an exact shallow Git checkout without waiting for Relayfile. `--checkout` also omits Relayfile unless context is explicitly requested.
+
+### Added
+
+- `fleet relayfile attach` adds optional live context to an existing sandbox without restarting its worker.
+
+### Migration Guidance
+
+- Add `--sandbox-relayfile` to retain the previous required live repository mirror. Combine it with `--checkout` when both a Git checkout and live context must be ready before dispatch.
+
+### Fixed
+
+- `fleet spawn` and SDK placement no longer report `dispatchState: "dispatched"` for a spawn that was placed but never sent. Only `dispatched_node_id`, or a status the node moved, counts as dispatch evidence, so `fleet spawn` and `fleet spawn-status` agree.
+- When a broker worker fails to spawn, the log now includes the underlying OS error, such as a missing binary, instead of only `failed to spawn worker`.
+
+## [13.4.1] - 2026-10-12
+
+### Fixed
+
+- Owned worker-name cleanup no longer gives up after five tries and blocks the name until manual recovery. The broker keeps reconciling the release on a jittered backoff (up to five minutes between attempts), confirms persistent by-name absence through the captured agent token, and preserves a replacement generation's cached credential. Cleanup without captured ownership proof fails closed and keeps the name reserved instead of claiming an unverified deletion.
+- `npx @agent-relay/connect join` no longer waits 60 seconds and rolls back when the local probe is running but cannot match the command to a live Claude Code or Codex session (for example, when it was run from a separate terminal). It stops within about a second and says to run the command from the agent's own shell. A timeout that does happen now names the probe's last answer. `connect install` no longer reports such a probe as ready when its version cannot be checked.
+
+## [13.4.0] - 2026-10-11
+
+### Added
+
+- `agent-relay integration subscribe --to self` routes provider events to the broker worker's registered identity, allowing fleet workers to subscribe without desktop session detection.
+- Broker events report PTY submit recovery: `delivery_unconfirmed` (no acceptance evidence for a write, with `attempts` / `max_attempts`; `terminal: true` when the delivery ends unconfirmed) and `delivery_resubmitted` (a submit-only retry, with `attempt` and `strategy`); `delivery_verified` adds `evidence` and `attempts`. `@agent-relay/harness-driver` and the Swift SDK protocol types include both new events.
+
+### Changed
+
+- A PTY delivery the broker can neither confirm nor see still parked in the agent's input box is now delivered as unconfirmed (a terminal `delivery_unconfirmed` with `outcome: "unconfirmed"`) instead of failing, and later messages to that agent are no longer held behind it. Agents whose terminal shows no acceptance signal keep receiving messages.
+- A confirmed `fleet spawn --task` whose task was written but never visibly accepted now succeeds (`spawned: true`) with `warning.code: "spawn_task_unconfirmed"`, instead of failing with `spawn_task_unconfirmed` and exit 8. Only a task that could not be delivered fails the spawn, with `spawn_task_failed`.
+
+### Fixed
+
+- `agent-relay fleet spawn` explains how to reuse a retained agent name with `fleet release <name> --delete-agent --wait` when registration fails with `agent_already_exists`.
+- The installer's Quick Start now prints `agent-relay node up --background` and `agent-relay node down`, which exist, instead of the removed `agent-relay up` form that failed with "unknown command 'up'". An install pinned with `AGENT_RELAY_VERSION` to a release older than 9.2.2 still prints the top-level `up`/`down` forms that release has.
+- A PTY message still visible in the agent's input box after submit is retried by pressing submit only, never by resending the body, for up to three total attempts. Later messages queue behind it instead of being typed on top of it, and if it is still stuck after 60 seconds the broker reports a terminal `agent_blocked_on_send` with reason `failed_draft_latched`.
+- Typing into an agent's terminal while a delivery is being retried takes over the terminal and cancels the retries.
+
+## [13.3.0] - 2026-10-10
+
+### Added
+
+- MCP `spawn` reports pending/liveness evidence, and `remove_agent` accepts optional registration-clearance waits.
+- `agent remove --wait` and `fleet release --delete-agent --wait` verify registration clearance before name reuse, with `--wait-timeout` and `--no-wait` controls. Fleet release adds `removal` evidence when waiting.
+- `fleet agent list` JSON includes node heartbeat timestamps and ages, with warnings for stale snapshots.
+- `fleet spawn`, `agent spawn`, and `node agent spawn` accept `--task-file` to read an initial brief from a local UTF-8 file. Fleet requires exactly one of `--task` and `--task-file`.
+- `agent-relay message dm send`, `message post` and `message dm send_group` take a repeatable `--file <path>` that uploads and attaches local files (for example screenshots); `message file upload` accepts `--to <agent>` for a DM.
+- `agent-relay message file download <file_id>` saves a received attachment (default `.agent-relay/attachments/<file_id>/`) and prints its path; `message file get <file_id>` shows it with a short-lived download URL.
+- The `agent-relay mcp` server adds `upload_file` (local path or base64) and `download_file`, and `send_group_dm` accepts `attachments`.
+- Agents spawned by the broker receive message attachments (up to 25 MiB each) as local files: the injected message ends with an `Attachments:` list giving each file's path under `.agent-relay/attachments/` in the agent's working directory, or an `agent-relay message file download <file_id>` command when a file could not be fetched. Messages that carry only attachments are now delivered too.
+- `@agent-relay/sdk` adds `files.upload` / `files.get` / `files.download` on `AgentRelay` and `RelaycastMessagingClient`, plus `uploadRelayFile` / `downloadRelayFile` helpers.
+- `agent-relay fleet spawn-status <invocation-id>` reads a recorded spawn dispatch without spawning again, separating confirmed readiness, a node-reported failure, and an outcome the node has not reported yet.
+
+### Changed
+
+- Unconfirmed `fleet spawn` results keep the `spawn_unconfirmed` code, now with `state: "pending"`, invocation diagnostics, liveness evidence and exit 8. Node heartbeat presence is reported as liveness evidence but never confirms the spawn.
+- Removal waits exit 8 if the registration remains present; scripts must handle nonzero exits beyond `$? -eq 1`. Waits remain opt-in, and unavailable verification reads preserve the asynchronous acknowledgement.
+- PTY-delivered tasks and messages are limited to 14 KiB (16 KiB with the message envelope); `fleet spawn`, `agent spawn` and PTY delivery reject larger input and name the limit, so write the brief to a file and send a pointer. Agents whose terminal lacks bracketed paste accept at most 1,536 bytes per injection. Muse startup tasks and messages to headless CLI agents travel as a single process argument and are limited to 16 KiB instead; native-runtime and app-server agents receive tasks and messages as frames and have no such limit; `message post|reply|dm send` are not capped, and a wrapped agent receives an oversized message as a pointer to it in Relay.
+
+### Fixed
+
+- Verified Fleet Devin spawns fail with `directory_trust_required` when the directory-trust prompt persists, releasing the worker through spawn cleanup instead of leaving a live but blocked worker.
+- Relay MCP `post_message` and `reply_to_thread` coalesce a transport replay of one request (and accept an `idempotency_key` for retries after a lost response), matching `send_dm`; native host tools key on the tool call ID. Independent writes with identical text remain separate messages.
+- `integration subscribe` rejects `--events` values the engine cannot subscribe to.
+- `integration subscribe` checks that the requested writeback events were persisted and rolls back a subscription left incomplete.
+- `integration subscribe` says when GitHub authorization for writeback could not be verified, instead of implying it succeeded.
+- `integration subscribe --list` separates a subscription's configuration from delivery confirmation, so a configured subscription is no longer read as a delivered one.
+- Fleet registration collisions use readable `spawn_name_taken` guidance covering asynchronous removal and failed-spawn cleanup, instead of Rust `Fatal(AlreadyExists {...})` text.
+- Pending fleet spawns preserve provisioned sandboxes and distinguish live, stale, elsewhere, registered, absent, and unknown evidence before advising a retry.
+- Tasks and relay messages typed into an agent's terminal wait until the agent is ready for input and can no longer be submitted half-way through, and a message that is too large fails with an explicit error instead of being retried.
+- Control characters other than newline and tab (for example `Ctrl-C`) are removed from tasks and messages typed into an agent's terminal, so they can no longer interrupt or edit the agent's input line.
+- A confirmed `fleet spawn --task` (the default) succeeds only once the agent's harness has visibly accepted the task (activity or a cleared composer, not merely the task echoed into the composer). If the task cannot be delivered, the worker is released and the spawn fails with `spawn_task_failed`. If delivery cannot be confirmed, the spawn fails with `spawn_task_unconfirmed`, names the agent that is still running, and says not to retry. With `--no-confirm` the spawn reports as soon as the node accepts it, without waiting for the task to arrive.
+- `agent-relay message file upload` now uploads and attaches the file; it always failed with "Invalid attachments: file ids must exist in workspace and be complete".
+- Broker-managed messages retry failed delivery up to three times, and later sends wait until delivery succeeds.
+- `fleet spawn` (and SDK placement confirmation) now waits six minutes for launch confirmation instead of two, so agents that register minutes after dispatch are confirmed rather than reported as unconfirmed; the timeout error names the `fleet spawn-status` poll for its invocation id instead of suggesting a redispatch.
+
+## [13.2.0] - 2026-10-08
+
+### Added
+
+- `agent-relay fleet spawn --sandbox` (unpinned or `--sandbox-provider agent37`) now uses Cloud's durable `async-v1` preparation and prints each preparation phase, so a slow Relayfile initial sync no longer ends as an unknown outcome. Older Cloud deployments keep working through the synchronous response.
+- `@agent-relay/cloud` `ensureCloudFleetSandbox` accepts `preparationMode: 'async-v1'` and an `onPreparationProgress` callback; `CloudFleetSandboxProvisionError` exposes `sandboxAbsent` and a typed `preparationFailure` (`code`, `phase`, `causeStage`).
+
+### Fixed
+
+- When Cloud ends a sandbox preparation (for example `relayfile_mount_failed` / `initial_sync_deadline`), `fleet spawn --sandbox` names the cause and confirms no sandbox was left running, without a redundant cleanup call or unknown-outcome guidance.
+- A lost Cloud response during `fleet spawn --sandbox` preparation no longer causes the spawn or a preparation step to be resubmitted.
+- `fleet spawn --sandbox` prints the generated sandbox identity before provisioning; re-running an interrupted spawn with `--sandbox-id <id>` resumes that sandbox instead of creating a second one.
+- Against a Cloud that does not support async preparation, a typed failure such as `relayfile_mount_failed` or a capacity rejection is reported at once with its cause instead of after a status-polling wait.
+- Workspace-scoped commands such as `agent-relay fleet release` continue using the workspace's Relaycast server when `--base-url` is omitted; explicit conflicting `--base-url` values are still rejected.
+- Fleet spawns now recover from transient Relaycast `d1_pressure`; persistent registration pressure returns a named `d1_pressure` error within 25 seconds, and any success arriving after retry-count or wall-clock exhaustion is explicitly deregistered.
+- Acknowledged `agent.deregister`, cumulative `delivery.ack`, and non-task action results now recover from transient Relaycast `d1_pressure`; exhausted non-task action results are replayed after reconnect.
+- `agent-relay fleet spawn` reports registration `d1_pressure` as retryable only when the registration is proven to have failed before any change was made.
+
+## [13.1.5] - 2026-10-08
+
+### Fixed
+
+- Workers started with `agent-relay fleet spawn` now appear in Agent Relay Desktop as your agents, on the machine that runs them, with their CLI's icon, instead of under "Other live agents".
+
+## [13.1.4] - 2026-10-07
+
+### Fixed
+
+- `agent-relay fleet spawn --sandbox` reports provider capacity and confirms no sandbox was created when Cloud rejects before allocation, without misleading leak-check guidance.
+
+## [13.1.3] - 2026-10-07
+
+### Fixed
+
+- Broker recovery preserves the cached node credential when an environment-supplied token is rejected, and `/api/session` reports the actionable terminal reason `env_override_rejected` until the stale override is removed or the Cloud node is re-enrolled.
+- Broker recovery retries once with a concurrently rotated cached token after a proof conflict, unless an environment override is active.
+- Concurrent node-token rotations retain the newest cached credential when an older response arrives late.
+- Node-token rotations reuse request-bound idempotency keys after lost responses, including process-local recovery for environment tokens and durable recovery across restarts when the node name and broker version are unchanged.
+- `/api/session` reports node control as `connecting`, `backoff`, `ok`, or `terminal` so operators can diagnose stopped realtime delivery.
+- `agent-relay fleet spawn --sandbox --sandbox-relayfile-path <path...>` now mounts exactly the listed subtrees — a scoped spawn from inside a large checkout no longer force-mounts the whole repository. The flag accepts up to Cloud's 16-path limit; the inferred repository is materialized and mounted only when its `contents/**` root is in the list (or the flag is omitted, which keeps the repository + `.relayfile` + `.skills` defaults).
+- Scoped `fleet spawn --sandbox` runs that exclude the repository no longer require a clean, pushed checkout — only repository identity is resolved.
+- A repo-relative `--cwd` whose repository is excluded from the scoped mount is now rejected instead of silently starting the worker at the mount root.
+
+## [13.1.2] - 2026-10-06
+
+### Fixed
+
+- Verified Fleet Muse spawns reject missing or unusable node login files before creating a worker, including fresh isolated-auth homes; reported provider-auth errors release capacity through spawn cleanup.
+- Fleet-spawned Muse workers no longer report themselves ready on an interactive device-login screen. Muse readiness now requires a visible prompt rather than output volume, and a recognised login screen fails the spawn with `provider_auth_required` and releases the worker instead of holding node capacity.
+- Broker recovery now stops with a clear re-enrollment error when Relaycast refuses node-token rotation proof, while retaining the last in-memory and durable credential for operator recovery. Accepted rotations use an atomically persisted idempotency key so a lost response or restart can recover the committed replacement.
+- `agent-relay fleet spawn --sandbox` accepts the canonical DEV Relaycast target only when authenticated against the exact DEV Cloud API URL (`https://dev.agentrelay.com/cloud`), while production trust remains unchanged.
+- `agent-relay fleet spawn --sandbox` makes bounded visibility checks for a node-created identity on both the worker-token and workspace-key read paths during channel reconciliation, absorbing Relaycast read-after-write lag without rotating the new worker credential.
+- Failed Fleet spawns keep owned identity cleanup alive for up to 5 attempts before returning the action failure, so teardown cannot strand a same-name identity.
+- A Fleet cleanup still in flight when the broker stops now reports an explicit cleanup-unconfirmed error instead of ending silently, so the caller can retry the cleanup.
+- `agent-relay fleet spawn --sandbox` for a node-created identity now finishes channel reconciliation within a 60-second budget, tolerates bounded read-after-write lag, and fails closed on a sustained channel mismatch.
+- Identity release retried for a node-created Fleet spawn now stops once the shared retry budget is exhausted.
+
+### Security
+
+- Broker-spawned agents and helper processes can no longer use the node's control-plane identity.
+
+## [13.1.1] - 2026-10-04
+
+### Added
+
+- `node agent list|spawn|new|release|set-model` and `node tail` accept `--state-dir`, `--broker-url`, and `--api-key`, so brokers started with `node up --state-dir` — such as fleet nodes — can be managed from any directory. Without these flags, `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY` or the enclosing project's broker is used.
+
+### Fixed
+
+- Broker fleet control keeps a healthy node WebSocket open when Relaycast returns retryable `d1_pressure` for `node.register` or `inventory.sync`, retrying the same frame with bounded exponential backoff while the existing registration and application-liveness deadlines remain fail-closed.
+- `--state-dir` on `node agent` commands, `node status`, and `node down` also accepts a fleet node directory whose broker state lives in `state/`.
+- An explicit `--state-dir` on `node agent` commands is no longer overridden by `RELAY_BROKER_URL` / `RELAY_BROKER_API_KEY`.
+- "No broker connection" errors name the path searched and whether it was the project default or `--state-dir`, instead of implying a running broker is down.
+- `node down --force --state-dir <dir>` can verify and stop brokers started from another working directory.
+- `node status` and `node down` name a missing broker identity record and how to create one.
+- `install.sh` now verifies what it downloads and installs it atomically, so updating over a running broker no longer breaks it. A corrupt or failed update is rejected; the standalone installer then rolls back to your existing install, while an npm install reports the rejection without rolling back.
+
+## [13.1.0] - 2026-10-03
+
+### Changed
+
+- `npx -y @agent-relay/connect install` installs a signed standalone probe on a clean Mac without installing the GUI app.
+
+### Fixed
+
+- `agent-relay mcp` standalone binaries no longer dispatch each tool call twice.
+- MCP `send_dm` now forwards idempotency keys so keyed retries do not store duplicate messages.
+- `@agent-relay/connect join` returns as soon as the probe admits the participant.
+- Timed-out or still-pending `@agent-relay/connect join` calls exit with status 8 and instruct the caller to retry the same request.
+
+## [13.0.1] - 2026-10-02
+
+### Added
+
+- `@agent-relay/connect` provides the accountless `npx -y @agent-relay/connect join <link>` hand-over between a host and an agent session, plus `install` to bootstrap the desktop probe and `send`, `status`, and `leave` to run the session.
+
+### Fixed
+
+- Broker: Muse workers now reuse the host Muse login (`RELAY_MUSE_SHARED_AUTH_PATH`, the host's `MUSE_AUTH_PATH`, `$XDG_CONFIG_HOME/muse/auth.json`, or `$HOME/.config/muse/auth.json`) instead of prompting for provider auth under every new agent name; Relay MCP settings stay per-worker. Multi-tenant hosts should set `RELAY_MUSE_ISOLATED_AUTH=1` before upgrading to keep a separate login per worker.
+
+## [13.0.0] - 2026-09-30
+
+### Added
+
+- `teams.json` agents accept a per-agent `model` field when `up --spawn` starts them; an explicit `--model` or `-m` inside `cli` still wins.
+- Persistent brokers expose authenticated, versioned native existing-session delivery and reconciliation for Cloud Babysitter. They durably reserve each `deliveryId` before the sole worker write, return stable receipts for exact duplicates, and reject session substitution or unsupported native input without sending.
+
+### Changed
+
+- Targeted `fleet spawn` now waits for harness readiness; the broker releases workers that miss its 90-second readiness window. Confirmed targeted spawns require `--confirm-timeout` of at least 95000ms.
+
+### Deprecated
+
+- `@agent-relay/utils` model-mapping helpers (`mapModelToCli`, `getBaseCli`) are deprecated for removal in the next major release; use separate `cli` and `model` fields instead of non-executable colon syntax.
+
+### Removed
+
+- `@agent-relay/sdk`: removed `workspace.fleetNodes` and `RelayWorkspaceFleetNodesConfig`, whose underlying service API no longer exists.
+
+### Fixed
+
+- Broker-spawned workers no longer inherit the broker's own credentials from its environment; each worker receives only its own agent token and the workspace credentials the broker delegates to it.
+- Integration subscription setup, listing and retirement use workspace authentication even when a spawned worker also has an agent token, preventing misleading “Workspace key required” failures.
+- A `teams.json` agent whose `cli` carries an inline `--model`/`-m` now records the model the harness actually runs. The inline override becomes the spawn's effective model before the relay skill prefix is chosen, so worker listings, spawn events, telemetry and small-model guidance describe the running model rather than the superseded pin.
+- `agent-relay fleet config|enable|disable|inherit` now exit successfully as hidden compatibility no-ops instead of failing on the removed workspace rollout API.
+- Targeted `fleet spawn` requests explicit readiness proof, preventing healthy launches from being rejected for missing proof; unconfirmed launches report `ready:false` while obsolete handlers remain rejected.
+- `@agent-relay/sdk` `placement.spawn` only asks a node to verify readiness when it will wait for the answer, and confirms against the contract it requested, so `confirm` omitted no longer arms a 90-second readiness kill switch and `verifyReady: false` no longer fails a healthy launch.
+- Broker `manual_flush` recovery now replays a missing cumulative-ACK predecessor without duplicating an already-completed PTY injection, restores it ahead of parked successors, and reports the head/ACK/received sequence gap plus the reconciliation action in `message flush` and `message auto` results.
+
+### Breaking Changes
+
+- SDK consumers must remove references to `workspace.fleetNodes` and `RelayWorkspaceFleetNodesConfig`.
+
+### Migration Guidance
+
+- Fleet nodes need no per-workspace enablement. Remove `fleet enable` from provisioning scripts; `fleet disable` no longer disables nodes.
+
+## [12.4.1] - 2026-09-22
+
+### Added
+
+- `agent-relay mcp` discovers Cloud shared-session search and context tools through the hosted MCP endpoint; `agent-relay mcp --sessions-only` runs that surface without a Relaycast workspace or broker registration for plugin use, reusing the stored non-interactive Cloud login and token refresh.
+- The Agent Relay Shared Sessions plugin bundles the sessions-only MCP server and a search-first skill, and is available from Relay's built-in plugin marketplace.
+- `integration subscribe --list` now names the target agent from `agent-events-<id>` or channel `subscription_agent_id` metadata (not a bare channel name), plus last delivery/ack timestamps and whether GitHub PR identity expansion is authorized. Health is read from each binding's pinned relayfile workspace, not only the currently active one.
+- `integration unsubscribe <provider> --owned-by @agent` retires every binding whose identity-bound channel is `agent-events-<id>` for that agent (ordinary `#name` channels are not treated as owned). `fleet release --unsubscribe-bindings` and `--delete-agent` stop the agent first, then retire bindings on the same resolved workspace as the release; `--delete-agent` deletes the identity only after retirement succeeds, so `--owned-by` can still retry. Cleanup progress goes to stderr so `fleet release` stdout stays one JSON document.
+
+### Fixed
+
+- Relay brokers now replace a dark fleet terminal WebSocket when Relaycast advances its terminal generation, using one bounded jittered retry loop without stalling node control or broker shutdown.
+- Broker-managed Muse workers now start with `--yolo` and receive their assigned task as the startup prompt, so tool use proceeds unattended and work begins deterministically before readiness; Muse prompts containing NUL or exceeding the portable 16 KiB startup limit are rejected before registration.
+- `node agent attach --node` no longer floods the terminal with base64 text after the remote terminal transport reconnects: the repaint now sends the decoded screen instead of the encoded snapshot payload.
+- `node agent attach --node` now closes the PTY input stream on a connection-fatal error and scopes the error to the stream that failed, matching the broker, so a dead input stream is reported instead of silently accepting keystrokes.
+- `node up` forwards a node definition's `maxAgents` to the broker's advertised capacity, so `fleet nodes list` (including `--pretty`) reports the configured cap instead of `0`/`unlimited`. A pre-set `AGENT_RELAY_NODE_MAX_AGENTS` still wins as the operator's authoritative declaration. Caps above the broker-parseable `u32` range are rejected at definition time instead of silently reporting unlimited.
+
+## [12.4.0] - 2026-09-20
+
+### Added
+
+- `fleet spawn`, `node up` capacity, and the `spawn`/`add_agent` MCP tools accept the Muse CLI (`muse`): nodes advertise `spawn:muse`, launches default to `--trust-workspace` so workspace skills and rules load, injected tasks submit without a manual Enter, and each worker gets Agent Relay MCP tools from an isolated per-worker Muse config home. Tool approvals stay on unless `--disable-approval` is passed explicitly.
+- Devin CLI is available through Relay PTY, fleet and MCP spawning with isolated worker MCP configuration, preserved approvals, and reliable initial and follow-up message submission.
+- `agent-relay fleet nodes list --pretty` renders the fleet roster as a human-readable table; `agent-relay fleet nodes --pretty` is available as a shorter equivalent, while JSON remains the default.
+
+### Fixed
+
+- MCP `spawn`, `add_agent`, and direct-message calls now coalesce in-flight JSON-RPC replays and accept an `idempotency_key` for safe retries after a lost response, preventing duplicate workers, false duplicate-name failures, and duplicate DMs while keeping later JSON-RPC ID reuse distinct.
+- `node agent attach --node` now replaces an expired remote terminal session once and reconnects existing local terminal clients, while transient terminal failures retain the bounded resume budget without minting additional sessions.
+
+## [12.3.1] - 2026-09-20
+
+### Added
+
+- The `relay.ci.pr-proof` hosted listener is redeployed automatically when its source changes on main, so pull requests are proved against the merged flow instead of a stale snapshot. Configure a `FLOWS_CLOUD_TOKEN` repo secret (a Flows Cloud token carrying `flows:listeners:write`) and a `RELAY_PR_PROOF_APPROVER` repo variable; a token without that scope is refused.
+
+### Fixed
+
+- `agent-relay node down` now releases a node claim whose recorded state dir is a different spelling of the same directory (a symlinked path, or a record written by an older CLI); previously the claim was left behind and kept blocking `node up` for that node id.
+- Broker registration and channel-join retries no longer stack on top of the relaycast SDK's own admission retries: the SDK paces individual requests on the server's `Retry-After`, the broker owns the startup and spawn budgets, and `workspace_busy` failures now report the true `attempts` total the server received instead of only the broker's round count.
+- Registration errors now render a server `Retry-After` longer than the one-second admission minimum, and reconcile loops honour it.
+
+### Changed
+
+- Broker depends on relaycast SDK 8.0.1, which classifies a body-read failure during registration as a retryable transport error and reports the endpoint URL and status on malformed responses.
+
+## [12.3.0] - 2026-09-19
+
+### Added
+
+- `scripts/flows/opencode-agent-cli.mjs` implements the `relayflows-agent-cli-v1` contract, so relayflows v2 can run OpenCode agents. A credential stored by `opencode auth login` works; an environment-only `OPENCODE_API_KEY` does not, because v2 spawns adapters with a closed environment allowlist at execution while `flows check` probes with the full environment, so an env-only key passes preflight and then fails at run.
+- `npm run <flow>:check` for every verification flow generates its spec and runs `flows check` on it — the replacement for v1's `DRY_RUN=1` graph validation.
+
+### Changed
+
+- Every relayflow moved from the v1 `@relayflows/core` builder to relayflows v2: `relay.ci.pr-proof`, `relay.verify.fleet-daytona`, `relay.verify.cleanroom`, `relay.verify.features`, `relay.diagnose.orchestration`, and `relay.audit.feature-manifest`. Flow names are dot-namespaced and all v1 step names are preserved.
+- The PR proof is now deployed as a hosted GitHub listener (`flows deploy --on github:events=pull_request`) and journals the classification and broker staging its GitHub dispatcher used to do.
+- `verify:cleanroom`, `verify:fleet-daytona`, `diagnose:orchestration`, and `verify:features` now generate a v2 spec and run it through the `flows` CLI. `audit:feature-manifest` gained an npm entry point.
+- `@relayflows/sdk` 2.x is a dev dependency, so `npx flows` resolves in this repo.
+
+### Removed
+
+- `.github/workflows/relayflow-pr-proof.yml` and the whole `workflows/` directory. Repoint branch protection at the deployed listener; the PR-proof required status check no longer comes from GitHub Actions.
+- `DRY_RUN=1` on the verification flows; relayflows v2 has no dry-run execution mode.
+
+### Fixed
+
+- `agent-relay node up` no longer lets a second local broker silently steal a live node's Cloud delivery socket: it refuses an enrolled node id another live broker on this machine already holds — naming that broker's pid and state directory and offering `node down`, a distinct enrollment, or `--force` — including an explicit `RELAY_NODE_ID`, while `--local-only` claims nothing and a crashed broker's stale claim never blocks a restart.
+
+### Migration Guidance
+
+- v1 knobs with no v2 equivalent are dropped, each recorded at its call site and in `flows/spec-builder.ts`: the relaycast `channel`, `idleNudge`, agent `preset`/`role`, and per-agent-step timeouts. `permissions` survives but is coarser — `AgentStepSpec.permissions` has no read/write split, deny list, or exec allowlist, so the runners' own seals remain what prove evidence was not mutated.
+
+## [12.2.7] - 2026-09-19
+
+### Fixed
+
+- `agent-relay cloud schedule` uploads each immutable code snapshot through Cloud's R2 workflow storage, so scheduled workflows get a code tree without cloning the repository or using AWS.
+
+## [12.2.6] - 2026-09-19
+
+### Fixed
+
+- Run mounted product surfaces in a child process when standalone
+
+## [12.2.5] - 2026-09-19
+
+### Changed
+
+- Harden subscription evidence and capture Nango forwards
+- Install command
+- Readme tweaks
+
+### Fixed
+
+- Retry Relaycast overloads across spawn and mcp-args
+
+## [12.2.4] - 2026-09-18
+
+### Added
+
+- `agent-relay file`, `agent-relay flows`, and `agent-relay sessions` expose the relayfile, relayflows, and relayhistory CLIs from their own SDKs, so every Relay product is reachable from one binary.
+- `agent-relay sessions cloud list|events|search|thread|turns|digest|coverage` read Relayhistory cloud history once `@relayhistory/cloud-client` is installed alongside the CLI and Relayhistory credentials are configured.
+- `@agent-relay/cli-surface`: the contract a product SDK implements to be mounted as an `agent-relay` command group.
+
+### Changed
+
+- `agent-relay session` is now a hidden alias of `agent-relay sessions`; `session replay` keeps working unchanged.
+
+### Deprecated
+
+- `agent-relay cloud schedule` and `agent-relay cloud schedules` warn as relayflows v1. Both stay listed and supported: relayflows v2 has no hosted scheduling yet.
+- `--relayflow-version v1` on `agent-relay cloud run` warns; use `agent-relay flows run --cloud` for the v2 engine.
+- `agent-relay node workflow run|logs|sync` run on the relayflows v1 engine and are hidden from help; use `agent-relay flows run|replay|sync`.
+
+### Removed
+
+- `agent-relay reflex` (`on`, `off`, `status`).
+
+### Fixed
+
+- `ai-hist`'s `--acquisition-timeout-ms` is accepted instead of always failing as an unknown option, and `ai-hist` no longer publishes its compiled tests.
+
+### Breaking Changes
+
+- The `agent-relay reflex` command group is removed. Reflex history capture still runs from its stored enabled flag, but the CLI no longer toggles it.
+
+### Migration Guidance
+
+- Scripts calling `agent-relay reflex on|off|status` must be updated; there is no replacement command. Edit the Reflex state file directly if you need to change the flag.
+- Scripts calling `agent-relay cloud run --relayflow-version v1` should move to `agent-relay flows run --cloud`.
+- Scripts calling `agent-relay node workflow run|logs|sync` should move to `agent-relay flows run|replay|sync`. `flows replay` reads a run's local journal rather than tailing a log file.
+
+## [12.2.3] - 2026-09-18
+
+### Added
+
+- Opt-in persistent broker task providers preserve final results across reconnects and acknowledge callbacks only after durable Relaycast receipts.
+
+### Fixed
+
+- `node agent attach` and `message flush|hold|auto` no longer hard-error with "has no live Fleet placement on the persisted remote session" for a flag-free attach to a local PTY worker when the project also has persisted Relaycast workspace credentials — a live local broker discovered via `connection.json` is used instead.
+- Broker Codex initial tasks use small render-gated chunks and bounded submit-only retries to recover stuck prompts without retyping the task.
+
+## [12.2.2] - 2026-09-15
+
+### Changed
+
+- Stop double-publishing cloud, wait longer for the registry, tag what was built
+
+## [12.2.1] - 2026-09-15
+
+### Fixed
+
+- Broker node connections recover when inventory acknowledgements stop even while WebSocket pongs continue, with bounded retries during outages.
+
+## [12.2.0] - 2026-09-15
+
+### Added
+
+- Broker `GET /api/node-delivery` exposes frame arrival, routing decisions, pending handoff, and acknowledgement counters without requiring logs or a restart.
+
+### Fixed
+
+- Broker node connections now require an accepted registration before reporting readiness or publishing inventory and heartbeats; rejected and unanswered registrations reconnect with bounded backoff.
+- Direct-message CLI and MCP receipts separate directory name matches from unconfirmed recipient delivery, preserving the queued message ID without reporting reachability from a roster match.
+
+## [12.1.0] - 2026-09-12
+
+### Added
+
+- `agent-relay node up --local-only` runs local agents during Relaycast outages, visibly reports degraded capabilities, and retains local delivery records for reconciliation after reconnect.
+
+### Fixed
+
+- Local release of broker-owned workers now performs generation-bound direct identity cleanup with durable retries when the worker host is unavailable.
+- HTTP agent spawn rejects failed Relaycast node binding, cleans up the newly registered identity, and publishes declared metadata for successful spawns using either new or supplied tokens.
+- Multi-workspace startup rolls back already-registered memberships if a sibling registration fails, preventing leaked hosted identities.
+- No-key startup keeps Relaycast workspace creation on its own timeout so typed `workspace_busy` admission exhaustion is preserved instead of surfacing as a generic handshake timeout.
+
+- `agent-relay node up` retries the narrowly transient Relaycast `workspace_busy` admission response while keeping unrelated rate limits terminal and preserving bounded startup diagnostics.
+- `fleet spawn --sandbox` dispatches with only its temporary launcher token after Cloud target selection, avoiding the SDK's dual-credential rejection while keeping workspace-key authority limited to launcher registration and release.
+- `fleet spawn` and `mcp-args --register` retry typed Relaycast overloads up to three times with idempotent admission handling.
+
+- SDK fleet spawn placement receipts preserve invocation correlation and distinguish accepted, ready, unconfirmed, and terminal-failed outcomes.
+
+- CLI and MCP fleet spawns require explicit launch/readiness proof, preserve dispatch evidence, and surface terminal failures with correlated receipts.
+
+- `fleet agent list` reports control-plane reachability separately from hosted-worker liveness in JSON and pretty output, including offline local nodes.
+
+- `fleet spawn --sandbox` uses the provider-neutral durable profile for explicit Daytona and E2B sandboxes, so their measured resource envelopes are routable while Agent37 retains its heavy profile.
+
+- Normal broker restarts preserve unmatched local audit backlogs without blocking fleet recovery.
+- Cloud Daytona Fleet provisioning now requires and returns the exact provider sandbox UUID alongside the stable Cloud sandbox ID, enabling ID-bound inspection and cleanup after interrupted launches.
+
+- Node startup recovery and shutdown require a persisted process and runtime-lock identity for the selected state directory, preserving unrelated agents.
+
+### Changed
+
+- `up` and `node up` refuse startup outside macOS and Linux (including WSL, with `ps` and `lsof` available) because broker ownership cannot be verified elsewhere. Brokers started by earlier versions have no verifiable identity and are not shut down or recovered automatically; stop them manually and restart once to create one.
+
+## [12.0.0] - 2026-09-10
+
+### Added
+
+- `integration subscribe --to @agent --spawn <cli>` launches and confirms a worker for the explicit resource, verifies exact recipient membership, and cleans up an owned worker when setup fails. Repeatable `--spawn-arg` forwards literal harness options.
+
+### Fixed
+
+- Worker startup queues the initial task before incoming events without consuming delivery retry attempts while waiting.
+
+- Codex startup requires its cursor in the composer, no loading or busy indicator, and one second of quiet output. It no longer depends on transient MCP server labels or historical prompt glyphs; timeout fallback remains unverified.
+
+- `node status` bounds local API probes and reports unavailable details, so a stalled broker cannot hang the command for the default 30-second request timeout.
+
+- Owned worker cleanup keeps the broker responsive while remote cleanup is pending and retains generation-guarded retries after failure.
+- Claude startup verifies the selected trust-menu choice and recognizes version banners without a greeting. Timeout-based startup fallback no longer counts as confirmed harness readiness.
+- Subscription workers suppress default channel joins and verify live membership before setup. Failed HTTP and fleet launches clean up only their owned identity, including delayed pre-ready exits and safe cleanup retries; `--broker-connection` selects a workspace-verified node connection.
+- Explicit workspace credentials take precedence over an ambient agent token; conflicting explicit credentials are rejected.
+- Plural fleet spawn channels are honored and membership is verified before launch; membership failures abort setup.
+- Served fleet spawn actions wait for the broker's confirmed readiness and propagate terminal launch failures instead of completing at placement.
+
+### Changed
+
+- Claude and Codex workers receive a separate delayed Enter for every injected delivery. After the PTY acknowledges the write, background Enter recovery is disabled for both harnesses to avoid submitting unrelated input after idle. The structured `injection_recovery_disabled` diagnostic explicitly leaves harness acceptance unconfirmed: echoed input is not proof of an agent action.
+
+### Breaking Changes
+
+- `serveNode` verifies spawns by default and requires engine support for node-owned spawn status reads; deploy the compatible engine before publishing/upgrading fleet clients. Legacy handlers can explicitly set `verifyReady: false` to receive unverified placement only.
+- SDK `waitForReady` reports `startup_fallback` at its deadline when `worker_startup_fallback` occurred without a proven readiness handshake.
+- MCP raw CLI spawns wait for harness readiness and report terminal startup errors; the selected broker must support the readiness contract.
+
+### Migration Guidance
+
+- Deploy the compatible Relaycast engine before upgrading fleet clients. Set `verifyReady: false` only when the caller explicitly accepts unverified placement.
+
+## [11.11.0] - 2026-09-10
+
+### Changed
+
+- Operators can keep using custom `--sandbox-name` values with `agent-relay fleet spawn --sandbox`; launches without a custom name generate a stable `sbx_<UUID>` identity automatically, while only `--sandbox-id` replay requires the matching deterministic lowercase `fleet-sandbox-<UUID>` name.
+
+### Fixed
+
+- Ambiguous Cloud sandbox responses retain their stable `--sandbox-id` for replay instead of automatically deleting an allocation whose outcome is unknown.
+- Persisting an Agent37 Relaycast target keeps the canonical Cloud workspace key as the durable selector and stores the route-scoped transport credential separately, so later commands can reuse the original explicit key.
+- Relaycast credentials and origins now resolve as one transport pair for attach, observer, Fleet, and Relayfile provisioning commands; stale sandbox responses cannot overwrite a project workspace that was rebound while provisioning was in flight.
+- Legacy non-Agent37 Cloud sandbox responses remain usable when they omit the newer Relaycast target, while any target Cloud does return is verified and persisted for both newly provisioned and reused providers.
+- Standalone package smoke workspaces remain valid for five minutes, and startup overrides are capped at four minutes so shutdown and cleanup verification always retain a full-minute lease margin.
+- Startup retries now require Relaycast's typed pre-commit storage-admission codes instead of replaying every 5xx response from an unkeyed workspace or agent-registration request.
+- Agent registration retries now honor Relaycast's typed cooldown (capped at one minute) instead of immediately retrying through the same write-capacity window, while a three-minute aggregate deadline prevents hung requests from stranding callers.
+
+## [11.10.4] - 2026-09-08
+
+### Changed
+
+- `agent-relay fleet spawn --sandbox` now requests Cloud's long-running workload profile and reports the provider Cloud actually selected, enabling Agent37 placement without a provider flag.
+
+### Fixed
+
+- `agent-relay mcp-args --register` now reports Relaycast registration status, code, request ID, and attempt count after a service failure.
+- `agent-relay node up` no longer exits when Relaycast answers a startup request with a transient 5xx. The broker retries workspace creation and agent registration up to three times before failing.
+- A fleet message the broker cannot deliver to its worker is no longer reported back as handled, so it stays outstanding and can be redelivered.
+- Fleet deliveries the broker rejects are now logged with a reason and sequence number, so a worker that stops receiving messages can be diagnosed from the broker log.
+- PTY workers no longer exit when Claude Code's folder-trust dialog appears. Relay selects the affirmative option by its label, so both menu orderings work.
+
+## [11.10.3] - 2026-09-05
+
+### Added
+
+- Select Relayflow engine generation
+
+### Fixed
+
+- Pin npm before fresh dependency resolution to avoid arborist crash
+- Stop Prettier auto-formatting .trajectories/, exempt it from the proof contract
+
+## [11.10.2] - 2026-09-03
+
+### Fixed
+
+- Broker `/api/send` responses now distinguish durable Relaycast publication from confirmed delivery and include the server-observed reachability of named recipients.
+- `relay-verify-features` reports failed Slack, GitHub, PostHog, and NightCTO escalation delivery as failed workflow evidence.
+- Concurrent `relay-verify-features` runs can no longer corrupt another run's fix or erase its verdict and escalation receipts.
+- `relay-verify-features` no longer treats an unconfirmed Slack alert as delivered and hands it off for follow-up instead of silently swallowing the failure.
+- `relay-verify-features` aborts feature checks when the CLI is outside the checkout under test.
+- `relay-verify-features` reports an autofix run as unverified when the fixer provides no evidence for a failed check, instead of counting it as handled.
+- `node agent message flush` and `node agent message auto` now unblock a held queue that could previously never drain, instead of reporting `flushed: 0` forever and leaving the agent unable to receive anything later. A parked message whose Relaycast identity has been retired is dead-lettered with a reason and is visible in `node deadletters`; injection failures and out-of-order sequences are still held for retry.
+- `node agent message flush`, `hold`, and `auto` now accept `--node`, so an agent on another machine can be flushed or woken from anywhere. Previously they consulted only the local broker and returned `agent_not_found` for a name that `node agent list` and `node agent attach --node` both resolved.
+
+### Added
+
+- `POST /api/spawned/{name}/flush` now returns `dead_lettered`, `held`, and `blocked_reason` alongside `flushed`, so an empty queue is distinguishable from one the broker could not drain. Exposed on the harness-driver and Swift SDK clients.
+- `agent-relay cloud run` accepts `--relayflow-version <v1|v2>`; `cloud schedule` accepts explicit `v1` and rejects unsupported `v2` schedules locally. Omitting the selector preserves the Cloud default.
+
+## [11.10.1] - 2026-09-02
+
+### Fixed
+
+- Claude workers now start multiline tasks delivered by `fleet spawn --task` instead of leaving the brief unsubmitted in the composer.
+- `agent-relay node agent attach` no longer loses input typed while its drive or passthrough stream reconnects, while still refusing to replay into a different worker.
+
+## [11.10.0] - 2026-09-02
+
+### Added
+
+- `agent-relay fleet spawn --sandbox-relayfile-path <path...>` mounts only the requested Relayfile subtrees so agents can start against large shared workspaces without materializing unrelated files.
+
+## [11.9.1] - 2026-09-01
+
+### Fixed
+
+- `agent-relay mcp-args --register` now allows up to 30 seconds for Relaycast registration before failing, preventing healthy but slow Cloud workflow agents from timing out at the previous 10-second boundary.
+
+## [11.9.0] - 2026-09-01
+
+### Added
+
+- `agent-relay fleet spawn --sandbox-provider <daytona|e2b>` pins fresh Cloud sandbox placement to a provider and preserves that provider through attribution checks and cleanup.
+
+## [11.8.7] - 2026-08-29
+
+### Changed
+
+- Plumb repos: readonly string[] through EnsureCloudFleetSandboxInput
+
+## [11.8.6] - 2026-08-29
+
+### Fixed
+
+- `agent-relay fleet spawn --sandbox` now waits through the mounted Daytona provisioning deadline instead of abandoning successful long-running requests without a sandbox ID for cleanup.
+
+## [11.8.5] - 2026-08-27
+
+### Added
+
+- `@agent-relay/sdk` placement accepts `placementSandboxOnly` as a client default and `sandboxOnly` per request to restrict eligible nodes to Cloud-provisioned JIT sandboxes; both default to `false`.
+
+### Changed
+
+- `placement.spawn` now fails fast by default when no placement-ready node exists; callers must pass `failFast: false` to opt into bounded queueing.
+
+### Fixed
+
+- `placement.spawn` excludes offline nodes and nodes without live handlers, preserves Relaycast's atomic automatic selection when no client-only constraints apply, and returns named failures without invoking or persisting a hostless placement.
+
+### Breaking Changes
+
+- Placement queueing is no longer implicit. A request without an eligible live node rejects with `no_eligible_node`, `node_unavailable`, `sandbox_policy_mismatch`, or `unmapped_repo` instead of waiting for the placement TTL.
+- `RelaySpawnPlacementAck.node` and `placement.node` are now optional for engine-selected dispatches whose successful acknowledgment cannot yet be matched to roster metadata; use `dispatchedNodeId` or `handlerNodeId` when an identifier is required.
+
+### Migration Guidance
+
+- Pass `failFast: false` on placement requests that intentionally wait for nodes to join, and set a bounded `ttlMs`; set `placementSandboxOnly: true` for clients whose workloads must never run on brokers or developer machines.
+
+## [11.8.4] - 2026-08-25
+
+### Changed
+
+- Gate feature and fix PRs with isolated red-green proofs
+
+## [11.8.3] - 2026-08-24
+
+### Fixed
+
+- Fleet brokers now reclaim their stable agent identity after a restart instead of remaining offline when their previous agent token is unavailable.
+
+## [11.8.2] - 2026-08-22
+
+### Fixed
+
+- Agent names that had already been registered can be reclaimed again. Relaycast made registration create-only, so the broker's register-or-rotate paths failed with an opaque `401 Agent token required`; supervisor restart, offline-agent attach and the broker's own reconnect now reclaim the name through an audited takeover instead, and crash recovery uses the explicit recover route.
+- `agent-relay fleet spawn --node <name>` now uses the active workspace to mint and clean up a short-lived launcher identity when no agent token is present.
+- The `send_dm` MCP tool returns a compact, fixed-size delivery receipt instead of echoing the sent message body back twice, cutting the context a sending agent spends per DM by roughly two-thirds. The `agent-relay message dm --json` output is unchanged.
+- `agent-relay node agent attach --mode drive` no longer drops and reopens its input stream when the agent is busy. A full PTY write queue now reports `pty_write_queue_full`, which the broker and SDK treat as a refusal of that one keystroke instead of transport death, replacing the repeating `input stream lost … / reconnected after 1 attempt(s)` flap with a single line that says the session is still attached.
+- Attach input streams send a keepalive ping, so an idle input socket can no longer be closed by a network idle timeout while the screen keeps updating.
+- Attach no longer sends `rows: 0, cols: 0` to the broker when the terminal reports no size, removing the spurious `rows and cols must be positive integers` warning.
+- Attaching to an agent that lives on another fleet node without `--node` now names the node to run the command on, instead of reporting `no agent named '<name>'` for an agent that is running.
+
+### Added
+
+- `relay session replay <id>` and `@agent-relay/session`'s `SessionClient.replaySession()` now include the cross-node Relaycast conversation for the session, report the effective retention boundary, and flag incomplete coverage.
+- Relay channel, thread, direct, and group messages now carry their originating session so they can be recovered in later session replays.
+
+## [11.8.1] - 2026-08-20
+
+### Added
+
+- `agent-relay fleet spawn <cli> --sandbox` now spawns an agent in a fresh Cloud Daytona node in one command, with no `--token` required in workspace-only shells. It mounts the current Relayfile workspace at `/workspace` by default; pass `--no-sandbox-relayfile` for a deliberately bare sandbox.
+- `agent-relay observer` mints a scoped, read-only observer token and prints the observer URL built from it, so sharing a live follow-along view no longer requires hand-rolling a `POST /v1/observer-tokens` call. Defaults to a 24-hour token with agent DMs excluded; `--channels`, `--include-dms`, and `--expires` widen it, and `observer list` / `observer revoke <id>` manage existing tokens.
+- `get_observer_url` MCP tool does the same for an orchestrating agent, so a lead can hand the user a follow-along link without shelling out.
+- `@agent-relay/sdk` exports `createObserverToken`, `listObserverTokens`, and `revokeObserverToken`.
+
+### Fixed
+
+- `agent-relay fleet agent list` names live agents on remote fleet nodes instead of dropping their rows.
+- `agent-relay fleet agent list --node <name>` is now an exact local filter that excludes other nodes and roster-only records.
+- `agent-relay fleet agent list` labels missing, malformed, or count-mismatched remote inventory as `count only (degraded)` rather than rendering a bare count.
+
+## [11.8.0] - 2026-08-19
+
+### Added
+
+- Fleet node definitions can declare node-local `repoPaths`; registration advertises only placement-safe repository keys and keeps absolute checkout paths private to the node.
+
+## [11.7.2] - 2026-08-19
+
+### Fixed
+
+- `agent-relay node agent attach --node` now tolerates 30-second control-plane responses and retries transient reachability failures inside a 90-second overall budget.
+- `agent-relay node agent attach --node` errors now report the node reference, resolved node ID when available, redacted endpoint, timeout, and attempt count.
+- `agent-relay node agent attach --node` now keeps established sessions alive through the node transport's reconnect window.
+
+## [11.7.1] - 2026-08-18
+
+### Added
+
+- `relay session replay <id>` reconstructs a completed Relay-emitted session as attributed Relayhistory context without minting a new session or attaching to the original harness.
+
+### Fixed
+
+- Fleet node delivery acknowledgements now wait for worker receipt instead of firing when the message is handed off.
+- Fleet node delivery acknowledgements preserve per-agent sequence order across broker restarts.
+- Broker startup now accepts Relaycast registration responses taking up to 12 seconds per attempt, accommodating slower backends.
+- Broker startup now reports handshake deadline exhaustion as an unconfirmed response that may have completed server-side, instead of declaring the backend unreachable.
+
+## [11.7.0] - 2026-08-17
+
+### Added
+
+- `agent-relay fleet agent list [--pretty|--json] [--node <n>] [--all]` lists fleet-wide agents with their live, inventory, and roster presence, and reports unavailable node data explicitly.
+
+### Added
+
+- `agent-relay node agent list --status` shows each agent's inbound delivery mode, pending-queue contents, and a derived "stuck" flag alongside last activity, reporting unavailable delivery reads as `unknown`.
+
+### Fixed
+
+- Live broker workers missing from the Relaycast reconnect inventory are now restored from their existing agent identity, so a node-control reconnect no longer makes a still-running terminal permanently unreachable.
+- `agent-relay node agent attach --node` view sessions now close with a terminal code and reason immediately when their target worker is released.
+
+## [11.6.10] - 2026-08-17
+
+### Fixed
+
+- `agent-relay fleet spawn --cwd` now starts workers in the requested absolute directory on every node and rejects missing or relative paths instead of inheriting the node process directory.
+- The broker's live-worker impersonation probe (used by message sends, delivery read-acks, and channel join/leave) is now bounded, so an engine that never returns from the presence check can no longer hang the caller indefinitely.
+- The broker's own identity is no longer refused as a live-worker impersonation when its own token falls out of cache; it re-mints its own credential instead of erroring.
+- Impersonation now refuses to rotate a target's token when the presence probe returns an agent status it doesn't recognize, instead of treating unknown statuses as safe to rotate.
+
+## [11.6.9] - 2026-08-16
+
+### Fixed
+
+- Fleet terminal drive attach (`agent-relay node agent attach --node --mode drive`) now waits for the remote terminal handshake instead of racing the websocket and failing with `[object Object]`.
+- Fleet terminal attach now preserves the upstream error code and message, so attaching to a missing or cross-node agent reports which machine to run on instead of a generic unreachable-node error.
+
+## [11.6.7] - 2026-08-16
+
+### Fixed
+
+- Fleet terminal attach (`agent-relay node agent attach --node`) now reconnects automatically when the terminal websocket goes silent, instead of appearing connected forever and permanently stopping on long-lived nodes.
+
+## [11.6.6] - 2026-08-16
+
+### Fixed
+
+- Spawned broker workers now derive `RELAY_ATTEST_SESSION_ID` from the harness session they actually run and stamp `Session-Id:` git trailers across HTTP and node-control spawn paths.
+- The broker now logs when a spawned worker has no usable session reference, instead of silently skipping `RELAY_ATTEST_SESSION_ID` injection.
+- The broker's commit-attribution git hook no longer silently disables a repository's other hooks (`pre-commit`, `commit-msg`, etc.) while active.
+- A commit-attribution hook-installation failure now falls back to spawning without commit trailers instead of failing the whole worker spawn.
+
+## [11.6.5] - 2026-08-15
+
+### Added
+
+- `agent-relay agent rotate` now provides an explicit recovery path for an existing agent name whose token is stale or invalid.
+
+### Fixed
+
+- Agent identity recovery no longer releases seats or rotates tokens during ordinary offline presence updates.
+- Agent registration and token rotation are bounded by a deadline instead of hanging indefinitely on an existing broken record.
+- `agent remove` preserves attributed message history and no longer exposes raw database queries or bound parameters when the removal fails.
+
+### Fixed
+
+- Spawned agents receive their brief again when the harness prompt is not
+  recognised. Readiness detection reads a vendor TUI and could reject a healthy
+  session indefinitely, leaving the agent idle holding work it was never handed;
+  injected messages were withheld the same way. Queued startup work is now
+  released once the harness is live and a bounded deadline passes, with a
+  warning. A deliberate veto, such as an unanswered trust prompt, is still never
+  timed out past.
+
+## [11.6.4] - 2026-08-15
+
+### Added
+
+- `agent-relay node agent attach --node` now accepts a short-lived `--join-ticket`, redeems it into an owner-only project workspace credential, and uses that credential for the attach.
+
+### Fixed
+
+- `agent-relay message dm send` now uses workspace credentials for exact recipient resolution even when an agent token is also configured, preserves unresolved delivery receipts, and exits non-zero instead of presenting them as success.
+- MCP `send_dm` now returns a tool error, while preserving its delivery receipt, when exact recipient resolution is unavailable.
+
+## [11.6.3] - 2026-08-14
+
+### Fixed
+
+- `agent-relay message dm send` no longer fails with "Workspace key required" for agent-scoped credentials that can send but aren't authorized to list the workspace roster; recipient-name verification now degrades gracefully instead of blocking the send.
+
+## [11.6.2] - 2026-08-14
+
+### Added
+
+- `agent-relay node agent attach --node` now accepts `--workspace-key`, so commands copied from the Cloud dashboard resolve the intended workspace regardless of the working directory.
+- Passing `--workspace-key` to the local or `--ssh-host` attach path is rejected because those paths authenticate with the broker instead.
+- `agent-relay-broker reclaim-legacy-identity`: restore restart reclaim for one
+  offline agent registered before identity proofs were stamped.
+- Fleet spawn callers can now declare an agent's organization, project, workstream,
+  role, and objective through the CLI, the MCP `spawn` tool, or the Fleet DSL. Relay
+  publishes those fields onto the agent's Relaycast record after registration; when
+  `objective` is omitted the spawn task is used, and hierarchy is never inferred from
+  the agent's name.
+
+### Fixed
+
+- `register_agent` now writes supplied `metadata` or `persona` instead of silently discarding it when returning a cached token, and its new `verify_metadata` option reports whether the write actually persisted.
+- Spawned agents now launch Agent Relay MCP through an installed local `agent-relay` executable instead of cold `npx` resolution.
+- Spawn now fails before start with an actionable error when no usable Agent Relay MCP executable is available.
+- Fleet `spawn:<harness>` actions resolve from the spawn's own verified result instead of bare worker-registry presence, so a node that registers a worker whose process dies during startup now returns `spawn_failed: <detail>` with the startup exit status and worker log path rather than `spawned: true`.
+- A fleet node whose connection to the engine goes dead now reconnects on its own instead of disappearing from `agent-relay fleet nodes` until the broker is restarted.
+
+## [11.6.1] - 2026-08-13
+
+### Fixed
+
+- `send_dm` and `agent-relay message dm send` receipts now name the exact requested and resolved recipients.
+- `send_dm` and `agent-relay message dm send` now report unconfirmed enqueue without claiming delivery, including when recipient resolution is unavailable.
+- `get_message_readers` and `agent-relay message inbox get_readers` now surface a queued-or-unread signal for an empty reader list.
+- `send_dm` mode docs and `agent-relay message dm send --mode` help now explain that `wait` injects on idle while `steer` injects immediately and may interrupt active work.
+- Fleet brokers now periodically renew authoritative worker inventory, including empty snapshots that clear stale server entries, so quiet agents remain active in Relaycast instead of aging offline while their node is healthy.
+
+## [11.6.0] - 2026-08-13
+
+### Added
+
+- `@agent-relay/session` provides Relayhistory-backed cross-harness session continuity with immutable ownership, steering attribution, native Claude resume, and portable journal injection for other handoffs.
+
+- The Swift SDK now provides broker-backed fleet terminal sessions through `AgentClient.terminals`, including live node discovery, view/drive modes, authoritative snapshots, bounded reconnect, input acknowledgements, compare-and-set delivery-mode restoration, and structured close outcomes.
+
+### Fixed
+
+- Fleet terminal snapshot refresh failures stay scoped to their correlated request instead of closing a healthy streaming session.
+
+- Fleet terminal readiness reports the broker's delivery-mode revision so native drive clients preserve concurrent changes across reconnect and close.
+
+- Swift terminal sessions reject further input after an acknowledgement becomes uncertain, preventing duplicate keystrokes after timeout or reconnect.
+
+## [11.5.6] - 2026-08-13
+
+### Fixed
+
+- Remote `agent-relay drive --node` sessions now apply delivery-mode changes instead of remaining in `manual_flush`.
+
+## [11.5.5] - 2026-08-12
+
+### Fixed
+
+- Fleet agent roster status recovers after a node-control reconnect instead of leaving live workers offline.
+
+## [11.5.4] - 2026-08-12
+
+### Fixed
+
+- Serialize terminal worker writes
+
+## [11.5.3] - 2026-08-12
+
+### Fixed
+
+- Increased the Relayfile integration control-plane request budget so subscription provisioning does not fail at the previous 10-second boundary when Cloud provider status is slow, including when callers forward an undefined optional timeout.
+
+## [11.5.2] - 2026-08-11
+
+### Added
+
+- Default-enabled obligation/boomerang lifecycle: obligating DMs (containing `@@c2a-obligation@@`) trigger automatic re-injection to the recipient every 500 ms (up to 3 times) until the author reacts with ✅. Controlled via `RELAY_OBLIGATION_BOOMERANG=0` to disable and `RELAY_OBLIGATION_INTERVAL_MS=<ms>` to configure the return interval.
+- `agent-relay local agent attach <agent> --node <node>` now opens an authenticated terminal session for physical and Daytona fleet nodes, preserving view, drive, and passthrough modes.
+- `agent-relay local agent attach <agent> --ssh-host <host>` now provides an explicit SSH fallback for physical fleet nodes without exporting the remote broker or its API key.
+- Spawned agents now stamp a `Session-Id:` git trailer on commits when the dispatcher supplies a session reference, enabling auditors to trace each commit back to the session that produced it.
+- `agent-relay node agent attach` now distinguishes between "agent does not exist" and "agent is running on a different fleet node": when a 404 resolves to a workspace-registered agent with a fleet placement, the error names the node (`agent 'X' is registered on node 'finn-mini'; cross-node attach is not yet supported`) instead of the indistinguishable "no agent named 'X'".
+
+### Fixed
+
+- `agent-relay integration subscribe` now sends Relayfile path filters using Relaycast's `path_glob` wire field, preventing scoped subscriptions from silently receiving broader event sets.
+- Broker bridge now treats a blank/whitespace-only nested `sessionRef` inside `metadata.attestation` as absent; a valid top-level `session_ref` correctly fills the field instead of being silently suppressed.
+
+## [11.5.1] - 2026-08-10
+
+### Added
+
+- Add commit trailer hook support
+
+### Changed
+
+- Cover configured commit hooks
+
+### Fixed
+
+- Preserve home-relative commit hooks
+- Retain inherited git configuration
+- Preserve existing commit hooks
+
+## [11.5.0] - 2026-08-10
+
+### Added
+
+- The Agent Relay `spawn` MCP tool accepts an AgentWorkforce `persona` id or path instead of a raw CLI, routes it to a `spawn:persona` fleet node, and waits for broker registration plus harness readiness before reporting success. `@agent-relay/fleet` documents the corresponding `defineWorkforcePersonaSpawnNode` setup.
+
+### Fixed
+
+- Fleet node heartbeats remain compatible with deployed Relaycast engines when capacity is unbounded, so active-agent counts and liveness continue updating while nullable load reporting rolls out separately.
+
+## [11.4.3] - 2026-08-09
+
+### Fixed
+
+- Spawned PTY agents keep their initial brief queued until the harness exposes a proven input prompt, preventing slow CLI startup from losing the brief and leaving a registered agent idle.
+- Spawned Codex PTY agents accept the CLI's directory-trust interstitial before readiness, so a queued initial brief reaches the real input prompt instead of remaining parked behind the startup menu.
+- `agent-relay node agent attach --mode drive` (and `--mode passthrough`) no longer floods the terminal with `input stream send failed: PTY input stream is closed` when the PTY input stream dies mid-session. The loss is now reported once, the stream is reopened with bounded backoff, and if that fails the command exits non-zero with a readable message instead of leaving a session that looks alive but accepts no input. Because attach forwards every byte except `Ctrl+C`/`Ctrl+]` while the stream is healthy, a source TUI with mouse tracking enabled could previously produce this flood from pointer movement alone, without a single keystroke; input is now dropped rather than forwarded for as long as the stream is down.
+- A reopened attach input stream is verified to belong to the same worker process before any keystroke is forwarded. The stream is reopened by agent name, so without this a replaced worker could silently receive input typed for the session you attached to; the check fails closed when identity cannot be established.
+
+## [11.4.2] - 2026-08-07
+
+### Added
+
+- `agent-relay cloud login --device` logs in a machine with no browser through the OAuth device flow: the CLI prints a code you approve from any other device. Login and re-authentication fall back to it automatically over SSH or on a Unix host with no display server, and each machine gets its own cloud session instead of a copied `cloud-auth.json`. Requires cloud with the device authorization endpoints.
+- `agent-relay workspace restore` returns to the recorded previous workspace.
+- `agent-relay workspace rebind <name>` pins a project's next broker start to a named workspace without changing the machine-global active workspace.
+
+### Changed
+
+- `workspace create` warns on stderr when it changes the active workspace and records the prior name; named switches now record the same restore point, and first-run telemetry notices no longer contaminate JSON stdout.
+- `agent-relay node status` reports whether the broker workspace came from a command-line flag, environment variable, repository pin, machine-global active workspace, or first-run creation.
+
+### Fixed
+
+- `agent-relay node up` resolves its installed broker through canonical package-manager links and Relay's user install directories, so mise-managed and minimal-`PATH` launches no longer fail when the broker binary is already installed.
+- `agent-relay node up` warns instead of silently ignoring stored Cloud fleet enrollments when the project workspace pin has no enrolled node id. That combination started the broker in the pinned workspace while the node never heartbeat, leaving the Cloud dashboard and `agent-relay fleet nodes` showing different rosters with no error from either.
+- `agent-relay cloud enroll` records the enrolled node on the project workspace pin, so `node up` in that repo serves the node it just enrolled. A pin that already names a different node is reported and left untouched rather than repointed.
+- `agent-relay workspace switch|join` keeps the project's enrolled fleet node id instead of dropping it, which previously produced the pin state that made the next `node up` ignore the enrollment store.
+- `agent-relay up` / `node up` use one precedence ladder: `--workspace-key` → workspace environment variables → repository pin → machine-global active workspace → creating one. A fresh project joins the active workspace instead of silently creating another, startup announces the winning source, and `node status` reports the same five-source provenance.
+- Cloud enrollment selects node identity without overriding workspace resolution. A conflict with the repository pin stops startup, names both non-secret sources, and points to `workspace rebind <name>` as the recovery path.
+- `agent-relay node agent spawn` now verifies that the worker process survives startup before reporting success, and reports its exit status and log path when launch fails.
+- Detached `node up --background` surfaces early child failures and stops polling when the child exits without trying to kill an already dead process.
+- A fleet node killed and restarted before its stale registration is reaped no longer fails to come back online: the broker now proves its own restart identity from its persisted state directory, so it can reclaim its prior name without an operator setting `RELAY_AGENT_IDENTITY_KEY` by hand.
+
+### Security
+
+- Agent registration no longer hands over an existing agent's id, name, and bearer token to whoever registers with the same name. A name collision is now rejected unless the request proves it's the same work unit via `RELAY_AGENT_IDENTITY_KEY` matching the identity stamped on the existing agent at its creation; strict- and non-strict-name registration now share this same fail-closed admission decision.
+- That identity proof is stored as a one-way hash rather than the raw value, so a workspace member who can read agent metadata can no longer replay another work unit's identity key to reclaim its credentials.
+
+## [11.4.1] - 2026-08-03
+
+### Changed
+
+- Every `agent-relay` MCP tool description now states what the call returns, so an agent can tell from the tool list whether `post_message` hands back a message ID, whether `spawn` means the worker is running, and what an empty `list_agents` result implies. `register_agent` also explains that the registered name can differ from the requested one.
+
+### Fixed
+
+- CLI output no longer disappears when stdout or stderr is a pipe instead of a terminal. Node's stdio writes are asynchronous for pipes on macOS, so exiting in the same tick as the write discarded whatever was still buffered — `agent-relay cloud session --json | parser` and `$(agent-relay …)` could come back with empty stdout _and_ empty stderr, hiding the payload and the error that explained the failure. Every hard-exit path now drains stdio first.
+
+## [11.4.0] - 2026-08-02
+
+### Added
+
+- `agent-relay cloud workspaces` lists the Cloud workspaces the stored login can use, with their IDs (`--json` for scripts). Workspace IDs previously had no CLI discovery path.
+- `agent-relay cloud enroll --workspace` accepts a workspace name or slug, not just a Cloud workspace UUID or unified `rw_` ID. The name is matched against the login's workspace listing, so enrolling no longer requires fetching an ID from the web dashboard.
+
+### Changed
+
+- `agent-relay cloud whoami` prints the organization and workspace IDs alongside their names.
+- `agent-relay` pins `@relayflows/cli` exactly, so each Relay release resolves one reviewed workflow dependency tree instead of changing with later compatible Relayflows publishes.
+
+### Security
+
+- Bundled Gemini and Codex relay instructions and hooks no longer expose workspace administration keys in observer URLs or terminal transcripts; observation now requires a separately provisioned, read-only observer token.
+
+## [11.3.1] - 2026-07-31
+
+### Fixed
+
+- A CLI command that fails with a non-`Error` value now reports it. A protocol-shaped rejection such as `{ status: 401 }` from a broker client printed `[object Object]`, and an `Error` with an empty message printed nothing at all; both now surface the message, status, and code, with credentials redacted. Applies to the top-level failure handler, `node agent attach`, and broker request failures.
+- `agent-relay integration webhook create` now works. It took a `<url>` argument and sent `{ url, event }`, but `POST /v1/webhooks` accepts `{ channel, name? }` and returns the URL — so every invocation failed with `channel is required`. It now takes `<channel>` with an optional `--name`, matching `create-inbound`, which posts to the same endpoint.
+- `@agent-relay/sdk` `RelayCreateWebhookInput` declared a required `url` and an `event`, neither of which the endpoint accepts. It is now `{ channel, name? }`. Code passing `url`/`event` was already failing at runtime.
+
+## [11.3.0] - 2026-07-30
+
+### Changed
+
+- `@agent-relay/config`, `@agent-relay/cli`, `@agent-relay/fleet`, and `@agent-relay/harness-driver` now build on Zod 4, matching `@agent-relay/sdk`; Relay no longer ships a split Zod 3/Zod 4 install.
+- `@agent-relay/config` builds `jsonSchemas` with Zod's built-in `z.toJSONSchema` and drops the `zod-to-json-schema` dependency. Output stays draft-7 and still describes config files as authored, but some keywords differ (records gain `propertyNames`, integers gain explicit bounds, and `RegExp` fields render as unconstrained).
+- `@agent-relay/harness-driver` now exports `SpawnAgentResultSchema` as a Zod 4 schema, and `@agent-relay/fleet` `action()` validates its `input` with Zod 4. Code that pairs either with its own Zod 3 instance — `z.infer`, `.extend()` — needs `zod@^4`.
+- `node agent attach --mode drive` keeps the agent in `auto_inject`, so a driven agent goes on receiving relay messages while you watch it instead of having them parked for the whole session. `Ctrl+]` now holds delivery when you want the screen still while typing; a second press drains the queue and returns to live delivery.
+
+### Added
+
+- `relay node agent list --pretty` shows a `PENDING` column with the messages still waiting to reach each agent (queued inbound plus in-flight deliveries awaiting confirmation); the broker reports it as `pending_messages` on `GET /api/spawned` and `GET /api/status`.
+- `agent-relay cloud login` now records your user, email, and organization to `~/.agentworkforce/relay/cloud-identity.json`, and the CLI, broker, and Relaycast traffic all report usage under that user and org instead of an anonymous machine id. `agent-relay cloud whoami` refreshes the record; `agent-relay cloud logout` clears it.
+- `agent-relay telemetry status` reports which user and organization usage is attributed to, or says so explicitly when it is anonymous.
+- Every event now carries a `machine_id` alongside the person key, signed in or not, so machine-level questions survive login: how many machines an account runs on, how many accounts share a machine, and (via Relaycast's `actor_machine_id`) how many machines share a workspace.
+- `@agent-relay/cloud/identity` exposes the identity store (`readStoredIdentity`, `resolveCloudIdentity`, `cloudIdentityEnv`), and child processes inherit identity via `AGENT_RELAY_USER_ID` / `AGENT_RELAY_ORG_ID` / `AGENT_RELAY_ORG_SLUG` / `AGENT_RELAY_USER_EMAIL`.
+
+### Fixed
+
+- An agent released and respawned under the same name receives relay messages again. Release drops the agent's delivery cursor and the engine reuses the agent record, so every message after the respawn arrived past the start of the sequence, was classified as a gap, and was acknowledged without being delivered — discarding it and stopping the engine from retrying.
+- A PTY agent whose inbound delivery is held when it becomes ready now runs the initial task from its spawn, instead of leaving it parked in the worker's injection queue until the hold lifts.
+- The published CLI now actually reports telemetry. The npm package is plain `tsc` output with no key injection step, and the bun standalone's `--define` targeted a literal `process.env.AGENT_RELAY_POSTHOG_KEY` that the code never read (it used a computed `process.env[name]` lookup), so **both** installable artifacts shipped with telemetry silently disabled — every `cli_command_run`, `workflow_run`, `cloud_auth`, `agent_relay_tool_call`, `setup_init`, `swarm_run`, and `bridge_spawn` event was dropped. Only the Rust broker was reporting.
+- Opting out of telemetry (`AGENT_RELAY_TELEMETRY_DISABLED` or `DO_NOT_TRACK`) now keeps your cloud identity out of child process environments, including identity an ancestor process or your shell had already exported. The identity env vars — one of which carries your email — previously reached every spawned process, including third-party harness CLIs, even when opted out.
+- Identity forwarding to the Relaycast gateway is no longer gated on the local process carrying a PostHog key. An npm-installed CLI bakes no key, so it previously forwarded no identity at all and every hosted event fell back to being keyed on the workspace. Forwarding now follows the telemetry preference alone.
+- `node agent list` no longer reports an exited agent as `working` indefinitely; the broker now reaps a worker whose harness has gone away or never started.
+- `node agent attach --mode drive|passthrough` truncates its status line to the terminal width, so a narrow pane no longer stacks status lines over the agent's output.
+- PTY `node agent attach --mode drive|passthrough` sessions now reserve and safely clip their status row, preventing full-screen agent CLIs from tearing, scrolling, or duplicating Relay's controls.
+- Detaching from `node agent attach --mode drive|passthrough` restores the row and column the status line reserved, so a later `--mode view` session no longer inherits a PTY one row and column short. `POST /api/resize/{name}` applies dimensions sent alongside `release: true`.
+- Agent Relay MCP instructions now route work with existing named participants through Relay instead of provider-native subagents.
+- The `drive` status line counts only messages actually parked by the inbound hold. It previously also counted every delivery a harness queued for injection, so `pending` climbed on ordinary traffic and never came back down.
+- `node agent attach --mode view` now exits on the first Ctrl-C instead of waiting for a WebSocket close handshake.
+- `agent-relay up` keeps Reflex history-sync diagnostics out of normal startup output, writes them to `--log-file` when configured, and shows them with `--verbose`.
+- The broker now sends its anonymous telemetry id (`X-Agent-Relay-Distinct-Id`) and origin actor with its Relaycast requests, so hosted usage can be attributed to an install instead of only to a workspace. The id header is omitted when telemetry is opted out; requests and origin actor are unaffected.
+- The broker now reads its telemetry preference and machine-id files from `AGENT_RELAY_DATA_DIR` when set, matching the CLI. It previously only read `~/.agentworkforce/relay/telemetry.json`, so an opt-out written by `agent-relay telemetry disable` under a configured data directory was ignored.
+- `WhoAmIResponse.currentOrganization` and `currentWorkspace` are typed as nullable, matching what Cloud returns for a user with no active workspace; `agent-relay cloud whoami` no longer crashes for those users.
+
+### Security
+
+- CLI output masks credentials: `node up` / `node status` print the workspace key as `rk_live_…xxxx`, `cloud session --json` masks the access token unless `--reveal-token` is passed, and `workspace active --json` / `workspace create` mask workspace keys unless `--reveal-secrets` is passed. The new `workspace key [name]` command reads a stored key back from the local store (masked unless `--reveal-secrets`).
+- The workspace key no longer appears on any child argv: the broker child and the `--background` daemon both receive it via the environment only, so `ps` output and startup error messages never carry it. Verbose startup steps mask the key in the handshake line.
+- Error output redacts embedded credentials: cloud endpoint errors (which carry key-bearing URLs) and Commander unknown-option errors (which echo mistyped flags like `--workspce-key=rk_live_…` verbatim) mask any live credential in the text.
+- Upgraded `axios`, `concurrently`, `fast-uri`, `form-data`, `hono`, `js-yaml`, `postcss`, `shell-quote`, and `tar` past their high- and critical-severity advisories.
+
+## [11.2.0] - 2026-07-25
+
+### Added
+
+- `agent-relay cloud room` can invite trusted full room participants through explicit secret sinks, manage members, and establish revocable per-device Relaycast sessions without sharing the workspace key.
+- `agent-relay cloud integration` exposes the existing Cloud integration catalog, connection, and disconnection lifecycle from the CLI; connected providers remain available through Relayfile's normal setup, mount, and writeback flow.
+- `agent-relay agent me|presence` use scoped agent credentials for room-safe identity and presence checks.
+
+### Fixed
+
+- Codex PTY workers now receive initial Relay tasks in one bulk write, preventing full-screen input redraws from delaying task submission for minutes.
+- `agent-relay node up` now binds an OS-assigned API port atomically by default, preventing concurrent Fleet nodes from racing over a probed port; `AGENT_RELAY_BROKER_PORT` remains an explicit stable-port override.
+- Newly connected Fleet brokers now advertise their spawn/release handlers immediately, so the first remote spawn is dispatched instead of remaining queued until load changes.
+- `agent-relay fleet spawn --session-ref` now passes the requested session to Claude and Codex as a real resume operation, and a released agent name can be reused immediately instead of being suppressed as a duplicate spawn.
+
+## [11.1.1] - 2026-07-23
+
+### Added
+
+- `relay node agent list --pretty` now provides a compact agent view with each agent's name, CLI/model, state, and relative last activity time.
+- `agent-relay fleet spawn|release` can create, target, and release agents across live Fleet nodes directly from the terminal.
+- `agent-relay fleet nodes --all` includes offline and direct fleet-history records when they are needed for diagnostics.
+- `agent-relay message dm send --mode steer` can wake an idle remote agent immediately from the terminal.
+
+### Changed
+
+- `agent-relay fleet nodes` now shows only live fleet providers by default instead of mixing unavailable nodes with direct-delivery history.
+- CLI and MCP workspace selection is now pinned to the current project, so later agents and processes resume one collaboration session until a new workspace is explicitly created or selected.
+- Enrolled Fleet nodes now retain their node identity when a pinned project session is restarted.
+
+### Fixed
+
+- MCP workspace creation and selection now preserve completed remote or in-memory changes with a warning when local persistence fails, preventing duplicate workspaces and false failed switches.
+- Workspace creation now rejects invalid names before provisioning a remote workspace.
+- Fleet node restarts now reject stored enrollment fallbacks that do not match the project-pinned node identity.
+
+## [11.0.2] - 2026-07-22
+
+### Fixed
+
+- `agent-relay agent attach --mode drive|passthrough` now takes raw input before replaying terminal state and preserves inherited raw mode on detach, preventing mouse-report escape characters and parent-TUI input regressions.
+
+## [11.0.1] - 2026-07-22
+
+### Fixed
+
+- `agent-relay agent attach --mode view` now consumes local input while viewing, preventing mouse-wheel reports from appearing as scroll-up and scroll-down escape characters.
+
+## [11.0.0] - 2026-07-21
+
+### Added
+
+- Relay harnesses and `agent-relay node agent spawn|new --runtime native` can run Claude Code, Codex, OpenCode, Pi, and experimental Deep Agents through official AI SDK harness adapters, while `--runtime pty` remains available for terminal sessions and unsupported harnesses.
+- Relaycast exposes canonical agent activity and agent events with capability, source, and fidelity metadata across native and PTY runtimes.
+
+### Changed
+
+- Feature verification catalog now records the exact CLI and MCP surfaces, adds previously unlisted SDK and plugin integrations, and maps every category to an end-to-end procedure with prerequisites, assertions, cleanup, and automation limits.
+
+### Fixed
+
+- Native Codex sessions now use an AI SDK adapter that avoids the macOS XProtect false positive affecting its previous bundled Codex executable and defaults to a model accepted by ChatGPT-account authentication.
+- Native `node agent attach --mode drive` now disconnects idle event streams before cleanup, so `/detach` and Ctrl-C return immediately.
+- Native harness sidecars now start with authenticated Relay messaging and discovery tools plus collaboration instructions, so agents can coordinate without user setup or global MCP configuration.
+- Native harnesses now preserve sender and routing context on inbound Relay messages, so Claude and Codex reply through Relay instead of only printing responses in attached terminals.
+- `agent-relay-broker` now orders fleet `agent.deregister` before acknowledging a local worker release, so a restarted node can immediately recover the same agent name without an active-location collision, and fails fast instead of stalling the runtime API when fleet-control delivery is backpressured.
+- Native AI SDK harnesses now permit official adapter bootstrap files under their fixed cache root and invoke pnpm independently of Relay's npm workspace, preventing successful-looking spawns from immediately disappearing.
+- Native `node agent attach --mode drive` sessions now show an interactive prompt, preserve structured adapter error messages, and close their broker connection when detached.
+
+### Breaking Changes
+
+- Agent Relay now requires Node.js 22 or newer.
+
+### Migration Guidance
+
+- Upgrade Node.js to version 22 or newer before installing this Agent Relay release.
+
+## [10.6.7] - 2026-07-21
+
+### Fixed
+
+- `@agent-relay/cloud` now exposes project-aware workspace resolution, and SDK-backed CLI consumers prefer the workspace recorded by the broker in the current checkout over an unrelated machine-global active workspace.
+
+## [10.6.6] - 2026-07-19
+
+### Fixed
+
+- `agent-relay cloud enroll --workspace` now validates and resolves Cloud UUIDs and unified `rw_` IDs before minting, and reports unresolvable identifiers instead of mislabeling them as permission failures.
+
+## [10.6.5] - 2026-07-19
+
+### Added
+
+- `agent-relay cloud enroll --workspace <id>` now mints and redeems a fleet-node enrollment token from the stored Cloud login, so admins can enroll machines without copying tokens from the dashboard.
+- `agent-relay-broker` `/health` now reports `deadLetterCount`, making terminal delivery loss visible alongside the pending queue.
+
+### Fixed
+
+- `agent-relay-broker` now keeps wait-mode PTY deliveries pending through busy turns and enrolls spawned workers in their declared Relaycast channels, preventing premature dead-lettering and missing channel mentions.
+
+## [10.6.4] - 2026-07-18
+
+### Fixed
+
+- `agent-relay integration` now discovers relayfile control-plane capabilities before sending API v3 headers, fails fast with upgrade and restart guidance for incompatible daemons, and safely replaces stale daemons when a compatible binary is installed.
+- `AgentRelaySDK` now maps Relaycast lifecycle states onto its existing Swift presence states, so root-package consumers compile with Relaycast 6.1 and later while package-local builds remain compatible with 6.0.5.
+- `agent-relay-broker` and `@agent-relay/utils` now preserve mise/asdf/rtx-style CLI shims when spawning provider workers, so Codex, Claude, Gemini, and other agent CLIs installed via a version manager receive their own permission flags (e.g. `--dangerously-bypass-approvals-and-sandbox`) instead of the manager binary rejecting them.
+
+## [10.6.3] - 2026-07-17
+
+### Fixed
+
+- `agent-relay-broker` no longer mistakes `/exit` text echoed during a paced message injection for an agent-issued exit command, preventing freshly spawned PTY agents from terminating before their initial task is delivered.
+
+## [10.6.2] - 2026-07-16
+
+### Added
+
+- `workflows/verify-features.ts` — scheduled relayflow that verifies every user-facing CLI feature tier by tier (CLI health, broker lifecycle, channel messaging, cross-agent DMs, critical paths) and posts structured PASS/FAIL reports to `#relay-health`. The reporter agent analyzes logs for drift and waits for human approval before opening a PR with fixes.
+- `.agentworkforce/features/manifest.yaml` — exhaustive catalog of 124 features across 20+ categories, each tagged with verify tier, criticality, and source location.
+- `.agentworkforce/features/critical-paths.md` — documents the 4 product-critical sequences that must work end-to-end (broker+registration, channel messaging, local agent lifecycle, MCP server).
+- `@agent-relay/sdk` `./workflows` subpath export, enabling local workflow files to import the workflow builder without a build step.
+
+### Fixed
+
+- `agent-relay node up --background` now preserves persisted Cloud enrollment credentials and node identity through detached startup, and fails instead of reporting healthy when the enrolled node cannot connect.
+
+## [10.6.1] - 2026-07-16
+
+### Fixed
+
+- `agent-relay node up --config` now loads JavaScript and TypeScript node definitions with package imports from standalone binaries, while npm-installed Bun runs keep their existing in-process behavior.
+- `agent-relay node up` now serves persisted Cloud-enrolled nodes with the enrolled `nodeId`, so the broker and local providers authenticate with the node token's bound identity instead of a fresh local node id.
+
+## [10.6.0] - 2026-07-16
+
+### Added
+
+- `agent-relay-broker` reports a PII-safe `broker_panic` telemetry event from a process-wide panic hook, capturing only the compile-time `panic_location` (`file:line`) — never the panic message — so broker crashes are visible alongside the existing agent-crash signal.
+
+### Fixed
+
+- `@agent-relay/sdk` repo-filtered message placement now matches nodes: `toRelayNode` derives a node's `repoKeys` from its `repo:<key>` registration tags when no dedicated repo field is present, so a placement repo filter is no longer a no-op that never matches. Explicit `repoKeys`/`repo_keys`/`repoPaths` fields still take precedence.
+- `agent-relay-broker`'s `/api/observer-token` recovers from an `observer_token_name_conflict` (409) by rotating the existing same-named token to return fresh, usable material instead of failing the mint, so repeat mints of the fixed-name dashboard observer token succeed. It rotates only a token whose scopes exactly match the endpoint's read-only set and that carries no filters; any other conflict still propagates unchanged.
+
+## [10.5.0] - 2026-07-16
+
+### Added
+
+- `agent-relay drive` (and `agent new`, which attaches in drive mode) gains an in-band `Ctrl+]` toggle that flips the driven agent between held (`manual_flush`) and live (`auto_inject`) inbound delivery, draining the parked queue into the PTY; the status line shows the current mode, the pending count, and the toggle hint.
+- `@agent-relay/sdk` observer mode: `new AgentRelay({ observerToken })` streams `relay.addListener(...)` read-only from the workspace observer plane — the durable event log is REST-backfilled and merged with the live stream, deduped and ordered by `seq`, with `sinceSeq`/`onCursor` options to persist and resume the cursor across restarts. Degrades to live-only against engines without the backfill endpoint; `workspace.register()`/`reconnect()` throw in observer mode (observer tokens are read-only).
+
+### Changed
+
+- `@agent-relay/sdk` messaging and delivery types now derive from the canonical `@relaycast/types` schemas: `Relay*` types index into the wire contract, `normalize.ts` validates payloads with canonical-derived zod schemas at the boundary instead of probing snake/camel field variants, and `InboxItemState` builds on canonical `DeliveryStatus`, while `InjectionResult.status` derives from the adapter receipt lifecycle (`MessageReceipt`) — wire-contract changes now surface as compile errors instead of silent drift.
+
+### Fixed
+
+- `agent-relay node agent message flush` now actually injects the queued messages while a drive session is attached: the broker sends a one-shot `flush_injections` frame that exempts the flushed backlog from the drive-mode interactive hold, instead of parking it in a second frozen queue until detach. Without this (and the `Ctrl+]` toggle above), an agent being driven could never receive a relay message — replies to anything it sent sat invisible until the human detached.
+- `agent-relay drive` no longer zeroes its pending counter on a partial flush; the undrained remainder stays counted in the status line.
+- `@agent-relay/sdk` `relay.addListener(...)` on a workspace-key client now receives channel messages, DMs, and thread replies by streaming through registered agent clients (`workspace.register`/`reconnect`) over the node transport, deduplicating events delivered to multiple locally-registered agents; previously listeners silently received nothing. Listener connect failures now surface through `onError` instead of being swallowed, and a listener with no registered agent warns after 10s.
+- `agent-relay-broker` now mutes the default/extra channels it joins for its own broker-self agent, so channel messages stop writing delivery rows to that identity's permanently-offline implicit node (they previously queued until TTL expiry on every message). Muting is best-effort and never fails startup.
+- `@agent-relay/sdk` messaging events map the canonical `message.reacted` WebSocket event onto `reactionAdded`/`reactionRemoved`; previously only the non-canonical `reaction.added`/`reaction.removed` names were handled, so reaction listeners never fired against current Relaycast engines.
+
+## [10.4.0] - 2026-07-15
+
+### Added
+
+- `--wk <key>` is a shorthand for `--workspace-key` on every SDK-backed `agent-relay` command (`fleet nodes`, `workspace`, `integration`, `webhook`, …) and on `up`/`node up`; an explicit `--workspace-key` still wins when both are passed.
+- `agent-relay up` records the workspace it joins (passed via `--workspace-key`/`--wk` or auto-minted) in the project data dir, and SDK-backed commands run in that directory now resolve that workspace key ahead of the machine-global active workspace, so `fleet nodes`/`node …` in a project reflect the broker's actual workspace. An explicit `--workspace-key`/`--wk` or `RELAY_WORKSPACE_KEY`/`RELAY_API_KEY` still overrides it. `fleet nodes` prints a stderr note when the key was inferred from that project record, so a stale broker workspace is visible rather than silent.
+
+### Changed
+
+- `agent-relay-broker` injects messages into a CLI with escape-aware paced writes — one VT control sequence (CSI/SS3/OSC), UTF-8 codepoint, or byte at a time with a small gap between them — instead of one bulk write, reducing dropped or batched leading characters during injection. Tunable via `RELAY_INJECT_RATE_MS` (default `5`; `0` restores the single bulk write).
+
+## [10.3.0] - 2026-07-15
+
+### Added
+
+- `AgentRelayBrokerSDK` (Swift) reaches broker-control/observability parity with the TypeScript harness driver: `listAgents`, `sendInput`, `resizePty`, `flushPending`, `snapshot`, full-payload `sendMessage` (with `mode`), `setModel`, `subscribeChannels`/`unsubscribeChannels`, `getStatus`, `getMetrics`, `getCrashInsights`, `preflight`, and `renewLease` on `AgentRelayBrokerClient`, plus the `Codable` response types (`ListAgent`, `BrokerStatus`, `PtySnapshot`, `MetricsResponse`, `CrashInsightsResponse`, and related).
+
+### Fixed
+
+- `agent-relay agent attach --mode view` strips mouse-tracking, focus-reporting, alternate-scroll, and bracketed-paste enables from the viewed agent's output, so watching an agent whose TUI uses the mouse no longer sprays `^[[<35;22;25M`-style escape sequences over the read-only viewer.
+- `AgentRelaySDK` and `AgentRelayBrokerSDK` (Swift) release cancelled async-stream consumers, bound event buffering, and avoid creating channel event queues for join-only subscriptions, preventing reconnect-driven memory growth.
+- `agent-relay-broker` retries the Codex model-detection spawn (`codex debug models`) on `ExecutableFileBusy` (`ETXTBSY`), so a concurrent `fork`/`exec` race under load no longer aborts detection and spuriously falls back away from the requested model.
+- `agent-relay-broker` bounds each initial Relaycast startup handshake attempt and retries on timeout with backoff (per-attempt deadline scaled by the configured workspace count), so a stalled backend connection no longer hangs `agent-relay node up`/`init` until an external supervisor kills the broker (which surfaced as an opaque "broker exited with code null during initial handshake"). Returned errors are surfaced immediately rather than replayed. Tunable via `AGENT_RELAY_HANDSHAKE_TIMEOUT_MS` and `AGENT_RELAY_HANDSHAKE_ATTEMPTS`.
+
+## [10.2.0] - 2026-07-14
+
+### Added
+
+- `AgentRelaySDK` (Swift) gains rich relay facades over the relaycast engine SDK, mirroring the TypeScript `@agent-relay/sdk`: `AgentClient.threads` (get/reply), `inbox` and `deliveries` (list/ack/fail/defer), `channels` (list/get/create/update/archive/join/leave/invite/members/mute/unmute), `agents` (list/get/me/update/delete/presence), `nodes`, `triggers`, `integrations` (webhooks + subscriptions), `files` (upload), and `workspace` admin. `post`/`dm` accept `attachments`, and a typed listener hub adds `addListener`/`once`/`onError` alongside the existing event streams. `AgentRelay.createWorkspace(name:)` and `AgentRelay.workspace` consolidate workspace bootstrap and participant registration. Depends on relaycast `6.0.5+`.
+- `agent-relay-broker` retains terminally-failed deliveries (retry cap exhausted or recipient gone) in a persisted, capped dead-letter queue instead of discarding them, emitting `dead_letter_added`/`dead_letter_redelivered` broker events and exposing `GET /api/dead-letters` and `POST /api/dead-letters/redeliver`.
+- `agent-relay node deadletters` lists dead-letter deliveries and `agent-relay node redeliver <id|--all>` requeues them through the normal delivery path with a reset retry count; `@agent-relay/harness-driver` adds matching `getDeadLetters()`/`redeliverDeadLetters()` client methods.
+- `agent-relay-broker` persists its inbound dedup cache (relaycast spawn control events and delivery read-acks) alongside pending deliveries and reloads it on startup, dropping expired entries, so a crash + restart no longer re-processes those already-seen control events and read-acks.
+
+### Changed
+
+- `agent-relay-broker` upgrades the bundled `relaycast` engine crate to 6.0 and parses inbound Relaycast WebSocket events against the published typed contract first, logging a structured warning when an event only parses via the tolerant fallback — so engine contract drift is observable without dropping traffic.
+
+### Fixed
+
+- `AgentRelaySDK` (Swift): realtime channel/DM/thread events now resolve the sender correctly instead of falling back to `"unknown"`, reading it from relaycast's message-level `agent_id`/`agent_name` fields.
+- `AgentRelaySDK` (Swift): a bare HTTP 409 from relaycast is no longer blanket-mapped to `agent_already_exists`; only agent registration (`register`/`registerOrRotate`) gets that remapping, while every other endpoint (channels, triggers, nodes, webhooks, ...) surfaces its original error code.
+- `@agent-relay/harness-driver` ignores callbacks from superseded event WebSockets, decodes fragmented and binary frames correctly, and reconnects with exponential backoff, preventing duplicate or dropped events during reconnect races.
+- `HarnessDriverClient.subscribeWorkerStream()` bounds each subscription buffer (default 10,000 chunks, configurable with `maxQueueSize`) and drops the oldest chunk with a one-time warning when a consumer falls behind.
+- `relay node tail --agent <headless-agent>` preserves stdout and stderr bytes, including CRLF and unterminated final chunks, instead of joining or altering output lines.
+- `agent-relay-broker` prunes stale PTY input serializers when workers exit or are released and reconciles them after broadcast lag instead of retaining entries indefinitely.
+- `agent-relay drive` and `passthrough` restore inbound delivery mode safely when setup is interrupted or detach races another session, preserving explicit holds and concurrent mode changes.
+- `agent-relay drive`, `view`, and `passthrough` preserve split UTF-8 input, stop terminal writes after detach begins, avoid status-line repaints inside partial ANSI sequences, skip status output for non-TTY streams, and bound buffered output under backpressure.
+- PTY input acks (`POST /api/input/{name}`, the input WebSocket, and the harness-driver `PtyInputStream.send()`) now resolve only after the worker confirms the keystrokes reached the child process. Failed PTY writes surface as a rejected `send()` (via a `write_pty`→`write_pty_response` round-trip with a 5s dead-worker timeout) so `agent-relay drive` predictive echo rolls back glyphs for input that never landed, instead of acking prematurely on enqueue. The `POST /api/input/{name}` response includes the worker `name` alongside `bytes_written`, matching the `HarnessDriverClient.sendInput` contract.
+- `agent-relay drive` no longer races worker automation against the human. Switching a worker to `manual_flush` sends an interactive hold that pauses pending relay-message injection (queued deliveries are parked, not dropped), freezes any in-flight injection, and suppresses the stuck-agent auto-enter and prompt auto-responders; switching back to `auto_inject` releases the hold and resumes. The hold is replayed to a worker that restarts while still in `manual_flush`.
+- PTY workers no longer deadlock or stall when a wrapped CLI floods output without reading its input. PTY writes (drive keystrokes, relay-message injection, auto-responses) now submit to the write drainer non-blockingly instead of parking the worker's async select loop, so the loop keeps forwarding output and handling input even when the child's stdin buffer is full. Injection pacing delays are now deadline-driven rather than inline sleeps, removing the per-delivery drive/watch latency jank. Relay-message injection now advances only after the drainer confirms each paced write reached the child, so a wedged drainer no longer produces a false `delivery_injected` or a bogus echo baseline — the delivery is requeued and retried instead. Human keystrokes that hit a momentarily full write queue are buffered in FIFO order and retried rather than dropped, preserving typing under back-pressure.
+- `agent-relay-broker` raises the timeout for detecting local Codex CLI model support from 5s to 15s, avoiding a spurious fallback away from the requested model when the CLI is slow to spawn under load.
+- `agent-relay drive`/`passthrough`: concurrent attach clients no longer fight over the shared PTY size. The broker now enforces a single-resizer policy — `POST /api/resize/{name}` accepts an optional `session_id` (sent by the attach clients) and applies resizes only from the current owner, releasing on detach so the next client can take over. An idle-but-live session keeps ownership by periodically re-asserting its current size (a no-op refresh that emits no SIGWINCH), so it can't be superseded mid-session; ownership is also cleared when a worker exits, restarts, or is released. Resize calls without a `session_id` are unchanged.
+- PTY readiness/echo detection and `agent-relay wrap` auto-suggestion guarding now scan a stateful, stitched output stream, so an ANSI escape sequence split across two PTY reads (e.g. a cursor-position sequence or a `\x1b[7m` ghost-text marker) is no longer corrupted or missed.
+- PTY workers with no discoverable child PID (macOS quirk) are no longer declared dead after ~30s of silence — a silently "thinking" agent could be killed mid-task. The no-PID watchdog now tolerates several minutes of silence, resets on real child-side activity (PTY output or a write the drainer confirms reached the PTY — not a mere enqueue, so a wedged drainer can't defer the fallback forever), and still detects genuine exits promptly via the PTY reader.
+
+## [10.1.0] - 2026-07-13
+
+### Added
+
+- `agent-relay node up` gains `--log-file <path>`, `--log-level <debug|info|warn|error>`, and `--log-json`: a served node logs each capability it registers (`debug`) and every action that hits it (`info`, with a duration and `node`/`kind`/`invocationId` fields; failures at `warn`). Without a flag the node stays quiet apart from warnings; `--verbose` raises the level to `debug`. An invalid `--log-level` is rejected instead of silently disabling logs. Serving programmatically, inject any sink via `serveNode({ logger })`.
+- `@agent-relay/sdk` adds thin Relaycast client factories — `createWorkspaceClient`, `createAgentClient`, `createRealtimeClient`, and `createWorkspace` — typed raw pass-throughs for workspace-key and agent-token operations that keep upstream payloads and errors untouched.
+
+### Changed
+
+- `@relaycast/sdk` is no longer a runtime dependency of the `agent-relay` CLI package.
+
+### Changed
+
+- `agent-relay-broker` links the `relaycast` engine crate at 6.0.0 (multi-provider fleet-wire registration); WebSocket event schemas are unchanged.
+- `agent-relay-broker` now parses inbound Relaycast WebSocket events (channel messages, DMs, group DMs, thread replies, reactions, presence, `action.invoked`) against the typed wire contract first; events that do not match the published schema still route through the previous tolerant field probing, with a structured warning so contract drift is observable in broker logs.
+
+### Fixed
+
+- `agent-relay-broker` resumes Relaycast mailbox delivery at the server's authoritative per-agent ACK cursor after a broker restart, preserving strict gap detection and legacy node compatibility.
+
+## [10.0.0] - 2026-07-13
+
+### Added
+
+- **Node providers** — a node's actions are hosted by providers that connect directly to the engine and are invoked node-addressed (`POST /v1/nodes/:node/actions/:name/invoke`). The broker attaches to its node as the `broker` provider over `/v1/node/ws` — PTY runtime, agent delivery, `spawn:<harness>`/`release` capacity, real-load heartbeats — as one provider among several, self-advertising its capacity (default harness set plus `AGENT_RELAY_NODE_HARNESSES`) and exposing its resolved `node_id`/`node_name` on `/api/session`. Author TypeScript actions with `@agent-relay/fleet` (`defineNode`/`serveNode`); an action named `spawn:<harness>` wraps the broker's spawn so any language can adjust the command, env, or cwd before it runs.
+
+### Changed
+
+- Relaycast SDKs upgraded to the node-provider release: `@relaycast/sdk` 6.0.0 adds the node-provider client.
+- `agent-relay fleet status` reads this node's provider attachment and per-provider liveness from the engine nodes API instead of a local status file.
+
+### Removed
+
+- `agent-relay fleet serve` is removed. Run `agent-relay node up` (optionally `--config <file>`); for a Cloud-managed node run `agent-relay cloud enroll --token <token>` first.
+
+### Fixed
+
+- `agent-relay node up` reports `Broker started.` as soon as the workspace handshake completes: the broker no longer blocks its `/api/session` readiness on minting the node token (a Relaycast `create_node` round-trip). The node-control client mints the token in the background and publishes it to the session, so a slow node-token mint on a slow network no longer delays or fails startup. Serving a capability definition without an explicit `RELAY_NODE_TOKEN` waits briefly for the background-minted token instead of skipping the provider.
+
+### Breaking Changes
+
+- The broker's local `/api/fleet/ws` sidecar protocol — and its `@agent-relay/harness-driver` TS mirror (`SdkToBroker`/`BrokerToSdk`/`NodeSupervision`) — is removed. Capability handlers connect to the engine directly as node providers instead of tunnelling through the broker, which keeps only its PTY runtime, agent delivery, and `spawn:<harness>`/`release` capacity. Node-scoped action rows replace workspace-global ones, and existing action-invoke URLs change to `POST /v1/nodes/:node/actions/:name/invoke`.
+
+## [9.2.4] - 2026-07-11
+
+### Fixed
+
+- `agent-relay integration subscribe|unsubscribe` now safely persists and retires each relayfile-cloud inbound webhook subscription during replacement, rollback, and normal removal. The `@relayfile/client@0.10.21` pin enables full recovery of interrupted cloud creates.
+- Inbound webhook cleanup is crash-safe and retryable: subscription retirement is journaled under a kernel advisory lock with framed commits and bounded owner leases, so an interrupted or crashed cleanup recovers on restart (with periodic lease renewal and post-rename-safe temp cleanup) instead of leaking webhooks. Journal directories open with `FILE_FLAG_BACKUP_SEMANTICS` on Windows.
+- Activate relayfile v3 crash recovery.
+
+## [9.2.3] - 2026-07-08
+
+### Added
+
+- `agent-relay integration subscribe` now wires a server-side inbound bridge: it provisions a relaycast inbound-target and a relayfile-cloud webhook subscription so real provider messages (Slack/GitHub/Linear) are injected into the target relay channel — and delivered to on-node agents — with no local watcher or client process running.
+
+## [9.2.2] - 2026-07-08
+
+### Added
+
+- `agent-relay cloud enroll --token <ocl_node_enr_…>` redeems a one-time Cloud enrollment token and persists node credentials to `~/.agentworkforce/relay/fleet-enrollments.json` (0600); a later plain `agent-relay node up` then runs as the Cloud-managed node. The token is never printed.
+- `agent-relay node up|down|status|metrics|tail`, `node agent …`, and `node workflow run|logs|sync` unify `local up` and `fleet serve` under one command group. `node up [--config <file>]` brings the current context's node online: the broker runs agents, and a project `agent-relay.{ts,…}` is served as a capability provider. A plain agent host needs no definition file.
+- Reflex history sync runs in-process via the ai-hist SDK, syncing to relayhistory-cloud.
+- Swift SDK (`AgentRelaySDK`, `packages/sdk-swift`): `AgentClient` gains `invokeAction(_:input:timeout:pollInterval:)` — invoke a relay action and await its output — plus `channelHistory(_:limit:before:)` and `dmHistory(with:limit:before:)` for reading channel and 1:1 DM message history as oldest-first `RelayChannelEvent`s.
+
+### Changed
+
+- `local` is now a hidden deprecated alias of `node` (the full old surface, including `local run|logs|sync`, still works) and prints a one-time deprecation warning; it is slated for removal in a future major.
+- The harness-agnostic PTY kernel is extracted into a `relay-pty` crate: injection, queue, supervision, and crash-insight primitives moved there, `relay-pty` runs in default cargo commands, and broker dependencies are trimmed.
+
+### Removed
+
+- Removed the orphaned `@agent-relay/utils` `relay-pty-path` resolver, its `./relay-pty-path` subpath export, and other stale references to the pre-broker `relay-pty` standalone binary (rules docs, `.gitignore`, an unrunnable benchmark script).
+
+### Fixed
+
+- `agent-relay-broker` resumes Relaycast mailbox delivery at the server's authoritative per-agent ACK cursor after a broker restart, preserving strict gap detection and legacy node compatibility.
+- `agent-relay-broker` no longer acknowledges Relaycast `manual_flush` deliveries while they exist only in volatile memory; flushes ACK only an injected FIFO prefix, and full queues reject new deliveries without evicting held messages.
+- PTY snapshots (`view`/`drive`/`passthrough` attach, `GET /api/spawned/{name}/snapshot` ansi format) now capture and replay terminal modes — alt-screen, cursor visibility, application cursor keys, bracketed paste, mouse reporting, autowrap, and keypad — so attaching to a TUI no longer leaves the client terminal mis-configured (stray cursor, misbehaving arrows, broken paste). Each mode is re-emitted in both directions so an attach after a crashed session heals a terminal left in the wrong state.
+- `agent-relay view`/`drive`/`passthrough`: detaching now emits a conservative terminal reset (leave alt-screen, show cursor, disable mouse reporting + bracketed paste + application cursor keys, reset scroll region) on TTY stdout, so a driven session's replayed snapshot and live stream can't leave your shell in a broken terminal state.
+- `agent-relay drive`/`passthrough`: a `Ctrl+C` during attach setup no longer strands the worker's inbound delivery mode — an interrupt in that window can't leave the worker stuck in `manual_flush` (drive) or cancel an explicit `agent message hold` (passthrough).
+- `agent-relay drive`/`passthrough`: multi-byte UTF-8 input split across stdin reads (large pastes, IME) is now forwarded intact instead of being mangled into U+FFFD.
+- `agent-relay drive`/`passthrough`/`view`: output no longer sprays to the terminal after detach begins.
+- `agent-relay drive`/`passthrough`: the status line no longer corrupts the agent's output by splicing reverse-video controls into a half-sent escape sequence, and is skipped entirely when stdout is not a TTY (e.g. piped to `tee`).
+- `agent-relay drive`/`passthrough`: on detach the worker's delivery mode is restored without clobbering a concurrent change from another session (broker compare-and-set), and a session that never learned the pre-attach mode leaves it unchanged with a warning instead of force-resetting to `auto_inject` and silently cancelling a hold.
+- `agent-relay drive`/`passthrough`/`view`: stdout backpressure is respected — output is buffered (bounded, in order) and flushed on drain instead of growing Node's stdout buffer without limit under a fast agent and slow terminal.
+- PTY input acks (`POST /api/input/{name}`, the input WebSocket, and the harness-driver `PtyInputStream.send()`) now resolve only after the worker confirms the keystrokes reached the child process. Failed PTY writes surface as a rejected `send()` (via a `write_pty`→`write_pty_response` round-trip with a 5s dead-worker timeout) so `agent-relay drive` predictive echo rolls back glyphs for input that never landed, instead of acking prematurely on enqueue. The `POST /api/input/{name}` response includes the worker `name` alongside `bytes_written`, matching the `HarnessDriverClient.sendInput` contract.
+- `agent-relay drive` no longer races worker automation against the human. Switching a worker to `manual_flush` sends an interactive hold that pauses pending relay-message injection (queued deliveries are parked, not dropped), freezes any in-flight injection, and suppresses the stuck-agent auto-enter and prompt auto-responders; switching back to `auto_inject` releases the hold and resumes. The hold is replayed to a worker that restarts while still in `manual_flush`.
+- PTY workers no longer deadlock or stall when a wrapped CLI floods output without reading its input. PTY writes (drive keystrokes, relay-message injection, auto-responses) now submit to the write drainer non-blockingly instead of parking the worker's async select loop, so the loop keeps forwarding output and handling input even when the child's stdin buffer is full. Injection pacing delays are now deadline-driven rather than inline sleeps, removing the per-delivery drive/watch latency jank. Relay-message injection now advances only after the drainer confirms each paced write reached the child, so a wedged drainer no longer produces a false `delivery_injected` or a bogus echo baseline — the delivery is requeued and retried instead. Human keystrokes that hit a momentarily full write queue are buffered in FIFO order and retried rather than dropped, preserving typing under back-pressure.
+- `agent-relay drive|view|passthrough` no longer lose or duplicate agent output around attach.
+- `agent-relay drive` no longer strands the user on a stale, wrong-geometry screen after attach.
+- `agent-relay drive` pending counter is no longer inflated or under-counted by events around attach.
+- Swift SDK: depending on this repository by git URL no longer fails with `no such module 'Relaycast'` — the root `Package.swift` now declares the `relaycast` dependency `AgentRelaySDK` imports.
+
+## [9.2.1] - 2026-07-02
+
+### Fixed
+
+- Surface agent-originated fleet deliveries to the dashboard live.
+
+## [9.2.0] - 2026-07-01
+
+### Added
+
+- `POST /api/observer-token` mints scoped read-only tokens.
+
+### Fixed
+
+- Harden dashboard replay against silent live-channel drops.
+
+## [9.1.10] - 2026-07-01
+
+### Changed
+
+- All message delivery is routed through Relaycast with no local bypass.
+
+### Fixed
+
+- `HarnessDriverClient.spawn()` now polls the broker's startup handshake for the full `startupTimeoutMs` budget (default 45s) instead of a fixed ~10s, so a slow-but-healthy Relaycast handshake that keeps answering `503` while warming up is no longer misreported as a spawn failure.
+
+## [9.1.9] - 2026-06-30
+
+### Added
+
+- `agent-relay up --verbose` now prints step-by-step startup progress (port resolution, broker process spawn, handshake retries, capability providers, node-delivery wait, agent spawns) and streams the broker's own startup-phase logs and stderr live, instead of only surfacing a terse error if startup fails.
+
+## [9.1.8] - 2026-06-30
+
+### Added
+
+- `agent-relay integration` commands now talk to relayfile over its local **control-plane unix socket** (`relayfile control-plane serve`) via the published **`@relayfile/client`** package — a typed, version-negotiated client (`/v1/hello` handshake) — instead of shelling out to the `relayfile` CLI and parsing stdout. The daemon is auto-started on first use (or required already-running via `RELAYFILE_REQUIRE_DAEMON=1`); request/response types are generated from relayfile's OpenAPI so contract drift is a build error rather than a runtime surprise. Requires relayfile ≥ 0.10.17.
+
+### Changed
+
+- `agent-relay integration subscribe` now resolves provider-native `--resource` values through relayfile before binding, so Slack channel names, GitHub repos, Linear team keys, and Telegram chats bind to matching relayfile VFS globs while explicit `/`-prefixed globs still work.
+
+### Fixed
+
+- `agent-relay-broker` node id, when the broker auto-mints its node, is derived from the machine-id seed plus a hash of the working directory **and the workspace id**, so the same project directory re-pointed at a different workspace (e.g. `agent-relay up` minting a fresh workspace) mints a distinct node instead of reusing a node id already owned by the old workspace. Previously that reuse made `create_node` fail the mint and silently disabled all realtime injection. When an explicit `RELAY_NODE_TOKEN` is supplied (operator-enrolled / fleet nodes), the pinned node id is used verbatim so `node.register` matches the token's node.
+
+## [9.1.7] - 2026-06-29
+
+### Fixed
+
+- `agent-relay integration subscribe` is now idempotent and supports multiple resources/channels per provider. Each inbound webhook is scoped to its `(provider, resource)` binding (not one-per-provider), so subscribing a second Slack channel — or two sources into the same relay channel — no longer collides on the unique `(workspace, webhook name)` index or clobbers the other binding's webhook. Re-subscribing creates the replacement webhook/subscription before retiring the old one, so a transient failure can't leave you with no working binding; a failed cleanup now warns instead of being silently swallowed. The relay channel id is normalized (`#general` → `general`) consistently across the webhook, subscription filter, relayfile bind, and writeback-secret lookup.
+
+## [9.1.6] - 2026-06-28
+
+### Changed
+
+- `agent-relay integration subscribe` now points the writeback subscription at the relayfile-cloud ingress and signs it with a per-channel secret fetched from relayfile (`relayfile integration writeback-secret`), instead of a relay-server path that returned 404. The secret is derived server-side and tied to the logged-in account, so there's nothing to provision; `--bridge-url`/`--bridge-secret` still override.
+
+## [9.1.5] - 2026-06-27
+
+### Added
+
+- `agent-relay skills add` installs the `/orchestrate` skill (from `agentrelay.com/skill.md`) into your coding harnesses. An interactive TUI asks whether to install for the current project or globally and which harnesses to target (Claude Code, Codex, Cursor, Gemini, OpenCode); `--global`/`--local`, `--harness <ids>`, and `--all` flags drive it non-interactively.
+- `agent-relay reflex on|off|status` manages Reflex history sync with a consent prompt and persisted `~/.agentworkforce/reflex.json` state.
+- `agent-relay integration subscribe|unsubscribe` binds any relayfile provider to a relay channel or agent in one command, with an inline connect flow when the provider isn't linked yet.
+- `agent-relay integration subscription create` now accepts `--filter`, `--url`, and `--secret` to scope delivery and secure the writeback endpoint.
+
+## [9.1.4] - 2026-06-27
+
+### Changed
+
+- Relaycast SDKs upgraded to v5: `@relaycast/sdk` `^5.0.5` (v4→v5 major), the `relaycast` broker crate `5.0.2`, and Swift Relaycast `5.0.5`. The v5 `agents.release` returns an action invocation (like `agents.spawn`); the `remove_agent` MCP tool surfaces that invocation.
+
+## [9.1.3] - 2026-06-26
+
+### Added
+
+- Node-only delivery for relaycast v5.0.1: agents spawned by the broker are bound to its node so the engine delivers realtime injection to them.
+- `sdk-swift` splits broker orchestration into `AgentRelayBrokerSDK` and adds hosted participant `AgentRelaySDK` APIs for workspace registration, channel/DM messaging, inbound events, and relay-routed `AgentClient.registerAction(...)` handlers.
+
+### Changed
+
+- The relaycast engine is wrapped in a hosted communicate transport.
+
+### Fixed
+
+- `agent-relay-broker` bootstrap `node.register` no longer advertises a generic `"spawn"` capability. Because the engine does not treat bare `"spawn"` as a placement capability (only `spawn:*`), it had materialized a `spawn` action pinned to whichever node bootstrapped first, which then hijacked capability-based spawn placement for the whole workspace — every `spawn` invoke was dispatched to that node, ignoring `cli`/`target_node`/least-loaded routing.
+- Node tokens are now cached per `node_id` (`node-tokens/{node_id}.json`) and scoped to the workspace (and engine base URL) they were minted for, so two brokers in different directories on one host no longer overwrite each other's token, and a token cached for one workspace/engine is no longer reused against another and rejected with HTTP 401. A node-control `/v1/node/ws` 401 discards the stale token and re-mints a fresh one under a bounded give-up cap with reconnect backoff instead of looping forever.
+- `agent.register` now forwards the invocation id and harness session ref, so the invocation is correlated to the spawned agent and a `spawn:<harness>` with `harnessConfig.session_id` resumes the session instead of starting fresh. A fleet `spawn:<harness>` runs the sidecar's declared harness rather than the literal `cli` from the action input; the broker-direct raw-`cli` spawn is reserved for the no-sidecar path.
+- `seq:0` fan-out frames (action results, reactions, read receipts) are no longer dropped — action results are injected into the calling agent's PTY; inbound `deliver`/`action.invoke` frames tolerate unknown future engine fields instead of being dropped without an ack (which caused infinite redelivery), and the per-agent delivery-dedup memory is bounded.
+- `create_node` mint failures now log the real HTTP status and response body instead of collapsing to `Max retries exceeded`, and non-retryable `4xx` responses are no longer retried.
+- `agent-relay up` refuses to auto-spawn agents when broker node delivery (`/v1/node/ws`) is not connected, exiting non-zero with guidance instead of spawning agents that can never receive realtime injection; `agent-relay status`, `agent-relay doctor`, `/health`, and `/api/status` now report node-delivery health (`nodeConnected`/`nodeDelivery`).
+- The `release` action reports a faithful result — a genuinely unknown worker returns an error while an already-exited worker still reports success — and node-control no longer logs a spurious `agent.register reply did not match a pending registration` warning.
+
+## [9.1.2] - 2026-06-24
+
+### Changed
+
+- The hosted engine base URL default is owned solely by the relaycast SDK. `agent-relay`, `agent-relay-broker`, and the bundled SDKs no longer hardcode a base URL — they pass `RELAYCAST_BASE_URL`/`RELAY_BASE_URL` through for self-hosting and otherwise inherit the SDK default (`cast.agentrelay.com`). The broker reaches the fleet node-control endpoint via the SDK's `node_control_ws_url` helper and only injects `RELAY_BASE_URL` into spawned agents when an override is set.
+
+### Fixed
+
+- `@agent-relay/cloud` refresh now fails with typed, timeout-bounded errors and migrates legacy `~/.agent-relay/cloud-auth.json` credentials into the canonical `~/.agentworkforce/relay/cloud-auth.json` store without dual-writing.
+
+### Breaking Changes
+
+- relay's Swift `AgentRelay` client no longer defaults the base URL — callers must pass `baseURL` or set `RELAY_BASE_URL`.
+
+## [9.1.1] - 2026-06-24
+
+### Fixed
+
+- `agent-relay integration webhook|subscription` commands work reliably in local broker workflows even when shell auth is stale or missing.
+- Escape glob in `@agent-relay/*` to satisfy prettier.
+
+## [9.1.0] - 2026-06-24
+
+### Added
+
+- `agent-relay integration webhook create-inbound <channel> [--name]` mints an inbound channel webhook (returns a scoped URL + one-time token) so external services can push messages into an agent's channel without the SDK; `list-inbound` and `delete-inbound` manage them. Closes the CLI gap where inbound webhooks were reachable only via the SDK/MCP.
+
+### Changed
+
+- Default Agent Relay clients to `cast.agentrelay.com`, and drop the redundant `gateway.relaycast.dev` default in the MCP server.
+- Decompose the three largest TypeScript god files into single-responsibility modules.
+
+### Removed
+
+- Removed all `gateway.relaycast.dev` / `api.relaycast.dev` references; clients target `cast.agentrelay.com` only.
+- Remove the web app (moved to AgentWorkforce/agentrelay.com).
+
+### Fixed
+
+- The Bun-compiled `agent-relay` standalone binary now bundles workspace packages from their compiled JS instead of their `.d.ts`, so `node up` starts the implicit Fleet local node instead of failing with `Fleet local node skipped: … is not a function`. The redundant `tsconfig` `paths` that mapped `@agent-relay/*` to declaration files have been removed.
+- Record workspace_id from the agent registration response.
+- Use `@relaycast/sdk` instead of the dead bespoke RPC API.
+- Pin verify-standalone-macos to macos-15 and add a smoke wait timeout.
+
+## [9.0.1] - 2026-06-21
+
+### Changed
+
+- `agent-relay-broker` upgrades the bundled `relaycast` crate to 4.1 (broker crate 4.1.1 + CLI SDK 4.1.6), changing the relaycast-backed local delivery store schema.
+
+### Removed
+
+- The local web dashboard is removed. `agent-relay up` no longer starts a dashboard, the installer no longer fetches the `relay-dashboard-server` binary / UI or installs `@agent-relay/dashboard-server`, and `up` drops the `--no-dashboard`, `--port`, and `--foreground` flags.
+- Telemetry drops the `human_dashboard` `ActionSource` (CLI and `agent-relay-broker`); broker HTTP-API spawns now report `human_cli`.
+- Dropped the legacy `~/.agent-relay` auth fallback and the removed/placeholder `@agent-relay/telemetry` package.
+
+### Fixed
+
+- Fix verifiable gaps between docs and code.
+
+### Breaking Changes
+
+- `agent-relay up` is broker-only and runs attached by default. The previous `--no-dashboard` (which detached) is gone — use `--background` to run detached. The `--no-dashboard`, `--port`, and `--foreground` flags now error as unknown options.
+- The `AGENT_RELAY_DASHBOARD_PORT` environment variable is replaced by `AGENT_RELAY_BROKER_PORT`, which sets the broker base port (the HTTP API binds the next free port above it).
+
+### Migration Guidance
+
+- Replace `agent-relay up --no-dashboard` with `agent-relay up --background`; remove `--port`/`--foreground` from `up` invocations; set `AGENT_RELAY_BROKER_PORT` in place of `AGENT_RELAY_DASHBOARD_PORT` to pin the broker port.
+- Dashboard assets are no longer managed by `agent-relay uninstall`; delete any leftover `~/.agentworkforce/relay/dashboard` directory manually.
+
+## [8.9.2] - 2026-06-19
+
+### Changed
+
+- `add_agent` MCP tool descriptions map natural-language spawn requests to exact parameters ("spawn a codex agent" → `cli:"codex"`; "spawn an opus claude agent" → `cli:"claude", model:"claude-opus-4-8"`), so relay orchestrators route cross-CLI and model-tier requests correctly.
+
+### Fixed
+
+- Accept grok and opencode in the spawn tool cli enum.
+
+## [8.9.1] - 2026-06-19
+
+### Changed
+
+- Update Relaycast SDK to 4.1.2.
+- Align `web/content/docs` with the actual SDK/CLI implementation.
+- Decompose the two largest CLI god files into cohesive modules.
+- Add design engineering skills and improve button interaction polish.
+
+### Fixed
+
+- `agent-relay node up --config <node-def>` loads plain JavaScript node definitions without `jiti`, so the published Bun-compiled CLI can serve compiled JS node files.
+
+## [8.9.0] - 2026-06-18
+
+### Added
+
+- `agent-relay fleet config|enable|disable|inherit` and `@agent-relay/sdk` `workspace.fleetNodes` expose the per-workspace fleet node rollout flag.
+
+## [8.8.5] - 2026-06-18
+
+### Fixed
+
+- Spawned opencode worker agents no longer pause for interactive tool-approval prompts; the broker injects a wildcard allow-all permission block into every generated `opencode.json`, augmenting existing partial permission objects rather than replacing them.
+
+## [8.8.4] - 2026-06-17
+
+### Added
+
+- `@agent-relay/integration-prompts` provides shared Relayfile integration descriptor discovery and prompt builders for prescriptive, full-inject, and slim writeback instructions.
+
+### Fixed
+
+- `@agent-relay/cloud` preserves operator refresh-token expiry metadata and refreshes canonical cloud sessions before access or refresh tokens reach their renewal windows.
+
+## [8.8.3] - 2026-06-17
+
+### Added
+
+- `agent-relay local agent spawn` and `agent-relay new` accept `--cwd` so agents spawn into a specific working directory.
+
+### Fixed
+
+- `agent-relay-broker` keeps an explicitly requested Codex model when the model catalog cannot be queried, falling back to the default only when the catalog explicitly rejects the model.
+
+## [8.8.2] - 2026-06-17
+
+### Added
+
+- `@agent-relay/sdk` adds `placement.spawn({ capability, node?, repo? })` — node-targeted / `self` / least-eligible placement that gates on advertised capability and repo-key map, queues with a bounded TTL until an eligible live node appears, and surfaces queue/fail visibility through `onReconcile` events. A `spawn:<cli>` capability pins the broker harness — a mismatched `input.cli` is rejected — and the exported `RelayPlacementError` reports `capability_mismatch` / `placement_queue_full` / `placement_ttl_expired` / `unmapped_repo`.
+- `agent-relay-broker` keeps fleet node rosters and load counts accurate across reconnects, restarts, and worker lifecycle changes; the broker heartbeat carries a node roster snapshot for liveness.
+- Support fleet-node enrollment in `fleet serve`.
+- Add mount scoring and onboarding variants to `@agent-relay/evals`.
+
+## [8.8.1] - 2026-06-16
+
+### Added
+
+- `agent-relay` spawn APIs add an optional task-exit mode so spawned CLI agents run the injected task and then cleanly self-terminate with `/exit`.
+
+### Changed
+
+- `agent-relay-broker` improves relay-worker spawning guidance for small models and Gemini, and removes Droid broker injection (it suppressed relay tool use).
+
+### Fixed
+
+- Apply eval-derived relay worker guidance.
+
+## [8.8.0] - 2026-06-16
+
+### Added
+
+- `@agent-relay/fleet` ships the fleet node SDK — `defineNode`/`action`/`spawn`/`onMessage` declare a node's typed capabilities and channel-message triggers. Trigger `match` regexes must be flag-free: a flagged regex (e.g. `/ship/i`) is rejected at `defineNode` rather than silently matched case-sensitively — use character classes like `[Ss]hip`.
+- `agent-relay-broker` adds a fleet node control plane: a `node_control` client drives the harness-driver sidecar over the local protocol, registers nodes and handlers, dispatches broker handler invocations, and attributes handler spawns, with hardened node/handler registration timing.
+- `@agent-relay/harness-driver` adds the local fleet sidecar protocol frames for node and handler registration, clean node deregistration, broker handler invocation, handler results, handler-attributed spawns, and sidecar supervision metadata.
+- `agent-relay fleet nodes|status` inspect registered fleet nodes, and the broker MCP surface adds `query_nodes` and `spawn` tools.
+- Two-node fleet E2E (`tests/e2e/fleet`, `Fleet E2E` CI workflow) boots a real relaycast engine plus two nodes (real Rust broker + sidecar each) and asserts the live control wire — boot/register, capability-filtered roster, cross-node action dispatch + ack, declarative trigger fire-once, end-to-end spawn completion, capability-routed / least-loaded / resume placement, in-flight reschedule on node death, and bounded-mailbox TTL dead-letter.
+- `agent-relay cloud connect daytona` (local capture).
+
+### Changed
+
+- `@agent-relay/sdk` and `@agent-relay/cli` now depend on `@relaycast/sdk` 4.0 (durable-delivery status model `queued|delivered|acked|failed|dead_lettered`).
+- Publish `@agent-relay/fleet` in the release pipeline.
+
+### Fixed
+
+- `@agent-relay/cloud` writes cloud auth atomically and serializes file-backed token refreshes across processes, preventing concurrent refreshes from clobbering rotated credentials.
+
+## [8.7.2] - 2026-06-13
+
+### Added
+
+- Add worker CLI client
+
+## [8.7.1] - 2026-06-13
+
+### Fixed
+
+- Refresh lockfile for cloud workspace version
+
+## [8.7.0] - 2026-06-13
+
+### Added
+
+- `@agent-relay/cloud` adds a canonical cloud session and active-workspace contract — `ensureCloudSession`, `resolveActiveWorkspace`, promoted workspace-store APIs, `agent-relay cloud session --json`, and `agent-relay workspace active --json` — unifying the auth session for cross-language consumers.
+
+### Changed
+
+- Include cloud session commands in bootstrap manifest
+- Add infrastructure-failure delivery coverage
+
+## [8.6.0] - 2026-06-11
+
+### Added
+
+- `@agent-relay/config` `CLI_AUTH_CONFIG` adds an `xai` provider (Grok CLI): `grok login --device-auth` device-code connect, `~/.grok/auth.json` credential capture, and the official x.ai installer as the sandbox fallback — so cloud sandboxes can authenticate the `grok` harness from a connected account instead of an API key.
+
+### Changed
+
+- `agent-relay local agent message hold|flush|auto <name>` now owns local broker delivery controls; the old top-level `agent-relay agent message …` path was removed.
+
+## [8.5.0] - 2026-06-11
+
+### Added
+
+- `@agent-relay/sdk` wires the durable delivery surface to the Relaycast backend: `inbox.list`, `inbox.subscribe`, `inbox.ack/fail/defer`, and `deliveries.ack/fail/defer` now use the hosted delivery ledger, agent-scoped capabilities report `serverDeliveryState: true`, and `DeliveryRunner` works against Relaycast-backed inbox items.
+
+### Fixed
+
+- `agent-relay-broker` persists pending deliveries on shutdown and on every queue change, redelivers them on restart, reports timeout-fallback verification explicitly, and emits `delivery_dropped` when the per-worker queue cap evicts a message.
+- Default plugin base URLs to `gateway.relaycast.dev`.
+
+## [8.4.0] - 2026-06-11
+
+### Added
+
+- `@agent-relay/sdk` re-exports `RelayError` and `RelayErrorCode`, adds `relay.once(selector, handler)`, and exposes an `onError` hook for listener and action-handler failures.
+- `@agent-relay/sdk` typed action handles now provide `completed()`, `failed()`, `invoked()`, and `denied()` listener predicates, and spawn result schemas accept JSON Schema or Zod-compatible validators.
+
+### Changed
+
+- `@agent-relay/sdk` `relay.workspace.register(...)` is idempotent by default: re-registering an existing agent adopts the identity and rotates its token; pass `{ strict: true }` to keep conflict failures.
+- `@agent-relay/sdk` `relay.addListener(...)` and `relay.once(...)` narrow handler event types for exact dotted selectors such as `message.created`.
+- `agent-relay` and cloud clients stop sending `origin_surface`; spawned-agent Relaycast attribution includes the selected model in `origin_actor`.
+
+### Fixed
+
+- `@agent-relay/sdk` listener and action-handler errors are no longer silently swallowed; without an `onError` hook they log a warning naming the failing selector or action.
+
+## [8.3.7] - 2026-06-11
+
+### Added
+
+- Spawned agents emit `origin_actor` metadata from the JavaScript SDK and per-worker broker path.
+
+### Changed
+
+- PTY message injection re-sends the full MCP reply-instructions `<system-reminder>` block only after roughly 64KB of agent output since the last reminder, in addition to the five-minute cooldown; `agent-relay wrap` uses the same throttle and otherwise sends the short reminder hint.
+- LLM markdown mirrors and raw Agent Relay skill markdown are discoverable from the docs surface.
+
+### Fixed
+
+- `packages/sdk/README.md` now documents the v8 API surface instead of removed pre-v8 calls such as `relay.as(...)`, `agent.events.on(...)`, and `relay.actions.register(...)`.
+
+## [8.3.6] - 2026-06-10
+
+### Added
+
+- `agent-relay-broker` emits Relaycast `origin_actor` metadata with the launched CLI path.
+- Spawn `model` values flow through MCP, the TypeScript SDK, and the broker to the launched CLI.
+
+### Changed
+
+- Relaycast dependencies were bumped to the published model-aware versions.
+- Agent Relay skill handoff docs were refreshed for the current MCP and spawn flows.
+
+## [8.3.5] - 2026-06-10
+
+### Fixed
+
+- `agent-relay cloud connect <provider>` forwards the OAuth callback to the sandbox's `127.0.0.1` endpoint instead of `localhost`, avoiding failed `::1` dials in Daytona sandboxes.
+
+## [8.3.4] - 2026-06-10
+
+### Added
+
+- `agent-relay-broker` bridges delivery read acknowledgements to the Relaycast backend.
+
+### Fixed
+
+- `agent-relay-broker` suppresses the intentional `too_many_arguments` lint on the read-ack timeout helper.
+
+## [8.3.3] - 2026-06-09
+
+### Fixed
+
+- `agent-relay cloud connect codex` binds the OAuth callback tunnel on both `127.0.0.1` and `::1` and pins the sandbox Codex CLI to `@openai/codex@0.138.0`.
+
+## [8.3.2] - 2026-06-09
+
+### Fixed
+
+- `agent-relay-broker` forwards harness metadata to the Relaycast backend while consuming `@relaycast/sdk` 2.3.0.
+
+## [8.3.1] - 2026-06-09
+
+### Added
+
+- `agent-relay-broker` and `@agent-relay/harness-driver` accept explicit workspace keys and broker instance names, so local and cloud brokers can join the same Relay workspace with stable, addressable names.
+
+### Fixed
+
+- `agent-relay` defaults hosted traffic to `https://gateway.relaycast.dev`.
+
+## [8.3.0] - 2026-06-05
+
+### Added
+
+- `@agent-relay/harnesses` adds a `grok` PTY harness for the Grok CLI, including Relaycast MCP support for spawned agents.
+- `agent-relay local run|logs|sync` starts executable workflow files on the local machine, stores run metadata and logs under `.agentworkforce/relay/local-runs`, and mirrors the cloud run/logs/sync command shape.
+- `agent-relay local run` supports Relayflows YAML workflows through the same background logs and sync wrapper used for local script workflows.
+
+### Changed
+
+- `agent-relay local run` delegates YAML and TypeScript workflow execution to `@relayflows/cli` instead of bundling TypeScript workflow execution inside the Relay CLI.
+
+## [8.2.0] - 2026-06-04
+
+### Added
+
+- `@agent-relay/harness-driver` adds lifecycle-aware `SpawnedAgentHandle` state for managed agent sessions.
+- `@agent-relay/harnesses` is now published to npm, so SDK consumers can install the prebuilt PTY harnesses and harness-authoring helpers.
+
+## [8.1.2] - 2026-06-04
+
+### Fixed
+
+- `@agent-relay/harness-driver` exports the `./predictive-echo` subpath.
+
+## [8.1.1] - 2026-06-04
+
+### Added
+
+- `agent-relay drive` and `agent-relay passthrough` add adaptive predictive echo so typing stays responsive when driving high-latency or remote agents, and stays invisible on fast local links.
+- `@agent-relay/harness-driver` exports a reusable `PredictiveEchoEngine` for other attach UIs.
+
+### Changed
+
+- `agent-relay-broker` streams interactive PTY output more smoothly, and `@agent-relay/harness-driver` reduces PTY input latency when driving remote agents.
+
+## [8.1.0] - 2026-06-03
+
+### Added
+
+- `agent-relay agent message hold|flush|auto <name>` controls local broker message delivery without relying on interactive attach key chords.
+
+### Changed
+
+- `agent-relay drive` and `agent-relay passthrough` now forward `Ctrl+B` and `Ctrl+G` to the agent; use `agent message hold`, `agent message flush`, and `agent message auto` for delivery control.
+
+### Fixed
+
+- `agent-relay` attach sessions no longer write successful `view`, `drive`, or `passthrough` banners into the interactive terminal buffer.
+
+## [8.0.5] - 2026-06-03
+
+### Fixed
+
+- Legacy Codex MCP opt-out behavior is preserved after the v8 MCP rename.
+
+## [8.0.4] - 2026-06-03
+
+### Added
+
+- `agent-relay` forwards Relaycast attribution and Agent Relay MCP tool events to hosted Relaycast.
+
+### Fixed
+
+- `agent-relay local agent list` and `agent-relay local metrics` connect only to an existing broker, so read-only commands no longer start an empty broker and hang after printing results.
+- OpenClaw skill markdown imports build correctly.
+
+## [8.0.3] - 2026-06-03
+
+### Fixed
+
+- SDK package export validation passes after publish.
+
+## [8.0.2] - 2026-06-03
+
+### Fixed
+
+- Publish checks resolve the `@agent-relay/harness-driver` broker path correctly.
+
+## [8.0.0] - 2026-06-03
+
+### Added
+
+- `@agent-relay/sdk` adds the v8 messaging, delivery, and action surface: live workspace/agent clients, channels, DMs, threads, reactions, inbox, events, `DeliveryRunner`, `ActionRegistry`, `relay.addListener(...)`, fire-and-forget actions, and webhooks.
+- `@agent-relay/sdk` adds the public session/harness contract, `AgentRelay.spawnAgent({ runtime, cli, ... })`, and agent-client send/reply/react helpers that expose stable `messageId` values.
+- `@agent-relay/harness-driver` adds the optional managed harness boundary for broker startup, PTY/headless spawn, release/status, logs/readiness plumbing, and runtime-provided actions such as `agent.create`, `agent.release`, `agent.status`, and `agent.attach`.
+- `@agent-relay/harnesses` PTY harnesses accept `create({ relay })` to spawn live sessions into a relay workspace, and add `createHuman({ relay, name })`, `defineHarness`, and the harness contract types.
+- `agent-relay` adds SDK-backed workspace, agent, channel, message, integration, and capabilities command groups, restores the cloud command group, and keeps `view`, `drive`, and `passthrough` as top-level attach commands.
+- `agent-relay mcp` ships the Agent Relay MCP stdio server with underscore tool names, can expose registered SDK actions as MCP tools, and recovers stale agent tokens mid-session with re-registration guidance.
+
+### Changed
+
+- Relay stores per-project runtime state in `.agentworkforce/relay/` instead of `.agent-relay/`, and global data/log homes move from `~/.agent-relay`, `$XDG_DATA_HOME/agent-relay`, and platform equivalents to `agentworkforce/relay`.
+- `agent-relay` installs dashboard UI assets under `~/.agentworkforce/relay/dashboard` instead of `~/.relay/dashboard`.
+- `agent-relay` and `@agent-relay/sdk` upgrade to Relaycast 2.x/2.5.x: spawn/release run as Relaycast actions, action events replace the old command protocol, and the workspace-scoped realtime stream backs listener APIs.
+- `@agent-relay/sdk` is scoped to communication primitives; managed broker startup, PTY/headless spawning, workflow supervision, and harness lifecycle helpers move to `@agent-relay/harness-driver`.
+- `@agent-relay/sdk` actions accept Zod-compatible `safeParse` schemas alongside JSON-schema-lite, and `DeliveryRunner` can deliver inbox items to session targets through `receiveMessage(...)`.
+- `@agent-relay/sdk` no longer emits client-side analytics or depends on `@agent-relay/telemetry`; SDK/API attribution uses Relaycast origin metadata and CLI telemetry posts through `https://i.agentrelay.com` by default.
+- `@agent-relay/openclaw` consumes Relaycast's unified `message.reacted` event and remains available as an optional adapter with managed spawn internals moved to `@agent-relay/harness-driver`.
+
+### Deprecated
+
+- `@agent-relay/telemetry` is deprecated as a public npm package; telemetry implementation is now internal to the `agent-relay` CLI.
+- External MCP setup through `agent-relay up` is deprecated: spawned agents receive the bundled Agent Relay MCP server through launch-time configuration.
+- Workspace setup now leads with creating an Agent Relay workspace through the SDK, MCP, or OpenClaw setup; existing workspace keys are treated as join secrets.
+
+### Breaking Changes
+
+- `@agent-relay/sdk` `relay.workspace.register(...)` returns a live agent client instead of a `{ token }` registration record, and rejects duplicate agent names.
+- `@agent-relay/sdk` removes `AgentRelay.as()` / `asAgent()`; act as a registered agent through the client returned by `workspace.register(...)` / `workspace.reconnect({ apiToken })`.
+- `@agent-relay/sdk` removes the top-level `relay.sendMessage(...)`; send from a registered agent or human client.
+- `@agent-relay/sdk` removes `relay.on(...)`, `relay.notify(...)`, and the public `relay.actions` register/invoke namespace; use `relay.addListener(...)` and `relay.registerAction(...)`.
+- `@agent-relay/sdk` removes root and subpath exports for broker clients, spawn facades, PTY/headless helpers, workflow/consensus/shadow helpers, communicate adapters, browser/worker entry points, GitHub/Slack primitive adapters, and persona support.
+- `agent-relay` removes spawn-first, workflow/swarm, DLQ, activity, log, and `on` command trees from the default CLI package.
+- `@agent-relay/sdk` swaps `@agentworkforce/harness-kit` and `@agentworkforce/workload-router` for `@agentworkforce/persona-kit@^3`, removes the persona tier system, and makes `loadPersona` return the canonical `PersonaSpec`.
+- `@agent-relay/sdk` renames the raw client spawn surface from provider terminology to CLI terminology: `HarnessDriverClient.spawnProvider()` is now `spawnCli()`, `SpawnProviderInput` is now `SpawnCliInput`, and `SpawnHeadlessInput.provider` is now `SpawnHeadlessInput.cli`.
+- `@agent-relay/sdk` removes high-level `spawnPty`, `spawnHeadless`, positional `spawn`, `spawnAndWait`, and shorthand CLI spawners such as `relay.claude.spawn()`; use `AgentRelay.spawnAgent({ cli, ... })`.
+- `agent-relay-broker` public Rust protocol types now require typed ID newtypes such as `WorkerName`, `DeliveryId`, `EventId`, `WorkspaceId`, `ChannelName`, and `MessageTarget`; JSON wire format is unchanged because wrappers are `#[serde(transparent)]`.
+- `agent-relay spawn` and SDK spawn calls now return harness `sessionId` metadata for resumable Claude and Codex PTY sessions.
+- `sdk-swift` renames `RelayCast` to `AgentRelayClient`.
+- `@agent-relay/harness-driver` renames the managed broker client and companion exports from `AgentRelayClient` names to `HarnessDriverClient` names.
+
+### Migration Guidance
+
+- Bind to the live client `register(...)` returns instead of a token, persist `client.token`, and reconnect later with `relay.workspace.reconnect({ apiToken })`.
+- Replace `relay.sendMessage(...)` with a send from a registered participant such as `alice.sendMessage(...)` or a `createHuman(...)` client.
+- Replace `relay.on(predicate, handler)` with `relay.addListener(predicate, handler)`, prefer dotted event names, and replace `relay.notify(...)` with an inline handler that sends from a participant.
+- Replace `relay.actions.register(...)` / `relay.actions.invoke(...)` with `relay.registerAction(...)`; read outcomes from `action.completed` events.
+- Read message IDs as `message.messageId`, reply with `reply({ messageId })`, and react with `react({ messageId, emoji })`.
+- Stop running brokers before upgrading, remove stale `.agent-relay/` and `~/.agent-relay` state if present, and restart with `agent-relay local up`; new runtime state is created under `.agentworkforce/relay/`.
+- Use `agent-relay local up/status/down` for local broker lifecycle commands.
+- Install `@agent-relay/harness-driver` for code that starts brokers, spawns PTY/headless agents, waits for managed harness state, or runs supervised workflows; keep `@agent-relay/sdk` for identities, messages, delivery/read state, presence, and commands.
+- Replace SDK spawn calls with driver actions such as `agent.create`, `agent.release`, and `agent.status` when agents need to request managed harness work through MCP.
+- Flatten personas that relied on `tiers.*` to a single top-level `harness`, `model`, and `systemPrompt`, then launch them through the owning CLI/package and pass the resulting command to `relay.spawnAgent({ cli, ... })`.
+- Replace `client.spawnProvider({ provider, ... })` with `client.spawnCli({ cli, ... })`; replace `client.spawnHeadless({ provider, ... })` with `client.spawnHeadless({ cli, ... })`.
+- Downstream Rust callers must construct identifiers via `relay_broker::ids::{WorkerName, DeliveryId, EventId, MessageTarget, ...}` instead of raw `String` values.
+- `sdk-swift`: replace `RelayCast(apiKey:baseURL:)` with `AgentRelayClient(apiKey:baseURL:)`.
+- Import `HarnessDriverClient` from `@agent-relay/harness-driver` and update companion type names such as `HarnessDriverClientOptions`, `RuntimeSpawnOptions`, `BrokerInitArgs`, `HarnessDriverEvents`, and `HarnessDriverProtocolError`.
+
+### Removed
+
+- `@agent-relay/config` removes unused legacy global-storage helpers, the `.agent-relay.json` project-root config fallback, and the legacy `/tmp/relay-outbox` symlink support.
+- `agent-relay` drops the legacy `~/.agent-relay/dashboard` static-asset fallback from broker startup; uninstall still purges legacy install directories.
+
+### Fixed
+
+- `@agent-relay/sdk`, `agent-relay mcp`, and `agent-relay-broker` share the same invalid-agent-token recovery signal for stale Relaycast agent tokens.
+- `@agent-relay/cloud` ignores stray localhost callbacks with invalid OAuth state parameters.
+- `agent-relay-broker` harness configs report harness PIDs, validate app-server protocol/auth/host settings at spawn, and give app-server release requests time to finish.
+- `@agent-relay/sdk` normalizes broker `pid: null` spawn responses to `undefined` while PTY harness PIDs are reported asynchronously.
+- `agent-relay workspace` stores workspace keys with owner-only permissions and rejects reserved object-property names.
+- `sdk-swift` connects to the v7 broker `/ws` event stream and routes spawn, release, channel post, and direct message calls through the broker HTTP API.
+
+### Security
+
+- `agent-relay` upgrades Vitest to 4.x to resolve the critical npm audit advisory.
+- `gemini-relay-extension` refreshes its lockfile to clear fast-uri, path-to-regexp, hono, qs, ip-address, express-rate-limit, and `@hono/node-server` advisories.
+
+## [7.1.1] - 2026-05-25
+
+### Changed
+
+- Cache nested workspace node_modules
+- Update README to reflect new features and remove old content
+- Prune unused root dependencies
+- Add three-way demo and update README
+
+### Fixed
+
+- Bump relayfile-mount binary v0.1.6 -> v0.7.39
+- Externalize @slack/web-api in build:cjs + declare as root dep
+- Bump quinn-proto to 0.11.14 to address Dependabot alert
+- Drop swarms extra to clear litellm Dependabot alerts
+- Run package validation smoke before tarball cleanup
+
+### Security
+
+- Bump protobufjs and fast-xml-builder to clear high-severity alerts
+- Bump fast-uri to 3.1.2 to clear path-traversal & host-confusion
+- Bump ws to 8.21.0 to clear uninitialized memory disclosure
+- Bump @slack/web-api to ^7.16.0 to clear axios prototype pollution
+
+## [7.1.0] - 2026-05-22
+
+### Changed
+
+- Drop user-directory validation references
+- Remove unused user-directory package
+- Avoid persisting result callback tokens
+- Add structured agent result callbacks
+
+### Fixed
+
+- Normalize changelog release notes
+- Resolve clippy regressions for structured result callbacks
+
+## [7.0.1] - 2026-05-22
+
+### Added
+
+- `agent-relay log {path,list,view,rotate,clear}` inspects and prunes broker diagnostic logs, with rotated platform-standard log files.
+- `AgentRelayClient.onBrokerExit()` notifies SDK consumers when a spawned broker exits, including code, signal, PID, and recent stderr.
+- `AgentRelay.addListener()` accepts `BeforeAgentSpawnHandler` directly.
+
+### Changed
+
+- Relay self-termination guidance now points agents at direct process exit instead of broker shutdown paths.
+
+## [7.0.0] - 2026-05-21
+
+### Breaking Changes
+
+- `@agent-relay/sdk`: `AgentRelay` event callbacks moved from `relay.on* = handler` fields to `relay.addListener(type, handler)` / `removeListener`; the old callback fields are removed.
+- `@agent-relay/sdk`: channel subscribe and unsubscribe listeners now receive `{ agent, channels }` instead of positional arguments.
+- `@agent-relay/sdk`: spawn and release lifecycle hooks can observe call sites, and `beforeAgentSpawn` listeners can return shallow spawn-input patches.
+- Broker/SDK wire protocol moved to v2 for terminal delivery events and lifecycle event shape changes.
+
+### Migration Guidance
+
+- Use `relay.addListener(...)` and retain the returned unsubscribe function instead of assigning `relay.onAgentSpawned = ...`.
+- Update channel subscribe and unsubscribe handlers to destructure `({ agent, channels })`.
+
+## [6.3.5] - 2026-05-21
+
+### Added
+
+- `agent-relay up --broker-name` overrides the local broker identity instead of deriving it from the project directory.
+
+## [6.3.4] - 2026-05-21
+
+### Added
+
+- `agent-relay cloud`: workflow code uploads through the cloud storage API.
+- Scheduled workflows can receive environment variables.
 
 ## [6.3.3] - 2026-05-21
 
-### Product Perspective
-#### User-Impacting Fixes
-- Detect opencode api key completion (#934) (#934)
+### Fixed
 
-### Technical Perspective
-#### Releases
-- v6.3.3
-
----
+- `agent-relay config`: OpenCode API-key completion is detected correctly.
 
 ## [6.3.2] - 2026-05-20
 
-### Product Perspective
-#### User-Impacting Fixes
-- Stop worker stderr from rendering inside agent xterm (#931) (#931)
+### Fixed
 
-### Technical Perspective
-#### Releases
-- v6.3.2
-
----
+- Broker worker stderr no longer renders inside the agent xterm.
 
 ## [6.3.1] - 2026-05-20
 
-### Product Perspective
-#### User-Impacting Fixes
-- Pre-register Claude PTY workers so Relaycast MCP boots fast (#926)
+### Fixed
 
-### Technical Perspective
-#### Dependencies & Tooling
-- Retrigger flaky macOS Rust Tests
-- Drop change-implying framing from PTY pre-register note
-
-#### Releases
-- v6.3.1
-
----
+- Claude PTY workers pre-register so `agent-relay mcp` boots faster.
 
 ## [6.3.0] - 2026-05-20
 
-### Technical Perspective
-#### Releases
-- v6.3.0
+### Added
 
----
+- `agent-relay activity` tails broker-wide message, delivery, lifecycle, and worker-output events with filters and JSON Lines output.
+- Broker `/api/input/{name}/stream` and SDK `openInputStream()` provide ordered websocket PTY input without one HTTP request per keystroke.
+
+### Changed
+
+- CLI attach modes use the SDK PTY input stream for interactive input.
 
 ## [6.2.8] - 2026-05-20
 
-### Product Perspective
-#### User-Impacting Fixes
-- Tighten PTY chrome scrubbing, document idle override, tame stale-state warning (#930) (#930)
+### Fixed
 
-### Technical Perspective
-#### Releases
-- v6.2.8
-
----
+- Workflow runtime PTY chrome scrubbing is stricter, stale-state warnings are quieter, and idle override behavior is documented.
 
 ## [6.2.7] - 2026-05-20
 
-### Technical Perspective
-#### Releases
-- v6.2.7
+### Fixed
 
----
+- `agent-relay up --no-dashboard` and `agent-relay down --force` recover half-started brokers that stayed alive without readable connection metadata.
+- `agent-relay who` and `agent-relay agents` fail clearly when broker queries fail instead of printing empty agent lists.
+- `agent-relay doctor` reports half-started, stale-connection, unresolved-template, and stuck outbound-delivery states directly.
 
 ## [6.2.6] - 2026-05-20
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Flush UTF-8 decoder on normal pty_closed path
-- Preserve split multi-byte UTF-8 in worker_stream (#922) (#922)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.2.6
-
----
+- PTY `worker_stream` events preserve multi-byte UTF-8 characters split across read chunks.
+- The broker flushes UTF-8 decoder state on the normal `pty_closed` path.
 
 ## [6.2.5] - 2026-05-19
 
-### Product Perspective
+### Changed
 
-#### User-Impacting Fixes
+- Deprecated `uuid` usage was removed from install-time dependencies.
 
-- Handle write_pty frames in PTY worker (#920)
+### Fixed
 
-### Technical Perspective
-
-#### Dependencies & Tooling
-
-- Sync package-lock.json for next 15.5.18 bump
-- Bump next from 15.5.14 to 15.5.18 in /web
-
-#### Releases
-
-- v6.2.5
-
----
+- PTY workers handle `write_pty` frames.
 
 ## [6.2.4] - 2026-05-19
 
-### Technical Perspective
+### Changed
 
-#### Architecture & API Changes
-
-- Use relaycast sdk 1.1 helpers
-
-#### Releases
-
-- v6.2.4
-
----
+- Broker Relaycast integration uses the Relaycast SDK 1.1 helper APIs.
 
 ## [6.2.3] - 2026-05-19
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Broker status reports the product release line instead of an internal crate version.
 
-- **Align reported version with product release line** (#904)
+### Changed
 
-#### User-Impacting Fixes
+- Broker runtime code was split into focused modules and the public Rust crate API was narrowed.
+- `agent-relay agents:logs` returns readable, line-oriented output by default.
 
-- Address coderabbit review on version handling
-- Use next/link for docs navigation
-- Pass idle threshold to spawned workers
-- Address runtime review findings
+### Fixed
 
-### Technical Perspective
-
-#### Architecture & API Changes
-
-- Narrow public crate API
-- Group relaycast broker integration
-- Extract broker runtime event handlers
-- Split broker runtime modules
-- Split broker main entrypoint
-- Move broker crate under crates
-
-#### Dependencies & Tooling
-
-- Record runtime split trajectory
-- Complete issue 875 trajectory file list
-- Update issue 875 trajectory metadata
-
-#### Releases
-
-- v6.2.3
-
----
+- Spawned workers receive idle thresholds consistently.
+- Broker runtime review issues in request handling and stale-state reporting were addressed.
 
 ## [6.2.2] - 2026-05-18
 
-### Technical Perspective
+### Changed
 
-#### Architecture & API Changes
-
-- Share interactive-attach prep helpers via attach.ts
-- Split runDriveSession to drop below complexity 15 (#897)
-
-#### Dependencies & Tooling
-
-- Align trajectory title with retrospective scope
-- Sanitize absolute paths in metadata (#899)
-
-#### Releases
-
-- v6.2.2
-
----
+- CLI attach and drive sessions share preparation helpers; behavior is unchanged.
 
 ## [6.2.1] - 2026-05-18
 
-### Technical Perspective
+### Fixed
 
-#### Releases
-
-- v6.2.1
-
----
+- Removed an out-of-scope preview configuration change from the 6.2.0 line.
 
 ## [6.2.0] - 2026-05-18
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- `agent-relay view <name>` streams a running agent PTY without taking control or stopping the agent.
+- `agent-relay drive <name>` attaches interactively and queues inbound relay messages until the user flushes them.
+- `agent-relay passthrough <name>` attaches interactively while inbound relay messages continue to auto-inject.
+- `agent-relay new NAME CLI [args...]` starts broker-owned agents, with `--attach`, `--ephemeral`, and spawn-and-attach forms.
+- `agent-relay rm <name>` releases broker-owned agents.
+- Broker per-agent delivery-mode, pending-queue, and flush routes manage inbound queues.
+- TypeScript SDK clients can read snapshots, stream worker output, set delivery mode, inspect pending queues, and flush queued messages.
+- `agent-relay replies <agent>` reads worker direct-message replies with JSON, unread, mark-read, sender identity, and cursor options.
+- `agent-relay history` and `agent-relay replies` accept message-id `--since` cursors for incremental reads.
+- `agent-relay who --json` returns structured status, PID, uptime, and memory fields for scripts.
+- `packages/personas` includes a `nextjs-web-steward` persona and workforce v3 persona schema.
+- Docs include broker HTTP / WebSocket API reference pages and CLI reference navigation icons.
 
-- **`new` / `relay` / `run` / `rm` verbs + `-n` silent alias (#864 sub-4)** (#864)
-- **`agent-relay drive <name>` interactive take-over client (#864 sub-3)** (#864)
-- **Per-agent session mode + pending-queue routes (#864 sub-2)** (#864)
-- **`agent-relay view <name>` read-only PTY stream client (#864 sub-1)** (#864)
+### Changed
 
-#### User-Impacting Fixes
+- Broker inbound delivery uses one per-agent queue so `auto_inject` and `manual_flush` preserve ordering consistently.
+- CLI attach commands share SDK-backed broker snapshots, delivery mode changes, streams, and flushes.
+- PTY readiness checks use the live VT grid and cursor position to avoid false ready states in alternate screens and menus.
+- PTY writes from user input and terminal-query replies pass through one FIFO writer.
+- Rust and TypeScript telemetry disable PostHog reporting when no `AGENT_RELAY_POSTHOG_KEY` is configured.
+- `agent-relay send` uses the orchestrator identity by default so `agent-relay replies <worker>` can correlate worker direct messages.
 
-- Defer spawn-and-attach import until --attach is set
-- Surface drainer write failures from pty write_all
-- Resolve #800 — broker: composable wait-conditions for CLI readiness (steal from ht) (#800)
-- Resolve #802 — broker: add VT grid via alacritty_terminal (steal from ht, don't use libghostty) (#802)
-- Resolve #802 — broker: add VT grid via alacritty_terminal (steal from ht, don't use libghostty) (#802)
+### Fixed
 
-### Technical Perspective
-
-#### Architecture & API Changes
-
-- Rename session-mode `relay` → `passthrough` across all surfaces
-- `new` takes positional NAME (drop `-n` flag) + scrub PR refs (#864)
-- Drop `run` verb, fold spawn-and-attach into `new --attach` (#889)
-- Unify worker request/response correlation (#871) (#871)
-
-#### Performance & Reliability
-
-- Assert X-API-Key on every broker request
-- Actually assert on the API-key header in the harness
-- Cover drainer flush failure ack propagation
-- Alias slack-primitive / github-primitive / workflow-types in vitest
-- Add 'view' to expected leaf command list (#880)
-- Add stale preview environment cleanup
-
-#### Dependencies & Tooling
-
-- Drop PR references and legacy framing from code comments (#864)
-- Record `run` -> `new --attach` refactor decision
-- Record decisions for sub-PR 4 (#864) (#864)
-- Normalize projectId in merged trajectory
-- Source PostHog key from `vars.POSTHOG_PROJECT_KEY`
-- Inject PostHog key at build time (P0.5 of #881) (#881)
-
-#### Releases
-
-- v6.2.0
-
----
+- `relay.spawn({ task })` returns `success: false` and terminates the agent when task delivery fails after retries.
+- Broker worker teardown emits `message_delivery_failed` for dropped pending deliveries so SDK delivery waiters terminate.
+- SDK `sendAndWaitForDelivery` waits for terminal delivery confirmation or failure instead of treating `delivery_ack` as final.
+- `agent-relay mcp` startup ignores unresolved `RELAY_*` environment placeholders before auto-registering.
+- `agent-relay history --from <agent>` returns the newest messages after chronological sorting.
+- `agent-relay replies --unread` prints nothing when there are no unread messages.
+- Messaging `--limit` values clamp invalid negative inputs.
+- SDK `sendInput` routes through the PTY worker protocol so input reaches the agent PTY.
 
 ## [6.0.22] - 2026-05-15
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Bump agent-relay-workflow writer timeouts (#857) (#857)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.22
-
----
+- Bump agent-relay-workflow writer timeouts
 
 ## [6.0.21] - 2026-05-14
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Add pr_url verification check (#852)** (#852)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.21
-
----
+- Add pr_url verification check
 
 ## [6.0.20] - 2026-05-13
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Persist spawned agents across cwd (#846) (#846)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.20
-
----
+- Persist spawned agents across cwd
 
 ## [6.0.19] - 2026-05-13
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Export createContextFactory + its option/return interfaces (#845)** (#845)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.19
-
----
+- Export createContextFactory + its option/return interfaces
 
 ## [6.0.18] - 2026-05-12
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Proactive-runtime — agent-relay CLI bootstrap + DLQ + cloud SDK (#843)** (#843)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.18
-
----
+- Proactive-runtime — agent-relay CLI bootstrap + DLQ + cloud SDK
 
 ## [6.0.17] - 2026-05-12
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Host @agent-relay/events + @agent-relay/agent in relay (#844)** (#844)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.17
-
----
+- Host @agent-relay/events + @agent-relay/agent in relay
 
 ## [6.0.16] - 2026-05-11
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Drain broker stderr alongside stdout after startup (#842) (#842)
-- Replace blocking stdout writer task with tokio::io (#841) (#841)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.16
-
----
-
-## [6.0.15] - 2026-05-11
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.15
-
----
+- Drain broker stderr alongside stdout after startup
+- Replace blocking stdout writer task with tokio::io
 
 ## [6.0.14] - 2026-05-10
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Reclaim agent on 409 instead of crashing the broker (#797) (#830) (#797)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.14
-
----
+- Reclaim agent on 409 instead of crashing the broker
 
 ## [6.0.13] - 2026-05-09
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Re-export github primitive from root entry
+- Make reliability repair-aware by default
 
-- **Re-export github primitive from root entry (#823)** (#823)
-- **Make reliability repair-aware by default (#827)** (#827)
+### Fixed
 
-#### User-Impacting Fixes
-
-- Wait for matching broker tarball before install (#829) (#829)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.13
-
----
+- Wait for matching broker tarball before install
 
 ## [6.0.12] - 2026-05-09
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Finish agentToken doc cleanup in types.ts (#822) (#822)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.12
-
----
+- Finish agentToken doc cleanup in types.ts
 
 ## [6.0.10] - 2026-05-08
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Spawn agents from named AgentWorkforce personas
+- Add @agentrelay/personas pack
 
-- **Spawn agents from named AgentWorkforce personas**
-- **Add @agentrelay/personas pack (#816)** (#816)
+### Changed
 
-#### User-Impacting Fixes
+- Skip personas package in dist-files check
+- Align with @agent-relay scope and lockstep versioning
 
-- Stop stamping default_workspace_id into RELAYFILE_WORKSPACE (#821) (#821)
-- Stop stamping relaycast workspace id into RELAYFILE_WORKSPACE (#820) (#820)
-- Trust at*live*\* agent tokens, drop probe-then-rotate (#819) (#819)
+### Fixed
+
+- Stop stamping default_workspace_id into RELAYFILE_WORKSPACE
+- Stop stamping relaycast workspace id into RELAYFILE_WORKSPACE
+- Trust at*live*\* agent tokens, drop probe-then-rotate
 - Address PR review (Windows paths, TOCTOU, harness validation)
 - Tighten validator robustness
 - Regenerate lockfile and address review nits
 
-### Technical Perspective
-
-#### Performance & Reliability
-
-- Skip personas package in dist-files check
-
-#### Dependencies & Tooling
-
-- Align with @agent-relay scope and lockstep versioning
-
-#### Releases
-
-- v6.0.10
-
----
-
 ## [6.0.9] - 2026-05-05
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Add WorkflowBuilder.paths() for multi-repo cloud workflows
 
-- **Add WorkflowBuilder.paths() for multi-repo cloud workflows (#814)** (#814)
+### Fixed
 
-#### User-Impacting Fixes
-
-- Align communicate transport with current Relaycast API (#813) (#813)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.9
-
----
+- Align communicate transport with current Relaycast API
 
 ## [6.0.8] - 2026-05-04
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Surface phase C multi-repo push results in cloud CLI
+- Phase B multi-path tarball upload for cloud workflows
 
-- **Surface phase C multi-repo push results in cloud CLI (#775)** (#775)
-- **Phase B multi-path tarball upload for cloud workflows (#774)** (#774)
+### Fixed
 
-#### User-Impacting Fixes
-
-- Exclude volatile workflow files when applying sync patches (#811) (#811)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.8
-
----
-
-## [6.0.7] - 2026-05-01
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.7
-
----
+- Exclude volatile workflow files when applying sync patches
 
 ## [6.0.6] - 2026-04-30
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Add repository metadata for workflow types (#809) (#809)
-- Publish SDK internal deps before sdk (#806) (#806)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.6
-
----
+- Add repository metadata for workflow types
+- Publish SDK internal deps before sdk
 
 ## [6.0.4] - 2026-04-30
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Publish SDK workflow types before SDK (#807) (#807)
-- Pack github-primitive + workflow-types in smoke; publish workflow-types (#804) (#804)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.4
-
----
+- Publish SDK workflow types before SDK
+- Pack github-primitive + workflow-types in smoke; publish workflow-types
 
 ## [6.0.3] - 2026-04-29
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Expose connectProvider() in @agent-relay/cloud SDK (#798)** (#798)
-- **Expose runScriptWorkflow() in @agent-relay/sdk/workflows (#799)** (#799)
-- **Bundle @agent-relay/github-primitive at /github subpath (#782)** (#782)
-
-#### User-Impacting Fixes
-
-- Update codegen-models workflow to use new Python output path (#780) (#780)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.3
-
----
+- Expose connectProvider() in @agent-relay/cloud SDK
+- Expose runScriptWorkflow() in @agent-relay/sdk/workflows
+- Bundle @agent-relay/github-primitive at /github subpath
 
 ## [6.0.2] - 2026-04-25
 
-### Product Perspective
-
-#### User-Impacting Fixes
+### Fixed
 
 - Drop darwin-x64 verify leg (macos-13 queue stuck again)
-- Re-add @agent-relay/cloud to publish-packages matrix (#788)
-
-### Technical Perspective
-
-#### Releases
-
-- v6.0.2
-
----
+- Re-add @agent-relay/cloud to publish-packages matrix
 
 ## [6.0.1] - 2026-04-25
 
-### Product Perspective
+### Breaking Changes
 
-#### Breaking Changes
+- Drop legacy agent-relay/broker\* exports and shipped workspace dirs
 
-- **Drop legacy agent-relay/broker\* exports and shipped workspace dirs**
+### Added
 
-#### User-Facing Features & Improvements
+- Restore agent-relay/\* subpath exports via shim re-exports
 
-- **Restore agent-relay/\* subpath exports via shim re-exports**
+### Changed
 
-#### User-Impacting Fixes
+- Fix stale broker checks
+
+### Fixed
 
 - Drop dead linkResult reference
 - Allow shipped workspace packages declared as regular deps
@@ -682,28 +2433,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Walk ancestor node_modules for shadowed broker packages
 - Install broker optional-deps for CLI users
 
-### Technical Perspective
-
-#### Performance & Reliability
-
-- Fix stale broker checks and PyPI retry
-
-#### Releases
-
-- v6.0.1
-
----
-
 ## [6.0.0] - 2026-04-24
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- ApplySiblingLinks — link sibling-repo packages during workflow setup
+- Split broker binaries into per-platform optional-dep packages
 
-- **ApplySiblingLinks — link sibling-repo packages during workflow setup (#776)** (#776)
-- **Split broker binaries into per-platform optional-dep packages** (#770)
+### Changed
 
-#### User-Impacting Fixes
+- Drop darwin-x64 smoke test
+- Cross-platform post-publish verification of @agent-relay/sdk
+- Skip dist check for broker-\* packages in package-validation
+- Add cross-platform smoke test for broker optional-deps
+- Update Cursor models to latest
+
+### Fixed
 
 - Keep SIGWINCH on unix, background-thread poll on Windows
 - Unbreak Windows build
@@ -713,796 +2458,348 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Address PR review feedback on broker optional-deps
 - Keep broker packages as workspaces so npm ci passes
 
-### Technical Perspective
-
-#### Performance & Reliability
-
-- Drop darwin-x64 smoke test
-- Cross-platform post-publish verification of @agent-relay/sdk
-- Skip dist check for broker-\* packages in package-validation
-- Add cross-platform smoke test for broker optional-deps
-
-#### Dependencies & Tooling
-
-- Update Cursor models to latest (#777) (#777)
-
-#### Releases
-
-- v6.0.0
-
----
-
 ## [5.0.0] - 2026-04-22
 
-### Product Perspective
-
-#### User-Impacting Fixes
+### Fixed
 
 - Repair pre-existing test failures on main
-- Address Copilot review on broker resolution (#769)
-- Ship per-platform wheels with embedded broker (drop runtime download) (#769)
-
-### Technical Perspective
-
-#### Performance & Reliability
-
-- Include publish-sdk-py in summary job
-
-#### Releases
-
-- v5.0.0
-
----
+- Address Copilot review on broker resolution
 
 ## [4.0.40] - 2026-04-22
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Add browser and github workflow primitives (#718)** (#718)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.40
-
----
+- Add browser and github workflow primitives
 
 ## [4.0.38] - 2026-04-22
 
-### Product Perspective
-
-#### User-Impacting Fixes
+### Fixed
 
 - Retry get_session on 503 + correct quickstart idle wait
 
-### Technical Perspective
-
-#### Releases
-
-- v4.0.38
-
----
-
 ## [4.0.37] - 2026-04-22
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Send workflowPath so the launcher can skip the $HOME upload (#766)** (#766)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.37
-
----
+- Send workflowPath so the launcher can skip the $HOME upload
 
 ## [4.0.36] - 2026-04-22
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Add credential proxy workflows runtime stack
 
-- **Add credential proxy workflows runtime stack (#717)** (#717)
+### Fixed
 
-#### User-Impacting Fixes
-
-- Bootstrap for first publish (#764) (#764)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.36
-
----
+- Bootstrap for first publish
 
 ## [4.0.35] - 2026-04-21
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Widen @relayfile/sdk dep range to allow 0.2.x + 0.3.x (#763)** (#763)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.35
-
----
+- Widen @relayfile/sdk dep range to allow 0.2.x + 0.3.x
 
 ## [4.0.34] - 2026-04-21
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Mark run failed under continue-on-error when steps fail (#762) (#762)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.34
-
----
+- Mark run failed under continue-on-error when steps fail
 
 ## [4.0.33] - 2026-04-20
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Add --register flag to mcp-args subcommand
 
-- **Add --register flag to mcp-args subcommand (#760)** (#760)
-
-#### User-Impacting Fixes
+### Fixed
 
 - Bundle local mount package
 
-### Technical Perspective
-
-#### Releases
-
-- v4.0.33
-
----
-
 ## [4.0.32] - 2026-04-20
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Add agent-relay mcp-args subcommand
+- Add agent activity hook
 
-- **Add agent-relay mcp-args subcommand (#759)** (#759)
-- **Add agent activity hook**
-
-#### User-Impacting Fixes
+### Fixed
 
 - Ignore late delivery ack activity
 
-### Technical Perspective
-
-#### Releases
-
-- v4.0.32
-
----
-
 ## [4.0.31] - 2026-04-20
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Align Rust AgentSpawn/AgentRelease with TS schema
+- Per-component version properties on every event
+- Instrument all CLI commands with rich events
 
-- **Align Rust AgentSpawn/AgentRelease with TS schema**
-- **Per-component version properties on every event**
-- **Instrument all CLI commands with rich events**
+### Fixed
 
-#### User-Impacting Fixes
-
-- FileDb in-memory cache authoritative — fixes stale status after disk write failures (#757) (#757)
+- FileDb in-memory cache authoritative — fixes stale status after disk write failures
 - Extract runSignalHandler helper; apply in monitoring
 - Is_tty should check stdin, not stdout
 - Plug two CliExit regressions flagged by Devin
 - Flush queue before process exit; schema cleanup
 - Upgrade posthog-node from v4 to v5
 
-### Technical Perspective
-
-#### Releases
-
-- v4.0.31
-
----
-
 ## [4.0.30] - 2026-04-19
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Export A2A communicate subpaths (#753) (#753)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.30
-
----
+- Export A2A communicate subpaths
 
 ## [4.0.29] - 2026-04-17
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Add ProcessBackend workflow for cloud sandbox execution (#747)** (#747)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.29
-
----
+- Add ProcessBackend workflow for cloud sandbox execution
 
 ## [4.0.28] - 2026-04-15
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Bundle ssh2 in release pipeline, not just scripts/build-bun.sh (#746) (#746)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.28
-
----
+- Bundle ssh2 in release pipeline, not just scripts/build-bun.sh
 
 ## [4.0.27] - 2026-04-15
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Bundle ssh2 into Bun binary so cloud connect exercises the ssh2 path (#745) (#745)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.27
-
----
+- Bundle ssh2 into Bun binary so cloud connect exercises the ssh2 path
 
 ## [4.0.26] - 2026-04-15
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Add visible launch checkpoint for cloud connect (#744) (#744)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.26
-
----
+- Add visible launch checkpoint for cloud connect
 
 ## [4.0.25] - 2026-04-15
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Stop cloud connect hangs and re-auth loops (#743) (#743)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.25
-
----
+- Stop cloud connect hangs and re-auth loops
 
 ## [4.0.24] - 2026-04-15
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Prefer native Node TS stripping over tsx fallback (#741) (#741)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.24
-
----
+- Prefer native Node TS stripping over tsx fallback
 
 ## [4.0.23] - 2026-04-14
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Show workspace key and observer URL in agent-relay status (#740)** (#740)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.23
-
----
+- Show workspace key and observer URL in agent-relay status
 
 ## [4.0.22] - 2026-04-14
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Cloud-connect fix workflows (claude hang + utils bundling) (#738)** (#738)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.22
-
----
+- Cloud-connect fix workflows (claude hang + utils bundling)
 
 ## [4.0.21] - 2026-04-13
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Env-var auth fallback for headless consumers
 
-- **Env-var auth fallback for headless consumers (#734)** (#734)
+### Fixed
 
-#### User-Impacting Fixes
-
-- Inbox --agent flag, history DM support, history --from DM context (#737) (#737)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.21
-
----
+- Inbox --agent flag, history DM support, history --from DM context
 
 ## [4.0.20] - 2026-04-13
 
-### Product Perspective
+### Changed
 
-#### User-Impacting Fixes
+- Unify WorkflowTrajectory on agent-trajectories SDK
 
-- Replace esbuild pre-parse with tsx stderr post-processing (#735) (#735)
+### Fixed
 
-### Technical Perspective
-
-#### Architecture & API Changes
-
-- Unify WorkflowTrajectory on agent-trajectories SDK (#732) (#732)
-
-#### Releases
-
-- v4.0.20
-
----
+- Replace esbuild pre-parse with tsx stderr post-processing
 
 ## [4.0.19] - 2026-04-13
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Make preParseWorkflowFile async to avoid Bun-compiled CLI hang (#733) (#733)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.19
-
----
+- Make preParseWorkflowFile async to avoid Bun-compiled CLI hang
 
 ## [4.0.18] - 2026-04-13
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Add progress diagnostics and spawnSync to runScriptFile (#731) (#731)
-- History/inbox fetch workspace_key via broker HTTP API (#729) (#729)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.18
-
----
+- Add progress diagnostics and spawnSync to runScriptFile
+- History/inbox fetch workspace_key via broker HTTP API
 
 ## [4.0.17] - 2026-04-13
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Workerd export condition + narrow entry + workers-safety probe
 
-- **Workerd export condition + narrow entry + workers-safety probe (#726)** (#726)
+### Fixed
 
-#### User-Impacting Fixes
-
-- Restore packages/sdk vitest suite to green (#728) (#728)
-- Pre-parse workflow script files with actionable error hints (#727) (#727)
-- Make --resume work for script workflows (#725) (#725)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.17
-
----
+- Restore packages/sdk vitest suite to green
+- Pre-parse workflow script files with actionable error hints
+- Make --resume work for script workflows
 
 ## [4.0.16] - 2026-04-12
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Wire relaycast MCP for headless opencode spawner (#723) (#723)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.16
-
----
+- Wire Agent Relay MCP for headless OpenCode spawner
 
 ## [4.0.15] - 2026-04-12
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- History and inbox work without RELAY_API_KEY env var (#722) (#722)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.15
-
----
+- History and inbox work without RELAY_API_KEY env var
 
 ## [4.0.14] - 2026-04-11
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Add cloud cancel CLI + fix opencode headless spawn (#721)** (#721)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.14
-
----
+- Add cloud cancel CLI + fix opencode headless spawn
 
 ## [4.0.13] - 2026-04-11
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Retry real install paths in verify-publish (#719) (#719)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.13
-
----
+- Retry real install paths in verify-publish
 
 ## [4.0.12] - 2026-04-11
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Add workflow for relay bootstrap and messaging fixes (#708)** (#708)
-- **Add meta and clean-room relay validation workflows (#713)** (#713)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.12
-
----
+- Add workflow for relay bootstrap and messaging fixes
+- Add meta and clean-room relay validation workflows
 
 ## [4.0.11] - 2026-04-10
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Log full deterministic step output on failure for cloud visibility (#716) (#716)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.11
-
----
+- Log full deterministic step output on failure for cloud visibility
 
 ## [4.0.10] - 2026-04-10
 
-### Product Perspective
+### Changed
 
-#### User-Impacting Fixes
+- Harden macos binary verification
 
-- Skip in-sandbox provisioning when cloud launcher already seeded ACLs (#711) (#711)
-- Harden macos binary smoke checks (#710) (#710)
+### Fixed
 
-### Technical Perspective
-
-#### Performance & Reliability
-
-- Harden macos binary verification (#709) (#709)
-
-#### Releases
-
-- v4.0.10
-
----
+- Skip in-sandbox provisioning when cloud launcher already seeded ACLs
+- Harden macos binary smoke checks
 
 ## [4.0.9] - 2026-04-10
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Harden npm publish packaging (#707) (#707)
-- Use bun built-in TS validation, remove esbuild dependency (#706) (#706)
-- Npm tarball propagation race in verify-publish and install.sh (#705) (#705)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.9
-
----
+- Harden npm publish packaging
+- Use bun built-in TS validation, remove esbuild dependency
+- Npm tarball propagation race in verify-publish and install.sh
 
 ## [4.0.6] - 2026-04-10
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Complete implementation + fix Supermemory adapter (#700)** (#700)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.6
-
----
+- Complete implementation + fix Supermemory adapter
 
 ## [4.0.5] - 2026-04-08
 
-### Technical Perspective
-
-#### Architecture & API Changes
+### Changed
 
 - Route waitlist signups to cloud
 
-#### Releases
-
-- v4.0.5
-
----
-
 ## [4.0.4] - 2026-04-07
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Use local workspace session for symlink/solo mode to avoid 405 on cloud API (#692) (#692)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.4
-
----
+- Use local workspace session for symlink/solo mode to avoid 405 on cloud API
 
 ## [4.0.3] - 2026-04-07
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Fast workspace seeding — symlink mount + tar bulk upload
+- 30 workflows to wire relayauth/relayfile permissions into workflow runner
 
-- **Fast workspace seeding — symlink mount + tar bulk upload (#691)** (#691)
-- **30 workflows to wire relayauth/relayfile permissions into workflow runner (#673)** (#673)
+### Fixed
 
-#### User-Impacting Fixes
-
-- Only prefer sibling relay-dashboard dev build when RELAY_LOCAL_DEV=1 (#690) (#690)
-- Install broker binary to BIN_DIR so it's on PATH (#689) (#689)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.3
-
----
-
-## [4.0.2] - 2026-04-07
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.2
-
----
+- Only prefer sibling relay-dashboard dev build when RELAY_LOCAL_DEV=1
+- Install broker binary to BIN_DIR so it's on PATH
 
 ## [4.0.1] - 2026-04-06
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- TDD refactoring workflows for runner.ts + main.rs decomposition
+- /schedule — RelayCron landing page
+- Auto-download relayfile-mount binary on first use
 
-- **TDD refactoring workflows for runner.ts + main.rs decomposition (#675)** (#675)
-- **/schedule — RelayCron landing page**
-- **Auto-download relayfile-mount binary on first use (#670)** (#670)
+### Changed
 
-#### User-Impacting Fixes
+- Gitignore .trajectories/ (automated run artifacts)
 
-- Allow anonymous workspace creation in agent-relay on (#683) (#683)
-- Wire .agentignore/.agentreadonly enforcement into agent-relay on (#671) (#671)
+### Fixed
 
-### Technical Perspective
-
-#### Dependencies & Tooling
-
-- Gitignore .trajectories/ (automated run artifacts) (#676) (#676)
-
-#### Releases
-
-- v4.0.1
-
----
+- Allow anonymous workspace creation in agent-relay on
+- Wire .agentignore/.agentreadonly enforcement into agent-relay on
 
 ## [4.0.0] - 2026-03-31
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Default agent-relay on to production cloud endpoints (#667)** (#667)
-- **Unified workspace ID across relay services (#664)** (#664)
-
-### Technical Perspective
-
-#### Releases
-
-- v4.0.0
-
----
-
-## [3.2.22] - 2026-03-27
-
-### Technical Perspective
-
-#### Releases
-
-- v3.2.22
-
----
+- Default agent-relay on to production cloud endpoints
+- Unified workspace ID across relay services
 
 ## [3.2.21] - 2026-03-27
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Avoid E2BIG spawn failure and verification token double-count (#655) (#655)
-- Queue outbound messages during RelayObserver reconnect (#646) (#646)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.2.21
-
----
+- Avoid E2BIG spawn failure and verification token double-count
+- Queue outbound messages during RelayObserver reconnect
 
 ## [3.2.18] - 2026-03-25
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Remove unused dm_drops_total function to fix clippy dead-code warning (#645) (#645)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.2.18
-
----
+- Remove unused dm_drops_total function to fix clippy dead-code warning
 
 ## [3.2.17] - 2026-03-25
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Add dry-run support and stream CLI output to terminal
 
-- **Add dry-run support and stream CLI output to terminal (#643)** (#643)
+### Fixed
 
-#### User-Impacting Fixes
-
-- Resolve DM participants for correct routing (#644) (#644)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.2.17
-
----
+- Resolve DM participants for correct routing
 
 ## [3.2.16] - 2026-03-25
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Add http and broker-path subpath exports for Electron apps
+- PTY output streaming workflow
+- Add integration step type for external services
+- Add dynamic channel subscribe/unsubscribe to broker
+- Cloud endpoints, API executor, and Communicate SDK v2 protocol
+- Communicate Mode SDK (on_relay) for TypeScript
+- Add wait/steer message injection modes
 
-- **Add http and broker-path subpath exports for Electron apps (#640)** (#640)
-- **PTY output streaming workflow (#390) (#528)** (#390)
-- **Add integration step type for external services (#631)** (#631)
-- **Add dynamic channel subscribe/unsubscribe to broker (#630)** (#630)
-- **Cloud endpoints, API executor, and Communicate SDK v2 protocol (#632)** (#632)
-- **Communicate Mode SDK (on_relay) for Python and TypeScript (#618)** (#618)
-- **Add wait/steer message injection modes**
+### Changed
 
-#### User-Impacting Fixes
+- Assert injection mode defaults to wait when omitted
+- Fix missing MessageInjectionMode imports in test modules
+- Bump relaycast crate to v1 for injection mode support
 
-- Add RELAY_SKIP_PROMPT and self-echo filtering (#641) (#641)
+### Fixed
+
+- Add RELAY_SKIP_PROMPT and self-echo filtering
 - Ignore failing relaycast DM tests pending relaycast 1.0 API investigation
 - Cargo fmt corrections
 - Sync lockfile for new UI deps
-- Validate channel names at build time and dry-run (#638) (#638)
+- Validate channel names at build time and dry-run
 - Forward steer mode through relaycast DMs
 - Unblock fork PR checks and enforce steer rejection for relaycast DM
 - Propagate inbound injection mode on relay_inbound events
@@ -1512,233 +2809,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Satisfy rust fmt/clippy for injection mode changes
 - Don't block steer injections behind autosuggest gate
 
-### Technical Perspective
-
-#### Performance & Reliability
-
-- Assert injection mode defaults to wait when omitted
-- Fix missing MessageInjectionMode imports in test modules
-
-#### Dependencies & Tooling
-
-- Bump relaycast crate to v1 for injection mode support
-
-#### Releases
-
-- v3.2.16
-
----
-
 ## [3.2.15] - 2026-03-23
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Add RelayObserver proxy client for UI consumers
 
-- **Add RelayObserver proxy client for UI consumers (#627)** (#627)
+### Fixed
 
-#### User-Impacting Fixes
-
-- Add bypass flag to codex non-interactive spawns (#628) (#628)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.2.15
-
----
+- Add bypass flag to codex non-interactive spawns
 
 ## [3.2.14] - 2026-03-23
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Add initial Swift SDK and harden workflow output (#589)** (#589)
-
-#### User-Impacting Fixes
-
-- Make og image compatible with OpenNext
-- Track generated SST resource types
-- Avoid generated SST type dependency
-
-### Technical Perspective
-
-#### Dependencies & Tooling
-
-- Rename SST app to relay-web
-
-#### Releases
-
-- v3.2.14
-
----
+- Add initial Swift SDK and harden workflow output
 
 ## [3.2.13] - 2026-03-20
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Ignore non-zero exit codes for opencode non-interactive agents (#602) (#602)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.2.13
-
----
+- Ignore non-zero exit codes for opencode non-interactive agents
 
 ## [3.2.12] - 2026-03-20
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Add Codex relay skill for sub-agent communication (#595)** (#595)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.2.12
-
----
+- Add Codex relay skill for sub-agent communication
 
 ## [3.2.11] - 2026-03-20
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Add workflow defaults abstraction
 
-- **Add workflow defaults abstraction (#599)** (#599)
+### Fixed
 
-#### User-Impacting Fixes
-
-- Detect Codex boot marker format in PTY startup gate (#600) (#600)
-- Consolidate CLI path resolution (#598) (#598)
-- Reduce WS spawn pre-registration timeout from 15s to 3s (#597) (#597)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.2.11
-
----
+- Detect Codex boot marker format in PTY startup gate
+- Consolidate CLI path resolution
+- Reduce WS spawn pre-registration timeout from 15s to 3s
 
 ## [3.2.10] - 2026-03-20
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Workflow to polish CLI output with listr2 + chalk
+- CLI session collectors, step-level cwd, and run summary table
 
-- **Workflow to polish CLI output with listr2 + chalk (#585)** (#585)
-- **CLI session collectors, step-level cwd, and run summary table (#592)** (#592)
+### Fixed
 
-#### User-Impacting Fixes
-
-- Auto-build local sdk workflows runtime (#588) (#588)
-- MCP tools unavailable for agents spawned via agent_add (#591) (#591)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.2.10
-
----
-
-## [3.2.9] - 2026-03-19
-
-### Technical Perspective
-
-#### Releases
-
-- v3.2.9
-
----
+- Auto-build local sdk workflows runtime
+- MCP tools unavailable for agents spawned via agent_add
 
 ## [3.2.8] - 2026-03-18
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Detect claude CLI with inline args for MCP injection (#584) (#584)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.2.8
-
----
+- Detect claude CLI with inline args for MCP injection
 
 ## [3.2.7] - 2026-03-18
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Forward RELAY_WORKSPACES_JSON and RELAY_DEFAULT_WORKSPACE to spawned agent MCP config (#583) (#583)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.2.7
-
----
+- Forward RELAY_WORKSPACES_JSON and RELAY_DEFAULT_WORKSPACE to spawned agent MCP config
 
 ## [3.2.6] - 2026-03-17
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Add reasoning effort metadata to model registry
+- Add resize_pty protocol message for remote PTY resize
 
-- **Add reasoning effort metadata to model registry (#579)** (#579)
-- **Add resize_pty protocol message for remote PTY resize**
+### Fixed
 
-#### User-Impacting Fixes
-
-- Ensure spawned Claude agents get proper MCP config (#581) (#581)
+- Ensure spawned Claude agents get proper MCP config
 - Address PR review feedback for resize_pty
-
-### Technical Perspective
-
-#### Releases
-
-- v3.2.6
-
----
-
-## [3.2.5] - 2026-03-17
-
-### Technical Perspective
-
-#### Releases
-
-- v3.2.5
-
----
 
 ## [3.2.4] - 2026-03-17
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- StartFrom + deterministic/worktree step parity
+- A2A protocol transport layer for TypeScript
+- Add OpenClaw orchestrator skill for headless multi-agent sessions
+- Add TS adapters for OpenAI Agents, LangGraph, Google ADK, CrewAI + review fixes
+- Verify TypeScript Pi adapter exports
+- Add Communicate Mode SDK (on_relay) for TypeScript
 
-- **StartFrom + deterministic/worktree step parity (#574)** (#574)
-- **A2A protocol transport layer — Python (89 tests ✅) + TypeScript**
-- **Add OpenClaw orchestrator skill for headless multi-agent sessions**
-- **Add TS adapters for OpenAI Agents, LangGraph, Google ADK, CrewAI + review fixes**
-- **Add Pi RPC adapter for Python SDK + verify TS Pi adapter exports**
-- **Add Communicate Mode SDK (on_relay) for Python and TypeScript**
+### Changed
 
-#### User-Impacting Fixes
+- Add 13 e2e tests for TypeScript adapters against live Relaycast
+- Hide communicate pages from public docs until tested
+- Sync package-lock.json after config version bump
+
+### Fixed
 
 - Address latest Devin review findings
 - Move framework adapters from dependencies to optional peerDependencies
@@ -1749,79 +2913,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Address Devin review findings on Communicate SDK
 - Address Barry review feedback on Communicate SDK
 - Address Will + Devin review feedback on Communicate SDK
-- Address PR #565 review — remove onRelay auto-detect, fix ReDoS regex (#565)
+- Address PR review — remove onRelay auto-detect, fix ReDoS regex
 - RegisterOrRotate for 409, ws.close timeout, add @sinclair/typebox dep for Pi adapter
-- Align Python SDK transport with real Relaycast API surface
 - Address Devin review findings
 - Exclude vitest test files from SDK build config
 - Add @sinclair/typebox to root dependencies for global install
-- Address PR #565 review feedback (#565)
+- Address PR review feedback
 - Communicate mode spec compliance — adapters, tests, infra
 - Critical spec compliance issues from deep review
 - Spec compliance — ping/pong, auto-detect module matching
 - Add per-adapter subpath exports and withRelay alias
 - Sync package-lock.json with package.json
 
-### Technical Perspective
-
-#### Performance & Reliability
-
-- Add 13 e2e tests for all TS + Python adapters against live Relaycast
-
-#### Dependencies & Tooling
-
-- Hide communicate pages from public docs until tested
-- Sync package-lock.json after config version bump
-
-#### Releases
-
-- v3.2.4
-
----
-
 ## [3.2.3] - 2026-03-15
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Add HTTP transport mode; route all CLI commands through SDK
 
-- **Add HTTP transport mode; route all CLI commands through SDK**
+### Changed
 
-#### User-Impacting Fixes
+- Add tests for droid/opencode auto-accept permission detection
 
-- Use correct broker init subcommand and --api-port flag (#569)
-- Use broker binary path instead of process.argv[1] for auto-start (#569)
+### Fixed
+
+- Use correct broker init subcommand and --api-port flag
+- Use broker binary path instead of process.argv[1] for auto-start
 - Add RELAY_SKIP_BOOTSTRAP to Codex, Opencode, and Gemini/Droid config paths
 - Auto-accept droid/opencode permission prompts with --cwd
-- Set RELAY_SKIP_BOOTSTRAP when agent token is pre-registered (#85)
-- Auto-accept droid/opencode permission prompts with --cwd
+- Set RELAY_SKIP_BOOTSTRAP when agent token is pre-registered
 - Address review feedback on HTTP client and listing commands
 - Auto-accept Claude Code folder trust prompt for spawned agents
 
-### Technical Perspective
-
-#### Performance & Reliability
-
-- Add tests for droid/opencode auto-accept permission detection
-- Add tests for droid/opencode auto-accept permission detection
-
-#### Releases
-
-- v3.2.3
-
----
-
 ## [3.2.2] - 2026-03-14
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Package plugins as proper platform formats and PRPM collections
+- Implement CLI native plugins for OpenCode, Claude Code, and Gemini CLI
+- Add deterministic step support to WorkflowBuilder
 
-- **Package plugins as proper platform formats and PRPM collections**
-- **Implement CLI native plugins for OpenCode, Claude Code, and Gemini CLI**
-- **Add deterministic step support to WorkflowBuilder**
+### Changed
 
-#### User-Impacting Fixes
+- Update MCP tool name references to 3-level hierarchy
+
+### Fixed
 
 - Suppress codex update prompt in spawned workers
 - Remove relay.shutdown() that killed the running broker in status command
@@ -1834,431 +2970,153 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Idle verification loop handles single-fire agent_idle events
 - Idle verification loop mirrors runVerification double-occurrence guard
 - Non-lead agents in hub-spoke should use idle-as-complete
-- Address Devin review feedback on PR #566 (#566)
+- Address Devin review feedback on PR
 - Use ref-counted Map for activeReviewers instead of Set
 - WorkflowBuilder drops preset field and reviewer double-booking
 
-### Technical Perspective
-
-#### Dependencies & Tooling
-
-- Update MCP tool name references to 3-level hierarchy (#564) (#564)
-
-#### Releases
-
-- v3.2.2
-
----
-
 ## [3.2.1] - 2026-03-13
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
-
-- **Point-person-led completion pipeline (#552)** (#552)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.2.1
-
----
+- Point-person-led completion pipeline
 
 ## [3.2.0] - 2026-03-13
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Deterministic workspace key from user + directory
 
-- **Deterministic workspace key from user + directory (#549)** (#549)
+### Changed
 
-#### User-Impacting Fixes
+- Move skills to dedicated directory with symlinks
+- Add workflow smoke matrix for codex and gemini
 
-- Pass --model flag to spawned CLI processes (#559) (#559)
-- Rebind relaycast tokens after workspace switch (#558) (#558)
-- Update MCP tool name references to dot-notation hierarchy (#555) (#555)
-- Inject inter-agent DMs via workspace WebSocket (#553) (#553)
-- Exact flag matching for --mcp-config guard (#550) (#550)
+### Fixed
 
-### Technical Perspective
-
-#### Architecture & API Changes
-
-- Move skills to dedicated directory with symlinks (#561) (#561)
-
-#### Performance & Reliability
-
-- Add workflow smoke matrix for codex and gemini (#544) (#544)
-
-#### Releases
-
-- v3.2.0
-
----
-
-## [3.1.23] - 2026-03-12
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.23
-
----
+- Pass --model flag to spawned CLI processes
+- Rebind relaycast tokens after workspace switch
+- Update MCP tool name references to dot-notation hierarchy
+- Inject inter-agent DMs via workspace WebSocket
+- Exact flag matching for --mcp-config guard
 
 ## [3.1.22] - 2026-03-11
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Install parity and spawn deserialization fallback (#541) (#541)
-- Preserve user MCP servers when spawning Claude from dashboard (#542) (#542)
-- Codex bypass flag → --dangerously-bypass-approvals-and-sandbox (#540) (#540)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.22
-
----
+- Install parity and spawn deserialization fallback
+- Preserve user MCP servers when spawning Claude from dashboard
+- Codex bypass flag → --dangerously-bypass-approvals-and-sandbox
 
 ## [3.1.21] - 2026-03-11
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Wire workspaceName/relaycastBaseUrl options in AgentRelay
+- Add multi-workspace support to OpenClaw bridge
+- Add skipRelayPrompt flag to skip MCP config injection on spawn
+- Wire multi-workspace runtime flows
+- Add multi-workspace auth plumbing
 
-- **Wire workspaceName/relaycastBaseUrl options in AgentRelay (#538)** (#538)
-- **Add multi-workspace support to OpenClaw bridge**
-- **Add skipRelayPrompt flag to skip MCP config injection on spawn** (#419)
-- **Wire multi-workspace runtime flows**
-- **Add multi-workspace auth plumbing**
+### Changed
 
-#### User-Impacting Fixes
+- Record multi-workspace implementation trail
+
+### Fixed
 
 - SwitchWorkspace clawName, stale alias default, and corrupt JSON handling
 - Preserve skip_relay_prompt on restart
 - Reset exit info per retry + preserve exit code on spawn failure
 - Avoid wiping workspace alias/id when add-workspace updates without flags
 - Use timeoutMs directly in nudge loop timeout guard
-- Forward skip_relay_prompt in Python SDK and skip pre-registration in broker
+- Skip pre-registration in the broker
 - Workspace default handling in add-workspace
 - Harden multi-workspace add-workspace default and logging behavior
 - Distinguish force-released (nudge exhaustion) from released (idle-complete)
-- Address PR #531 review feedback in workflow runner (#531)
+- Address PR review feedback in workflow runner
 - Always record failed attempt output for workflow retries
 - Pass skipRelayPrompt through spawner headless path and simplify Rust type
-- Include exitCode and exitSignal in step events (#499) (#499)
+- Include exitCode and exitSignal in step events
 - Escape TOML string values for codex --config workspace env vars
-- Treat force-released agent as step failure, not success (#498)
+- Treat force-released agent as step failure, not success
 - Correct error message for default workspace lookup failure and forward workspace env vars in MCP snippets
 - Use workspace-scoped dedup keys for MCP self-echo pre-seeding
 - Allow clippy too_many_arguments on MultiWorkspaceSession::new
-- Address multi-workspace code review bugs from PR #519 (#519)
+- Address multi-workspace code review bugs from PR
 - Restore carriage return in wrap retry PTY injection
-
-### Technical Perspective
-
-#### Dependencies & Tooling
-
-- Record multi-workspace implementation trail
-
-#### Releases
-
-- v3.1.21
-
----
 
 ## [3.1.19] - 2026-03-10
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Resolve install binary verification, uninstall, and version prefix bugs (#535) (#535)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.19
-
----
+- Resolve install binary verification, uninstall, and version prefix bugs
 
 ## [3.1.18] - 2026-03-10
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Multi-workspace runtime support
+- Harden handoffs with auto step owners + per-step reviews
 
-- **Multi-workspace runtime support (#519)** (#519)
-- **Harden handoffs with auto step owners + per-step reviews (#511)** (#511)
+### Fixed
 
-#### User-Impacting Fixes
-
-- Rebase release commit on latest main before pushing (#533) (#533)
-- Guard specialist promise in executor supervised path (#525) (#525)
-- Avoid rotating relay agent token on setup (#520) (#520)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.18
-
----
-
-## [3.1.15] - 2026-03-09
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.15
-
----
+- Rebase release commit on latest main before pushing
+- Guard specialist promise in executor supervised path
+- Avoid rotating relay agent token on setup
 
 ## [3.1.14] - 2026-03-09
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Prevent race condition in relay WS handler binding (#515) (#515)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.14
-
----
+- Prevent race condition in relay WS handler binding
 
 ## [3.1.13] - 2026-03-09
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Bind relay event handlers after WS connect (#513) (#513)
-- Expose all workspace DM conversations in dashboard (#510) (#510)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.13
-
----
-
-## [3.1.12] - 2026-03-07
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.12
-
----
-
-## [3.1.11] - 2026-03-07
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.11
-
----
+- Bind relay event handlers after WS connect
+- Expose all workspace DM conversations in dashboard
 
 ## [3.1.10] - 2026-03-05
 
-### Product Perspective
+### Fixed
 
-#### User-Impacting Fixes
-
-- Quote make_latest to prevent openclaw release from hijacking latest (#496) (#496)
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.10
-
----
-
-## [3.1.9] - 2026-03-05
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.9
-
----
-
-## [3.1.8] - 2026-03-05
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.8
-
----
-
-## [3.1.7] - 2026-03-05
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.7
-
----
-
-## [3.1.5] - 2026-03-04
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.5
-
----
-
-## [3.1.4] - 2026-03-04
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.4
-
----
-
-## [3.1.3] - 2026-03-04
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.3
-
----
-
-## [3.1.2] - 2026-03-04
-
-### Technical Perspective
-
-#### Releases
-
-- v3.1.2
-
----
+- Quote make_latest to prevent openclaw release from hijacking latest
 
 ## [3.1.1] - 2026-03-04
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Add openclaw-relaycast package
 
-- **Add openclaw-relaycast package (#474)** (#474)
-
-#### User-Impacting Fixes
+### Fixed
 
 - Remove unsupported dashboard flag from dev script
 
-### Technical Perspective
-
-#### Releases
-
-- v3.1.1
-
----
-
 ## [3.1.0] - 2026-03-04
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Make provider spawn transport-driven
+- Add direct spawn/message API
 
-- **Make provider spawn transport-driven**
-- **Add direct spawn/message API (#473)** (#473)
-
-#### User-Impacting Fixes
-
-- Make SDK lifecycle release test more robust (#471) (#471)
-
-### Technical Perspective
-
-#### Architecture & API Changes
+### Changed
 
 - Switch runtime contract to provider-driven headless
-
-#### Performance & Reliability
-
 - Align contract fixture checks with broker event shapes
 
-#### Releases
+### Fixed
 
-- v3.1.0
-
----
+- Make SDK lifecycle release test more robust
 
 ## [3.0.2] - 2026-03-02
 
-### Product Perspective
+### Changed
 
-#### User-Impacting Fixes
-
-- Resolve platform-specific broker binary in SDK (#464) (#464)
-- Use SDK join_channel API for broker channel joins
-- Remove relay-pty references from postinstall.js
-- Update verify-install to check for agent-relay-broker instead of relay-pty
-- Remove redundant registration map_err conversion
-
-### Technical Perspective
-
-#### Performance & Reliability
-
-- Stabilize macOS CLI agents timeout
-- Allow SDK broker fallback in macOS npx verify
-- Accept SDK broker fallback in npx resolution check
-- Fix verify-publish PR package resolution
-- Accept both relaycast workspace key field shapes
-- Restore coverage threshold and fix sdk integration type
-- Retrigger checks
-
-#### Dependencies & Tooling
-
-- Use published relaycast 0.3.0 crate
-
-#### Releases
-
-- v3.0.2
-
----
+- Republished 2.3.16 unchanged under the 3.x version line; no functional changes.
 
 ## [2.3.16] - 2026-03-02
 
-### Product Perspective
-
-#### User-Impacting Fixes
-
-- Resolve platform-specific broker binary in SDK (#464) (#464)
-- Use SDK join_channel API for broker channel joins
-- Remove relay-pty references from postinstall.js
-- Update verify-install to check for agent-relay-broker instead of relay-pty
-- Remove redundant registration map_err conversion
-
-### Technical Perspective
-
-#### Performance & Reliability
+### Changed
 
 - Stabilize macOS CLI agents timeout
 - Allow SDK broker fallback in macOS npx verify
@@ -2267,465 +3125,169 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Accept both relaycast workspace key field shapes
 - Restore coverage threshold and fix sdk integration type
 - Retrigger checks
-
-#### Dependencies & Tooling
-
 - Use published relaycast 0.3.0 crate
 
-#### Releases
+### Fixed
 
-- v2.3.16
-
----
+- Resolve platform-specific broker binary in SDK
+- Use SDK join_channel API for broker channel joins
+- Remove relay-pty references from postinstall.js
+- Update verify-install to check for agent-relay-broker instead of relay-pty
+- Remove redundant registration map_err conversion
 
 ## [2.3.14] - 2026-02-19
 
-### Technical Perspective
+### Changed
 
-#### Dependencies & Tooling
-
-- Auto-generate CHANGELOG on stable release (#447) (#447)
-
-#### Releases
-
-- v2.3.14
-
----
+- Auto-generate CHANGELOG on stable release
 
 ## [2.1.5] - 2026-01-30
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Task injection retries: Spawning agents with tasks now automatically retries delivery up to 3 times, preventing silent failures that left agents without their initial instructions.
 
-- **Task injection retries**: Spawning agents with tasks now automatically retries delivery up to 3 times, preventing silent failures that left agents without their initial instructions.
+### Changed
 
-#### User-Impacting Fixes
-
-- Auto-suggestion injection and cursor-agent reconciliation fixed — agents now correctly receive suggestions and cursor state stays in sync (#347).
-
-### Technical Perspective
-
-#### Architecture & API Changes
-
-- Injection retry logic added to spawn flow with configurable attempts and backoff (#349).
+- Injection retry logic added to spawn flow with configurable attempts and backoff.
 - Cursor-agent reconciliation ensures agent state matches the editor's cursor position after reconnects.
 
-#### Releases
+### Fixed
 
-- v2.1.4, v2.1.5
-
----
+- Auto-suggestion injection and cursor-agent reconciliation fixed — agents now correctly receive suggestions and cursor state stays in sync.
 
 ## [2.1.3] - 2026-01-29
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Agent-to-agent JSONL watch: Agents can now observe each other's activity streams via JSONL watch, enabling real-time coordination.
+- Onboarding improvements: Smoother first-run experience with better prompts and flow handling.
+- SQLite dependency removed: Storage layer switched from SQLite to JSONL, reducing native binary requirements and simplifying installation.
 
-- **Agent-to-agent JSONL watch**: Agents can now observe each other's activity streams via JSONL watch, enabling real-time coordination (#346).
-- **Onboarding improvements**: Smoother first-run experience with better prompts and flow handling (#345).
-- **SQLite dependency removed**: Storage layer switched from SQLite to JSONL, reducing native binary requirements and simplifying installation (#343).
-
-#### User-Impacting Fixes
-
-- Relay-pty binary resolution fixed for `npx` usage — no longer requires postinstall scripts, making global installs more reliable (#344).
-- Messages path routing corrected for dashboard storage (#341).
-
-### Technical Perspective
-
-#### Architecture & API Changes
+### Changed
 
 - Storage backend migrated from SQLite to JSONL flat files, eliminating the native `better-sqlite3` dependency.
 - Relay-pty binary resolution rewritten with comprehensive edge case handling for npx, global installs, and monorepo setups.
 - Agent-to-agent JSONL watch enables streaming observation of peer agent activity.
-
-#### Performance & Reliability
-
 - Comprehensive test suite added for relay-pty binary path resolution across install scenarios.
-- Bundled dependency audit added to CI (#339).
-- Timeout and skip logic for x64 macOS verification on PRs (#340).
-
-#### Dependencies & Tooling
-
+- Bundled dependency audit added to CI.
+- Timeout and skip logic for x64 macOS verification on PRs.
 - Removed `better-sqlite3` native dependency in favor of JSONL storage.
 - macOS x64 verification job removed from CI (slow, low value).
 
-#### Releases
+### Fixed
 
-- v2.1.0, v2.1.1, v2.1.2, v2.1.3 (plus v2.0.34–v2.0.37)
-
----
+- Relay-pty binary resolution fixed for `npx` usage — no longer requires postinstall scripts, making global installs more reliable.
+- Messages path routing corrected for dashboard storage.
 
 ## [2.0.37] - 2026-01-28
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- OpenCode HTTP API integration: Full OpenCode provider support via HTTP API, enabling OpenCode as a first-class agent backend.
+- File-based continuity: Agents can now save and restore session state through file-based continuity commands, surviving restarts and long operations.
+- Performance benchmarking: New benchmarking package for comparing agent configurations and measuring swarm performance.
+- MCP client parity: MCP client now aligned with SDK for consistent behavior across both integration paths.
 
-- **OpenCode HTTP API integration**: Full OpenCode provider support via HTTP API, enabling OpenCode as a first-class agent backend (#337).
-- **File-based continuity**: Agents can now save and restore session state through file-based continuity commands, surviving restarts and long operations (#331).
-- **Performance benchmarking**: New benchmarking package for comparing agent configurations and measuring swarm performance (#326).
-- **MCP client parity**: MCP client now aligned with SDK for consistent behavior across both integration paths (#323).
-
-#### User-Impacting Fixes
-
-- **Unbounded output buffer crash fixed**: `RangeError` from large agent output no longer crashes the process (#338).
-- Storage health reporting and doctor CLI now correctly handle JSONL storage (#334, #335).
-- Stale agents cleaned up automatically when their process dies without a clean disconnect (#319).
-- CJS exports fixed for `agent-relay` and `@agent-relay/utils` — CommonJS consumers can now `require()` the packages (#325, #328).
-
-### Technical Perspective
-
-#### Architecture & API Changes
+### Changed
 
 - OpenCode HTTP API integration adds a new provider adapter for the OpenCode backend.
 - File-based continuity command handling added to orchestrator for session persistence.
 - New `listConnectedAgents()` and `removeAgent()` APIs for programmatic agent management.
 - Shared client helpers extracted to `@agent-relay/utils` for SDK/MCP consistency.
 - MCP client aligned with SDK: `sendAndWait` return types updated to `AckPayload`, `PROTOCOL_VERSION` imported consistently.
-- Agent capacity increased to support 10,000 concurrent agents (#318).
-
-#### Performance & Reliability
-
+- Agent capacity increased to support 10,000 concurrent agents.
 - Output buffer bounds enforced to prevent `RangeError` crashes from large payloads.
 - Storage reliability and security fixes: health checks, doctor diagnostics, and JSONL handling hardened.
 - Stale agent cleanup on process death prevents ghost entries in connected agent lists.
-- Relay-pty binary fallback logic improved for cross-platform resolution (#324).
-
-#### Dependencies & Tooling
-
-- Post-publish verification workflow added for npm packages with npx, Docker, and macOS tests (#323).
+- Relay-pty binary fallback logic improved for cross-platform resolution.
+- Post-publish verification workflow added for npm packages with npx, Docker, and macOS tests.
 - CJS build artifacts generated during `npm pack` for dual ESM/CJS support.
 - Bundled dependencies ensure tarball includes all `@agent-relay` packages.
 - macOS CI runners updated (macos-13 → macos-15-large, macos-12 for Intel x64).
 - Dashboard publishing removed from relay monorepo (moved to relay-cloud).
-- PostHog analytics added to docs site (#321).
 
-#### Releases
+### Fixed
 
-- v2.0.21–v2.0.32, plus numerous CI and packaging fixes.
-
----
+- Unbounded output buffer crash fixed: `RangeError` from large agent output no longer crashes the process.
+- Storage health reporting and doctor CLI now correctly handle JSONL storage.
+- Stale agents cleaned up automatically when their process dies without a clean disconnect.
+- CJS exports fixed for `agent-relay` and `@agent-relay/utils` — CommonJS consumers can now `require()` the packages.
 
 ## [2.0.25] - 2026-01-27
 
-### Product Perspective
+### Added
 
-#### User-Facing Features & Improvements
+- Dashboard moved to relay-cloud: Dashboard package removed from the relay monorepo and migrated to the dedicated relay-cloud repository, simplifying the core package.
+- CLI dashboard startup: `--dashboard` flag now launches the dashboard via npx fallback when not locally available.
+- Socket length handling: Long socket messages no longer truncated or malformed.
+- Stale agent cleanup: Agents whose processes die without clean disconnect are now automatically removed.
+- 10K agent capacity: Relay server now supports up to 10,000 concurrent connected agents.
 
-- **Dashboard moved to relay-cloud**: Dashboard package removed from the relay monorepo and migrated to the dedicated relay-cloud repository, simplifying the core package.
-- **CLI dashboard startup**: `--dashboard` flag now launches the dashboard via npx fallback when not locally available (#322).
-- **Socket length handling**: Long socket messages no longer truncated or malformed (#317).
-- **Stale agent cleanup**: Agents whose processes die without clean disconnect are now automatically removed (#319).
-- **10K agent capacity**: Relay server now supports up to 10,000 concurrent connected agents (#318).
+### Changed
 
-#### User-Impacting Fixes
+- Dashboard package fully removed; CI updated to test daemon via socket instead of HTTP.
+- `listConnectedAgents()` and `removeAgent()` APIs added for agent lifecycle management.
+- Agent capacity limit raised to 10,000.
+- Socket length handling improved in Rust relay-pty core.
+- Stale agent cleanup prevents ghost entries when processes exit uncleanly.
+- CLI tests no longer conflict with a running local daemon.
+- Dashboard publishing workflow removed; package cleanup across workspaces.
+- npx fallback added for dashboard startup in CLI.
+
+### Fixed
 
 - Dashboard references cleaned up after package removal to prevent broken imports.
 - Socket.rs `warn!` macro indentation corrected for proper Rust compilation.
 - CLI tests isolated from running daemon to prevent interference.
 
-### Technical Perspective
-
-#### Architecture & API Changes
-
-- Dashboard package fully removed; CI updated to test daemon via socket instead of HTTP (#315, #316).
-- `listConnectedAgents()` and `removeAgent()` APIs added for agent lifecycle management (#319).
-- Agent capacity limit raised to 10,000 (#318).
-- Socket length handling improved in Rust relay-pty core (#317).
-
-#### Performance & Reliability
-
-- Stale agent cleanup prevents ghost entries when processes exit uncleanly.
-- CLI tests no longer conflict with a running local daemon.
-
-#### Dependencies & Tooling
-
-- Dashboard publishing workflow removed; package cleanup across workspaces (#315, #320).
-- PostHog analytics added to documentation site (#321).
-- npx fallback added for dashboard startup in CLI.
-
-#### Releases
-
-- v2.0.21–v2.0.25
-
----
-
 ## [2.0.20] - 2026-01-26
 
-### Overview
-
-- Major SDK expansion with swarm primitives, logs API, and protocol types.
-- New CLI auth testing package with Dockerized workflows and scripts.
-- Relay-pty and wrapper improvements focused on reliability and orchestration.
-- Expanded documentation for swarm primitives and testing guides.
-
-### Product Perspective
-
-#### User-Facing Features & Improvements
+### Added
 
 - Swarm primitives added to SDK with full documentation and examples.
 - CLI auth testing tooling introduced with repeatable scripts and Docker workflows.
 - Provider connection UI copy refreshed (OpenCode/Droid messaging updates).
 - Improved onboarding reliability for OAuth flows in cloud workspaces.
-
-#### User-Impacting Fixes
-
-- Spawner registration timeouts in cloud workspaces resolved.
-- Idle detection behavior made more robust to avoid false positives.
-- OAuth URL parsing now handles line-wrapped output from CLI.
-
-#### Deprecations
-
-- None noted for this release.
-
-#### Breaking Changes & Migration Guidance
-
-- None noted for this release.
-
-### Technical Perspective
-
-#### Architecture & API Changes
-
-- New SDK client capabilities (`client`, `logs`, and protocol types) and expanded test coverage.
-- Spawner logic updated for more reliable agent registration and routing.
-- Relay-pty orchestration updated in Rust core with supporting wrapper changes.
-
-#### Performance & Reliability
-
-- Idle detection strengthened in wrapper layer (logic + tests).
-- Relay-pty orchestration hardened; additional tests for injection handling.
-
-#### Dependencies & Tooling
-
-- Workspace package updates and lockfile refresh.
-- New hooks scripts (`scripts/hooks/install.sh`, `scripts/hooks/pre-commit`) for developer workflows.
-- Dockerfiles updated for workspace and CLI testing images.
-
-#### Implementation Details (For Developers)
-
-- Added `packages/cli-tester` with auth credential checks and socket client utilities.
-- New CLI tester scripts for spawn/registration/auth flows.
-- `packages/config` gains CLI auth config updates for cloud onboarding.
-- `relay-pty` binary updated for macOS arm64.
-
-### Added
-
 - `@agent-relay/mcp` package with MCP tools/resources and one-command install.
 - Swarm primitives SDK API and examples (`SWARM_CAPABILITIES`, `SWARM_PATTERNS`).
 - CLI auth testing package with Docker and scripted flows.
 - New roadmap/spec documentation for primitives and multi-server architecture.
 
+### Changed
+
+- Major SDK expansion with swarm primitives, logs API, and protocol types.
+- New CLI auth testing package with Dockerized workflows and scripts.
+- Relay-pty and wrapper improvements focused on reliability and orchestration.
+- Expanded documentation for swarm primitives and testing guides.
+- New SDK client capabilities (`client`, `logs`, and protocol types) and expanded test coverage.
+- Spawner logic updated for more reliable agent registration and routing.
+- Relay-pty orchestration updated in Rust core with supporting wrapper changes.
+- Idle detection strengthened in wrapper layer (logic + tests).
+- Relay-pty orchestration hardened; additional tests for injection handling.
+- Workspace package updates and lockfile refresh.
+- New hooks scripts (`scripts/hooks/install.sh`, `scripts/hooks/pre-commit`) for developer workflows.
+- Dockerfiles updated for workspace and CLI testing images.
+- Added `packages/cli-tester` with auth credential checks and socket client utilities.
+- New CLI tester scripts for spawn/registration/auth flows.
+- `packages/config` gains CLI auth config updates for cloud onboarding.
+- `relay-pty` binary updated for macOS arm64.
+- Dynamic import for MCP commands in CLI.
+- Spawner and daemon routing adjustments for improved registration and diagnostics.
+- Wrapper base class behavior and tests for relay-pty orchestration.
+- Updates to workspace Dockerfiles and publish workflow tweaks.
+- Package metadata alignment across SDK, dashboard, wrapper, spawner, and api-types.
+- Additional instrumentation in relay-pty and orchestrator to support reliability.
+- Swarm primitives guide and comprehensive roadmap specification.
+- CLI auth testing guide.
+
 ### Fixed
 
+- Spawner registration timeouts in cloud workspaces resolved.
+- Idle detection behavior made more robust to avoid false positives.
+- OAuth URL parsing now handles line-wrapped output from CLI.
 - Cloud spawner timeout in agent registration.
 - OAuth URL parsing for line-wrapped output in CLI auth flows.
 - Idle detection stability in wrapper layer.
 - Relay-pty postinstall and codesign handling for macOS builds.
 - Minor CI/test issues in relay-pty orchestrator tests.
-
-### Changed
-
-- Dynamic import for MCP commands in CLI.
-- Spawner and daemon routing adjustments for improved registration and diagnostics.
-- Wrapper base class behavior and tests for relay-pty orchestration.
-
-### Infrastructure & Refactors
-
-- Updates to workspace Dockerfiles and publish workflow tweaks.
-- Package metadata alignment across SDK, dashboard, wrapper, spawner, and api-types.
-- Additional instrumentation in relay-pty and orchestrator to support reliability.
-
-### Documentation
-
-- Swarm primitives guide and comprehensive roadmap specification.
-- CLI auth testing guide.
-
-### Recent Daily Breakdown
-
-#### 2026-01-27
-
-- Merged swarm primitives and channels work into mainline (#314).
-- Relay and orchestrator fixes: relay-pty updates, wrapper base changes, and new dev hooks.
-
-#### 2026-01-26
-
-- Added CLI auth testing package with Docker workflow and scripts.
-- Added swarm primitives SDK APIs, examples, and documentation.
-- Added primitives roadmap spec and beads/trajectory artifacts.
-- Fixed spawner registration timeout in cloud workspaces.
-- Improved onboarding behavior for OAuth URL wrapping and bypass permissions.
-- Hardened idle detection and relay-pty orchestration; added tests.
-- Updated package-lock and workspace package metadata; release tags v2.0.18–v2.0.20.
-
-### Commit Activity (Past 3 Weeks)
-
-- 23 commits across Jan 26–27, 2026 (21 on Jan 26; 2 on Jan 27).
-- Authors: Khaliq (18), GitHub Actions (3), Agent Relay (2).
-- Top scopes: `feat`, `fix`, `docs`, `chore`.
-
----
-
-## [Three-Week Retrospective: Jan 3–24, 2026]
-
-## [Week 1: January 3-10, 2026]
-
-### Product Perspective
-
-**Core Messaging & Communication**
-
-- First-class channels and direct messages as core features.
-- Direct message routing improvements and message store integration.
-
-**Cloud & Workspace Management**
-
-- Cloud link logic for workspace connectivity.
-- Workspace persistence across container restarts and dynamic repo management.
-- Workspace deployment fixes.
-
-**Developer Experience**
-
-- CLI patterns for agent visibility and log tailing.
-- Codex state management and XTerm display improvements.
-
-**Billing & Authentication**
-
-- Billing bridge fixes and GitHub CLI auth support.
-- Authentication tightening and token fetch improvements.
-
-### Technical Perspective
-
-**Architecture & Infrastructure**
-
-- Multi-server architecture documentation and scalability adjustments.
-- WebSocket ping/pong keepalive for main and bridge connections.
-
-**Cloud Infrastructure**
-
-- Cloud link migrations and update-workspaces workflow fixes.
-
-**State Management**
-
-- Message delivery fixes and Codex state persistence improvements.
-
-**Deployment & Operations**
-
-- Container entrypoint updates and deployment fixes.
-
-**Documentation**
-
-- Trail snippet bump and competitive analysis additions.
-
----
-
-## [Week 2: January 10-17, 2026]
-
-### Product Perspective
-
-**Mobile & UI Improvements**
-
-- Mobile scrolling fixes for XTermLogViewer and viewport stability.
-- Dashboard UI restrictions/restore and agent list labeling cleanup.
-
-**Channels & Messaging**
-
-- Channel creation logging improvements.
-- Message routing, duplication, and attribution fixes in cloud dashboard.
-
-**Workspace & User Management**
-
-- Workspace selector and user filtering fixes.
-- Workspace proxy query parameter preservation.
-
-**Agent Profiles & Coordination**
-
-- Added agent profiles for multi-project support and Mega coordinator command.
-- Trajectory viewer race condition fixes.
-
-**Authentication & Providers**
-
-- Gemini API key validation fixes and Claude login flow improvements.
-
-### Technical Perspective
-
-**Relay-PTY System Migration**
-
-- Node-pty to Rust relay-pty migration with hybrid orchestrator.
-- Relay-pty infrastructure tests and Rust 1.83 Cargo.lock v4 fixes.
-
-**Performance & Reliability**
-
-- Injection reliability improvements and duplicate terminal message fixes.
-- Workspace ID sync fixes to avoid routing race conditions.
-
-**State & Continuity**
-
-- Continuity parsing and workspace path handling.
-
-**Fallback Logic**
-
-- Proper fallback logic and protocol prompt updates.
-
----
-
-## [Week 3: January 17-24, 2026]
-
-### Product Perspective
-
-**Channels & Team Collaboration**
-
-- Channel invites, endpoints, and message delivery fixes.
-- Mobile channel scrolling and DM filtering in sidebar.
-- Unified threading between channels and DMs.
-
-**Performance & User Experience**
-
-- 5x faster relay message injection latency.
-- Mobile scrolling improvements and unified markdown rendering.
-- Agent pin-to-top for agents panel.
-
-**Developer Experience**
-
-- Model selection dropdown sync and mapping consolidation.
-- CLI tool bumps and SDK fixes.
-
-**Workspace & Credentials**
-
-- Workspace-scoped provider credentials.
-- Workspace switching fixes and force-update workflow.
-
-**Pricing & Documentation**
-
-- Pricing updates and TASKS/protocol documentation refresh.
-- Clarified agent roles (devops vs infrastructure).
-
-### Technical Perspective
-
-**Build System & CI/CD**
-
-- Turborepo integration and concurrent Docker builds.
-- Turbo/TypeScript build fixes and publish error remediation.
-
-**Sync Messaging Protocol**
-
-- Turn-based sync messaging with `[await]` syntax and ACK tracking.
-
-**Daemon & Spawning**
-
-- Daemon-based spawning with improved diagnostics and membership restore.
-- Spawn timing race condition fixes.
-
-**Cloud Infrastructure**
-
-- Static file serving fixes, new `/api/bridge` endpoint, and routing fixes.
-- Cloud sync heartbeat timeout handling and queue monitor fixes.
-
-**Authentication & Git Operations**
-
-- GitHub token fallback and GH_TOKEN injection fixes.
-- Custom GitHub credential helper with improved retry logic.
-
-**Workspace & Path Management**
-
-- Workspace inbox namespacing and continuity parsing improvements.

@@ -1,0 +1,33 @@
+{
+  "id": "compact_qkzes8r7n4br",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-07-11T12:54:49.720Z",
+  "sourceTrajectories": ["traj_wbeqtax0wo8m"],
+  "dateRange": {
+    "start": "2026-07-11T12:45:08.168Z",
+    "end": "2026-07-11T12:54:40.870Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 2,
+    "uniqueAgents": ["default"]
+  },
+  "decisionGroups": [
+    {
+      "category": "security",
+      "decisions": [
+        {
+          "question": "Separate authoritative identity ownership from delivery cursor state",
+          "chosen": "Separate authoritative identity ownership from delivery cursor state",
+          "reasoning": "Every successful agent.register must protect its name/ID pairing even when no cursor is negotiated. Explicit IdentityReject decisions prevent both surfacing and name-only ACKs for contradictory frames, while provisional bindings preserve legacy first-sequence behavior.",
+          "fromTrajectory": "traj_wbeqtax0wo8m"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

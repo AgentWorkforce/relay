@@ -7,23 +7,10 @@
  */
 
 // Re-export everything from retry.js
-export {
-  retry,
-  createRetrier,
-  retryLinear,
-  retryImmediate,
-  DEFAULT_RETRY_OPTIONS
-} from './retry.js';
+export { retry, createRetrier, retryLinear, retryImmediate, DEFAULT_RETRY_OPTIONS } from './retry.js';
 
 // Re-export everything from timing.js
-export {
-  sleep,
-  waitFor,
-  withTimeout,
-  deferred,
-  measureTime,
-  retryWithDelay
-} from './timing.js';
+export { sleep, waitFor, withTimeout, deferred, measureTime, retryWithDelay } from './timing.js';
 
 /**
  * Combined utility: retry with timeout
@@ -57,10 +44,10 @@ export async function retryWithTimeout(fn, options = {}) {
  */
 export async function waitForValue(getValue, expectedValue, options = {}) {
   const { waitFor } = await import('./timing.js');
-  return waitFor(
-    async () => (await getValue()) === expectedValue,
-    { message: `Value did not become ${expectedValue}`, ...options }
-  );
+  return waitFor(async () => (await getValue()) === expectedValue, {
+    message: `Value did not become ${expectedValue}`,
+    ...options,
+  });
 }
 
 /**
@@ -84,26 +71,14 @@ export async function measureRetry(fn, options = {}) {
   return {
     result,
     attempts,
-    totalTime: duration
+    totalTime: duration,
   };
 }
 
 // Import directly for default export (avoid Promise issues)
-import {
-  retry,
-  createRetrier,
-  retryLinear,
-  retryImmediate,
-} from './retry.js';
+import { retry, createRetrier, retryLinear, retryImmediate } from './retry.js';
 
-import {
-  sleep,
-  waitFor,
-  withTimeout,
-  deferred,
-  measureTime,
-  retryWithDelay,
-} from './timing.js';
+import { sleep, waitFor, withTimeout, deferred, measureTime, retryWithDelay } from './timing.js';
 
 export default {
   // Retry utilities
@@ -123,5 +98,5 @@ export default {
   // Combined utilities
   retryWithTimeout,
   waitForValue,
-  measureRetry
+  measureRetry,
 };

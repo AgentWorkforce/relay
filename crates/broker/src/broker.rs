@@ -1,6 +1,7 @@
 use std::{collections::HashMap, io::Write, path::Path};
 
 use crate::{
+    ids::{ChannelName, WorkerName},
     protocol::{AgentRuntime, AgentSpec},
     supervisor::RestartPolicy,
 };
@@ -26,14 +27,14 @@ pub(crate) fn is_pid_alive(pid: u32) -> bool {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub(crate) struct BrokerState {
-    pub(crate) agents: HashMap<String, PersistedAgent>,
+    pub(crate) agents: HashMap<WorkerName, PersistedAgent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct PersistedAgent {
     pub(crate) runtime: AgentRuntime,
     pub(crate) parent: Option<String>,
-    pub(crate) channels: Vec<String>,
+    pub(crate) channels: Vec<ChannelName>,
     #[serde(default)]
     pub(crate) pid: Option<u32>,
     #[serde(default)]
@@ -72,8 +73,8 @@ impl BrokerState {
     /// Remove persisted agents whose PIDs are no longer alive.
     /// Returns the names of agents that were cleaned up.
     #[cfg(unix)]
-    pub(crate) fn reap_dead_agents(&mut self) -> Vec<String> {
-        let dead: Vec<String> = self
+    pub(crate) fn reap_dead_agents(&mut self) -> Vec<WorkerName> {
+        let dead: Vec<WorkerName> = self
             .agents
             .iter()
             .filter(|(_, agent)| {
@@ -94,9 +95,9 @@ impl BrokerState {
     }
 
     #[cfg(not(unix))]
-    pub(crate) fn reap_dead_agents(&mut self) -> Vec<String> {
+    pub(crate) fn reap_dead_agents(&mut self) -> Vec<WorkerName> {
         // On non-Unix platforms, clear all agents without PID info
-        let dead: Vec<String> = self
+        let dead: Vec<WorkerName> = self
             .agents
             .iter()
             .filter(|(_, agent)| agent.pid.is_none())

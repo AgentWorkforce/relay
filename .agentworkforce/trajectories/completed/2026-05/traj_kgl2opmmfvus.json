@@ -1,0 +1,25 @@
+{
+  "id": "traj_kgl2opmmfvus",
+  "version": 1,
+  "task": {
+    "title": "Simplify harness config PR around broker-owned configs"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T21:32:14.085Z",
+  "completedAt": "2026-05-25T21:47:15.455Z",
+  "agents": [],
+  "chapters": [],
+  "retrospective": {
+    "summary": "Simplified harness work around broker-executable configs: added broker harness registry APIs, SDK harnessId registration/selection, Relaycast harnessId/inline config handling, and concise docs that remove dynamic SDK resolvers.",
+    "approach": "Standard approach",
+    "confidence": 0.86
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "75f019cf5c2601ae195315ea43ae601eb39cfed7",
+    "endRef": "75f019cf5c2601ae195315ea43ae601eb39cfed7"
+  }
+}

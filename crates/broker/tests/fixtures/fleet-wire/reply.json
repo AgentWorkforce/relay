@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "type": "reply",
+  "id": "req_agent_register_001",
+  "ok": true,
+  "data": {
+    "status": "started",
+    "agent": "codex-builder-1"
+  }
+}

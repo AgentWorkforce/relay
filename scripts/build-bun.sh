@@ -65,7 +65,7 @@ for target_spec in "${TARGETS[@]}"; do
         --external better-sqlite3 \
         --external cpu-features \
         --external node-pty \
-        ./dist/src/cli/index.js \
+        ./packages/cli/dist/cli/index.js \
         --outfile "$output" 2>&1; then
 
         # Get file size
@@ -100,7 +100,7 @@ if bun build \
     --external better-sqlite3 \
     --external cpu-features \
     --external node-pty \
-    ./dist/src/cli/index.js \
+    ./packages/cli/dist/cli/index.js \
     --outfile "$CURRENT_OUTPUT" 2>&1; then
 
     SIZE=$(du -h "$CURRENT_OUTPUT" | cut -f1)

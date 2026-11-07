@@ -1,0 +1,151 @@
+/**
+ * Detectors for relaycast `agent_token_invalid` responses.
+ *
+ * The Agent Relay MCP server (and any SDK consumer) uses these helpers to
+ * recognise when a Relaycast agent token has been invalidated mid-session so
+ * the stale credential can be cleared and the caller pointed at a fresh
+ * `register_agent` call.
+ *
+ * The primary signal is the typed `code` field on the upstream
+ * `@relaycast/sdk` `RelayError` (re-exported from this package). Structural
+ * detection of the status + message pair and serialized error bodies remains
+ * as a fallback for errors that crossed an HTTP or MCP serialization boundary
+ * and lost their `RelayError` shape.
+ */
+
+export const INVALID_AGENT_TOKEN_CODE = 'agent_token_invalid';
+export const INVALID_AGENT_TOKEN_MESSAGE = 'Invalid agent token';
+export const RELAY_SERVICE_FAILURE_MESSAGE =
+  'Relay service could not complete the request. Retry, or contact the workspace operator if the problem persists.';
+
+// Matches driver/query-builder diagnostics that can carry raw SQL text and
+// bound parameter values. The unquoted-identifier branch requires a trailing
+// SQL keyword (from/where/set/values/`(`/`;`) so ordinary prose that happens
+// to end in "<verb> <identifier>" (e.g. "Could not select file", "Failed to
+// update account") does not trip it — only `<verb> <identifier>
+// <sql-continuation>` does. `from\s+<identifier>` is included so canonical
+// `select <col> from <table>` is still caught even though `<col>` isn't
+// itself followed by one of the other continuation keywords.
+const DATABASE_DIAGNOSTIC_PATTERN =
+  /(?:failed\s+query\s*:|\bparams?\s*:|\bparameters\s*:|\bsqlstate\b|\b(?:select|insert\s+into|update|delete\s+from|drop\s+table|truncate\s+table|alter\s+table)\s+(?:["`[*]|[a-z_][\w.]*\s*(?:from\s+[a-z_][\w.]*|where|set|values|\(|;)))/i;
+
+interface MaybeError {
+  code?: unknown;
+  statusCode?: unknown;
+  status?: unknown;
+  message?: unknown;
+  body?: unknown;
+  cause?: unknown;
+}
+
+/**
+ * Format an upstream Relay error for a user-facing CLI/MCP boundary.
+ *
+ * Service/framework exceptions can include raw SQL and bound parameters in
+ * `error.message`. Those details are useful only inside the service and can
+ * contain identifiers or other caller data, so collapse database diagnostics
+ * to a stable actionable message while preserving ordinary API errors.
+ */
+export function safeRelayErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return DATABASE_DIAGNOSTIC_PATTERN.test(message) ? RELAY_SERVICE_FAILURE_MESSAGE : message;
+}
+
+function normalizeCode(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed.toLowerCase() : null;
+}
+
+function readStatus(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function readBodyError(body: unknown): { code?: string; message?: string } | null {
+  if (!body || typeof body !== 'object') return null;
+  const root = body as { error?: unknown; code?: unknown; message?: unknown };
+  const errorField = root.error;
+  if (errorField && typeof errorField === 'object') {
+    const e = errorField as { code?: unknown; message?: unknown };
+    return {
+      code: typeof e.code === 'string' ? e.code : undefined,
+      message: typeof e.message === 'string' ? e.message : undefined,
+    };
+  }
+  return {
+    code: typeof root.code === 'string' ? root.code : undefined,
+    message: typeof root.message === 'string' ? root.message : undefined,
+  };
+}
+
+/**
+ * True when `error` looks like an invalid-agent-token response from
+ * Relaycast. Recognises both the typed `agent_token_invalid` code (PR #137)
+ * and the legacy status-401 + "Invalid agent token" message pair.
+ *
+ * The optional `visited` set guards against cyclic `cause` graphs
+ * (`a.cause = b; b.cause = a`) — a `WeakSet` so we don't leak references.
+ */
+export function isInvalidAgentTokenError(error: unknown, visited: WeakSet<object> = new WeakSet()): boolean {
+  if (!error || typeof error !== 'object') return false;
+  if (visited.has(error as object)) return false;
+  visited.add(error as object);
+  const err = error as MaybeError;
+
+  if (normalizeCode(err.code) === INVALID_AGENT_TOKEN_CODE) return true;
+
+  const bodyError = readBodyError(err.body);
+  if (bodyError && normalizeCode(bodyError.code) === INVALID_AGENT_TOKEN_CODE) return true;
+
+  const status = readStatus(err.statusCode) ?? readStatus(err.status);
+  const message =
+    (typeof err.message === 'string' ? err.message.trim() : '') || (bodyError?.message?.trim() ?? '');
+  if (status === 401 && message === INVALID_AGENT_TOKEN_MESSAGE) return true;
+
+  if (err.cause) {
+    return isInvalidAgentTokenError(err.cause, visited);
+  }
+  return false;
+}
+
+interface MaybeToolResult {
+  content?: unknown;
+  isError?: unknown;
+  structuredContent?: unknown;
+}
+
+/**
+ * True when a tool result swallowed an invalid-token error into its
+ * content array (the pattern the Agent Relay MCP server uses when an upstream
+ * call returns `Invalid agent token` in a 401 body).
+ */
+export function isInvalidAgentTokenToolResult(result: unknown): boolean {
+  if (!result || typeof result !== 'object') return false;
+  const r = result as MaybeToolResult;
+  if (!Array.isArray(r.content)) return false;
+  return r.content.some((entry) => {
+    if (!entry || typeof entry !== 'object') return false;
+    const e = entry as { type?: unknown; text?: unknown };
+    if (e.type !== 'text' || typeof e.text !== 'string') return false;
+    return e.text.trim() === INVALID_AGENT_TOKEN_MESSAGE;
+  });
+}
+
+/**
+ * Human-readable guidance returned to the MCP client after invalidating a
+ * stale agent token. Matches the wording surfaced by the Agent Relay MCP
+ * server so prompts that key on this string keep working across both
+ * implementations.
+ */
+export function agentTokenRecoveryMessage(): string {
+  return [
+    `${INVALID_AGENT_TOKEN_CODE}: The selected Relaycast agent token is no longer valid.`,
+    'The stale token was cleared from this MCP session.',
+    'Call the "register_agent" tool with the configured agent name to obtain a fresh token, then retry the failed operation.',
+  ].join(' ');
+}

@@ -1,6 +1,6 @@
 /**
  * CLI Registry - AUTO-GENERATED FILE - DO NOT EDIT
- * Generated from packages/shared/cli-registry.yaml
+ * Generated from packages/utils/cli-registry.yaml
  * Run: npm run codegen:models
  *
  * This is the single source of truth for CLI tools, versions, and models.
@@ -9,7 +9,7 @@
 
 /**
  * CLI tool versions.
- * Update packages/shared/cli-registry.yaml to change versions.
+ * Update packages/utils/cli-registry.yaml to change versions.
  */
 export const CLIVersions = {
   /** Claude Code v2.1.72 */
@@ -20,10 +20,14 @@ export const CLIVersions = {
   GEMINI: '0.39.1',
   /** Cursor v2026.02.27-e7d2ef6 */
   CURSOR: '2026.02.27-e7d2ef6',
+  /** Devin v3000.10.31 */
+  DEVIN: '3000.10.31',
   /** Droid v0.1.0 */
   DROID: '0.1.0',
   /** OpenCode v1.2.24 */
   OPENCODE: '1.2.24',
+  /** Grok v0.1.0 */
+  GROK: '0.1.0',
   /** Aider v0.72.1 */
   AIDER: '0.72.1',
   /** Goose v1.0.16 */
@@ -38,8 +42,10 @@ export const CLIs = {
   CODEX: 'codex',
   GEMINI: 'gemini',
   CURSOR: 'cursor',
+  DEVIN: 'devin',
   DROID: 'droid',
   OPENCODE: 'opencode',
+  GROK: 'grok',
   AIDER: 'aider',
   GOOSE: 'goose',
 } as const;
@@ -299,6 +305,16 @@ export const CursorModels = {
 export type CursorModel = (typeof CursorModels)[keyof typeof CursorModels];
 
 /**
+ * Devin model identifiers.
+ */
+export const DevinModels = {
+  /** SWE-1.6 */
+  SWE_1_6: 'swe-1.6',
+} as const;
+
+export type DevinModel = (typeof DevinModels)[keyof typeof DevinModels];
+
+/**
  * Droid model identifiers.
  */
 export const DroidModels = {
@@ -419,6 +435,18 @@ export const OpencodeModels = {
 } as const;
 
 export type OpencodeModel = (typeof OpencodeModels)[keyof typeof OpencodeModels];
+
+/**
+ * Grok model identifiers.
+ */
+export const GrokModels = {
+  /** Grok Build (default) */
+  GROK_BUILD: 'grok-build',
+  /** Grok Composer 2.5 Fast */
+  GROK_COMPOSER_2_5_FAST: 'grok-composer-2.5-fast',
+} as const;
+
+export type GrokModel = (typeof GrokModels)[keyof typeof GrokModels];
 
 /** Reasoning effort levels supported by model providers. */
 export const ReasoningEfforts = {
@@ -573,6 +601,13 @@ export const CURSOR_MODEL_OPTIONS: ModelOption[] = [
 ];
 
 /**
+ * Devin model options for UI dropdowns.
+ */
+export const DEVIN_MODEL_OPTIONS: ModelOption[] = [
+  { value: 'swe-1.6', label: 'SWE-1.6' },
+];
+
+/**
  * Droid model options for UI dropdowns.
  */
 export const DROID_MODEL_OPTIONS: ModelOption[] = [
@@ -635,6 +670,14 @@ export const OPENCODE_MODEL_OPTIONS: ModelOption[] = [
   { value: 'openai/o3-pro', label: 'O3 Pro' },
   { value: 'openai/o4-mini', label: 'O4 Mini' },
   { value: 'openai/o4-mini-deep-research', label: 'O4 Mini Deep Research' },
+];
+
+/**
+ * Grok model options for UI dropdowns.
+ */
+export const GROK_MODEL_OPTIONS: ModelOption[] = [
+  { value: 'grok-build', label: 'Grok Build' },
+  { value: 'grok-composer-2.5-fast', label: 'Grok Composer 2.5 Fast' },
 ];
 
 /**
@@ -772,6 +815,13 @@ export const CURSOR_MODEL_METADATA: Record<CursorModel, ModelOption> = {
 };
 
 /**
+ * Devin model metadata keyed by model id.
+ */
+export const DEVIN_MODEL_METADATA: Record<DevinModel, ModelOption> = {
+  'swe-1.6': { value: 'swe-1.6', label: 'SWE-1.6' },
+};
+
+/**
  * Droid model metadata keyed by model id.
  */
 export const DROID_MODEL_METADATA: Record<DroidModel, ModelOption> = {
@@ -837,6 +887,14 @@ export const OPENCODE_MODEL_METADATA: Record<OpencodeModel, ModelOption> = {
 };
 
 /**
+ * Grok model metadata keyed by model id.
+ */
+export const GROK_MODEL_METADATA: Record<GrokModel, ModelOption> = {
+  'grok-build': { value: 'grok-build', label: 'Grok Build' },
+  'grok-composer-2.5-fast': { value: 'grok-composer-2.5-fast', label: 'Grok Composer 2.5 Fast' },
+};
+
+/**
  * All models grouped by CLI tool.
  *
  * @example
@@ -852,8 +910,10 @@ export const Models = {
   Codex: CodexModels,
   Gemini: GeminiModels,
   Cursor: CursorModels,
+  Devin: DevinModels,
   Droid: DroidModels,
   Opencode: OpencodeModels,
+  Grok: GrokModels,
 } as const;
 
 /**
@@ -873,8 +933,10 @@ export const ModelOptions = {
   Codex: CODEX_MODEL_OPTIONS,
   Gemini: GEMINI_MODEL_OPTIONS,
   Cursor: CURSOR_MODEL_OPTIONS,
+  Devin: DEVIN_MODEL_OPTIONS,
   Droid: DROID_MODEL_OPTIONS,
   Opencode: OPENCODE_MODEL_OPTIONS,
+  Grok: GROK_MODEL_OPTIONS,
 } as const;
 
 /**
@@ -885,8 +947,10 @@ export const ModelMetadata = {
   Codex: CODEX_MODEL_METADATA,
   Gemini: GEMINI_MODEL_METADATA,
   Cursor: CURSOR_MODEL_METADATA,
+  Devin: DEVIN_MODEL_METADATA,
   Droid: DROID_MODEL_METADATA,
   Opencode: OPENCODE_MODEL_METADATA,
+  Grok: GROK_MODEL_METADATA,
 } as const;
 
 const MODEL_METADATA_BY_CLI: Record<CLI, Record<string, ModelOption>> = {
@@ -894,8 +958,10 @@ const MODEL_METADATA_BY_CLI: Record<CLI, Record<string, ModelOption>> = {
   codex: CODEX_MODEL_METADATA,
   gemini: GEMINI_MODEL_METADATA,
   cursor: CURSOR_MODEL_METADATA,
+  devin: DEVIN_MODEL_METADATA,
   droid: DROID_MODEL_METADATA,
   opencode: OPENCODE_MODEL_METADATA,
+  grok: GROK_MODEL_METADATA,
   aider: {},
   goose: {},
 };
@@ -987,6 +1053,13 @@ export const CLIRegistry = {
     install: 'Download from cursor.com',
     npmLink: undefined,
   },
+  devin: {
+    name: 'Devin',
+    package: 'devin',
+    version: '3000.10.31',
+    install: 'Install Devin CLI from https://docs.devin.ai/cli',
+    npmLink: undefined,
+  },
   droid: {
     name: 'Droid',
     package: 'droid',
@@ -1000,6 +1073,13 @@ export const CLIRegistry = {
     version: '1.2.24',
     install: 'npm install -g opencode-ai',
     npmLink: 'https://www.npmjs.com/package/opencode-ai',
+  },
+  grok: {
+    name: 'Grok',
+    package: 'grok',
+    version: '0.1.0',
+    install: 'Install from x.ai (Grok CLI)',
+    npmLink: undefined,
   },
   aider: {
     name: 'Aider',
@@ -1027,4 +1107,5 @@ export const DefaultModels = {
   cursor: 'composer-2-fast',
   droid: 'opus-4.6-fast',
   opencode: 'openai/gpt-5.2',
+  grok: 'grok-build',
 } as const;

@@ -1,4 +1,5 @@
 import type { RelayState } from './index.js';
+import { collectInboxMessages } from './tools.js';
 
 interface HookContext {
   hook(name: string, handler: HookHandler): void;
@@ -28,10 +29,6 @@ interface RelayMessage {
   ts: string;
 }
 
-interface InboxCheckResponse {
-  messages?: RelayMessage[];
-}
-
 export function registerHooks(ctx: HookContext, state: RelayState): void {
   // These OpenCode hook names are provisional per specs/cli-native-plugins.md section 5.
   ctx.hook('session.idle', async () => handleSessionIdle(state));
@@ -39,10 +36,8 @@ export function registerHooks(ctx: HookContext, state: RelayState): void {
   ctx.hook('session.end', async () => handleSessionEnd(state));
 }
 
-async function handleSessionIdle(
-  state: RelayState
-): Promise<SessionIdleResult | void> {
-  if (!state.connected || !state.token) {
+async function handleSessionIdle(state: RelayState): Promise<SessionIdleResult | void> {
+  if (!state.connected || !state.agent) {
     return;
   }
 
@@ -70,9 +65,7 @@ async function handleSessionIdle(
   };
 }
 
-function handleSessionCompacting(
-  state: RelayState
-): SessionCompactingResult | void {
+function handleSessionCompacting(state: RelayState): SessionCompactingResult | void {
   if (!state.connected) {
     return;
   }
@@ -105,27 +98,12 @@ async function handleSessionEnd(state: RelayState): Promise<void> {
 }
 
 async function pollInbox(state: RelayState): Promise<RelayMessage[]> {
-  const response = await fetch(`${normalizeBaseUrl(state.apiBaseUrl)}/inbox/check`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${state.token}`,
-    },
-    body: JSON.stringify({}),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Relay API error: ${response.status} ${await response.text()}`);
+  if (!state.agent) {
+    return [];
   }
 
-  const payload = (await response.json()) as InboxCheckResponse;
-  return Array.isArray(payload.messages) ? payload.messages : [];
-}
-
-function normalizeBaseUrl(baseUrl: string): string {
-  let end = baseUrl.length;
-  while (end > 0 && baseUrl[end - 1] === '/') end--;
-  return end === baseUrl.length ? baseUrl : baseUrl.slice(0, end);
+  const inbox = await state.agent.inbox();
+  return collectInboxMessages(state.agent, inbox, state.seenMessageIds);
 }
 
 function formatInjectedMessages(messages: RelayMessage[]): string {
@@ -144,9 +122,7 @@ function buildCompactionPreserve(state: RelayState): string {
     state.spawned.size === 0
       ? '  (none)'
       : Array.from(state.spawned.entries())
-          .map(
-            ([name, agent]) => `  - ${name}: ${agent.status} - "${agent.task}"`
-          )
+          .map(([name, agent]) => `  - ${name}: ${agent.status} - "${agent.task}"`)
           .join('\n');
 
   return [
@@ -163,7 +139,5 @@ function formatWorkspace(workspace: string | null): string {
     return '(unknown)';
   }
 
-  return workspace.length > 16
-    ? `${workspace.slice(0, 16)}...`
-    : workspace;
+  return workspace.length > 16 ? `${workspace.slice(0, 16)}...` : workspace;
 }

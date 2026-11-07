@@ -1,17 +1,50 @@
+use serde::Deserialize;
 use serde_json::Value;
 
+use super::wire::{self, TypedInbound};
+use crate::attachments::{
+    append_attachment_block, attachments_at, render_reference_block, InboundAttachment,
+};
+use crate::ids::{AgentId, EventId, MessageTarget, ThreadId, WorkspaceAlias, WorkspaceId};
 use crate::types::{
-    BrokerCommandEvent, BrokerCommandPayload, InboundKind, InboundRelayEvent, InjectRequest,
-    RelayPriority, ReleaseParams, SenderKind, SpawnParams,
+    BrokerCommandPayload, InboundKind, InboundRelayEvent, InjectRequest, RelayPriority,
+    ReleaseParams, SenderKind, SpawnParams,
 };
 
+fn ws_event_type(value: &Value) -> &str {
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+}
+
 /// Map a Relaycast ServerEvent (received over WebSocket) to an InboundRelayEvent.
+///
+/// Events are first parsed against the typed wire contract
+/// ([`wire::parse_typed_inbound`]); shapes that do not match fall back to
+/// the tolerant `relaycast::normalize_inbound_event` field probing with a
+/// structured warning, so contract drift is observable without dropping
+/// traffic.
 pub fn map_ws_event(
     value: &Value,
     workspace_id: &str,
     workspace_alias: Option<&str>,
 ) -> Option<InboundRelayEvent> {
-    let event = relaycast::normalize_inbound_event(value)?;
+    let (event, attachments) = match wire::parse_typed_inbound(value) {
+        Some(TypedInbound::Event(event, attachments)) => (event, attachments),
+        Some(TypedInbound::Ignored) => return None,
+        None => {
+            let event = relaycast::normalize_inbound_event(value)?;
+            tracing::warn!(
+                target = "broker::bridge",
+                event_type = %ws_event_type(value),
+                event_id = %event.event_id,
+                "WS event did not match the typed wire contract; mapped via tolerant fallback"
+            );
+            let attachments = fallback_attachments(value);
+            (event, attachments)
+        }
+    };
     let kind = map_sdk_event_kind(event.kind);
     tracing::debug!(
         target = "broker::bridge",
@@ -23,51 +56,187 @@ pub fn map_ws_event(
     );
 
     Some(InboundRelayEvent {
-        event_id: event.event_id,
-        workspace_id: workspace_id.to_string(),
-        workspace_alias: workspace_alias.map(str::to_string),
+        event_id: EventId::new(event.event_id),
+        workspace_id: WorkspaceId::new(workspace_id),
+        workspace_alias: workspace_alias.map(WorkspaceAlias::from),
         kind,
         from: event.from,
-        sender_agent_id: event.sender_agent_id,
+        sender_agent_id: event.sender_agent_id.map(AgentId::from),
         sender_kind: map_sdk_sender_kind(event.sender_kind),
-        target: event.target,
+        target: MessageTarget::new(event.target),
         text: event.text,
-        thread_id: event.thread_id,
+        thread_id: event.thread_id.map(ThreadId::from),
         priority: map_sdk_priority(event.priority),
+        attachments,
     })
 }
 
-/// Map a Relaycast `command.invoked` event to a BrokerCommandEvent.
-///
-/// Relaycast emits these when an agent invokes a registered slash command
-/// (e.g. `/spawn`, `/release`). The `parameters` field carries structured data.
-pub fn map_ws_broker_command(
-    value: &Value,
-    workspace_id: &str,
-    workspace_alias: Option<&str>,
-) -> Option<BrokerCommandEvent> {
-    let command = relaycast::normalize_command_invocation(value)?;
-    let params = command.parameters.clone().map(Value::Object)?;
-    let command_name = command.command.trim_start_matches('/');
-    let payload = if command_name == "spawn" || command_name.starts_with("spawn-") {
-        let spawn: SpawnParams = serde_json::from_value(params).ok()?;
-        BrokerCommandPayload::Spawn(spawn)
-    } else if command_name == "release" || command_name.starts_with("release-") {
-        let release: ReleaseParams = serde_json::from_value(params).ok()?;
-        BrokerCommandPayload::Release(release)
-    } else {
-        return None;
-    };
+/// Attachment arrays in the top-level and payload-wrapped event shapes the
+/// tolerant fallback accepts.
+pub(crate) const WS_ATTACHMENT_POINTERS: &[&str] = &[
+    "/message/attachments",
+    "/payload/message/attachments",
+    "/data/attachments",
+    "/data/message/attachments",
+    "/payload/attachments",
+    "/attachments",
+];
 
-    Some(BrokerCommandEvent {
-        command: command.command,
-        workspace_id: workspace_id.to_string(),
-        workspace_alias: workspace_alias.map(str::to_string),
-        channel: command.channel,
-        invoked_by: command.invoked_by,
-        handler_agent_id: command.handler_agent_id,
-        payload,
-    })
+/// Tolerant attachment probe for events that miss the typed wire contract.
+pub(crate) fn fallback_attachments(value: &Value) -> Vec<InboundAttachment> {
+    attachments_at(value, WS_ATTACHMENT_POINTERS)
+}
+
+/// Message text plus an attachment reference block, for delivery paths that
+/// do not download attachments themselves.
+pub(crate) fn text_with_attachment_references(
+    text: &str,
+    attachments: &[InboundAttachment],
+) -> String {
+    append_attachment_block(text, render_reference_block(attachments).as_deref())
+}
+
+/// A parsed `action.invoked` WebSocket event.
+///
+/// Relaycast 2.x routes spawn/release through the actions API. The
+/// `action.invoked` event identifies the invocation but omits its input, so the
+/// handler reads the input back with `get_action_invocation` before executing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionInvokedRef {
+    /// Action name (e.g. "spawn", "release").
+    pub action: String,
+    /// Invocation id, used to fetch the input and report completion.
+    pub invocation_id: String,
+    /// Agent name of the caller.
+    pub invoked_by: String,
+    /// Handler agent id assigned by Relaycast, when present.
+    pub handler_agent_id: Option<String>,
+}
+
+/// Parse a raw `action.invoked` WebSocket event.
+///
+/// The typed contract shape (`relaycast::ActionInvokedEvent`, all
+/// fields required) is tried first; legacy top-level or payload-wrapped
+/// shapes fall back to field probing with a structured warning.
+pub fn parse_ws_action_invoked(value: &Value) -> Option<ActionInvokedRef> {
+    if ws_event_type(value) == "action.invoked" {
+        if let Ok(event) = relaycast::ActionInvokedEvent::deserialize(value) {
+            return Some(ActionInvokedRef {
+                action: event.action_name,
+                invocation_id: event.invocation_id,
+                invoked_by: event.caller_name,
+                handler_agent_id: Some(event.handler_agent_id),
+            });
+        }
+    }
+    let event = action_invoked_object(value)?;
+    let parsed = ActionInvokedRef {
+        action: event.get("action_name")?.as_str()?.to_string(),
+        invocation_id: event.get("invocation_id")?.as_str()?.to_string(),
+        invoked_by: event
+            .get("caller_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        handler_agent_id: event
+            .get("handler_agent_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    };
+    tracing::warn!(
+        target = "broker::bridge",
+        invocation_id = %parsed.invocation_id,
+        action = %parsed.action,
+        "action.invoked event did not match the typed wire contract; parsed via tolerant fallback"
+    );
+    Some(parsed)
+}
+
+/// Locate the object carrying the `action.invoked` fields, accepting both
+/// top-level and `payload`-wrapped event shapes.
+fn action_invoked_object(value: &Value) -> Option<&Value> {
+    let is_action = |v: &Value| v.get("type").and_then(|t| t.as_str()) == Some("action.invoked");
+    if is_action(value) && value.get("action_name").is_some() {
+        return Some(value);
+    }
+    let payload = value.get("payload")?;
+    if (is_action(value) || is_action(payload)) && payload.get("action_name").is_some() {
+        return Some(payload);
+    }
+    None
+}
+
+/// Build the broker execution payload from a fetched action invocation input.
+///
+/// Returns `None` for actions the broker does not own or whose input does not
+/// match the expected spawn/release shape.
+///
+/// # Session attribution bridging
+///
+/// Fleet dispatches (e.g. `fleet.spawn()` from `@agent-relay/fleet`) place the
+/// session reference at the **top level** of the action input JSON alongside
+/// `name` and `cli`.  `SpawnParams.metadata.attestation` has no dedicated field
+/// for it, so serde would otherwise silently drop it.  This function lifts it
+/// into `attestation.session_ref` so the broker's `prepare-commit-msg` hook can
+/// stamp a `Session-Id:` trailer on every commit the spawned agent makes.
+///
+/// Key lookup order (first non-blank value wins):
+/// 1. `session_ref` — canonical snake_case key used by the Fleet CLI/API
+///    (see `runtime::relaycast_events::relaycast_spawn_session_ref`).
+/// 2. `sessionRef` — camelCase alias for the same key.
+/// 3. `session_id` — legacy snake_case alias retained for backward compat.
+/// 4. `sessionId` — legacy camelCase alias retained for backward compat.
+pub fn broker_payload_from_action(
+    action: &str,
+    input: Option<serde_json::Map<String, Value>>,
+) -> Option<BrokerCommandPayload> {
+    let input = input?;
+    if action == "spawn" || action.starts_with("spawn-") {
+        // Lift the session reference from the top-level map before consuming it.
+        // Fleet dispatches use `session_ref`/`sessionRef` as the canonical keys
+        // (matching `relaycast_spawn_session_ref` in `runtime/relaycast_events.rs`).
+        // `session_id`/`sessionId` are kept as fallback aliases for backward compat.
+        // `find_map` is used so a blank value for an earlier key does not suppress
+        // a valid value for a later key (`.or_else()` only falls back on `None`,
+        // not on `Some("")`).
+        let session_id = ["session_ref", "sessionRef", "session_id", "sessionId"]
+            .iter()
+            .find_map(|key| {
+                input
+                    .get(*key)
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+            })
+            .map(str::to_owned);
+        let mut spawn: SpawnParams = serde_json::from_value(Value::Object(input)).ok()?;
+        // Thread session_id into attestation.session_ref when both are
+        // present.  Only an already-attested spawn gains a Session-Id trailer;
+        // an un-attested spawn has no hook installed so there is nothing to
+        // stamp.
+        //
+        // Use the same blank-value guard as spawner.rs `is_valid_attestation_value`:
+        // a nested `sessionRef` that is `None` or blank (all whitespace) is treated
+        // as absent so a valid top-level alias still reaches the hook.
+        if let (Some(ref mut attestation), Some(sid)) =
+            (&mut spawn.metadata.attestation, session_id)
+        {
+            let nested_is_blank = attestation
+                .session_ref
+                .as_deref()
+                .map(str::trim)
+                .is_none_or(|v| v.is_empty());
+            if nested_is_blank {
+                attestation.session_ref = Some(sid);
+            }
+        }
+        Some(BrokerCommandPayload::Spawn(spawn))
+    } else if action == "release" || action.starts_with("release-") {
+        let release: ReleaseParams = serde_json::from_value(Value::Object(input)).ok()?;
+        Some(BrokerCommandPayload::Release(release))
+    } else {
+        None
+    }
 }
 
 fn map_sdk_event_kind(kind: relaycast::NormalizedEventKind) -> InboundKind {
@@ -103,12 +272,12 @@ pub fn to_inject_request(event: InboundRelayEvent) -> Option<InjectRequest> {
     }
 
     Some(InjectRequest {
-        id: event.event_id,
+        id: event.event_id.into_string(),
         workspace_id: event.workspace_id,
         workspace_alias: event.workspace_alias,
         from: event.from,
         target: event.target,
-        body: event.text,
+        body: text_with_attachment_references(&event.text, &event.attachments),
         priority: event.priority,
         attempts: 0,
     })
@@ -126,9 +295,175 @@ mod tests {
         super::map_ws_event(value, "ws_test", Some("test"))
     }
 
-    fn map_command(value: &Value) -> Option<crate::types::BrokerCommandEvent> {
-        super::map_ws_broker_command(value, "ws_test", Some("test"))
+    use super::{broker_payload_from_action, parse_ws_action_invoked, ActionInvokedRef};
+
+    /// Parse an `action.invoked` event and resolve the spawn/release payload
+    /// from a separately-supplied input map, mirroring the runtime flow where
+    /// the input is fetched via `get_action_invocation`.
+    fn map_action(
+        event: &Value,
+        input: Value,
+    ) -> Option<(ActionInvokedRef, crate::types::BrokerCommandPayload)> {
+        let action_ref = parse_ws_action_invoked(event)?;
+        let input_map = input.as_object().cloned();
+        let payload = broker_payload_from_action(&action_ref.action, input_map)?;
+        Some((action_ref, payload))
     }
+    #[test]
+    fn contract_fixture_events_parse_via_typed_wire_contract() {
+        use serde::Deserialize as _;
+
+        use crate::relaycast::wire::{parse_typed_inbound, TypedInbound};
+        use crate::types::RelayPriority;
+
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../packages/contracts/fixtures/relaycast-ws-event-fixtures.json"
+        ))
+        .expect("ws event fixture should be valid JSON");
+
+        let inbound_cases = fixture
+            .get("typed_inbound")
+            .and_then(Value::as_array)
+            .expect("fixture must include typed_inbound cases");
+        assert!(!inbound_cases.is_empty());
+
+        for case in inbound_cases {
+            let name = case.get("name").and_then(Value::as_str).unwrap_or("?");
+            let event = case.get("event").expect("case must include event");
+            let expect = case.get("expect").expect("case must include expect");
+
+            // The canonical engine shape must parse on the typed path, not
+            // the tolerant fallback.
+            let typed = parse_typed_inbound(event);
+            assert!(
+                matches!(typed, Some(TypedInbound::Event(..))),
+                "fixture case {name:?} must parse via the typed wire contract"
+            );
+
+            // And the typed result must be identical to what the tolerant
+            // parser (the behavior oracle) produces.
+            if let Some(TypedInbound::Event(typed_event, typed_attachments)) = typed {
+                let tolerant = relaycast::normalize_inbound_event(event)
+                    .expect("tolerant parser should map fixture case");
+                assert_eq!(
+                    typed_event, tolerant,
+                    "typed and tolerant parse diverged for fixture case {name:?}"
+                );
+                assert_eq!(
+                    typed_attachments,
+                    super::fallback_attachments(event),
+                    "typed and tolerant attachments diverged for fixture case {name:?}"
+                );
+            }
+
+            let mapped = map_event(event)
+                .unwrap_or_else(|| panic!("fixture case {name:?} should map to an inbound event"));
+
+            let expected_kind = match expect.get("kind").and_then(Value::as_str) {
+                Some("message_created") => InboundKind::MessageCreated,
+                Some("dm_received") => InboundKind::DmReceived,
+                Some("group_dm_received") => InboundKind::GroupDmReceived,
+                Some("thread_reply") => InboundKind::ThreadReply,
+                Some("presence") => InboundKind::Presence,
+                Some("reaction_received") => InboundKind::ReactionReceived,
+                other => panic!("fixture case {name:?} has unknown expected kind {other:?}"),
+            };
+            assert_eq!(mapped.kind, expected_kind, "kind mismatch for {name:?}");
+
+            let expect_str = |key: &str| expect.get(key).and_then(Value::as_str);
+            assert_eq!(
+                mapped.event_id.as_str(),
+                expect_str("event_id").unwrap(),
+                "event_id mismatch for {name:?}"
+            );
+            assert_eq!(
+                mapped.from,
+                expect_str("from").unwrap(),
+                "from mismatch for {name:?}"
+            );
+            assert_eq!(
+                mapped.target.as_str(),
+                expect_str("target").unwrap(),
+                "target mismatch for {name:?}"
+            );
+            if let Some(text) = expect_str("text") {
+                assert_eq!(mapped.text, text, "text mismatch for {name:?}");
+            }
+            assert_eq!(
+                mapped.thread_id.as_deref(),
+                expect_str("thread_id"),
+                "thread_id mismatch for {name:?}"
+            );
+            let expected_priority = match expect_str("priority") {
+                Some("P2") => RelayPriority::P2,
+                Some("P3") => RelayPriority::P3,
+                Some("P4") => RelayPriority::P4,
+                other => panic!("fixture case {name:?} has unknown expected priority {other:?}"),
+            };
+            assert_eq!(
+                mapped.priority, expected_priority,
+                "priority mismatch for {name:?}"
+            );
+
+            let injectable = expect
+                .get("injectable")
+                .and_then(Value::as_bool)
+                .expect("fixture case must declare injectable");
+            assert_eq!(
+                to_inject_request(mapped).is_some(),
+                injectable,
+                "injectability mismatch for {name:?}"
+            );
+        }
+
+        for case in fixture
+            .get("typed_ignored")
+            .and_then(Value::as_array)
+            .expect("fixture must include typed_ignored cases")
+        {
+            let name = case.get("name").and_then(Value::as_str).unwrap_or("?");
+            let event = case.get("event").expect("case must include event");
+            assert_eq!(
+                parse_typed_inbound(event),
+                Some(TypedInbound::Ignored),
+                "fixture case {name:?} must be typed-ignored"
+            );
+            assert!(
+                map_event(event).is_none(),
+                "fixture case {name:?} must not map to an inbound event"
+            );
+        }
+
+        for case in fixture
+            .get("typed_action")
+            .and_then(Value::as_array)
+            .expect("fixture must include typed_action cases")
+        {
+            let name = case.get("name").and_then(Value::as_str).unwrap_or("?");
+            let event = case.get("event").expect("case must include event");
+            let expect = case.get("expect").expect("case must include expect");
+            assert!(
+                relaycast::ActionInvokedEvent::deserialize(event).is_ok(),
+                "fixture case {name:?} must parse via the typed action contract"
+            );
+            let parsed = super::parse_ws_action_invoked(event)
+                .unwrap_or_else(|| panic!("fixture case {name:?} should parse"));
+            assert_eq!(
+                parsed,
+                ActionInvokedRef {
+                    action: expect["action"].as_str().unwrap().to_string(),
+                    invocation_id: expect["invocation_id"].as_str().unwrap().to_string(),
+                    invoked_by: expect["invoked_by"].as_str().unwrap().to_string(),
+                    handler_agent_id: expect
+                        .get("handler_agent_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                },
+                "action mapping mismatch for {name:?}"
+            );
+        }
+    }
+
     #[test]
     fn maps_message_created_top_level() {
         let event = map_event(&json!({
@@ -149,6 +484,62 @@ mod tests {
         assert_eq!(event.target, "#general");
         assert_eq!(event.text, "hello");
         assert!(to_inject_request(event).is_some());
+    }
+
+    #[test]
+    fn dm_with_attachments_injects_attachment_reference() {
+        let event = map_event(&json!({
+            "id": "evt_attach_dm",
+            "type": "dm.received",
+            "conversation_id": "dm_1",
+            "message": {
+                "id": "m_attach",
+                "agent_id": "a1",
+                "agent_name": "alice",
+                "text": "see screenshot",
+                "attachments": [{
+                    "file_id": "file_1",
+                    "filename": "shot.png",
+                    "content_type": "image/png",
+                    "size_bytes": 156748
+                }]
+            }
+        }))
+        .expect("dm with attachments should map");
+        let request = to_inject_request(event).expect("dm should be injectable");
+        assert!(
+            request.body.starts_with(
+                "see screenshot\n\nAttachments:\n- shot.png (image/png, 153.1 KB) file file_1"
+            ),
+            "{}",
+            request.body
+        );
+    }
+
+    #[test]
+    fn tolerant_fallback_carries_attachments() {
+        // Payload-wrapped legacy shape: misses the typed contract.
+        let event = map_event(&json!({
+            "type": "message.created",
+            "payload": {
+                "id": "evt-legacy",
+                "channel": "#ops",
+                "message": {
+                    "id": "m4",
+                    "from": {"name": "alice"},
+                    "body": "",
+                    "attachments": [{"file_id": "file_7", "filename": "log.txt"}]
+                }
+            }
+        }))
+        .expect("legacy shape should map via tolerant fallback");
+        assert_eq!(event.attachments.len(), 1);
+        assert_eq!(event.attachments[0].file_id, "file_7");
+        let request = to_inject_request(event).expect("message should inject");
+        assert_eq!(
+            request.body,
+            "Attachments:\n- log.txt file file_7 (not downloaded: download not attempted); fetch with: agent-relay message file download file_7"
+        );
     }
 
     #[test]
@@ -313,8 +704,11 @@ mod tests {
 
     #[test]
     fn maps_presence_top_level() {
+        // v8 contract: presence transitions are `agent.status.active` /
+        // `agent.status.offline` (the gateway's engine), not the pre-v8
+        // `agent.online`. See engine presence adapter.
         let event = map_event(&json!({
-            "type": "agent.online",
+            "type": "agent.status.active",
             "agent": { "name": "alice" }
         }))
         .unwrap();
@@ -370,14 +764,18 @@ mod tests {
 
     #[test]
     fn maps_reaction_added() {
+        // v8 contract: reactions arrive as a single `message.reacted` event
+        // (with an `action` of "added"/"removed"), not the pre-v8
+        // `reaction.added`/`reaction.removed`. See engine reaction route.
         let event = map_event(&json!({
-            "type": "reaction.added",
+            "type": "message.reacted",
+            "action": "added",
             "message_id": "msg_42",
             "emoji": "thumbsup",
             "agent_name": "alice",
             "channel_name": "general"
         }))
-        .expect("should map reaction.added");
+        .expect("should map message.reacted");
 
         assert_eq!(event.kind, InboundKind::ReactionReceived);
         assert_eq!(event.from, "alice");
@@ -391,14 +789,17 @@ mod tests {
 
     #[test]
     fn maps_reaction_removed() {
+        // A reaction removal is the same `message.reacted` event with
+        // `action: "removed"`; the broker surfaces both as ReactionReceived.
         let event = map_event(&json!({
-            "type": "reaction.removed",
+            "type": "message.reacted",
+            "action": "removed",
             "message_id": "msg_42",
             "emoji": "thumbsup",
             "agent_name": "bob",
             "channel_name": "dev"
         }))
-        .expect("should map reaction.removed");
+        .expect("should map message.reacted");
 
         assert_eq!(event.kind, InboundKind::ReactionReceived);
         assert_eq!(event.from, "bob");
@@ -410,7 +811,8 @@ mod tests {
         // Reactions without a channel (e.g. DM reactions) are dropped from PTY
         // injection — they're surfaced via the inbox API / piggyback instead.
         assert!(map_event(&json!({
-            "type": "reaction.added",
+            "type": "message.reacted",
+            "action": "added",
             "message_id": "msg_99",
             "emoji": "rocket",
             "agent_name": "carol"
@@ -442,51 +844,441 @@ mod tests {
     }
 
     #[test]
-    fn maps_command_invoked_spawn() {
-        let cmd = map_command(&json!({
-            "type": "command.invoked",
-            "command": "/spawn",
-            "channel": "general",
-            "invoked_by": "147298826957365248",
-            "args": null,
-            "parameters": {
+    fn maps_action_invoked_spawn() {
+        let (action_ref, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_1",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
                 "name": "Worker1",
                 "cli": "codex",
                 "args": ["--full-auto"]
-            }
-        }))
-        .expect("should map command.invoked spawn");
+            }),
+        )
+        .expect("should map action.invoked spawn");
 
-        assert_eq!(cmd.command, "/spawn");
-        assert_eq!(cmd.channel, "general");
-        assert_eq!(cmd.invoked_by, "147298826957365248");
-        assert_eq!(cmd.handler_agent_id, None);
+        assert_eq!(action_ref.action, "spawn");
+        assert_eq!(action_ref.invocation_id, "inv_1");
+        assert_eq!(action_ref.invoked_by, "147298826957365248");
+        assert_eq!(action_ref.handler_agent_id, None);
         assert_eq!(
-            cmd.payload,
+            payload,
             crate::types::BrokerCommandPayload::Spawn(crate::types::SpawnParams {
                 name: "Worker1".into(),
                 cli: "codex".into(),
                 args: vec!["--full-auto".into()],
+                metadata: crate::types::SpawnMetadata::default(),
             })
         );
     }
 
     #[test]
-    fn maps_command_invoked_release() {
-        let cmd = map_command(&json!({
-            "type": "command.invoked",
-            "command": "/release",
-            "channel": "general",
-            "invoked_by": "147298826957365248",
-            "args": null,
-            "parameters": {
-                "name": "Worker1"
-            }
-        }))
-        .expect("should map command.invoked release");
+    fn maps_spawn_attestation_metadata_from_the_dispatch_input() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_attestation",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerAttested",
+                "cli": "codex",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-public-123",
+                        "agentId": "agent_worker_42",
+                        "sponsorId": "user_owner_7"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn attestation metadata");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        assert_eq!(
+            params.metadata.attestation,
+            Some(crate::types::CommitAttestation {
+                jti: "jti-public-123".into(),
+                agent_id: "agent_worker_42".into(),
+                sponsor_id: "user_owner_7".into(),
+                session_ref: None,
+            })
+        );
+    }
+
+    /// Fleet dispatches (`fleet.spawn()`) place `session_id` at the top level
+    /// of the action input, not inside `metadata.attestation`.  The bridge must
+    /// thread it into `attestation.session_ref` so the broker hook can stamp a
+    /// `Session-Id:` trailer.
+    #[test]
+    fn bridges_top_level_session_id_into_attestation_session_ref() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_session",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerWithSession",
+                "cli": "claude",
+                "session_id": "ai-hist:claudecode-abc123",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-public-456",
+                        "agentId": "agent_worker_99",
+                        "sponsorId": "user_owner_7"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn with top-level session_id");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        assert_eq!(
+            params.metadata.attestation,
+            Some(crate::types::CommitAttestation {
+                jti: "jti-public-456".into(),
+                agent_id: "agent_worker_99".into(),
+                sponsor_id: "user_owner_7".into(),
+                session_ref: Some("ai-hist:claudecode-abc123".into()),
+            })
+        );
+    }
+
+    /// `sessionId` (camelCase) is the alternate key fleet dispatches may use.
+    #[test]
+    fn bridges_top_level_session_id_camel_case_alias() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_session_camel",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerCamel",
+                "cli": "claude",
+                "sessionId": "session-camel-xyz",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-camel",
+                        "agentId": "agent_camel",
+                        "sponsorId": "sponsor_camel"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn with camelCase sessionId");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        let attestation = params
+            .metadata
+            .attestation
+            .expect("attestation must be present");
+        assert_eq!(
+            attestation.session_ref.as_deref(),
+            Some("session-camel-xyz")
+        );
+    }
+
+    /// When attestation is absent, top-level `session_id` is silently ignored
+    /// (no attestation = hook not installed = nothing to stamp).
+    #[test]
+    fn session_id_without_attestation_is_silently_ignored() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_no_attest",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerNoAttest",
+                "cli": "codex",
+                "session_id": "some-session-ref"
+            }),
+        )
+        .expect("should map spawn without attestation");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        // No attestation — hook is not installed, nothing to stamp.
+        assert_eq!(params.metadata.attestation, None);
+    }
+
+    /// An explicit `sessionRef` inside `metadata.attestation` must NOT be
+    /// overwritten by the top-level `session_id`.
+    #[test]
+    fn explicit_attestation_session_ref_wins_over_top_level_session_id() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_explicit_ref",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerExplicit",
+                "cli": "claude",
+                "session_id": "top-level-id",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-explicit",
+                        "agentId": "agent_explicit",
+                        "sponsorId": "sponsor_explicit",
+                        "sessionRef": "explicit-nested-ref"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn with explicit sessionRef");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        let attestation = params
+            .metadata
+            .attestation
+            .expect("attestation must be present");
+        // The nested sessionRef takes precedence; top-level session_id is not applied.
+        assert_eq!(
+            attestation.session_ref.as_deref(),
+            Some("explicit-nested-ref")
+        );
+    }
+
+    /// Fleet CLI/API uses `session_ref` (snake_case) as the canonical top-level
+    /// key — verified against `runtime::relaycast_events::relaycast_spawn_session_ref`.
+    /// The bridge must recognise it even when `session_id` is absent.
+    #[test]
+    fn bridges_top_level_session_ref_canonical_key() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_session_ref_canon",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerSessionRef",
+                "cli": "claude",
+                "session_ref": "ai-hist:claudecode-fleet-canonical",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-ref-canon",
+                        "agentId": "agent_ref_canon",
+                        "sponsorId": "sponsor_ref_canon"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn with top-level session_ref");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        let attestation = params
+            .metadata
+            .attestation
+            .expect("attestation must be present");
+        assert_eq!(
+            attestation.session_ref.as_deref(),
+            Some("ai-hist:claudecode-fleet-canonical"),
+            "session_ref (canonical fleet key) must be bridged into attestation.session_ref"
+        );
+    }
+
+    /// `sessionRef` (camelCase) is the camelCase alias of the canonical fleet key.
+    #[test]
+    fn bridges_top_level_session_ref_camel_case_alias() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_session_ref_camel",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerSessionRefCamel",
+                "cli": "claude",
+                "sessionRef": "ai-hist:claudecode-fleet-camel",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-ref-camel",
+                        "agentId": "agent_ref_camel",
+                        "sponsorId": "sponsor_ref_camel"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn with top-level sessionRef");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        let attestation = params
+            .metadata
+            .attestation
+            .expect("attestation must be present");
+        assert_eq!(
+            attestation.session_ref.as_deref(),
+            Some("ai-hist:claudecode-fleet-camel"),
+            "sessionRef (camelCase fleet alias) must be bridged into attestation.session_ref"
+        );
+    }
+
+    /// When `session_ref` is blank and `sessionRef` holds a valid value, the valid
+    /// value must not be suppressed.  `.or_else()` would fail here because it only
+    /// falls back on `None`; `find_map` skips blank values from earlier keys.
+    #[test]
+    fn blank_session_ref_falls_through_to_valid_session_ref_alias() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_blank_fallthrough",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerBlankFallthrough",
+                "cli": "claude",
+                "session_ref": "",
+                "sessionRef": "ai-hist:claudecode-from-alias",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-blank-fallthrough",
+                        "agentId": "agent_blank",
+                        "sponsorId": "sponsor_blank"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn where session_ref is blank");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        let attestation = params
+            .metadata
+            .attestation
+            .expect("attestation must be present");
+        assert_eq!(
+            attestation.session_ref.as_deref(),
+            Some("ai-hist:claudecode-from-alias"),
+            "blank session_ref must not suppress the valid sessionRef alias"
+        );
+    }
+
+    /// A blank `session_id` must not suppress a valid `sessionId` alias.
+    #[test]
+    fn blank_session_id_falls_through_to_valid_session_id_alias() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_blank_session_id",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerBlankSessionId",
+                "cli": "claude",
+                "session_id": "   ",
+                "sessionId": "ai-hist:claudecode-camel-rescue",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-blank-sid",
+                        "agentId": "agent_blank_sid",
+                        "sponsorId": "sponsor_blank_sid"
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn where session_id is whitespace-only");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        let attestation = params
+            .metadata
+            .attestation
+            .expect("attestation must be present");
+        assert_eq!(
+            attestation.session_ref.as_deref(),
+            Some("ai-hist:claudecode-camel-rescue"),
+            "whitespace-only session_id must not suppress valid sessionId alias"
+        );
+    }
+
+    /// A blank/whitespace-only `sessionRef` inside `metadata.attestation` must be
+    /// treated as absent so a valid top-level `session_ref` can fill the field.
+    /// The `nested_is_blank` guard in `broker_payload_from_action` handles this;
+    /// a plain `is_none()` check would silently suppress the top-level value.
+    #[test]
+    fn blank_nested_session_ref_is_treated_as_absent() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_blank_nested",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
+                "name": "WorkerBlankNested",
+                "cli": "claude",
+                "session_ref": "ai-hist:claudecode-top-level-wins",
+                "metadata": {
+                    "attestation": {
+                        "jti": "jti-blank-nested",
+                        "agentId": "agent_blank_nested",
+                        "sponsorId": "sponsor_blank_nested",
+                        "sessionRef": "   "
+                    }
+                }
+            }),
+        )
+        .expect("should map spawn with blank nested sessionRef");
+
+        let crate::types::BrokerCommandPayload::Spawn(params) = payload else {
+            panic!("expected spawn payload");
+        };
+        let attestation = params
+            .metadata
+            .attestation
+            .expect("attestation must be present");
+        assert_eq!(
+            attestation.session_ref.as_deref(),
+            Some("ai-hist:claudecode-top-level-wins"),
+            "blank nested sessionRef must be treated as absent; top-level session_ref must fill the field"
+        );
+    }
+
+    #[test]
+    fn maps_action_invoked_release() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "release",
+                "invocation_id": "inv_2",
+                "caller_name": "147298826957365248",
+            }),
+            json!({ "name": "Worker1" }),
+        )
+        .expect("should map action.invoked release");
 
         assert_eq!(
-            cmd.payload,
+            payload,
             crate::types::BrokerCommandPayload::Release(crate::types::ReleaseParams {
                 name: "Worker1".into(),
             })
@@ -494,124 +1286,99 @@ mod tests {
     }
 
     #[test]
-    fn maps_command_invoked_spawn_with_suffix() {
-        let cmd = map_command(&json!({
-            "type": "command.invoked",
-            "command": "/spawn-19c4c7f8150",
-            "channel": "general",
-            "invoked_by": "147298826957365248",
-            "parameters": {
+    fn maps_action_invoked_spawn_with_suffix() {
+        let (_, payload) = map_action(
+            &json!({
+                "type": "action.invoked",
+                "action_name": "spawn-19c4c7f8150",
+                "invocation_id": "inv_3",
+                "caller_name": "147298826957365248",
+            }),
+            json!({
                 "name": "Worker2",
                 "cli": "codex",
                 "args": ["--full-auto"]
-            }
-        }))
-        .expect("should map command.invoked spawn with suffix");
+            }),
+        )
+        .expect("should map action.invoked spawn with suffix");
 
         assert_eq!(
-            cmd.payload,
+            payload,
             crate::types::BrokerCommandPayload::Spawn(crate::types::SpawnParams {
                 name: "Worker2".into(),
                 cli: "codex".into(),
                 args: vec!["--full-auto".into()],
+                metadata: crate::types::SpawnMetadata::default(),
             })
         );
     }
 
     #[test]
-    fn maps_command_invoked_release_with_suffix() {
-        let cmd = map_command(&json!({
-            "type": "command.invoked",
-            "command": "/release-19c4c7f8150",
-            "channel": "general",
-            "invoked_by": "147298826957365248",
-            "parameters": {
-                "name": "Worker2"
-            }
+    fn parses_action_invoked_handler_agent_id() {
+        let action_ref = parse_ws_action_invoked(&json!({
+            "type": "action.invoked",
+            "action_name": "spawn",
+            "invocation_id": "inv_4",
+            "caller_name": "147298826957365248",
+            "handler_agent_id": "147305428879515648",
         }))
-        .expect("should map command.invoked release with suffix");
+        .expect("should parse action.invoked handler agent id");
 
         assert_eq!(
-            cmd.payload,
-            crate::types::BrokerCommandPayload::Release(crate::types::ReleaseParams {
-                name: "Worker2".into(),
-            })
+            action_ref.handler_agent_id.as_deref(),
+            Some("147305428879515648")
         );
     }
 
     #[test]
-    fn maps_command_invoked_handler_agent_id() {
-        let cmd = map_command(&json!({
-            "type": "command.invoked",
-            "command": "/spawn",
-            "channel": "general",
-            "invoked_by": "147298826957365248",
-            "handler_agent_id": "147305428879515648",
-            "parameters": {
-                "name": "Worker3",
-                "cli": "codex"
+    fn parses_action_invoked_payload_wrapped() {
+        let action_ref = parse_ws_action_invoked(&json!({
+            "type": "action.invoked",
+            "payload": {
+                "type": "action.invoked",
+                "action_name": "spawn",
+                "invocation_id": "inv_5",
+                "caller_name": "abc",
             }
         }))
-        .expect("should map command.invoked handler agent id");
+        .expect("should parse payload-wrapped action.invoked");
 
-        assert_eq!(cmd.handler_agent_id.as_deref(), Some("147305428879515648"));
+        assert_eq!(action_ref.action, "spawn");
+        assert_eq!(action_ref.invocation_id, "inv_5");
     }
 
     #[test]
-    fn command_invoked_ignores_non_command_types() {
-        assert!(map_command(&json!({
+    fn action_invoked_ignores_non_action_types() {
+        assert!(parse_ws_action_invoked(&json!({
             "type": "dm.received",
-            "command": "/spawn",
-            "channel": "general",
-            "invoked_by": "123",
-            "parameters": { "name": "x", "cli": "y" }
+            "action_name": "spawn",
+            "invocation_id": "inv_6",
+            "caller_name": "123",
         }))
         .is_none());
     }
 
     #[test]
-    fn command_invoked_ignores_similar_command_without_delimiter() {
-        assert!(map_command(&json!({
-            "type": "command.invoked",
-            "command": "/spawnx",
-            "channel": "general",
-            "invoked_by": "123",
-            "parameters": { "name": "x", "cli": "y" }
-        }))
+    fn action_payload_ignores_unknown_actions() {
+        assert!(broker_payload_from_action(
+            "unknown",
+            Some(json!({ "name": "x" }).as_object().cloned().unwrap())
+        )
         .is_none());
     }
 
     #[test]
-    fn command_invoked_ignores_unknown_commands() {
-        assert!(map_command(&json!({
-            "type": "command.invoked",
-            "command": "/unknown",
-            "channel": "general",
-            "invoked_by": "123",
-            "parameters": { "name": "x" }
-        }))
-        .is_none());
+    fn action_payload_ignores_missing_input() {
+        assert!(broker_payload_from_action("spawn", None).is_none());
     }
 
     #[test]
-    fn command_invoked_ignores_missing_parameters() {
-        assert!(map_command(&json!({
-            "type": "command.invoked",
-            "command": "/spawn",
-            "channel": "general",
-            "invoked_by": "123"
-        }))
-        .is_none());
-    }
-
-    #[test]
-    fn command_invoked_not_picked_up_by_map_event() {
+    fn action_invoked_not_picked_up_by_map_event() {
         assert!(map_event(&json!({
-            "type": "command.invoked",
-            "command": "/spawn",
-            "channel": "general",
-            "invoked_by": "123",
-            "parameters": { "name": "Worker1", "cli": "codex" }
+            "type": "action.invoked",
+            "action_name": "spawn",
+            "invocation_id": "inv_7",
+            "caller_name": "123",
         }))
         .is_none());
     }

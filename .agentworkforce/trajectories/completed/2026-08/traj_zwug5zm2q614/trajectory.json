@@ -1,0 +1,70 @@
+{
+  "id": "traj_zwug5zm2q614",
+  "version": 1,
+  "task": {
+    "title": "Implement replayable durable relay session resolution for Factory PR pointers",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1522"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-17T09:27:37.067Z",
+  "completedAt": "2026-08-17T09:56:05.609Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-17T09:55:16.049Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_o35y67g632me",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-17T09:55:16.049Z",
+      "endedAt": "2026-08-17T09:56:05.609Z",
+      "events": [
+        {
+          "ts": 1786960516051,
+          "type": "decision",
+          "content": "Replay consumes the existing Relayhistory conversation-turns journal with Relay's emitted ai-hist UUID; stored Relayhistory auth is used only as an authenticated resolver credential, and no new ID, store, or join table is introduced.: Replay consumes the existing Relayhistory conversation-turns journal with Relay's emitted ai-hist UUID; stored Relayhistory auth is used only as an authenticated resolver credential, and no new ID, store, or join table is introduced.",
+          "raw": {
+            "question": "Replay consumes the existing Relayhistory conversation-turns journal with Relay's emitted ai-hist UUID; stored Relayhistory auth is used only as an authenticated resolver credential, and no new ID, store, or join table is introduced.",
+            "chosen": "Replay consumes the existing Relayhistory conversation-turns journal with Relay's emitted ai-hist UUID; stored Relayhistory auth is used only as an authenticated resolver credential, and no new ID, store, or join table is introduced.",
+            "alternatives": [
+              {
+                "option": "new replay store",
+                "reason": ""
+              },
+              {
+                "option": "new PR identifier",
+                "reason": ""
+              },
+              {
+                "option": "heuristic history lookup",
+                "reason": ""
+              }
+            ],
+            "reasoning": "Remote relayhistory-cloud main mounts GET /v1/sessions/:sessionId/turns behind rth:read and scopes lookup by organization."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added the Relay CLI consumer for the existing authenticated Relayhistory session-turn journal, with no new identifier or storage. Relaycast message metadata/join remains intentionally unclaimed.",
+    "approach": "Standard approach",
+    "confidence": 0.78
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "e3217d29001a7d3688dc62ba42ccfd1b80aac15e",
+    "endRef": "e3217d29001a7d3688dc62ba42ccfd1b80aac15e"
+  }
+}

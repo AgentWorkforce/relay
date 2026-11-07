@@ -1,0 +1,53 @@
+{
+  "id": "traj_x5439bvwnurb",
+  "version": 1,
+  "task": {
+    "title": "Keep OpenClaw adapter in core simplification PR"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-28T20:04:13.544Z",
+  "completedAt": "2026-05-28T20:15:04.856Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-28T20:15:00.377Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_g4oe851jtxfs",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-28T20:15:00.377Z",
+      "endedAt": "2026-05-28T20:15:04.856Z",
+      "events": [
+        {
+          "ts": 1779999300378,
+          "type": "decision",
+          "content": "Keep OpenClaw as an optional adapter: Keep OpenClaw as an optional adapter",
+          "raw": {
+            "question": "Keep OpenClaw as an optional adapter",
+            "chosen": "Keep OpenClaw as an optional adapter",
+            "alternatives": [],
+            "reasoning": "OpenClaw still serves as a useful adapter, but any managed spawn implementation belongs behind @agent-relay/driver so the core SDK remains messaging/delivery/actions focused."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Restored @agent-relay/openclaw as an optional adapter, moved its managed spawn bridge to @agent-relay/driver, refreshed package docs and lockfile, and validated package tests/build plus core build.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/Users/will/Projects/AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "ceea9bc45b8b807c480d9aa0b8d9b6a76533a725",
+    "endRef": "ceea9bc45b8b807c480d9aa0b8d9b6a76533a725"
+  }
+}

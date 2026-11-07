@@ -1,0 +1,69 @@
+{
+  "version": "1.0.0",
+  "id": "e1f6f321-9db7-45bc-8e51-0eddb12b39fd",
+  "timestamp": "2026-07-14T19:09:41.447Z",
+  "trajectory": "traj_qwe5mrwvm03z",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_qwe5mrwvm03z/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 46,
+              "revision": "ebb47e62cd13edb7dde7926a7de1f65c2c07219e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 17,
+              "end_line": 23,
+              "revision": "ebb47e62cd13edb7dde7926a7de1f65c2c07219e"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/runtime/session.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 117,
+              "end_line": 166,
+              "revision": "ebb47e62cd13edb7dde7926a7de1f65c2c07219e"
+            },
+            {
+              "start_line": 186,
+              "end_line": 265,
+              "revision": "ebb47e62cd13edb7dde7926a7de1f65c2c07219e"
+            },
+            {
+              "start_line": 364,
+              "end_line": 414,
+              "revision": "ebb47e62cd13edb7dde7926a7de1f65c2c07219e"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

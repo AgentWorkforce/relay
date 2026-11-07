@@ -1,0 +1,53 @@
+{
+  "id": "traj_ceo5q9bh2od3",
+  "version": 1,
+  "task": {
+    "title": "Add structured spawned-agent results"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-20T21:24:17.929Z",
+  "completedAt": "2026-05-20T21:43:51.936Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-20T21:43:48.187Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_7lq3uodpwrbr",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-20T21:43:48.187Z",
+      "endedAt": "2026-05-20T21:43:51.936Z",
+      "events": [
+        {
+          "ts": 1779313428188,
+          "type": "decision",
+          "content": "Implemented structured agent results as a broker-mediated callback token plus MCP tool",
+          "raw": {
+            "question": "Implemented structured agent results as a broker-mediated callback token plus MCP tool",
+            "chosen": "Implemented structured agent results as a broker-mediated callback token plus MCP tool",
+            "alternatives": [],
+            "reasoning": "The SDK can declare a result contract at spawn time, the broker mints a per-agent callback token, and the injected Relaycast MCP server exposes submit_result without requiring the spawned agent to know broker credentials."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added structured spawned-agent result contracts across the broker, MCP tool, and TypeScript SDK, with focused Rust and Vitest coverage plus docs.",
+    "approach": "Standard approach",
+    "confidence": 0.82
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/private/tmp/relay-structured-agent-results",
+  "tags": [],
+  "_trace": {
+    "startRef": "db037b0557e7353e169e92293f4adde06e48a6c6",
+    "endRef": "db037b0557e7353e169e92293f4adde06e48a6c6"
+  }
+}

@@ -1,0 +1,1607 @@
+import {
+  createRelaycastClient,
+  type RelaycastAgentDeliverySurface,
+  type RelaycastAgentLike,
+  type RelaycastMessagingOptions,
+  type RelaycastWorkspaceLike,
+} from './relaycast-client.js';
+import {
+  delay,
+  nonEmptyPlacement,
+  placementActionInput,
+  placementActionName,
+  RelayPlacementError,
+  resolveDispatchState,
+  type PlacementSelection,
+} from './relaycast-placement.js';
+import {
+  asRecord,
+  definedOptions,
+  normalizeActionInvocation,
+  normalizeActionInvocationAck,
+  normalizeInboundWebhook,
+  normalizeWebhookSubscription,
+  readStr,
+  serializeAttachmentInputs,
+  toCompleteInvocationRequest,
+  toMessageListOptions,
+  toRegisterActionRequest,
+  toRelayCapability,
+  toRelayNode,
+  toRelayTrigger,
+  toTriggerRequest,
+} from './relaycast-translate.js';
+import {
+  normalizeAgent,
+  normalizeAgentPresence,
+  normalizeAgentRegistration,
+  normalizeChannel,
+  normalizeChannelMember,
+  normalizeChannelName,
+  normalizeChannelReadStatus,
+  normalizeDeliveryTransition,
+  normalizeGroupDirectConversation,
+  normalizeInbox,
+  normalizeInboxItem,
+  normalizeMessage,
+  normalizeMessagingEvent,
+  normalizeReaction,
+  normalizeReadReceipt,
+  normalizeSearchResult,
+  normalizeThread,
+  normalizeFileInfo,
+} from './normalize.js';
+import { downloadRelayFile, uploadRelayFile } from './files.js';
+import { currentReplaySessionRef, replayMessageMetadata, resolveReplaySessionRef } from './session-ref.js';
+import type { AgentSessionEvent } from '../session/index.js';
+import type {
+  RelayActionInvocation,
+  RelayActionInvocationAck,
+  RelayCompleteInvocationInput,
+  RelayAgent,
+  RelayDownloadedFile,
+  RelayFileInfo,
+  RelayUploadFileInput,
+  RelayAgentPresence,
+  RelayAgentRegistration,
+  RelayChannel,
+  RelayChannelMember,
+  RelayChannelReadStatus,
+  RelayCapability,
+  RelayCreateChannelInput,
+  RelayCreateGroupDirectMessageInput,
+  RelayCreateInboundWebhookInput,
+  RelayCreateSubscriptionInput,
+  RelayCreateWebhookInput,
+  RelayDeliveryResult,
+  RelayDeliveryUnsupportedResult,
+  RelayEventSubscription,
+  RelayInboundWebhook,
+  RelaySubscribeInput,
+  RelayWebhookSubscription,
+  RelayGroupDirectConversation,
+  RelayRegisterCapabilityInput,
+  RelayWebhook,
+  RelayWorkspaceInfo,
+  InboxAckInput,
+  InboxDeferInput,
+  InboxFailInput,
+  InboxItem,
+  InboxListInput,
+  InboxListResult,
+  InboxMarkReadInput,
+  InboxSubscribeInput,
+  RelayInbox,
+  RelayListAgentsOptions,
+  RelayListChannelsOptions,
+  RelayListNodesOptions,
+  RelayListDirectMessagesInput,
+  RelayMessage,
+  RelayMessageListOptions,
+  RelayReleaseAgentInput,
+  RelayAgentReleaseResult,
+  RelayMessageReaction,
+  RelayMessagingCapabilities,
+  RelayMessagingClient,
+  RelayMessagingEvent,
+  RelayMessagingEventMap,
+  RelayNode,
+  RelayPlacementReconcileEvent,
+  RelayReadReceipt,
+  RelayRegisterAgentInput,
+  RelayReplyMessageInput,
+  RelaySearchResult,
+  RelaySendChannelMessageInput,
+  RelaySendDirectMessageInput,
+  RelaySendGroupDirectMessageInput,
+  RelaySpawnPlacementAck,
+  RelaySpawnPlacementInput,
+  RelayThread,
+  RelayTrigger,
+  RelayTriggerInput,
+  RelayUpdateAgentInput,
+  RelayUpdateChannelInput,
+} from './types.js';
+
+// Re-exported so the public surface stays identical after the placement and
+// client-construction concerns moved into sibling modules. Consumers import
+// these from './relaycast.js' via the messaging index.
+export { RelayPlacementError } from './relaycast-placement.js';
+export type { RelaySpawnDispatchState, RelaySpawnPlacementState } from './relaycast-placement.js';
+export type { RelaycastMessagingOptions } from './relaycast-client.js';
+
+const DEFAULT_CONFIRM_TIMEOUT_MS = 360_000;
+const DEFAULT_CONFIRM_POLL_MS = 500;
+/** `setTimeout` clamps anything larger, firing immediately instead of waiting. */
+const MAX_CONFIRM_TIMEOUT_MS = 2_147_483_647;
+
+/** Terminal statuses that mean the node ran the action successfully. */
+const CONFIRM_SUCCESS_STATUSES = new Set(['completed', 'succeeded', 'success']);
+/**
+ * Terminal statuses that mean the node will not run the action. `denied` is a
+ * refusal (permission/authorization) and is terminal, not pending — see the
+ * documented lifecycle `invoked` → `completed` | `failed` | `denied` at
+ * `packages/sdk-swift/Sources/AgentRelaySDK/RelayRestClient.swift:26`, which
+ * that client surfaces as a non-retryable `action_denied` error.
+ */
+const CONFIRM_FAILURE_STATUSES = new Set(['failed', 'error', 'denied', 'cancelled', 'canceled']);
+
+function hasSpawnReadinessProof(value: { output?: Record<string, unknown> | null }): boolean {
+  return value.output?.spawned === true && value.output?.ready === true;
+}
+
+function hasSpawnLaunchProof(value: { output?: Record<string, unknown> | null }): boolean {
+  return value.output?.spawned === true && typeof value.output?.ready === 'boolean';
+}
+
+/**
+ * The requester declares the mode and judges only what it asked for. A
+ * readiness request demands `ready:true`; a launch-only request accepts either
+ * boolean. Both demand `spawned:true`, so a handler that reports nothing still
+ * fails. Judging a launch-only request against `ready:true` would reject the
+ * broker's own honest `ready:false` success — the failure shape relay#1430
+ * exists to remove.
+ */
+function hasSpawnProof(
+  value: { output?: Record<string, unknown> | null },
+  requireReadiness: boolean
+): boolean {
+  return requireReadiness ? hasSpawnReadinessProof(value) : hasSpawnLaunchProof(value);
+}
+
+function spawnProofError(
+  node: string,
+  status: string,
+  action: string,
+  output: Record<string, unknown> | null | undefined,
+  requireReadiness: boolean
+): string {
+  if (output?.spawned === true && typeof output.ready !== 'boolean') {
+    // Only a readiness request sent `verify_ready`; on the launch-only path the
+    // accurate statement is that the handler omitted the `ready` boolean.
+    return requireReadiness
+      ? `node '${node}' handler did not honour verify_ready: missing explicit spawned:true and ready:true proof; upgrade to a release containing Relay PR #1708`
+      : `node '${node}' reported ${status} for ${action} without an explicit ready boolean; upgrade to a release containing Relay PR #1708`;
+  }
+  return `node '${node}' reported ${status} for ${action} without explicit ${
+    requireReadiness ? 'spawned:true and ready:true' : 'spawned:true and a ready boolean'
+  } proof`;
+}
+
+/** Distinguishes "the read outlived its budget" from any value a read returns. */
+const READ_TIMED_OUT = Symbol('relay.confirm.readTimedOut');
+
+type ConfirmReadOutcome = { ok: true; value: RelayActionInvocation } | { ok: false; error: string };
+
+/**
+ * Coerce a caller-supplied duration to a usable one.
+ *
+ * `NaN` and `Infinity` are the dangerous inputs: `Date.now() + NaN` is `NaN`,
+ * and `Date.now() >= NaN` is never true, so an unnormalized value would make
+ * the confirmation loop wait forever — silently, which is the precise failure
+ * this confirmation exists to remove.
+ */
+function confirmDurationMs(value: number | undefined, fallback: number, max: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.min(value, max) : fallback;
+}
+
+/**
+ * Resolve a read, or give up on it once `ms` has elapsed. A `getInvocation`
+ * that outlives the remaining budget must not postpone the deadline check: the
+ * caller asked to stop waiting at a point in time, not after N more reads.
+ */
+async function raceConfirmRead(
+  read: Promise<ConfirmReadOutcome>,
+  ms: number
+): Promise<ConfirmReadOutcome | typeof READ_TIMED_OUT> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      read,
+      new Promise<typeof READ_TIMED_OUT>((resolve) => {
+        timer = setTimeout(() => resolve(READ_TIMED_OUT), ms);
+      }),
+    ]);
+  } finally {
+    // Leaving this pending would keep a CLI process alive for the full budget.
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export class RelaycastMessagingClient implements RelayMessagingClient {
+  readonly capabilities: RelayMessagingCapabilities;
+
+  private readonly relaycast: RelaycastWorkspaceLike;
+  private readonly agentClient?: RelaycastAgentLike;
+  private readonly selfNodeName?: string;
+  private readonly placementTtlMs: number;
+  private readonly placementSandboxOnly: boolean;
+  private readonly maxQueuedPlacements: number;
+  private readonly placementLog?: (message: string) => void;
+  private readonly sessionRef?: string;
+  private queuedPlacements = 0;
+  private readonly eventHandlers = new Map<
+    keyof RelayMessagingEventMap,
+    Set<(event: RelayMessagingEvent) => void | Promise<void>>
+  >();
+  private eventUnsubscribe?: () => void;
+
+  constructor(options: RelaycastMessagingOptions) {
+    this.relaycast = createRelaycastClient(options);
+    this.agentClient =
+      options.agentClient ??
+      (options.agentToken ? this.relaycast.as?.(options.agentToken, options.agentClientOptions) : undefined);
+    this.selfNodeName = options.selfNodeName;
+    this.placementTtlMs = options.placementTtlMs ?? 60 * 60 * 1000;
+    this.placementSandboxOnly = options.placementSandboxOnly ?? false;
+    this.maxQueuedPlacements = options.maxQueuedPlacements ?? 100;
+    this.placementLog = options.placementLog;
+    this.sessionRef =
+      options.sessionRef === undefined
+        ? currentReplaySessionRef()
+        : resolveReplaySessionRef(options.sessionRef);
+    // Durable delivery state is agent-scoped: it requires an agent client that
+    // exposes the relaycast delivery ledger (deliveries list + transitions).
+    const durable = this.deliverySurface() !== undefined;
+    this.capabilities = {
+      serverDeliveryState: durable,
+      durableDelivery: durable,
+      durableAck: durable,
+      durableFail: durable,
+      durableDefer: durable,
+    };
+  }
+
+  readonly agents = {
+    list: async (options?: RelayListAgentsOptions): Promise<RelayAgent[]> => {
+      const agents = await this.relaycast.agents.list(definedOptions({ status: options?.status }));
+      return agents.map(normalizeAgent);
+    },
+    get: async (name: string): Promise<RelayAgent> => normalizeAgent(await this.relaycast.agents.get(name)),
+    register: async (input: RelayRegisterAgentInput): Promise<RelayAgentRegistration> =>
+      normalizeAgentRegistration(await this.relaycast.agents.register(input)),
+    registerOrRotate: async (input: RelayRegisterAgentInput): Promise<RelayAgentRegistration> =>
+      normalizeAgentRegistration(
+        this.relaycast.agents.registerOrRotate
+          ? await this.relaycast.agents.registerOrRotate(input)
+          : await this.relaycast.agents.register(input)
+      ),
+    me: async (): Promise<RelayAgent> => normalizeAgent(await this.requireAgentClient('agents.me').me()),
+    update: async (name: string, input: RelayUpdateAgentInput): Promise<RelayAgent> =>
+      normalizeAgent(await this.relaycast.agents.update(name, input)),
+    delete: async (name: string): Promise<void> => {
+      await this.relaycast.agents.delete(name);
+    },
+    release: async (input: RelayReleaseAgentInput): Promise<RelayAgentReleaseResult> => {
+      const ack = normalizeActionInvocationAck(await this.relaycast.agents.release(input));
+      return { ...ack };
+    },
+    presence: async (): Promise<RelayAgentPresence[]> => {
+      const presence = await this.relaycast.agents.presence();
+      return presence.map(normalizeAgentPresence);
+    },
+  };
+
+  readonly sessionEvents = {
+    emit: async (agentName: string, event: AgentSessionEvent): Promise<unknown> => {
+      const events = this.relaycast.agents.events;
+      if (!events) throw new Error('Relaycast agent session events API is unavailable.');
+      const { type, ...payload } = event;
+      return events.emit(agentName, { type, payload });
+    },
+    list: async (
+      agentName: string,
+      options?: { type?: AgentSessionEvent['type']; limit?: number }
+    ): Promise<unknown[]> => {
+      const events = this.relaycast.agents.events;
+      if (!events) throw new Error('Relaycast agent session events API is unavailable.');
+      return events.list(agentName, options);
+    },
+  };
+
+  readonly channels = {
+    list: async (options?: RelayListChannelsOptions): Promise<RelayChannel[]> => {
+      const channels = await this.relaycast.channels.list(
+        definedOptions({ includeArchived: options?.includeArchived })
+      );
+      return channels.map(normalizeChannel);
+    },
+    get: async (name: string): Promise<RelayChannel> =>
+      normalizeChannel(await this.relaycast.channels.get(normalizeChannelName(name))),
+    create: async (input: RelayCreateChannelInput): Promise<RelayChannel> =>
+      normalizeChannel(await this.requireAgentClient('channels.create').channels.create(input)),
+    update: async (name: string, input: RelayUpdateChannelInput): Promise<RelayChannel> =>
+      normalizeChannel(
+        await this.requireAgentClient('channels.update').channels.update(normalizeChannelName(name), input)
+      ),
+    archive: async (name: string): Promise<void> => {
+      await this.requireAgentClient('channels.archive').channels.archive(normalizeChannelName(name));
+    },
+    join: async (name: string): Promise<void> => {
+      await this.requireAgentClient('channels.join').channels.join(normalizeChannelName(name));
+    },
+    leave: async (name: string): Promise<void> => {
+      await this.requireAgentClient('channels.leave').channels.leave(normalizeChannelName(name));
+    },
+    invite: async (channel: string, agent: string): Promise<void> => {
+      await this.requireAgentClient('channels.invite').channels.invite(normalizeChannelName(channel), agent);
+    },
+    members: async (name: string): Promise<RelayChannelMember[]> => {
+      const members = await this.requireAgentClient('channels.members').channels.members(
+        normalizeChannelName(name)
+      );
+      return members.map(normalizeChannelMember);
+    },
+    mute: async (name: string): Promise<void> => {
+      await this.requireAgentClient('channels.mute').channels.mute(normalizeChannelName(name));
+    },
+    unmute: async (name: string): Promise<void> => {
+      await this.requireAgentClient('channels.unmute').channels.unmute(normalizeChannelName(name));
+    },
+  };
+
+  readonly messages = {
+    send: async (input: RelaySendChannelMessageInput): Promise<RelayMessage> => {
+      const message = await this.requireAgentClient('messages.send').send(
+        input.channel,
+        input.text,
+        definedOptions({
+          attachments: serializeAttachmentInputs(input.attachments),
+          blocks: input.blocks,
+          data: replayMessageMetadata(input.metadata, this.sessionRef),
+          mode: input.mode,
+          idempotencyKey: input.idempotencyKey,
+        })
+      );
+      return normalizeMessage(message, { kind: 'channel', channelName: normalizeChannelName(input.channel) });
+    },
+    list: async (channel: string, options?: RelayMessageListOptions): Promise<RelayMessage[]> => {
+      const channelName = normalizeChannelName(channel);
+      const messages = await this.relaycast.messages.list(channelName, toMessageListOptions(options));
+      return messages.map((message) => normalizeMessage(message, { kind: 'channel', channelName }));
+    },
+    get: async (id: string): Promise<RelayMessage> => normalizeMessage(await this.relaycast.messages.get(id)),
+    reply: async (input: RelayReplyMessageInput): Promise<RelayMessage> => {
+      const message = await this.requireAgentClient('messages.reply').reply(
+        input.messageId,
+        input.text,
+        definedOptions({
+          blocks: input.blocks,
+          data: replayMessageMetadata(input.metadata, this.sessionRef),
+          idempotencyKey: input.idempotencyKey,
+        })
+      );
+      return normalizeMessage(message, {
+        kind: 'thread_reply',
+        parentId: input.messageId,
+        threadId: input.messageId,
+      });
+    },
+    direct: async (input: RelaySendDirectMessageInput): Promise<RelayMessage> => {
+      const response = await this.requireAgentClient('messages.direct').dm(
+        input.to,
+        input.text,
+        definedOptions({
+          attachments: serializeAttachmentInputs(input.attachments),
+          data: replayMessageMetadata(input.metadata, this.sessionRef),
+          mode: input.mode,
+          idempotencyKey: input.idempotencyKey,
+        })
+      );
+      return this.normalizeDirectResponse(response, 'dm');
+    },
+    groupDirect: async (input: RelaySendGroupDirectMessageInput): Promise<RelayMessage> => {
+      const agent = this.requireAgentClient('messages.groupDirect');
+      const conversationId =
+        input.conversationId ??
+        normalizeGroupDirectConversation(
+          await agent.dms.createGroup(
+            { participants: input.participants ?? [], ...(input.name ? { name: input.name } : {}) },
+            definedOptions({ idempotencyKey: input.idempotencyKey })
+          )
+        ).id;
+
+      if (!conversationId) {
+        throw new Error(
+          'messages.groupDirect requires conversationId or participants that create a conversation.'
+        );
+      }
+
+      const response = await agent.dms.sendMessage(
+        conversationId,
+        input.text,
+        definedOptions({
+          attachments: serializeAttachmentInputs(input.attachments),
+          data: replayMessageMetadata(input.metadata, this.sessionRef),
+          mode: input.mode,
+          idempotencyKey: input.idempotencyKey,
+        })
+      );
+      return this.normalizeDirectResponse(response, 'group_dm', conversationId);
+    },
+    createGroupDirect: async (
+      input: RelayCreateGroupDirectMessageInput
+    ): Promise<RelayGroupDirectConversation> =>
+      normalizeGroupDirectConversation(
+        await this.requireAgentClient('messages.createGroupDirect').dms.createGroup(
+          { participants: input.participants, ...(input.name ? { name: input.name } : {}) },
+          definedOptions({ idempotencyKey: input.idempotencyKey })
+        )
+      ),
+    listDirect: async (input: RelayListDirectMessagesInput): Promise<RelayMessage[]> => {
+      const options = toMessageListOptions(input);
+      const list = this.agentClient
+        ? await this.agentClient.dms.messages(input.conversationId, options)
+        : await this.requireWorkspaceDmMessages()(input.conversationId, options);
+      return list.map((message) =>
+        normalizeMessage(message, { kind: 'dm', conversationId: input.conversationId })
+      );
+    },
+    markRead: async (messageId: string): Promise<RelayReadReceipt> =>
+      normalizeReadReceipt(await this.requireAgentClient('messages.markRead').markRead(messageId)),
+    readers: async (messageId: string): Promise<RelayReadReceipt[]> => {
+      const readers = await this.requireAgentClient('messages.readers').readers(messageId);
+      return readers.map((reader) =>
+        normalizeReadReceipt({ ...((reader ?? {}) as Record<string, unknown>), messageId })
+      );
+    },
+    readStatus: async (channel: string): Promise<RelayChannelReadStatus[]> => {
+      const statuses = await this.requireAgentClient('messages.readStatus').readStatus(
+        normalizeChannelName(channel)
+      );
+      return statuses.map(normalizeChannelReadStatus);
+    },
+    reactions: async (messageId: string): Promise<RelayMessageReaction[]> => {
+      const reactions = this.agentClient
+        ? await this.agentClient.reactions(messageId)
+        : await this.relaycast.messages.reactions(messageId);
+      return reactions.map(normalizeReaction);
+    },
+    react: async (messageId: string, emoji: string): Promise<RelayMessageReaction> =>
+      normalizeReaction(await this.requireAgentClient('messages.react').react(messageId, emoji)),
+    unreact: async (messageId: string, emoji: string): Promise<void> => {
+      await this.requireAgentClient('messages.unreact').unreact(messageId, emoji);
+    },
+    search: async (
+      query: string,
+      options?: { channel?: string; from?: string; limit?: number; before?: string; after?: string }
+    ): Promise<RelaySearchResult[]> => {
+      const results = await this.requireAgentClient('messages.search').search(
+        query,
+        definedOptions({
+          channel: options?.channel ? normalizeChannelName(options.channel) : undefined,
+          from: options?.from,
+          limit: options?.limit,
+          before: options?.before,
+          after: options?.after,
+        })
+      );
+      return results.map(normalizeSearchResult);
+    },
+  };
+
+  readonly threads = {
+    get: async (messageId: string, options?: RelayMessageListOptions): Promise<RelayThread> =>
+      normalizeThread(await this.relaycast.messages.thread(messageId, toMessageListOptions(options))),
+    reply: async (input: RelayReplyMessageInput): Promise<RelayMessage> => this.messages.reply(input),
+  };
+
+  readonly inbox = {
+    get: async (options?: { limit?: number }): Promise<RelayInbox> =>
+      normalizeInbox(
+        await this.requireAgentClient('inbox.get').inbox(definedOptions({ limit: options?.limit }))
+      ),
+    /**
+     * List durable deliveries queued for the authenticated agent. The
+     * relaycast ledger replays non-terminal items (accepted + deferred) in
+     * FIFO order with the message payload embedded. The underlying API has no
+     * cursor, so `nextCursor` is never set and `before`/`after` are ignored.
+     */
+    list: async (input?: InboxListInput): Promise<InboxListResult> => {
+      const surface = this.deliverySurface();
+      if (!surface) return { items: [] };
+      const deliveries = await surface.deliveries(definedOptions({ limit: input?.limit }));
+      return {
+        items: deliveries.map((delivery) =>
+          normalizeInboxItem(delivery, definedOptions({ recipientName: input?.agentName }))
+        ),
+      };
+    },
+    /**
+     * Stream durable deliveries: seed from the non-terminal queue, then push
+     * items announced by `delivery.accepted` WebSocket events, deduplicated by
+     * delivery id. Falls back to an empty stream without an agent client.
+     */
+    subscribe: (input?: InboxSubscribeInput): AsyncIterable<InboxItem> => {
+      const surface = this.deliverySurface();
+      if (!surface) return this.emptyInboxSubscription();
+      return this.createInboxSubscription(surface, input);
+    },
+    ack: async (input: InboxAckInput): Promise<RelayDeliveryResult> => {
+      const surface = this.deliverySurface();
+      if (!surface) return this.unsupportedInboxDelivery('ack', input.inboxItemId);
+      return normalizeDeliveryTransition('ack', await surface.ackDelivery(input.inboxItemId));
+    },
+    fail: async (input: InboxFailInput): Promise<RelayDeliveryResult> => {
+      const surface = this.deliverySurface();
+      if (!surface) return this.unsupportedInboxDelivery('fail', input.inboxItemId, input.error);
+      return normalizeDeliveryTransition(
+        'fail',
+        await surface.failDelivery(
+          input.inboxItemId,
+          definedOptions({ error: input.error, retryable: input.retry })
+        )
+      );
+    },
+    defer: async (input: InboxDeferInput): Promise<RelayDeliveryResult> => {
+      const surface = this.deliverySurface();
+      if (!surface) {
+        return this.unsupportedInboxDelivery('defer', input.inboxItemId, input.reason, input.availableAt);
+      }
+      return normalizeDeliveryTransition(
+        'defer',
+        await surface.deferDelivery(input.inboxItemId, {
+          availableAt: input.availableAt,
+          ...(input.reason === undefined ? {} : { reason: input.reason }),
+        })
+      );
+    },
+    markRead: async (input: InboxMarkReadInput): Promise<RelayDeliveryResult> =>
+      this.unsupportedInboxDelivery(
+        'ack',
+        input.inboxItemId,
+        'The Relaycast delivery ledger has no read state; use inbox.ack to mark a delivery handled.'
+      ),
+  };
+
+  readonly events = {
+    connect: (): void => {
+      if (this.eventUnsubscribe) return;
+      const forward = (event: unknown): void => this.emitEvent(normalizeMessagingEvent(event));
+      // Agent-scoped clients stream through their own connection; a workspace-key
+      // client streams all workspace-visible events through the workspace stream.
+      if (this.agentClient) {
+        this.agentClient.connect();
+        this.eventUnsubscribe = this.agentClient.on.any(forward);
+        return;
+      }
+      if (typeof this.relaycast.connect === 'function' && this.relaycast.on) {
+        this.relaycast.connect();
+        this.eventUnsubscribe = this.relaycast.on.any(forward);
+        return;
+      }
+      // No agent client and no workspace stream available: preserve the
+      // explicit "needs an agent token" error.
+      this.requireAgentClient('events.connect');
+    },
+    disconnect: async (): Promise<void> => {
+      this.eventUnsubscribe?.();
+      this.eventUnsubscribe = undefined;
+      if (this.agentClient) {
+        await this.agentClient.disconnect();
+      } else if (typeof this.relaycast.disconnect === 'function') {
+        this.relaycast.disconnect();
+      }
+    },
+    subscribe: (channels: string[]): void => {
+      this.requireAgentClient('events.subscribe').subscribe(channels.map(normalizeChannelName));
+    },
+    unsubscribe: (channels: string[]): void => {
+      this.requireAgentClient('events.unsubscribe').unsubscribe(channels.map(normalizeChannelName));
+    },
+    on: <K extends keyof RelayMessagingEventMap>(
+      event: K,
+      handler: (...args: RelayMessagingEventMap[K]) => void | Promise<void>
+    ): (() => void) => this.addEventListener(event, handler),
+  };
+
+  /**
+   * Durable delivery transitions keyed by the relaycast delivery id (the
+   * `InboxItem.id` returned by `inbox.list`/`inbox.subscribe`). Transitions
+   * are idempotent on the server.
+   */
+  readonly deliveries = {
+    ack: async (deliveryId: string): Promise<RelayDeliveryResult> => {
+      const surface = this.deliverySurface();
+      if (!surface) return this.unsupportedInboxDelivery('ack', deliveryId);
+      return normalizeDeliveryTransition('ack', await surface.ackDelivery(deliveryId));
+    },
+    fail: async (deliveryId: string, reason?: string): Promise<RelayDeliveryResult> => {
+      const surface = this.deliverySurface();
+      if (!surface) return this.unsupportedInboxDelivery('fail', deliveryId, reason);
+      return normalizeDeliveryTransition(
+        'fail',
+        await surface.failDelivery(deliveryId, definedOptions({ error: reason }))
+      );
+    },
+    defer: async (deliveryId: string, deferUntil?: string): Promise<RelayDeliveryResult> => {
+      const surface = this.deliverySurface();
+      if (!surface) return this.unsupportedInboxDelivery('defer', deliveryId, undefined, deferUntil);
+      return normalizeDeliveryTransition(
+        'defer',
+        await surface.deferDelivery(deliveryId, {
+          // The relaycast defer transition requires an explicit availability
+          // time; default to a short retry window when none is given.
+          availableAt: deferUntil ?? new Date(Date.now() + 30_000).toISOString(),
+        })
+      );
+    },
+  };
+
+  readonly integrations = {
+    webhooks: {
+      create: async (input: RelayCreateWebhookInput): Promise<RelayWebhook> =>
+        (await this.requireWebhooks().create(input)) as RelayWebhook,
+      list: async (): Promise<RelayWebhook[]> => (await this.requireWebhooks().list()) as RelayWebhook[],
+      delete: async (id: string): Promise<void> => {
+        await this.requireWebhooks().delete(id);
+      },
+      trigger: async (id: string, payload?: Record<string, unknown>): Promise<unknown> =>
+        this.requireWebhooks().trigger(id, payload ?? {}),
+    },
+    subscriptions: {
+      create: async (input: RelayCreateSubscriptionInput): Promise<RelayEventSubscription> => {
+        const raw = (await this.requireSubscriptions().create(input)) as RelayEventSubscription;
+        return { ...raw, ...normalizeWebhookSubscription(raw) };
+      },
+      list: async (): Promise<RelayEventSubscription[]> =>
+        ((await this.requireSubscriptions().list()) as RelayEventSubscription[]).map((raw) => ({
+          ...raw,
+          ...normalizeWebhookSubscription(raw),
+        })),
+      get: async (id: string): Promise<RelayEventSubscription> => {
+        const raw = (await this.requireSubscriptions().get(id)) as RelayEventSubscription;
+        return { ...raw, ...normalizeWebhookSubscription(raw) };
+      },
+      delete: async (id: string): Promise<void> => {
+        await this.requireSubscriptions().delete(id);
+      },
+    },
+  };
+
+  readonly webhooks = {
+    createInbound: async (input: RelayCreateInboundWebhookInput): Promise<RelayInboundWebhook> =>
+      normalizeInboundWebhook(
+        await this.requireWebhooks().createInbound({
+          channel: normalizeChannelName(input.channel),
+          ...(input.name === undefined ? {} : { name: input.name }),
+        })
+      ),
+    subscribe: async (input: RelaySubscribeInput): Promise<RelayWebhookSubscription> =>
+      normalizeWebhookSubscription(
+        await this.requireSubscriptions().create(
+          definedOptions({
+            url: input.url,
+            events: input.events,
+            secret: input.secret,
+            headers: input.headers,
+          })
+        )
+      ),
+    list: async (): Promise<RelayInboundWebhook[]> =>
+      (await this.requireWebhooks().list()).map(normalizeInboundWebhook),
+    delete: async (webhookId: string): Promise<void> => {
+      await this.requireWebhooks().delete(webhookId);
+    },
+    subscriptions: async (): Promise<RelayWebhookSubscription[]> =>
+      (await this.requireSubscriptions().list()).map(normalizeWebhookSubscription),
+    unsubscribe: async (id: string): Promise<void> => {
+      await this.requireSubscriptions().delete(id);
+    },
+  };
+
+  readonly commands = {
+    register: async (input: RelayRegisterCapabilityInput): Promise<RelayCapability> =>
+      toRelayCapability(await this.requireActions().register(toRegisterActionRequest(input))),
+    list: async (): Promise<RelayCapability[]> => (await this.requireActions().list()).map(toRelayCapability),
+    delete: async (command: string): Promise<void> => {
+      await this.requireActions().delete(command);
+    },
+    available: (): boolean => Boolean(this.relaycast.actions),
+    agentScoped: (): boolean => Boolean(this.agentClient?.actions),
+    invoke: async (name: string, input?: Record<string, unknown>): Promise<RelayActionInvocationAck> =>
+      normalizeActionInvocationAck(await this.requireAgentActions('commands.invoke').invoke(name, input)),
+    getInvocation: async (name: string, invocationId: string): Promise<RelayActionInvocation> =>
+      normalizeActionInvocation(
+        await this.requireAgentActions('commands.getInvocation').getInvocation(name, invocationId)
+      ),
+    completeInvocation: async (
+      name: string,
+      invocationId: string,
+      data: RelayCompleteInvocationInput
+    ): Promise<RelayActionInvocation> =>
+      normalizeActionInvocation(
+        await this.requireAgentActions('commands.completeInvocation').completeInvocation(
+          name,
+          invocationId,
+          toCompleteInvocationRequest(data)
+        )
+      ),
+  };
+
+  readonly nodes = {
+    list: async (options?: RelayListNodesOptions): Promise<RelayNode[]> =>
+      (await this.requireNodes().list(options)).map(toRelayNode),
+    get: async (name: string): Promise<RelayNode | null> => {
+      const nodes = this.requireNodes();
+      if (nodes.get) {
+        const raw = await nodes.get(name);
+        return raw ? toRelayNode(raw) : null;
+      }
+      const [node] = (await nodes.list({ name })).map(toRelayNode);
+      return node ?? null;
+    },
+  };
+
+  readonly placement = {
+    spawn: async (input: RelaySpawnPlacementInput): Promise<RelaySpawnPlacementAck> => {
+      const capability = nonEmptyPlacement(input.capability, 'placement capability');
+      const repo = input.repo?.trim() || undefined;
+      const targetNode = this.resolvePlacementNode(input.node, input.selfNodeName);
+      const sandboxOnly = input.sandboxOnly ?? this.placementSandboxOnly;
+      const failFast = input.failFast ?? true;
+      const ttlMs = Math.max(0, input.ttlMs ?? input.ttlOverrideMs ?? this.placementTtlMs);
+      const pollIntervalMs = Math.max(25, input.pollIntervalMs ?? 1_000);
+      const startedAt = Date.now();
+      let queued = false;
+      let attempts = 0;
+
+      try {
+        while (true) {
+          attempts += 1;
+          const decision = await this.selectPlacementNode({ capability, repo, targetNode, sandboxOnly });
+          if (decision.node) {
+            const actionName = input.actionName ?? placementActionName(capability);
+            // Preserve the engine's atomic, least-loaded placement when there
+            // are no client-side repo or sandbox constraints. Retargeting every
+            // automatic request to the SDK's roster snapshot creates a TOCTOU:
+            // a node can die between this read and action invocation, after
+            // which the engine treats it as a targeted queued placement.
+            const clientMustTarget = Boolean(targetNode || repo || sandboxOnly);
+            // Asking the broker to verify readiness commits it to holding the
+            // action open until the harness reports ready and to *releasing the
+            // worker* if it never does. Only request that when this call will
+            // wait for the answer — `confirm: true`. Deriving it from
+            // `confirm !== false` instead would make the documented default
+            // (`confirm` omitted) request verification and then walk away,
+            // killing a worker that would otherwise have survived.
+            // Persona resolves a nested child in the engine, which never reads
+            // `verify_ready`; its handler proves readiness on its own.
+            const verifyReady =
+              input.verifyReady ??
+              (input.confirm === true && capability.startsWith('spawn:') && capability !== 'spawn:persona');
+            // What this requester will accept as proof. Persona's engine-owned
+            // handler reports proven readiness even though it is never sent
+            // `verify_ready`, so its contract stays readiness-only.
+            const requireReadiness = verifyReady || capability === 'spawn:persona';
+            const actionInput = placementActionInput(input.input, {
+              verifyReady,
+              capability,
+              ...(clientMustTarget ? { node: decision.node.name } : {}),
+              repo,
+              ttlMs,
+            });
+            const ack = await this.commands.invoke(actionName, actionInput);
+            const placedNode = clientMustTarget
+              ? decision.node
+              : await this.resolvePlacementAckNode(ack, capability);
+            const placedNodeLabel =
+              placedNode?.name ?? ack.dispatchedNodeId ?? ack.handlerNodeId ?? 'engine-selected node';
+            // A synchronous handler can reject or deny the invocation before
+            // this call even returns, so the ack itself can already carry a
+            // terminal failure. The terminal-status checks in
+            // confirmPlacementInvocation only run once polling starts, so
+            // `confirm: false` — the default, and `fleet spawn --no-confirm`
+            // — must not skip straight to `state: 'accepted'` for a dispatch
+            // already known to have failed or been denied.
+            const ackStatus = ack.status?.toLowerCase();
+            if (ackStatus && CONFIRM_FAILURE_STATUSES.has(ackStatus)) {
+              throw new RelayPlacementError(
+                'spawn_failed',
+                `node '${placedNodeLabel}' reported ${ackStatus} for ${actionName} immediately upon dispatch`,
+                {
+                  capability,
+                  node: placedNodeLabel,
+                  repo,
+                  attempts,
+                  state: 'failed',
+                  dispatchState: resolveDispatchState(ack),
+                  invocationId: ack.invocationId,
+                  receipt: ack as unknown as Record<string, unknown>,
+                }
+              );
+            }
+            const ackOutput = (ack as unknown as { output?: Record<string, unknown> | null }).output;
+            if (
+              !input.confirm &&
+              capability.startsWith('spawn:') &&
+              ackStatus &&
+              CONFIRM_SUCCESS_STATUSES.has(ackStatus) &&
+              !hasSpawnProof({ output: ackOutput }, requireReadiness)
+            ) {
+              throw new RelayPlacementError(
+                'spawn_failed',
+                spawnProofError(placedNodeLabel, ackStatus, actionName, ackOutput, requireReadiness),
+                {
+                  capability,
+                  node: placedNodeLabel,
+                  repo,
+                  attempts,
+                  state: 'failed',
+                  dispatchState: resolveDispatchState(ack),
+                  invocationId: ack.invocationId,
+                  receipt: ack as unknown as Record<string, unknown>,
+                }
+              );
+            }
+            // The ack proves only that the engine accepted the dispatch. Unless
+            // the caller asks for confirmation, a node that accepted the
+            // invocation and launched nothing resolves identically to a real
+            // spawn — see `confirm` on RelaySpawnPlacementInput.
+            const confirmation = input.confirm
+              ? await this.confirmPlacementInvocation(actionName, ack, {
+                  capability,
+                  node: placedNodeLabel,
+                  repo,
+                  attempts,
+                  // The mode this request actually asked the broker for, so the
+                  // poll judges the same contract the invocation carried.
+                  requireReadiness,
+                  // Defaults and validation live in confirmPlacementInvocation
+                  // so a direct caller cannot bypass them.
+                  timeoutMs: input.confirmTimeoutMs,
+                  pollIntervalMs: input.confirmPollIntervalMs,
+                })
+              : undefined;
+            return {
+              ...ack,
+              ...(placedNode ? { node: placedNode } : {}),
+              placement: {
+                capability,
+                ...(placedNode ? { node: placedNode.name } : {}),
+                ...(repo ? { repo } : {}),
+                attempts,
+                queued,
+                confirmed: Boolean(confirmation),
+                // `ready` means proven harness readiness. A confirmation that
+                // only judged the launch contract (`verifyReady: false`) is
+                // confirmed, not ready.
+                state: confirmation && requireReadiness ? 'ready' : 'accepted',
+              },
+              ...(confirmation ? { confirmation } : {}),
+            };
+          }
+
+          if (decision.hardFail) {
+            this.logPlacement(input, decision.message);
+            throw new RelayPlacementError(decision.reason, decision.message, {
+              capability,
+              node: targetNode,
+              repo,
+              attempts,
+            });
+          }
+
+          if (failFast || Date.now() - startedAt >= ttlMs) {
+            // A repo that no live, capable node maps will never drain by waiting,
+            // so report it as `unmapped_repo` rather than a generic TTL expiry.
+            const code: RelayPlacementError['code'] = failFast
+              ? decision.reconcileReason === 'unmapped_repo'
+                ? 'unmapped_repo'
+                : decision.reconcileReason === 'target_offline'
+                  ? 'node_unavailable'
+                  : decision.reconcileReason === 'sandbox_policy_mismatch'
+                    ? 'sandbox_policy_mismatch'
+                    : 'no_eligible_node'
+              : decision.reconcileReason === 'unmapped_repo'
+                ? 'unmapped_repo'
+                : 'placement_ttl_expired';
+            const message =
+              code === 'unmapped_repo'
+                ? `${decision.message}; no node maps the requested repo`
+                : failFast
+                  ? `${decision.message}; placement failed fast`
+                  : `${decision.message}; placement TTL expired`;
+            await this.reconcilePlacement(input, {
+              action: 'failed',
+              reason: decision.reconcileReason,
+              capability,
+              ...(targetNode ? { node: targetNode } : {}),
+              ...(repo ? { repo } : {}),
+              attempts,
+              message,
+            });
+            throw new RelayPlacementError(code, message, {
+              capability,
+              node: targetNode,
+              repo,
+              attempts,
+            });
+          }
+
+          if (!queued) {
+            if (this.queuedPlacements >= this.maxQueuedPlacements) {
+              const message = `${decision.message}; placement queue full`;
+              await this.reconcilePlacement(input, {
+                action: 'failed',
+                reason: decision.reconcileReason,
+                capability,
+                ...(targetNode ? { node: targetNode } : {}),
+                ...(repo ? { repo } : {}),
+                attempts,
+                message,
+              });
+              throw new RelayPlacementError('placement_queue_full', message, {
+                capability,
+                node: targetNode,
+                repo,
+                attempts,
+              });
+            }
+            this.queuedPlacements += 1;
+            queued = true;
+            await this.reconcilePlacement(input, {
+              action: 'queued',
+              reason: decision.reconcileReason,
+              capability,
+              ...(targetNode ? { node: targetNode } : {}),
+              ...(repo ? { repo } : {}),
+              attempts,
+              message: decision.message,
+            });
+          }
+
+          // Floor the queued delay at a small minimum so a near-zero remaining
+          // TTL cannot busy-spin the poll loop before the next expiry check.
+          await delay(Math.max(5, Math.min(pollIntervalMs, ttlMs - (Date.now() - startedAt))));
+        }
+      } finally {
+        if (queued) this.queuedPlacements = Math.max(0, this.queuedPlacements - 1);
+      }
+    },
+  };
+
+  /**
+   * Poll a dispatched invocation until the node reports a terminal result.
+   *
+   * Confirmation has to be observable from the requester, because the failure
+   * this guards against is a node that cannot report honestly: an obsolete
+   * broker advertises `spawn:<harness>` capacity, acks the invocation, and
+   * never launches or reports anything. Silence is therefore a failure, not a
+   * pending success — it times out as `spawn_unconfirmed`.
+   */
+  private async confirmPlacementInvocation(
+    actionName: string,
+    ack: RelayActionInvocationAck,
+    context: {
+      capability: string;
+      node: string;
+      repo?: string;
+      attempts: number;
+      /** Whether this request asked the broker for proven harness readiness. */
+      requireReadiness: boolean;
+      timeoutMs?: number;
+      pollIntervalMs?: number;
+    }
+  ): Promise<RelayActionInvocation> {
+    const { timeoutMs, pollIntervalMs, requireReadiness, ...errorContext } = context;
+    const invocationId = ack.invocationId;
+    // Dispatch evidence starts from the ack: a `dispatchedNodeId` means the
+    // engine already routed the invocation to a node. A `pending`/`queued` ack
+    // without one has not routed yet. A read below that carries a
+    // `dispatchedNodeId` adds evidence (the engine may dispatch after
+    // acknowledging); a timeout or a terminal status never manufactures it — see
+    // `resolveDispatchState`. Computed before either early exit below so every
+    // `spawn_unconfirmed` path, not just the timeout/failure paths, carries it.
+    let dispatchState = resolveDispatchState(ack);
+    if (!invocationId) {
+      throw new RelayPlacementError(
+        'spawn_unconfirmed',
+        `node '${context.node}' accepted ${actionName} without returning an invocation id, so the dispatch cannot be confirmed`,
+        { ...errorContext, state: 'unconfirmed_may_be_running', dispatchState }
+      );
+    }
+
+    // Normalized here rather than at the call site so every entry path is
+    // covered, including a direct SDK caller passing `NaN`.
+    const budgetMs = confirmDurationMs(timeoutMs, DEFAULT_CONFIRM_TIMEOUT_MS, MAX_CONFIRM_TIMEOUT_MS);
+    const cadenceMs = confirmDurationMs(pollIntervalMs, DEFAULT_CONFIRM_POLL_MS, budgetMs);
+
+    // A missing actions API is a permanent misconfiguration, not a transient
+    // read failure. Polling it until the deadline would turn a clear error into
+    // a slow one that reads as an unresponsive node.
+    if (!this.agentClient?.actions) {
+      throw new RelayPlacementError(
+        'spawn_unconfirmed',
+        `node '${context.node}' accepted ${actionName} (invocation ${invocationId}), but confirmation requires an agent-scoped client with the actions API, so the dispatch cannot be read back`,
+        {
+          ...errorContext,
+          state: 'unconfirmed_may_be_running',
+          invocationId,
+          dispatchState,
+        }
+      );
+    }
+
+    const deadline = Date.now() + budgetMs;
+    let lastReadError: string | undefined;
+    for (;;) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs > 0) {
+        // Fold rejection into the value so abandoning a slow read below cannot
+        // surface as an unhandled rejection.
+        const read: Promise<ConfirmReadOutcome> = this.commands.getInvocation(actionName, invocationId).then(
+          (value) => ({ ok: true, value }) as const,
+          (error) => ({ ok: false, error: error instanceof Error ? error.message : String(error) }) as const
+        );
+        const outcome = await raceConfirmRead(read, remainingMs);
+
+        if (outcome !== READ_TIMED_OUT) {
+          if (outcome.ok) {
+            // A later success must not report an earlier transient failure.
+            lastReadError = undefined;
+            const invocation = outcome.value;
+            // Only a node id counts here: the read normalizer defaults a
+            // missing status to `invoked`, which is not evidence.
+            if (invocation?.dispatchedNodeId) dispatchState = 'dispatched';
+            const status = invocation?.status?.toLowerCase();
+            if (status && CONFIRM_SUCCESS_STATUSES.has(status)) {
+              if (
+                errorContext.capability.startsWith('spawn:') &&
+                !hasSpawnProof(invocation, requireReadiness)
+              ) {
+                throw new RelayPlacementError(
+                  'spawn_failed',
+                  spawnProofError(context.node, status, actionName, invocation.output, requireReadiness),
+                  {
+                    ...errorContext,
+                    state: 'failed',
+                    invocationId,
+                    dispatchState,
+                    receipt: invocation as unknown as Record<string, unknown>,
+                  }
+                );
+              }
+              return invocation;
+            }
+            if (status && CONFIRM_FAILURE_STATUSES.has(status)) {
+              const nodeError = invocation?.error?.trim();
+              const retryablePressure =
+                errorContext.capability.startsWith('spawn:') &&
+                /^node agent\.register failed for agent '[^']+': d1_pressure:/.test(nodeError ?? '');
+              throw new RelayPlacementError(
+                retryablePressure ? 'spawn_retryable' : 'spawn_failed',
+                retryablePressure
+                  ? `${nodeError}. No registration mutation was applied; retry the spawn.`
+                  : nodeError || `node '${context.node}' reported ${status} for ${actionName}`,
+                {
+                  ...errorContext,
+                  state: 'failed',
+                  invocationId,
+                  dispatchState,
+                  receipt: invocation as unknown as Record<string, unknown>,
+                }
+              );
+            }
+          } else {
+            // A read failure is not evidence either way; keep polling until the
+            // deadline and report the last reason if we never get an answer.
+            lastReadError = outcome.error;
+          }
+        }
+      }
+
+      if (Date.now() >= deadline) {
+        throw new RelayPlacementError(
+          'spawn_unconfirmed',
+          `node '${context.node}' accepted ${actionName} (invocation ${invocationId}) but never reported a result within ${budgetMs}ms. ` +
+            `The node advertised capacity and acknowledged the dispatch; nothing confirmed that it launched. ` +
+            `The invocation may still be running, so do not retry blindly. ` +
+            `Poll this dispatch with agent-relay fleet spawn-status ${invocationId}; an unknown outcome is not proof that no process started.` +
+            (lastReadError ? ` Last read error: ${lastReadError}` : ''),
+          {
+            ...errorContext,
+            state: 'unconfirmed_may_be_running',
+            invocationId,
+            dispatchState,
+          }
+        );
+      }
+      // Never sleep past the deadline: that would buy one more pointless read.
+      await delay(Math.max(0, Math.min(cadenceMs, deadline - Date.now())));
+    }
+  }
+
+  readonly triggers = {
+    list: async (): Promise<RelayTrigger[]> => (await this.requireTriggers().list()).map(toRelayTrigger),
+    create: async (input: RelayTriggerInput): Promise<RelayTrigger> =>
+      toRelayTrigger(await this.requireTriggers().create(toTriggerRequest(input))),
+    update: async (id: string, input: Partial<RelayTriggerInput>): Promise<RelayTrigger> =>
+      toRelayTrigger(await this.requireTriggers().update(id, toTriggerRequest(input))),
+    delete: async (id: string): Promise<void> => {
+      await this.requireTriggers().delete(id);
+    },
+  };
+
+  readonly workspace = {
+    info: async (): Promise<RelayWorkspaceInfo> => {
+      if (!this.relaycast.workspace) {
+        throw new Error('RelaycastMessagingClient.workspace.info requires the relaycast workspace API.');
+      }
+      return (await this.relaycast.workspace.info()) as RelayWorkspaceInfo;
+    },
+  };
+
+  readonly files = {
+    upload: async (
+      input: RelayUploadFileInput,
+      options?: import('./types.js').RelayFileTransferOptions
+    ): Promise<RelayFileInfo> => uploadRelayFile(this.requireAgentFiles('files.upload'), input, options),
+    get: async (id: string): Promise<RelayFileInfo> =>
+      normalizeFileInfo(await this.requireAgentFiles('files.get').get(id)),
+    download: async (
+      id: string,
+      options?: import('./types.js').RelayFileTransferOptions
+    ): Promise<RelayDownloadedFile> =>
+      downloadRelayFile(this.requireAgentFiles('files.download'), id, options),
+  };
+
+  private resolvePlacementNode(node: string | 'self' | undefined, selfNodeName?: string): string | undefined {
+    if (!node) return undefined;
+    if (node !== 'self') return nonEmptyPlacement(node, 'placement node');
+    const resolved = selfNodeName ?? this.selfNodeName;
+    if (!resolved) {
+      throw new Error('placement node "self" requires selfNodeName on the request or client.');
+    }
+    return nonEmptyPlacement(resolved, 'placement self node');
+  }
+
+  private async selectPlacementNode(input: {
+    capability: string;
+    repo?: string;
+    targetNode?: string;
+    sandboxOnly: boolean;
+  }): Promise<PlacementSelection> {
+    if (input.targetNode) {
+      const node = await this.nodes.get(input.targetNode);
+      if (!node) {
+        return {
+          message: `Placement queued: target node "${input.targetNode}" is not registered`,
+          reconcileReason: 'target_offline',
+        };
+      }
+      if (!this.nodeHasCapability(node, input.capability)) {
+        return {
+          message: `Placement rejected: node "${node.name}" does not advertise capability "${input.capability}"`,
+          hardFail: true,
+          reason: 'capability_mismatch',
+          reconcileReason: 'no_eligible_node',
+        };
+      }
+      if (input.sandboxOnly && !this.nodeIsCloudSandbox(node)) {
+        return {
+          message: `Placement rejected: node "${node.name}" is not a Cloud sandbox`,
+          hardFail: true,
+          reason: 'sandbox_policy_mismatch',
+          reconcileReason: 'sandbox_policy_mismatch',
+        };
+      }
+      if (!this.nodeIsPlacementReady(node)) {
+        return {
+          message: `Placement queued: target node "${node.name}" is not placement-ready`,
+          reconcileReason: 'target_offline',
+        };
+      }
+      if (!this.nodeMapsRepo(node, input.repo)) {
+        return {
+          message: `Placement queued: node "${node.name}" does not map repo "${input.repo}"`,
+          reconcileReason: 'unmapped_repo',
+        };
+      }
+      return { node };
+    }
+
+    const nodes = await this.nodes.list({ capability: input.capability });
+    const capable = nodes.filter((node) => this.nodeHasCapability(node, input.capability));
+    const policyEligible = input.sandboxOnly
+      ? capable.filter((node) => this.nodeIsCloudSandbox(node))
+      : capable;
+    const live = policyEligible.filter((node) => this.nodeIsPlacementReady(node));
+    const eligible = live.filter((node) => this.nodeMapsRepo(node, input.repo));
+    if (eligible[0]) return { node: eligible[0] };
+
+    if (input.sandboxOnly) {
+      return {
+        message: `Placement queued: no placement-ready Cloud sandbox advertises capability "${input.capability}"`,
+        reconcileReason: 'sandbox_policy_mismatch',
+      };
+    }
+
+    if (input.repo && live.length > 0) {
+      return {
+        message: `Placement queued: no live node advertising "${input.capability}" maps repo "${input.repo}"`,
+        reconcileReason: 'unmapped_repo',
+      };
+    }
+    return {
+      message: `Placement queued: no live node advertises capability "${input.capability}"`,
+      reconcileReason: 'no_eligible_node',
+    };
+  }
+
+  private nodeHasCapability(node: RelayNode, capability: string): boolean {
+    return node.capabilities.some((item) => item.name === capability);
+  }
+
+  /** Return true only when the fresh roster reports a usable action handler. */
+  private nodeIsPlacementReady(node: RelayNode): boolean {
+    return node.status === 'online' && node.live === true && node.handlersLive === true;
+  }
+
+  /** Match the stable Cloud JIT provenance tag without relying on disposable node names. */
+  private nodeIsCloudSandbox(node: RelayNode): boolean {
+    return Boolean(
+      node.tags?.some((tag) => /^cloud:node-type:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?-jit$/.test(tag))
+    );
+  }
+
+  private async resolvePlacementAckNode(
+    ack: RelayActionInvocationAck,
+    capability: string
+  ): Promise<RelayNode | undefined> {
+    const nodeId = ack.dispatchedNodeId ?? ack.handlerNodeId;
+    if (nodeId) {
+      try {
+        const nodes = await this.nodes.list({ capability });
+        return nodes.find((candidate) => candidate.id === nodeId || candidate.nodeId === nodeId);
+      } catch (error) {
+        try {
+          this.placementLog?.(
+            `[placement] dispatch ${ack.invocationId ?? 'unknown'} accepted by ${nodeId}, but roster metadata could not be refreshed: ${error instanceof Error ? error.message : String(error)}`
+          );
+        } catch {
+          // Observability must not change the outcome of an accepted placement.
+        }
+      }
+    }
+    // The action has already been accepted at this point. Missing or lagging
+    // roster metadata must not turn that success into a retryable error that
+    // could duplicate the placement.
+    return undefined;
+  }
+
+  private nodeMapsRepo(node: RelayNode, repo: string | undefined): boolean {
+    if (!repo) return true;
+    // Absent repoKeys means the node has not opted into per-repo scoping — treat
+    // it as permissive. An empty array (`repoKeys: []`) is still an explicit
+    // "no repos", so it continues to deny. This lets fleets that have not yet
+    // deployed `repo:*` tag advertisement stay live, while preserving opt-in
+    // behaviour for anyone who does publish tags. Without this fallback,
+    // `undefined` from `readRepoKeys` fails every repo-scoped placement across
+    // the whole fleet the moment `nodeMapsRepo` is enforced, because
+    // `undefined?.includes(...)` is `undefined` and `Boolean(undefined)` is
+    // `false` — an absent field would then read as "explicitly denies".
+    if (node.repoKeys === undefined) return true;
+    return node.repoKeys.includes(repo);
+  }
+
+  private async reconcilePlacement(
+    input: RelaySpawnPlacementInput,
+    event: RelayPlacementReconcileEvent
+  ): Promise<void> {
+    this.logPlacement(input, event.message);
+    // A throwing/rejecting reconcile hook (e.g. a Slack/log sink outage) must not
+    // break an otherwise valid placement — isolate it and log the failure.
+    try {
+      await input.onReconcile?.(event);
+    } catch (error) {
+      this.placementLog?.(
+        `[agent-relay] placement reconcile hook threw: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  private logPlacement(input: RelaySpawnPlacementInput, message: string): void {
+    const line = `[agent-relay] ${message}`;
+    // Observability log sinks are caller-provided; never let them break placement.
+    try {
+      input.log?.(line);
+    } catch (error) {
+      this.placementLog?.(
+        `[agent-relay] placement log hook threw: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    if (input.log !== this.placementLog) {
+      try {
+        this.placementLog?.(line);
+      } catch {
+        // Intentionally swallow the client log-sink failure; nothing else to report to.
+      }
+    }
+  }
+
+  private requireWebhooks(): NonNullable<RelaycastWorkspaceLike['webhooks']> {
+    if (!this.relaycast.webhooks) {
+      throw new Error('RelaycastMessagingClient.integrations.webhooks requires the relaycast webhooks API.');
+    }
+    return this.relaycast.webhooks;
+  }
+
+  private requireSubscriptions(): NonNullable<RelaycastWorkspaceLike['subscriptions']> {
+    if (!this.relaycast.subscriptions) {
+      throw new Error(
+        'RelaycastMessagingClient.integrations.subscriptions requires the relaycast subscriptions API.'
+      );
+    }
+    return this.relaycast.subscriptions;
+  }
+
+  private requireActions(): NonNullable<RelaycastWorkspaceLike['actions']> {
+    if (!this.relaycast.actions) {
+      throw new Error('RelaycastMessagingClient.commands requires the relaycast actions API.');
+    }
+    return this.relaycast.actions;
+  }
+
+  private requireNodes(): NonNullable<RelaycastWorkspaceLike['nodes']> {
+    if (!this.relaycast.nodes) {
+      throw new Error('RelaycastMessagingClient.nodes requires the relaycast nodes API.');
+    }
+    return this.relaycast.nodes;
+  }
+
+  private requireTriggers(): NonNullable<RelaycastWorkspaceLike['triggers']> {
+    if (!this.relaycast.triggers) {
+      throw new Error('RelaycastMessagingClient.triggers requires the relaycast triggers API.');
+    }
+    return this.relaycast.triggers;
+  }
+
+  private requireAgentActions(operation: string): NonNullable<RelaycastAgentLike['actions']> {
+    const actions = this.agentClient?.actions;
+    if (!actions) {
+      throw new Error(
+        `RelaycastMessagingClient.${operation} requires an agent-scoped client with the actions API.`
+      );
+    }
+    return actions;
+  }
+
+  private requireAgentClient(operation: string): RelaycastAgentLike {
+    if (!this.agentClient) {
+      throw new Error(`RelaycastMessagingClient.${operation} requires agentToken or agentClient.`);
+    }
+    return this.agentClient;
+  }
+
+  private requireAgentFiles(operation: string): NonNullable<RelaycastAgentLike['files']> {
+    const files = this.requireAgentClient(operation).files;
+    if (!files) {
+      throw new Error(
+        `RelaycastMessagingClient.${operation} requires a relaycast agent client with the files API.`
+      );
+    }
+    return files;
+  }
+
+  private requireWorkspaceDmMessages(): NonNullable<RelaycastWorkspaceLike['dmMessages']> {
+    if (!this.relaycast.dmMessages) {
+      throw new Error(
+        'RelaycastMessagingClient.messages.listDirect requires agentClient or relaycast.dmMessages.'
+      );
+    }
+    return this.relaycast.dmMessages;
+  }
+
+  /**
+   * The durable delivery API of the agent client, when present. Requires an
+   * agent-scoped client built from `@relaycast/sdk` 2.5+ (or a compatible
+   * injected `agentClient`).
+   */
+  private deliverySurface(): (RelaycastAgentLike & RelaycastAgentDeliverySurface) | undefined {
+    const agent = this.agentClient;
+    if (
+      !agent ||
+      typeof agent.deliveries !== 'function' ||
+      typeof agent.ackDelivery !== 'function' ||
+      typeof agent.failDelivery !== 'function' ||
+      typeof agent.deferDelivery !== 'function'
+    ) {
+      return undefined;
+    }
+    return agent as RelaycastAgentLike & RelaycastAgentDeliverySurface;
+  }
+
+  private async *createInboxSubscription(
+    agent: RelaycastAgentLike & RelaycastAgentDeliverySurface,
+    input?: InboxSubscribeInput
+  ): AsyncGenerator<InboxItem, void, undefined> {
+    const signal = input?.signal;
+    if (signal?.aborted) return;
+    const recipient = definedOptions({ recipientName: input?.agentName });
+
+    const seen = new Set<string>();
+    const queue: InboxItem[] = [];
+    let stopped = false;
+    let notify: (() => void) | undefined;
+
+    const wake = (): void => {
+      const resolve = notify;
+      notify = undefined;
+      resolve?.();
+    };
+    const push = (item: InboxItem): void => {
+      if (!item.id || seen.has(item.id)) return;
+      seen.add(item.id);
+      queue.push(item);
+      wake();
+    };
+    const stop = (): void => {
+      stopped = true;
+      wake();
+    };
+
+    // Register the event listener before seeding so accepted deliveries that
+    // land mid-seed are not missed; `seen` deduplicates the overlap.
+    const inFlight = new Set<string>();
+    agent.connect();
+    const unsubscribe = agent.on.any((event) => {
+      const record = asRecord(event);
+      if (record.type !== 'delivery.accepted') return;
+      const deliveryId = readStr(record, 'deliveryId', 'delivery_id');
+      if (!deliveryId || seen.has(deliveryId) || inFlight.has(deliveryId)) return;
+      inFlight.add(deliveryId);
+      // The accepted event carries ids only; re-list the non-terminal queue
+      // to pick up the delivery row with its embedded message payload.
+      void agent
+        .deliveries()
+        .then((deliveries) => {
+          const match = deliveries.find((raw) => readStr(asRecord(raw), 'id') === deliveryId);
+          if (match) push(normalizeInboxItem(match, recipient));
+        })
+        .catch(() => {
+          // The delivery already transitioned or the list failed transiently;
+          // it will be replayed by the next non-terminal listing.
+        })
+        .finally(() => {
+          inFlight.delete(deliveryId);
+        });
+    });
+    signal?.addEventListener('abort', stop, { once: true });
+
+    try {
+      for (const raw of await agent.deliveries()) {
+        push(normalizeInboxItem(raw, recipient));
+      }
+      while (!stopped) {
+        const next = queue.shift();
+        if (next) {
+          yield next;
+          continue;
+        }
+        await new Promise<void>((resolve) => {
+          notify = resolve;
+        });
+      }
+    } finally {
+      stopped = true;
+      unsubscribe();
+      signal?.removeEventListener('abort', stop);
+    }
+  }
+
+  private async *emptyInboxSubscription(): AsyncIterable<InboxItem> {
+    return;
+  }
+
+  private unsupportedInboxDelivery(
+    action: RelayDeliveryUnsupportedResult['action'],
+    messageId: string,
+    reason?: string,
+    deferUntil?: string
+  ): RelayDeliveryUnsupportedResult {
+    return {
+      supported: false,
+      action,
+      messageId,
+      ...(reason
+        ? { reason }
+        : {
+            reason:
+              'Durable delivery transitions require an agent-scoped client with the Relaycast delivery API.',
+          }),
+      ...(deferUntil ? { deferUntil } : {}),
+    };
+  }
+
+  private normalizeDirectResponse(
+    input: unknown,
+    kind: 'dm' | 'group_dm',
+    conversationId?: string
+  ): RelayMessage {
+    const record =
+      input !== null && typeof input === 'object' && !Array.isArray(input)
+        ? (input as Record<string, unknown>)
+        : {};
+    const resolvedConversationId =
+      conversationId ??
+      (typeof record.conversationId === 'string'
+        ? record.conversationId
+        : typeof record.conversation_id === 'string'
+          ? record.conversation_id
+          : undefined);
+    const createdAt =
+      typeof record.createdAt === 'string'
+        ? record.createdAt
+        : typeof record.created_at === 'string'
+          ? record.created_at
+          : undefined;
+
+    return normalizeMessage(record.message, {
+      kind,
+      conversationId: resolvedConversationId,
+      createdAt,
+    });
+  }
+
+  private addEventListener<K extends keyof RelayMessagingEventMap>(
+    event: K,
+    handler: (...args: RelayMessagingEventMap[K]) => void | Promise<void>
+  ): () => void {
+    let handlers = this.eventHandlers.get(event);
+    if (!handlers) {
+      handlers = new Set();
+      this.eventHandlers.set(event, handlers);
+    }
+    const typedHandler = handler as unknown as (event: RelayMessagingEvent) => void | Promise<void>;
+    handlers.add(typedHandler);
+    return () => {
+      const current = this.eventHandlers.get(event);
+      if (current !== handlers) return;
+      current.delete(typedHandler);
+      if (current.size === 0) {
+        this.eventHandlers.delete(event);
+      }
+    };
+  }
+
+  private emitEvent(event: RelayMessagingEvent): void {
+    const handlers = [
+      ...(this.eventHandlers.get(event.type as keyof RelayMessagingEventMap) ?? []),
+      ...(this.eventHandlers.get('any') ?? []),
+    ];
+
+    for (const handler of handlers) {
+      try {
+        const result = handler(event);
+        if (result && typeof (result as Promise<void>).catch === 'function') {
+          void (result as Promise<void>).catch((error) => {
+            console.error(`[agent-relay] messaging listener for "${event.type}" threw:`, error);
+          });
+        }
+      } catch (error) {
+        console.error(`[agent-relay] messaging listener for "${event.type}" threw:`, error);
+      }
+    }
+  }
+}

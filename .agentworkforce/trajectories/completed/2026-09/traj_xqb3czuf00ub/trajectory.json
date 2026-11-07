@@ -1,0 +1,62 @@
+{
+  "id": "traj_xqb3czuf00ub",
+  "version": 1,
+  "task": {
+    "title": "Make PR 1642 exact-head proof self-contained",
+    "source": {
+      "system": "plain",
+      "id": "relay#1642"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-03T01:39:19.495Z",
+  "completedAt": "2026-09-03T01:39:41.583Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-03T01:39:20.251Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_pu1akc8kc7fq",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-03T01:39:20.251Z",
+      "endedAt": "2026-09-03T01:39:41.583Z",
+      "events": [
+        {
+          "ts": 1788399560255,
+          "type": "decision",
+          "content": "Stub only the workflow-builder boundary in a disposable module tree: Stub only the workflow-builder boundary in a disposable module tree",
+          "raw": {
+            "question": "Stub only the workflow-builder boundary in a disposable module tree",
+            "chosen": "Stub only the workflow-builder boundary in a disposable module tree",
+            "alternatives": [],
+            "reasoning": "The exact-SHA proof checkout intentionally has no node_modules; copying the byte-identical workflow and its relative helpers lets Cloud execute actual step registration without adding a network install or mutating the evidence checkout."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Made the relay#1642 exact-head proof execute the production workflow graph without requiring node_modules in its bare target checkout; validated local head proof fixed and focused suite 39/39.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [
+    "da8fefc3f"
+  ],
+  "filesChanged": [
+    "tests/relayflows/cases/1642-verify-features-escalation/run.mjs"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "0f3d98d9a5cf2847eb5c6516cd68c964792bcf0f",
+    "endRef": "da8fefc3fc8e628552c174f90a971b8d17840047",
+    "traceId": "1ae6b793-b528-48a2-b1a8-94fcb6af7ab5"
+  }
+}

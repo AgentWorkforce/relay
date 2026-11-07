@@ -7,8 +7,11 @@ import ignore from 'ignore';
 import * as tar from 'tar';
 
 import { ensureAuthenticated, authorizedApiFetch } from './auth.js';
+import { WorkflowApiKeyClient } from './api-client.js';
 import {
   defaultApiUrl,
+  type RelayflowVersion,
+  type RunWorkflowOptions,
   type WorkflowFileType,
   type RunWorkflowResponse,
   type ScheduleWorkflowOptions,
@@ -17,43 +20,45 @@ import {
   type SyncPatchResponse,
   type PathSubmission,
 } from './types.js';
+import { inferWorkflowFileType, parseWorkflowPaths, shouldSyncCodeByDefault } from './workflow-paths.js';
+
+// Re-exported so consumers (cloud package barrel, workflows tests) keep
+// importing these from './workflows.js' after the parsers moved out.
+export { inferWorkflowFileType, parseWorkflowPaths, shouldSyncCodeByDefault };
 
 type ResolvedWorkflowInput = {
   workflow: string;
   fileType: WorkflowFileType;
   sourceFileType?: WorkflowFileType;
+  /**
+   * True when `workflow` was read from the file named by the argument, false
+   * for inline workflow content. Only a file-backed workflow has a path inside
+   * a synced code archive.
+   */
+  fromFile: boolean;
 };
 
 type S3Credentials = {
+  backend?: 's3' | 'cloud-api';
   accessKeyId: string;
   secretAccessKey: string;
   sessionToken: string;
   bucket: string;
   prefix: string;
+  cloudApiUrl?: string;
+  cloudApiAccessToken?: string;
 };
 
 type PrepareWorkflowResponse = {
   runId: string;
   s3Credentials: S3Credentials;
   s3CodeKey: string;
+  workflowStorage?: {
+    backend?: 's3' | 'cloud-api';
+  };
 };
 
-type WorkflowPathDefinition = {
-  name: string;
-  path: string;
-  pushBranch?: string;
-  pushBase?: string;
-  pushPrBody?: string;
-};
-
-type RunWorkflowOptions = {
-  apiUrl?: string;
-  fileType?: WorkflowFileType;
-  syncCode?: boolean;
-  resume?: string;
-  startFrom?: string;
-  previousRunId?: string;
-};
+const PREPARED_RUN_ID_MARKER = 'AGENT_RELAY_CLOUD_PREPARED_RUN_ID=';
 
 const CODE_SYNC_EXCLUDES = [
   '.git',
@@ -73,11 +78,35 @@ const CODE_SYNC_EXCLUDES = [
 ];
 const PATH_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 
-function validateYamlWorkflow(content: string): void {
+function validateRelayflowVersion(value: unknown): asserts value is RelayflowVersion | undefined {
+  if (value !== undefined && value !== 'v1' && value !== 'v2') {
+    throw new Error('relayflowVersion must be v1 or v2');
+  }
+}
+
+function validateScheduleRelayflowVersion(value: unknown): asserts value is 'v1' | undefined {
+  validateRelayflowVersion(value);
+  if (value === 'v2') {
+    throw new Error('Relayflow v2 schedules are not supported; omit --relayflow-version or use v1.');
+  }
+}
+
+function validateYamlWorkflow(content: string, relayflowVersion: RelayflowVersion | undefined): void {
   const hasField = (field: string) => new RegExp(`^${field}\\s*:`, 'm').test(content);
 
   if (!hasField('version')) {
     throw new Error('missing required field "version"');
+  }
+  if (relayflowVersion === 'v2') {
+    // The v2 kernel spec is a flat `steps` list; `swarm`, `agents` and
+    // `workflows` are v1 shapes that its parser rejects as unknown fields.
+    // Requiring them here made `--relayflow-version v2` unusable for YAML:
+    // every v2 spec failed this check before a request was ever sent, so the
+    // flag only ever worked for documents that were v1 in all but name.
+    if (!hasField('steps')) {
+      throw new Error('missing required field "steps"');
+    }
+    return;
   }
   if (!hasField('swarm')) {
     throw new Error('missing required field "swarm"');
@@ -88,222 +117,6 @@ function validateYamlWorkflow(content: string): void {
   if (!hasField('workflows')) {
     throw new Error('missing required field "workflows"');
   }
-}
-
-function stripYamlScalar(raw: string): string {
-  const value = raw.trim();
-  // Quoted scalars: locate the matching closing quote and strip a trailing
-  // comment only after the close. Avoids corrupting values like
-  // `"Fix issue #123"` where `#` is part of the string, not a YAML comment.
-  if (value.startsWith('"') || value.startsWith("'")) {
-    const quote = value[0];
-    const close = value.indexOf(quote, 1);
-    if (close !== -1) {
-      return value.slice(1, close);
-    }
-    // Unterminated quote — fall through and treat as a plain scalar.
-  }
-  // Unquoted scalar: a `#` preceded by whitespace starts a YAML comment.
-  const commentIndex = value.search(/\s#/);
-  if (commentIndex !== -1) {
-    return value.slice(0, commentIndex).trim();
-  }
-  return value;
-}
-
-const FIELD_KEY_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
-
-function assignPathField(target: Partial<WorkflowPathDefinition>, text: string): void {
-  // Manual split avoids polynomial backtracking on inputs like "A:\t\t\t...".
-  const colonIndex = text.indexOf(':');
-  if (colonIndex === -1) return;
-  const key = text.slice(0, colonIndex).trimEnd();
-  if (!FIELD_KEY_RE.test(key)) return;
-  const value = stripYamlScalar(text.slice(colonIndex + 1));
-  switch (key) {
-    case 'name':
-      target.name = value;
-      break;
-    case 'path':
-      target.path = value;
-      break;
-    case 'pushBranch':
-      target.pushBranch = value;
-      break;
-    case 'pushBase':
-      target.pushBase = value;
-      break;
-    case 'pushPrBody':
-      target.pushPrBody = value;
-      break;
-  }
-}
-
-function parseYamlWorkflowPaths(content: string): WorkflowPathDefinition[] {
-  const paths: WorkflowPathDefinition[] = [];
-  const lines = content.split(/\r?\n/);
-  let inPaths = false;
-  let baseIndent = 0;
-  let current: Partial<WorkflowPathDefinition> | null = null;
-
-  const flush = () => {
-    if (current?.name && current.path) {
-      paths.push({
-        name: current.name,
-        path: current.path,
-        ...(current.pushBranch ? { pushBranch: current.pushBranch } : {}),
-        ...(current.pushBase ? { pushBase: current.pushBase } : {}),
-        ...(current.pushPrBody ? { pushPrBody: current.pushPrBody } : {}),
-      });
-    }
-    current = null;
-  };
-
-  for (const rawLine of lines) {
-    if (!rawLine.trim() || rawLine.trimStart().startsWith('#')) continue;
-    const indent = rawLine.match(/^\s*/)?.[0].length ?? 0;
-    const trimmed = rawLine.trim();
-
-    if (!inPaths) {
-      if (/^paths\s*:/.test(trimmed)) {
-        inPaths = true;
-        baseIndent = indent;
-      }
-      continue;
-    }
-
-    if (indent <= baseIndent && !trimmed.startsWith('-')) {
-      break;
-    }
-
-    if (trimmed.startsWith('-')) {
-      flush();
-      current = {};
-      const rest = trimmed.slice(1).trim();
-      if (rest) assignPathField(current, rest);
-      continue;
-    }
-
-    if (current) {
-      assignPathField(current, trimmed);
-    }
-  }
-  flush();
-
-  return paths;
-}
-
-function findMatchingBracket(source: string, startIndex: number, open: string, close: string): number {
-  let depth = 0;
-  let quote: '"' | "'" | '`' | null = null;
-  let escaped = false;
-
-  for (let i = startIndex; i < source.length; i += 1) {
-    const ch = source[i] as '"' | "'" | '`' | string;
-    if (quote) {
-      if (escaped) {
-        escaped = false;
-      } else if (ch === '\\') {
-        escaped = true;
-      } else if (ch === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === '`') {
-      quote = ch;
-      continue;
-    }
-    if (ch === open) {
-      depth += 1;
-    } else if (ch === close) {
-      depth -= 1;
-      if (depth === 0) return i;
-    }
-  }
-
-  return -1;
-}
-
-function extractPathArrayLiterals(source: string): string[] {
-  const literals: string[] = [];
-
-  const propertyPattern = /\bpaths\s*:/g;
-  let propertyMatch: RegExpExecArray | null;
-  while ((propertyMatch = propertyPattern.exec(source)) !== null) {
-    const arrayStart = source.indexOf('[', propertyPattern.lastIndex);
-    if (arrayStart === -1) continue;
-    const arrayEnd = findMatchingBracket(source, arrayStart, '[', ']');
-    if (arrayEnd !== -1) {
-      literals.push(source.slice(arrayStart, arrayEnd + 1));
-      propertyPattern.lastIndex = arrayEnd + 1;
-    }
-  }
-
-  const methodPattern = /\.paths\s*\(/g;
-  let methodMatch: RegExpExecArray | null;
-  while ((methodMatch = methodPattern.exec(source)) !== null) {
-    const arrayStart = source.indexOf('[', methodPattern.lastIndex);
-    if (arrayStart === -1) continue;
-    const arrayEnd = findMatchingBracket(source, arrayStart, '[', ']');
-    if (arrayEnd !== -1) {
-      literals.push(source.slice(arrayStart, arrayEnd + 1));
-      methodPattern.lastIndex = arrayEnd + 1;
-    }
-  }
-
-  return literals;
-}
-
-function extractObjectLiterals(arrayLiteral: string): string[] {
-  const objects: string[] = [];
-  for (let i = 0; i < arrayLiteral.length; i += 1) {
-    if (arrayLiteral[i] !== '{') continue;
-    const end = findMatchingBracket(arrayLiteral, i, '{', '}');
-    if (end === -1) break;
-    objects.push(arrayLiteral.slice(i, end + 1));
-    i = end;
-  }
-  return objects;
-}
-
-function readStringProperty(objectLiteral: string, propertyName: string): string | null {
-  const pattern = new RegExp(`\\b${propertyName}\\s*:\\s*(['"])(.*?)\\1`, 's');
-  const match = objectLiteral.match(pattern);
-  return match?.[2] ?? null;
-}
-
-function parseTypeScriptWorkflowPaths(content: string): WorkflowPathDefinition[] {
-  const paths: WorkflowPathDefinition[] = [];
-  for (const literal of extractPathArrayLiterals(content)) {
-    for (const objectLiteral of extractObjectLiterals(literal)) {
-      const name = readStringProperty(objectLiteral, 'name');
-      const pathValue = readStringProperty(objectLiteral, 'path');
-      if (name && pathValue) {
-        const pushBranch = readStringProperty(objectLiteral, 'pushBranch');
-        const pushBase = readStringProperty(objectLiteral, 'pushBase');
-        const pushPrBody = readStringProperty(objectLiteral, 'pushPrBody');
-        paths.push({
-          name,
-          path: pathValue,
-          ...(pushBranch ? { pushBranch } : {}),
-          ...(pushBase ? { pushBase } : {}),
-          ...(pushPrBody ? { pushPrBody } : {}),
-        });
-      }
-    }
-  }
-  return paths;
-}
-
-export function parseWorkflowPaths(content: string, fileType: WorkflowFileType): WorkflowPathDefinition[] {
-  if (fileType === 'yaml') {
-    return parseYamlWorkflowPaths(content);
-  }
-  if (fileType === 'ts') {
-    return parseTypeScriptWorkflowPaths(content);
-  }
-  return [];
 }
 
 async function validateTypeScriptWorkflow(content: string): Promise<void> {
@@ -362,27 +175,6 @@ async function validateTypeScriptWorkflow(content: string): Promise<void> {
     const message = stderr || 'TypeScript validation failed';
     throw new Error(`Workflow file has syntax errors:\n${message}`);
   }
-}
-
-export function inferWorkflowFileType(filePath: string): WorkflowFileType | null {
-  const ext = path.extname(filePath).toLowerCase();
-  switch (ext) {
-    case '.yaml':
-    case '.yml':
-      return 'yaml';
-    case '.ts':
-    case '.mts':
-    case '.cts':
-      return 'ts';
-    case '.py':
-      return 'py';
-    default:
-      return null;
-  }
-}
-
-export function shouldSyncCodeByDefault(_workflowArg: string, _explicitFileType?: WorkflowFileType): boolean {
-  return true;
 }
 
 function normalizeRepoName(repoName: string): string {
@@ -446,7 +238,7 @@ export async function resolveWorkflowInput(
     if (!fileType) {
       throw new Error(`Could not infer workflow type from ${workflowArg}. Use --file-type.`);
     }
-    return { workflow, fileType };
+    return { workflow, fileType, fromFile: true };
   } catch (error) {
     const err = error as NodeJS.ErrnoException;
     if (err.code === 'EISDIR') {
@@ -464,6 +256,7 @@ export async function resolveWorkflowInput(
   return {
     workflow: workflowArg,
     fileType: explicitFileType ?? 'yaml',
+    fromFile: false,
   };
 }
 
@@ -471,15 +264,16 @@ export async function runWorkflow(
   workflowArg: string,
   options: RunWorkflowOptions = {}
 ): Promise<RunWorkflowResponse> {
+  validateRelayflowVersion(options.relayflowVersion);
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  let auth = await ensureAuthenticated(apiUrl);
+  const api = await workflowApiClient(apiUrl);
   const input = await resolveWorkflowInput(workflowArg, options.fileType);
 
   if (input.fileType === 'ts') {
     await validateTypeScriptWorkflow(input.workflow);
   } else if (input.fileType === 'yaml') {
     console.error('Validating workflow...');
-    validateYamlWorkflow(input.workflow);
+    validateYamlWorkflow(input.workflow, options.relayflowVersion);
   }
 
   const syncCode = options.syncCode ?? shouldSyncCodeByDefault(workflowArg, options.fileType);
@@ -487,6 +281,9 @@ export async function runWorkflow(
     workflow: input.workflow,
     fileType: input.fileType,
   };
+  if (options.relayflowVersion !== undefined) {
+    requestBody.relayflowVersion = options.relayflowVersion;
+  }
   if (options.resume) {
     requestBody.resume = options.resume;
   }
@@ -503,15 +300,10 @@ export async function runWorkflow(
   if (syncCode) {
     const t0 = Date.now();
     console.error('Preparing run...');
-    const { response: prepResponse, auth: prepAuth } = await authorizedApiFetch(
-      auth,
-      '/api/v1/workflows/prepare',
-      {
-        method: 'POST',
-        headers: { Accept: 'application/json' },
-      }
-    );
-    auth = prepAuth;
+    const prepResponse = await api.fetch('/api/v1/workflows/prepare', {
+      method: 'POST',
+      headers: { Accept: 'application/json' },
+    });
 
     const prepPayload = await readJsonResponse(prepResponse);
     if (!prepResponse.ok) {
@@ -523,9 +315,33 @@ export async function runWorkflow(
     }
 
     const prepared = prepPayload;
+    // Trusted automation can opt into this machine-readable progress record
+    // before code upload and final submission. It lets a supervising process
+    // cancel the prepared run if the CLI is interrupted after the launch POST
+    // has completed but before the final JSON response is observed.
+    if (process.env.AGENT_RELAY_CLOUD_REPORT_PREPARED_RUN_ID === '1') {
+      console.error(`${PREPARED_RUN_ID_MARKER}${prepared.runId}`);
+    }
     console.error(`  Prepared in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
 
-    const s3Client = createScopedS3Client(prepared.s3Credentials);
+    let s3Client: S3Client | null = null;
+    const uploadCodeObject = async (objectKey: string, tarball: Buffer) => {
+      if (isCloudApiWorkflowStorage(prepared)) {
+        await uploadCodeObjectToCloudWorkflowStorage(api, prepared.runId, objectKey, tarball);
+        return;
+      }
+
+      s3Client ??= createScopedS3Client(prepared.s3Credentials);
+      const key = scopedCodeKey(prepared.s3Credentials.prefix, objectKey);
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: prepared.s3Credentials.bucket,
+          Key: key,
+          Body: tarball,
+          ContentType: 'application/gzip',
+        })
+      );
+    };
     requestBody.runId = prepared.runId;
 
     const declaredPaths = parseWorkflowPaths(input.workflow, input.fileType);
@@ -552,15 +368,7 @@ export async function runWorkflow(
         );
 
         const t2 = Date.now();
-        const key = scopedCodeKey(prepared.s3Credentials.prefix, s3CodeKey);
-        await s3Client.send(
-          new PutObjectCommand({
-            Bucket: prepared.s3Credentials.bucket,
-            Key: key,
-            Body: tarball,
-            ContentType: 'application/gzip',
-          })
-        );
+        await uploadCodeObject(s3CodeKey, tarball);
         console.error(`  ${pathDef.name}: uploaded in ${((Date.now() - t2) / 1000).toFixed(1)}s`);
 
         const repo = parseGitHubRemoteForPath(absolutePath);
@@ -595,16 +403,8 @@ export async function runWorkflow(
       );
 
       const t2 = Date.now();
-      console.error('Uploading to S3...');
-      const key = scopedCodeKey(prepared.s3Credentials.prefix, prepared.s3CodeKey);
-      await s3Client.send(
-        new PutObjectCommand({
-          Bucket: prepared.s3Credentials.bucket,
-          Key: key,
-          Body: tarball,
-          ContentType: 'application/gzip',
-        })
-      );
+      console.error('Uploading to workflow storage...');
+      await uploadCodeObject(prepared.s3CodeKey, tarball);
       console.error(`  Uploaded in ${((Date.now() - t2) / 1000).toFixed(1)}s`);
 
       requestBody.s3CodeKey = prepared.s3CodeKey;
@@ -627,7 +427,7 @@ export async function runWorkflow(
 
   const t3 = Date.now();
   console.error('Launching workflow...');
-  const { response, auth: updatedAuth } = await authorizedApiFetch(auth, '/api/v1/workflows/run', {
+  const response = await api.fetch('/api/v1/workflows/run', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -635,7 +435,6 @@ export async function runWorkflow(
     },
     body: JSON.stringify(requestBody),
   });
-  auth = updatedAuth;
 
   console.error(`  Launched in ${((Date.now() - t3) / 1000).toFixed(1)}s`);
 
@@ -660,21 +459,43 @@ export async function scheduleWorkflow(
   workflowArg: string,
   options: ScheduleWorkflowOptions = {}
 ): Promise<WorkflowSchedule> {
+  validateScheduleRelayflowVersion(options.relayflowVersion);
   const hasCron = typeof options.cron === 'string' && options.cron.trim().length > 0;
   const hasAt = typeof options.at === 'string' && options.at.trim().length > 0;
   if (hasCron === hasAt) {
     throw new Error('Provide exactly one of --cron or --at.');
   }
 
+  // Everything that can reject the schedule locally is checked before the
+  // snapshot is prepared and uploaded, so a typo never allocates a prepared
+  // run scope or uploads an archive that no schedule will reference.
+  let scheduledAt: string | undefined;
+  if (hasAt) {
+    const date = new Date(String(options.at));
+    if (Number.isNaN(date.getTime())) {
+      throw new Error(`Invalid date for --at: ${options.at}`);
+    }
+    scheduledAt = date.toISOString();
+  }
+
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
+  const api = await workflowApiClient(apiUrl);
   const input = await resolveWorkflowInput(workflowArg, options.fileType);
 
   if (input.fileType === 'ts') {
     await validateTypeScriptWorkflow(input.workflow);
   } else if (input.fileType === 'yaml') {
     console.error('Validating workflow...');
-    validateYamlWorkflow(input.workflow);
+    validateYamlWorkflow(input.workflow, options.relayflowVersion);
+  }
+
+  const declaredPaths = parseWorkflowPaths(input.workflow, input.fileType);
+  const seenPathNames = new Set<string>();
+  for (const pathDef of declaredPaths) {
+    if (!PATH_NAME_RE.test(pathDef.name) || seenPathNames.has(pathDef.name)) {
+      throw new Error(`Invalid or duplicate workflow path name: ${pathDef.name}`);
+    }
+    seenPathNames.add(pathDef.name);
   }
 
   const requestBody: Record<string, unknown> = {
@@ -684,6 +505,7 @@ export async function scheduleWorkflow(
     workflowRequest: {
       workflow: input.workflow,
       fileType: input.fileType,
+      ...(options.relayflowVersion === undefined ? {} : { relayflowVersion: options.relayflowVersion }),
       ...(input.sourceFileType ? { sourceFileType: input.sourceFileType } : {}),
       ...(options.envSecrets && Object.keys(options.envSecrets).length > 0
         ? { envSecrets: options.envSecrets }
@@ -696,38 +518,121 @@ export async function scheduleWorkflow(
   if (hasCron) {
     requestBody.cron_expression = options.cron?.trim();
   } else {
-    const scheduledAt = new Date(String(options.at));
-    if (Number.isNaN(scheduledAt.getTime())) {
-      throw new Error(`Invalid date for --at: ${options.at}`);
-    }
-    requestBody.scheduled_at = scheduledAt.toISOString();
+    requestBody.scheduled_at = scheduledAt;
   }
 
-  const { response } = await authorizedApiFetch(auth, '/api/v1/workflows/schedules', {
+  // Schedules are snapshots, not future clones: upload the same archive a
+  // synced `cloud run` would upload, then let Cloud copy it into each fire's
+  // fresh run scope. The prepared-run id is only a storage source reference;
+  // it is never launched and no credential is stored in the schedule.
+  console.error('Preparing scheduled code snapshot...');
+  const prepResponse = await api.fetch('/api/v1/workflows/prepare', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-    },
-    body: JSON.stringify(requestBody),
+    headers: { Accept: 'application/json' },
   });
-
-  const payload = await readJsonResponse(response);
-  if (!response.ok) {
-    throw new Error(`Workflow schedule failed: ${describeResponseError(response, payload)}`);
+  const prepPayload = await readJsonResponse(prepResponse);
+  if (!prepResponse.ok) {
+    throw new Error(`Workflow prepare failed: ${describeResponseError(prepResponse, prepPayload)}`);
   }
-
-  if (!isWorkflowScheduleEnvelope(payload)) {
-    throw new Error('Workflow schedule response was not valid JSON.');
+  if (!isPrepareWorkflowResponse(prepPayload)) {
+    throw new Error('Workflow prepare response was not valid JSON.');
   }
+  const prepared = prepPayload;
+  if (!isCloudApiWorkflowStorage(prepared)) {
+    throw new Error(
+      `Scheduled workflow snapshots require Cloud's R2 workflow storage; prepare returned backend ${workflowStorageBackend(prepared)}.`
+    );
+  }
+  const scheduledWorkflowRequest = requestBody.workflowRequest as Record<string, unknown>;
+  scheduledWorkflowRequest.codeSourceRunId = prepared.runId;
+  const uploadedObjectKeys: string[] = [];
+  let schedulePostSent = false;
+  let schedulePostResponse: Response | undefined;
+  const uploadScheduledSnapshot = async (objectKey: string, tarball: Buffer) => {
+    await uploadCodeObjectToCloudWorkflowStorage(api, prepared.runId, objectKey, tarball);
+    uploadedObjectKeys.push(objectKey);
+  };
 
-  return payload.schedule;
+  try {
+    if (declaredPaths.length > 0) {
+      const pathSubmissions: PathSubmission[] = [];
+      const resolvedPathRoots: string[] = [];
+      console.error(`Creating ${declaredPaths.length} scheduled path tarball(s)...`);
+      for (const pathDef of declaredPaths) {
+        const absolutePath = path.resolve(process.cwd(), pathDef.path);
+        resolvedPathRoots.push(absolutePath);
+        const s3CodeKey = `code-${pathDef.name}.tar.gz`;
+        const tarball = await createTarball(absolutePath);
+        await uploadScheduledSnapshot(s3CodeKey, tarball);
+        const repo = parseGitHubRemoteForPath(absolutePath);
+        pathSubmissions.push({
+          name: pathDef.name,
+          s3CodeKey,
+          ...(repo ? { repoOwner: repo.repoOwner, repoName: repo.repoName } : {}),
+          ...(pathDef.pushBranch ? { pushBranch: pathDef.pushBranch } : {}),
+          ...(pathDef.pushBase ? { pushBase: pathDef.pushBase } : {}),
+          ...(pathDef.pushPrBody ? { pushPrBody: pathDef.pushPrBody } : {}),
+        });
+      }
+      scheduledWorkflowRequest.paths = pathSubmissions;
+      // Inline workflow content has no file inside the snapshot; a path hint
+      // would point every fire at a file that does not exist.
+      if (input.fromFile) {
+        for (const root of resolvedPathRoots) {
+          const workflowPath = relativizeWorkflowPathFromRoot(workflowArg, root);
+          if (workflowPath) {
+            scheduledWorkflowRequest.workflowPath = workflowPath;
+            break;
+          }
+        }
+      }
+    } else {
+      const tarball = await createTarball(process.cwd());
+      await uploadScheduledSnapshot(prepared.s3CodeKey, tarball);
+      scheduledWorkflowRequest.s3CodeKey = prepared.s3CodeKey;
+      const workflowPath = input.fromFile ? relativizeWorkflowPath(workflowArg) : null;
+      if (workflowPath) {
+        scheduledWorkflowRequest.workflowPath = workflowPath;
+      }
+    }
+
+    schedulePostSent = true;
+    const response = await api.fetch('/api/v1/workflows/schedules', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+    });
+    schedulePostResponse = response;
+
+    const payload = await readJsonResponse(response);
+    if (!response.ok) {
+      throw new Error(`Workflow schedule failed: ${describeResponseError(response, payload)}`);
+    }
+
+    if (!isWorkflowScheduleEnvelope(payload)) {
+      throw new Error('Workflow schedule response was not valid JSON.');
+    }
+
+    return payload.schedule;
+  } catch (error) {
+    // Once the POST is in flight, the server may have created the schedule even
+    // if the client never receives a usable response. Its snapshot must remain
+    // intact unless the server definitively rejected the POST.
+    if (!schedulePostSent || (schedulePostResponse && !schedulePostResponse.ok)) {
+      const cleanupFailures = await cleanupFailedScheduledSnapshot(api, prepared.runId, uploadedObjectKeys);
+      rethrowScheduleFailure(error, cleanupFailures);
+    }
+    rethrowUncertainScheduleFailure(error);
+  }
 }
 
 export async function listWorkflowSchedules(options: { apiUrl?: string } = {}): Promise<WorkflowSchedule[]> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
-  const { response } = await authorizedApiFetch(auth, '/api/v1/workflows/schedules', {
+  const api = await workflowApiClient(apiUrl);
+  const response = await api.fetch('/api/v1/workflows/schedules', {
     headers: { Accept: 'application/json' },
   });
 
@@ -752,8 +657,8 @@ export async function getRunStatus(
   options: { apiUrl?: string } = {}
 ): Promise<Record<string, unknown>> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
-  const { response } = await authorizedApiFetch(auth, `/api/v1/workflows/runs/${encodeURIComponent(runId)}`, {
+  const api = await workflowApiClient(apiUrl);
+  const response = await api.fetch(`/api/v1/workflows/runs/${encodeURIComponent(runId)}`, {
     headers: { Accept: 'application/json' },
   });
 
@@ -774,15 +679,11 @@ export async function cancelWorkflow(
   options: { apiUrl?: string } = {}
 ): Promise<{ runId: string; status: string }> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
-  const { response } = await authorizedApiFetch(
-    auth,
-    `/api/v1/workflows/runs/${encodeURIComponent(runId)}/cancel`,
-    {
-      method: 'POST',
-      headers: { Accept: 'application/json' },
-    }
-  );
+  const api = await workflowApiClient(apiUrl);
+  const response = await api.fetch(`/api/v1/workflows/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: 'POST',
+    headers: { Accept: 'application/json' },
+  });
 
   const payload = await readJsonResponse(response);
   if (!response.ok) {
@@ -805,7 +706,7 @@ export async function getRunLogs(
   } = {}
 ): Promise<WorkflowLogsResponse> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  const auth = await ensureAuthenticated(apiUrl);
+  const api = await workflowApiClient(apiUrl);
   const searchParams = new URLSearchParams();
   if (typeof options.offset === 'number') {
     searchParams.set('offset', String(options.offset));
@@ -816,7 +717,7 @@ export async function getRunLogs(
 
   const requestPath = `/api/v1/workflows/runs/${encodeURIComponent(runId)}/logs${searchParams.size ? `?${searchParams.toString()}` : ''}`;
 
-  const { response } = await authorizedApiFetch(auth, requestPath, {
+  const response = await api.fetch(requestPath, {
     headers: { Accept: 'application/json' },
   });
 
@@ -844,15 +745,12 @@ export async function syncWorkflowPatch(
   options: { apiUrl?: string } = {}
 ): Promise<SyncPatchResponse> {
   const apiUrl = options.apiUrl ?? defaultApiUrl();
-  let auth = await ensureAuthenticated(apiUrl);
+  const api = await workflowApiClient(apiUrl);
 
   // Verify the run is completed
-  const { response: statusResponse, auth: a1 } = await authorizedApiFetch(
-    auth,
-    `/api/v1/workflows/runs/${encodeURIComponent(runId)}`,
-    { headers: { Accept: 'application/json' } }
-  );
-  auth = a1;
+  const statusResponse = await api.fetch(`/api/v1/workflows/runs/${encodeURIComponent(runId)}`, {
+    headers: { Accept: 'application/json' },
+  });
 
   if (!statusResponse.ok) {
     const payload = await readJsonResponse(statusResponse);
@@ -865,11 +763,9 @@ export async function syncWorkflowPatch(
   }
 
   // Download the patch
-  const { response } = await authorizedApiFetch(
-    auth,
-    `/api/v1/workflows/runs/${encodeURIComponent(runId)}/patch`,
-    { headers: { Accept: 'application/json' } }
-  );
+  const response = await api.fetch(`/api/v1/workflows/runs/${encodeURIComponent(runId)}/patch`, {
+    headers: { Accept: 'application/json' },
+  });
 
   const payload = await readJsonResponse(response);
   if (!response.ok) {
@@ -892,6 +788,25 @@ export async function syncWorkflowPatch(
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
+
+type WorkflowHttpClient = {
+  fetch(requestPath: string, init?: RequestInit): Promise<Response>;
+};
+
+async function storedWorkflowClient(apiUrl: string): Promise<WorkflowHttpClient> {
+  let auth = await ensureAuthenticated(apiUrl);
+  return {
+    async fetch(requestPath, init = {}) {
+      const result = await authorizedApiFetch(auth, requestPath, init);
+      auth = result.auth;
+      return result.response;
+    },
+  };
+}
+
+async function workflowApiClient(apiUrl: string): Promise<WorkflowHttpClient> {
+  return WorkflowApiKeyClient.fromEnv(apiUrl) ?? storedWorkflowClient(apiUrl);
+}
 
 async function readJsonResponse(response: Response): Promise<unknown> {
   const rawBody = await response.text();
@@ -981,8 +896,123 @@ function isPrepareWorkflowResponse(payload: unknown): payload is PrepareWorkflow
     typeof creds.secretAccessKey === 'string' &&
     typeof creds.sessionToken === 'string' &&
     typeof creds.bucket === 'string' &&
-    typeof creds.prefix === 'string'
+    typeof creds.prefix === 'string' &&
+    (creds.backend === undefined || creds.backend === 's3' || creds.backend === 'cloud-api')
   );
+}
+
+function isCloudApiWorkflowStorage(prepared: PrepareWorkflowResponse): boolean {
+  return prepared.workflowStorage?.backend === 'cloud-api' || prepared.s3Credentials.backend === 'cloud-api';
+}
+
+function workflowStorageBackend(prepared: PrepareWorkflowResponse): string {
+  return prepared.workflowStorage?.backend ?? prepared.s3Credentials.backend ?? 's3';
+}
+
+function workflowStorageObjectPath(runId: string, objectKey: string): string {
+  const encodedRunId = encodeURIComponent(runId);
+  const encodedKey = objectKey.split('/').map(encodeURIComponent).join('/');
+  return `/api/v1/workflows/runs/${encodedRunId}/storage/${encodedKey}`;
+}
+
+async function uploadCodeObjectToCloudWorkflowStorage(
+  api: WorkflowHttpClient,
+  runId: string,
+  objectKey: string,
+  tarball: Buffer
+): Promise<void> {
+  const response = await api.fetch(workflowStorageObjectPath(runId, objectKey), {
+    method: 'PUT',
+    headers: {
+      'content-type': 'application/gzip',
+      accept: 'application/json',
+    },
+    body: tarball as unknown as BodyInit,
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(`Workflow storage upload failed: ${describeResponseError(response, payload)}`);
+  }
+}
+
+async function tombstoneCodeObjectInCloudWorkflowStorage(
+  api: WorkflowHttpClient,
+  runId: string,
+  objectKey: string
+): Promise<void> {
+  // Cloud's workflow-storage route has no object-delete operation. An empty
+  // overwrite erases the uploaded archive before the prepared run is cancelled;
+  // the now-empty run-scoped object is retained under Cloud's storage lifecycle.
+  const response = await api.fetch(workflowStorageObjectPath(runId, objectKey), {
+    method: 'PUT',
+    headers: {
+      'content-type': 'application/octet-stream',
+      accept: 'application/json',
+    },
+    body: Buffer.alloc(0) as unknown as BodyInit,
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(`Workflow storage tombstone failed: ${describeResponseError(response, payload)}`);
+  }
+}
+
+async function cancelPreparedWorkflow(api: WorkflowHttpClient, runId: string): Promise<void> {
+  const response = await api.fetch(`/api/v1/workflows/runs/${encodeURIComponent(runId)}/cancel`, {
+    method: 'POST',
+    headers: { Accept: 'application/json' },
+  });
+  const payload = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(`Prepared workflow cancellation failed: ${describeResponseError(response, payload)}`);
+  }
+}
+
+async function cleanupFailedScheduledSnapshot(
+  api: WorkflowHttpClient,
+  runId: string,
+  uploadedObjectKeys: readonly string[]
+): Promise<unknown[]> {
+  const cleanupFailures: unknown[] = [];
+  for (const objectKey of uploadedObjectKeys) {
+    try {
+      await tombstoneCodeObjectInCloudWorkflowStorage(api, runId, objectKey);
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
+  }
+  try {
+    await cancelPreparedWorkflow(api, runId);
+  } catch (error) {
+    cleanupFailures.push(error);
+  }
+  return cleanupFailures;
+}
+
+function rethrowScheduleFailure(error: unknown, cleanupFailures: readonly unknown[]): never {
+  if (cleanupFailures.length === 0) {
+    throw error;
+  }
+
+  const cleanupMessage = cleanupFailures
+    .map((failure) => (failure instanceof Error ? failure.message : String(failure)))
+    .join('; ');
+  if (error instanceof Error) {
+    error.message = `${error.message} (scheduled snapshot cleanup failed: ${cleanupMessage})`;
+    throw error;
+  }
+  throw new Error(`${String(error)} (scheduled snapshot cleanup failed: ${cleanupMessage})`, {
+    cause: error,
+  });
+}
+
+function rethrowUncertainScheduleFailure(error: unknown): never {
+  const note = 'The schedule may have been created; the scheduled snapshot was left in place.';
+  if (error instanceof Error) {
+    error.message = `${error.message} (${note})`;
+    throw error;
+  }
+  throw new Error(`${String(error)} (${note})`, { cause: error });
 }
 
 function createScopedS3Client(s3Credentials: S3Credentials): S3Client {

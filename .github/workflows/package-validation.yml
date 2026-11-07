@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Reusable workflows cannot elevate the caller's token permissions.
+# detect-changes.yml reads pull-request file lists and commit comparisons.
+permissions:
+  contents: read
+  pull-requests: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -15,43 +21,14 @@ env:
 
 jobs:
   changes:
-    name: Detect web-only change set
-    runs-on: ubuntu-latest
-    outputs:
-      web_only: ${{ steps.scope.outputs.web_only }}
-    steps:
-      - id: scope
-        uses: actions/github-script@v7
-        with:
-          script: |
-            let files = [];
-
-            if (context.eventName === 'pull_request') {
-              const changed = await github.paginate(github.rest.pulls.listFiles, {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: context.payload.pull_request.number,
-                per_page: 100,
-              });
-              files = changed.map((file) => file.filename);
-            } else {
-              const comparison = await github.rest.repos.compareCommits({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                base: context.payload.before,
-                head: context.sha,
-              });
-              files = (comparison.data.files || []).map((file) => file.filename);
-            }
-
-            const webOnly = files.length > 0 && files.every((file) => file.startsWith('web/'));
-            core.info(`Changed files (${files.length}): ${files.join(', ')}`);
-            core.setOutput('web_only', webOnly ? 'true' : 'false');
-
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/detect-changes.yml
   validate:
     name: Build & Validate
     needs: changes
-    if: needs.changes.outputs.web_only != 'true'
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     env:
       NPM_CONFIG_FUND: false
@@ -66,17 +43,40 @@ jobs:
         with:
           node-version: '22'
 
-      # Cache node_modules - skip npm ci entirely if unchanged
-      - name: Cache node_modules
+      # Restore node_modules — skip npm ci entirely if unchanged. Split
+      # restore/save (instead of actions/cache@v4) so the cache is saved
+      # right after `npm ci` produces a clean tree; otherwise the implicit
+      # post-job save runs after `pack:validate`, which deletes
+      # `packages/*/node_modules` and poisons the cache for the next run
+      # (broker fails at runtime with `Cannot find package 'posthog-node'`
+      # because the cached telemetry workspace has no nested deps).
+      - name: Restore node_modules
         id: cache-modules
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
-          path: node_modules
-          key: modules-${{ hashFiles('package-lock.json') }}
+          # Include nested workspace node_modules so unhoisted workspace deps
+          # survive a cache hit — otherwise the cache restores only the root
+          # tree and skipping `npm ci` can leave the bundler unable to resolve
+          # them.
+          path: |
+            node_modules
+            packages/*/node_modules
+          key: modules-v3-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-modules.outputs.cache-hit != 'true'
         run: npm ci
+
+      # Save the freshly-installed node_modules immediately, before any
+      # later step (notably `pack:validate`) mutates the tree.
+      - name: Save node_modules
+        if: steps.cache-modules.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            node_modules
+            packages/*/node_modules
+          key: modules-v3-${{ hashFiles('package-lock.json') }}
 
       # Cache turbo build outputs for incremental builds
       - name: Cache turbo
@@ -87,15 +87,11 @@ jobs:
           restore-keys: turbo-
 
       - name: Build packages
-        run: npm run build
-
-      - name: Audit bundled dependencies
         run: |
-          echo "=== Auditing bundled package dependencies ==="
-          node scripts/audit-bundled-deps.mjs
-
-      - name: Validate npm tarball artifact
-        run: npm run pack:validate
+          npm run build
+          # cloud sits outside the core build chain;
+          # build it so package validation can verify its dist output.
+          npm --prefix packages/cloud run build
 
       - name: Validate all
         run: |
@@ -105,7 +101,7 @@ jobs:
           # Check dist files exist (skip non-Node package directories).
           # broker-* packages ship a Rust-built binary in bin/, not a JS
           # dist — they live under packages/ only for workspace linkage.
-          SKIP_PACKAGES="build-plans brand broker-darwin-arm64 broker-darwin-x64 broker-linux-arm64 broker-linux-x64 broker-win32-x64 personas"
+          SKIP_PACKAGES="build-plans broker-darwin-arm64 broker-darwin-x64 broker-linux-arm64 broker-linux-x64 broker-win32-x64 personas"
           for pkg_dir in packages/*/; do
             pkg_name=$(basename "$pkg_dir")
             if [ ! -f "$pkg_dir/package.json" ]; then
@@ -132,9 +128,7 @@ jobs:
             const packages = [
               '@agent-relay/sdk',
               '@agent-relay/config',
-              '@agent-relay/hooks',
               '@agent-relay/utils',
-              '@agent-relay/user-directory',
             ];
 
             (async () => {
@@ -155,8 +149,8 @@ jobs:
           echo ""
           echo "=== Testing main package ==="
           node --eval "
-            import('./dist/src/index.js').then(m => {
-              const required = ['AgentRelay', 'AgentRelayClient', 'createLogger'];
+            import('./packages/cli/dist/index.js').then(m => {
+              const required = ['AgentRelay', 'createLogger'];
               const missing = required.filter(r => !(r in m));
               if (missing.length) {
                 console.error('Missing exports:', missing);
@@ -172,13 +166,13 @@ jobs:
       - name: Test CLI startup
         run: |
           echo "=== Testing CLI broker lifecycle ==="
-          TEST_PORT=3899
-          API_PORT=$((TEST_PORT + 1))
-          # Start broker+dashboard in background
-          node dist/src/cli/index.js up --port "$TEST_PORT" &
+          BROKER_PORT=3899
+          API_PORT=$((BROKER_PORT + 1))
+          # Start the broker in background
+          AGENT_RELAY_BROKER_PORT="$BROKER_PORT" node packages/cli/dist/cli/index.js node up &
           DAEMON_PID=$!
 
-          # Wait for health endpoint (broker API is dashboard port + 1)
+          # Wait for health endpoint (broker API is the base port + 1)
           for i in {1..20}; do
             if curl -sf "http://127.0.0.1:${API_PORT}/health" > /dev/null; then
               break
@@ -189,20 +183,28 @@ jobs:
           # Verify broker is reachable
           if curl -sf "http://127.0.0.1:${API_PORT}/health" > /dev/null; then
             echo "✓ Broker health endpoint responding"
-            AGENT_RELAY_SKIP_TMUX=1 node dist/src/cli/index.js status || true
+            AGENT_RELAY_SKIP_TMUX=1 node packages/cli/dist/cli/index.js node status || true
           else
             echo "✗ Broker health endpoint did not become ready"
             exit 1
           fi
 
           # Cleanup through CLI down first, then hard-kill fallback
-          node dist/src/cli/index.js down --force --timeout 5000 || true
+          node packages/cli/dist/cli/index.js node down --force --timeout 5000 || true
           kill $DAEMON_PID 2>/dev/null || true
+
+      # Keep tarball validation after runtime smoke tests. The tarball
+      # validator removes nested workspace node_modules before packing so the
+      # package cannot accidentally include them.
+      - name: Validate npm tarball artifact
+        run: npm run pack:validate
 
   publish-fresh-install-build:
     name: Publish Fresh Install Build
     needs: changes
-    if: needs.changes.outputs.web_only != 'true'
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     env:
       NPM_CONFIG_FUND: false
@@ -217,6 +219,14 @@ jobs:
         with:
           node-version: '22.14.0'
 
+      - name: Upgrade npm before fresh resolution
+        # See publish.yml's "Upgrade npm before fresh resolution" step: npm
+        # <=10.9.x's arborist crashes re-resolving the harnesses package's
+        # peer set once the lockfile is gone (npm/cli#8261). Fixed by npm
+        # version, not Node version — confirmed via repro on npm 10.9.4/Node
+        # 22.22.0 still crashing and npm 11.19.1/Node 22.14.0 succeeding.
+        run: npm install -g npm@11.19.1
+
       # The publish workflow bumps versions, removes package-lock.json, then
       # runs npm install. This catches range-resolved dependency breaks before merge.
       - name: Install dependencies with publish resolution
@@ -224,19 +234,25 @@ jobs:
           rm -rf node_modules packages/*/node_modules package-lock.json
           npm install
 
-      - name: Show resolved trajectory dependency
-        run: npm ls agent-trajectories --all
-
       - name: Ensure rollup optional dependencies are installed
         run: npm install --no-save rollup || true
 
-      - name: Build full workspace
-        run: npm run build
+      - name: Build Rust broker
+        run: npm run build:rust
+
+      - name: Build TypeScript packages
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: npm run clean && ./node_modules/.bin/turbo run build --filter='./packages/*' --concurrency=2
 
   standalone-macos-smoke:
     name: Standalone macOS Smoke
     needs: changes
-    if: needs.changes.outputs.web_only != 'true'
+    # Fork and Dependabot pull requests cannot receive Actions repository
+    # secrets. Skip this live-cloud smoke there instead of falling back to
+    # provisioning an undeletable workspace; other same-repository PRs and
+    # main pushes must reuse the CI workspace.
+    if: needs.changes.outputs.node_changed == 'true' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: macos-latest
     env:
       NPM_CONFIG_FUND: false
@@ -331,16 +347,14 @@ jobs:
             --target="$TARGET" \
             --external=better-sqlite3 \
             --define="process.env.AGENT_RELAY_VERSION=\"${VERSION}\"" \
-            ./dist/src/cli/index.js \
+            ./packages/cli/dist/cli/index.js \
             --outfile "release-binaries/${OUTPUT}"
-          if ! strings "release-binaries/${OUTPUT}" | grep -q 'ssh-userauth'; then
-            echo "FATAL: ssh2 protocol symbols missing from release-binaries/${OUTPUT}"
-            echo "cloud connect would hang; aborting validation."
-            exit 1
-          fi
           scripts/sign-macos-binary.sh "release-binaries/${OUTPUT}"
           scripts/verify-macos-binary.sh "release-binaries/${OUTPUT}" "$EXPECTED_ARCH" -- --version
           echo "STANDALONE_CLI=$PWD/release-binaries/${OUTPUT}" >> "$GITHUB_ENV"
+
+      - name: Verify standalone MCP dispatches each request once
+        run: node scripts/verify-standalone-mcp-single-dispatch.mjs "$STANDALONE_CLI"
 
       - name: Smoke standalone lifecycle
         env:

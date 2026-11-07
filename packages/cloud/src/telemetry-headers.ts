@@ -1,0 +1,116 @@
+export const AGENT_RELAY_DISTINCT_ID_HEADER = 'X-Agent-Relay-Distinct-Id';
+export const AGENT_RELAY_MACHINE_ID_HEADER = 'X-Agent-Relay-Machine-Id';
+export const AGENT_RELAY_USER_ID_HEADER = 'X-Agent-Relay-User-Id';
+export const AGENT_RELAY_ORG_ID_HEADER = 'X-Agent-Relay-Org-Id';
+export const AGENT_RELAY_ORG_SLUG_HEADER = 'X-Agent-Relay-Org-Slug';
+export const RELAYCAST_HARNESS_HEADER = 'X-Relaycast-Harness';
+export const RELAYCAST_ORIGIN_CLIENT_HEADER = 'X-Relaycast-Origin-Client';
+export const RELAYCAST_ORIGIN_VERSION_HEADER = 'X-Relaycast-Origin-Version';
+
+const AGENT_RELAY_DISTINCT_ID_ENV = 'AGENT_RELAY_DISTINCT_ID';
+const AGENT_RELAY_MACHINE_ID_ENV = 'AGENT_RELAY_MACHINE_ID';
+const AGENT_RELAY_USER_ID_ENV = 'AGENT_RELAY_USER_ID';
+const AGENT_RELAY_ORG_ID_ENV = 'AGENT_RELAY_ORG_ID';
+const AGENT_RELAY_ORG_SLUG_ENV = 'AGENT_RELAY_ORG_SLUG';
+const ORCHESTRATOR_HARNESS_ENV = 'AGENT_RELAY_ORCHESTRATOR_HARNESS';
+const TELEMETRY_CLIENT_ENV = 'AGENT_RELAY_TELEMETRY_CLIENT';
+
+const DISTINCT_ID_ALLOWED = /^[a-z0-9._:-]+$/i;
+const HEADER_VALUE_ALLOWED = /^[a-z0-9 ._\-/():=;,+@]+$/i;
+
+function sanitizeHeaderValue(
+  raw: string | undefined,
+  options: { maxLength: number; pattern?: RegExp }
+): string | undefined {
+  if (!raw) return undefined;
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  if (options.pattern && !options.pattern.test(trimmed)) return undefined;
+  return trimmed.slice(0, options.maxLength);
+}
+
+function isTelemetryDisabledByEnv(env: NodeJS.ProcessEnv): boolean {
+  const disabled = env.AGENT_RELAY_TELEMETRY_DISABLED ?? env.DO_NOT_TRACK;
+  return disabled === '1' || disabled?.toLowerCase() === 'true';
+}
+
+export function buildAgentRelayTelemetryHeaders(
+  env: NodeJS.ProcessEnv = process.env
+): Record<string, string> {
+  if (isTelemetryDisabledByEnv(env)) return {};
+
+  const userId = sanitizeHeaderValue(env[AGENT_RELAY_USER_ID_ENV], {
+    maxLength: 128,
+    pattern: DISTINCT_ID_ALLOWED,
+  });
+
+  const machineId = sanitizeHeaderValue(env[AGENT_RELAY_MACHINE_ID_ENV], {
+    maxLength: 128,
+    pattern: DISTINCT_ID_ALLOWED,
+  });
+
+  // When the caller is a signed-in cloud user, the user id IS the person key —
+  // it keeps CLI-side and relaycast-side events on one PostHog person. The
+  // machine hash remains the fallback for anonymous (not-logged-in) runs.
+  const distinctId =
+    sanitizeHeaderValue(env[AGENT_RELAY_DISTINCT_ID_ENV], {
+      maxLength: 128,
+      pattern: DISTINCT_ID_ALLOWED,
+    }) ??
+    userId ??
+    machineId;
+  if (!distinctId) return {};
+
+  const headers: Record<string, string> = {
+    [AGENT_RELAY_DISTINCT_ID_HEADER]: distinctId,
+  };
+
+  // Sent alongside the distinct id, never instead of it: once a user signs in
+  // the distinct id is their user id, so this is the only thing that keeps
+  // "how many machines share this workspace/account" answerable.
+  if (machineId) headers[AGENT_RELAY_MACHINE_ID_HEADER] = machineId;
+  if (userId) headers[AGENT_RELAY_USER_ID_HEADER] = userId;
+
+  const orgId = sanitizeHeaderValue(env[AGENT_RELAY_ORG_ID_ENV], {
+    maxLength: 128,
+    pattern: DISTINCT_ID_ALLOWED,
+  });
+  if (orgId) headers[AGENT_RELAY_ORG_ID_HEADER] = orgId;
+
+  const orgSlug = sanitizeHeaderValue(env[AGENT_RELAY_ORG_SLUG_ENV], {
+    maxLength: 120,
+    pattern: DISTINCT_ID_ALLOWED,
+  });
+  if (orgSlug) headers[AGENT_RELAY_ORG_SLUG_HEADER] = orgSlug;
+
+  const harness = sanitizeHeaderValue(env[ORCHESTRATOR_HARNESS_ENV], {
+    maxLength: 120,
+    pattern: HEADER_VALUE_ALLOWED,
+  });
+  const client = sanitizeHeaderValue(env[TELEMETRY_CLIENT_ENV], {
+    maxLength: 80,
+    pattern: HEADER_VALUE_ALLOWED,
+  });
+  const version = sanitizeHeaderValue(env.AGENT_RELAY_CLI_VERSION ?? env.AGENT_RELAY_SDK_VERSION, {
+    maxLength: 48,
+    pattern: HEADER_VALUE_ALLOWED,
+  });
+
+  if (harness) headers[RELAYCAST_HARNESS_HEADER] = harness;
+  if (client) headers[RELAYCAST_ORIGIN_CLIENT_HEADER] = client;
+  if (version) headers[RELAYCAST_ORIGIN_VERSION_HEADER] = version;
+
+  return headers;
+}
+
+export function appendAgentRelayTelemetryHeaders(
+  headers: Headers,
+  env: NodeJS.ProcessEnv = process.env
+): Headers {
+  for (const [name, value] of Object.entries(buildAgentRelayTelemetryHeaders(env))) {
+    if (!headers.has(name)) {
+      headers.set(name, value);
+    }
+  }
+  return headers;
+}

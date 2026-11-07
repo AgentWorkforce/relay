@@ -1,0 +1,53 @@
+{
+  "id": "traj_8nhd9lljhbsw",
+  "version": 1,
+  "task": {
+    "title": "Switch owned MCP tool names to underscores"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-25T22:05:23.828Z",
+  "completedAt": "2026-05-25T22:14:25.886Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-25T22:14:21.692Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_u96wz75lomqh",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-25T22:14:21.692Z",
+      "endedAt": "2026-05-25T22:14:25.886Z",
+      "events": [
+        {
+          "ts": 1779747261693,
+          "type": "decision",
+          "content": "Use action-oriented underscore MCP tool names only: Use action-oriented underscore MCP tool names only",
+          "raw": {
+            "question": "Use action-oriented underscore MCP tool names only",
+            "chosen": "Use action-oriented underscore MCP tool names only",
+            "alternatives": [],
+            "reasoning": "The owned MCP server no longer needs to preserve @relaycast/mcp compatibility for the major release, and underscore names like add_reaction and post_message are easier for agents and MCP clients than dotted names."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Renamed owned Relaycast MCP tools from dotted namespaces to action-oriented underscore names, removed dotted registrations, updated prompts/skills/bootstrap docs, and validated the CLI/MCP focused Vitest suites.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/private/tmp/relay-owned-mcp",
+  "tags": [],
+  "_trace": {
+    "startRef": "9c2dbee0873be69ad79fb7d6520c371be7e8135e",
+    "endRef": "9c2dbee0873be69ad79fb7d6520c371be7e8135e"
+  }
+}

@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const registryPath = join(__dirname, '../packages/shared/cli-registry.yaml');
+const registryPath = join(__dirname, '../packages/utils/cli-registry.yaml');
 
 const shouldUpdate = process.argv.includes('--update');
 
@@ -117,9 +117,7 @@ async function fetchGoogleModels() {
   }
 
   try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`
-    );
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`);
     if (!response.ok) return null;
     const data = await response.json();
     return data.models?.map((m) => m.name.replace('models/', '')) || null;
@@ -209,7 +207,7 @@ async function main() {
     if (shouldUpdate && hasChanges) {
       writeFileSync(registryPath, stringify(registry));
       console.log('\nUpdated cli-registry.yaml');
-      console.log('Run `npm run codegen:models` to regenerate TypeScript/Python models.');
+      console.log('Run `npm run codegen:models` to regenerate TypeScript models.');
     } else if (!shouldUpdate) {
       console.log('\nRun with --update to apply changes.');
     }

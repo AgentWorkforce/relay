@@ -1,7 +1,7 @@
-name: Verify Published SDK (Cross-Platform)
+name: Verify Published Harness Driver (Cross-Platform)
 
-# Clean-room verification that @agent-relay/sdk — freshly installed from the
-# public registry on each target OS/arch — pulls in the correct
+# Clean-room verification that @agent-relay/harness-driver — freshly installed
+# from the public registry on each target OS/arch — pulls in the correct
 # @agent-relay/broker-<platform>-<arch> optional dep and actually spawns a
 # broker end-to-end. This is the last line of defense for the optional-dep
 # pattern: pre-publish the smoke-broker-packages job exercises the logic via
@@ -22,14 +22,14 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'SDK version to verify (default: latest)'
+        description: 'Package version to verify (default: latest)'
         required: false
         type: string
         default: 'latest'
   workflow_call:
     inputs:
       version:
-        description: 'SDK version to verify'
+        description: 'Package version to verify'
         required: false
         type: string
         default: 'latest'
@@ -39,14 +39,14 @@ env:
 
 jobs:
   verify-sdk:
-    name: Verify @agent-relay/sdk (${{ matrix.platform }})
+    name: Verify @agent-relay/harness-driver (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: darwin-arm64
-            os: macos-14
+            os: macos-15
             expected_pkg: '@agent-relay/broker-darwin-arm64'
           # darwin-x64 verify is intentionally omitted: GitHub's macos-13
           # (Intel) runner pool is capacity-constrained and routinely queues
@@ -77,14 +77,14 @@ jobs:
             VERSION="latest"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "spec=@agent-relay/sdk@$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Using spec: @agent-relay/sdk@$VERSION"
+          echo "spec=@agent-relay/harness-driver@$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Using spec: @agent-relay/harness-driver@$VERSION"
 
       # Registry/CDN propagation can lag the publish by up to a minute. Retry
       # with exponential backoff so the first run after publish doesn't miss.
-      # The SDK pins internal runtime deps to the exact same release version;
-      # wait for those too so npm/Bun installs cannot resolve a half-published
-      # SDK that later fails at runtime inside @agent-relay/sdk/workflows.
+      # The harness driver pins internal runtime deps to the exact same
+      # release version; wait for those too so npm/Bun installs cannot resolve
+      # a half-published harness driver that later fails at runtime.
       #
       # The matching broker package is included because npm silently skips
       # optionalDependencies that 404 — if the broker tarball hasn't reached
@@ -92,7 +92,7 @@ jobs:
       # no broker installed and the next step would fail confusingly.
       # `npm view <pkg> version` and the actual tarball fetch can hit
       # different caches, so additionally probe the tarball URL directly.
-      - name: Wait for SDK, internal deps, and matching broker on registry
+      - name: Wait for harness driver, internal deps, and matching broker on registry
         shell: bash
         run: |
           set -euo pipefail
@@ -106,14 +106,14 @@ jobs:
 
           PACKAGES=(
             "$SPEC"
-            "@agent-relay/config@$VERSION"
-            "@agent-relay/github-primitive@$VERSION"
-            "@agent-relay/slack-primitive@$VERSION"
-            "@agent-relay/workflow-types@$VERSION"
+            "@agent-relay/sdk@$VERSION"
             "${EXPECTED_BROKER}@$VERSION"
           )
 
-          for i in 1 2 3 4 5 6 7; do
+          # Up to ~11 minutes: exponential backoff capped at 60s. The v12.2.1
+          # publish succeeded, but win32 verification gave up after the old
+          # ~4 minute window while the registry was still surfacing packages.
+          for i in $(seq 1 15); do
             missing=()
             for pkg in "${PACKAGES[@]}"; do
               if ! npm view "$pkg" version >/dev/null 2>&1; then
@@ -122,35 +122,41 @@ jobs:
             done
 
             # Even when `npm view` succeeds, the tarball may still 404 from
-            # the CDN edge that npm install hits. Probe the tarball URL of
-            # the matching broker directly.
+            # the CDN edge that npm install hits. Probe every package's
+            # tarball URL directly — the v12.0.0 publish passed a broker-only
+            # probe and then 404'd on the harness driver's own tarball.
             if [ "${#missing[@]}" -eq 0 ]; then
-              TARBALL_URL=$(npm view "${EXPECTED_BROKER}@$VERSION" dist.tarball 2>/dev/null || true)
-              if [ -z "$TARBALL_URL" ]; then
-                missing+=("${EXPECTED_BROKER}@$VERSION (no tarball url)")
-              else
+              for pkg in "${PACKAGES[@]}"; do
+                TARBALL_URL=$(npm view "$pkg" dist.tarball 2>/dev/null || true)
+                if [ -z "$TARBALL_URL" ]; then
+                  missing+=("$pkg (no tarball url)")
+                  continue
+                fi
                 STATUS=$(curl -sS -o /dev/null -w "%{http_code}" -I \
                   --connect-timeout 5 --max-time 15 "$TARBALL_URL" || echo "000")
                 if [ "$STATUS" != "200" ]; then
-                  missing+=("${EXPECTED_BROKER}@$VERSION (tarball HTTP $STATUS)")
+                  missing+=("$pkg (tarball HTTP $STATUS)")
                 fi
-              fi
+              done
             fi
 
             if [ "${#missing[@]}" -eq 0 ]; then
-              echo "registry has SDK, internal deps, and ${EXPECTED_BROKER} for $VERSION"
+              echo "registry has harness driver, internal deps, and ${EXPECTED_BROKER} for $VERSION"
               exit 0
             fi
 
             WAIT=$((2 ** i))
+            if [ "$WAIT" -gt 60 ]; then
+              WAIT=60
+            fi
             echo "attempt $i: registry missing ${missing[*]}, sleeping ${WAIT}s"
             sleep "$WAIT"
           done
 
-          echo "FAIL: registry never surfaced all SDK packages for $VERSION"
+          echo "FAIL: registry never surfaced all harness driver packages for $VERSION"
           exit 1
 
-      - name: Install @agent-relay/sdk into scratch project
+      - name: Install @agent-relay/harness-driver into scratch project
         shell: bash
         run: |
           set -euo pipefail
@@ -160,22 +166,36 @@ jobs:
           cd "$SCRATCH"
           npm init -y --silent >/dev/null
           echo "Installing ${{ steps.spec.outputs.spec }}"
-          npm install --no-audit --no-fund "${{ steps.spec.outputs.spec }}"
+          # A probe from this runner can hit a warm CDN edge while npm's
+          # fetch hits a cold one, so retry the install on transient 404s.
+          for i in 1 2 3 4 5; do
+            if npm install --no-audit --no-fund "${{ steps.spec.outputs.spec }}"; then
+              break
+            fi
+            if [ "$i" -eq 5 ]; then
+              echo "FAIL: npm install did not succeed after $i attempts"
+              exit 1
+            fi
+            WAIT=$((15 * i))
+            echo "install attempt $i failed, clearing npm cache and retrying in ${WAIT}s"
+            npm cache clean --force >/dev/null 2>&1 || true
+            sleep "$WAIT"
+          done
           echo ""
           echo "=== installed @agent-relay/ packages ==="
           ls node_modules/@agent-relay/
 
-      - name: Verify workflow module imports
+      - name: Verify harness driver public entrypoint imports
         shell: bash
         run: |
           cd "$SCRATCH"
           node --input-type=module -e "
-            const workflows = await import('@agent-relay/sdk/workflows');
-            if (!workflows.WorkflowRunner || !workflows.workflow) {
-              console.error('FAIL: @agent-relay/sdk/workflows missing expected exports');
+            const harnessDriver = await import('@agent-relay/harness-driver');
+            if (typeof harnessDriver.HarnessDriverClient !== 'function') {
+              console.error('FAIL: @agent-relay/harness-driver missing HarnessDriverClient export');
               process.exit(1);
             }
-            console.log('OK: @agent-relay/sdk/workflows imports with workflow-types installed');
+            console.log('OK: @agent-relay/harness-driver public entrypoint imports');
           "
 
       - name: Verify only the matching broker package was installed
@@ -214,7 +234,7 @@ jobs:
         run: |
           cd "$SCRATCH"
           node --input-type=module -e "
-            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/sdk/broker-path';
+            import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
             import { accessSync, constants } from 'node:fs';
             const expected = getOptionalDepPackageName();
             const p = getBrokerBinaryPath();
@@ -231,19 +251,19 @@ jobs:
             console.log('OK: resolver returned executable binary from optional-dep package');
           "
 
-      - name: Spawn smoke — AgentRelayClient.spawn()
+      - name: Spawn smoke — HarnessDriverClient.spawn()
         shell: bash
         run: |
           cd "$SCRATCH"
           node --input-type=module -e "
-            import { AgentRelayClient } from '@agent-relay/sdk';
-            const client = await AgentRelayClient.spawn({
+            import { HarnessDriverClient } from '@agent-relay/harness-driver';
+            const client = await HarnessDriverClient.spawn({
               cwd: process.cwd(),
               channels: ['general'],
               startupTimeoutMs: 45000,
               onStderr: (line) => console.error('[broker]', line),
             });
-            console.log('OK: AgentRelayClient.spawn() returned');
+            console.log('OK: HarnessDriverClient.spawn() returned');
             await client.shutdown();
             console.log('OK: client.shutdown() completed');
           "

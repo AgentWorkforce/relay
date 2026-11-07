@@ -1,0 +1,53 @@
+{
+  "id": "traj_z9o14mx56gy9",
+  "version": 1,
+  "task": {
+    "title": "Make standalone timeout regression test ordering-based"
+  },
+  "status": "completed",
+  "startedAt": "2026-08-18T11:41:55.268Z",
+  "completedAt": "2026-08-18T11:42:37.800Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-18T11:42:00.043Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_5rza1i4rc7gj",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-18T11:42:00.043Z",
+      "endedAt": "2026-08-18T11:42:37.800Z",
+      "events": [
+        {
+          "ts": 1787053320044,
+          "type": "decision",
+          "content": "Gate fake readiness on the second node-down invocation: Gate fake readiness on the second node-down invocation",
+          "raw": {
+            "question": "Gate fake readiness on the second node-down invocation",
+            "chosen": "Gate fake readiness on the second node-down invocation",
+            "alternatives": [],
+            "reasoning": "The first down is preflight cleanup and the second can only occur after the zero-second startup deadline while node up is still alive, so readiness ordering is deterministic and independent of scheduler timing."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Replaced the late-readiness timeout test's fixed 100ms sleep with a second-node-down handshake, added explicit before/after readiness events, proved the test fails when the production timeout guard is removed, and passed the focused suite five consecutive times plus shell and formatting checks.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "ad84354329879e11d83b4e85b1bc3f6b22607acb",
+    "endRef": "ad84354329879e11d83b4e85b1bc3f6b22607acb"
+  }
+}

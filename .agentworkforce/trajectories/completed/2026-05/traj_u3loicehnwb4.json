@@ -1,0 +1,53 @@
+{
+  "id": "traj_u3loicehnwb4",
+  "version": 1,
+  "task": {
+    "title": "Gate broker diagnostic logs behind env flag"
+  },
+  "status": "completed",
+  "startedAt": "2026-05-21T04:14:44.815Z",
+  "completedAt": "2026-05-21T04:14:45.063Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-05-21T04:14:44.956Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_1itfbmg9tn3r",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-05-21T04:14:44.956Z",
+      "endedAt": "2026-05-21T04:14:45.063Z",
+      "events": [
+        {
+          "ts": 1779336884957,
+          "type": "decision",
+          "content": "Default broker tracing filter to off: Default broker tracing filter to off",
+          "raw": {
+            "question": "Default broker tracing filter to off",
+            "chosen": "Default broker tracing filter to off",
+            "alternatives": [],
+            "reasoning": "PTY worker stderr is parsed as stream fallback output when it is not JSON, so warn-level tracing must not be emitted unless explicitly requested."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Made broker tracing quiet by default with AGENT_RELAY_BROKER_LOG or RUST_LOG opt-in and corrected PTY tracing targets.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "/private/tmp/relay-quiet-broker-logs",
+  "tags": [],
+  "_trace": {
+    "startRef": "db037b0557e7353e169e92293f4adde06e48a6c6",
+    "endRef": "db037b0557e7353e169e92293f4adde06e48a6c6"
+  }
+}
