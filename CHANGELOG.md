@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Factory Droid workers can join Relay through `spawn:droid`, receive queued messages while idle, and send replies through Relay.
+- Factory Droid managed messaging reports unavailable while inherited MCP startup isolation remains unverified; it refuses to launch providers and leaves history collection available.
 
 ## [17.2.1] - 2026-11-07
 

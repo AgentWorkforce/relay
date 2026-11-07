@@ -66,8 +66,13 @@ fn adapter(cx: &HarnessContext) -> Arc<dyn HarnessAdapter> {
 pub(crate) const MARKER: &str = "AGENT_RELAY_DROID_SPAWN";
 const TIMEOUT: Duration = Duration::from_secs(30);
 const STARTUP_GUIDANCE: &str = "Droid did not open its native session. Check `droid --version` (verified with 1.6.0) and Factory sign-in.";
+pub(crate) const STARTUP_ISOLATION_GUIDANCE: &str = "Factory Droid managed messaging is unavailable until inherited MCP server startup can be isolated. Factory history collection remains available.";
 fn unsupported() -> Option<String> {
-    (!cfg!(unix)).then(|| "Factory Droid managed messaging is not available on Windows.".into())
+    Some(if cfg!(unix) {
+        STARTUP_ISOLATION_GUIDANCE.into()
+    } else {
+        "Factory Droid managed messaging is not available on Windows.".into()
+    })
 }
 
 mod registry;

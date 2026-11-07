@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { once } from 'node:events';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -36,8 +34,6 @@ for (const [directory, revision] of [
 await rm(resultPath, { force: true });
 const directory = await mkdtemp(path.join(tmpdir(), 'relay-factory-proof-'));
 const targetDir = process.env.RELAY_PR_PROOF_CARGO_TARGET_DIR ?? path.join(directory, 'target');
-let host;
-let logs = '';
 let proofError;
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, {
@@ -58,41 +54,7 @@ const observe = async (outcome, signature, details) => {
     `${JSON.stringify({ version: 1, caseId, arm, outcome, signature, details }, null, 2)}\n`
   );
 };
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function waitFor(probe, description) {
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    if (host?.exitCode !== null && host?.exitCode !== undefined)
-      throw new Error(`Host exited during ${description}: ${logs}`);
-    const value = await probe();
-    if (value) return value;
-    await sleep(20);
-  }
-  throw new Error(`Timed out: ${description}: ${logs}`);
-}
-async function exchange(socket, request) {
-  return new Promise((resolve, reject) => {
-    const connection = net.createConnection(socket);
-    let response = '';
-    connection.setTimeout(3000, () => connection.destroy(new Error('Control response timed out')));
-    connection.on('error', reject);
-    connection.on('connect', () => connection.write(`${JSON.stringify(request)}\n`));
-    connection.on('data', (chunk) => {
-      response += chunk;
-      if (response.includes('\n')) {
-        connection.destroy();
-        try {
-          resolve(JSON.parse(response));
-        } catch (error) {
-          reject(error);
-        }
-      }
-    });
-    connection.on('end', () => {
-      if (!response.includes('\n')) reject(new Error('Control response truncated'));
-    });
-  });
-}
+
 try {
   run(
     'cargo',
@@ -124,6 +86,15 @@ try {
     run('rustc', [path.join(harness, 'tests/relayflows/cases', caseId, 'droid.rs'), '-o', fake]);
     const runtime = path.join(directory, 'runtime');
     const events = path.join(directory, 'events');
+    const control = path.join(directory, 'sentinel-control');
+    const sentinel = spawnSync(fake, [], {
+      env: { RELAY_FACTORY_FIXTURE_EVENTS: control },
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+    assert.ifError(sentinel.error);
+    assert.equal(sentinel.status, 1);
+    assert.equal(await readFile(control, 'utf8'), 'provider unexpectedly started');
     const launch = randomUUID();
     await mkdir(runtime, { mode: 0o700 });
     await writeFile(
@@ -131,7 +102,7 @@ try {
       JSON.stringify({ id: 'one', text: 'synthetic owned turn one' }),
       { mode: 0o600 }
     );
-    host = spawn(
+    const held = spawnSync(
       binary,
       [
         'droid-spawn-host',
@@ -146,59 +117,20 @@ try {
       ],
       {
         env: { ...process.env, AGENT_RELAY_DROID_SPAWN: launch, RELAY_FACTORY_FIXTURE_EVENTS: events },
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf8',
+        timeout: 10_000,
       }
     );
-    host.stdout.on('data', (chunk) => {
-      logs = (logs + chunk).slice(-4000);
-    });
-    host.stderr.on('data', (chunk) => {
-      logs = (logs + chunk).slice(-4000);
-    });
-    const record = await waitFor(async () => {
-      try {
-        return JSON.parse(await readFile(path.join(runtime, `${launch}.ready.json`), 'utf8'));
-      } catch (error) {
-        if (error.code === 'ENOENT') return null;
-        throw error;
-      }
-    }, 'native initialization');
-    assert.equal(record.session_id, '11111111-2222-4333-8444-555555555555');
-    assert.equal(record.host.pid, host.pid);
-    assert.equal(record.initial_message_id, 'one');
-    for (const id of ['one', 'two']) {
-      const request = { op: 'prompt', id, text: `synthetic owned turn ${id}` };
-      assert(['accepted', 'delivered'].includes((await exchange(record.socket, request)).status));
-      await waitFor(
-        async () => (await exchange(record.socket, request)).status === 'delivered',
-        `completion ${id}`
-      );
-      assert.equal((await exchange(record.socket, { op: 'status' })).state, 'idle');
-      assert.equal((await exchange(record.socket, request)).status, 'delivered');
-      assert.equal(
-        (await exchange(record.socket, { ...request, text: 'different payload' })).status,
-        'refused'
-      );
-    }
-    const lines = (await readFile(events, 'utf8'))
-      .trim()
-      .split('\n')
-      .map((line) => line.split(' '));
-    assert.deepEqual(
-      lines.map((row) => row[2]),
-      ['prompt:one', 'prompt:two']
-    );
-    assert(lines.every((row) => Number(row[0]) === record.child.pid && row[1] === record.session_id));
-    const ended = once(host, 'exit');
-    assert.equal((await exchange(record.socket, { op: 'stop' })).status, 'stopped');
-    const [code] = await ended;
-    assert.equal(code, 0, logs);
-    assert.throws(() => process.kill(record.child.pid, 0), { code: 'ESRCH' });
+    assert.ifError(held.error);
+    assert.notEqual(held.status, 0);
+    assert.match(held.stderr, /unavailable until inherited MCP server startup can be isolated/);
+    await assert.rejects(readFile(events), { code: 'ENOENT' });
+    await assert.rejects(readFile(path.join(runtime, `${launch}.ready.json`)), { code: 'ENOENT' });
+    await assert.rejects(readFile(path.join(runtime, `${launch}.droid.log`)), { code: 'ENOENT' });
     await observe(
       'fixed',
-      'factory_native_worker_reuses_session_and_deduplicates',
-      'The exact production host initializes a disposable compiled Droid wire peer, injects the pinned MCP definition, admits only its send permission and denies foreign/Execute permissions. The initial task is queued before readiness, and two idle-separated turns retain the same native session/PID; duplicates are not emitted and changed payloads are refused. Stop reaps the child. This uses no Factory credential/model/network and does not claim a live Relay MCP or hosted-history roundtrip.'
+      'factory_native_worker_refuses_unverified_mcp_startup',
+      'The exact production host refuses before invoking a disposable compiled sentinel provider or opening provider logs/readiness. Inherited MCP startup isolation is not established, so managed messaging remains unavailable. Protocol serialization/deduplication are unit-tested separately; no Factory credential/model/network or live Relay roundtrip is claimed.'
     );
   }
 } catch (error) {
@@ -206,13 +138,6 @@ try {
   throw error;
 } finally {
   const cleanupErrors = [];
-  if (host && host.exitCode === null) {
-    try {
-      process.kill(-host.pid, 'SIGKILL');
-    } catch (error) {
-      if (error.code !== 'ESRCH') cleanupErrors.push(error);
-    }
-  }
   try {
     await rm(directory, { recursive: true, force: true });
   } catch (error) {

@@ -166,3 +166,35 @@ fn caller_uses_only_its_marked_ready_record_and_rejects_a_nested_renamed_worker(
         .unwrap()
         .is_err());
 }
+
+#[test]
+fn unverified_mcp_isolation_refuses_before_any_host_or_provider_side_effect() {
+    let home = tempfile::tempdir().unwrap();
+    let binary = home.path().join("droid");
+    std::fs::write(&binary, "not an executable image").unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let env = BTreeMap::from([("RELAY_DESKTOP_DROID".into(), binary.display().to_string())]);
+    let cx = HarnessContext::local(&env, home.path(), &home.path().join("data"));
+    let adapter = DroidAdapter::new(&cx);
+    assert!(
+        matches!(adapter.detect(), Installed::Unusable(reason) if reason == STARTUP_ISOLATION_GUIDANCE)
+    );
+    let launch = Launch {
+        harness: ID,
+        name: "worker".into(),
+        text: "owned synthetic task".into(),
+        directory: home.path().into(),
+        full_access: false,
+        message_id: "one".into(),
+        session_id: crate::relay::store::random_uuid(),
+    };
+    assert!(matches!(
+        adapter.launch(&launch, &|_, _| panic!("a held host must not start")),
+        Err(LaunchError::Unavailable(reason)) if reason == STARTUP_ISOLATION_GUIDANCE
+    ));
+    let runtime = runtime(&adapter.config);
+    assert!(!runtime.exists());
+    let error = host::run(&binary, home.path(), &runtime, &launch.session_id).unwrap_err();
+    assert_eq!(error.to_string(), STARTUP_ISOLATION_GUIDANCE);
+    assert!(!runtime.exists());
+}
