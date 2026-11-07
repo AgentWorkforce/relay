@@ -26,6 +26,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { isBundledBunEntrypointPath } from './agent-relay-mcp-command.js';
+import { describeError } from './describe-error.js';
 
 /** The agent tools `relay init` can connect. */
 export const TOOL_IDS = ['claude', 'codex', 'opencode', 'grok', 'pi', 'devin', 'cursor'] as const;
@@ -1152,7 +1153,7 @@ export function installTool(target: ToolTarget, launch: McpLaunch, op: ToolOpera
     writeEntryFile(target, op.scope, file, launch, env);
     return { ...base, status, method: 'file' };
   } catch (error) {
-    return { ...base, status: 'failed', message: error instanceof Error ? error.message : String(error) };
+    return { ...base, status: 'failed', message: describeError(error) };
   }
 }
 
@@ -1173,6 +1174,6 @@ export function uninstallTool(target: ToolTarget, op: ToolOperation): ToolResult
     removeEntryFile(target, file, true);
     return { ...base, status: 'removed', method: 'file' };
   } catch (error) {
-    return { ...base, status: 'failed', message: error instanceof Error ? error.message : String(error) };
+    return { ...base, status: 'failed', message: describeError(error) };
   }
 }

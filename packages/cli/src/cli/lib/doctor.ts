@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { getProjectPaths } from '@agent-relay/config';
 import { HarnessDriverClient, type BrokerStatus } from '@agent-relay/harness-driver';
 import { readNodeDeliveryStatus } from './broker-lifecycle.js';
+import { describeError } from './describe-error.js';
 
 type SqliteDriver = 'better-sqlite3' | 'node';
 
@@ -280,7 +281,7 @@ async function checkBrokerReliability(): Promise<CheckResult[]> {
       },
     ];
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = describeError(err);
     return [
       ...(relayKeyTemplateResult ? [relayKeyTemplateResult] : []),
       {
@@ -761,7 +762,7 @@ function readInstallationStatus(dataDir: string): InstallationStatus {
     return {
       found: false,
       path: statusPath,
-      error: err instanceof Error ? err.message : String(err),
+      error: describeError(err),
     };
   }
 }
