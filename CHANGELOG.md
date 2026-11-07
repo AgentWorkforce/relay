@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agents.integrations.subscribe` and session socket subscriptions exclude leftover provider events after the last subscription is removed.
 - `agent-relay file` accepts private JSON integration metadata files on Unix.
 - `agent-relay flows` reports GitLab setup requirements and resumes human-approved repository runs with their original access.
+- `agent-relay-node` lists Codex sessions and delivers messages to them promptly when Codex's thread database is large.
 
 ## [17.2.0] - 2026-11-06
 
