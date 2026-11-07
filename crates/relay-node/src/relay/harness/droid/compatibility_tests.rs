@@ -68,3 +68,101 @@ fn executable_identity_survives_a_retargeted_installation_symlink() {
 }
 
 use std::os::unix::ffi::OsStringExt;
+
+#[test]
+fn a_failed_initial_file_create_never_deletes_another_launch_handoff() {
+    let home = tempfile::tempdir().unwrap();
+    let binary = home.path().join("droid");
+    std::fs::write(&binary, "").unwrap();
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let env = BTreeMap::from([("RELAY_DESKTOP_DROID".into(), binary.display().to_string())]);
+    let cx = HarnessContext::local(&env, home.path(), &home.path().join("data"));
+    let adapter = DroidAdapter::new(&cx);
+    let dir = runtime(&adapter.config);
+    crate::relay::paths::socket_directory(&dir).unwrap();
+    let launch = Launch {
+        harness: ID,
+        name: "worker".into(),
+        text: "new task".into(),
+        directory: home.path().into(),
+        full_access: false,
+        message_id: "new".into(),
+        session_id: crate::relay::store::random_uuid(),
+    };
+    registry::write_initial(&dir, &launch.session_id, "original", "original task").unwrap();
+    assert!(adapter
+        .launch(&launch, &|_, _| panic!(
+            "a host must not start for an existing handoff"
+        ))
+        .is_err());
+    let retained = registry::initial(&dir, &launch.session_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.id, "original");
+    assert_eq!(retained.text, "original task");
+}
+
+#[test]
+fn caller_uses_only_its_marked_ready_record_and_rejects_a_nested_renamed_worker() {
+    let home = tempfile::tempdir().unwrap();
+    let config = DroidConfig::from_env(&|_| None, home.path());
+    let dir = runtime(&config);
+    crate::relay::paths::socket_directory(&dir).unwrap();
+    let executable = home.path().join("renamed-worker");
+    std::fs::write(&executable, "").unwrap();
+    let launch = crate::relay::store::random_uuid();
+    let environment = std::collections::HashMap::from([(MARKER.into(), launch.clone())]);
+    let table = FakeProcesses::default();
+    table.insert(
+        40,
+        FakeProcess {
+            uid: crate::relay::peer::current_uid(),
+            start: 1,
+            environment: environment.clone(),
+            ..Default::default()
+        },
+    );
+    table.insert(
+        41,
+        FakeProcess {
+            uid: crate::relay::peer::current_uid(),
+            parent: 40,
+            start: 2,
+            environment: environment.clone(),
+            executable: Some(executable.clone()),
+            ..Default::default()
+        },
+    );
+    let record = Record {
+        launch_id: launch.clone(),
+        session_id: crate::relay::store::random_uuid(),
+        host: SpawnedProcess { pid: 40, start: 1 },
+        child: SpawnedProcess { pid: 41, start: 2 },
+        socket: home.path().join("socket"),
+        executable: executable.clone(),
+        directory: home.path().into(),
+        initial_message_id: None,
+    };
+    write_record(&dir.join(format!("{launch}.ready.json")), &record).unwrap();
+    // No session record exists: the marked ready record proves this exact worker.
+    assert_eq!(
+        crate::relay::droid::caller(&config, &table, 41)
+            .unwrap()
+            .unwrap(),
+        record.session_id
+    );
+    table.insert(
+        42,
+        FakeProcess {
+            uid: crate::relay::peer::current_uid(),
+            parent: 41,
+            start: 3,
+            environment,
+            executable: Some(executable),
+            ..Default::default()
+        },
+    );
+    assert!(crate::relay::droid::caller(&config, &table, 42)
+        .unwrap()
+        .is_err());
+}

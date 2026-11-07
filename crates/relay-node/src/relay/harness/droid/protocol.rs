@@ -71,6 +71,8 @@ impl Engine {
                     "refused"
                 } else if self.turns.contains_key(id) && !self.blocked {
                     "accepted"
+                } else if self.blocked && status == "accepted" {
+                    "in_doubt"
                 } else {
                     &status
                 };
@@ -105,7 +107,8 @@ impl Engine {
         let text = self.turns.get(&id)?.text.clone();
         // Commit the ambiguity fence before writing any provider bytes.
         if self.journal.status(&id, "in_doubt").is_err() {
-            self.blocked = true;
+            self.queue.push_front(id);
+            self.uncertain();
             return None;
         }
         let text = self.relay_server.as_ref().map_or_else(|| text.clone(), |server| format!("Agent Relay transport: use the private MCP server {server} tool send_relay_message for relay replies (to, text, optional numeric reply_to). This replaces shell reply instructions below. Preserve the requested recipient and reply_to.\n\n{text}"));
@@ -154,7 +157,11 @@ impl Engine {
         self.finish("in_doubt");
         self.blocked = true;
         for id in self.queue.drain(..) {
-            let _ = self.journal.status(&id, "refused");
+            if self.journal.status(&id, "refused").is_err() {
+                // The blocked replay path maps any stale accepted receipt
+                // to in_doubt when persistence cannot record the refusal.
+                self.blocked = true;
+            }
             self.turns.remove(&id);
         }
     }
@@ -271,6 +278,31 @@ mod tests {
         );
         assert_eq!(engine.request(&json!({"op":"status"}))["state"], "unknown");
         assert!(engine.next("native").is_none());
+    }
+    #[test]
+    fn failed_journal_writes_never_replay_dropped_turns_as_accepted() {
+        for failure_after_send in [false, true] {
+            let mut engine = Engine::testing();
+            let one = json!({"op":"prompt","id":"one","text":"hello"});
+            let queued = json!({"op":"prompt","id":"queued","text":"later"});
+            engine.request(&one);
+            engine.request(&queued);
+            if failure_after_send {
+                assert!(engine.next("native").is_some());
+            }
+            engine.journal.fail_writes();
+            if failure_after_send {
+                engine.uncertain();
+            } else {
+                assert!(engine.next("native").is_none());
+            }
+            assert_eq!(engine.request(&one)["status"], "in_doubt");
+            assert_eq!(engine.request(&queued)["status"], "in_doubt");
+            assert!(engine.turns.is_empty());
+            assert!(engine.queue.is_empty());
+            assert!(engine.next("native").is_none());
+            assert_eq!(engine.request(&json!({"op":"status"}))["state"], "unknown");
+        }
     }
     #[test]
     fn only_exact_launch_pinned_relay_send_is_approved() {

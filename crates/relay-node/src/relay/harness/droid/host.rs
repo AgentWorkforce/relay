@@ -113,16 +113,15 @@ pub fn run(executable: &Path, directory: &Path, runtime: &Path, launch_id: &str)
     };
     write_record(&runtime.join(format!("{session}.json")), &record)?;
     write_record(&runtime.join(format!("{launch_id}.ready.json")), &record)?;
-    let result = drive(
+    // Retain the identity record as evidence for an unreleased, ended worker.
+    drive(
         &listener,
         &mut provider,
         &mut input,
         &rx,
         &session,
         &mut engine,
-    );
-    // Retain the identity record as evidence for an unreleased, ended worker.
-    result
+    )
 }
 
 fn admit_initial(engine: &mut Engine, runtime: &Path, launch_id: &str) -> Result<Option<String>> {

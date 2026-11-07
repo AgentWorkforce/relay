@@ -286,3 +286,16 @@ pub(super) fn initial(runtime: &Path, launch: &str) -> anyhow::Result<Option<Ini
     );
     Ok(Some(serde_json::from_reader(file.take(1024 * 1024 + 1))?))
 }
+
+#[cfg(windows)]
+pub(super) fn write_initial(
+    _runtime: &Path,
+    _launch: &str,
+    _id: &str,
+    _text: &str,
+) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Factory Droid managed messaging is not available on Windows",
+    ))
+}

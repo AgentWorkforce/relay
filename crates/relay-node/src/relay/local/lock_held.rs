@@ -35,7 +35,10 @@ pub(super) fn discover_devin(
 /// The caller `pid`, when the walk up from it reaches a `devin` or
 /// `cursor-agent` process of this user's at `current`: the session whose
 /// file it holds open, or nobody. A Devin or Cursor command that is not a
-/// session never lends a caller the outer session's identity. At a Cursor
+/// session never lends a caller the outer session's identity. Factory Droid
+/// uses the private verified launch record whose child pid is `current`;
+/// an inherited marker never lends a nested unmanaged worker that identity.
+/// At a Cursor
 /// editor window's extension host, the conversation the caller's own
 /// `CURSOR_CONVERSATION_ID` names, or nobody. `None` lets the walk go on.
 pub(super) fn caller(
@@ -58,28 +61,34 @@ pub(super) fn caller(
                 .ok_or(CallerMiss::NotASession),
         );
     }
-    let droid = crate::relay::droid::session(
+    if let Some(droid) = crate::relay::droid::caller(
         &crate::relay::droid::DroidConfig::from_local(config),
         table,
         current,
-    );
-    let (kind, session) =
-        if droid.is_some() || crate::relay::droid::is_droid_process(table, current) {
-            (SessionKind::Droid, droid)
-        } else if devin::is_devin_process(table, current) {
-            (
-                SessionKind::Devin,
-                devin::held_session(&config.devin, table, current),
-            )
-        } else if cursor_cli::is_cursor_process(table, current) {
-            let session = cursor_cli::held_session(&config.cursor, table, current);
-            if session.is_none() && cursor_cli::editor::is_editor_worker(table, current) {
-                return None;
+    ) {
+        let same = table.process(current) == Some(process);
+        return Some(droid.and_then(|id| {
+            if same {
+                Ok(Target::new(SessionKind::Droid, id))
+            } else {
+                Err(CallerMiss::NotASession)
             }
-            (SessionKind::CursorCli, session)
-        } else {
+        }));
+    }
+    let (kind, session) = if devin::is_devin_process(table, current) {
+        (
+            SessionKind::Devin,
+            devin::held_session(&config.devin, table, current),
+        )
+    } else if cursor_cli::is_cursor_process(table, current) {
+        let session = cursor_cli::held_session(&config.cursor, table, current);
+        if session.is_none() && cursor_cli::editor::is_editor_worker(table, current) {
             return None;
-        };
+        }
+        (SessionKind::CursorCli, session)
+    } else {
+        return None;
+    };
     // Still the same process after its files were read.
     let same = table.process(current) == Some(process);
     Some(

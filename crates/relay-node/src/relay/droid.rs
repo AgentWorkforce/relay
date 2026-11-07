@@ -71,10 +71,32 @@ pub fn is_droid_process(table: &dyn ProcessTable, pid: i32) -> bool {
                 })
         })
 }
-pub fn session(config: &DroidConfig, table: &dyn ProcessTable, pid: i32) -> Option<String> {
-    let mut matches = records(config, table)
-        .into_iter()
-        .filter(|r| r.child.pid == pid);
-    let first = matches.next()?;
-    matches.next().is_none().then_some(first.session_id)
+/// The exact marked launch record is an indexed lookup, never a runtime scan.
+/// The record can establish a boundary without lending an unmanaged child its identity.
+pub fn caller(
+    config: &DroidConfig,
+    table: &dyn ProcessTable,
+    pid: i32,
+) -> Option<Result<String, crate::relay::sessions::CallerMiss>> {
+    let record = table
+        .environment_var(pid, crate::relay::harness::droid::MARKER)
+        .filter(|id| is_uuid(id))
+        .and_then(|id| {
+            read_record(
+                &crate::relay::harness::droid::runtime(config).join(format!("{id}.ready.json")),
+            )
+            .filter(|record| record.launch_id == id && is_uuid(&record.session_id))
+        });
+    let executable_matches = record
+        .as_ref()
+        .is_some_and(|record| table.executable(pid).as_ref() == Some(&record.executable));
+    if !executable_matches && !is_droid_process(table, pid) {
+        return None;
+    }
+    Some(
+        record
+            .filter(|record| record.child.pid == pid && verified(record, table))
+            .map(|record| record.session_id)
+            .ok_or(crate::relay::sessions::CallerMiss::NotASession),
+    )
 }

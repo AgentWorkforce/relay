@@ -63,7 +63,7 @@ pub const BUILTIN: Builtin = Builtin {
 fn adapter(cx: &HarnessContext) -> Arc<dyn HarnessAdapter> {
     Arc::new(DroidAdapter::new(cx))
 }
-const MARKER: &str = "AGENT_RELAY_DROID_SPAWN";
+pub(crate) const MARKER: &str = "AGENT_RELAY_DROID_SPAWN";
 const TIMEOUT: Duration = Duration::from_secs(30);
 const STARTUP_GUIDANCE: &str = "Droid did not open its native session. Check `droid --version` (verified with 1.6.0) and Factory sign-in.";
 fn unsupported() -> Option<String> {
@@ -231,6 +231,7 @@ impl SpawnFacet for DroidAdapter {
         if let Some(reason) = unsupported() {
             return Err(LaunchError::Unavailable(reason));
         }
+        let mut initial_saved = false;
         let result = (|| {
             let executable = self
                 .executable
@@ -246,6 +247,7 @@ impl SpawnFacet for DroidAdapter {
                 .map_err(|_| {
                     LaunchError::Failed("Droid initial task could not be saved privately".into())
                 })?;
+            initial_saved = true;
             let arguments = vec![
                 "droid-spawn-host".into(),
                 "--executable".into(),
@@ -311,9 +313,11 @@ impl SpawnFacet for DroidAdapter {
             }
         })();
         result.map_err(|error: LaunchError| {
-            let _ = std::fs::remove_file(
-                runtime(&self.config).join(format!("{}.task.json", launch.session_id)),
-            );
+            if initial_saved {
+                let _ = std::fs::remove_file(
+                    runtime(&self.config).join(format!("{}.task.json", launch.session_id)),
+                );
+            }
             let args = vec![
                 "exec".into(),
                 "--input-format".into(),

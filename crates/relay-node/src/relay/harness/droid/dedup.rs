@@ -28,6 +28,10 @@ impl Journal {
     pub(super) fn memory() -> Result<Self> {
         Self::initialize(Connection::open_in_memory()?)
     }
+    #[cfg(test)]
+    pub(super) fn fail_writes(&self) {
+        self.0.execute_batch("PRAGMA query_only=ON").unwrap();
+    }
     pub(super) fn lookup(&self, id: &str) -> Result<Option<(String, String)>> {
         Ok(self
             .0
