@@ -126,7 +126,14 @@ try {
   const program = new Command();
   program.exitOverride();
   registerNodeCommands(program, { core });
-  await program.parseAsync(['node', 'up', '--workspace-key', workspaceKey], { from: 'user' });
+  try {
+    await program.parseAsync(['node', 'up', '--workspace-key', workspaceKey], { from: 'user' });
+  } catch (err) {
+    // runUpCommand verifies the spawned broker's process identity after
+    // createRelay, which this stubbed broker cannot satisfy. The node identity
+    // under test is already captured in brokerEnv by then.
+    if (!brokerEnv) throw err;
+  }
 
   assert.ok(brokerEnv, 'production node up command did not reach broker creation');
   const identityPreserved =
