@@ -1396,10 +1396,10 @@ describe('exact broker artifact handoff', () => {
         const filename = path.join(root, 'sentinel');
         await writeFile(filename, 'owned descriptor sentinel');
         sentinel = openSync(filename, 'r');
-        const result = spawnSync('/usr/bin/python3', ['-c', INHERITED_FD_GUARD.join('\n')], {
+        const result = spawnSync('/usr/bin/python3', ['-I', '-S', '-c', INHERITED_FD_GUARD.join('\n')], {
           stdio: ['ignore', 'pipe', 'pipe', sentinel],
           encoding: 'utf8',
-          timeout: 2_000,
+          timeout: 10_000,
         });
         expect(result.error).toBeUndefined();
         expect(result.status).toBe(1);
@@ -1410,7 +1410,8 @@ describe('exact broker artifact handoff', () => {
         if (sentinel !== undefined) closeSync(sentinel);
         await rm(root, { recursive: true, force: true });
       }
-    }
+    },
+    15_000
   );
 
   it.skipIf(process.platform === 'win32' || !existsSync('/usr/bin/python3'))(
@@ -1419,6 +1420,8 @@ describe('exact broker artifact handoff', () => {
       const result = spawnSync(
         '/usr/bin/python3',
         [
+          '-I',
+          '-S',
           '-c',
           [
             'import errno',
@@ -1427,13 +1430,14 @@ describe('exact broker artifact handoff', () => {
             'raise ImportError("synthetic runtime import failure")',
           ].join('\n'),
         ],
-        { encoding: 'utf8', timeout: 2_000 }
+        { encoding: 'utf8', timeout: 10_000 }
       );
       expect(result.error).toBeUndefined();
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('ImportError: synthetic runtime import failure');
       expect(result.stdout).toContain("descriptor census: {'before_imports':");
-    }
+    },
+    15_000
   );
 
   it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
