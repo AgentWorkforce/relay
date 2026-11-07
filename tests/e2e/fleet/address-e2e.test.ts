@@ -152,11 +152,13 @@ describe.skipIf(!pre.ok)('agent@machine addressing to a Cloud-shaped sandbox nod
         const invocation = await getInvocation(engine, driverToken, 'spawn', spawn.invocationId!);
         return invocation.status === 'completed' || invocation.status === 'failed' ? invocation : null;
       },
-      { label: 'sandbox spawn settled', timeoutMs: 35_000 }
+      // A verified spawn carrying a task completes only once that task's receipt
+      // is verified after readiness (main's fleet-e2e allows 60 s for the same).
+      { label: 'sandbox spawn settled', timeoutMs: 60_000 }
     );
     expect(done.status).toBe('completed');
     await waitForNonce(briefNonce, 'spawned agent acted on its brief');
-  }, 150_000);
+  }, 180_000);
 
   afterAll(async () => {
     await sandbox?.stop();
