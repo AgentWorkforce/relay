@@ -11,6 +11,7 @@ import {
   placementActionInput,
   placementActionName,
   RelayPlacementError,
+  resolveDispatchState,
   type PlacementSelection,
 } from './relaycast-placement.js';
 import {
@@ -28,7 +29,6 @@ import {
   toRelayCapability,
   toRelayNode,
   toRelayTrigger,
-  toRelayWorkspaceFleetNodesConfig,
   toTriggerRequest,
 } from './relaycast-translate.js';
 import {
@@ -49,7 +49,9 @@ import {
   normalizeReadReceipt,
   normalizeSearchResult,
   normalizeThread,
+  normalizeFileInfo,
 } from './normalize.js';
+import { downloadRelayFile, uploadRelayFile } from './files.js';
 import { currentReplaySessionRef, replayMessageMetadata, resolveReplaySessionRef } from './session-ref.js';
 import type { AgentSessionEvent } from '../session/index.js';
 import type {
@@ -57,6 +59,9 @@ import type {
   RelayActionInvocationAck,
   RelayCompleteInvocationInput,
   RelayAgent,
+  RelayDownloadedFile,
+  RelayFileInfo,
+  RelayUploadFileInput,
   RelayAgentPresence,
   RelayAgentRegistration,
   RelayChannel,
@@ -78,7 +83,6 @@ import type {
   RelayRegisterCapabilityInput,
   RelayWebhook,
   RelayWorkspaceInfo,
-  RelayWorkspaceFleetNodesConfig,
   InboxAckInput,
   InboxDeferInput,
   InboxFailInput,
@@ -123,9 +127,10 @@ import type {
 // client-construction concerns moved into sibling modules. Consumers import
 // these from './relaycast.js' via the messaging index.
 export { RelayPlacementError } from './relaycast-placement.js';
+export type { RelaySpawnDispatchState, RelaySpawnPlacementState } from './relaycast-placement.js';
 export type { RelaycastMessagingOptions } from './relaycast-client.js';
 
-const DEFAULT_CONFIRM_TIMEOUT_MS = 120_000;
+const DEFAULT_CONFIRM_TIMEOUT_MS = 360_000;
 const DEFAULT_CONFIRM_POLL_MS = 500;
 /** `setTimeout` clamps anything larger, firing immediately instead of waiting. */
 const MAX_CONFIRM_TIMEOUT_MS = 2_147_483_647;
@@ -140,6 +145,48 @@ const CONFIRM_SUCCESS_STATUSES = new Set(['completed', 'succeeded', 'success']);
  * that client surfaces as a non-retryable `action_denied` error.
  */
 const CONFIRM_FAILURE_STATUSES = new Set(['failed', 'error', 'denied', 'cancelled', 'canceled']);
+
+function hasSpawnReadinessProof(value: { output?: Record<string, unknown> | null }): boolean {
+  return value.output?.spawned === true && value.output?.ready === true;
+}
+
+function hasSpawnLaunchProof(value: { output?: Record<string, unknown> | null }): boolean {
+  return value.output?.spawned === true && typeof value.output?.ready === 'boolean';
+}
+
+/**
+ * The requester declares the mode and judges only what it asked for. A
+ * readiness request demands `ready:true`; a launch-only request accepts either
+ * boolean. Both demand `spawned:true`, so a handler that reports nothing still
+ * fails. Judging a launch-only request against `ready:true` would reject the
+ * broker's own honest `ready:false` success — the failure shape relay#1430
+ * exists to remove.
+ */
+function hasSpawnProof(
+  value: { output?: Record<string, unknown> | null },
+  requireReadiness: boolean
+): boolean {
+  return requireReadiness ? hasSpawnReadinessProof(value) : hasSpawnLaunchProof(value);
+}
+
+function spawnProofError(
+  node: string,
+  status: string,
+  action: string,
+  output: Record<string, unknown> | null | undefined,
+  requireReadiness: boolean
+): string {
+  if (output?.spawned === true && typeof output.ready !== 'boolean') {
+    // Only a readiness request sent `verify_ready`; on the launch-only path the
+    // accurate statement is that the handler omitted the `ready` boolean.
+    return requireReadiness
+      ? `node '${node}' handler did not honour verify_ready: missing explicit spawned:true and ready:true proof; upgrade to a release containing Relay PR #1708`
+      : `node '${node}' reported ${status} for ${action} without an explicit ready boolean; upgrade to a release containing Relay PR #1708`;
+  }
+  return `node '${node}' reported ${status} for ${action} without explicit ${
+    requireReadiness ? 'spawned:true and ready:true' : 'spawned:true and a ready boolean'
+  } proof`;
+}
 
 /** Distinguishes "the read outlived its budget" from any value a read returns. */
 const READ_TIMED_OUT = Symbol('relay.confirm.readTimedOut');
@@ -613,12 +660,19 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
         this.requireWebhooks().trigger(id, payload ?? {}),
     },
     subscriptions: {
-      create: async (input: RelayCreateSubscriptionInput): Promise<RelayEventSubscription> =>
-        (await this.requireSubscriptions().create(input)) as RelayEventSubscription,
+      create: async (input: RelayCreateSubscriptionInput): Promise<RelayEventSubscription> => {
+        const raw = (await this.requireSubscriptions().create(input)) as RelayEventSubscription;
+        return { ...raw, ...normalizeWebhookSubscription(raw) };
+      },
       list: async (): Promise<RelayEventSubscription[]> =>
-        (await this.requireSubscriptions().list()) as RelayEventSubscription[],
-      get: async (id: string): Promise<RelayEventSubscription> =>
-        (await this.requireSubscriptions().get(id)) as RelayEventSubscription,
+        ((await this.requireSubscriptions().list()) as RelayEventSubscription[]).map((raw) => ({
+          ...raw,
+          ...normalizeWebhookSubscription(raw),
+        })),
+      get: async (id: string): Promise<RelayEventSubscription> => {
+        const raw = (await this.requireSubscriptions().get(id)) as RelayEventSubscription;
+        return { ...raw, ...normalizeWebhookSubscription(raw) };
+      },
       delete: async (id: string): Promise<void> => {
         await this.requireSubscriptions().delete(id);
       },
@@ -724,7 +778,24 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             // a node can die between this read and action invocation, after
             // which the engine treats it as a targeted queued placement.
             const clientMustTarget = Boolean(targetNode || repo || sandboxOnly);
+            // Asking the broker to verify readiness commits it to holding the
+            // action open until the harness reports ready and to *releasing the
+            // worker* if it never does. Only request that when this call will
+            // wait for the answer — `confirm: true`. Deriving it from
+            // `confirm !== false` instead would make the documented default
+            // (`confirm` omitted) request verification and then walk away,
+            // killing a worker that would otherwise have survived.
+            // Persona resolves a nested child in the engine, which never reads
+            // `verify_ready`; its handler proves readiness on its own.
+            const verifyReady =
+              input.verifyReady ??
+              (input.confirm === true && capability.startsWith('spawn:') && capability !== 'spawn:persona');
+            // What this requester will accept as proof. Persona's engine-owned
+            // handler reports proven readiness even though it is never sent
+            // `verify_ready`, so its contract stays readiness-only.
+            const requireReadiness = verifyReady || capability === 'spawn:persona';
             const actionInput = placementActionInput(input.input, {
+              verifyReady,
               capability,
               ...(clientMustTarget ? { node: decision.node.name } : {}),
               repo,
@@ -736,6 +807,53 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
               : await this.resolvePlacementAckNode(ack, capability);
             const placedNodeLabel =
               placedNode?.name ?? ack.dispatchedNodeId ?? ack.handlerNodeId ?? 'engine-selected node';
+            // A synchronous handler can reject or deny the invocation before
+            // this call even returns, so the ack itself can already carry a
+            // terminal failure. The terminal-status checks in
+            // confirmPlacementInvocation only run once polling starts, so
+            // `confirm: false` — the default, and `fleet spawn --no-confirm`
+            // — must not skip straight to `state: 'accepted'` for a dispatch
+            // already known to have failed or been denied.
+            const ackStatus = ack.status?.toLowerCase();
+            if (ackStatus && CONFIRM_FAILURE_STATUSES.has(ackStatus)) {
+              throw new RelayPlacementError(
+                'spawn_failed',
+                `node '${placedNodeLabel}' reported ${ackStatus} for ${actionName} immediately upon dispatch`,
+                {
+                  capability,
+                  node: placedNodeLabel,
+                  repo,
+                  attempts,
+                  state: 'failed',
+                  dispatchState: resolveDispatchState(ack),
+                  invocationId: ack.invocationId,
+                  receipt: ack as unknown as Record<string, unknown>,
+                }
+              );
+            }
+            const ackOutput = (ack as unknown as { output?: Record<string, unknown> | null }).output;
+            if (
+              !input.confirm &&
+              capability.startsWith('spawn:') &&
+              ackStatus &&
+              CONFIRM_SUCCESS_STATUSES.has(ackStatus) &&
+              !hasSpawnProof({ output: ackOutput }, requireReadiness)
+            ) {
+              throw new RelayPlacementError(
+                'spawn_failed',
+                spawnProofError(placedNodeLabel, ackStatus, actionName, ackOutput, requireReadiness),
+                {
+                  capability,
+                  node: placedNodeLabel,
+                  repo,
+                  attempts,
+                  state: 'failed',
+                  dispatchState: resolveDispatchState(ack),
+                  invocationId: ack.invocationId,
+                  receipt: ack as unknown as Record<string, unknown>,
+                }
+              );
+            }
             // The ack proves only that the engine accepted the dispatch. Unless
             // the caller asks for confirmation, a node that accepted the
             // invocation and launched nothing resolves identically to a real
@@ -746,6 +864,9 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
                   node: placedNodeLabel,
                   repo,
                   attempts,
+                  // The mode this request actually asked the broker for, so the
+                  // poll judges the same contract the invocation carried.
+                  requireReadiness,
                   // Defaults and validation live in confirmPlacementInvocation
                   // so a direct caller cannot bypass them.
                   timeoutMs: input.confirmTimeoutMs,
@@ -762,6 +883,10 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
                 attempts,
                 queued,
                 confirmed: Boolean(confirmation),
+                // `ready` means proven harness readiness. A confirmation that
+                // only judged the launch contract (`verifyReady: false`) is
+                // confirmed, not ready.
+                state: confirmation && requireReadiness ? 'ready' : 'accepted',
               },
               ...(confirmation ? { confirmation } : {}),
             };
@@ -873,17 +998,27 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       node: string;
       repo?: string;
       attempts: number;
+      /** Whether this request asked the broker for proven harness readiness. */
+      requireReadiness: boolean;
       timeoutMs?: number;
       pollIntervalMs?: number;
     }
   ): Promise<RelayActionInvocation> {
-    const { timeoutMs, pollIntervalMs, ...errorContext } = context;
+    const { timeoutMs, pollIntervalMs, requireReadiness, ...errorContext } = context;
     const invocationId = ack.invocationId;
+    // Dispatch evidence starts from the ack: a `dispatchedNodeId` means the
+    // engine already routed the invocation to a node. A `pending`/`queued` ack
+    // without one has not routed yet. A read below that carries a
+    // `dispatchedNodeId` adds evidence (the engine may dispatch after
+    // acknowledging); a timeout or a terminal status never manufactures it — see
+    // `resolveDispatchState`. Computed before either early exit below so every
+    // `spawn_unconfirmed` path, not just the timeout/failure paths, carries it.
+    let dispatchState = resolveDispatchState(ack);
     if (!invocationId) {
       throw new RelayPlacementError(
         'spawn_unconfirmed',
         `node '${context.node}' accepted ${actionName} without returning an invocation id, so the dispatch cannot be confirmed`,
-        errorContext
+        { ...errorContext, state: 'unconfirmed_may_be_running', dispatchState }
       );
     }
 
@@ -899,7 +1034,12 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       throw new RelayPlacementError(
         'spawn_unconfirmed',
         `node '${context.node}' accepted ${actionName} (invocation ${invocationId}), but confirmation requires an agent-scoped client with the actions API, so the dispatch cannot be read back`,
-        errorContext
+        {
+          ...errorContext,
+          state: 'unconfirmed_may_be_running',
+          invocationId,
+          dispatchState,
+        }
       );
     }
 
@@ -921,15 +1061,46 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             // A later success must not report an earlier transient failure.
             lastReadError = undefined;
             const invocation = outcome.value;
+            // Only a node id counts here: the read normalizer defaults a
+            // missing status to `invoked`, which is not evidence.
+            if (invocation?.dispatchedNodeId) dispatchState = 'dispatched';
             const status = invocation?.status?.toLowerCase();
             if (status && CONFIRM_SUCCESS_STATUSES.has(status)) {
+              if (
+                errorContext.capability.startsWith('spawn:') &&
+                !hasSpawnProof(invocation, requireReadiness)
+              ) {
+                throw new RelayPlacementError(
+                  'spawn_failed',
+                  spawnProofError(context.node, status, actionName, invocation.output, requireReadiness),
+                  {
+                    ...errorContext,
+                    state: 'failed',
+                    invocationId,
+                    dispatchState,
+                    receipt: invocation as unknown as Record<string, unknown>,
+                  }
+                );
+              }
               return invocation;
             }
             if (status && CONFIRM_FAILURE_STATUSES.has(status)) {
+              const nodeError = invocation?.error?.trim();
+              const retryablePressure =
+                errorContext.capability.startsWith('spawn:') &&
+                /^node agent\.register failed for agent '[^']+': d1_pressure:/.test(nodeError ?? '');
               throw new RelayPlacementError(
-                'spawn_failed',
-                invocation?.error?.trim() || `node '${context.node}' reported ${status} for ${actionName}`,
-                errorContext
+                retryablePressure ? 'spawn_retryable' : 'spawn_failed',
+                retryablePressure
+                  ? `${nodeError}. No registration mutation was applied; retry the spawn.`
+                  : nodeError || `node '${context.node}' reported ${status} for ${actionName}`,
+                {
+                  ...errorContext,
+                  state: 'failed',
+                  invocationId,
+                  dispatchState,
+                  receipt: invocation as unknown as Record<string, unknown>,
+                }
               );
             }
           } else {
@@ -945,9 +1116,15 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
           'spawn_unconfirmed',
           `node '${context.node}' accepted ${actionName} (invocation ${invocationId}) but never reported a result within ${budgetMs}ms. ` +
             `The node advertised capacity and acknowledged the dispatch; nothing confirmed that it launched. ` +
-            `Check that node's broker version, or re-run without confirmation to accept an unconfirmed dispatch.` +
+            `The invocation may still be running, so do not retry blindly. ` +
+            `Poll this dispatch with agent-relay fleet spawn-status ${invocationId}; an unknown outcome is not proof that no process started.` +
             (lastReadError ? ` Last read error: ${lastReadError}` : ''),
-          errorContext
+          {
+            ...errorContext,
+            state: 'unconfirmed_may_be_running',
+            invocationId,
+            dispatchState,
+          }
         );
       }
       // Never sleep past the deadline: that would buy one more pointless read.
@@ -973,17 +1150,20 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       }
       return (await this.relaycast.workspace.info()) as RelayWorkspaceInfo;
     },
-    fleetNodes: {
-      get: async (): Promise<RelayWorkspaceFleetNodesConfig> => {
-        return toRelayWorkspaceFleetNodesConfig(await this.requireWorkspaceFleetNodes().get());
-      },
-      set: async (enabled: boolean): Promise<RelayWorkspaceFleetNodesConfig> => {
-        return toRelayWorkspaceFleetNodesConfig(await this.requireWorkspaceFleetNodes().set(enabled));
-      },
-      inherit: async (): Promise<RelayWorkspaceFleetNodesConfig> => {
-        return toRelayWorkspaceFleetNodesConfig(await this.requireWorkspaceFleetNodes().inherit());
-      },
-    },
+  };
+
+  readonly files = {
+    upload: async (
+      input: RelayUploadFileInput,
+      options?: import('./types.js').RelayFileTransferOptions
+    ): Promise<RelayFileInfo> => uploadRelayFile(this.requireAgentFiles('files.upload'), input, options),
+    get: async (id: string): Promise<RelayFileInfo> =>
+      normalizeFileInfo(await this.requireAgentFiles('files.get').get(id)),
+    download: async (
+      id: string,
+      options?: import('./types.js').RelayFileTransferOptions
+    ): Promise<RelayDownloadedFile> =>
+      downloadRelayFile(this.requireAgentFiles('files.download'), id, options),
   };
 
   private resolvePlacementNode(node: string | 'self' | undefined, selfNodeName?: string): string | undefined {
@@ -1197,17 +1377,6 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
     return this.relaycast.triggers;
   }
 
-  private requireWorkspaceFleetNodes(): NonNullable<
-    NonNullable<RelaycastWorkspaceLike['workspace']>['fleetNodes']
-  > {
-    if (!this.relaycast.workspace?.fleetNodes) {
-      throw new Error(
-        'RelaycastMessagingClient.workspace.fleetNodes requires @relaycast/sdk with the workspace fleet nodes API.'
-      );
-    }
-    return this.relaycast.workspace.fleetNodes;
-  }
-
   private requireAgentActions(operation: string): NonNullable<RelaycastAgentLike['actions']> {
     const actions = this.agentClient?.actions;
     if (!actions) {
@@ -1223,6 +1392,16 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       throw new Error(`RelaycastMessagingClient.${operation} requires agentToken or agentClient.`);
     }
     return this.agentClient;
+  }
+
+  private requireAgentFiles(operation: string): NonNullable<RelaycastAgentLike['files']> {
+    const files = this.requireAgentClient(operation).files;
+    if (!files) {
+      throw new Error(
+        `RelaycastMessagingClient.${operation} requires a relaycast agent client with the files API.`
+      );
+    }
+    return files;
   }
 
   private requireWorkspaceDmMessages(): NonNullable<RelaycastWorkspaceLike['dmMessages']> {

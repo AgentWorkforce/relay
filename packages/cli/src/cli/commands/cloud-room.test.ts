@@ -155,6 +155,29 @@ describe('registerCloudRoomCommands', () => {
     );
   });
 
+  it('renders a non-Error rejection readably instead of [object Object]', async () => {
+    const { program, deps } = createHarness();
+    vi.mocked(deps.ensureCloudSession).mockRejectedValueOnce({ status: 401, code: 'unauthorized' });
+
+    await expect(
+      program.parseAsync([
+        'node',
+        'agent-relay',
+        'cloud',
+        'room',
+        'invite',
+        '--workspace',
+        'rw_7ccfea89',
+        '--email',
+        'person@example.com',
+        '--json',
+      ])
+    ).rejects.toThrow('exit:1');
+
+    expect(deps.error).toHaveBeenCalledWith('{"status":401,"code":"unauthorized"}');
+    expect(deps.error).not.toHaveBeenCalledWith('[object Object]');
+  });
+
   it('writes a token only to a new owner-only file', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'relay-room-invite-'));
     const tokenFile = path.join(directory, 'token');

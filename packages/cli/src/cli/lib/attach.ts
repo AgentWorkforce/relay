@@ -14,6 +14,7 @@
 import type { InboundDeliveryMode } from '@agent-relay/harness-driver';
 
 import {
+  describeMissingBrokerConnection,
   resolveBrokerConnection,
   type BrokerConnection,
   type BrokerConnectionDeps,
@@ -358,10 +359,7 @@ export function prepareAttachTarget(
   }
   const connection = resolveBrokerConnection(options, deps);
   if (!connection) {
-    deps.error(
-      'Error: could not locate broker connection. Pass --broker-url, set RELAY_BROKER_URL, ' +
-        'or run from a directory containing .agentworkforce/relay/connection.json.'
-    );
+    deps.error(describeMissingBrokerConnection(options, deps));
     return null;
   }
   return { name, connection };

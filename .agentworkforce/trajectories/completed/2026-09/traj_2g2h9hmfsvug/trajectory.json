@@ -1,0 +1,53 @@
+{
+  "id": "traj_2g2h9hmfsvug",
+  "version": 1,
+  "task": {
+    "title": "Retry safe replacement terminal allocation failures"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-20T02:49:35.228Z",
+  "completedAt": "2026-09-20T02:49:35.481Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-20T02:49:35.369Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_u5aqso9wwsw9",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-20T02:49:35.369Z",
+      "endedAt": "2026-09-20T02:49:35.481Z",
+      "events": [
+        {
+          "ts": 1789872575370,
+          "type": "decision",
+          "content": "Retry only definite non-allocation responses during replacement: Retry only definite non-allocation responses during replacement",
+          "raw": {
+            "question": "Retry only definite non-allocation responses during replacement",
+            "chosen": "Retry only definite non-allocation responses during replacement",
+            "alternatives": [],
+            "reasoning": "Structured node_unreachable and terminal_session_unavailable responses prove no terminal was allocated, so bounded retries preserve the single replacement-session invariant while handling stale liveness."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Replacement allocation now uses bounded retries only for definite non-allocation failures and includes the full budget in readiness timing.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "a7cf42c46355ec3ed5822a5ec50fdd9d10eb3a7a",
+    "endRef": "a7cf42c46355ec3ed5822a5ec50fdd9d10eb3a7a"
+  }
+}

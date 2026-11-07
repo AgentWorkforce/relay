@@ -6,7 +6,7 @@ export const DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS = 15_000;
 // "bounded registration" into "registration always times out immediately".
 const MAX_SETTIMEOUT_DELAY_MS = 2_147_483_647;
 
-function normalizeTimeoutMs(timeoutMs: number): number {
+export function normalizeTimeoutMs(timeoutMs: number): number {
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     return DEFAULT_AGENT_REGISTRATION_TIMEOUT_MS;
   }
@@ -17,8 +17,18 @@ function normalizeTimeoutMs(timeoutMs: number): number {
 // close the quote, emit an escaped literal quote, reopen. Without this, a
 // name containing `$(...)` or backticks would execute command substitution
 // if a user copies the recovery command as-is into a shell.
-function shellQuote(value: string): string {
+export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * A word as the shell reads it: quoted unless it is plainly safe to paste.
+ * A leading `=` is quoted too, since zsh expands `=cmd` to a path.
+ * @param value - The word to print in a copy-pasteable command.
+ * @returns The word, single-quoted when it holds anything else.
+ */
+export function shellWord(value: string): string {
+  return /^[A-Za-z0-9._@%+:,/-][A-Za-z0-9._@%+=:,/-]*$/.test(value) ? value : shellQuote(value);
 }
 
 /**

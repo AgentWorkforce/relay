@@ -44,11 +44,26 @@ import {
 } from '../../scripts/pr-proof/prepare.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
+  boundedDiagnostic,
   boundedDuration,
+  createCommandOutputRedactors,
   createPreparedRunProgressParser,
+  createCredentialRedactor,
   createCliApiKeyEnvironment,
+  formatCloudRunArtifact,
+  formatCloudRunDiagnostics,
+  maskCapturedCommandOutput,
+  parseJsonOutput,
   preparedRunIdFromOutput,
+  recognizedCloudStatusFromOutput,
+  recognizedCloudRunStatus,
+  sanitizeCloudCommandOutput,
+  sanitizeCloudStatusDiagnostic,
+  writeStatusPollDeadlineDiagnostics,
+  writeStatusPollTimeoutDiagnostics,
 } from '../../scripts/pr-proof/run-cloud.mjs';
+// @ts-expect-error JavaScript module intentionally has no declaration file.
+import { runBoundedProcess } from '../../scripts/pr-proof/process-runner.mjs';
 // @ts-expect-error JavaScript module intentionally has no declaration file.
 import {
   openVerifiedBrokerExecutable,
@@ -148,7 +163,13 @@ describe('RelayFlow PR proof classification', () => {
   });
 
   it('requires explicit classification even without a conventional title', () => {
-    const result = classifyPullRequest({ title: 'Update reconnect documentation', body: '' });
+    // A read diff that touches nothing shippable: the exemption has to come
+    // from the files, so the assertion below is about the missing metadata.
+    const result = classifyPullRequest({
+      title: 'Update reconnect documentation',
+      body: '',
+      changedFiles: ['docs/reconnect.md'],
+    });
     expect(result.required).toBe(false);
     expect(result.errors).toContainEqual(
       expect.stringContaining('must declare a RelayFlow Proof change type')
@@ -168,14 +189,16 @@ describe('RelayFlow PR proof classification', () => {
     const result = classifyPullRequest({
       title: 'docs: explain reconnect behavior',
       body: proofBody('non-functional', 'n/a'),
+      changedFiles: ['docs/reconnect.md'],
     });
     expect(result).toMatchObject({ required: false, caseId: null, errors: [] });
   });
 
-  it('rejects attempts to mark a fix title non-functional', () => {
+  it('rejects attempts to mark a runtime fix non-functional', () => {
     const result = classifyPullRequest({
       title: 'fix(broker): reconnect dead links',
       body: proofBody('non-functional', 'n/a'),
+      changedFiles: ['crates/broker/src/runtime/delivery.rs'],
     });
     expect(result.errors).toContainEqual(expect.stringContaining('cannot be non-functional'));
   });
@@ -430,6 +453,420 @@ describe('Cloud dispatcher API key lifecycle', () => {
     );
   });
 
+  it('retains terminal status diagnostics when Cloud logs are empty', () => {
+    const diagnostics = formatCloudRunDiagnostics({
+      runId: 'cloud-run-123',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed","error":"step timeout"}',
+      statusPollFailures: 2,
+      logs: { stdout: '', stderr: '', exitCode: 0, timedOut: false },
+    });
+
+    expect(diagnostics).toContain('run_id=cloud-run-123');
+    expect(diagnostics).toContain('terminal_status=failed');
+    expect(diagnostics).toContain('status_poll_failures=2');
+    expect(diagnostics).not.toContain('step timeout');
+    expect(diagnostics).toContain('cloud_logs_output=empty');
+  });
+
+  it('allowlists status diagnostics without retaining nested workflow output', () => {
+    const rawStatus = JSON.stringify({
+      runId: 'cloud-run-123',
+      status: 'failed',
+      updatedAt: '2026-09-08T10:00:00.000Z',
+      workflow: 'return process.env.SECRET',
+      error: 'top-level-error-must-not-survive ci-key',
+      message: 'top-level-message-must-not-survive',
+      dispatchType: 'arbitrary free text must not survive',
+      result: {
+        error: {
+          token: 'rk_live_0123456789abcdef',
+          detail: 'nested-result-must-not-survive',
+        },
+      },
+      failure: {
+        phase: 'launch',
+        code: 'workflow_launch_failed',
+        message: 'failure-message-must-not-survive ci-key rk_live_0123456789abcdef',
+        sandboxId: 'sandbox id with arbitrary free text',
+        causeChain: ['nested-cause-must-not-survive'],
+      },
+    });
+    const diagnostic = sanitizeCloudStatusDiagnostic(`status response follows\n${rawStatus}`, ['ci-key']);
+
+    expect(JSON.parse(diagnostic)).toEqual({
+      runId: 'cloud-run-123',
+      status: 'failed',
+      updatedAt: '2026-09-08T10:00:00.000Z',
+      failure: {
+        phase: 'launch',
+        code: 'workflow_launch_failed',
+      },
+    });
+    expect(diagnostic).not.toContain('nested-result-must-not-survive');
+    expect(diagnostic).not.toContain('top-level-error-must-not-survive');
+    expect(diagnostic).not.toContain('top-level-message-must-not-survive');
+    expect(diagnostic).not.toContain('failure-message-must-not-survive');
+    expect(diagnostic).not.toContain('arbitrary free text');
+    expect(diagnostic).not.toContain('nested-cause-must-not-survive');
+    expect(diagnostic).not.toContain('0123456789abcdef');
+
+    const persisted = formatCloudRunDiagnostics({
+      runId: 'cloud-run-123',
+      terminalStatus: 'failed',
+      lastStatusOutput: rawStatus,
+      statusPollFailures: 0,
+      logs: { stdout: '', stderr: '', exitCode: 0, timedOut: false },
+      diagnosticSecretValues: ['ci-key'],
+    });
+    expect(persisted).toContain('workflow_launch_failed');
+    expect(persisted).not.toContain('nested-result-must-not-survive');
+    expect(persisted).not.toContain('top-level-error-must-not-survive');
+    expect(persisted).not.toContain('top-level-message-must-not-survive');
+    expect(persisted).not.toContain('failure-message-must-not-survive');
+    expect(persisted).not.toContain('arbitrary free text');
+    expect(persisted).not.toContain('ci-key');
+  });
+
+  it('omits non-JSON status errors even when they contain configured secrets', () => {
+    const diagnostic = sanitizeCloudStatusDiagnostic('Status request failed: upstream rejected short-key', [
+      'short-key',
+    ]);
+
+    expect(diagnostic).toBe('<non-JSON status response omitted>');
+    expect(diagnostic).not.toContain('short-key');
+  });
+
+  it('accepts only known Cloud run statuses', () => {
+    expect(recognizedCloudRunStatus('RUNNING')).toBe('running');
+    expect(recognizedCloudRunStatus('failed')).toBe('failed');
+    expect(recognizedCloudRunStatus('running-opaque-secret')).toBeNull();
+    expect(recognizedCloudRunStatus(null)).toBeNull();
+  });
+
+  it('treats malformed and status-less successful poll output as retryable', () => {
+    expect(recognizedCloudStatusFromOutput('{"status":unknown-secret}')).toBeNull();
+    expect(recognizedCloudStatusFromOutput('{"runId":"still-running"}')).toBeNull();
+    expect(recognizedCloudStatusFromOutput('{"workflowRun":{"status":"running"}}')).toBe('running');
+  });
+
+  it('redacts configured and recognized credentials from raw command output and artifacts', () => {
+    const raw = 'stdout ci-api-key rk_live_0123456789abcdef';
+    expect(sanitizeCloudCommandOutput(raw, ['ci-api-key'])).toBe('stdout [redacted] rk_live_…');
+    const githubToken = 'github_pat_0123456789abcdef0123456789abcdef';
+    expect(sanitizeCloudCommandOutput(`status ${githubToken}`)).toBe('status github_pat_…');
+
+    const artifact = formatCloudRunArtifact({
+      runId: 'cloud-run-123',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed","error":"opaque-status-secret"}',
+      statusPollFailures: 0,
+      logs: {
+        stdout: `workflow output ci-api-key\n`,
+        stderr: 'failure rth_at_0123456789abcdef\n',
+        exitCode: 0,
+        timedOut: false,
+      },
+      diagnosticSecretValues: ['ci-api-key'],
+    });
+
+    expect(artifact).toContain('workflow output [redacted]');
+    expect(artifact).toContain('failure rth_at_…');
+    expect(artifact).not.toContain('ci-api-key');
+    expect(artifact).not.toContain('0123456789abcdef');
+    expect(artifact).not.toContain('opaque-status-secret');
+  });
+
+  it('redacts complete credentials before configured prefix secrets in console and artifacts', () => {
+    const credentialSuffix = '0123456789abcdef';
+    const consoleOutput = sanitizeCloudCommandOutput(`launch rk_live_${credentialSuffix}`, ['rk_live_']);
+    expect(consoleOutput).toBe('launch [redacted]…');
+    expect(consoleOutput).not.toContain(credentialSuffix);
+
+    const artifact = formatCloudRunArtifact({
+      runId: 'cloud-run-prefix-secret',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed"}',
+      statusPollFailures: 0,
+      logs: {
+        stdout: `workflow output rk_live_${credentialSuffix}\n`,
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+      },
+      diagnosticSecretValues: ['rk_live_'],
+    });
+
+    expect(artifact).toContain('workflow output [redacted]…');
+    expect(artifact).not.toContain(credentialSuffix);
+  });
+
+  it('redacts credentials reconstructed across captured stdout and stderr', () => {
+    const configuredArtifact = formatCloudRunArtifact({
+      runId: 'cloud-run-split-secret',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed"}',
+      statusPollFailures: 0,
+      logs: { stdout: 'split-', stderr: 'secret', exitCode: 1, timedOut: false },
+      diagnosticSecretValues: ['split-secret'],
+    });
+    expect(configuredArtifact).toContain('[redacted]');
+    expect(configuredArtifact).not.toContain('split-secret');
+
+    const prefixedArtifact = formatCloudRunArtifact({
+      runId: 'cloud-run-split-prefix',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed"}',
+      statusPollFailures: 0,
+      logs: { stdout: 'rk_', stderr: 'live_token', exitCode: 1, timedOut: false },
+    });
+    expect(prefixedArtifact).toContain('rk_live_…');
+    expect(prefixedArtifact).not.toContain('rk_live_token');
+  });
+
+  it('keeps credential fragments attached to their originating output stream', async () => {
+    const captureWithRedaction = async (code: string, secretValues: string[]) => {
+      const redactors = createCommandOutputRedactors(secretValues);
+      const capture = await runBoundedProcess(process.execPath, ['-e', code], {
+        echo: false,
+        transformChunk: (text, stream, final) => redactors[stream].push(text, final),
+      });
+      return maskCapturedCommandOutput(capture, redactors);
+    };
+
+    const configuredCapture = await captureWithRedaction(
+      "process.stdout.write('secret'); setTimeout(() => process.stderr.write('split-'), 25)",
+      ['split-secret']
+    );
+    const configuredArtifact = formatCloudRunArtifact({
+      runId: 'cloud-run-redaction-a',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed"}',
+      statusPollFailures: 0,
+      logs: configuredCapture,
+      diagnosticSecretValues: ['split-secret'],
+    });
+
+    expect(configuredCapture.stdout).toBe('secret');
+    expect(configuredCapture.stderr).toBe('split-');
+    expect(configuredArtifact).not.toContain('split-secret');
+
+    const prefixCapture = await captureWithRedaction(
+      "process.stdout.write('live_token'); setTimeout(() => process.stderr.write('rk_'), 25)",
+      []
+    );
+    const prefixArtifact = formatCloudRunArtifact({
+      runId: 'cloud-run-redaction-b',
+      terminalStatus: 'failed',
+      lastStatusOutput: '{"status":"failed"}',
+      statusPollFailures: 0,
+      logs: prefixCapture,
+      diagnosticSecretValues: [],
+    });
+
+    expect(prefixCapture.stdout).toBe('live_token');
+    expect(prefixCapture.stderr).toBe('rk_');
+    expect(prefixArtifact).not.toContain('rk_live_token');
+
+    const benignTrailingPrefix = createCommandOutputRedactors();
+    expect(
+      benignTrailingPrefix.stdout.push('finished with br', false) + benignTrailingPrefix.stdout.push('', true)
+    ).toBe('finished with br');
+  });
+
+  it('redacts credential prefixes and configured secrets across subprocess chunk boundaries', async () => {
+    const redactor = createCredentialRedactor(['split-secret']);
+    const sanitized =
+      redactor.push('prefix rk_', false) +
+      redactor.push('live_0123456789 split-', false) +
+      redactor.push('secret tail', true);
+    expect(sanitized).toBe('prefix rk_live_… [redacted] tail');
+
+    const longCredentialLength = 200_000;
+    const capture = await runBoundedProcess(
+      process.execPath,
+      ['-e', `process.stdout.write('head rk_live_' + 'a'.repeat(${longCredentialLength}) + ' tail')`],
+      {
+        echo: false,
+        maxCaptureBytes: 128,
+        maxLiveOutputBytes: 128,
+        transformChunk: (text, stream, final) => redactor.push(text, final),
+      }
+    );
+
+    expect(capture.stdout).toBe('head rk_live_… tail');
+    expect(capture.stdout).not.toContain('a'.repeat(longCredentialLength));
+
+    const captureLimit = 2 * 1024 * 1024;
+    const boundaryCredential = '0123456789abcdef'.repeat(128);
+    const boundaryRedactor = createCredentialRedactor();
+    const boundaryCapture = await runBoundedProcess(
+      process.execPath,
+      [
+        '-e',
+        [
+          `process.stdout.write('x'.repeat(${captureLimit - 'rk_live_'.length}))`,
+          "process.stdout.write('rk_')",
+          "setImmediate(() => process.stdout.write('live_' + process.env.BOUNDARY_CREDENTIAL + ' tail'))",
+        ].join(';'),
+      ],
+      {
+        echo: false,
+        env: { ...process.env, BOUNDARY_CREDENTIAL: boundaryCredential },
+        maxCaptureBytes: captureLimit,
+        maxLiveOutputBytes: 128,
+        transformChunk: (text, stream, final) => {
+          // Force the credential prefix to cross a redactor boundary even if
+          // the OS coalesces the two writes into one pipe chunk.
+          const prefixIndex = text.indexOf('rk_live_');
+          if (prefixIndex >= 0) {
+            const split = prefixIndex + 'rk_'.length;
+            return (
+              boundaryRedactor.push(text.slice(0, split), false) +
+              boundaryRedactor.push(text.slice(split), final)
+            );
+          }
+          return boundaryRedactor.push(text, final);
+        },
+      }
+    );
+
+    expect(Buffer.byteLength(boundaryCapture.stdout, 'utf8')).toBeLessThanOrEqual(captureLimit);
+    expect(boundaryCapture.stdout).toContain('rk_live_…');
+    expect(boundaryCapture.stdout).not.toContain('0123456789abcdef');
+  });
+
+  it('preserves large credential-free output without pathological rescanning', () => {
+    const cleanOutput = `head ${'ordinary-output '.repeat(20_000)}tail`;
+    expect(sanitizeCloudCommandOutput(cleanOutput, ['configured-secret'])).toBe(cleanOutput);
+  });
+
+  it('rejects and terminates when an output transform throws', async () => {
+    await expect(
+      runBoundedProcess(process.execPath, ['-e', "process.stdout.write('trigger')"], {
+        echo: false,
+        transformChunk: () => {
+          throw new Error('transform failed');
+        },
+      })
+    ).rejects.toThrow('transform failed');
+  });
+
+  it.skipIf(process.platform === 'win32' || !PS_PATH)(
+    'kills same-group descendants when an output transform fails during final flush',
+    async () => {
+      const script = [
+        "const { spawn } = require('node:child_process');",
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        "process.stdout.write(String(child.pid) + '\\n');",
+        'child.unref();',
+      ].join('');
+      let transformed = '';
+      await expect(
+        runBoundedProcess(process.execPath, ['-e', script], {
+          echo: false,
+          transformChunk: (text, _stream, final) => {
+            if (final) throw new Error('final transform failed');
+            transformed += text;
+            return text;
+          },
+        })
+      ).rejects.toThrow('final transform failed');
+
+      const descendantPid = Number(transformed.trim());
+      expect(descendantPid).toBeGreaterThan(0);
+      const deadline = Date.now() + 2_000;
+      let running = true;
+      while (running && Date.now() < deadline) {
+        let processState = '';
+        try {
+          processState = execFileSync(PS_PATH!, ['-o', 'stat=', '-p', String(descendantPid)], {
+            encoding: 'utf8',
+          }).trim();
+        } catch (error) {
+          const status = (error as { status?: number }).status;
+          if (status !== 1) throw error;
+        }
+        running = processState.length > 0 && !processState.startsWith('Z');
+        if (running) await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (running) process.kill(descendantPid, 'SIGKILL');
+      expect(running).toBe(false);
+    }
+  );
+
+  it('omits malformed JSON status payloads instead of falling back to raw output', () => {
+    const diagnostic = sanitizeCloudStatusDiagnostic(
+      '{"status":"failed","result":{"token":"unknown-secret"}'
+    );
+
+    expect(diagnostic).toBe('<malformed JSON status response omitted>');
+    expect(diagnostic).not.toContain('unknown-secret');
+  });
+
+  it('uses a fixed error when malformed JSON contains unrecognized secrets', () => {
+    const malformed = 'status response follows\n{"status":"failed","token":unknown-secret}';
+
+    expect(() => parseJsonOutput(malformed, 'Cloud status')).toThrow(
+      new Error('Cloud status did not return JSON')
+    );
+  });
+
+  it('persists bounded diagnostics when a Cloud status poll times out', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-status-timeout-'));
+    const logsPath = path.join(root, 'nested', 'cloud.log');
+    try {
+      await writeStatusPollTimeoutDiagnostics({
+        logsPath,
+        runId: 'cloud-run-timeout',
+        lastStatusOutput: '😀'.repeat(100_000),
+        statusPollFailures: 3,
+      });
+
+      const diagnostics = await readFile(logsPath, 'utf8');
+      expect(diagnostics).toContain('run_id=cloud-run-timeout');
+      expect(diagnostics).toContain('terminal_status=status_poll_timeout');
+      expect(diagnostics).toContain('status_poll_failures=3');
+      expect(diagnostics).toContain('cloud_logs_timed_out=true');
+      expect(Buffer.byteLength(diagnostics, 'utf8')).toBeLessThanOrEqual(65 * 1024);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['nonzero', 'Status request failed: unknown-secret'],
+    ['malformed', '{"status":unknown-secret}'],
+    ['status-less', '{"runId":"cloud-run-deadline","result":{"token":"unknown-secret"}}'],
+  ])('persists safe bounded diagnostics when %s polls exhaust the deadline', async (_case, output) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-status-deadline-'));
+    const logsPath = path.join(root, 'nested', 'cloud.log');
+    try {
+      await writeStatusPollDeadlineDiagnostics({
+        logsPath,
+        runId: 'cloud-run-deadline',
+        lastStatusOutput: output,
+        statusPollFailures: 4,
+      });
+
+      const diagnostics = await readFile(logsPath, 'utf8');
+      expect(diagnostics).toContain('run_id=cloud-run-deadline');
+      expect(diagnostics).toContain('terminal_status=status_poll_deadline_exceeded');
+      expect(diagnostics).toContain('status_poll_failures=4');
+      expect(diagnostics).not.toContain('unknown-secret');
+      expect(Buffer.byteLength(diagnostics, 'utf8')).toBeLessThanOrEqual(65 * 1024);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bounds multibyte Cloud diagnostics by UTF-8 bytes', () => {
+    const diagnostics = boundedDiagnostic('😀'.repeat(100_000));
+
+    expect(Buffer.byteLength(diagnostics, 'utf8')).toBeLessThanOrEqual(64 * 1024);
+    expect(diagnostics).toContain('[... diagnostic output truncated ...]');
+  });
+
   it('waits for a complete prepared-run progress line split across stderr chunks', () => {
     const runIds: string[] = [];
     const parser = createPreparedRunProgressParser((runId: string) => runIds.push(runId));
@@ -451,6 +888,7 @@ describe('Cloud dispatcher API key lifecycle', () => {
 
     expect(auth.cliEnv.CLOUD_API_URL).toBe(credentialEnv.CLOUD_API_URL);
     expect(auth.cliEnv.CLOUD_API_KEY).toBe(credentialEnv.CLOUD_API_KEY);
+    expect(auth.diagnosticSecretValues).toEqual([credentialEnv.CLOUD_API_KEY]);
     expect(auth.cliEnv.CLOUD_API_ACCESS_TOKEN).toBeUndefined();
     expect(auth.cliEnv.CLOUD_API_REFRESH_TOKEN).toBeUndefined();
     expect(auth.cliEnv.CLOUD_API_ACCESS_TOKEN_EXPIRES_AT).toBeUndefined();
@@ -1250,7 +1688,8 @@ describe('process timeout contract', () => {
       ].join('');
       const result = await runProcess(process.execPath, ['-e', script], {
         echo: false,
-        timeoutMs: 100,
+        // Allow the fixture to start and print its PID before testing forced cleanup.
+        timeoutMs: 1_000,
         terminationGraceMs: 100,
       });
       const descendantPid = Number(result.stdout.trim());
@@ -1479,48 +1918,62 @@ describe('pull request snapshot consistency', () => {
 });
 
 describe('trusted dispatcher source contract', () => {
-  it('never checks out PR head code on the credential-bearing GitHub runner', async () => {
-    const source = await readFile('.github/workflows/relayflow-pr-proof.yml', 'utf8');
-    expect(source).toContain('pull_request_target:');
-    expect(source).toContain('ref: ${{ github.event.pull_request.base.sha || github.sha }}');
-    expect(source).toContain('persist-credentials: false');
-    expect(source).toContain('git add -f -- .relayflow/pr-proof-input.json');
-    expect(source).toContain('statuses: write');
-    expect(source).toContain('report-status.mjs start');
-    expect(source).toContain('report-status.mjs finish');
-    expect(source).toContain('concurrency:');
-    expect(source).toContain('cancel-in-progress: true');
-    expect(source).toContain("if: always() && steps.status.outputs.head_sha != ''");
-    expect(source).not.toContain('always() && !cancelled()');
-    expect(source).toContain('--expected-head-sha "${{ steps.status.outputs.head_sha }}"');
-    expect(source).toContain('actions/checkout@11d5960a326750d5838078e36cf38b85af677262');
-    expect(source).toContain('actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020');
-    expect(source).toContain('actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02');
-    expect(source).toContain('actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093');
-    expect(source).toContain('resolve-broker-artifacts.mjs');
-    expect(source).toContain('stage-broker-artifacts.mjs');
-    expect(source).toContain('actions: read');
-    expect(source).not.toContain('github.event.pull_request.head.sha }}');
+  /**
+   * The v1 dispatcher was a `pull_request_target` job whose security rested on
+   * never checking out PR head code on a credential-bearing runner. A deployed
+   * v2 flow has no runner and no checkout, so the equivalent boundary moved:
+   * the listener's event envelope is attacker-influenced data, and the flow
+   * must reduce it to a pull request NUMBER before anything trusts it. Every
+   * SHA, title, and body in the proof contract then comes from the GitHub API
+   * via `prepare.mjs`, exactly as the dispatcher resolved them.
+   */
+  it('never lets listener-supplied pull request data reach the proof contract', async () => {
+    const normalizer = await readFile('scripts/pr-proof/event-from-input.mjs', 'utf8');
+    // The only thing extracted from the envelope, and the only thing written.
+    expect(normalizer).toContain('pullRequestNumber');
+    expect(normalizer).toContain('{ inputs: { pr_number: number } }');
+    // Safe, not merely integral: JSON.parse rounds past 2^53, so an integral
+    // check would accept a rounded id and prove the wrong pull request.
+    expect(normalizer).toContain('Number.isSafeInteger(value) && value > 0');
+    // A non-pull_request event must refuse rather than guess a number out of it.
+    expect(normalizer).toContain('This flow proves pull requests; the listener delivered a');
+    // base64 keeps attacker-controlled text out of the lowered shell command.
+    expect(normalizer).toContain('BASE64 = /^[A-Za-z0-9+/]*={0,2}$/');
+    expect(normalizer).not.toContain('headSha');
+    expect(normalizer).not.toContain('baseSha');
   });
 
-  it('fits broker resolution, Cloud execution, and setup inside the dispatcher deadline', async () => {
-    const dispatcher = await readFile('.github/workflows/relayflow-pr-proof.yml', 'utf8');
+  it('gives the flow the classification, staging, and status work the dispatcher did', async () => {
+    const source = await readFile('flows/ci/pr-proof.flow.ts', 'utf8');
+    expect(source).toContain('event-from-input.mjs --input-base64 ${encodeInput(input)}');
+    expect(source).not.toContain('JSON.stringify(input)}');
+    expect(source).toContain('prepare.mjs --event ${EVENT_PATH}');
+    expect(source).toContain('resolve-broker-artifacts.mjs');
+    expect(source).toContain('stage-broker-artifacts.mjs');
+    // Broker binaries come from authenticated Actions run storage, never the
+    // workspace seed; `gh run download` replaces actions/download-artifact.
+    expect(source).toContain('gh run download');
+    expect(source).toContain('--source cloud');
+  });
+
+  it('fits broker resolution and the proof itself inside the flow budget', async () => {
+    const source = await readFile('flows/ci/pr-proof.flow.ts', 'utf8');
     const resolver = await readFile('scripts/pr-proof/resolve-broker-artifacts.mjs', 'utf8');
-    const dispatcherMinutes = Number(dispatcher.match(/timeout-minutes: (\d+)/)?.[1]);
-    const cloudTimeoutMs = Number(dispatcher.match(/PR_PROOF_CLOUD_TIMEOUT_MS: '(\d+)'/)?.[1]);
+    const budgetMinutes = Number(source.match(/wallclock: '(\d+)m'/)?.[1]);
     const brokerProducerMinutes = Number(resolver.match(/BROKER_PRODUCER_TIMEOUT_MS = (\d+) \* 60_000/)?.[1]);
     const brokerQueueMinutes = Number(resolver.match(/BROKER_QUEUE_HEADROOM_MS = (\d+) \* 60_000/)?.[1]);
     const pollIntervalMs = Number(
       resolver.match(/RESOLVE_POLL_INTERVAL_MS = ([\d_]+)/)?.[1]?.replaceAll('_', '')
     );
     const pollSlackAttempts = Number(resolver.match(/RESOLVE_POLL_SLACK_ATTEMPTS = (\d+)/)?.[1]);
-    const setupHeadroomMs = 5 * 60_000;
+    // Broker resolution now runs inside the flow rather than in the job around
+    // it, so the budget must cover the resolver's worst case on top of the
+    // proof's own 45 minutes. Under-budgeting fails a PR whose broker artifact
+    // is still building by the clock instead of judging it on evidence.
+    const proofMs = 45 * 60_000;
     expect(resolver).toContain('const [base, head] = await Promise.all([');
-    expect(dispatcherMinutes * 60_000).toBeGreaterThanOrEqual(
-      (brokerProducerMinutes + brokerQueueMinutes) * 60_000 +
-        pollSlackAttempts * pollIntervalMs +
-        cloudTimeoutMs +
-        setupHeadroomMs
+    expect(budgetMinutes * 60_000).toBeGreaterThanOrEqual(
+      (brokerProducerMinutes + brokerQueueMinutes) * 60_000 + pollSlackAttempts * pollIntervalMs + proofMs
     );
   });
 
@@ -1654,17 +2107,30 @@ describe('trusted dispatcher source contract', () => {
   });
 
   it('gates head execution on deterministic base evidence', async () => {
-    const source = await readFile('workflows/pr-proof.ts', 'utf8');
-    expect(source).toContain(".onError('fail-fast')");
-    expect(source).toContain(".step('gate-base'");
-    expect(source).toContain("dependsOn: ['gate-base']");
-    expect(source).toContain(".step('gate-red-green'");
+    const source = await readFile('flows/ci/pr-proof.flow.ts', 'utf8');
+    // Ordering is the gate: the head arm must not be reachable until the base
+    // arm's evidence has passed a deterministic check. In v1 that was
+    // `dependsOn: ['gate-base']`; in an awaited body it is source order, so
+    // assert the four positions directly rather than trusting the read.
+    const baseArm = source.indexOf("f\n      .agent('base-prover'");
+    const baseGate = source.indexOf('--arm base');
+    const headArm = source.indexOf("f\n      .agent('head-verifier'");
+    const redGreen = source.indexOf('--arm both');
+    expect(baseArm).toBeGreaterThan(-1);
+    expect(baseGate).toBeGreaterThan(baseArm);
+    expect(headArm).toBeGreaterThan(baseGate);
+    expect(redGreen).toBeGreaterThan(headArm);
     expect(source).toContain('PR_PROOF_ARM_COMPLETE arm=base');
     expect(source).toContain('PR_PROOF_ARM_COMPLETE arm=head');
     expect(source).toContain('--source cloud');
-    expect(source).toContain("result.status !== 'completed'");
-    expect(source).toContain('.timeout(2_700_000)');
-    expect(source).not.toContain('.timeout(3_600_000)');
+    // v1 said this with `.onError('fail-fast')` and `retries: 0`. v2 has no
+    // repair agents and no step retries, so no agent can edit the harness or
+    // the artifacts after a gate rejects them. Assert on the body rather than
+    // the file: the header comment names both v1 knobs to explain their
+    // absence, and must not be read as reintroducing them.
+    const body = source.slice(source.indexOf('export default flow'));
+    expect(body).not.toContain('retries');
+    expect(body).not.toContain('onError');
   });
 
   it('records the per-step Cloud sandbox id instead of the orchestrator id', async () => {
@@ -1715,6 +2181,15 @@ describe('trusted dispatcher source contract', () => {
     expect(source).toContain("requiredCredential(env, 'CLOUD_API_KEY')");
     expect(source).not.toContain("path.join(authDir, 'cloud-auth.json')");
     expect(source).not.toContain('CLOUD_API_REFRESH_TOKEN=');
+    expect(source).toContain('formatCloudRunArtifact({');
+    expect(source).toContain('sanitizeCloudCommandOutput(launch.stderr');
+    expect(source).toContain('const sanitizedLogs = sanitizeCloudCommandOutput(');
+    expect(source).toContain("`${logs.stdout ?? ''}${logs.stderr ?? ''}`");
+    expect(source).toContain('sanitizeCloudCommandOutput(error.message');
+    expect(source).toContain("console.warn('Cloud RelayFlow status: <unrecognized>')");
+    expect(source).not.toContain('process.stderr.write(launch.stderr)');
+    expect(source).not.toContain('process.stdout.write(logs.stdout)');
+    expect(source).not.toContain('process.stderr.write(logs.stderr)');
   });
 
   it('emits the prepared Cloud run id before upload and final submission', async () => {
@@ -1736,7 +2211,7 @@ describe('classification reads the diff, not the title', () => {
     ].join('\n');
 
   it('treats a workflow-only change as non-runtime', () => {
-    expect(runtimeSurfaceChanged(['workflows/verify-features.ts', 'scripts/pr-proof/contract.mjs'])).toBe(
+    expect(runtimeSurfaceChanged(['flows/verify/features.spec.ts', 'scripts/pr-proof/contract.mjs'])).toBe(
       false
     );
   });
@@ -1776,6 +2251,35 @@ describe('classification reads the diff, not the title', () => {
   });
 
   /**
+   * Package-local unit tests are test corpus too, not just the top-level
+   * tests/ tree: published tarballs pin an explicit `files` array that
+   * excludes them, so they never reach a shipped artifact regardless of
+   * where they live under packages/.
+   */
+  it('exempts a package-local *.test.ts(x) file under packages/', () => {
+    expect(runtimeSurfaceChanged(['packages/cli/src/cli/publish-workflow.test.ts'])).toBe(false);
+    expect(runtimeSurfaceChanged(['packages/sdk/src/__tests__/widget.test.tsx'])).toBe(false);
+  });
+
+  it('still treats the runtime file next to an edited test as runtime', () => {
+    // The test-file exemption must not blanket-cover a PR that also edits
+    // real runtime code alongside its test.
+    expect(
+      runtimeSurfaceChanged([
+        'packages/cli/src/cli/commands/local-agent.ts',
+        'packages/cli/src/cli/commands/local-agent.test.ts',
+      ])
+    ).toBe(true);
+  });
+
+  it('does not let a *.test.ts suffix exempt a runtime script outside packages/', () => {
+    // An unanchored `\.test\.tsx?$` pattern would also match this path,
+    // contradicting "scripts/ is NOT exempt wholesale" and this allowlist's
+    // fail-closed treatment of an unseen scripts/ subtree.
+    expect(runtimeSurfaceChanged(['scripts/some-new-tool/main.test.ts'])).toBe(true);
+  });
+
+  /**
    * The defect this closes, direction 1: a `fix(` PR that only edits a
    * scheduled workflow was told its change type "cannot be non-functional",
    * so it had to fabricate a runtime proof it could not honestly build.
@@ -1784,7 +2288,7 @@ describe('classification reads the diff, not the title', () => {
     const result = classifyPullRequest({
       title: 'fix(workflow): fail loudly on alert delivery',
       body: nonFunctional(),
-      changedFiles: ['workflows/verify-features.ts', 'CHANGELOG.md'],
+      changedFiles: ['flows/verify/features.spec.ts', 'CHANGELOG.md'],
     });
     expect(result.errors).toEqual([]);
     expect(result.required).toBe(false);
@@ -1794,7 +2298,7 @@ describe('classification reads the diff, not the title', () => {
     const result = classifyPullRequest({
       title: 'fix(workflow): fail loudly on alert delivery',
       body: nonFunctional(),
-      changedFiles: ['workflows/verify-features.ts', 'crates/broker/src/runtime/fleet.rs'],
+      changedFiles: ['flows/verify/features.spec.ts', 'crates/broker/src/runtime/fleet.rs'],
     });
     expect(result.errors.join(' ')).toContain('changes runtime files');
   });
@@ -1838,6 +2342,7 @@ describe('classification reads the diff, not the title', () => {
   it('still exempts the CI-only script subtrees', () => {
     expect(runtimeSurfaceChanged(['scripts/pr-proof/prepare.mjs'])).toBe(false);
     expect(runtimeSurfaceChanged(['scripts/evals/run-relay-evals.mjs'])).toBe(false);
+    expect(runtimeSurfaceChanged(['scripts/verify-features/targeted-pr-plan.mjs'])).toBe(false);
   });
 
   /**
@@ -1861,14 +2366,82 @@ describe('classification reads the diff, not the title', () => {
     expect(result.errors.join(' ')).toContain('cannot be non-functional');
   });
 
-  it('falls back to title-only behaviour when the diff is unavailable', () => {
-    // changedFiles omitted: preserve the previous contract rather than
-    // silently exempting a change nobody inspected.
+  /**
+   * The false green this closes. When the GitHub files API is unreadable,
+   * `prepare.mjs` classifies with `changedFiles: null`. Classification then
+   * fell back to the title, and a PR whose title carried no conventional
+   * `feat(`/`fix(` prefix returned `required: false` — so a transient API
+   * failure published a green "proof not required" skip on the one check that
+   * gates the merge. An unread diff exempts nothing.
+   */
+  it('requires a proof for a chore( non-functional PR when the diff is unreadable', () => {
+    const result = classifyPullRequest({
+      title: 'chore(broker): tidy delivery bookkeeping',
+      body: nonFunctional(),
+      changedFiles: null,
+    });
+    expect(result).toMatchObject({
+      required: true,
+      kind: null,
+      reason: 'changed-file list unavailable',
+    });
+    expect(result.reason).toBe('changed-file list unavailable');
+    expect(result.errors.join(' ')).toContain('changed-file list could not be read');
+    // The declared `n/a` case is consistent with the declared change type, so
+    // the unreadable diff must not be reported as a case-selector mistake.
+    expect(result.errors.join(' ')).not.toContain('RelayFlow case id');
+  });
+
+  it('requires a proof when the diff is unreadable and the title is conventional', () => {
     const result = classifyPullRequest({
       title: 'fix(broker): reconnect dead links',
       body: nonFunctional(),
+      changedFiles: null,
     });
-    expect(result.errors.join(' ')).toContain('cannot be non-functional');
+    expect(result.required).toBe(true);
+    expect(result.errors.join(' ')).toContain('changed-file list could not be read');
+  });
+
+  it('requires a proof for an unreadable diff with no proof metadata at all', () => {
+    const result = classifyPullRequest({
+      title: 'chore(broker): tidy delivery bookkeeping',
+      body: '',
+      changedFiles: null,
+    });
+    expect(result.required).toBe(true);
+  });
+
+  /**
+   * The fail-closed rule must not swallow a legitimate exemption: a diff that
+   * WAS read and touches nothing shippable still classifies as exempt.
+   */
+  it('still exempts a declared non-functional PR whose diff was read', () => {
+    const result = classifyPullRequest({
+      title: 'chore(docs): clarify attach modes',
+      body: nonFunctional(),
+      changedFiles: ['docs/attach.md'],
+    });
+    expect(result.required).toBe(false);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('keeps a declared bug-fix case selectable when the diff is unreadable', () => {
+    // Still required, still the declared case: the fail-closed path adds no
+    // spurious errors to a PR that already declares a proof.
+    const result = classifyPullRequest({
+      title: 'fix(broker): reconnect dead links',
+      body: [
+        '- Change type: `bugfix` <!-- relay-pr-proof:type -->',
+        '- RelayFlow case: `1593-parked-agent-orphaned-receipt` <!-- relay-pr-proof:case -->',
+      ].join('\n'),
+      changedFiles: null,
+    });
+    expect(result).toMatchObject({
+      required: true,
+      kind: 'bugfix',
+      caseId: '1593-parked-agent-orphaned-receipt',
+      errors: [],
+    });
   });
 });
 

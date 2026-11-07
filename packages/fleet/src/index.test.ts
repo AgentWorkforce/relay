@@ -8,6 +8,7 @@ import {
   defineDefaultLocalNode,
   defineNode,
   invokeNodeHandler,
+  MAX_FLEET_NODE_AGENTS,
   nodeInfo,
   nodeRegistrationTags,
   onMessage,
@@ -29,6 +30,19 @@ describe('@agent-relay/fleet', () => {
     expect(node.name).toBe('builder-1');
     expect(node.maxAgents).toBe(3);
     expect(node.capabilities['run:build']).toMatchObject({ name: 'run:build', kind: 'action' });
+  });
+
+  it('rejects maxAgents outside the broker-parseable range', () => {
+    const capabilities = { ping: async () => 'pong' };
+    // The boundary itself is the largest u32 the broker parses.
+    expect(defineNode({ name: 'capped', maxAgents: MAX_FLEET_NODE_AGENTS, capabilities }).maxAgents).toBe(
+      MAX_FLEET_NODE_AGENTS
+    );
+    for (const maxAgents of [0, -1, 1.5, Number.NaN, MAX_FLEET_NODE_AGENTS + 1, Number.MAX_SAFE_INTEGER]) {
+      expect(() => defineNode({ name: 'capped', maxAgents, capabilities })).toThrow(
+        /maxAgents must be a positive integer/
+      );
+    }
   });
 
   it('accepts a plain async handler as an escape hatch', async () => {
@@ -275,8 +289,36 @@ describe('@agent-relay/fleet', () => {
       'spawn:claude',
       'spawn:codex',
       'spawn:gemini',
+      'spawn:muse',
       'spawn:aider',
     ]);
+  });
+
+  it('delegates Muse authentication environment and readiness to the broker spawn', async () => {
+    const env = { RELAY_MUSE_SHARED_AUTH_PATH: '/srv/muse/auth.json' };
+    const node = defineNode({
+      name: 'muse-node',
+      capabilities: {
+        'spawn:muse': spawn({ runtime: 'pty', command: 'muse', env }, { verifyReady: true }),
+      },
+    });
+    const ctx = stubContext(node.name, Object.keys(node.capabilities));
+    await invokeNodeHandler(node, 'spawn:muse', { name: 'muse-worker', task: 'ship it' }, ctx);
+    expect(ctx.spawnAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        verifyReady: true,
+        initialTask: 'ship it',
+        agent: expect.objectContaining({
+          cli: 'muse',
+          harness_config: expect.objectContaining({ env }),
+        }),
+      })
+    );
+  });
+
+  it('advertises spawn:muse from the default local node', () => {
+    const node = defineDefaultLocalNode({ name: 'local' });
+    expect(Object.keys(node.capabilities)).toContain('spawn:muse');
   });
 
   it('rejects invalid definitions early', () => {

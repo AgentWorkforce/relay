@@ -29,24 +29,11 @@
   "ignore": ["**/*.test.ts", "scripts/**", "plugins/**", "tests/**", "packages/openclaw/bridge/**"],
   "ignoreDependencies": ["turbo"],
   "ignoreWorkspaces": [
-    "packages/agent",
-    "packages/brand",
     "packages/broker-darwin-arm64",
     "packages/broker-darwin-x64",
     "packages/broker-linux-arm64",
     "packages/broker-linux-x64",
     "packages/broker-win32-x64",
-    "packages/browser-primitive",
-    "packages/cloud",
-    "packages/credential-proxy",
-    "packages/events",
-    "packages/gateway",
-    "packages/github-primitive",
-    "packages/hooks",
-    "packages/memory",
-    "packages/personas",
-    "packages/policy",
-    "packages/slack-primitive",
-    "packages/trajectory"
+    "packages/cloud"
   ]
 }

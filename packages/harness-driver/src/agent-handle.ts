@@ -44,8 +44,8 @@ export interface AgentIdleInfo {
 }
 
 export interface AgentReadyInfo {
-  /** `'ready'` after worker_ready, `'exited'` if startup died, or `'timeout'`. */
-  reason: 'ready' | 'exited' | 'timeout';
+  /** A fallback is unproven startup; it is reported only if no ready/exit arrives before the deadline. */
+  reason: 'ready' | 'exited' | 'timeout' | 'startup_fallback';
   /** Runtime reported by the ready handshake. */
   runtime?: AgentRuntime;
   /** Harness process id reported by the ready handshake. */
@@ -75,6 +75,7 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
   readonly sessionId?: string;
   readonly pid?: number;
   readonly generation?: string;
+  readonly channels?: string[];
 
   constructor(
     result: SpawnAgentResult,
@@ -87,6 +88,7 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
     this.sessionId = result.sessionId;
     this.pid = result.pid;
     this.generation = result.generation;
+    this.channels = result.channels;
   }
 
   /** Exit info if the agent has already exited (from broker event history), else `undefined`. */
@@ -114,12 +116,13 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
    * Resolve only after the broker has received the harness `worker_ready`
    * handshake. A successful `/api/spawn` response proves process creation,
    * not harness readiness, so callers that advertise a running agent should
-   * gate on this method and release on `exited` / `timeout`.
+   * gate on `reason === 'ready'`; a startup fallback does not prove readiness.
    */
   waitForReady(timeoutMs = 90_000): Promise<AgentReadyInfo> {
     this.client.connectEvents();
 
     return new Promise<AgentReadyInfo>((resolve) => {
+      let fallback: AgentReadyInfo | undefined;
       let timer: ReturnType<typeof setTimeout> | undefined;
       let unsub: () => void = () => undefined;
       let settled = false;
@@ -134,6 +137,13 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
         if (this.isCurrentGeneration(event) && event.kind === 'worker_ready' && event.name === this.name) {
           settle({ reason: 'ready', runtime: event.runtime, pid: event.pid });
           return;
+        }
+        if (
+          this.isCurrentGeneration(event) &&
+          event.kind === 'worker_startup_fallback' &&
+          event.name === this.name
+        ) {
+          fallback = { reason: 'startup_fallback', runtime: event.runtime, pid: event.pid };
         }
         const exit = this.isCurrentGeneration(event) ? matchExit(event, this.name) : undefined;
         if (exit) settle({ reason: 'exited', exit });
@@ -154,7 +164,14 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
         settle({ reason: 'exited', exit: alreadyExited });
         return;
       }
-      timer = setTimeout(() => settle({ reason: 'timeout' }), timeoutMs);
+      const priorFallback = this.client
+        .queryEvents({ kind: 'worker_startup_fallback', name: this.name })
+        .filter((event) => this.isCurrentGeneration(event))
+        .at(-1);
+      if (priorFallback?.kind === 'worker_startup_fallback') {
+        fallback = { reason: 'startup_fallback', runtime: priorFallback.runtime, pid: priorFallback.pid };
+      }
+      timer = setTimeout(() => settle(fallback ?? { reason: 'timeout' }), timeoutMs);
     });
   }
 
@@ -271,8 +288,14 @@ export class SpawnedAgentHandle implements SpawnAgentResult {
   }
 
   /** Release the agent via the broker. */
-  release(reason?: string): Promise<{ name: string }> {
-    return this.client.release(this.name, reason);
+  release(reason?: string, options?: { deleteIdentity?: boolean }): Promise<{ name: string }> {
+    if (options?.deleteIdentity && !this.generation)
+      return Promise.reject(new Error('Owned identity deletion requires a worker generation'));
+    return this.generation === undefined
+      ? this.client.release(this.name, reason)
+      : options?.deleteIdentity
+        ? this.client.release(this.name, reason, this.generation, true)
+        : this.client.release(this.name, reason, this.generation);
   }
 
   private isCurrentGeneration(event: BrokerEvent): boolean {

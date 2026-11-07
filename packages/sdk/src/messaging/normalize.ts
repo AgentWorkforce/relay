@@ -27,6 +27,7 @@ import type {
   InboxItem,
   InboxItemState,
   RelayAgent,
+  RelayFileInfo,
   RelayAgentChannel,
   RelayAgentPresence,
   RelayAgentRegistration,
@@ -271,6 +272,38 @@ export function normalizeAgentChannel(input: unknown): RelayAgentChannel {
     name,
     role: channel.role ?? 'member',
     joinedAt: opt(channel.joined_at),
+  });
+}
+
+/** The file id and byte upload URL from a `files.upload` response, in either key casing. */
+export function normalizeFileUpload(input: unknown): { id?: string; uploadUrl?: string } {
+  const wired = toWire(input);
+  const upload = isRecord(wired) ? wired : {};
+  return {
+    id: opt(str(upload, 'id') ?? str(upload, 'file_id')),
+    uploadUrl: opt(str(upload, 'upload_url')),
+  };
+}
+
+export function normalizeFileInfo(input: unknown): RelayFileInfo {
+  const wired = toWire(input);
+  const file = isRecord(wired) ? wired : {};
+  const status = str(file, 'status');
+  return compact<RelayFileInfo>({
+    id: str(file, 'id') ?? str(file, 'file_id') ?? '',
+    filename: str(file, 'filename') ?? '',
+    contentType: str(file, 'content_type') ?? 'application/octet-stream',
+    sizeBytes: num(file, 'size_bytes') ?? 0,
+    // A record that omits `status` but carries a download URL is complete.
+    status:
+      status === 'pending' || status === 'complete' || status === 'deleted'
+        ? status
+        : status === undefined && str(file, 'download_url')
+          ? 'complete'
+          : undefined,
+    downloadUrl: opt(str(file, 'download_url')),
+    uploadedBy: opt(str(file, 'uploaded_by')),
+    createdAt: opt(str(file, 'created_at')),
   });
 }
 

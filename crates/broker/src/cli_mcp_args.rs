@@ -4,14 +4,27 @@ use std::{
 };
 
 use crate::relaycast::{
-    configure_agent_relay_mcp_with_token, RelaycastHttpClient, RelaycastRegistrationError,
+    configure_agent_relay_mcp_launch, retry_agent_registration_create_only, RegRetryOutcome,
+    RelaycastHttpClient, RelaycastRegistrationError, MAX_AGENT_REGISTRATION_ELAPSED,
+    MAX_AGENT_REGISTRATION_OUTER_TIMEOUT,
 };
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::McpArgsCommand;
 
-const MCP_ARGS_REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
+// The registration helper (`retry_agent_registration_create_only`) already
+// enforces its own `MAX_AGENT_REGISTRATION_ELAPSED` bounded-retry budget and
+// its `register_new_spawn_identity` implementation has a separate defensive
+// `MAX_AGENT_REGISTRATION_OUTER_TIMEOUT` guard. This wrapper timeout is a
+// final backstop only (e.g. against a future regression in that helper), so it
+// is derived from the helper's outer guard plus explicit slack rather than a
+// magic number. It must stay strictly larger than the helper's outer guard so
+// it can never race the helper and swallow its typed exhausted/fatal diagnostic.
+const MCP_ARGS_REGISTER_TIMEOUT_SLACK: Duration = Duration::from_secs(30);
+const MCP_ARGS_REGISTER_TIMEOUT: Duration = Duration::from_secs(
+    MAX_AGENT_REGISTRATION_OUTER_TIMEOUT.as_secs() + MCP_ARGS_REGISTER_TIMEOUT_SLACK.as_secs(),
+);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,6 +32,13 @@ struct McpArgsOutput {
     args: Vec<String>,
     side_effect_files: Vec<PathBuf>,
     agent_token: Option<String>,
+    /// Names (never values) of the credential variables the harness config
+    /// references. File-based harnesses (Cursor, OpenCode, Gemini, Grok) keep
+    /// credentials out of project files, so the caller must set each of these
+    /// on the agent process environment (`RELAY_AGENT_TOKEN` is `agentToken`
+    /// when `--register` minted it).
+    #[serde(default)]
+    required_env: Vec<String>,
 }
 
 struct RegisteredMcpArgsToken {
@@ -104,7 +124,7 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         .default_workspace
         .or_else(|| std::env::var("RELAY_DEFAULT_WORKSPACE").ok());
 
-    let args = configure_agent_relay_mcp_with_token(
+    let launch = configure_agent_relay_mcp_launch(
         &cli,
         &agent_name,
         api_key.as_deref(),
@@ -114,8 +134,11 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         agent_token.as_deref(),
         workspaces_json.as_deref(),
         default_workspace.as_deref(),
+        None,
     )
     .await?;
+    let args = launch.args;
+    let required_env = launch.env.into_iter().map(|(key, _)| key).collect();
 
     let side_effect_files = side_effect_files_for(&cli, &existing_args, &cwd)?;
 
@@ -123,6 +146,7 @@ async fn compute_mcp_args_output(cmd: McpArgsCommand) -> Result<McpArgsOutput> {
         args,
         side_effect_files,
         agent_token: registered.map(|registered| registered.agent_token),
+        required_env,
     })
 }
 
@@ -171,13 +195,35 @@ async fn register_agent_token_for_mcp_args_with_timeout(
 
     let agent_token = match tokio::time::timeout(
         timeout,
-        client.register_agent_token(agent_name, Some(&cli_lower)),
+        retry_agent_registration_create_only(&client, agent_name, Some(&cli_lower)),
     )
     .await
     {
         Ok(Ok(token)) => token,
-        Ok(Err(error)) => return Err(map_register_agent_token_error(error)),
-        Err(error) => bail!("register timed out after {timeout:?}: {error}"),
+        Ok(Err(RegRetryOutcome::RetryableExhausted(error)))
+        | Ok(Err(RegRetryOutcome::Fatal(error))) => {
+            return Err(map_register_agent_token_error(error));
+        }
+        // The helper's own bounded retry and defensive outer guard should
+        // always resolve before this final, larger backstop can fire. If it
+        // ever does fire, still surface a typed, correlated diagnostic (agent
+        // name + elapsed budget) through the same classifier used for the
+        // helper's own errors, instead of a generic "timed out" string that
+        // would lose structured classification.
+        Err(_elapsed) => {
+            return Err(map_register_agent_token_error(
+                RelaycastRegistrationError::Transport {
+                    agent_name: agent_name.to_string(),
+                    detail: format!(
+                        "register outer safety timeout exceeded after {timeout:?}; this exceeds \
+                         the {inner:?} bounded-retry budget and {guard:?} helper guard, indicating \
+                         a regression rather than a legitimate exhausted retry",
+                        inner = MAX_AGENT_REGISTRATION_ELAPSED,
+                        guard = MAX_AGENT_REGISTRATION_OUTER_TIMEOUT,
+                    ),
+                },
+            ));
+        }
     };
 
     Ok(RegisteredMcpArgsToken {
@@ -354,6 +400,23 @@ mod tests {
     fn output_as_json(output: &McpArgsOutput) -> Value {
         let json = serde_json::to_string_pretty(output).expect("serialize output");
         serde_json::from_str(&json).expect("parse output json")
+    }
+
+    #[tokio::test]
+    async fn devin_defers_private_mcp_configuration_to_the_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = compute_mcp_args_output(command("devin", temp.path()))
+            .await
+            .unwrap();
+        assert!(
+            output.args.is_empty(),
+            "no trust or permission bypass flags"
+        );
+        assert!(output.side_effect_files.is_empty());
+        assert!(
+            !temp.path().join(".devin").exists(),
+            "never write shared project state"
+        );
     }
 
     #[tokio::test]
@@ -628,12 +691,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn register_retries_transient_overload_before_surface_terminal_diagnostics() {
+        let _env = EnvGuard::all();
+        std::env::remove_var("RELAY_API_KEY");
+        std::env::remove_var("RELAY_BASE_URL");
+        std::env::remove_var("RELAY_AGENT_TOKEN");
+
+        let server = MockServer::start();
+        let register_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(503)
+                .header("x-request-id", "mcp-args-374")
+                .header("retry-after", "5")
+                .json_body(json!({
+                    "ok": false,
+                    "error": {
+                        "code": "registration_backend_overloaded",
+                        "message": "deterministic registration failure"
+                    }
+                }));
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let mut cmd = command("codex", temp.path());
+        cmd.register = true;
+        cmd.base_url = Some(server.base_url());
+        cmd.api_key = Some("rk_live_test".to_string());
+        cmd.agent_token = None;
+
+        let error = compute_mcp_args_output(cmd)
+            .await
+            .expect_err("the controlled registration error must surface");
+        let message = error.to_string();
+
+        for marker in [
+            "(503)",
+            "registration_backend_overloaded",
+            "deterministic registration failure",
+            "request_id: mcp-args-374",
+            "attempts: 3",
+        ] {
+            assert!(message.contains(marker), "missing {marker}: {message}");
+        }
+        // The broker-owned retry budget handles the typed transient overload;
+        // the terminal diagnostic must report the total broker attempts.
+        register_mock.assert_hits(3);
+    }
+
+    #[tokio::test]
     async fn register_timeout_remains_bounded() {
         let server = MockServer::start();
         let register_mock = server.mock(|when, then| {
             when.method(POST).path("/v1/agents");
             then.status(200)
-                .delay(Duration::from_millis(300))
+                // Native-root discovery can take tens of milliseconds on a
+                // cold machine. Leave enough room to prove the request was
+                // sent while keeping the server response beyond the bound.
+                .delay(Duration::from_secs(2))
                 .json_body(json!({
                     "ok": true,
                     "data": {
@@ -654,17 +768,90 @@ mod tests {
                 "test-agent",
                 Some("rk_live_test".to_string()),
                 Some(server.base_url()),
-                Duration::from_millis(30),
+                Duration::from_secs(1),
             ),
         )
         .await
-        .expect("the injected 30ms registration bound must finish within the outer guard");
+        .expect("the injected 1s registration bound must finish within the outer guard");
         let error = match outcome {
             Ok(_) => panic!("the delayed registration must time out"),
             Err(error) => error,
         };
 
-        assert!(error.to_string().contains("register timed out after 30ms"));
+        let message = error.to_string();
+        for marker in ["register transport error", "1s"] {
+            assert!(message.contains(marker), "missing {marker}: {message}");
+        }
+        register_mock.assert_hits(1);
+    }
+
+    /// The wrapper timeout must always be strictly larger than both the
+    /// helper's bounded-retry budget and its separate outer guard, plus a
+    /// non-zero slack margin. If this regresses, the wrapper's
+    /// `tokio::time::timeout` can fire first and discard the helper's typed
+    /// exhaustion/fatal diagnostic.
+    #[test]
+    fn wrapper_timeout_never_races_the_helpers_own_budget() {
+        assert!(
+            MCP_ARGS_REGISTER_TIMEOUT > MAX_AGENT_REGISTRATION_ELAPSED,
+            "the CLI wrapper timeout ({MCP_ARGS_REGISTER_TIMEOUT:?}) must exceed the helper's \
+             own bounded-retry budget ({MAX_AGENT_REGISTRATION_ELAPSED:?})"
+        );
+        assert!(
+            MCP_ARGS_REGISTER_TIMEOUT > MAX_AGENT_REGISTRATION_OUTER_TIMEOUT,
+            "the CLI wrapper timeout ({MCP_ARGS_REGISTER_TIMEOUT:?}) must exceed the helper's \
+             defensive outer guard ({MAX_AGENT_REGISTRATION_OUTER_TIMEOUT:?})"
+        );
+        assert_eq!(
+            MCP_ARGS_REGISTER_TIMEOUT,
+            MAX_AGENT_REGISTRATION_OUTER_TIMEOUT + MCP_ARGS_REGISTER_TIMEOUT_SLACK,
+            "the wrapper timeout must be derived from the helper's outer guard plus explicit \
+             slack, not a magic number that can silently drift out of sync"
+        );
+    }
+
+    #[tokio::test]
+    async fn register_uses_full_default_timeout_and_surfaces_typed_error_not_generic_timeout() {
+        // Regression test for the exact-head finding: with the *real* default
+        // `MCP_ARGS_REGISTER_TIMEOUT` (derived from the helper's defensive
+        // `MAX_AGENT_REGISTRATION_OUTER_TIMEOUT` plus slack), a fast-failing
+        // fatal registration error must surface as the helper's own typed
+        // diagnostic through `map_register_agent_token_error`, never as the
+        // outer wrapper's generic "register timed out" fallback. This proves
+        // the default timeout no longer races the helper for realistic
+        // (non-hanging) failures.
+        let server = MockServer::start();
+        let register_mock = server.mock(|when, then| {
+            when.method(POST).path("/v1/agents");
+            then.status(401).json_body(json!({
+                "ok": false,
+                "error": {
+                    "code": "unauthorized",
+                    "message": "bad api key"
+                }
+            }));
+        });
+
+        let error = register_agent_token_for_mcp_args_with_timeout(
+            "codex",
+            "test-agent",
+            Some("rk_live_test".to_string()),
+            Some(server.base_url()),
+            MCP_ARGS_REGISTER_TIMEOUT,
+        )
+        .await
+        .map(|_| ())
+        .expect_err("a fatal 401 must surface as an error");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("register auth error"),
+            "expected the helper's typed auth-error classification, got: {message}"
+        );
+        assert!(
+            !message.starts_with("register timed out after"),
+            "the default timeout must never race the helper's own bounded retry: {message}"
+        );
         register_mock.assert_hits(1);
     }
 

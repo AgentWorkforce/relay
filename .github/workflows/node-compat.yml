@@ -18,11 +18,14 @@ concurrency:
 
 jobs:
   changes:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/detect-changes.yml
   install-test:
     name: Install Test (Node ${{ matrix.node-version }})
     needs: changes
-    if: needs.changes.outputs.node_changed == 'true'
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -42,6 +45,11 @@ jobs:
         run: |
           node --version
           npm --version
+
+      - name: Install native process identity test tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends lsof procps
 
       - name: Install dependencies
         run: npm ci
@@ -78,7 +86,9 @@ jobs:
   fresh-install:
     name: Fresh Install (Node ${{ matrix.node-version }})
     needs: changes
-    if: needs.changes.outputs.node_changed == 'true'
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -97,6 +107,15 @@ jobs:
         run: |
           node --version
           npm --version
+
+      - name: Upgrade npm before fresh resolution
+        # npm <=10.9.x's arborist crashes re-resolving the harnesses
+        # package's peer set with no lockfile present (npm/cli#8261) — an
+        # npm-version bug, not a Node-version one (npm/cli#8261). Pinned on
+        # both matrix legs so this job stays a clean Node-compat signal instead
+        # of being confounded by whichever npm happens to ship with each Node
+        # image.
+        run: npm install -g npm@11.19.1
 
       - name: Clean install
         run: |
