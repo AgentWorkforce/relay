@@ -53,7 +53,7 @@ describe('update-checker', () => {
       expect(output).toContain('Update available');
       expect(output).toContain('1.0.0');
       expect(output).toContain('2.0.0');
-      expect(output).toContain('npm install -g agent-relay');
+      expect(output).toContain('agent-relay update');
     });
 
     it('does not print when no update available', async () => {

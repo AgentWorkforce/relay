@@ -103,12 +103,7 @@ export type JsonValue = null | boolean | number | string | JsonValue[] | { [key:
 
 export type NativeHarnessInputMode = 'auto' | 'active' | 'idle';
 export type NativeHarnessCommandKind =
-  | 'submit_user_message'
-  | 'interrupt'
-  | 'approve_tool'
-  | 'reject_tool'
-  | 'compact'
-  | 'release';
+  'submit_user_message' | 'interrupt' | 'approve_tool' | 'reject_tool' | 'compact' | 'release';
 
 /**
  * Portable normalized agent-event payload. The SDK owns the canonical event discriminants;
@@ -613,9 +608,32 @@ export type BrokerEvent =
       name: string;
       delivery_id: string;
       event_id: string;
-      /** 'echo' when confirmed in PTY output, 'timeout_fallback' when acked unverified. */
+      /**
+       * 'harness_acceptance' for accepted PTY deliveries and 'completed_replay'
+       * for duplicate completed deliveries; legacy workers may report 'echo'
+       * or 'timeout_fallback'.
+       */
       verification?: string;
       reason?: string;
+      evidence?: string | null;
+      attempts?: number | null;
+    }
+  | {
+      kind: 'delivery_unconfirmed';
+      name: string;
+      delivery_id: string;
+      event_id: string;
+      reason: string;
+      attempts: number;
+      max_attempts: number;
+    }
+  | {
+      kind: 'delivery_resubmitted';
+      name: string;
+      delivery_id: string;
+      event_id: string;
+      attempt: number;
+      strategy: string;
     }
   | {
       kind: 'delivery_failed';
@@ -838,10 +856,44 @@ export type WorkerToBroker =
     }
   | {
       type: 'delivery_verified';
-      payload: { delivery_id: string; event_id: string; verification?: string; reason?: string };
+      /** See the `delivery_verified` broker event for `verification` values. */
+      payload: {
+        delivery_id: string;
+        event_id: string;
+        verification?: string;
+        reason?: string;
+        evidence?: string;
+        attempts?: number;
+      };
+    }
+  | {
+      type: 'delivery_unconfirmed';
+      payload: {
+        delivery_id: string;
+        event_id: string;
+        reason: string;
+        attempts: number;
+        max_attempts: number;
+      };
+    }
+  | {
+      type: 'delivery_resubmitted';
+      payload: {
+        delivery_id: string;
+        event_id: string;
+        attempt: number;
+        strategy: string;
+      };
     }
   | {
       type: 'delivery_failed';
+      /**
+       * Terminal and never replayed. PTY injection adds 'prompt_unproven' (no
+       * composer was recognized in time), 'body remained parked after bounded
+       * submit-key recovery', 'harness acceptance could not be proven'
+       * (neither parked nor accepted, so not evidence of loss) and
+       * 'injection_too_large: …' (rejected before any byte was written).
+       */
       payload: { delivery_id: string; event_id: string; reason: string };
     }
   | {

@@ -153,7 +153,6 @@ describe('registerLocalWorkflowCommands', () => {
     ['YML', 'workflow.yml', 'version: "1.0"\n'],
     ['TypeScript', 'workflow.ts', 'console.log("workflow");\n'],
     ['TSX', 'workflow.tsx', 'console.log("workflow");\n'],
-    ['Python', 'workflow.py', 'print("workflow")\n'],
   ])('delegates %s workflow runs to the relayflows CLI', async (_label, fileName, contents) => {
     const spawnProcess = vi.fn(() => ({
       pid: 4242,

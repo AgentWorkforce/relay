@@ -556,7 +556,10 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
           const inv = await getInvocation(engine, driverToken, 'spawn', first.invocationId!);
           return inv.status === 'completed' || inv.status === 'failed' ? inv : null;
         },
-        { label: 'resumable spawn settled', timeoutMs: 30_000, intervalMs: 300 }
+        // A verified spawn carrying a task now completes only once that task's
+        // receipt is verified after readiness, so allow for readiness plus
+        // delivery verification rather than readiness alone.
+        { label: 'resumable spawn settled', timeoutMs: 60_000, intervalMs: 300 }
       );
       expect(firstDone.status).toBe('completed'); // resumable spawn carried session_ref through token authority
       expect(firstDone.output).toMatchObject({ spawned: true, ready: true, name });
@@ -600,7 +603,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
         },
         { label: 'origin worker release confirmed', timeoutMs: 30_000 }
       );
-      expect(released.status).toBe('completed');
+      expect(released.status, JSON.stringify(released)).toBe('completed');
       // The legacy broker release action stops the PTY and detaches its binding;
       // the fixture owner separately removes its retained engine identity.
       expect(await releaseAgent(engine, workspaceKey, name)).toBeLessThan(300);
@@ -620,7 +623,7 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
           const inv = await getInvocation(engine, driverToken, 'spawn', resume.invocationId!);
           return ['completed', 'failed'].includes(inv.status) ? inv : null;
         },
-        { label: 'resumed worker confirmed ready', timeoutMs: 30_000 }
+        { label: 'resumed worker confirmed ready', timeoutMs: 60_000 }
       );
       expect(resumed.status).toBe('completed');
       expect(resumed.output).toMatchObject({ spawned: true, ready: true, name });
@@ -630,7 +633,9 @@ describe.skipIf(!pre.ok)('two-node fleet scenario matrix', () => {
         args: expect.arrayContaining(['resume', sessionRef]),
       });
     },
-    180_000
+    // Two 60 s spawn settles, two 15 s brief observations and a 30 s release
+    // wait alone reach 180 s, so leave room for the actions between them.
+    240_000
   );
 
   it('propagates unsupported generic session resume as a terminal failure with no retained identity', async () => {

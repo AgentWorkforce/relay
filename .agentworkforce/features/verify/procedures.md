@@ -105,7 +105,56 @@ Do not substitute a public request-bin or a shared endpoint: webhook payloads
 and signatures are test data that must remain isolated. Each run gets its own
 receiver path and destroys it after the webhook/subscription cleanup below.
 
+## relay-init
+
+**Automated:** `node tests/relayflows/core/init-parity.mjs`, on every pull request that reaches the core lane.
+
+**Prerequisites:** the built CLI (`npm run build:core`) and network access to GitHub releases for the local server and the pinned core. Set `RELAY_CORE_BIN` to test a core you built.
+
+**Setup:** a fresh sandboxed `HOME`, `AGENT_RELAY_CORE_SOCKET` inside it, and each tool marked installed the way the core detects it: its folder, or `~/.cursor/cli-config.json`. Never run this against your own home.
+
+**Assertions, for each tool:**
+
+1. `relay init --tools <tool>` reports injection for that tool.
+2. The tool's own file has what the tool reads, and any setting the person kept there is still there.
+3. `settings.get` reports that tool's settings on and every other tool's off, and no other tool's file was written.
+4. The core's workspace is on loopback, and its log names no hosted service.
+5. `relay init --uninstall` turns the settings off and removes what init added, keeping the person's own settings.
+
+**Cleanup:** `relay init --stop`, then remove the sandbox.
+
+**Limitation:** `--hosted` and `--interactive` are not automated. Hosted setup needs a disposable account, and guided setup needs a terminal.
+
+## core-daemon
+
+**Automated:** the scenarios of `relay-init` and `core-delivery` start and drive the real core, and `cargo test` in `crates/relay-node` covers it against fake services.
+
+**Prerequisites:** a sandbox as in `relay-init`. The core answers on `AGENT_RELAY_CORE_SOCKET`; `status.get` and `settings.get` are the read-only checks.
+
+**Assertions:** `relay init` starts one core, a second run attaches to it, the core reports the saved workspace, and `relay init --stop` leaves nothing answering. A running desktop core is attached to and never stopped.
+
+**Limitation:** attaching to a real desktop core needs a machine with the desktop app, so verify `init-desktop-aware` by hand.
+
+## core-delivery
+
+**Automated:** `node tests/relayflows/core/delivery.mjs` and `node tests/relayflows/core/grok-join.mjs`, on every pull request that reaches the core lane.
+
+**Prerequisites:** as in `relay-init`. A copy of the running Node stands in for each tool; a Node built against a shared `libnode`, such as Homebrew's, gets that library copied beside it, and a copy that still cannot run fails the scenario at once.
+
+**How a session is made:** the scenario meets the contract the core discovers, and no more. A Cursor CLI session is a process named `cursor-agent` holding its conversation's `store.db` open, which runs the hook from `~/.cursor/hooks.json` as its child. A Grok session is a `grok` process with its record in `active_sessions.json`, beside a leader on `leader.sock`. No trust check is relaxed: the core proves the leader from the kernel as it does in production.
+
+**Assertions:**
+
+1. The session joins Relay on its own.
+2. A direct message from another agent arrives through the tool's route: Cursor's `followup_message`, or Grok's `session/prompt`, naming the sender.
+3. A Grok session with no leader stays off Relay.
+4. Everything stayed local.
+
+**Limitation:** the core requires a signature or install location these scenarios cannot meet for the Cursor editor, Codex on macOS and Claude Code's inbox, so waking an idle Cursor editor window and delivery to Claude Code, Codex, OpenCode, Pi and Devin are covered by `cargo test` in `crates/relay-node` and by live checks with the real tools.
+
 ## broker-lifecycle
+
+**Legacy:** this and the other `status: legacy` categories run on the broker and PTY path that the core replaces. They are verified by hand on demand, never on a pull request.
 
 **Features:** `broker-up`, `broker-down`, `broker-status`, `broker-metrics`, `broker-deadletters`, `broker-redeliver`.
 
@@ -494,16 +543,6 @@ node tests/integration/sdk/v8-api-smoke.mjs
 ```
 
 Assert bootstrap/reconnect, participants, channel/thread/reaction/DM/group-DM/listener/action/DeliveryRunner/webhook/node behavior. Release all identities and clean up remote workspace through its control plane; the smoke script does not delete it.
-
-## python-sdk
-
-**Features:** all `python-sdk-*` entries.
-
-```bash
-cd packages/sdk-py && python -m pytest
-```
-
-For true E2E, create a disposable Relay, send/receive unique message, then release agents and shut down. Adapter/workflow tests require their provider CLI and must clean up spawned work.
 
 ## swift-sdk
 

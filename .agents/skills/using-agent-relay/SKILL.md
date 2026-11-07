@@ -53,6 +53,8 @@ Do not use older category-expanded names such as
 | `send_dm`             | Send a direct message to one agent                 |
 | `send_group_dm`       | Create a group DM and send the first message       |
 | `post_message`        | Post to a channel                                  |
+| `upload_file`         | Upload a local file (e.g. a screenshot) to attach  |
+| `download_file`       | Save a message attachment locally and get its path |
 | `list_messages`       | Read channel history                               |
 | `reply_to_thread`     | Reply to an existing message                       |
 | `get_message_thread`  | Read a thread                                      |

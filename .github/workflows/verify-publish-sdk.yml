@@ -46,7 +46,7 @@ jobs:
       matrix:
         include:
           - platform: darwin-arm64
-            os: macos-14
+            os: macos-15
             expected_pkg: '@agent-relay/broker-darwin-arm64'
           # darwin-x64 verify is intentionally omitted: GitHub's macos-13
           # (Intel) runner pool is capacity-constrained and routinely queues

@@ -9,12 +9,16 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use std::{fs, path::Path};
 
-pub(crate) fn injection_bytes(cli: &str, text: &str) -> Vec<u8> {
-    if is_devin_cli(cli) {
-        format!("\x1b[200~{}\x1b[201~", text.replace('\x1b', "")).into_bytes()
-    } else {
-        text.as_bytes().to_vec()
-    }
+#[cfg(test)]
+fn injection_bytes(cli: &str, text: &str) -> Vec<u8> {
+    crate::injection_wire::injection_bytes(
+        if is_devin_cli(cli) {
+            crate::injection_wire::InjectionWire::Paste
+        } else {
+            crate::injection_wire::InjectionWire::Typed
+        },
+        text,
+    )
 }
 
 pub(crate) fn can_inject(cli: &str, pty: &PtySession) -> bool {

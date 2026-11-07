@@ -126,7 +126,6 @@ try {
     'build:config',
     'build:cloud',
     'build:utils',
-    'build:policy',
     'build:sdk',
     'build:harness-driver',
     'build:harnesses',

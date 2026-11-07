@@ -11,6 +11,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { describeError } from './describe-error.js';
 
 /** Where a skill is installed: into the current project or the user's home. */
 export type SkillScope = 'project' | 'global';
@@ -232,7 +233,7 @@ export function installSkill(opts: {
         label: target.label,
         path: filePath,
         status: 'failed',
-        error: err instanceof Error ? err.message : String(err),
+        error: describeError(err),
       };
     }
   });
@@ -262,7 +263,7 @@ export async function fetchSkill(
     if (controller.signal.aborted) {
       throw new Error(`Timed out downloading skill from ${url} after ${timeoutMs}ms`);
     }
-    const message = err instanceof Error ? err.message : String(err);
+    const message = describeError(err);
     throw new Error(`Failed to reach ${url}: ${message}`);
   } finally {
     clearTimeout(timer);

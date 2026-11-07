@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { getProjectPaths } from '@agent-relay/config';
+import { assertNotRelayHome, ensureGitExclude, getProjectPaths, isRelayHomeDir } from '@agent-relay/config';
 
 import {
   readRelaycastCredential,
@@ -43,6 +43,8 @@ export interface ProjectWorkspaceSession {
   /** Last server-selected Relaycast route for follow-up commands in this session. */
   relaycastRoute?: 'canonical' | 'agent37-isolated';
   relaycastBaseUrl?: string;
+  /** Cloud API origin that authenticated and returned the Relaycast target. */
+  relaycastCloudApiUrl?: string;
   /** Route-scoped transport credential; the canonical Cloud workspace key remains `workspaceKey`. */
   relaycastApiKey?: string;
   /** Reference to a machine-local route credential; never contains key material. */
@@ -83,6 +85,7 @@ export interface WorkspaceSelection {
   workspaceId?: string;
   relaycastRoute?: 'canonical' | 'agent37-isolated';
   relaycastBaseUrl?: string;
+  relaycastCloudApiUrl?: string;
   relaycastApiKey?: string;
   relaycastApiKeyRef?: string;
   /** Project session directory that can durably carry a server-selected target. */
@@ -125,6 +128,7 @@ export function readProjectWorkspaceSession(
         ? parsed.relaycastRoute
         : undefined;
     const relaycastBaseUrl = trimOrUndefined(parsed.relaycastBaseUrl);
+    const relaycastCloudApiUrl = trimOrUndefined(parsed.relaycastCloudApiUrl);
     const relaycastApiKeyRef = trimOrUndefined(parsed.relaycastApiKeyRef);
     const legacyApiKey = trimOrUndefined(parsed.relaycastApiKey);
     const expectedRef =
@@ -149,6 +153,7 @@ export function readProjectWorkspaceSession(
       ...(workspaceId ? { workspaceId } : {}),
       ...(relaycastRoute ? { relaycastRoute } : {}),
       ...(relaycastBaseUrl ? { relaycastBaseUrl } : {}),
+      ...(relaycastCloudApiUrl ? { relaycastCloudApiUrl } : {}),
       ...(relaycastApiKey ? { relaycastApiKey } : {}),
       ...(relaycastApiKeyRef ? { relaycastApiKeyRef } : {}),
     };
@@ -169,7 +174,21 @@ export function writeProjectWorkspaceKey(
   const key = trimOrUndefined(workspaceKey);
   if (!key) return;
   const { env, ...metadata } = options;
-  withProjectWorkspaceKeyLock(dataDir, () => writeProjectWorkspaceKeyUnlocked(dataDir, key, metadata, env));
+  withProjectWorkspaceKeyLock(dataDir, env, () =>
+    writeProjectWorkspaceKeyUnlocked(dataDir, key, metadata, env)
+  );
+}
+
+/**
+ * The workspace key is a credential: keep the project data directory that
+ * holds it out of `git status` (and so out of `git add -A`) through the
+ * repository's `info/exclude`. Only the standard `<project>/.agentworkforce/relay`
+ * directory is excluded; a caller-chosen data directory elsewhere is left to
+ * its owner.
+ */
+function excludeProjectDataDirFromGit(dataDir: string): void {
+  const parts = path.resolve(dataDir).split(path.sep);
+  if (parts.at(-1) === 'relay' && parts.at(-2) === '.agentworkforce') ensureGitExclude(dataDir);
 }
 
 function writeProjectWorkspaceKeyUnlocked(
@@ -184,6 +203,7 @@ function writeProjectWorkspaceKeyUnlocked(
   const workspaceId = trimOrUndefined(options.workspaceId);
   const relaycastRoute = options.relaycastRoute;
   const relaycastBaseUrl = trimOrUndefined(options.relaycastBaseUrl);
+  const relaycastCloudApiUrl = trimOrUndefined(options.relaycastCloudApiUrl);
   const relaycastApiKey = trimOrUndefined(options.relaycastApiKey);
   let relaycastApiKeyRef = trimOrUndefined(options.relaycastApiKeyRef);
   if (relaycastApiKey && workspaceId && relaycastRoute && relaycastBaseUrl) {
@@ -200,6 +220,7 @@ function writeProjectWorkspaceKeyUnlocked(
     );
   }
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  excludeProjectDataDirFromGit(dataDir);
   const file = projectWorkspaceKeyPath(dataDir);
   // Worker threads share a PID, so include a per-write nonce as well as the PID.
   let tmp = `${file}.tmp.${process.pid}.${randomUUID()}`;
@@ -210,6 +231,7 @@ function writeProjectWorkspaceKeyUnlocked(
       ...(workspaceId ? { workspaceId } : {}),
       ...(relaycastRoute ? { relaycastRoute } : {}),
       ...(relaycastBaseUrl ? { relaycastBaseUrl } : {}),
+      ...(relaycastCloudApiUrl ? { relaycastCloudApiUrl } : {}),
       // Route credentials are always externalized above. Never serialize a
       // raw Relaycast key into repository metadata, even for incomplete input.
       ...(relaycastApiKeyRef ? { relaycastApiKeyRef } : {}),
@@ -242,7 +264,17 @@ function writeProjectWorkspaceKeyUnlocked(
   }
 }
 
-function withProjectWorkspaceKeyLock<T>(dataDir: string, callback: () => T): T {
+/**
+ * Run `callback` holding the project pin's lock. A project pin never goes in
+ * the relay home (`AGENT_RELAY_HOME`): a project resolved to `~` would
+ * otherwise write its pin among the machine-wide workspace and sign-in files.
+ */
+function withProjectWorkspaceKeyLock<T>(
+  dataDir: string,
+  env: NodeJS.ProcessEnv | undefined,
+  callback: () => T
+): T {
+  assertNotRelayHome(dataDir, env ?? process.env);
   fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const lockDir = `${projectWorkspaceKeyPath(dataDir)}${PROJECT_WORKSPACE_LOCK_SUFFIX}`;
   const ownerToken = randomUUID();
@@ -386,12 +418,16 @@ export function writeProjectWorkspaceTargetIfSelectionCurrent(
   selection: WorkspaceSelection,
   target: Required<
     Pick<ProjectWorkspaceSession, 'workspaceId' | 'relaycastRoute' | 'relaycastBaseUrl' | 'relaycastApiKey'>
-  >
+  > &
+    Pick<ProjectWorkspaceSession, 'relaycastCloudApiUrl'>
 ): boolean {
   const credentialEnv = selection.credentialHome
     ? { AGENT_RELAY_HOME: selection.credentialHome }
     : process.env;
-  return withProjectWorkspaceKeyLock(dataDir, () => {
+  // Best effort, like every caller treats it: a selection read from the relay
+  // home is not a project session to record a target in.
+  if (isRelayHomeDir(dataDir, credentialEnv)) return false;
+  return withProjectWorkspaceKeyLock(dataDir, credentialEnv, () => {
     const current = readProjectWorkspaceSession(dataDir, fs, credentialEnv);
     if (selection.projectSessionPresent === false && current) return false;
     if (
@@ -400,6 +436,7 @@ export function writeProjectWorkspaceTargetIfSelectionCurrent(
         current.workspaceId !== selection.workspaceId ||
         current.relaycastRoute !== selection.relaycastRoute ||
         current.relaycastBaseUrl !== selection.relaycastBaseUrl ||
+        current.relaycastCloudApiUrl !== selection.relaycastCloudApiUrl ||
         current.relaycastApiKey !== selection.relaycastApiKey ||
         current.relaycastApiKeyRef !== selection.relaycastApiKeyRef)
     ) {
@@ -432,6 +469,7 @@ export function writeProjectWorkspaceTargetIfSelectionCurrent(
         workspaceId: target.workspaceId,
         relaycastRoute: target.relaycastRoute,
         relaycastBaseUrl: target.relaycastBaseUrl,
+        ...(target.relaycastCloudApiUrl ? { relaycastCloudApiUrl: target.relaycastCloudApiUrl } : {}),
         relaycastApiKeyRef: credentialRef,
       },
       credentialEnv
@@ -459,7 +497,7 @@ export function writeProjectWorkspaceKeyPreservingSession(
   if (!key) return;
 
   const { env: credentialEnv, ...metadata } = options;
-  withProjectWorkspaceKeyLock(dataDir, () => {
+  withProjectWorkspaceKeyLock(dataDir, credentialEnv, () => {
     const existing = readProjectWorkspaceSession(dataDir, fs, credentialEnv);
     const sameWorkspace = existing?.workspaceKey === key;
     const retained: ProjectWorkspaceSessionMetadata = sameWorkspace
@@ -468,6 +506,7 @@ export function writeProjectWorkspaceKeyPreservingSession(
           ...(existing?.workspaceId ? { workspaceId: existing.workspaceId } : {}),
           ...(existing?.relaycastRoute ? { relaycastRoute: existing.relaycastRoute } : {}),
           ...(existing?.relaycastBaseUrl ? { relaycastBaseUrl: existing.relaycastBaseUrl } : {}),
+          ...(existing?.relaycastCloudApiUrl ? { relaycastCloudApiUrl: existing.relaycastCloudApiUrl } : {}),
           ...(existing?.relaycastApiKey ? { relaycastApiKey: existing.relaycastApiKey } : {}),
           ...(existing?.relaycastApiKeyRef ? { relaycastApiKeyRef: existing.relaycastApiKeyRef } : {}),
         }
@@ -487,6 +526,9 @@ export function writeProjectWorkspaceKeyPreservingSession(
         ...(metadata.relaycastRoute ? { relaycastRoute: metadata.relaycastRoute } : {}),
         ...(trimOrUndefined(metadata.relaycastBaseUrl)
           ? { relaycastBaseUrl: trimOrUndefined(metadata.relaycastBaseUrl) }
+          : {}),
+        ...(trimOrUndefined(metadata.relaycastCloudApiUrl)
+          ? { relaycastCloudApiUrl: trimOrUndefined(metadata.relaycastCloudApiUrl) }
           : {}),
         ...(trimOrUndefined(metadata.relaycastApiKey)
           ? { relaycastApiKey: trimOrUndefined(metadata.relaycastApiKey) }
@@ -524,8 +566,17 @@ export function resolveWorkspaceSelection(
   const env = options.env ?? process.env;
   const credentialHome = path.resolve(path.dirname(relaycastCredentialStorePath(env)));
   const credentialHomeSelection = { credentialHome };
-  const dataDir = options.projectDataDir ?? projectDataDir(options.projectRoot);
-  const project = dataDir ? readProjectWorkspaceSession(dataDir, options.fileSystem ?? fs, env) : undefined;
+  const candidateDataDir = options.projectDataDir ?? projectDataDir(options.projectRoot);
+  const pinned = candidateDataDir
+    ? readProjectWorkspaceSession(candidateDataDir, options.fileSystem ?? fs, env)
+    : undefined;
+  // A pin found in a relay home is not a project's: older versions wrote one
+  // there when run in ~. It is ignored, so the machine-wide store decides.
+  // Checked only when a pin was read, so resolving where none exists costs
+  // no path canonicalization (slow on automounted folders such as /home).
+  const inRelayHome = pinned !== undefined && isRelayHomeDir(candidateDataDir!, env);
+  const dataDir = inRelayHome ? undefined : candidateDataDir;
+  const project = inRelayHome ? undefined : pinned;
   const flag = trimOrUndefined(options.workspaceKey);
   if (flag) {
     return {
@@ -539,6 +590,9 @@ export function resolveWorkspaceSelection(
         : {}),
       ...(project?.workspaceKey === flag && project.relaycastBaseUrl
         ? { relaycastBaseUrl: project.relaycastBaseUrl }
+        : {}),
+      ...(project?.workspaceKey === flag && project.relaycastCloudApiUrl
+        ? { relaycastCloudApiUrl: project.relaycastCloudApiUrl }
         : {}),
       ...(project?.workspaceKey === flag && project.relaycastApiKey
         ? { relaycastApiKey: project.relaycastApiKey }
@@ -569,6 +623,9 @@ export function resolveWorkspaceSelection(
         ...(project?.workspaceKey === envKey && project.relaycastBaseUrl
           ? { relaycastBaseUrl: project.relaycastBaseUrl }
           : {}),
+        ...(project?.workspaceKey === envKey && project.relaycastCloudApiUrl
+          ? { relaycastCloudApiUrl: project.relaycastCloudApiUrl }
+          : {}),
         ...(project?.workspaceKey === envKey && project.relaycastApiKey
           ? { relaycastApiKey: project.relaycastApiKey }
           : {}),
@@ -591,6 +648,7 @@ export function resolveWorkspaceSelection(
       ...(project.workspaceId ? { workspaceId: project.workspaceId } : {}),
       ...(project.relaycastRoute ? { relaycastRoute: project.relaycastRoute } : {}),
       ...(project.relaycastBaseUrl ? { relaycastBaseUrl: project.relaycastBaseUrl } : {}),
+      ...(project.relaycastCloudApiUrl ? { relaycastCloudApiUrl: project.relaycastCloudApiUrl } : {}),
       ...(project.relaycastApiKey ? { relaycastApiKey: project.relaycastApiKey } : {}),
       ...(project.relaycastApiKeyRef ? { relaycastApiKeyRef: project.relaycastApiKeyRef } : {}),
       ...(dataDir ? { projectDataDir: dataDir, projectSessionPresent: true } : {}),

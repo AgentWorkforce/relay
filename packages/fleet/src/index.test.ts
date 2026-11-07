@@ -294,6 +294,28 @@ describe('@agent-relay/fleet', () => {
     ]);
   });
 
+  it('delegates Muse authentication environment and readiness to the broker spawn', async () => {
+    const env = { RELAY_MUSE_SHARED_AUTH_PATH: '/srv/muse/auth.json' };
+    const node = defineNode({
+      name: 'muse-node',
+      capabilities: {
+        'spawn:muse': spawn({ runtime: 'pty', command: 'muse', env }, { verifyReady: true }),
+      },
+    });
+    const ctx = stubContext(node.name, Object.keys(node.capabilities));
+    await invokeNodeHandler(node, 'spawn:muse', { name: 'muse-worker', task: 'ship it' }, ctx);
+    expect(ctx.spawnAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        verifyReady: true,
+        initialTask: 'ship it',
+        agent: expect.objectContaining({
+          cli: 'muse',
+          harness_config: expect.objectContaining({ env }),
+        }),
+      })
+    );
+  });
+
   it('advertises spawn:muse from the default local node', () => {
     const node = defineDefaultLocalNode({ name: 'local' });
     expect(Object.keys(node.capabilities)).toContain('spawn:muse');

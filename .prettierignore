@@ -6,6 +6,11 @@ target/
 packages/*/dist/
 web/content/docs/
 packages/config/src/cli-registry.generated.ts
-tests/benchmarks/head-to-head.ts
 .agentworkforce/trajectories/
 .trajectories/
+
+# The probe embeds these byte-for-byte (plugins, hooks, pages, fixtures); formatting breaks its tests.
+crates/relay-node/src
+crates/relay-node/resources
+crates/relay-node/tests/fixtures
+crates/relay-node/docs

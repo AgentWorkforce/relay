@@ -49,7 +49,9 @@ import {
   normalizeReadReceipt,
   normalizeSearchResult,
   normalizeThread,
+  normalizeFileInfo,
 } from './normalize.js';
+import { downloadRelayFile, uploadRelayFile } from './files.js';
 import { currentReplaySessionRef, replayMessageMetadata, resolveReplaySessionRef } from './session-ref.js';
 import type { AgentSessionEvent } from '../session/index.js';
 import type {
@@ -57,6 +59,9 @@ import type {
   RelayActionInvocationAck,
   RelayCompleteInvocationInput,
   RelayAgent,
+  RelayDownloadedFile,
+  RelayFileInfo,
+  RelayUploadFileInput,
   RelayAgentPresence,
   RelayAgentRegistration,
   RelayChannel,
@@ -125,7 +130,7 @@ export { RelayPlacementError } from './relaycast-placement.js';
 export type { RelaySpawnDispatchState, RelaySpawnPlacementState } from './relaycast-placement.js';
 export type { RelaycastMessagingOptions } from './relaycast-client.js';
 
-const DEFAULT_CONFIRM_TIMEOUT_MS = 120_000;
+const DEFAULT_CONFIRM_TIMEOUT_MS = 360_000;
 const DEFAULT_CONFIRM_POLL_MS = 500;
 /** `setTimeout` clamps anything larger, firing immediately instead of waiting. */
 const MAX_CONFIRM_TIMEOUT_MS = 2_147_483_647;
@@ -668,12 +673,19 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
         this.requireWebhooks().trigger(id, payload ?? {}),
     },
     subscriptions: {
-      create: async (input: RelayCreateSubscriptionInput): Promise<RelayEventSubscription> =>
-        (await this.requireSubscriptions().create(input)) as RelayEventSubscription,
+      create: async (input: RelayCreateSubscriptionInput): Promise<RelayEventSubscription> => {
+        const raw = (await this.requireSubscriptions().create(input)) as RelayEventSubscription;
+        return { ...raw, ...normalizeWebhookSubscription(raw) };
+      },
       list: async (): Promise<RelayEventSubscription[]> =>
-        (await this.requireSubscriptions().list()) as RelayEventSubscription[],
-      get: async (id: string): Promise<RelayEventSubscription> =>
-        (await this.requireSubscriptions().get(id)) as RelayEventSubscription,
+        ((await this.requireSubscriptions().list()) as RelayEventSubscription[]).map((raw) => ({
+          ...raw,
+          ...normalizeWebhookSubscription(raw),
+        })),
+      get: async (id: string): Promise<RelayEventSubscription> => {
+        const raw = (await this.requireSubscriptions().get(id)) as RelayEventSubscription;
+        return { ...raw, ...normalizeWebhookSubscription(raw) };
+      },
       delete: async (id: string): Promise<void> => {
         await this.requireSubscriptions().delete(id);
       },
@@ -1008,14 +1020,14 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
   ): Promise<RelayActionInvocation> {
     const { timeoutMs, pollIntervalMs, requireReadiness, ...errorContext } = context;
     const invocationId = ack.invocationId;
-    // Dispatch evidence is fixed at ack time: a node id here means the engine
-    // already routed the invocation to a node before this method starts
-    // polling. A `pending`/`queued` ack with no node id has not routed yet,
-    // and confirmation timing out or reading a terminal status later does not
-    // retroactively manufacture that evidence — see `resolveDispatchState`.
-    // Computed before either early exit below so every `spawn_unconfirmed`
-    // path, not just the timeout/failure paths, carries this evidence.
-    const dispatchState = resolveDispatchState(ack);
+    // Dispatch evidence starts from the ack: a `dispatchedNodeId` means the
+    // engine already routed the invocation to a node. A `pending`/`queued` ack
+    // without one has not routed yet. A read below that carries a
+    // `dispatchedNodeId` adds evidence (the engine may dispatch after
+    // acknowledging); a timeout or a terminal status never manufactures it — see
+    // `resolveDispatchState`. Computed before either early exit below so every
+    // `spawn_unconfirmed` path, not just the timeout/failure paths, carries it.
+    let dispatchState = resolveDispatchState(ack);
     if (!invocationId) {
       throw new RelayPlacementError(
         'spawn_unconfirmed',
@@ -1063,6 +1075,9 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
             // A later success must not report an earlier transient failure.
             lastReadError = undefined;
             const invocation = outcome.value;
+            // Only a node id counts here: the read normalizer defaults a
+            // missing status to `invoked`, which is not evidence.
+            if (invocation?.dispatchedNodeId) dispatchState = 'dispatched';
             const status = invocation?.status?.toLowerCase();
             if (status && CONFIRM_SUCCESS_STATUSES.has(status)) {
               if (
@@ -1085,9 +1100,15 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
               return invocation;
             }
             if (status && CONFIRM_FAILURE_STATUSES.has(status)) {
+              const nodeError = invocation?.error?.trim();
+              const retryablePressure =
+                errorContext.capability.startsWith('spawn:') &&
+                /^node agent\.register failed for agent '[^']+': d1_pressure:/.test(nodeError ?? '');
               throw new RelayPlacementError(
-                'spawn_failed',
-                invocation?.error?.trim() || `node '${context.node}' reported ${status} for ${actionName}`,
+                retryablePressure ? 'spawn_retryable' : 'spawn_failed',
+                retryablePressure
+                  ? `${nodeError}. No registration mutation was applied; retry the spawn.`
+                  : nodeError || `node '${context.node}' reported ${status} for ${actionName}`,
                 {
                   ...errorContext,
                   state: 'failed',
@@ -1111,7 +1132,7 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
           `node '${context.node}' accepted ${actionName} (invocation ${invocationId}) but never reported a result within ${budgetMs}ms. ` +
             `The node advertised capacity and acknowledged the dispatch; nothing confirmed that it launched. ` +
             `The invocation may still be running, so do not retry blindly. ` +
-            `Check that node's broker version, or re-run without confirmation to accept an unconfirmed dispatch.` +
+            `Poll this dispatch with agent-relay fleet spawn-status ${invocationId}; an unknown outcome is not proof that no process started.` +
             (lastReadError ? ` Last read error: ${lastReadError}` : ''),
           {
             ...errorContext,
@@ -1144,6 +1165,20 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       }
       return (await this.relaycast.workspace.info()) as RelayWorkspaceInfo;
     },
+  };
+
+  readonly files = {
+    upload: async (
+      input: RelayUploadFileInput,
+      options?: import('./types.js').RelayFileTransferOptions
+    ): Promise<RelayFileInfo> => uploadRelayFile(this.requireAgentFiles('files.upload'), input, options),
+    get: async (id: string): Promise<RelayFileInfo> =>
+      normalizeFileInfo(await this.requireAgentFiles('files.get').get(id)),
+    download: async (
+      id: string,
+      options?: import('./types.js').RelayFileTransferOptions
+    ): Promise<RelayDownloadedFile> =>
+      downloadRelayFile(this.requireAgentFiles('files.download'), id, options),
   };
 
   private resolvePlacementNode(node: string | 'self' | undefined, selfNodeName?: string): string | undefined {
@@ -1372,6 +1407,16 @@ export class RelaycastMessagingClient implements RelayMessagingClient {
       throw new Error(`RelaycastMessagingClient.${operation} requires agentToken or agentClient.`);
     }
     return this.agentClient;
+  }
+
+  private requireAgentFiles(operation: string): NonNullable<RelaycastAgentLike['files']> {
+    const files = this.requireAgentClient(operation).files;
+    if (!files) {
+      throw new Error(
+        `RelaycastMessagingClient.${operation} requires a relaycast agent client with the files API.`
+      );
+    }
+    return files;
   }
 
   private requireWorkspaceDmMessages(): NonNullable<RelaycastWorkspaceLike['dmMessages']> {

@@ -9,13 +9,12 @@ name: Fleet E2E
 # engine build), which rust-cache amortises on warm runs. The 20-minute job
 # timeout is a cold-build ceiling, not the matrix runtime.
 
-# NOTE on branches: the fleet stack is developed on `feat/fleet-*` branches that
-# merge into each other before `main`, so the trigger must include them — gating
-# on `[main]` alone leaves this job inert for the entire feature stack (it would
-# only run after something reaches main). Update to `[main]` once the stack lands.
+# NOTE on branches: this runs on pushes to `main` and on pull requests from this
+# repository (see the job `if:`) into `main` or a `feat/fleet-**` stack base.
+# Feature branches are tested through their PR, not through push runs.
 on:
   push:
-    branches: [main, 'feat/fleet-**']
+    branches: [main]
     paths:
       - 'packages/fleet/**'
       - 'packages/cli/**'
@@ -54,6 +53,7 @@ env:
 
 jobs:
   fleet-e2e:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     name: Two-node fleet matrix
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -65,15 +65,15 @@ jobs:
 
       # The relaycast engine lives in a separate repo. This E2E drives the
       # node-provider model and heartbeats whose load may be unreported for
-      # unbounded providers. This companion PR candidate supplies isolated
-      # registration, acknowledged cleanup and node-owned spawn status reads.
-      # It is a test pin, not a released or deployed product dependency.
+      # unbounded providers. This released engine supplies isolated
+      # registration, atomic generation-guarded cleanup and node-owned spawn
+      # status reads. It is a test pin, not a deployed product dependency.
       - name: Checkout relaycast engine (node-provider model)
         uses: actions/checkout@v4
         with:
           persist-credentials: false
           repository: AgentWorkforce/relaycast
-          ref: a5c7ac66f64a650274fbe2c60e3cd5d3c9b87dcd # relaycast#387: verified served-node spawn completion
+          ref: aabc862dd0ef9ea77bbddb1590907530e30ac070 # relaycast v10.3.0: atomic exact-agent release
           path: relaycast-engine
 
       - name: Setup Node.js
