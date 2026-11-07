@@ -449,8 +449,7 @@ export async function resolveWorkspaceByKey(
 }
 
 type ResolveDescriptorResult =
-  | { descriptor: ActiveWorkspaceDescriptor }
-  | { lastUnsupported: Error | null; sawMethodNotAllowed: boolean };
+  { descriptor: ActiveWorkspaceDescriptor } | { lastUnsupported: Error | null; sawMethodNotAllowed: boolean };
 
 async function resolveWorkspaceDescriptor(
   key: string,
@@ -574,7 +573,9 @@ export async function resolveActiveWorkspace(
   // (this never creates a new workspace) and retry once. Best-effort: any
   // failure here (no session, no longer a member, etc.) falls through to the
   // original resolve error so the failure mode is unchanged from before.
-  if (entry.cloudWorkspaceId) {
+  // A 405 says the configured API has a different shape, not that this key
+  // stopped resolving, so it is no reason to re-mint and overwrite the key.
+  if (entry.cloudWorkspaceId && !primary.sawMethodNotAllowed) {
     try {
       const joined = await joinWorkspace(entry.cloudWorkspaceId, {
         apiUrl: options.apiUrl,

@@ -293,6 +293,72 @@ describe('resolveActiveWorkspace', () => {
 
     await expect(resolveActiveWorkspace()).rejects.toThrow(/Workspace not found/);
   });
+
+  it('keeps the messaging-only diagnosis on a 404 that self-heal cannot fix', async () => {
+    setWorkspaceKey('ops', 'rk_live_orphan');
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: 'Workspace not found' }), {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          })
+      )
+    );
+
+    await expect(resolveActiveWorkspace()).rejects.toThrow(/messaging-only workspace/);
+  });
+
+  it('rethrows a non-404 resolve error unchanged when there is nothing to self-heal from', async () => {
+    setWorkspaceKey('ops', 'rk_live_rotated');
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: 'Forbidden' }), {
+            status: 403,
+            headers: { 'content-type': 'application/json' },
+          })
+      )
+    );
+
+    const error = await resolveActiveWorkspace().then(
+      () => undefined,
+      (err: unknown) => err as Error
+    );
+    expect(error?.message).toMatch(/Forbidden/);
+    expect(error?.message).not.toMatch(/messaging-only workspace/);
+  });
+
+  it('does not self-heal or touch the stored key when a resolve endpoint answers 405', async () => {
+    setWorkspaceKey('ops', 'rk_live_ops', undefined, 'rw_ops');
+
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'POST') {
+        return new Response(JSON.stringify({ workspaceId: 'rw_ops', relaycastApiKey: 'rk_live_new' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const error = await resolveActiveWorkspace().then(
+      () => undefined,
+      (err: unknown) => err as Error
+    );
+    expect(error?.message).toMatch(/Method not allowed/);
+    expect(error?.message).not.toMatch(/messaging-only workspace/);
+    expect(fetchMock.mock.calls.some(([, init]) => (init?.method ?? 'GET') === 'POST')).toBe(false);
+    expect(readWorkspaceStore().workspaces.ops).toEqual({ key: 'rk_live_ops', cloudWorkspaceId: 'rw_ops' });
+  });
 });
 
 describe('joinWorkspace', () => {
