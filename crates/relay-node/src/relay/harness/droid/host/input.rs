@@ -51,17 +51,35 @@ impl Write for Input {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
     #[test]
     fn a_slow_progressing_reader_gets_more_than_one_stall_budget() {
         let mut child = std::process::Command::new("python3")
             .args([
                 "-c",
-                "import os,time\nwhile os.read(0,4096): time.sleep(0.006)",
+                // Startup can exceed the transport's idle budget. A real
+                // worker has initialized before it receives a large prompt.
+                "import os,time\ntime.sleep(0.35)\nprint('READY',flush=True)\nwhile os.read(0,4096): time.sleep(0.006)",
             ])
             .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
+        let mut output = child.stdout.take().unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut bytes = [0; 6];
+            let result = output.read_exact(&mut bytes).map(|_| bytes);
+            let _ = sender.send(result);
+        });
+        let ready = receiver.recv_timeout(Duration::from_secs(10));
+        let ready_ok = matches!(&ready, Ok(Ok(bytes)) if bytes == b"READY\n");
+        if !ready_ok {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = reader.join();
+        assert!(ready_ok, "provider fixture did not initialize: {ready:?}");
         let mut input = Input::new(child.stdin.take().unwrap()).unwrap();
         let start = Instant::now();
         let result = super::super::send(
