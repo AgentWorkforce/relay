@@ -75,6 +75,58 @@ fn partial_appends_wait_for_the_complete_record_and_corruption_releases() {
 }
 
 #[test]
+fn non_object_or_untyped_complete_records_are_unverifiable_after_the_anchor() {
+    for value in [
+        json!(null),
+        json!([]),
+        json!(true),
+        json!(42),
+        json!("bad"),
+        json!({}),
+        json!({"type":7}),
+    ] {
+        let (_home, config, path, payload) = fixture();
+        append(&path, value);
+        assert!(cancelled(&config, SID, &payload));
+    }
+}
+
+#[test]
+fn an_append_after_the_read_snapshot_is_not_a_cancellation() {
+    let (_home, config, path, _payload) = fixture();
+    let history = format!("{}\n", json!({"type":"fixture","data":"x".repeat(4096)}));
+    std::fs::write(&path, format!("{}{}\n", history.repeat(20), start(200))).unwrap();
+    let payload = json!({"timestamp":200,"relayJournal":snapshot(&config,SID).unwrap()});
+    let mut file = open(&path).unwrap();
+    let length = file.metadata().unwrap().len();
+    assert!(length > LIMIT);
+    append(&path, json!({"type":"session.usage_record","data":{}}));
+    let bytes = read_tail_at(&mut file, length).unwrap();
+    assert!(bytes.len() as u64 <= LIMIT);
+    assert_eq!(scan(&bytes, SID, 200), Some(false));
+    assert!(!cancelled(&config, SID, &payload));
+    append(&path, json!({"type":"abort"}));
+    assert!(cancelled(&config, SID, &payload));
+}
+
+#[test]
+fn a_complete_anchor_at_the_tail_boundary_is_preserved() {
+    let (_home, config, path, _payload) = fixture();
+    let anchor = format!("{}\n", start(200));
+    let overhead = format!("{}\n", json!({"type":"fixture","data":""})).len();
+    let filler = format!(
+        "{}\n",
+        json!({"type":"fixture","data":"x".repeat(LIMIT as usize-anchor.len()-overhead)})
+    );
+    let tail = format!("{anchor}{filler}");
+    assert_eq!(tail.len() as u64, LIMIT);
+    let prefix = format!("{}\n", json!({"type":"fixture"}));
+    std::fs::write(&path, format!("{prefix}{tail}")).unwrap();
+    let payload = json!({"timestamp":200,"relayJournal":snapshot(&config,SID).unwrap()});
+    assert!(!cancelled(&config, SID, &payload));
+}
+
+#[test]
 fn replacement_truncation_and_missing_anchors_never_claim_a_delivery() {
     let (_home, config, path, payload) = fixture();
     let copy = path.with_extension("replacement");
@@ -189,4 +241,22 @@ fn cancellation_exits_idle_wait_and_leaves_an_offered_message_for_the_next_hook(
         .as_str()
         .unwrap()
         .contains("A real offered message"));
+    // Older native stop inputs still wait for a later offer. They cannot use
+    // timestamp-based cancellation, but must not lose the existing idle route.
+    payload.as_object_mut().unwrap().remove("timestamp");
+    payload.as_object_mut().unwrap().remove("relayJournal");
+    assert_eq!(
+        hook_answer(&config, &table, 501, 103, &payload),
+        Some(json!({}))
+    );
+    config
+        .inbox
+        .offer(&thread, "legacy-stop-message", "A later legacy offer")
+        .unwrap();
+    let legacy = hook_answer(&config, &table, 501, 103, &payload).unwrap();
+    assert_eq!(legacy["decision"], "block");
+    assert!(legacy["reason"]
+        .as_str()
+        .unwrap()
+        .contains("A later legacy offer"));
 }

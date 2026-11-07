@@ -62,16 +62,30 @@ fn bytes(config: &CopilotConfig, sid: &str, stamp: &Value) -> Option<Vec<u8>> {
     {
         return None;
     }
-    let start = metadata.len().saturating_sub(LIMIT);
-    file.seek(SeekFrom::Start(start)).ok()?;
-    let mut bytes = Vec::new();
-    file.take(LIMIT + 1).read_to_end(&mut bytes).ok()?;
-    if bytes.len() as u64 > LIMIT
-        || identity(&std::fs::symlink_metadata(path).ok()?)? != stamp["identity"]
-    {
+    let bytes = read_tail_at(&mut file, metadata.len())?;
+    let after = std::fs::symlink_metadata(path).ok()?;
+    if !after.is_file() || identity(&after)? != stamp["identity"] || after.len() < metadata.len() {
         return None;
     }
-    if start > 0 {
+    Some(bytes)
+}
+
+fn read_tail_at(file: &mut File, length: u64) -> Option<Vec<u8>> {
+    let start = length.saturating_sub(LIMIT);
+    let trim = if start > 0 {
+        file.seek(SeekFrom::Start(start - 1)).ok()?;
+        let mut previous = [0];
+        file.read_exact(&mut previous).ok()?;
+        previous[0] != b'\n'
+    } else {
+        false
+    };
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    // Appends after the metadata snapshot belong to the next poll. Reading
+    // past that bound must not turn an ordinary append into cancellation.
+    file.take(length - start).read_to_end(&mut bytes).ok()?;
+    if trim {
         let first = bytes.iter().position(|b| *b == b'\n')?;
         bytes.drain(..=first);
     }
@@ -93,10 +107,10 @@ fn scan(bytes: &[u8], sid: &str, timestamp: u64) -> Option<bool> {
         .split_inclusive(|b| *b == b'\n')
         .filter(|l| l.ends_with(b"\n"))
     {
-        let event: Value = match serde_json::from_slice(line) {
-            Ok(value) => value,
-            Err(_) if anchored => return Some(true),
-            Err(_) => continue,
+        let event: Value = match serde_json::from_slice::<Value>(line) {
+            Ok(value) if value.is_object() && value["type"].is_string() => value,
+            _ if anchored => return Some(true),
+            _ => continue,
         };
         if !anchored {
             anchored = anchor(&event, sid, timestamp);

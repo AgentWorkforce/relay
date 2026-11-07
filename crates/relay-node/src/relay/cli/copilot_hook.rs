@@ -151,10 +151,7 @@ fn answer(bytes: &[u8]) -> Option<Value> {
     (value["ok"] == true && value["data"].is_object()).then(|| value["data"].clone())
 }
 fn waits(value: &Value) -> bool {
-    value["relayEvent"] == "stop"
-        && value["stopReason"] == "end_turn"
-        && value["timestamp"].as_u64().is_some()
-        && value["relayJournal"].is_object()
+    value["relayEvent"] == "stop" && value["stopReason"] == "end_turn"
 }
 
 #[cfg(test)]
@@ -232,9 +229,7 @@ mod tests {
         assert!(!waits(
             &json!({"relayEvent":"tool","stopReason":"end_turn"})
         ));
-        assert!(!waits(
-            &json!({"relayEvent":"stop","stopReason":"end_turn"})
-        ));
+        assert!(waits(&json!({"relayEvent":"stop","stopReason":"end_turn"})));
         assert!(waits(
             &json!({"relayEvent":"stop","stopReason":"end_turn", "timestamp":123, "relayJournal":{}})
         ));
