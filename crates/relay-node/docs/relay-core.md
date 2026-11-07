@@ -557,6 +557,19 @@ the first of two sources that names one:
    for `localhost`/`127.0.0.1`; no user info, path, query or fragment);
    anything else leaves `https://cast.agentrelay.com`.
 
+A build made for its own site (`AGENT_RELAY_SITE_URL` other than
+`https://agentrelay.com`, `links::is_site_build`) uses only that site's values
+and never falls back to Agent Relay's public gateways. The account's workspace
+must carry a bare https origin from the site's workspace resolve
+(`urls.relaycastUrl`); `RELAYCAST_URL` is ignored, and a missing or invalid
+origin is refused with a reason naming the site. A CLI key needs a recorded
+server in `relaycast-origins.json` or `RELAY_BASE_URL`: an unbound key, an
+unseen `ar_ws_…` key included, is refused with a reason naming the bindings
+file and the site. A persisted project route, of any kind, must name the
+site's own Relaycast origin (the one its sign-in recorded). Each refusal is
+reported in the daemon's activity, and the daemon has no workspace until it is
+fixed.
+
 Neither source's key is sent to the other's origin: `RELAYCAST_URL` applies
 only to the account's key, and CLI bindings only to the CLI's. Only
 `rk_…` and `ar_ws_…` keys of at least 12 characters without whitespace qualify. A refused

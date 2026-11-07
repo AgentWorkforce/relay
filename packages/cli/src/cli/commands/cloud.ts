@@ -36,6 +36,7 @@ import {
 } from '@agent-relay/cloud';
 
 import { linkEnrolledNodeToProjectPin, type EnrolledNodePinResult } from '../lib/enrollment-pin.js';
+import { describeError } from '../lib/describe-error.js';
 import { defaultExit } from '../lib/exit.js';
 import { sanitizeForTerminalLine } from '../lib/formatting.js';
 import { maskSecret } from '../lib/redact.js';
@@ -492,9 +493,9 @@ function reconcileEnrollmentPin(
     return result;
   } catch (err) {
     deps.warn(
-      `Enrollment succeeded but this project's workspace pin could not be updated: ${
-        err instanceof Error ? err.message : String(err)
-      }. 'relay node up' in this project may ignore the new enrollment.`
+      `Enrollment succeeded but this project's workspace pin could not be updated: ${describeError(
+        err
+      )}. 'relay node up' in this project may ignore the new enrollment.`
     );
     return undefined;
   }
@@ -894,9 +895,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         deps.error(
           isCloudLoginError(err)
             ? 'Cloud login required. Run `agent-relay cloud login` and retry.'
-            : err instanceof Error
-              ? err.message
-              : String(err)
+            : describeError(err)
         );
         deps.exit(1);
       } finally {
@@ -993,9 +992,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
             deps.upsertFleetNodeEnrollment(record);
           } catch (persistErr) {
             deps.error(
-              `Enrollment succeeded but persisting credentials failed: ${
-                persistErr instanceof Error ? persistErr.message : String(persistErr)
-              }`
+              `Enrollment succeeded but persisting credentials failed: ${describeError(persistErr)}`
             );
             // The one-time token is already consumed, so the credentials must
             // survive somewhere. Prefer a 0600 recovery file (never print the
@@ -1049,7 +1046,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
             );
           }
         } catch (err) {
-          deps.error(err instanceof Error ? err.message : String(err));
+          deps.error(describeError(err));
           deps.exit(1);
         }
       }
@@ -1368,7 +1365,7 @@ export function registerCloudCommands(program: Command, overrides: Partial<Cloud
         });
         deps.log('Patch applied successfully.');
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = describeError(err);
         deps.error(`Failed to apply patch: ${message}`);
         deps.error(`Patch saved to: ${tmpPatch}`);
         deps.exit(1);

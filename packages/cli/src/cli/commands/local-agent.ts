@@ -534,7 +534,7 @@ async function run(
       : await deps.connect(deps.cwd());
     await fn(client);
   } catch (err) {
-    deps.error(err instanceof Error ? err.message : String(err));
+    deps.error(describeError(err));
     deps.exit(1);
   } finally {
     client?.disconnect?.();
@@ -549,7 +549,7 @@ async function runLocalBroker(
   try {
     await fn(await deps.connectLocal(deps.cwd(), options));
   } catch (err) {
-    deps.error(err instanceof Error ? err.message : String(err));
+    deps.error(describeError(err));
     deps.exit(1);
   }
 }
@@ -654,7 +654,7 @@ function resolveRuntimeOption(
   try {
     return { requested, selected: resolvedSpawnRuntime({ cli: provider, runtime: requested }) };
   } catch (error) {
-    deps.error(error instanceof Error ? error.message : String(error));
+    deps.error(describeError(error));
     deps.exit(1);
     return undefined;
   }
@@ -952,7 +952,7 @@ export function registerLocalAgentCommands(
           runtime.selected
         );
       } catch (err) {
-        deps.error(err instanceof Error ? err.message : String(err));
+        deps.error(describeError(err));
         deps.exit(1);
         return;
       }

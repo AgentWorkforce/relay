@@ -1,3 +1,5 @@
+import { describeError } from './describe-error.js';
+
 export interface CollectWithRetryOptions {
   retries?: number;
   baseDelayMs?: number;
@@ -37,6 +39,6 @@ export async function collectWithRetry<T>(
       await sleep(delay);
     }
   }
-  const message = lastError instanceof Error ? lastError.message : String(lastError);
+  const message = describeError(lastError);
   return { ok: false, error: `${label}: ${message}`, retried: attempts > 1 };
 }
