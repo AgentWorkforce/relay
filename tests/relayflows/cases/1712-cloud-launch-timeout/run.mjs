@@ -37,7 +37,9 @@ const probeConfigPath = path.join(targetDir, '.relayflow-1712-launch-timeout.vit
 const probeObservationPath = path.join(targetDir, '.relayflow-1712-launch-timeout-observation.json');
 
 const probeSource = String.raw`import { test, vi } from 'vitest';
-import { writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 const mocks = vi.hoisted(() => ({
   ensureAuthenticated: vi.fn(),
@@ -86,9 +88,33 @@ test('observes explicit launch timeout forwarding on the compiled public client'
   const requests = [];
   mocks.ensureAuthenticated.mockResolvedValue(auth);
   mocks.authorizedApiFetch.mockImplementation(async (_auth, requestPath, init) => {
-    requests.push({ requestPath, body: JSON.parse(String(init?.body ?? '{}')) });
+    const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {};
+    requests.push({ requestPath, body });
     if (requestPath === '/api/v1/workflows/run') {
       return { auth, response: Response.json({ runId: 'run-launch-timeout-proof', status: 'queued' }) };
+    }
+    // Schedules store an immutable code snapshot before the schedule POST:
+    // answer the prepare call with Cloud-hosted storage and accept the upload.
+    if (requestPath === '/api/v1/workflows/prepare') {
+      return {
+        auth,
+        response: Response.json({
+          runId: 'run-launch-timeout-snapshot',
+          s3Credentials: {
+            accessKeyId: 'proof',
+            secretAccessKey: 'proof',
+            sessionToken: 'proof',
+            bucket: 'proof',
+            prefix: 'proof/run-launch-timeout-snapshot',
+            backend: 'cloud-api',
+          },
+          s3CodeKey: 'code.tar.gz',
+          workflowStorage: { backend: 'cloud-api' },
+        }),
+      };
+    }
+    if (requestPath.startsWith('/api/v1/workflows/runs/run-launch-timeout-snapshot/storage/')) {
+      return { auth, response: Response.json({ ok: true }) };
     }
     if (requestPath === '/api/v1/workflows/schedules') {
       return { auth, response: Response.json({ schedule }) };
@@ -102,12 +128,22 @@ test('observes explicit launch timeout forwarding on the compiled public client'
     syncCode: false,
     launchTimeoutMs: ${LAUNCH_TIMEOUT_MS},
   });
-  await scheduleWorkflow(workflow, {
-    apiUrl: 'https://relayflow.invalid',
-    fileType: 'yaml',
-    at: '2099-01-01T00:00:00.000Z',
-    launchTimeoutMs: ${LAUNCH_TIMEOUT_MS},
-  });
+  // The schedule snapshot archives the working directory; use an empty one so
+  // the probe never packs the checkout under test.
+  const snapshotRoot = await mkdtemp(path.join(os.tmpdir(), 'relayflow-1712-'));
+  const originalCwd = process.cwd();
+  process.chdir(snapshotRoot);
+  try {
+    await scheduleWorkflow(workflow, {
+      apiUrl: 'https://relayflow.invalid',
+      fileType: 'yaml',
+      at: '2099-01-01T00:00:00.000Z',
+      launchTimeoutMs: ${LAUNCH_TIMEOUT_MS},
+    });
+  } finally {
+    process.chdir(originalCwd);
+    await rm(snapshotRoot, { recursive: true, force: true });
+  }
 
   const runRequest = requests.find(({ requestPath }) => requestPath === '/api/v1/workflows/run');
   const scheduleRequest = requests.find(({ requestPath }) => requestPath === '/api/v1/workflows/schedules');

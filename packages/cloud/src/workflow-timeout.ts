@@ -72,11 +72,10 @@ function unicodeIdentifierEscapeLength(source: string, index: number): number {
   return /^[0-9A-Fa-f]{4}$/.test(source.slice(index + 2, index + 6)) ? 6 : 0;
 }
 
-function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 'py'>): MaskedWorkflowSource {
+function maskNonCode(source: string): MaskedWorkflowSource {
   let output = '';
   let index = 0;
   let quote: "'" | '"' | '`' | null = null;
-  let triple = false;
   let escaped = false;
   let lineComment = false;
   let blockComment = false;
@@ -197,7 +196,6 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
   // conservative: masking a possible regex is safer than inferring a timeout
   // from text inside it.
   const startsRegexLiteral = (): boolean => {
-    if (fileType !== 'ts') return false;
     if (asiKeywordPending !== undefined || lineBreakAfterAsiLabel) return true;
     if (
       previousSignificantCharacter === undefined ||
@@ -212,7 +210,6 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
   while (index < source.length) {
     const character = source[index];
     const next = source[index + 1];
-    const third = source[index + 2];
     scopeAt[index] = scopeStack[scopeStack.length - 1];
 
     if (regexLiteral) {
@@ -267,27 +264,12 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
 
     if (quote) {
       output += mask(character);
-      if (triple) {
-        if (escaped) {
-          escaped = false;
-        } else if (character === '\\') {
-          escaped = true;
-        } else if (character === quote && next === quote && third === quote) {
-          output += '  ';
-          index += 3;
-          quote = null;
-          triple = false;
-          escaped = false;
-          continue;
-        }
-      } else {
-        if (escaped) {
-          escaped = false;
-        } else if (character === '\\') {
-          escaped = true;
-        } else if (character === quote) {
-          quote = null;
-        }
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === quote) {
+        quote = null;
       }
       index += 1;
       continue;
@@ -307,7 +289,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
       continue;
     }
 
-    if (fileType === 'ts' && character === '\\') {
+    if (character === '\\') {
       const escapeLength = unicodeIdentifierEscapeLength(source, index);
       if (escapeLength > 0) {
         output += source.slice(index, index + escapeLength);
@@ -323,7 +305,7 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
     }
 
     const characterCode = source.charCodeAt(index);
-    if (fileType === 'ts' && characterCode >= 0xd800 && characterCode <= 0xdbff) {
+    if (characterCode >= 0xd800 && characterCode <= 0xdbff) {
       const identifierCharacter = identifierCodePointAt(source, index);
       if (identifierCharacter !== undefined && identifierCharacter.length > 1) {
         output += identifierCharacter;
@@ -338,13 +320,13 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
       }
     }
 
-    if (fileType === 'ts' && character === '/' && next === '/') {
+    if (character === '/' && next === '/') {
       output += '  ';
       index += 2;
       lineComment = true;
       continue;
     }
-    if (fileType === 'ts' && character === '/' && next === '*') {
+    if (character === '/' && next === '*') {
       output += '  ';
       index += 2;
       blockComment = true;
@@ -360,22 +342,15 @@ function maskNonCode(source: string, fileType: Extract<WorkflowFileType, 'ts' | 
       regexCharacterClass = false;
       continue;
     }
-    if (fileType === 'py' && character === '#') {
-      output += ' ';
-      index += 1;
-      lineComment = true;
-      continue;
-    }
-    if (character === "'" || character === '"' || (fileType === 'ts' && character === '`')) {
-      triple = fileType === 'py' && next === character && third === character;
+    if (character === "'" || character === '"' || character === '`') {
       quote = character;
-      output += triple ? '   ' : ' ';
+      output += ' ';
       escaped = false;
       previousSignificantCharacter = character;
       currentIdentifier = '';
       lastIdentifier = undefined;
       closedControlParen = false;
-      index += triple ? 3 : 1;
+      index += 1;
       continue;
     }
 
@@ -504,58 +479,52 @@ function bindingAt(
   return null;
 }
 
-function workflowInitializerAt(
-  source: string,
-  end: number,
-  fileType: Extract<WorkflowFileType, 'ts' | 'py'>
-): boolean {
+function workflowInitializerAt(source: string, end: number): boolean {
   let cursor = end;
   while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
-  if (fileType === 'ts') {
-    if (source[cursor] === ':') {
-      cursor += 1;
-      let delimiterDepth = 0;
-      let angleDepth = 0;
-      while (cursor < source.length) {
-        const character = source[cursor];
-        if (
-          delimiterDepth === 0 &&
-          angleDepth === 0 &&
-          TYPESCRIPT_DECLARATION_KEYWORDS.some(
-            (keyword) =>
-              source.startsWith(keyword, cursor) &&
-              !/[A-Za-z0-9_$]/.test(source[cursor - 1] ?? '') &&
-              /\s/.test(source[cursor + keyword.length] ?? '')
-          )
-        ) {
-          return false;
-        }
-        if (character === '(' || character === '[' || character === '{') delimiterDepth += 1;
-        else if (character === ')' || character === ']' || character === '}') {
-          delimiterDepth = Math.max(0, delimiterDepth - 1);
-        } else if (character === '<') angleDepth += 1;
-        else if (character === '>' && source[cursor - 1] !== '=') {
-          angleDepth = Math.max(0, angleDepth - 1);
-        } else if (
-          character === '=' &&
-          source[cursor + 1] !== '>' &&
-          delimiterDepth === 0 &&
-          angleDepth === 0
-        ) {
-          break;
-        } else if (character === ';' && delimiterDepth === 0 && angleDepth === 0) {
-          return false;
-        }
-        cursor += 1;
-      }
-    }
-    if (source[cursor] !== '=') return false;
+  if (source[cursor] === ':') {
     cursor += 1;
-    while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
-    if (source.startsWith('await', cursor) && !/[A-Za-z0-9_$]/.test(source[cursor + 5] ?? '')) {
-      cursor += 5;
-      while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+    let delimiterDepth = 0;
+    let angleDepth = 0;
+    while (cursor < source.length) {
+      const character = source[cursor];
+      if (
+        delimiterDepth === 0 &&
+        angleDepth === 0 &&
+        TYPESCRIPT_DECLARATION_KEYWORDS.some(
+          (keyword) =>
+            source.startsWith(keyword, cursor) &&
+            !/[A-Za-z0-9_$]/.test(source[cursor - 1] ?? '') &&
+            /\s/.test(source[cursor + keyword.length] ?? '')
+        )
+      ) {
+        return false;
+      }
+      if (character === '(' || character === '[' || character === '{') delimiterDepth += 1;
+      else if (character === ')' || character === ']' || character === '}') {
+        delimiterDepth = Math.max(0, delimiterDepth - 1);
+      } else if (character === '<') angleDepth += 1;
+      else if (character === '>' && source[cursor - 1] !== '=') {
+        angleDepth = Math.max(0, angleDepth - 1);
+      } else if (
+        character === '=' &&
+        source[cursor + 1] !== '>' &&
+        delimiterDepth === 0 &&
+        angleDepth === 0
+      ) {
+        break;
+      } else if (character === ';' && delimiterDepth === 0 && angleDepth === 0) {
+        return false;
+      }
+      cursor += 1;
     }
+  }
+  if (source[cursor] !== '=') return false;
+  cursor += 1;
+  while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
+  if (source.startsWith('await', cursor) && !/[A-Za-z0-9_$]/.test(source[cursor + 5] ?? '')) {
+    cursor += 5;
+    while (cursor < source.length && /\s/.test(source[cursor])) cursor += 1;
   }
   if (!source.startsWith('workflow', cursor)) return false;
   const afterName = source[cursor + 'workflow'.length] ?? '';
@@ -736,76 +705,7 @@ function addFunctionBinding(
   }
 }
 
-function pythonDelimiterDepth(source: string): Uint32Array {
-  const depths = new Uint32Array(source.length);
-  let depth = 0;
-  for (let cursor = 0; cursor < source.length; cursor += 1) {
-    depths[cursor] = depth;
-    const character = source[cursor];
-    if (character === '(' || character === '[' || character === '{') depth += 1;
-    else if (character === ')' || character === ']' || character === '}') depth = Math.max(0, depth - 1);
-  }
-  return depths;
-}
-
-function hasPythonStatementBindings(source: string): boolean {
-  const headers = /\b(?:for|with|except)\b/g;
-  let header = headers.exec(source);
-  if (header === null) return false;
-  const depths = pythonDelimiterDepth(source);
-  do {
-    if (depths[header.index] === 0) return true;
-    header = headers.exec(source);
-  } while (header !== null);
-  return false;
-}
-
-function hasPythonComprehensionTimeout(masked: MaskedWorkflowSource): boolean {
-  const { source, nextNonWhitespace } = masked;
-  if (!/\bfor\b/.test(source)) return false;
-  const containers: Array<{ comprehension: boolean; timeout: boolean }> = [];
-  for (let cursor = 0; cursor < source.length; cursor += 1) {
-    const character = source[cursor];
-    if (character === '(' || character === '[' || character === '{') {
-      containers.push({ comprehension: false, timeout: false });
-      continue;
-    }
-    if (character === ')' || character === ']' || character === '}') {
-      const container = containers.pop();
-      if (container?.comprehension && container.timeout) return true;
-      if (container?.timeout && containers.length > 0) containers[containers.length - 1].timeout = true;
-      continue;
-    }
-    const container = containers[containers.length - 1];
-    if (container === undefined) continue;
-    if (
-      source.startsWith('for', cursor) &&
-      !isIdentifierPart(source[cursor - 1]) &&
-      !isIdentifierPart(source[cursor + 3])
-    ) {
-      container.comprehension = true;
-    }
-    if (
-      source.startsWith('.timeout', cursor) &&
-      source[nextNonWhitespace[cursor + '.timeout'.length]] === '('
-    ) {
-      container.timeout = true;
-    }
-  }
-  // An unfinished comprehension is no stronger evidence than a complete one.
-  let nestedTimeout = false;
-  for (let index = containers.length - 1; index >= 0; index -= 1) {
-    nestedTimeout ||= containers[index].timeout;
-    if (containers[index].comprehension && nestedTimeout) return true;
-  }
-  return false;
-}
-
-function resolveExpressionScopeEnds(
-  source: string,
-  scopes: ExpressionScope[],
-  fileType: Extract<WorkflowFileType, 'ts' | 'py'>
-): void {
+function resolveExpressionScopeEnds(source: string, scopes: ExpressionScope[]): void {
   const active: Array<ExpressionScope & { depth: number; conditionalDepth: number }> = [];
   let scopeIndex = 0;
   let delimiterDepth = 0;
@@ -838,7 +738,6 @@ function resolveExpressionScopeEnds(
       continue;
     }
     if (
-      fileType === 'ts' &&
       character === '?' &&
       source[cursor + 1] !== '?' &&
       source[cursor + 1] !== '.' &&
@@ -849,12 +748,7 @@ function resolveExpressionScopeEnds(
       active[active.length - 1].conditionalDepth += 1;
       continue;
     }
-    if (
-      fileType === 'ts' &&
-      character === ':' &&
-      active.length > 0 &&
-      active[active.length - 1].depth === delimiterDepth
-    ) {
+    if (character === ':' && active.length > 0 && active[active.length - 1].depth === delimiterDepth) {
       while (active.length > 0 && active[active.length - 1].depth === delimiterDepth) {
         const scope = active[active.length - 1];
         if (scope.conditionalDepth > 0) {
@@ -864,9 +758,6 @@ function resolveExpressionScopeEnds(
         active.pop()!.end = cursor;
       }
       continue;
-    }
-    if (fileType === 'py' && (character === '\n' || character === '\r') && delimiterDepth === 0) {
-      closeAt(cursor);
     }
   }
 
@@ -930,229 +821,7 @@ function applyExpressionScopes(
   }
 }
 
-function pythonHeaderColon(source: string, start: number): number | undefined {
-  let delimiterDepth = 0;
-  for (let cursor = start; cursor < source.length; cursor += 1) {
-    const character = source[cursor];
-    if (character === '(' || character === '[' || character === '{') {
-      delimiterDepth += 1;
-      continue;
-    }
-    if (character === ')' || character === ']' || character === '}') {
-      delimiterDepth = Math.max(0, delimiterDepth - 1);
-      continue;
-    }
-    if (character === ':' && delimiterDepth === 0) return cursor;
-    if (character === '\n' || character === '\r') {
-      const previous = previousNonWhitespace(source, cursor - 1);
-      if (delimiterDepth === 0 && source[previous] !== '\\') return undefined;
-      let nextLineToken = cursor + 1;
-      while (source[nextLineToken] === ' ' || source[nextLineToken] === '\t') nextLineToken += 1;
-      if (
-        source.startsWith('def ', nextLineToken) ||
-        (source.startsWith('async', nextLineToken) &&
-          /\s/.test(source[nextLineToken + 'async'.length] ?? '') &&
-          source.startsWith('def ', nextNonWhitespace(source, nextLineToken + 'async'.length)))
-      ) {
-        return undefined;
-      }
-      continue;
-    }
-    if (character === ';' && delimiterDepth === 0) return undefined;
-  }
-  return undefined;
-}
-
-function pythonParameterBindings(parameters: string): string {
-  const names: string[] = [];
-  let segmentStart = 0;
-  let delimiterDepth = 0;
-  const recordSegment = (end: number): void => {
-    const segment = parameters.slice(segmentStart, end).trim();
-    const match = segment.match(/^\*{0,2}\s*([A-Za-z_][A-Za-z0-9_]*)/);
-    if (match !== null) names.push(match[1]);
-  };
-
-  for (let cursor = 0; cursor < parameters.length; cursor += 1) {
-    const character = parameters[cursor];
-    if (character === '(' || character === '[' || character === '{') delimiterDepth += 1;
-    else if (character === ')' || character === ']' || character === '}') {
-      delimiterDepth = Math.max(0, delimiterDepth - 1);
-    } else if (character === ',' && delimiterDepth === 0) {
-      recordSegment(cursor);
-      segmentStart = cursor + 1;
-    }
-  }
-  recordSegment(parameters.length);
-  return names.join(',');
-}
-
-function collectPythonLambdaScopes(source: string): ExpressionScope[] {
-  const scopes: ExpressionScope[] = [];
-  const pending: Array<{ parametersStart: number; depth: number; nestedScopeIndexes: number[] }> = [];
-  let delimiterDepth = 0;
-
-  for (let cursor = 0; cursor < source.length; cursor += 1) {
-    if (
-      source.startsWith('lambda', cursor) &&
-      !isIdentifierPart(source[cursor - 1]) &&
-      !isIdentifierPart(source[cursor + 'lambda'.length])
-    ) {
-      pending.push({
-        parametersStart: cursor + 'lambda'.length,
-        depth: delimiterDepth,
-        nestedScopeIndexes: [],
-      });
-      cursor += 'lambda'.length - 1;
-      continue;
-    }
-
-    const character = source[cursor];
-    if (character === '(' || character === '[' || character === '{') {
-      delimiterDepth += 1;
-      continue;
-    }
-    if (character === ')' || character === ']' || character === '}') {
-      while (pending.length > 0 && pending[pending.length - 1].depth >= delimiterDepth) pending.pop();
-      delimiterDepth = Math.max(0, delimiterDepth - 1);
-      continue;
-    }
-    if (character === ':' && pending[pending.length - 1]?.depth === delimiterDepth) {
-      const lambda = pending.pop()!;
-      for (const nestedScopeIndex of lambda.nestedScopeIndexes) scopes[nestedScopeIndex].end = cursor;
-      const scopeIndex = scopes.length;
-      scopes.push({
-        start: nextNonWhitespace(source, cursor + 1),
-        end: source.length,
-        parameters: pythonParameterBindings(source.slice(lambda.parametersStart, cursor)),
-      });
-      pending[pending.length - 1]?.nestedScopeIndexes.push(scopeIndex);
-      continue;
-    }
-    if ((character === '\n' || character === '\r' || character === ';') && delimiterDepth === 0) {
-      pending.length = 0;
-    }
-  }
-
-  return scopes;
-}
-
-function collectPythonFunctionScopes(masked: MaskedWorkflowSource): {
-  functionScopes: Set<number>;
-  functionBindings: Map<number, Set<string>>;
-  varScopes: Set<number>;
-} {
-  const {
-    source,
-    scopeAt,
-    scopeParents,
-    matchingCloseParens,
-    nextNonWhitespace: nextNonWhitespaceByIndex,
-  } = masked;
-  const functionScopes = new Set<number>();
-  const functionBindings = new Map<number, Set<string>>();
-  const lines: Array<{ start: number; end: number; indent: number }> = [];
-  let lineStart = 0;
-  for (const line of source.split('\n')) {
-    const cursor = lineStart + line.length;
-    let indent = 0;
-    while (lineStart + indent < cursor) {
-      const character = source[lineStart + indent];
-      if (character === ' ') indent += 1;
-      else if (character === '\t') indent += 4;
-      else break;
-    }
-    lines.push({ start: lineStart, end: cursor, indent });
-    lineStart = cursor + 1;
-  }
-
-  const declarations: Array<{
-    name: string;
-    colon: number;
-    indent: number;
-    parameters: string;
-  }> = [];
-  const declarationPattern = /^[ \t]*(?:async[ \t]+)?def[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\(/gm;
-  const declarationMatches = [...source.matchAll(declarationPattern)];
-  const delimiterDepth = declarationMatches.length > 0 ? pythonDelimiterDepth(source) : undefined;
-  let declarationLineIndex = 0;
-  for (const declarationMatch of declarationMatches) {
-    if (delimiterDepth?.[declarationMatch.index] !== 0) continue;
-    const openParen = declarationMatch.index + declarationMatch[0].lastIndexOf('(');
-    const closeParen = matchingCloseParens.get(openParen);
-    if (closeParen === undefined) continue;
-    const colon = pythonHeaderColon(source, nextNonWhitespaceByIndex[closeParen + 1] ?? source.length);
-    if (colon === undefined) continue;
-    while (
-      declarationLineIndex + 1 < lines.length &&
-      lines[declarationLineIndex].end < declarationMatch.index
-    ) {
-      declarationLineIndex += 1;
-    }
-    declarations.push({
-      name: declarationMatch[1],
-      colon,
-      indent: lines[declarationLineIndex]?.indent ?? 0,
-      parameters: pythonParameterBindings(source.slice(openParen + 1, closeParen)),
-    });
-  }
-
-  const pending: Array<{ indent: number; parameters: string; parentScope: number }> = [];
-  const stack: Array<{ indent: number; scopeId: number }> = [];
-  let nextScopeId = 1;
-  for (const scopeId of scopeParents.keys()) nextScopeId = Math.max(nextScopeId, scopeId + 1);
-  let declarationIndex = 0;
-  for (const line of lines) {
-    const trimmed = source.slice(line.start + line.indent, line.end);
-    if (trimmed.trim() === '') continue;
-    while (stack.length > 0 && line.indent <= stack[stack.length - 1].indent) stack.pop();
-
-    while (pending.length > 0 && line.indent > pending[0].indent) {
-      const definition = pending.shift()!;
-      const functionScope = nextScopeId++;
-      scopeParents.set(functionScope, definition.parentScope);
-      functionScopes.add(functionScope);
-      addFunctionBinding(functionBindings, functionScope, definition.parameters);
-      stack.push({ indent: definition.indent, scopeId: functionScope });
-    }
-    pending.length = 0;
-
-    const scopeId = stack[stack.length - 1]?.scopeId ?? 0;
-    scopeAt.fill(scopeId, line.start, line.end);
-
-    while (declarationIndex < declarations.length && declarations[declarationIndex].colon <= line.end) {
-      const definition = declarations[declarationIndex++];
-      addFunctionBinding(functionBindings, scopeId, definition.name);
-      const inlineBodyStart = nextNonWhitespaceByIndex[definition.colon + 1] ?? source.length;
-      if (inlineBodyStart < line.end) {
-        const functionScope = nextScopeId++;
-        scopeParents.set(functionScope, scopeId);
-        functionScopes.add(functionScope);
-        addFunctionBinding(functionBindings, functionScope, definition.parameters);
-        scopeAt.fill(functionScope, inlineBodyStart, line.end);
-      } else {
-        pending.push({
-          indent: definition.indent,
-          parameters: definition.parameters,
-          parentScope: scopeId,
-        });
-      }
-    }
-  }
-
-  // Python lambdas have expression scope rather than indentation scope. For
-  // the static timeout scan, resolve all expression boundaries in one pass so
-  // nested lambdas do not repeatedly rescan and rewrite the same suffix.
-  const lambdaScopes = collectPythonLambdaScopes(source);
-  resolveExpressionScopeEnds(source, lambdaScopes, 'py');
-  applyExpressionScopes(masked, lambdaScopes, functionScopes, functionBindings);
-  return { functionScopes, functionBindings, varScopes: functionScopes };
-}
-
-function collectFunctionScopes(
-  masked: MaskedWorkflowSource,
-  fileType: Extract<WorkflowFileType, 'ts' | 'py'>
-): {
+function collectFunctionScopes(masked: MaskedWorkflowSource): {
   functionScopes: Set<number>;
   functionBindings: Map<number, Set<string>>;
   varScopes: Set<number>;
@@ -1162,8 +831,6 @@ function collectFunctionScopes(
   const functionScopes = new Set<number>();
   const functionBindings = new Map<number, Set<string>>();
   const varScopes = new Set<number>();
-
-  if (fileType === 'py') return collectPythonFunctionScopes(masked);
 
   const register = (openParen: number, parametersStart: number, parametersEnd: number): void => {
     const closeParen = matchingCloseParens.get(openParen);
@@ -1298,7 +965,7 @@ function collectFunctionScopes(
       expressionArrowScopes.push({ start: bodyStart, end: source.length, parameters });
     }
   }
-  resolveExpressionScopeEnds(source, expressionArrowScopes, 'ts');
+  resolveExpressionScopeEnds(source, expressionArrowScopes);
   applyExpressionScopes(masked, expressionArrowScopes, functionScopes, functionBindings, varScopes);
 
   return { functionScopes, functionBindings, varScopes };
@@ -1327,39 +994,22 @@ export function inferWorkflowLaunchTimeoutMs(
 ): number | undefined {
   if (fileType === 'yaml') return undefined;
 
-  const masked = maskNonCode(workflow, fileType);
+  const masked = maskNonCode(workflow);
   const source = masked.source;
   // Control-flow headers can bind or reassign names with lifetimes that this
   // static scanner does not model (including destructured and async targets).
   // Conservatively leave the optional metadata out instead of borrowing an
   // enclosing builder or letting a loop-local binding hide an outer factory.
   // Test masked code so comments and strings cannot disable valid inference.
-  if (fileType === 'ts' ? /\bfor\s*(?:await\s*)?\(/.test(source) : hasPythonStatementBindings(source)) {
-    return undefined;
-  }
-  // Comprehension targets have an expression-local scope, including before
-  // their `for` clause. Until those bindings can be proven, optional inference
-  // must not borrow an enclosing workflow builder for their timeout calls.
-  if (fileType === 'py' && hasPythonComprehensionTimeout(masked)) return undefined;
-  const { functionScopes, functionBindings, varScopes } = collectFunctionScopes(masked, fileType);
+  if (/\bfor\s*(?:await\s*)?\(/.test(source)) return undefined;
+  const { functionScopes, functionBindings, varScopes } = collectFunctionScopes(masked);
   const bindings = new Map<number, Map<string, WorkflowBinding>>();
-  const declarationPattern =
-    fileType === 'ts'
-      ? /\b(const|let|var|function|class)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g
-      : /(?:^|[;\n])[ \t]*([A-Za-z_][A-Za-z0-9_]*)\s*(?::[^=\n;]+)?=(?!=)/g;
-  const pythonAssignmentDepth = fileType === 'py' ? pythonDelimiterDepth(source) : undefined;
+  const declarationPattern = /\b(const|let|var|function|class)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g;
   let declaration: RegExpExecArray | null;
   while ((declaration = declarationPattern.exec(source)) !== null) {
-    const declarationKind = fileType === 'ts' ? declaration[1] : undefined;
-    const declarationName = fileType === 'ts' ? declaration[2] : declaration[1];
-    const declarationNameIndex =
-      fileType === 'ts'
-        ? declaration.index + declaration[0].lastIndexOf(declarationName)
-        : declaration.index + declaration[0].indexOf(declarationName);
-    // A Python assignment nested inside delimiters is a keyword argument or
-    // function default, not a binding in the surrounding scope. Delimiter
-    // depth is precomputed once so this remains linear across all matches.
-    if (fileType === 'py' && pythonAssignmentDepth?.[declarationNameIndex] !== 0) continue;
+    const declarationKind = declaration[1];
+    const declarationName = declaration[2];
+    const declarationNameIndex = declaration.index + declaration[0].lastIndexOf(declarationName);
     const scopeId = masked.scopeAt[declarationNameIndex] ?? 0;
     const bindingScope =
       declarationKind === 'var' ? nearestFunctionScope(scopeId, varScopes, masked.scopeParents) : scopeId;
@@ -1371,11 +1021,11 @@ export function inferWorkflowLaunchTimeoutMs(
       scopeBindings = new Map();
       bindings.set(bindingScope, scopeBindings);
     }
-    const builder = workflowInitializerAt(source, declaration.index + declaration[0].length, fileType);
+    const builder = workflowInitializerAt(source, declaration.index + declaration[0].length);
     const previousBinding = scopeBindings.get(declarationName);
-    // A file-wide binding map cannot order reassigned Python values at every
-    // call site. Mixed assignments therefore never prove a builder, even if
-    // the final assignment happens to construct one.
+    // A file-wide binding map cannot order reassigned values at every call
+    // site. Mixed assignments therefore never prove a builder, even if the
+    // final assignment happens to construct one.
     scopeBindings.set(declarationName, { builder: builder && previousBinding?.builder !== false });
   }
 

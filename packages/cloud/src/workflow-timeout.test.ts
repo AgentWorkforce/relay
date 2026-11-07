@@ -21,7 +21,7 @@ describe('workflow launch timeout inference', () => {
   });
 
   it('omits inference for the checked-in workflow timeout beyond the metadata limit', () => {
-    const source = readFileSync(new URL('../../../workflows/verify-features.ts', import.meta.url), 'utf8');
+    const source = readFileSync(new URL('../../../flows/verify/features.spec.ts', import.meta.url), 'utf8');
     expect(source).toContain('.timeout(3_600_000)');
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBeUndefined();
   });
@@ -147,32 +147,6 @@ describe('workflow launch timeout inference', () => {
       }
     }
   );
-
-  it('does not treat multiline Python keyword arguments as assignments', () => {
-    const source = ['wf = workflow(', '  "real",', '  option=other,', ')', 'wf.timeout(900_000)'].join('\n');
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
-  });
-
-  it('does not treat multiline Python call keyword arguments as assignments', () => {
-    const source = [
-      'from library import wf',
-      'register(',
-      '  wf=workflow("real"),',
-      ')',
-      'wf.timeout(900_000)',
-    ].join('\n');
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
-  });
-
-  it('does not treat multiline Python function defaults as assignments', () => {
-    const source = ['def build(', '  wf=workflow("fake"),', '):', '  pass', 'wf.timeout(900_000)'].join('\n');
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
-  });
-
-  it('keeps multiline Python assignments as builder bindings', () => {
-    const source = ['wf = workflow(', '  "real",', '  option=other,', ')', 'wf.timeout(900_000)'].join('\n');
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
-  });
 
   it('does not let a shadowed non-builder identifier create an ambiguous timeout', () => {
     const source = [
@@ -488,111 +462,6 @@ describe('workflow launch timeout inference', () => {
     }
   });
 
-  it('reads Python literals while ignoring comments and string bodies', () => {
-    const source = [
-      '# workflow("comment").timeout(3_300_000)',
-      'description = """.timeout(3_200_000)"""',
-      'workflow("real").timeout(600_000).run()',
-    ].join('\n');
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(600_000);
-  });
-
-  it('tracks Python function parameters through indentation scopes', () => {
-    const source = [
-      "workflow('real').timeout(900_000)",
-      'def run(workflow):',
-      "    workflow('fake').timeout(600_000)",
-      "workflow('real').timeout(900_000)",
-    ].join('\n');
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
-  });
-
-  it('tracks Python parameters declared by a multiline function signature', () => {
-    const definition = [
-      'def run(',
-      '    workflow,',
-      '):',
-      '    pass',
-      `    workflow('fake').timeout(600_000)`,
-    ].join('\n');
-    expect(inferWorkflowLaunchTimeoutMs(definition, 'py')).toBeUndefined();
-    const source = [`workflow('real').timeout(900_000)`, definition].join('\n');
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
-  });
-
-  it.each([
-    `def run(workflow) -> None:\n    workflow('fake').timeout(600_000)`,
-    `def run(\n    workflow,\n) -> dict[str, int]:\n    workflow('fake').timeout(600_000)`,
-    `def run(workflow) -> None: workflow('fake').timeout(600_000)`,
-    `def outer():\n    def run(workflow) -> None:\n        workflow('fake').timeout(600_000)`,
-  ])('tracks Python parameters in return-annotated definitions: %s', (definition) => {
-    expect(inferWorkflowLaunchTimeoutMs(definition, 'py')).toBeUndefined();
-    expect(inferWorkflowLaunchTimeoutMs(`${definition}\nworkflow('real').timeout(900_000)`, 'py')).toBe(
-      900_000
-    );
-  });
-
-  it('does not treat Python parameter annotations or defaults as bindings', () => {
-    const source = [`def run(value: workflow = workflow):`, `    workflow('real').timeout(900_000)`].join(
-      '\n'
-    );
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
-  });
-
-  it('tracks Python parameters in a one-line function suite', () => {
-    const definition = `def run(workflow): workflow('fake').timeout(600_000)`;
-    expect(inferWorkflowLaunchTimeoutMs(definition, 'py')).toBeUndefined();
-    const source = [`workflow('real').timeout(900_000)`, definition].join('\n');
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
-  });
-
-  it('tracks Python lambda parameters through expression scope', () => {
-    const source = [
-      "workflow('real').timeout(900_000)",
-      "run = lambda workflow: workflow('fake').timeout(600_000)",
-      "workflow('real').timeout(900_000)",
-    ].join('\n');
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
-  });
-
-  it.each([`fn = lambda wf={'x': 1}: wf.timeout(600_000)`, `fn = lambda wf=items[1:2]: wf.timeout(600_000)`])(
-    'tracks Python lambda parameters with colon-containing defaults: %s',
-    (lambda) => {
-      const source = [lambda, `wf = workflow('real')`, 'wf.timeout(900_000)'].join('\n');
-      expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
-    }
-  );
-
-  it('ends a default lambda scope before the enclosing lambda body', () => {
-    const source =
-      `fn = lambda value=lambda workflow: workflow('fake').timeout(600_000): ` +
-      `workflow('real').timeout(900_000)`;
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
-  });
-
-  it.each([
-    `wf = workflow('real')\nif wf == other:\n    pass\nwf.timeout(900_000)`,
-    `wf = workflow('real')\nregister(wf=wf)\nwf.timeout(900_000)`,
-  ])('keeps Python builder bindings through non-assignment equals forms: %s', (source) => {
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
-  });
-
-  it('supports typed Python builder declarations', () => {
-    const source = `wf: WorkflowBuilder = workflow('real')\nwf.timeout(900_000)`;
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
-  });
-
-  it('keeps timeout-shaped text inside escaped Python triple-quoted delimiters masked', () => {
-    const doubleQuoted = String.raw`s = """abc \""" workflow("fake").timeout(600_000) still string"""`;
-    const singleQuoted = String.raw`s = '''abc \''' workflow("fake").timeout(600_000) still string'''`;
-    expect(inferWorkflowLaunchTimeoutMs(doubleQuoted, 'py')).toBeUndefined();
-    expect(inferWorkflowLaunchTimeoutMs(singleQuoted, 'py')).toBeUndefined();
-  });
-
-  it('ignores timeout methods on unrelated Python call expressions', () => {
-    expect(inferWorkflowLaunchTimeoutMs('http_client().timeout(600_000)', 'py')).toBeUndefined();
-  });
-
   it('uses the legacy five-minute floor for shorter workflow deadlines', () => {
     expect(inferWorkflowLaunchTimeoutMs("workflow('fast').timeout(1_000).run()", 'ts')).toBe(
       DEFAULT_WORKFLOW_LAUNCH_TIMEOUT_MS
@@ -611,54 +480,6 @@ describe('workflow launch timeout inference', () => {
   });
 
   it.each([
-    "wf = other()\nwf.timeout(600_000)\nwf = workflow('later')",
-    "wf = workflow('first')\nwf = other()\nwf.timeout(600_000)\nwf = workflow('later')",
-    "wf = workflow('first')\nwf.timeout(600_000)\nwf = other()",
-  ])('omits inference for mixed Python builder assignments: %s', (source) => {
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
-    expect(resolveWorkflowLaunchTimeoutMs(source, 'py', 900_000)).toBe(900_000);
-  });
-
-  it('does not let ambiguous Python assignments mask an unrelated proven workflow', () => {
-    const source = `workflow('real').timeout(900_000)
-wf = other()
-wf.timeout(600_000)
-wf = workflow('later')`;
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
-  });
-
-  it.each([
-    '[wf.timeout(600_000) for wf in unrelated]',
-    '(wf.timeout(600_000) for wf in unrelated)',
-    '{wf.timeout(600_000) for wf in unrelated}',
-    '{key: wf.timeout(600_000) for key, wf in unrelated}',
-    '[wf.timeout(600_000) async for wf in unrelated]',
-    '[wf.timeout(600_000) for group in groups for wf in group]',
-    '[invoke(wf.timeout(600_000)) for wf in unrelated]',
-    "[workflow('fake').timeout(600_000) for workflow in unrelated]",
-  ])('omits unproven Python comprehension timeout scopes: %s', (expression) => {
-    const source = `wf = workflow('real')\nvalues = ${expression}`;
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
-    expect(resolveWorkflowLaunchTimeoutMs(source, 'py', 900_000)).toBe(900_000);
-  });
-
-  it.each([
-    'for wf in items:',
-    'async for wf in items:',
-    'for key, wf in items:',
-    'for (key, wf) in items:',
-    'with manager() as wf:',
-    'async with manager() as wf:',
-    'with (manager() as wf):',
-    'except Exception as wf:',
-    'except* Exception as wf:',
-  ])('omits inference for unmodeled Python control-flow bindings: %s', (header) => {
-    const source = `wf = workflow('real')\n${header}\n  wf.timeout(600_000)`;
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
-    expect(resolveWorkflowLaunchTimeoutMs(source, 'py', 900_000)).toBe(900_000);
-  });
-
-  it.each([
     'for (const workflow of items) { workflow("fake").timeout(600_000); }',
     'for (const {workflow} of items) { workflow("fake").timeout(600_000); }',
     'for (const [workflow] of items) workflow("fake").timeout(600_000);',
@@ -672,61 +493,9 @@ wf = workflow('later')`;
     expect(resolveWorkflowLaunchTimeoutMs(source, 'ts', 900_000)).toBe(900_000);
   });
 
-  it('omits Python statement loops even when their target appears unrelated', () => {
-    const source = `wf = workflow('real')\nfor item in values:\n  wf.timeout(900_000)`;
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
-  });
-
   it('ignores masked TypeScript loop text when inferring a proven timeout', () => {
     const source = `// for (const workflow of items)\nconst text = 'for await (wf of items)';\nworkflow('real').timeout(900_000);`;
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
-  });
-
-  it('retains proven Python timeouts outside timeout-free comprehensions', () => {
-    const source = `wf = workflow('real')
-values = [item for item in items]
-wf.timeout(900_000)
-label = 'for wf in workflow.timeout(600_000)'`;
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
-  });
-
-  it.each([
-    '[item\n  for item in items]',
-    '(item\n  for item in items)',
-    '{item\n  for item in items}',
-    '{key: item\n  for key, item in items}',
-    '[item\n  async for item in items]',
-  ])('preserves inference around wrapped timeout-free Python comprehensions: %s', (expression) => {
-    const body = `values = ${expression}\nwf.timeout(900_000)`;
-    const source = `wf = workflow('real')\n${
-      expression.includes('async for') ? `async def run():\n${body.replace(/^/gm, '  ')}` : body
-    }`;
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
-    expect(resolveWorkflowLaunchTimeoutMs(source, 'py', 750_000)).toBe(750_000);
-  });
-
-  it.each([
-    "wf = workflow('real'); for wf in items: wf.timeout(600_000)",
-    "wf = workflow('real')\nif ready: with manager() as wf: wf.timeout(600_000)",
-  ])('conservatively omits malformed inline Python compound headers: %s', (source) => {
-    // Python rejects these compound statements in a simple-statement suite.
-    // The static scanner still must not derive metadata from their bindings.
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
-    expect(resolveWorkflowLaunchTimeoutMs(source, 'py', 750_000)).toBe(750_000);
-  });
-
-  it('omits distinct Python literals while preserving explicit override validation', () => {
-    const source = "workflow('a').timeout(600_000)\nworkflow('b').timeout(900_000)";
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
-    expect(resolveWorkflowLaunchTimeoutMs(source, 'py', 900_000)).toBe(900_000);
-    expect(() => resolveWorkflowLaunchTimeoutMs(source, 'py', 1)).toThrow(/must be at least/);
-  });
-
-  it('keeps malformed Python timeout candidates linear in their whitespace suffixes', () => {
-    const source = ('.timeout(' + '\t'.repeat(2_000)).repeat(2_000);
-    const startedAt = performance.now();
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBeUndefined();
-    expect(performance.now() - startedAt).toBeLessThan(2_000);
   });
 
   it('preserves TypeScript ASI and lexical scopes across long horizontal whitespace', () => {
@@ -737,16 +506,6 @@ label = 'for wf in workflow.timeout(600_000)'`;
         ${padding}/workflow('regex').timeout(300_000)/.test(input);
       }`;
     expect(inferWorkflowLaunchTimeoutMs(source, 'ts')).toBe(900_000);
-  });
-
-  it('preserves Python parameter scope across long indentation and inline suites', () => {
-    const padding = ' '.repeat(4_000);
-    const source = `workflow('real').timeout(900_000)
-def run(workflow):
-${padding}workflow('fake').timeout(600_000)
-def inline(workflow):${padding}workflow('fake').timeout(300_000)
-`;
-    expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(900_000);
   });
 
   it('keeps repeated single-parameter block arrows near-linear', () => {
@@ -760,20 +519,6 @@ def inline(workflow):${padding}workflow('fake').timeout(300_000)
     measure(1_000);
     const small = measure(4_000);
     const large = measure(16_000);
-    expect(large / small).toBeLessThan(8);
-  }, 15_000);
-
-  it('keeps nested Python lambda scope discovery near-linear', () => {
-    const measure = (count: number): number => {
-      const source = 'run = ' + 'lambda value: '.repeat(count) + `workflow('real').timeout(600_000)`;
-      const startedAt = performance.now();
-      expect(inferWorkflowLaunchTimeoutMs(source, 'py')).toBe(600_000);
-      return performance.now() - startedAt;
-    };
-
-    measure(500);
-    const small = measure(2_000);
-    const large = measure(8_000);
     expect(large / small).toBeLessThan(8);
   }, 15_000);
 
