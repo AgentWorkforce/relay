@@ -1,13 +1,14 @@
 use std::{
     env,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     io::{self, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         mpsc as std_mpsc, Arc,
     },
     thread,
+    time::Duration,
 };
 
 use alacritty_terminal::event::{Event, EventListener};
@@ -20,6 +21,24 @@ use parking_lot::Mutex;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use tokio::sync::{mpsc, oneshot};
 
+#[cfg(unix)]
+use std::{
+    collections::VecDeque,
+    os::fd::{AsRawFd, FromRawFd, OwnedFd},
+};
+#[cfg(windows)]
+use std::{
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    time::Instant,
+};
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::{
+        DuplicateHandle, DUPLICATE_SAME_ACCESS, ERROR_NOT_FOUND, ERROR_OPERATION_ABORTED, HANDLE,
+    },
+    System::{Threading::GetCurrentProcess, IO::CancelSynchronousIo},
+};
+
 /// Upper bound on queued PTY writes (both terminal-query replies from
 /// alacritty AND user/injection writes from `PtySession::write_all`).
 /// Bounded so a misbehaving child that floods query sequences while the
@@ -28,6 +47,48 @@ use tokio::sync::{mpsc, oneshot};
 /// healthy interaction sees fewer than a handful of pending writes at
 /// a time.
 const WRITE_QUEUE_DEPTH: usize = 128;
+#[cfg(windows)]
+const OUTPUT_ORDERING_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Why [`PtySession::submit_write`] refused to enqueue.
+///
+/// Typed — not a bare string — because the two cases mean opposite things to a
+/// caller serving an interactive attach session. [`QueueFull`] says the child
+/// is alive but momentarily not draining its stdin, so the write is the only
+/// thing that failed and the caller should keep its transport open and retry.
+/// [`DrainerExited`] says the PTY is gone. Callers recover the variant with
+/// `anyhow::Error::downcast_ref::<PtyWriteSubmitError>()`; `submit_write` keeps
+/// returning `anyhow::Result` so existing call sites are unaffected.
+///
+/// [`QueueFull`]: PtyWriteSubmitError::QueueFull
+/// [`DrainerExited`]: PtyWriteSubmitError::DrainerExited
+#[derive(Debug, thiserror::Error)]
+pub enum PtyWriteSubmitError {
+    /// The bounded drainer queue is full. Retryable: the drainer is blocked in
+    /// `write_all` behind a child that has stopped reading its stdin, and drains
+    /// as soon as it resumes.
+    #[error("pty write queue full ({depth} writes pending; drainer wedged behind child not reading stdin)")]
+    QueueFull {
+        /// Queue capacity, which is also the number of writes pending.
+        depth: usize,
+    },
+
+    /// The drainer thread is gone (PTY teardown). Not retryable.
+    #[error("pty write queue is closed (drainer exited)")]
+    DrainerExited,
+
+    /// The output reader could not yield ordering promptly enough to admit a
+    /// verified write. The write was not queued, so callers may retry it.
+    #[cfg(windows)]
+    #[error("timed out acquiring pty output ordering for verified write")]
+    OrderingTimeout,
+
+    /// The Windows reader thread could not be interrupted. The write was not
+    /// queued, so callers may retry it after surfacing the platform failure.
+    #[cfg(windows)]
+    #[error("failed to interrupt pty reader for verified write: {0}")]
+    OrderingWake(io::Error),
+}
 
 /// Single FIFO command for the PTY write drainer. Both query-reply
 /// writebacks (from `RelayEventListener`) and user-input/injection
@@ -51,8 +112,155 @@ enum WriteMsg {
     /// drop the receiver for fire-and-forget writes).
     UserInput {
         bytes: Vec<u8>,
+        /// Per-atom pacing gap. `Duration::ZERO` writes the whole payload
+        /// in one `write_all` (the historical behavior). A non-zero value
+        /// selects **escape-aware paced** writing: the drainer emits one VT
+        /// atom — a CSI/SS3/OSC control sequence, or one UTF-8 codepoint, or
+        /// one plain byte — per `write_all`+`flush`, sleeping `pace` between
+        /// atoms so bytes reach the child spread across multiple `read()`s
+        /// instead of a single blob. The whole payload stays a single
+        /// `WriteMsg`, so no reply or later write can splice between its
+        /// atoms. The sleeps run on the drainer thread, never on an async
+        /// task.
+        pace: Duration,
+        /// Optional second write that remains part of this FIFO entry. The
+        /// drainer waits `delay` after the primary bytes are flushed, then
+        /// writes and flushes `bytes` before acknowledging the command.
+        ///
+        /// This is intentionally not represented as a second `WriteMsg`: some
+        /// TUIs need a real pause between pasted text and its submit key, while
+        /// Relay still must prevent a terminal reply or human keystroke from
+        /// splicing into that boundary.
+        followup: Option<FollowupWrite>,
+        /// Optional cancellation shared with the submitter. The drainer checks
+        /// it before the primary bytes and again after the follow-up delay, so
+        /// a later owner of the input (a human typing) can stop a queued submit
+        /// key from reaching the child. A cancelled write acks
+        /// [`io::ErrorKind::Interrupted`] and leaves the drainer running.
+        cancel: Option<Arc<AtomicBool>>,
         ack: oneshot::Sender<io::Result<()>>,
     },
+}
+
+fn write_cancelled() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Interrupted,
+        "queued PTY write cancelled before it reached the child",
+    )
+}
+
+struct FollowupWrite {
+    delay: Duration,
+    bytes: Vec<u8>,
+}
+
+/// Length of the next indivisible write "atom" at the front of `bytes`.
+///
+/// A port of headless-terminal's `escapeSeqEnd`
+/// ([montanaflynn/headless-terminal], `internal/session/session.go`). Paced
+/// writing must never split a VT control sequence or a multi-byte UTF-8
+/// codepoint across the inter-atom sleep — doing so would corrupt arrow keys,
+/// modified function keys, OSC strings, or wide characters as they arrive at
+/// the child. This returns how many leading bytes form the next atom:
+///
+/// - **CSI** (`ESC [` … final `0x40..=0x7e`): the whole control sequence,
+///   including parameter (`0x30..=0x3f`) and intermediate (`0x20..=0x2f`)
+///   bytes.
+/// - **SS3** (`ESC O` + one final byte): 3 bytes.
+/// - **OSC** (`ESC ]` … terminated by `BEL` or `ST` = `ESC \`): through the
+///   terminator.
+/// - **Other two-byte escapes** (e.g. `ESC ESC`): 2 bytes.
+/// - **UTF-8 lead byte**: the full 2/3/4-byte codepoint.
+/// - **Anything else** (ASCII, `\r`, control bytes, stray continuation
+///   bytes): 1 byte.
+///
+/// A sequence truncated by the end of `bytes` returns the remaining length, so
+/// the final atom is emitted as-is rather than looping forever. `bytes` must be
+/// non-empty.
+///
+/// [montanaflynn/headless-terminal]: https://github.com/montanaflynn/headless-terminal
+fn next_atom_end(bytes: &[u8]) -> usize {
+    debug_assert!(
+        !bytes.is_empty(),
+        "next_atom_end requires a non-empty slice"
+    );
+    let len = bytes.len();
+    if bytes[0] != 0x1b {
+        return utf8_seq_len(bytes);
+    }
+    // Lone trailing ESC — can't classify without the next byte; emit as-is.
+    if len < 2 {
+        return 1;
+    }
+    match bytes[1] {
+        // CSI: params/intermediates (0x20..=0x3f) then a final byte (0x40..=0x7e).
+        b'[' => {
+            let mut i = 2;
+            while i < len && (0x20..=0x3f).contains(&bytes[i]) {
+                i += 1;
+            }
+            if i < len {
+                i += 1; // consume the final byte
+            }
+            i
+        }
+        // SS3: ESC O + exactly one final byte.
+        b'O' => 3.min(len),
+        // OSC: string terminated by BEL (0x07) or ST (ESC \).
+        b']' => {
+            let mut i = 2;
+            while i < len {
+                if bytes[i] == 0x07 {
+                    return i + 1;
+                }
+                if bytes[i] == 0x1b && i + 1 < len && bytes[i + 1] == b'\\' {
+                    return i + 2;
+                }
+                i += 1;
+            }
+            len
+        }
+        // Any other escape (ESC ESC, ESC <letter>, …) is a two-byte atom.
+        _ => 2,
+    }
+}
+
+/// Byte length of the UTF-8 codepoint (or single byte) at the front of `bytes`,
+/// clamped to what is actually present. A stray continuation byte or invalid
+/// lead byte yields 1 so paced writing always makes forward progress.
+fn utf8_seq_len(bytes: &[u8]) -> usize {
+    let lead = bytes[0];
+    let width = if lead < 0x80 {
+        1
+    } else if lead >= 0xf0 {
+        4
+    } else if lead >= 0xe0 {
+        3
+    } else if lead >= 0xc0 {
+        2
+    } else {
+        1 // continuation byte with no lead — emit alone
+    };
+    width.min(bytes.len())
+}
+
+/// Write `bytes` to `writer` one escape-aware atom at a time, flushing after
+/// each and sleeping `pace` between atoms (never after the last). The sleep
+/// runs on the calling (drainer) thread — the whole point is to hand the child
+/// its input in small, well-timed pieces rather than one blob it may batch or
+/// partially drop. Errors short-circuit, matching `write_all`.
+fn write_paced<W: Write>(writer: &mut W, bytes: &[u8], pace: Duration) -> io::Result<()> {
+    let mut i = 0;
+    while i < bytes.len() {
+        let end = i + next_atom_end(&bytes[i..]);
+        writer.write_all(&bytes[i..end])?;
+        writer.flush()?;
+        i = end;
+        if i < bytes.len() {
+            thread::sleep(pace);
+        }
+    }
+    Ok(())
 }
 
 /// Forwards alacritty's terminal events back to the PTY's stdin so the
@@ -135,6 +343,55 @@ impl GridSize {
     }
 }
 
+/// Default number of consecutive no-PID `Ok(None)` liveness checks tolerated
+/// before a child with no discoverable PID is declared exited.
+///
+/// The watchdog polls every ~5s, so `60` is ~5 minutes. This is deliberately
+/// long: the previous value of `6` (~30s) could declare a *silently thinking*
+/// child dead mid-task (an agent CLI can go >30s with no PTY output while it
+/// reasons). Raising it is safe because a genuinely dead child is detected
+/// promptly and independently by the PTY reader hitting EOF (which closes the
+/// worker's `pty_rx` and emits `agent_exit`) — this counter is only a backstop
+/// for the rare macOS case where `try_wait` is stuck at `Ok(None)` *and* no PID
+/// is ever available *and* the reader hasn't closed. In that narrow window we
+/// prefer a several-minute grace over a 30s false positive.
+pub const DEFAULT_NO_PID_EXIT_THRESHOLD: u32 = 60;
+
+/// One raw PTY read tagged at the producer, before it enters the async queue.
+///
+/// The sequence lets consumers distinguish output that was already read (but
+/// still queued) when they submit input from output read after that submission.
+/// Assigning it in the reader thread avoids a consumer-side `select!` race.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PtyOutput {
+    bytes: Vec<u8>,
+    sequence: u64,
+}
+
+impl PtyOutput {
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+}
+
+impl std::ops::Deref for PtyOutput {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_bytes()
+    }
+}
+
+impl AsRef<[u8]> for PtyOutput {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
 pub struct PtySession {
     master: Box<dyn portable_pty::MasterPty>,
     /// Single producer side of the FIFO write queue. All PTY writes —
@@ -146,9 +403,22 @@ pub struct PtySession {
     child_pid: Option<u32>,
     reaped: Arc<AtomicBool>,
     /// Counts consecutive watchdog checks where try_wait returned Ok(None)
-    /// AND we had no PID to verify with kill(0). After a threshold, we
-    /// assume the child is gone (macOS PTY quirk).
-    no_pid_alive_checks: std::sync::atomic::AtomicU32,
+    /// AND we had no PID to verify with kill(0). After
+    /// [`no_pid_exit_threshold`](Self::no_pid_exit_threshold) checks, we
+    /// assume the child is gone (macOS PTY quirk). Reset on any observed
+    /// child-side activity (PTY output, or a write the drainer has *confirmed*
+    /// actually reached the PTY master).
+    ///
+    /// Shared with the write drainer thread (`Arc`) so a confirmed write — not
+    /// a mere enqueue — resets the counter. Resetting on enqueue would let a
+    /// wedged drainer plus periodic input postpone the no-PID fallback forever
+    /// even though no byte is reaching the child.
+    no_pid_alive_checks: Arc<AtomicU32>,
+    /// Consecutive no-PID `Ok(None)` checks tolerated before declaring a
+    /// child with no discoverable PID exited. See [`has_exited`](Self::has_exited)
+    /// for the full rationale. Configurable so tests (and future tuning)
+    /// aren't pinned to the wall-clock default.
+    no_pid_exit_threshold: u32,
     /// VT100 grid kept in sync with PTY output. The reader thread
     /// advances `processor` on every chunk; queries (`screen_text`,
     /// `cursor_position`, `cell_at`) read `term` under the same lock.
@@ -174,6 +444,96 @@ pub struct PtySession {
     /// buffered stream chunks the snapshot already reflects and apply only
     /// the ones that came after.
     consumed_offset: Arc<AtomicU64>,
+    paste_capable: Arc<AtomicBool>,
+    /// Sequence assigned as soon as the reader obtains a PTY output chunk,
+    /// before grid parsing or async queue admission. Consumers sample this
+    /// producer watermark when submitting input so output that was already
+    /// queued cannot be mistaken for the input's echo.
+    output_sequence: Arc<AtomicU64>,
+    /// Linearizes producer sequence assignment with verified input queue
+    /// admission. Without this lock, output could be assigned a new sequence
+    /// after a caller sampled the watermark but before its write was queued.
+    output_order: Arc<Mutex<()>>,
+    /// Unix readiness probe shared with verified-write admission. Admission
+    /// counts buffered bytes through this descriptor while holding
+    /// `output_order`, reserving their pre-boundary sequence without waiting
+    /// for the reader or downstream consumer.
+    #[cfg(unix)]
+    poll_fd: Arc<OwnedFd>,
+    /// Byte-accurate sequence reservations for output already buffered in the
+    /// Unix PTY at a verified-write boundary. The reader consumes these later,
+    /// so admission never depends on downstream output-channel capacity.
+    #[cfg(unix)]
+    unix_output_reservations: Arc<Mutex<UnixOutputReservations>>,
+    /// Set while a Windows verified write is waiting for `output_order`.
+    /// A cancelled ConPTY reader observes this before starting another
+    /// blocking ReadFile, yielding the lock to the submitter instead.
+    #[cfg(windows)]
+    write_admission_pending: Arc<AtomicBool>,
+    /// Duplicated native handle for the reader thread. Windows verified writes
+    /// use it to interrupt an idle synchronous ConPTY read before acquiring
+    /// `output_order`; the handle never exposes the PTY itself.
+    #[cfg(windows)]
+    reader_cancel: ReaderCancel,
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct UnixOutputReservation {
+    remaining: usize,
+    sequence: u64,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Default)]
+struct UnixOutputReservations {
+    entries: VecDeque<UnixOutputReservation>,
+    total_bytes: usize,
+}
+
+#[cfg(windows)]
+struct ReaderCancel {
+    thread_handle: OwnedHandle,
+}
+
+#[cfg(windows)]
+impl ReaderCancel {
+    fn duplicate(reader_thread: &thread::JoinHandle<()>) -> io::Result<Self> {
+        let process = unsafe { GetCurrentProcess() };
+        let mut duplicate: HANDLE = std::ptr::null_mut();
+        let ok = unsafe {
+            DuplicateHandle(
+                process,
+                reader_thread.as_raw_handle() as HANDLE,
+                process,
+                &mut duplicate,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            // SAFETY: `DuplicateHandle` returned a new owned thread handle.
+            thread_handle: unsafe { OwnedHandle::from_raw_handle(duplicate.cast()) },
+        })
+    }
+
+    fn interrupt_read(&self) -> io::Result<()> {
+        let ok = unsafe { CancelSynchronousIo(self.thread_handle.as_raw_handle() as HANDLE) };
+        if ok != 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_NOT_FOUND as i32) {
+            // The reader is between synchronous calls. It will release (or
+            // reacquire) the ordering lock promptly, so retrying is safe.
+            return Ok(());
+        }
+        Err(error)
+    }
 }
 
 fn needs_sane_term_override() -> bool {
@@ -186,36 +546,91 @@ fn needs_sane_term_override() -> bool {
     }
 }
 
+/// Resolve `path` into a spawn-ready string while preserving shim behaviour.
+///
+/// Provider CLIs installed via version managers (mise, asdf, rtx/rtx-cli,
+/// direnv, pkgx, chruby, jenv, pyenv, rbenv, nodenv, tfenv, volta, ...) are
+/// exposed as symlinked shims that all point at the version-manager binary.
+/// Those shims dispatch to the real tool based on `argv[0]` (the shim's own
+/// basename). If we `canonicalize` the shim we collapse it to the manager
+/// binary (`/opt/homebrew/bin/mise`) — the child then sees `argv[0] = "mise"`
+/// and the manager parses provider-specific flags like
+/// `--dangerously-bypass-approvals-and-sandbox` as its own arguments, which
+/// aborts the worker before it ever starts.
+///
+/// The safe rule: if canonicalization would change the executable's basename,
+/// treat the input as a shim and keep the caller-facing path so argv[0] stays
+/// intact. Otherwise fall back to the canonical path (still helps
+/// posix_spawnp on hosts with quirky PATH handling).
 fn canonicalize_display(path: &Path) -> String {
-    std::fs::canonicalize(path)
-        .ok()
-        .and_then(|resolved| resolved.to_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| path.to_string_lossy().to_string())
+    let requested_name = path.file_name();
+    match std::fs::canonicalize(path) {
+        Ok(resolved) => {
+            let resolved_name = resolved.file_name();
+            if let (Some(orig), Some(target)) = (requested_name, resolved_name) {
+                if orig != target {
+                    return absolutize_shim_path(path)
+                        .and_then(|p| p.to_str().map(|s| s.to_string()))
+                        .unwrap_or_else(|| path.to_string_lossy().to_string());
+                }
+            }
+            resolved
+                .to_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| path.to_string_lossy().to_string())
+        }
+        Err(_) => path.to_string_lossy().to_string(),
+    }
+}
+
+/// Return an absolute path for `path` without following the final component's
+/// symlink (so `argv[0]` remains the shim's basename). Falls back to the raw
+/// path if the parent cannot be canonicalized.
+fn absolutize_shim_path(path: &Path) -> Option<PathBuf> {
+    if path.is_absolute() {
+        return Some(path.to_path_buf());
+    }
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let file_name = path.file_name()?;
+    let canonical_parent = if parent.as_os_str().is_empty() {
+        std::fs::canonicalize(".").ok()?
+    } else {
+        std::fs::canonicalize(parent).ok()?
+    };
+    Some(canonical_parent.join(file_name))
+}
+
+fn default_path_env() -> OsString {
+    #[cfg(unix)]
+    {
+        let home = env::var("HOME").unwrap_or_else(|_| String::from("/root"));
+        OsString::from(format!(
+            "{home}/.local/bin:{home}/.opencode/bin:{home}/.claude/local:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
+        ))
+    }
+    #[cfg(windows)]
+    {
+        OsString::from(r"C:\Windows\System32;C:\Windows")
+    }
 }
 
 fn resolve_command_path(command: &str) -> String {
+    let path_env = env::var_os("PATH")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(default_path_env);
+    resolve_command_path_with(command, path_env.as_os_str())
+}
+
+/// Testable core: resolves `command` against an explicit `path_env` instead of
+/// reading `std::env::var("PATH")`, so unit tests can exercise shim-preserving
+/// behaviour without racing on the process-wide PATH.
+fn resolve_command_path_with(command: &str, path_env: &OsStr) -> String {
     // Already a path (absolute or relative): use as-is but resolve symlinks when possible.
     if command.contains('/') || command.contains('\\') || command.starts_with('.') {
         return canonicalize_display(Path::new(command));
     }
 
-    let path_env = env::var_os("PATH")
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| {
-            #[cfg(unix)]
-            {
-                let home = env::var("HOME").unwrap_or_else(|_| String::from("/root"));
-                OsString::from(format!(
-                    "{home}/.local/bin:{home}/.opencode/bin:{home}/.claude/local:/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
-                ))
-            }
-            #[cfg(windows)]
-            {
-                OsString::from(r"C:\Windows\System32;C:\Windows")
-            }
-        });
-
-    for dir in env::split_paths(&path_env) {
+    for dir in env::split_paths(path_env) {
         let candidate = dir.join(command);
         if candidate.is_file() {
             return canonicalize_display(&candidate);
@@ -225,10 +640,22 @@ fn resolve_command_path(command: &str) -> String {
     command.to_string()
 }
 
-fn drain_write_queue<W: Write>(mut writer: W, write_rx: std_mpsc::Receiver<WriteMsg>) {
+/// Drain the shared write FIFO into the PTY writer.
+///
+/// `no_pid_alive_checks` is the watchdog's silence counter (shared with the
+/// [`PtySession`]). It is reset to `0` only when a user-input write is
+/// *confirmed* flushed to the PTY master — proof the write path (drainer → PTY)
+/// is actually live. Resetting on enqueue instead would let a wedged drainer
+/// plus periodic input starve the no-PID fallback indefinitely.
+fn drain_write_queue<W: Write>(
+    mut writer: W,
+    write_rx: std_mpsc::Receiver<WriteMsg>,
+    no_pid_alive_checks: Arc<AtomicU32>,
+) {
     while let Ok(msg) = write_rx.recv() {
         match msg {
             WriteMsg::Reply(bytes) => {
+                tracing::debug!(target: "relay_pty::startup_input", length = bytes.len(), "terminal query reply queued");
                 if bytes.is_empty() {
                     continue;
                 }
@@ -239,14 +666,62 @@ fn drain_write_queue<W: Write>(mut writer: W, write_rx: std_mpsc::Receiver<Write
                     break;
                 }
             }
-            WriteMsg::UserInput { bytes, ack } => {
-                if bytes.is_empty() {
+            WriteMsg::UserInput {
+                bytes,
+                pace,
+                followup,
+                cancel,
+                ack,
+            } => {
+                if bytes.is_empty() && followup.as_ref().is_none_or(|part| part.bytes.is_empty()) {
                     let _ = ack.send(Ok(()));
                     continue;
                 }
-                match writer.write_all(&bytes).and_then(|_| writer.flush()) {
+                let is_cancelled = || {
+                    cancel
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Acquire))
+                };
+                if is_cancelled() {
+                    let _ = ack.send(Err(write_cancelled()));
+                    continue;
+                }
+                if matches!(bytes.as_slice(), b"\x1b[B" | b"\x1b[A" | b"\r" | b"\n") {
+                    tracing::debug!(target: "relay_pty::startup_input", control = ?bytes,
+                        followup_length = followup.as_ref().map(|part| part.bytes.len()),
+                        "writing terminal control input");
+                }
+                let primary_result = if bytes.is_empty() {
+                    Ok(())
+                } else if pace.is_zero() {
+                    writer.write_all(&bytes).and_then(|_| writer.flush())
+                } else {
+                    write_paced(&mut writer, &bytes, pace)
+                };
+                let result = primary_result.and_then(|_| {
+                    let Some(part) = followup else {
+                        return Ok(());
+                    };
+                    if part.bytes.is_empty() {
+                        return Ok(());
+                    }
+                    thread::sleep(part.delay);
+                    if is_cancelled() {
+                        return Err(write_cancelled());
+                    }
+                    writer.write_all(&part.bytes).and_then(|_| writer.flush())
+                });
+                match result {
                     Ok(()) => {
+                        // Confirmed child-side activity: the bytes reached the
+                        // PTY master. Only now is it safe to reset the no-PID
+                        // silence counter.
+                        no_pid_alive_checks.store(0, Ordering::Relaxed);
                         let _ = ack.send(Ok(()));
+                    }
+                    Err(err) if err.kind() == io::ErrorKind::Interrupted && is_cancelled() => {
+                        // Only the follow-up was withheld; the PTY is healthy.
+                        let _ = ack.send(Err(err));
                     }
                     Err(err) => {
                         let _ = ack.send(Err(err));
@@ -258,13 +733,327 @@ fn drain_write_queue<W: Write>(mut writer: W, write_rx: std_mpsc::Receiver<Write
     }
 }
 
+/// Enqueue user input without treating queue admission as child activity.
+/// Keeping the watchdog counter in this helper's interface makes the invariant
+/// directly testable: only [`drain_write_queue`] may reset it after a confirmed
+/// write and flush.
+fn enqueue_user_write(
+    write_tx: &std_mpsc::SyncSender<WriteMsg>,
+    _no_pid_alive_checks: &AtomicU32,
+    bytes: Vec<u8>,
+    pace: Duration,
+    followup: Option<FollowupWrite>,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<oneshot::Receiver<io::Result<()>>> {
+    let (ack_tx, ack_rx) = oneshot::channel::<io::Result<()>>();
+    match write_tx.try_send(WriteMsg::UserInput {
+        bytes,
+        pace,
+        followup,
+        cancel,
+        ack: ack_tx,
+    }) {
+        Ok(()) => Ok(ack_rx),
+        Err(std_mpsc::TrySendError::Full(_)) => {
+            Err(anyhow::Error::new(PtyWriteSubmitError::QueueFull {
+                depth: WRITE_QUEUE_DEPTH,
+            }))
+        }
+        Err(std_mpsc::TrySendError::Disconnected(_)) => {
+            Err(anyhow::Error::new(PtyWriteSubmitError::DrainerExited))
+        }
+    }
+}
+
+/// Read one output chunk and assign its producer sequence while holding the
+/// same ordering lock used by verified write admission.
+///
+/// The callback is deliberately inside the critical section, immediately
+/// after the bytes have been copied from the PTY and before they are tagged.
+/// Production passes a no-op; deterministic tests pause there to prove a
+/// submitter cannot sample a boundary in the old read-complete/pre-tag gap.
+#[cfg(any(windows, test))]
+fn read_and_tag_output<R, F>(
+    reader: &mut R,
+    buf: &mut [u8],
+    output_order: &Mutex<()>,
+    output_sequence: &AtomicU64,
+    after_read: F,
+) -> io::Result<Option<(usize, u64)>>
+where
+    R: Read + ?Sized,
+    F: FnOnce(usize),
+{
+    let _order_guard = output_order.lock();
+    read_and_tag_output_locked(reader, buf, output_sequence, after_read)
+}
+
+/// Variant used when the caller already owns `output_order`.
+#[cfg(any(windows, test))]
+fn read_and_tag_output_locked<R, F>(
+    reader: &mut R,
+    buf: &mut [u8],
+    output_sequence: &AtomicU64,
+    after_read: F,
+) -> io::Result<Option<(usize, u64)>>
+where
+    R: Read + ?Sized,
+    F: FnOnce(usize),
+{
+    let n = reader.read(buf)?;
+    after_read(n);
+    if n == 0 {
+        return Ok(None);
+    }
+    let sequence = output_sequence
+        .fetch_add(1, Ordering::AcqRel)
+        .saturating_add(1);
+    Ok(Some((n, sequence)))
+}
+
+#[cfg(unix)]
+fn wait_for_pty_readable(fd: &OwnedFd) -> io::Result<()> {
+    let mut descriptor = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        let ready = unsafe { libc::poll(&mut descriptor, 1, -1) };
+        if ready > 0 {
+            return Ok(());
+        }
+        if ready == 0 {
+            continue;
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn pty_readable_bytes(fd: &OwnedFd) -> io::Result<usize> {
+    let mut available: libc::c_int = 0;
+    if unsafe { libc::ioctl(fd.as_raw_fd(), libc::FIONREAD, &mut available) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(available.max(0) as usize)
+}
+
+/// Reserve one producer sequence for every byte already buffered in the Unix
+/// PTY but not covered by an earlier boundary. The caller holds
+/// `output_order`, so the reader cannot consume bytes while the kernel count
+/// is compared with outstanding reservations.
+#[cfg(unix)]
+fn reserve_readable_output(
+    poll_fd: &OwnedFd,
+    reservations: &Mutex<UnixOutputReservations>,
+    output_sequence: &AtomicU64,
+) -> io::Result<()> {
+    let available = pty_readable_bytes(poll_fd)?;
+    let mut reservations = reservations.lock();
+    if available > reservations.total_bytes {
+        let sequence = output_sequence
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        let remaining = available - reservations.total_bytes;
+        reservations.entries.push_back(UnixOutputReservation {
+            remaining,
+            sequence,
+        });
+        reservations.total_bytes += remaining;
+    }
+    Ok(())
+}
+
+/// Read one Unix output chunk and apply any byte reservations created by
+/// verified-write admission. A read can straddle the old/new boundary, so the
+/// returned ranges split the buffer precisely instead of assigning one
+/// sequence to the whole read.
+#[cfg(unix)]
+fn read_and_tag_unix_output<R: Read + ?Sized>(
+    reader: &mut R,
+    buf: &mut [u8],
+    output_order: &Mutex<()>,
+    reservations: &Mutex<UnixOutputReservations>,
+    output_sequence: &AtomicU64,
+) -> io::Result<Option<Vec<(usize, usize, u64)>>> {
+    let _order_guard = output_order.lock();
+    let n = reader.read(buf)?;
+    if n == 0 {
+        return Ok(None);
+    }
+
+    let mut tagged = Vec::new();
+    let mut offset = 0;
+    let mut reservations = reservations.lock();
+    while offset < n {
+        let Some(front) = reservations.entries.front_mut() else {
+            break;
+        };
+        let take = front.remaining.min(n - offset);
+        let sequence = front.sequence;
+        front.remaining -= take;
+        let finished = front.remaining == 0;
+        reservations.total_bytes -= take;
+        if finished {
+            reservations.entries.pop_front();
+        }
+        tagged.push((offset, offset + take, sequence));
+        offset += take;
+    }
+    drop(reservations);
+
+    if offset < n {
+        let sequence = output_sequence
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        tagged.push((offset, n, sequence));
+    }
+    Ok(Some(tagged))
+}
+
+#[cfg(unix)]
+fn duplicate_poll_fd_cloexec(fd: libc::c_int) -> io::Result<OwnedFd> {
+    let duplicate = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicate >= 0 {
+        // SAFETY: `F_DUPFD_CLOEXEC` returned a new descriptor owned here.
+        return Ok(unsafe { OwnedFd::from_raw_fd(duplicate) });
+    }
+
+    let atomic_error = io::Error::last_os_error();
+    if atomic_error.raw_os_error() != Some(libc::EINVAL) {
+        return Err(atomic_error);
+    }
+
+    // Older kernels can reject F_DUPFD_CLOEXEC even when libc exposes it.
+    // Fall back to dup+fcntl, taking ownership immediately so every later
+    // error path closes the duplicate instead of leaking it.
+    let duplicate = unsafe { libc::dup(fd) };
+    if duplicate < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `dup` returned a new descriptor owned here. `OwnedFd` closes it
+    // if either fcntl below fails.
+    let duplicate = unsafe { OwnedFd::from_raw_fd(duplicate) };
+    let flags = unsafe { libc::fcntl(duplicate.as_raw_fd(), libc::F_GETFD) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe {
+        libc::fcntl(
+            duplicate.as_raw_fd(),
+            libc::F_SETFD,
+            flags | libc::FD_CLOEXEC,
+        )
+    } < 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(duplicate)
+}
+
+#[cfg(windows)]
+fn read_was_cancelled(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(ERROR_OPERATION_ABORTED as i32)
+}
+
+/// Finds the DECSET 2004 private-mode parameter (`?2004` or `;2004`) in PTY
+/// output, including one split across reads, by carrying the previous read's
+/// last four bytes. Plain text that merely contains `2004` does not match.
+#[derive(Default)]
+struct Decset2004Scan {
+    tail: [u8; 4],
+    tail_len: usize,
+}
+
+impl Decset2004Scan {
+    fn may_carry(&mut self, bytes: &[u8]) -> bool {
+        let is_parameter = |window: &[u8]| matches!(window, [b'?' | b';', b'2', b'0', b'0', b'4']);
+        let head = bytes.len().min(4);
+        let mut seam = [0u8; 8];
+        seam[..self.tail_len].copy_from_slice(&self.tail[..self.tail_len]);
+        seam[self.tail_len..self.tail_len + head].copy_from_slice(&bytes[..head]);
+        let joined = &seam[..self.tail_len + head];
+        let found = joined.windows(5).chain(bytes.windows(5)).any(is_parameter);
+        let carried = if bytes.len() >= 4 {
+            &bytes[bytes.len() - 4..]
+        } else {
+            &joined[joined.len().saturating_sub(4)..]
+        };
+        self.tail_len = carried.len();
+        self.tail[..self.tail_len].copy_from_slice(carried);
+        found
+    }
+}
+
+/// Whether the grid currently has bracketed-paste mode (DECSET 2004) set.
+fn paste_mode_enabled(term: &Term<RelayEventListener>) -> bool {
+    term.mode()
+        .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE)
+}
+
 impl PtySession {
+    fn enqueue_write_with_output_boundary(
+        &self,
+        bytes: Vec<u8>,
+        pace: Duration,
+        followup: Option<FollowupWrite>,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
+        #[cfg(unix)]
+        let _order_guard = {
+            let guard = self.output_order.lock();
+            reserve_readable_output(
+                &self.poll_fd,
+                &self.unix_output_reservations,
+                &self.output_sequence,
+            )?;
+            guard
+        };
+
+        #[cfg(windows)]
+        let order_guard = {
+            self.write_admission_pending.store(true, Ordering::Release);
+            let deadline = Instant::now() + OUTPUT_ORDERING_TIMEOUT;
+            let result = loop {
+                if let Some(guard) = self.output_order.try_lock() {
+                    break Ok(guard);
+                }
+                if let Err(error) = self.reader_cancel.interrupt_read() {
+                    break Err(anyhow::Error::new(PtyWriteSubmitError::OrderingWake(error)));
+                }
+                if Instant::now() >= deadline {
+                    break Err(anyhow::Error::new(PtyWriteSubmitError::OrderingTimeout));
+                }
+                thread::yield_now();
+            };
+            self.write_admission_pending.store(false, Ordering::Release);
+            result
+        };
+        #[cfg(windows)]
+        let _order_guard = order_guard?;
+
+        let boundary = self.output_sequence.load(Ordering::Acquire);
+        let ack = enqueue_user_write(
+            &self.write_tx,
+            &self.no_pid_alive_checks,
+            bytes,
+            pace,
+            followup,
+            cancel,
+        )?;
+        Ok((ack, boundary))
+    }
+
     pub fn spawn(
         command: &str,
         args: &[String],
         rows: u16,
         cols: u16,
-    ) -> Result<(Self, mpsc::Receiver<Vec<u8>>)> {
+    ) -> Result<(Self, mpsc::Receiver<PtyOutput>)> {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize {
@@ -291,6 +1080,16 @@ impl PtySession {
             .context("failed to spawn wrapped command")?;
         let child_pid = child.process_id();
 
+        #[cfg(unix)]
+        let poll_fd = Arc::new({
+            let master_fd = pair
+                .master
+                .as_raw_fd()
+                .context("pty master does not expose a pollable descriptor")?;
+            duplicate_poll_fd_cloexec(master_fd)
+                .context("failed to duplicate pty descriptor for readiness polling")?
+        });
+
         let mut reader = pair
             .master
             .try_clone_reader()
@@ -312,53 +1111,151 @@ impl PtySession {
         let term = Arc::new(Mutex::new(Term::new(Config::default(), &size, listener)));
         let processor = Arc::new(Mutex::new(Processor::new()));
 
+        // Watchdog silence counter, shared with the drainer so a confirmed
+        // write (not a mere enqueue) resets it.
+        let no_pid_alive_checks = Arc::new(AtomicU32::new(0));
+
         // Drainer: single owner of the writer. Receives `WriteMsg`s
         // from the queue and pushes them to the PTY. Lives on a
         // std::thread so it doesn't need a tokio runtime. Exits when
         // every sender is dropped — i.e. when the listener inside
         // `term` is dropped (term goes away at PtySession drop) AND
         // the `write_tx` clone on the struct is dropped (same time).
-        thread::spawn(move || drain_write_queue(writer, write_rx));
+        let drainer_no_pid = no_pid_alive_checks.clone();
+        thread::spawn(move || drain_write_queue(writer, write_rx, drainer_no_pid));
 
         let (tx, rx) = mpsc::channel(256);
         let term_clone = term.clone();
         let processor_clone = processor.clone();
+        let paste_capable = Arc::new(AtomicBool::new(false));
+        let paste_capable_reader = paste_capable.clone();
         let consumed_offset = Arc::new(AtomicU64::new(0));
         let consumed_offset_reader = consumed_offset.clone();
-        thread::spawn(move || {
+        let output_sequence = Arc::new(AtomicU64::new(0));
+        let output_sequence_reader = output_sequence.clone();
+        let output_order = Arc::new(Mutex::new(()));
+        let output_order_reader = output_order.clone();
+        #[cfg(unix)]
+        let poll_fd_reader = poll_fd.clone();
+        #[cfg(unix)]
+        let unix_output_reservations = Arc::new(Mutex::new(UnixOutputReservations::default()));
+        #[cfg(unix)]
+        let unix_output_reservations_reader = unix_output_reservations.clone();
+        #[cfg(windows)]
+        let write_admission_pending = Arc::new(AtomicBool::new(false));
+        #[cfg(windows)]
+        let write_admission_pending_reader = write_admission_pending.clone();
+        let reader_thread = thread::spawn(move || {
             let mut buf = [0u8; 4096];
+            let mut decset_2004_scan = Decset2004Scan::default();
             loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        {
-                            // Lock order: processor THEN term. `resize`
-                            // takes the same order; matching prevents
-                            // deadlock and ensures bytes are never
-                            // parsed against stale dimensions.
-                            //
-                            // The listener inside `term` may send bytes
-                            // onto the writeback channel while we hold
-                            // these locks — that send is non-blocking
-                            // (std::mpsc), so no deadlock with the
-                            // writer lock taken by the drainer thread.
-                            let mut processor_guard = processor_clone.lock();
-                            let mut term_guard = term_clone.lock();
-                            processor_guard.advance(&mut *term_guard, &buf[..n]);
-                            // Publish the grid's consumed byte offset while
-                            // still holding the term lock, so a concurrent
-                            // snapshot reader (which also locks `term`) reads
-                            // the offset that matches the grid it renders.
-                            consumed_offset_reader.fetch_add(n as u64, Ordering::Release);
+                #[cfg(unix)]
+                if wait_for_pty_readable(&poll_fd_reader).is_err() {
+                    break;
+                }
+
+                #[cfg(unix)]
+                let tagged = match read_and_tag_unix_output(
+                    &mut *reader,
+                    &mut buf,
+                    &output_order_reader,
+                    &unix_output_reservations_reader,
+                    &output_sequence_reader,
+                ) {
+                    Ok(Some(tagged)) => tagged,
+                    Ok(None) | Err(_) => break,
+                };
+
+                #[cfg(windows)]
+                while write_admission_pending_reader.load(Ordering::Acquire) {
+                    thread::yield_now();
+                }
+
+                #[cfg(windows)]
+                let tagged = read_and_tag_output(
+                    &mut *reader,
+                    &mut buf,
+                    &output_order_reader,
+                    &output_sequence_reader,
+                    |_| {},
+                );
+
+                #[cfg(windows)]
+                let tagged = match tagged {
+                    Err(error) if read_was_cancelled(&error) => continue,
+                    Ok(Some((n, sequence))) => vec![(0, n, sequence)],
+                    Ok(None) | Err(_) => break,
+                };
+
+                for (start, end, sequence) in tagged {
+                    let bytes = &buf[start..end];
+                    // Lock order: processor THEN term. `resize`
+                    // takes the same order; matching prevents
+                    // deadlock and ensures bytes are never
+                    // parsed against stale dimensions. Parsing and the
+                    // bounded output send stay outside `output_order`, so
+                    // backpressure cannot block verified write admission.
+                    //
+                    // The listener inside `term` may send bytes
+                    // onto the writeback channel while we hold
+                    // these locks — that send is non-blocking
+                    // (std::mpsc), so no deadlock with the
+                    // writer lock taken by the drainer thread.
+                    let mut processor_guard = processor_clone.lock();
+                    let mut term_guard = term_clone.lock();
+                    // Observe every mode transition, including an enable and a
+                    // disable inside one read. Stepping the parser one byte at a
+                    // time is the only way to see a transition that does not
+                    // survive to the end of the chunk, but it costs the reader
+                    // thread a parser call per byte, so it is reserved for chunks
+                    // that can actually carry the DECSET 2004 parameter, counting
+                    // one split across the previous read. Every other chunk is
+                    // parsed in bulk and then checked once.
+                    if paste_capable_reader.load(Ordering::Acquire) {
+                        processor_guard.advance(&mut *term_guard, bytes);
+                    } else {
+                        if decset_2004_scan.may_carry(bytes) {
+                            for byte in bytes {
+                                processor_guard
+                                    .advance(&mut *term_guard, std::slice::from_ref(byte));
+                                if paste_mode_enabled(&term_guard) {
+                                    paste_capable_reader.store(true, Ordering::Release);
+                                }
+                            }
+                        } else {
+                            processor_guard.advance(&mut *term_guard, bytes);
                         }
-                        if tx.blocking_send(buf[..n].to_vec()).is_err() {
-                            break;
+                        if paste_mode_enabled(&term_guard) {
+                            paste_capable_reader.store(true, Ordering::Release);
                         }
                     }
-                    Err(_) => break,
+                    // Publish the grid's consumed byte offset while
+                    // still holding the term lock, so a concurrent
+                    // snapshot reader (which also locks `term`) reads
+                    // the offset that matches the grid it renders.
+                    consumed_offset_reader.fetch_add(bytes.len() as u64, Ordering::Release);
+                    drop(term_guard);
+                    drop(processor_guard);
+
+                    if tx
+                        .blocking_send(PtyOutput {
+                            bytes: bytes.to_vec(),
+                            sequence,
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
                 }
             }
         });
+
+        #[cfg(windows)]
+        let reader_cancel = ReaderCancel::duplicate(&reader_thread)
+            .context("failed to duplicate pty reader thread handle")?;
+        // Detach the reader after retaining only the Windows cancellation
+        // handle. PTY/session ownership controls its lifetime as before.
+        drop(reader_thread);
 
         Ok((
             Self {
@@ -367,10 +1264,22 @@ impl PtySession {
                 child: Arc::new(Mutex::new(child)),
                 child_pid,
                 reaped: Arc::new(AtomicBool::new(false)),
-                no_pid_alive_checks: std::sync::atomic::AtomicU32::new(0),
+                no_pid_alive_checks,
+                no_pid_exit_threshold: DEFAULT_NO_PID_EXIT_THRESHOLD,
                 term,
                 processor,
                 consumed_offset,
+                paste_capable,
+                output_sequence,
+                output_order,
+                #[cfg(unix)]
+                poll_fd,
+                #[cfg(unix)]
+                unix_output_reservations,
+                #[cfg(windows)]
+                write_admission_pending,
+                #[cfg(windows)]
+                reader_cancel,
             },
             rx,
         ))
@@ -402,20 +1311,131 @@ impl PtySession {
     /// Returns `Err` if the queue is momentarily full (retryable) or the
     /// drainer has exited (PTY teardown).
     pub fn submit_write(&self, bytes: Vec<u8>) -> Result<oneshot::Receiver<io::Result<()>>> {
-        let (ack_tx, ack_rx) = oneshot::channel::<io::Result<()>>();
-        match self.write_tx.try_send(WriteMsg::UserInput {
+        // NB: do *not* reset the no-PID watchdog counter here. A successful
+        // enqueue only proves the queue had room, not that any byte reached the
+        // child. The drainer resets it after the write is confirmed flushed.
+        enqueue_user_write(
+            &self.write_tx,
+            &self.no_pid_alive_checks,
             bytes,
-            ack: ack_tx,
-        }) {
-            Ok(()) => Ok(ack_rx),
-            Err(std_mpsc::TrySendError::Full(_)) => Err(anyhow::anyhow!(
-                "pty write queue full ({} writes pending; drainer wedged behind child not reading stdin)",
-                WRITE_QUEUE_DEPTH
-            )),
-            Err(std_mpsc::TrySendError::Disconnected(_)) => Err(anyhow::anyhow!(
-                "pty write queue is closed (drainer exited)"
-            )),
-        }
+            Duration::ZERO,
+            None,
+            None,
+        )
+    }
+
+    /// Submit bytes for **escape-aware paced** delivery to the child. Identical
+    /// to [`submit_write`] except the drainer emits one VT atom / UTF-8
+    /// codepoint per write, sleeping `pace` between atoms (see
+    /// [`WriteMsg::UserInput`]). A `pace` of [`Duration::ZERO`] is exactly
+    /// [`submit_write`] — a single bulk write — so callers can carry a
+    /// configurable rate and disable pacing by passing zero.
+    ///
+    /// Pacing spreads a payload the child would otherwise receive as one blob
+    /// across multiple reads, which avoids a class of CLIs batching or dropping
+    /// leading characters when input arrives faster than they read it. The
+    /// entire payload remains one queue entry, so its atoms — and a trailing
+    /// `\r` appended to it — stay adjacent on the FIFO with nothing splicing
+    /// between them. The trade-off: while a paced write is in flight the drainer
+    /// is busy for roughly `atoms * pace`, delaying any queued terminal-query
+    /// replies for that window. Injection happens while the child waits on
+    /// input (not mid-query), so keep `pace` small and the payloads bounded.
+    ///
+    /// [`submit_write`]: PtySession::submit_write
+    pub fn submit_write_paced(
+        &self,
+        bytes: Vec<u8>,
+        pace: Duration,
+    ) -> Result<oneshot::Receiver<io::Result<()>>> {
+        enqueue_user_write(
+            &self.write_tx,
+            &self.no_pid_alive_checks,
+            bytes,
+            pace,
+            None,
+            None,
+        )
+    }
+
+    /// Queue a paced input atomically with the receive-time output watermark.
+    ///
+    /// The returned boundary is the latest producer sequence that precedes
+    /// this queue admission. Output carrying a sequence at or below it cannot
+    /// be evidence that this write reached the child, even if that output was
+    /// still waiting in the async receive queue when the write was submitted.
+    pub fn submit_write_paced_with_output_boundary(
+        &self,
+        bytes: Vec<u8>,
+        pace: Duration,
+    ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
+        self.enqueue_write_with_output_boundary(bytes, pace, None, None)
+    }
+
+    /// Submit a paced primary payload followed by a delayed second write as
+    /// one indivisible FIFO command.
+    ///
+    /// The follow-up is written and flushed only after the primary payload is
+    /// confirmed flushed and `followup_delay` has elapsed. No terminal reply,
+    /// later input, or other producer can splice bytes into that pause. This is
+    /// useful for TUIs that distinguish a pasted multiline body from a submit
+    /// key only when the key arrives in a later read.
+    pub fn submit_write_paced_with_followup(
+        &self,
+        bytes: Vec<u8>,
+        pace: Duration,
+        followup_delay: Duration,
+        followup_bytes: Vec<u8>,
+    ) -> Result<oneshot::Receiver<io::Result<()>>> {
+        enqueue_user_write(
+            &self.write_tx,
+            &self.no_pid_alive_checks,
+            bytes,
+            pace,
+            Some(FollowupWrite {
+                delay: followup_delay,
+                bytes: followup_bytes,
+            }),
+            None,
+        )
+    }
+
+    /// Queue a compound paced write atomically with its receive-time output
+    /// watermark. See [`submit_write_paced_with_output_boundary`].
+    pub fn submit_write_paced_with_followup_and_output_boundary(
+        &self,
+        bytes: Vec<u8>,
+        pace: Duration,
+        followup_delay: Duration,
+        followup_bytes: Vec<u8>,
+    ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
+        self.enqueue_write_with_output_boundary(
+            bytes,
+            pace,
+            Some(FollowupWrite {
+                delay: followup_delay,
+                bytes: followup_bytes,
+            }),
+            None,
+        )
+    }
+
+    /// Queue a submit-key write, with an optional delayed follow-up, that the
+    /// caller can cancel until each part reaches the child. Setting `cancel`
+    /// before the drainer starts the entry skips it entirely; setting it during
+    /// the follow-up delay withholds the follow-up. Either way the ack resolves
+    /// to [`io::ErrorKind::Interrupted`].
+    pub fn submit_cancellable_write_with_output_boundary(
+        &self,
+        bytes: Vec<u8>,
+        followup: Option<(Duration, Vec<u8>)>,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<(oneshot::Receiver<io::Result<()>>, u64)> {
+        self.enqueue_write_with_output_boundary(
+            bytes,
+            Duration::ZERO,
+            followup.map(|(delay, bytes)| FollowupWrite { delay, bytes }),
+            Some(cancel),
+        )
     }
 
     /// Submit bytes and await the drainer's write result. Convenience
@@ -563,6 +1583,15 @@ impl PtySession {
         self.consumed_offset.load(Ordering::Acquire)
     }
 
+    /// Whether the child has ever enabled bracketed-paste mode (DECSET 2004).
+    ///
+    /// Sticky: a TUI that turns the mode off while a dialog is open still
+    /// understands `ESC[200~` framing, so the capability is independent of
+    /// whether the composer is currently ready.
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.paste_capable.load(Ordering::Acquire)
+    }
+
     /// Check if the child process has exited without blocking.
     /// Returns true if the child has exited (or was already reaped).
     ///
@@ -570,13 +1599,21 @@ impl PtySession {
     /// 1. `try_wait()` (waitpid with WNOHANG)
     /// 2. `kill(pid, 0)` to check process existence (Unix only)
     /// 3. Consecutive no-PID fallback: if we never obtained a PID and try_wait
-    ///    keeps returning Ok(None), after several checks we assume the child
-    ///    is gone (works around a macOS PTY quirk where portable-pty's
-    ///    `process_id()` returns None and try_wait never transitions).
+    ///    keeps returning Ok(None), after `no_pid_exit_threshold` checks
+    ///    (default ~5 minutes) we assume the child is gone (works around a
+    ///    macOS PTY quirk where portable-pty's `process_id()` returns None and
+    ///    try_wait never transitions). The counter resets on any child-side
+    ///    activity — PTY output *or* a submitted write — so a long silent
+    ///    "thinking" pause never trips it. Genuine exits are caught far sooner
+    ///    by the PTY reader hitting EOF, so this long grace has no downside.
     pub fn has_exited(&self) -> bool {
-        // Number of consecutive no-PID Ok(None) checks before we declare
-        // the child gone. At 5s watchdog interval this is ~30s.
-        const NO_PID_THRESHOLD: u32 = 6;
+        // Number of consecutive no-PID Ok(None) checks before we declare the
+        // child gone. Defaults to ~5 minutes at the 5s watchdog interval (see
+        // `DEFAULT_NO_PID_EXIT_THRESHOLD`) so a silently-thinking child is not
+        // killed mid-task; genuine exits are caught promptly by the PTY reader
+        // EOF path, independent of this counter.
+        #[cfg(unix)]
+        let no_pid_threshold = self.no_pid_exit_threshold;
 
         // Fast path: already known to be reaped.
         if self.reaped.load(Ordering::Relaxed) {
@@ -663,10 +1700,10 @@ impl PtySession {
             tracing::debug!(
                 target: "agent_relay::worker::pty",
                 consecutive_checks = count,
-                threshold = NO_PID_THRESHOLD,
+                threshold = no_pid_threshold,
                 "has_exited: no PID available, try_wait says Ok(None)"
             );
-            if count >= NO_PID_THRESHOLD {
+            if count >= no_pid_threshold {
                 tracing::warn!(
                     target: "agent_relay::worker::pty",
                     consecutive_checks = count,
@@ -694,6 +1731,31 @@ impl PtySession {
     /// received, proving the child is still alive regardless of PID availability.
     pub fn reset_no_pid_checks(&self) {
         self.no_pid_alive_checks.store(0, Ordering::Relaxed);
+    }
+
+    /// Override the no-PID exit threshold (default
+    /// [`DEFAULT_NO_PID_EXIT_THRESHOLD`]). Primarily for tests and future
+    /// runtime tuning; lower values make the no-PID watchdog fire sooner.
+    pub fn set_no_pid_exit_threshold(&mut self, threshold: u32) {
+        self.no_pid_exit_threshold = threshold.max(1);
+    }
+
+    /// Current no-PID exit threshold (consecutive no-activity checks tolerated).
+    pub fn no_pid_exit_threshold(&self) -> u32 {
+        self.no_pid_exit_threshold
+    }
+
+    /// Current consecutive no-PID liveness-check count (test/diagnostic hook).
+    #[cfg(test)]
+    pub(crate) fn no_pid_alive_checks(&self) -> u32 {
+        self.no_pid_alive_checks.load(Ordering::Relaxed)
+    }
+
+    /// Seed the no-PID counter (test hook) to simulate accumulated silent
+    /// checks without waiting on a real watchdog interval.
+    #[cfg(test)]
+    pub(crate) fn set_no_pid_alive_checks(&self, n: u32) {
+        self.no_pid_alive_checks.store(n, Ordering::Relaxed);
     }
 
     pub fn shutdown(&self) -> Result<()> {
@@ -738,13 +1800,36 @@ impl PtySession {
 
 #[cfg(test)]
 mod tests {
-    use super::{GridSize, PtySession};
+    #[cfg(unix)]
+    use super::{
+        duplicate_poll_fd_cloexec, read_and_tag_unix_output, reserve_readable_output,
+        resolve_command_path, resolve_command_path_with, wait_for_pty_readable,
+        UnixOutputReservations,
+    };
+    use super::{
+        read_and_tag_output, Decset2004Scan, GridSize, Mutex, PtyOutput, PtySession,
+        PtyWriteSubmitError, DEFAULT_NO_PID_EXIT_THRESHOLD,
+    };
     use crate::snapshot::Snapshot;
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::term::{Config, Term};
     use alacritty_terminal::vte::ansi::Processor;
-    use std::env;
-    use tokio::time::{timeout, Duration};
+    #[cfg(unix)]
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::fd::AsRawFd;
+    #[cfg(unix)]
+    use std::os::unix::net::UnixStream;
+    use std::{
+        collections::VecDeque,
+        env,
+        io::{self, Cursor, Read},
+        sync::atomic::{AtomicU64, Ordering},
+    };
+    use tokio::{
+        sync::mpsc,
+        time::{timeout, Duration},
+    };
 
     /// Build a standalone Term + Processor pair the same way `spawn`
     /// does, so we can drive the parser with recorded byte streams
@@ -859,6 +1944,125 @@ mod tests {
         let _ = pty.shutdown();
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn paste_capability_latches_across_disable_in_same_read() {
+        let (pty, mut rx) = PtySession::spawn(
+            "sh",
+            &[
+                "-c".into(),
+                "printf '\\033[?2004h\\033[?2004lREADY'; sleep 2".into(),
+            ],
+            24,
+            80,
+        )
+        .unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !pty.screen_text().contains("READY") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(pty.bracketed_paste_enabled());
+        assert!(!pty
+            .term
+            .lock()
+            .mode()
+            .contains(alacritty_terminal::term::TermMode::BRACKETED_PASTE));
+        pty.shutdown().unwrap();
+        drain.abort();
+    }
+
+    /// Only a chunk carrying the `2004` parameter is parsed byte-by-byte, so a
+    /// DECSET split across reads must still latch from the bulk-parse path.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn paste_capability_latches_when_decset_spans_two_reads() {
+        let (pty, mut rx) = PtySession::spawn(
+            "sh",
+            &[
+                "-c".into(),
+                "printf '\\033[?20'; sleep 0.3; printf '04hREADY'; sleep 2".into(),
+            ],
+            24,
+            80,
+        )
+        .unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        // `READY` trails the DECSET, so the mode was parsed by the time it renders.
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !pty.screen_text().contains("READY") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(pty.bracketed_paste_enabled());
+        pty.shutdown().unwrap();
+        drain.abort();
+    }
+
+    /// A split `2004h` that a full reset (RIS, which never spells `2004`)
+    /// clears in the same second read never survives to the end of either
+    /// chunk, so the read boundary must still select the byte-by-byte path.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn paste_capability_latches_split_enable_reset_in_the_next_read() {
+        let (pty, mut rx) = PtySession::spawn(
+            "sh",
+            &[
+                "-c".into(),
+                "printf '\\033[?20'; sleep 0.3; printf '04h\\033cREADY'; sleep 2".into(),
+            ],
+            24,
+            80,
+        )
+        .unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !pty.screen_text().contains("READY") {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(pty.bracketed_paste_enabled());
+        pty.shutdown().unwrap();
+        drain.abort();
+    }
+
+    #[test]
+    fn decset_2004_scan_sees_the_parameter_across_every_split() {
+        for stream in [&b"ab\x1b[?2004hcd"[..], &b"ab\x1b[?1;2004hcd"[..]] {
+            for split in 0..=stream.len() {
+                let mut scan = Decset2004Scan::default();
+                let first = scan.may_carry(&stream[..split]);
+                let second = scan.may_carry(&stream[split..]);
+                assert!(first || second, "split at {split} hid the parameter");
+            }
+        }
+        let mut scan = Decset2004Scan::default();
+        assert!(!scan.may_carry(b"?200"));
+        assert!(
+            scan.may_carry(b"4"),
+            "a one-byte read completes the parameter"
+        );
+        assert!(!scan.may_carry(b"x"));
+        assert!(!scan.may_carry(b"?2"));
+        assert!(!scan.may_carry(b"00"));
+        assert!(scan.may_carry(b"4h"), "short reads carry the prefix");
+        assert!(!scan.may_carry(b"?2005"));
+        // relay#1930 review (cubic): ordinary text that merely contains 2004
+        // (a year, a port) is not a private-mode parameter, so it must keep
+        // the bulk parse instead of a per-byte parse on every such read.
+        let mut scan = Decset2004Scan::default();
+        assert!(!scan.may_carry(b"released in 2004, port 2004"));
+        assert!(!scan.may_carry(b" 200"));
+        assert!(!scan.may_carry(b"4"));
+    }
+
     #[tokio::test]
     async fn consumed_offset_tracks_total_bytes_parsed_into_grid() {
         let (pty, mut rx) = PtySession::spawn("echo", &["offset-line".into()], 24, 80).unwrap();
@@ -885,6 +2089,368 @@ mod tests {
             "snapshot offset must match consumed offset"
         );
         let _ = pty.shutdown();
+    }
+
+    #[tokio::test]
+    async fn verified_write_boundary_includes_output_still_queued_for_consumer() {
+        eprintln!("relay-pty-live-proof stage=spawn-start");
+        #[cfg(unix)]
+        let script = "printf 'same-echo\\n'; IFS= read -r line; printf '%s\\n' \"$line\"";
+        #[cfg(unix)]
+        let (pty, mut rx) = PtySession::spawn("sh", &["-c".into(), script.into()], 24, 80).unwrap();
+        #[cfg(unix)]
+        let submitted = b"same-echo\n".to_vec();
+
+        #[cfg(windows)]
+        let (pty, mut rx) = PtySession::spawn(
+            "cmd.exe",
+            &[
+                "/D".into(),
+                "/Q".into(),
+                "/V:ON".into(),
+                "/C".into(),
+                "echo same-echo&set /P line=&echo !line!".into(),
+            ],
+            24,
+            80,
+        )
+        .unwrap();
+        // Enter is carriage return on a Windows ConPTY input stream.
+        #[cfg(windows)]
+        let submitted = b"same-echo\r".to_vec();
+        #[cfg(unix)]
+        let harness_timeout = Duration::from_secs(2);
+        // Windows hosted runners can be cold; cmd.exe is intentionally used
+        // instead of PowerShell, but retain a bounded startup allowance.
+        #[cfg(windows)]
+        let harness_timeout = Duration::from_secs(10);
+        eprintln!("relay-pty-live-proof stage=spawned");
+
+        let proof = timeout(Duration::from_secs(30), async {
+            // Do not drain rx. Wait until the intended initial marker has
+            // reached the parsed grid, rather than accepting an unrelated
+            // startup VT chunk merely because it incremented
+            // `output_sequence`.
+            timeout(harness_timeout, async {
+                while !pty.screen_text().contains("same-echo") {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .map_err(|_| "initial same-echo marker did not reach the parsed grid".to_string())?;
+            eprintln!("relay-pty-live-proof stage=parsed-marker");
+
+            // On Windows, the reader holds `output_order` across its blocking
+            // ConPTY ReadFile. Requiring the lock to be unavailable proves
+            // this submission exercises CancelSynchronousIo rather than
+            // slipping into the short gap before the reader starts its next
+            // read.
+            #[cfg(windows)]
+            timeout(harness_timeout, async {
+                while pty.output_order.try_lock().is_some() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .map_err(|_| "Windows reader never blocked in ReadFile".to_string())?;
+            #[cfg(windows)]
+            eprintln!("relay-pty-live-proof stage=blocked-read-proven");
+            #[cfg(unix)]
+            eprintln!("relay-pty-live-proof stage=reader-idle-proven");
+
+            // The child is idle in `read` here. Verified submission must wake
+            // an idle Windows ConPTY reader (and must not be serialized behind
+            // Unix readiness polling), while retaining the synchronous API.
+            let submitted_at = std::time::Instant::now();
+            let (ack, boundary) = pty
+                .submit_write_paced_with_output_boundary(submitted, Duration::ZERO)
+                .map_err(|error| format!("verified write admission failed: {error}"))?;
+            if submitted_at.elapsed() >= Duration::from_secs(1) {
+                return Err("verified write admission stalled behind an idle PTY read".to_string());
+            }
+            eprintln!(
+                "relay-pty-live-proof stage=submit-admitted boundary={boundary} elapsed_ms={}",
+                submitted_at.elapsed().as_millis()
+            );
+
+            match timeout(harness_timeout, ack).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(error))) => return Err(format!("PTY write failed: {error}")),
+                Ok(Err(error)) => return Err(format!("PTY write acknowledgement lost: {error}")),
+                Err(_) => return Err("PTY write acknowledgement timed out".to_string()),
+            }
+            eprintln!("relay-pty-live-proof stage=write-ack");
+
+            let mut saw_stale = false;
+            let mut saw_fresh = false;
+            // Deliberately no per-receive timeout: the outer watchdog is one
+            // absolute bound that cannot be renewed by endless control chunks.
+            while let Some(chunk) = rx.recv().await {
+                let text = String::from_utf8_lossy(chunk.as_bytes());
+                if text.contains("same-echo") {
+                    if chunk.sequence() <= boundary {
+                        saw_stale = true;
+                        eprintln!(
+                            "relay-pty-live-proof stage=stale-output sequence={} boundary={boundary}",
+                            chunk.sequence()
+                        );
+                    } else {
+                        saw_fresh = true;
+                        eprintln!(
+                            "relay-pty-live-proof stage=fresh-output sequence={} boundary={boundary}",
+                            chunk.sequence()
+                        );
+                    }
+                }
+                if saw_stale && saw_fresh {
+                    break;
+                }
+            }
+
+            if !saw_stale {
+                return Err(
+                    "forced pre-submission chunk was not at or below the boundary".to_string(),
+                );
+            }
+            if !saw_fresh {
+                return Err("child echo was not above the returned boundary".to_string());
+            }
+            Ok::<(), String>(())
+        })
+        .await;
+
+        eprintln!("relay-pty-live-proof stage=shutdown-start");
+        drop(rx);
+        // `shutdown` uses a bounded two-second post-kill wait. The CI step's
+        // own two-minute timeout remains the outermost fail-safe for platform
+        // calls (such as TerminateProcess) that the test cannot preempt.
+        let shutdown = pty.shutdown();
+        eprintln!("relay-pty-live-proof stage=shutdown-complete result={shutdown:?}");
+        shutdown.expect("live proof PTY should shut down cleanly");
+
+        match proof {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => panic!("live PTY boundary proof failed: {error}"),
+            Err(_) => panic!("live PTY boundary proof exceeded 30-second watchdog"),
+        }
+    }
+
+    #[test]
+    fn completed_read_is_tagged_before_verified_write_can_sample_boundary() {
+        let output_order = Arc::new(Mutex::new(()));
+        let output_sequence = Arc::new(AtomicU64::new(0));
+        let (copied_tx, copied_rx) = std_mpsc::channel();
+        let (release_tx, release_rx) = std_mpsc::channel();
+
+        let reader_order = output_order.clone();
+        let reader_sequence = output_sequence.clone();
+        let reader = std::thread::spawn(move || {
+            let mut source = Cursor::new(b"same-echo".to_vec());
+            let mut buf = [0u8; 32];
+            read_and_tag_output(
+                &mut source,
+                &mut buf,
+                &reader_order,
+                &reader_sequence,
+                |n| {
+                    assert_eq!(n, b"same-echo".len());
+                    copied_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                },
+            )
+            .unwrap()
+            .unwrap()
+        });
+        copied_rx.recv().unwrap();
+
+        let (write_tx, write_rx) = std_mpsc::sync_channel(WRITE_QUEUE_DEPTH);
+        let no_pid = Arc::new(AtomicU32::new(0));
+        let submit_order = output_order.clone();
+        let submit_sequence = output_sequence.clone();
+        let (submit_started_tx, submit_started_rx) = std_mpsc::channel();
+        let (submitted_tx, submitted_rx) = std_mpsc::channel();
+        let submitter = std::thread::spawn(move || {
+            submit_started_tx.send(()).unwrap();
+            let _guard = submit_order.lock();
+            let boundary = submit_sequence.load(Ordering::Acquire);
+            let ack = enqueue_user_write(
+                &write_tx,
+                &no_pid,
+                b"same-echo\n".to_vec(),
+                Duration::ZERO,
+                None,
+                None,
+            )
+            .unwrap();
+            submitted_tx.send((boundary, ack)).unwrap();
+        });
+        submit_started_rx.recv().unwrap();
+        assert!(
+            submitted_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err(),
+            "verified submission overtook bytes already copied by the reader"
+        );
+
+        release_tx.send(()).unwrap();
+        let (stale_len, stale_sequence) = reader.join().unwrap();
+        assert_eq!(stale_len, b"same-echo".len());
+        let (boundary, _ack) = submitted_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("submitter proceeds after stale output is tagged");
+        submitter.join().unwrap();
+        assert!(stale_sequence <= boundary);
+
+        let mut fresh = Cursor::new(b"same-echo".to_vec());
+        let mut fresh_buf = [0u8; 32];
+        let (_, fresh_sequence) = read_and_tag_output(
+            &mut fresh,
+            &mut fresh_buf,
+            &output_order,
+            &output_sequence,
+            |_| {},
+        )
+        .unwrap()
+        .unwrap();
+        assert!(fresh_sequence > boundary);
+        assert!(matches!(
+            write_rx.recv().unwrap(),
+            WriteMsg::UserInput { .. }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readable_output_is_reserved_before_unix_boundary_admission() {
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        writer.write_all(b"stale").unwrap();
+
+        let poll_fd = duplicate_poll_fd_cloexec(reader.as_raw_fd()).unwrap();
+        let output_order = Mutex::new(());
+        let reservations = Mutex::new(UnixOutputReservations::default());
+        let output_sequence = AtomicU64::new(0);
+
+        // Reproduce the original poll-to-lock gap, but deliberately do not
+        // start the reader afterward: this models a reader blocked on a full
+        // downstream channel. Admission must reserve the kernel-buffered
+        // bytes immediately rather than waiting for consumer progress.
+        wait_for_pty_readable(&poll_fd).unwrap();
+        let admitted_at = std::time::Instant::now();
+        let guard = output_order.lock();
+        reserve_readable_output(&poll_fd, &reservations, &output_sequence).unwrap();
+        let boundary = output_sequence.load(Ordering::Acquire);
+        drop(guard);
+        assert!(
+            admitted_at.elapsed() < std::time::Duration::from_millis(100),
+            "kernel-buffered output reservation depended on downstream drain"
+        );
+
+        // Model a later kernel read that coalesces the reserved stale bytes
+        // with fresh post-write output. The helper must split the read at the
+        // exact reserved-byte boundary.
+        let mut combined = Cursor::new(b"stalefresh".to_vec());
+        let mut buf = [0u8; 16];
+        let tagged = read_and_tag_unix_output(
+            &mut combined,
+            &mut buf,
+            &output_order,
+            &reservations,
+            &output_sequence,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            tagged,
+            vec![
+                (0, b"stale".len(), boundary),
+                (b"stale".len(), b"stalefresh".len(), boundary + 1),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn polling_descriptor_is_created_close_on_exec() {
+        let source = std::fs::File::open("/dev/null").unwrap();
+        let duplicate = duplicate_poll_fd_cloexec(source.as_raw_fd()).unwrap();
+        assert_ne!(duplicate.as_raw_fd(), source.as_raw_fd());
+
+        let flags = unsafe { libc::fcntl(duplicate.as_raw_fd(), libc::F_GETFD) };
+        assert!(flags >= 0, "F_GETFD failed: {}", io::Error::last_os_error());
+        assert_ne!(
+            flags & libc::FD_CLOEXEC,
+            0,
+            "polling descriptor must not leak into unrelated child processes"
+        );
+    }
+
+    #[test]
+    fn output_channel_backpressure_does_not_hold_verified_write_ordering() {
+        struct ChunkReader(VecDeque<Vec<u8>>);
+        impl Read for ChunkReader {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let Some(chunk) = self.0.pop_front() else {
+                    return Ok(0);
+                };
+                buf[..chunk.len()].copy_from_slice(&chunk);
+                Ok(chunk.len())
+            }
+        }
+
+        let output_order = Arc::new(Mutex::new(()));
+        let output_sequence = Arc::new(AtomicU64::new(0));
+        let (output_tx, mut output_rx) = mpsc::channel(1);
+        let (second_tagged_tx, second_tagged_rx) = std_mpsc::channel();
+        let reader_order = output_order.clone();
+        let reader_sequence = output_sequence.clone();
+        let reader = std::thread::spawn(move || {
+            let mut source = ChunkReader(VecDeque::from([b"one".to_vec(), b"two".to_vec()]));
+            let mut buf = [0u8; 8];
+            for expected in [b"one".as_slice(), b"two".as_slice()] {
+                let (n, sequence) = read_and_tag_output(
+                    &mut source,
+                    &mut buf,
+                    &reader_order,
+                    &reader_sequence,
+                    |_| {},
+                )
+                .unwrap()
+                .unwrap();
+                if sequence == 2 {
+                    second_tagged_tx.send(()).unwrap();
+                }
+                output_tx
+                    .blocking_send(PtyOutput {
+                        bytes: buf[..n].to_vec(),
+                        sequence,
+                    })
+                    .unwrap();
+                assert_eq!(&buf[..n], expected);
+            }
+        });
+
+        second_tagged_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("second chunk is tagged before bounded output send blocks");
+        let admitted_at = std::time::Instant::now();
+        let boundary = {
+            let _guard = output_order.lock();
+            output_sequence.load(Ordering::Acquire)
+        };
+        assert_eq!(boundary, 2);
+        assert!(
+            admitted_at.elapsed() < std::time::Duration::from_millis(100),
+            "output channel backpressure held the verified-write ordering lock"
+        );
+
+        let first = output_rx.blocking_recv().unwrap();
+        let second = output_rx.blocking_recv().unwrap();
+        reader.join().unwrap();
+        assert_eq!((first.sequence(), first.as_bytes()), (1, b"one".as_slice()));
+        assert_eq!(
+            (second.sequence(), second.as_bytes()),
+            (2, b"two".as_slice())
+        );
     }
 
     #[tokio::test]
@@ -1026,8 +2592,12 @@ mod tests {
     // bytes that match real grid state — replacing the old hand-rolled
     // `TerminalQueryParser` that hardcoded `1;1` for CPR.
 
-    use super::{RelayEventListener, WriteMsg, WRITE_QUEUE_DEPTH};
+    use super::{
+        enqueue_user_write, FollowupWrite, RelayEventListener, WriteMsg, WRITE_QUEUE_DEPTH,
+    };
+    use std::sync::atomic::AtomicU32;
     use std::sync::mpsc as std_mpsc;
+    use std::sync::Arc;
     use std::time::Duration as StdDuration;
     use tokio::sync::oneshot;
 
@@ -1106,6 +2676,9 @@ mod tests {
         let (ack_tx_1, _ack_rx_1) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
             bytes: b"injection-body".to_vec(),
+            pace: Duration::ZERO,
+            followup: None,
+            cancel: None,
             ack: ack_tx_1,
         })
         .unwrap();
@@ -1113,6 +2686,9 @@ mod tests {
         let (ack_tx_2, _ack_rx_2) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
             bytes: b"\r".to_vec(),
+            pace: Duration::ZERO,
+            followup: None,
+            cancel: None,
             ack: ack_tx_2,
         })
         .unwrap();
@@ -1179,11 +2755,16 @@ mod tests {
         }
 
         let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
-        let drainer = std::thread::spawn(move || super::drain_write_queue(AlwaysFailWriter, rx));
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(AlwaysFailWriter, rx, Arc::new(AtomicU32::new(0)))
+        });
 
         let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
             bytes: b"should-fail\n".to_vec(),
+            pace: Duration::ZERO,
+            followup: None,
+            cancel: None,
             ack: ack_tx,
         })
         .expect("queue accepts user input");
@@ -1214,11 +2795,16 @@ mod tests {
         }
 
         let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
-        let drainer = std::thread::spawn(move || super::drain_write_queue(FlushFailWriter, rx));
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(FlushFailWriter, rx, Arc::new(AtomicU32::new(0)))
+        });
 
         let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
         tx.send(WriteMsg::UserInput {
             bytes: b"flush-should-fail\n".to_vec(),
+            pace: Duration::ZERO,
+            followup: None,
+            cancel: None,
             ack: ack_tx,
         })
         .expect("queue accepts user input");
@@ -1293,5 +2879,752 @@ mod tests {
             "submit_write must return an error when the queue fills, never block"
         );
         let _ = pty.shutdown();
+    }
+
+    /// relay#1597 MUST-FIRE: the full-queue rejection must be recoverable as a
+    /// *typed* variant, not only as prose.
+    ///
+    /// The broker turns this into the wire code an attach client uses to decide
+    /// whether its input stream is dead (`pty_write_queue_full`) or merely
+    /// refused one write. Matching on the message text there would silently
+    /// start closing healthy sessions the first time this wording changed, so
+    /// the type is the contract. Revert `enqueue_user_write` to
+    /// `anyhow::anyhow!("pty write queue full …")` and the downcast goes None.
+    #[tokio::test]
+    async fn full_write_queue_reports_a_typed_queue_full_error() {
+        let (pty, _rx) = PtySession::spawn("sleep", &["30".into()], 24, 80).unwrap();
+
+        let err = timeout(Duration::from_secs(5), async {
+            loop {
+                if let Err(err) = pty.submit_write(vec![b'x'; 8192]) {
+                    return err;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("submit_write must fail promptly, never block");
+
+        match err.downcast_ref::<PtyWriteSubmitError>() {
+            Some(PtyWriteSubmitError::QueueFull { depth }) => {
+                assert_eq!(*depth, WRITE_QUEUE_DEPTH);
+            }
+            other => panic!("expected a typed QueueFull error, got {other:?}"),
+        }
+        // The operator-facing text still has to explain itself.
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("pty write queue full") && rendered.contains("128"),
+            "queue-full error lost its explanation: {rendered}"
+        );
+        let _ = pty.shutdown();
+    }
+
+    // ---- No-PID watchdog hardening (#1247) ----
+
+    /// The default grace before a no-PID child is declared dead must be
+    /// several minutes, not the old ~30s that could kill a silently-thinking
+    /// agent mid-task. At the 5s watchdog interval, require >= 3 minutes.
+    #[test]
+    fn default_no_pid_threshold_is_several_minutes() {
+        let seconds = DEFAULT_NO_PID_EXIT_THRESHOLD as u64 * 5;
+        assert!(
+            seconds >= 180,
+            "no-PID grace is only {seconds}s; a silent 'thinking' pause could exceed it"
+        );
+    }
+
+    /// A living child that produces no output for a long stretch must not be
+    /// declared exited by the watchdog. (`sleep` is silent for its whole run.)
+    #[tokio::test]
+    async fn silent_child_is_not_declared_exited() {
+        let (pty, _rx) = PtySession::spawn("sleep", &["30".into()], 24, 80).unwrap();
+        // Even simulating many accumulated silent checks — up to just below the
+        // threshold — the child is still considered alive.
+        pty.set_no_pid_alive_checks(pty.no_pid_exit_threshold() - 1);
+        assert!(
+            !pty.has_exited(),
+            "a silent but living child must not be declared exited"
+        );
+        let _ = pty.shutdown();
+    }
+
+    /// A genuinely exited child must still be detected promptly regardless of
+    /// the (now much longer) no-PID grace — try_wait/kill(0) catch it.
+    #[tokio::test]
+    async fn real_exit_is_still_detected() {
+        let (pty, _rx) = PtySession::spawn("sh", &["-c".into(), "exit 0".into()], 24, 80).unwrap();
+        let detected = timeout(Duration::from_secs(5), async {
+            loop {
+                if pty.has_exited() {
+                    break true;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+        assert_eq!(detected, Ok(true), "a real child exit must be detected");
+        let _ = pty.shutdown();
+    }
+
+    /// A *confirmed* write is child-side activity and must reset the no-PID
+    /// silence counter, so an interactive session receiving input but emitting
+    /// no output for a while is never declared dead. The reset is driven by the
+    /// drainer once the bytes flush — awaiting the ack proves that path.
+    #[tokio::test]
+    async fn write_resets_no_pid_counter() {
+        let (pty, _rx) = PtySession::spawn("cat", &[], 24, 80).unwrap();
+        pty.set_no_pid_alive_checks(pty.no_pid_exit_threshold() - 1);
+        let ack = pty
+            .submit_write(b"hello\n".to_vec())
+            .expect("submit_write enqueues");
+        // The drainer resets the counter on confirmed write success, so wait
+        // for the ack before asserting.
+        ack.await
+            .expect("drainer acks the write")
+            .expect("write succeeds");
+        assert_eq!(
+            pty.no_pid_alive_checks(),
+            0,
+            "a confirmed write must reset the no-PID silence counter"
+        );
+        let _ = pty.shutdown();
+    }
+
+    /// A mere *enqueue* must not reset the counter: if the drainer is wedged and
+    /// never flushes, periodic input can't indefinitely defer the no-PID
+    /// fallback. This drives the *real* [`drain_write_queue`] against a writer
+    /// that blocks forever inside `write`, so the message is picked up but never
+    /// confirmed — proving the reset is gated on a confirmed write, not on
+    /// enqueue. (Asserting on a counter no drainer ever touches would pass
+    /// unconditionally and catch nothing.)
+    #[tokio::test]
+    async fn enqueue_without_confirm_does_not_reset_no_pid_counter() {
+        // Signals when the drainer has actually dequeued the message and
+        // entered `write` — so the assertion below observes the genuine
+        // "picked up but unconfirmed" state, not a race where the drainer
+        // hasn't touched the message yet (which would pass vacuously).
+        let (entered_tx, entered_rx) = std_mpsc::channel::<()>();
+        struct BlockingWriter {
+            entered: std_mpsc::Sender<()>,
+        }
+        impl std::io::Write for BlockingWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                // Announce entry, then wedge: never return before the test
+                // asserts, so the write can never be confirmed.
+                let _ = self.entered.send(());
+                std::thread::sleep(StdDuration::from_secs(60));
+                Ok(0)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let counter = Arc::new(AtomicU32::new(5));
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let counter_for_drainer = counter.clone();
+        let _drainer = std::thread::spawn(move || {
+            super::drain_write_queue(
+                BlockingWriter {
+                    entered: entered_tx,
+                },
+                rx,
+                counter_for_drainer,
+            )
+        });
+
+        let ack = enqueue_user_write(
+            &tx,
+            counter.as_ref(),
+            b"queued\n".to_vec(),
+            Duration::ZERO,
+            None,
+            None,
+        )
+        .expect("submit path accepts the write");
+        // Block until the drainer has dequeued the message and is wedged inside
+        // `write` — the write is now genuinely picked up but not confirmed.
+        entered_rx
+            .recv_timeout(StdDuration::from_secs(5))
+            .expect("drainer reaches write() with the queued message");
+        // The wedged write leaves the ack pending — never confirmed.
+        assert!(
+            timeout(Duration::from_millis(50), ack).await.is_err(),
+            "a wedged writer must leave the write unconfirmed"
+        );
+        // Because the write never confirmed+flushed, the drainer must not have
+        // reset the silence counter. If `drain_write_queue` were changed to
+        // reset on receipt instead of on confirmation, this would drop to 0.
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::Relaxed),
+            5,
+            "an unconfirmed write must not reset the silence counter"
+        );
+    }
+
+    /// The threshold is configurable and clamped to at least 1.
+    #[tokio::test]
+    async fn no_pid_threshold_is_configurable() {
+        let (mut pty, _rx) = PtySession::spawn("sleep", &["30".into()], 24, 80).unwrap();
+        pty.set_no_pid_exit_threshold(42);
+        assert_eq!(pty.no_pid_exit_threshold(), 42);
+        pty.set_no_pid_exit_threshold(0);
+        assert_eq!(pty.no_pid_exit_threshold(), 1, "threshold clamps to >= 1");
+        let _ = pty.shutdown();
+    }
+
+    // ---- Escape-aware paced injection (#801) ----
+
+    #[test]
+    fn next_atom_end_plain_ascii_and_control_are_one_byte() {
+        assert_eq!(super::next_atom_end(b"hello"), 1);
+        assert_eq!(super::next_atom_end(b"\r"), 1);
+        assert_eq!(super::next_atom_end(b"\n"), 1);
+    }
+
+    #[test]
+    fn next_atom_end_keeps_csi_sequence_atomic() {
+        // Up arrow: ESC [ A.
+        assert_eq!(super::next_atom_end(b"\x1b[A"), 3);
+        // Modified key with params + separators: ESC [ 1 ; 5 A.
+        assert_eq!(super::next_atom_end(b"\x1b[1;5A"), 6);
+        // Only the sequence is one atom; trailing text is a separate atom.
+        assert_eq!(super::next_atom_end(b"\x1b[0mX"), 4);
+    }
+
+    #[test]
+    fn next_atom_end_keeps_ss3_sequence_atomic() {
+        // SS3 (application cursor mode): ESC O A.
+        assert_eq!(super::next_atom_end(b"\x1bOA"), 3);
+        assert_eq!(super::next_atom_end(b"\x1bOFtail"), 3);
+    }
+
+    #[test]
+    fn next_atom_end_keeps_osc_sequence_atomic() {
+        // OSC set-title terminated by BEL (index 9 → length 10).
+        assert_eq!(super::next_atom_end(b"\x1b]0;title\x07after"), 10);
+        // OSC terminated by ST (ESC \).
+        assert_eq!(super::next_atom_end(b"\x1b]0;t\x1b\\x"), 7);
+    }
+
+    #[test]
+    fn next_atom_end_two_byte_escape() {
+        // ESC ESC (steer prefix) is a two-byte atom.
+        assert_eq!(super::next_atom_end(b"\x1b\x1b"), 2);
+        // ESC <letter> that isn't [ / O / ] is also two bytes.
+        assert_eq!(super::next_atom_end(b"\x1bMrest"), 2);
+    }
+
+    #[test]
+    fn next_atom_end_multibyte_utf8_stays_whole() {
+        assert_eq!(super::next_atom_end("é".as_bytes()), 2);
+        assert_eq!(super::next_atom_end("€".as_bytes()), 3);
+        assert_eq!(super::next_atom_end("😀".as_bytes()), 4);
+    }
+
+    #[test]
+    fn next_atom_end_truncated_sequences_make_progress() {
+        // Sequences cut off by end-of-buffer return the remainder so the pacer
+        // emits them as-is rather than spinning forever.
+        assert_eq!(super::next_atom_end(b"\x1b"), 1);
+        assert_eq!(super::next_atom_end(b"\x1b["), 2);
+        assert_eq!(super::next_atom_end(b"\x1bO"), 2);
+        // Truncated 4-byte UTF-8 lead clamps to what's present.
+        assert_eq!(super::next_atom_end(&[0xf0, 0x9f]), 2);
+        // A stray continuation byte advances by one.
+        assert_eq!(super::next_atom_end(&[0x9f, 0x98]), 1);
+    }
+
+    /// The core requirement from #801: a payload mixing CSI / SS3 / OSC escape
+    /// sequences, a two-byte `ESC ESC`, and multi-byte UTF-8 must be written
+    /// one whole atom per `write` call — never split mid-sequence — while
+    /// reproducing the original bytes exactly and in order.
+    #[test]
+    fn write_paced_emits_atoms_without_splitting_sequences() {
+        use std::sync::Mutex as StdMutex;
+
+        // Records each `write` call separately. `write_all` calls `write` once
+        // per atom because this writer consumes the whole slice each call, so a
+        // recorded chunk == one atom handed to `write_paced`.
+        struct RecordingWriter {
+            chunks: Arc<StdMutex<Vec<Vec<u8>>>>,
+        }
+        impl std::io::Write for RecordingWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.chunks.lock().unwrap().push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        // plain, CSI (with params), SS3, OSC+BEL, ESC ESC, plain, 😀, CR.
+        let payload = b"hi\x1b[1;5A\x1bOB\x1b]0;t\x07\x1b\x1bX\xf0\x9f\x98\x80\r".to_vec();
+        let chunks = Arc::new(StdMutex::new(Vec::new()));
+        let mut writer = RecordingWriter {
+            chunks: chunks.clone(),
+        };
+        // Zero pace keeps the test instant; it still walks the atom loop.
+        super::write_paced(&mut writer, &payload, StdDuration::ZERO).unwrap();
+
+        let chunks = chunks.lock().unwrap().clone();
+        let flat: Vec<u8> = chunks.iter().flatten().copied().collect();
+        assert_eq!(
+            flat, payload,
+            "paced write must reproduce the payload bytes in order"
+        );
+        let expected: Vec<Vec<u8>> = vec![
+            b"h".to_vec(),
+            b"i".to_vec(),
+            b"\x1b[1;5A".to_vec(),
+            b"\x1bOB".to_vec(),
+            b"\x1b]0;t\x07".to_vec(),
+            b"\x1b\x1b".to_vec(),
+            b"X".to_vec(),
+            "😀".as_bytes().to_vec(),
+            b"\r".to_vec(),
+        ];
+        assert_eq!(
+            chunks, expected,
+            "each write call must be exactly one escape-aware atom"
+        );
+    }
+
+    /// A paced `WriteMsg::UserInput` routed through the real drainer must
+    /// deliver every byte and ack success, proving the pacing branch is wired
+    /// end-to-end (not just the standalone helper).
+    #[tokio::test]
+    async fn drainer_paced_user_input_delivers_and_acks() {
+        use std::sync::Mutex as StdMutex;
+        struct CollectWriter {
+            out: Arc<StdMutex<Vec<u8>>>,
+        }
+        impl std::io::Write for CollectWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.out.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let out = Arc::new(StdMutex::new(Vec::new()));
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let writer = CollectWriter { out: out.clone() };
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(writer, rx, Arc::new(AtomicU32::new(0)))
+        });
+
+        let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"go\x1b[A\r".to_vec(),
+            pace: StdDuration::from_millis(1),
+            followup: None,
+            cancel: None,
+            ack: ack_tx,
+        })
+        .expect("queue accepts paced user input");
+        tx.send(WriteMsg::Reply(b"terminal-reply".to_vec()))
+            .unwrap();
+
+        let ack = tokio::time::timeout(Duration::from_secs(2), ack_rx)
+            .await
+            .expect("drainer acks paced write")
+            .expect("ack sender not dropped");
+        assert!(ack.is_ok(), "paced write must succeed");
+        drop(tx);
+        drainer.join().expect("drainer thread joins cleanly");
+        assert_eq!(
+            out.lock().unwrap().as_slice(),
+            b"go\x1b[A\rterminal-reply",
+            "terminal replies queue behind the entire typed body"
+        );
+    }
+
+    /// A delayed follow-up must be a distinct PTY write while remaining inside
+    /// the same FIFO command. Claude Code needs this shape for multiline task
+    /// submission: body first, then Enter after the paste boundary settles.
+    #[tokio::test]
+    async fn drainer_keeps_delayed_followup_atomic_and_acks_both_writes() {
+        use std::sync::Mutex as StdMutex;
+
+        struct RecordingWriter {
+            chunks: Arc<StdMutex<Vec<Vec<u8>>>>,
+        }
+        impl std::io::Write for RecordingWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.chunks.lock().unwrap().push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let chunks = Arc::new(StdMutex::new(Vec::new()));
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let writer = RecordingWriter {
+            chunks: chunks.clone(),
+        };
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(writer, rx, Arc::new(AtomicU32::new(0)))
+        });
+
+        let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"multiline\nbody".to_vec(),
+            pace: StdDuration::ZERO,
+            followup: Some(FollowupWrite {
+                delay: StdDuration::from_millis(5),
+                bytes: b"\r".to_vec(),
+            }),
+            cancel: None,
+            ack: ack_tx,
+        })
+        .expect("queue accepts the compound write");
+        tx.send(WriteMsg::Reply(b"terminal-reply".to_vec()))
+            .expect("queue accepts a following terminal reply");
+
+        let ack = tokio::time::timeout(Duration::from_secs(1), ack_rx)
+            .await
+            .expect("drainer acks the compound write")
+            .expect("ack sender not dropped");
+        assert!(
+            ack.is_ok(),
+            "both writes in the compound command must succeed"
+        );
+
+        drop(tx);
+        drainer.join().expect("drainer thread joins cleanly");
+        assert_eq!(
+            chunks.lock().unwrap().as_slice(),
+            [
+                b"multiline\nbody".to_vec(),
+                b"\r".to_vec(),
+                b"terminal-reply".to_vec(),
+            ],
+            "the follow-up is a distinct write and no later FIFO item can splice before it"
+        );
+    }
+
+    #[tokio::test]
+    async fn delayed_followup_failure_rejects_the_compound_write() {
+        struct FailSecondWriter {
+            writes: usize,
+        }
+        impl std::io::Write for FailSecondWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.writes += 1;
+                if self.writes == 2 {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "forced follow-up failure",
+                    ))
+                } else {
+                    Ok(buf.len())
+                }
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(
+                FailSecondWriter { writes: 0 },
+                rx,
+                Arc::new(AtomicU32::new(0)),
+            )
+        });
+        let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"body".to_vec(),
+            pace: StdDuration::ZERO,
+            followup: Some(FollowupWrite {
+                delay: StdDuration::ZERO,
+                bytes: b"\r".to_vec(),
+            }),
+            cancel: None,
+            ack: ack_tx,
+        })
+        .expect("queue accepts the compound write");
+
+        let ack = tokio::time::timeout(Duration::from_secs(1), ack_rx)
+            .await
+            .expect("drainer resolves the compound write")
+            .expect("ack sender not dropped");
+        assert!(
+            ack.is_err(),
+            "a failed submit key must reject the whole write"
+        );
+
+        drop(tx);
+        drainer.join().expect("drainer thread joins cleanly");
+    }
+
+    /// A human taking over the composer during a delayed submit recovery must
+    /// stop the queued follow-up key, not merely relabel its ack afterwards.
+    #[tokio::test]
+    async fn cancelled_followup_is_withheld_and_drainer_keeps_running() {
+        use std::sync::Mutex as StdMutex;
+
+        struct RecordingWriter {
+            chunks: Arc<StdMutex<Vec<Vec<u8>>>>,
+        }
+        impl std::io::Write for RecordingWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.chunks.lock().unwrap().push(buf.to_vec());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let chunks = Arc::new(StdMutex::new(Vec::new()));
+        let (tx, rx) = std_mpsc::sync_channel::<WriteMsg>(WRITE_QUEUE_DEPTH);
+        let writer = RecordingWriter {
+            chunks: chunks.clone(),
+        };
+        let drainer = std::thread::spawn(move || {
+            super::drain_write_queue(writer, rx, Arc::new(AtomicU32::new(0)))
+        });
+
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (ack_tx, ack_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"\x1b[F".to_vec(),
+            pace: StdDuration::ZERO,
+            followup: Some(FollowupWrite {
+                delay: StdDuration::from_millis(200),
+                bytes: b"\r".to_vec(),
+            }),
+            cancel: Some(cancel.clone()),
+            ack: ack_tx,
+        })
+        .expect("queue accepts the recovery write");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.store(true, Ordering::Release);
+
+        let ack = tokio::time::timeout(Duration::from_secs(1), ack_rx)
+            .await
+            .expect("drainer resolves the cancelled write")
+            .expect("ack sender not dropped");
+        assert_eq!(
+            ack.expect_err("cancelled follow-up must not ack success")
+                .kind(),
+            std::io::ErrorKind::Interrupted
+        );
+
+        let skipped = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (skip_tx, skip_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"\r".to_vec(),
+            pace: StdDuration::ZERO,
+            followup: None,
+            cancel: Some(skipped),
+            ack: skip_tx,
+        })
+        .expect("queue accepts a pre-cancelled write");
+        assert!(skip_rx.await.unwrap().is_err());
+
+        let (human_tx, human_rx) = oneshot::channel::<std::io::Result<()>>();
+        tx.send(WriteMsg::UserInput {
+            bytes: b"human".to_vec(),
+            pace: StdDuration::ZERO,
+            followup: None,
+            cancel: None,
+            ack: human_tx,
+        })
+        .expect("queue accepts the human write");
+        assert!(
+            human_rx.await.unwrap().is_ok(),
+            "drainer survives cancellation"
+        );
+
+        drop(tx);
+        drainer.join().expect("drainer thread joins cleanly");
+        assert_eq!(
+            chunks.lock().unwrap().as_slice(),
+            [b"\x1b[F".to_vec(), b"human".to_vec()],
+            "neither the cancelled follow-up CR nor the pre-cancelled CR reaches the child"
+        );
+    }
+
+    /// Regression: mise/asdf/rtx expose provider CLIs (codex, claude, gemini)
+    /// as symlinked shims that all point at the version-manager binary. Those
+    /// shims dispatch on `argv[0]` (the shim's basename), so canonicalising
+    /// the symlink to `.../bin/mise` makes the manager parse provider flags
+    /// like `--dangerously-bypass-approvals-and-sandbox` as its own arguments
+    /// and abort the worker before it starts.
+    ///
+    /// `resolve_command_path` must keep the shim path, so `CommandBuilder`
+    /// spawns the child with `argv[0] = "codex"` and the flags reach the
+    /// intended provider CLI.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_command_path_preserves_mise_style_shim_via_path_lookup() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manager_dir = tmp.path().join("mgr");
+        let shim_dir = tmp.path().join("shims");
+        std::fs::create_dir_all(&manager_dir).unwrap();
+        std::fs::create_dir_all(&shim_dir).unwrap();
+
+        let manager = manager_dir.join("mise");
+        std::fs::write(&manager, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        let shim = shim_dir.join("codex");
+        symlink(&manager, &shim).expect("symlink");
+
+        // Passing PATH explicitly avoids racing on process-wide PATH mutation
+        // between parallel test threads.
+        let path_var = std::env::join_paths([&shim_dir, &manager_dir]).unwrap();
+        let resolved = resolve_command_path_with("codex", path_var.as_os_str());
+
+        assert!(
+            resolved.ends_with("/codex"),
+            "shim basename must survive resolution so argv[0] stays 'codex' \
+             (mise/asdf dispatch on argv[0]); got {resolved:?}"
+        );
+        assert!(
+            !resolved.ends_with("/mise"),
+            "must NOT collapse the shim to the version-manager binary \
+             (would cause mise to parse provider flags); got {resolved:?}"
+        );
+        // Preserving argv[0] on unix requires an absolute path so the child
+        // spawn does not depend on the parent's PATH.
+        assert!(
+            std::path::Path::new(&resolved).is_absolute(),
+            "resolved shim path must be absolute; got {resolved:?}"
+        );
+    }
+
+    /// Same shim rule when the caller supplies an explicit path to the shim
+    /// (rather than a bare command that we PATH-search).
+    #[cfg(unix)]
+    #[test]
+    fn resolve_command_path_preserves_shim_when_given_explicit_shim_path() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manager_dir = tmp.path().join("mgr");
+        let shim_dir = tmp.path().join("shims");
+        std::fs::create_dir_all(&manager_dir).unwrap();
+        std::fs::create_dir_all(&shim_dir).unwrap();
+
+        let manager = manager_dir.join("asdf");
+        std::fs::write(&manager, b"#!/bin/sh\nexit 0\n").unwrap();
+        let shim = shim_dir.join("gemini");
+        symlink(&manager, &shim).expect("symlink");
+
+        let resolved = resolve_command_path(shim.to_str().unwrap());
+
+        assert!(
+            resolved.ends_with("/gemini"),
+            "shim basename must survive when caller passes the shim path; got {resolved:?}"
+        );
+        assert!(
+            !resolved.ends_with("/asdf"),
+            "must NOT collapse the shim to the version-manager binary; got {resolved:?}"
+        );
+    }
+
+    /// Non-shim symlinks (target basename matches the source basename — the
+    /// common case where a bin dir is itself a symlink) should still be
+    /// resolved, so we do not regress the posix_spawnp fix that motivated
+    /// the original `canonicalize_display` behaviour.
+    #[cfg(unix)]
+    #[test]
+    fn resolve_command_path_still_canonicalizes_same_name_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real_dir = tmp.path().join("real");
+        let link_dir = tmp.path().join("link");
+        std::fs::create_dir_all(&real_dir).unwrap();
+
+        let real_bin = real_dir.join("mytool");
+        std::fs::write(&real_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        // link/mytool is a symlink to real/mytool — same basename, so
+        // canonicalising is safe (argv[0] is unchanged).
+        std::fs::create_dir_all(&link_dir).unwrap();
+        symlink(&real_bin, link_dir.join("mytool")).expect("symlink");
+
+        let path_var = std::env::join_paths([&link_dir]).unwrap();
+        let resolved = resolve_command_path_with("mytool", path_var.as_os_str());
+
+        assert_eq!(
+            std::path::PathBuf::from(resolved),
+            std::fs::canonicalize(&real_bin).unwrap(),
+            "same-name symlink should resolve to the canonical target"
+        );
+    }
+
+    /// End-to-end proof through `PtySession::spawn`: point a shim named
+    /// `codex-shim` at a fake mise that echoes `$0` and every argument, then
+    /// verify the child actually receives `argv[0] = "codex-shim"` and the
+    /// provider flag as its own argument (rather than the mise binary
+    /// receiving the flag).
+    ///
+    /// Passes the shim to `PtySession::spawn` as an absolute path so this
+    /// test does not race on process-wide PATH mutation with sibling tests.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pty_spawn_preserves_shim_argv0_for_mise_style_symlink() {
+        use std::os::unix::fs::symlink;
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let manager_dir = tmp.path().join("mgr");
+        let shim_dir = tmp.path().join("shims");
+        std::fs::create_dir_all(&manager_dir).unwrap();
+        std::fs::create_dir_all(&shim_dir).unwrap();
+
+        // Fake mise: prints argv[0] and all args, then exits.
+        let manager = manager_dir.join("mise");
+        std::fs::write(
+            &manager,
+            b"#!/bin/sh\nprintf 'argv0=%s\\n' \"$0\"\nfor a in \"$@\"; do printf 'arg=%s\\n' \"$a\"; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&manager, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let shim = shim_dir.join("codex-shim");
+        symlink(&manager, &shim).expect("symlink");
+
+        let flag = "--dangerously-bypass-approvals-and-sandbox".to_string();
+        let (pty, mut rx) = PtySession::spawn(
+            shim.to_str().expect("shim path utf8"),
+            std::slice::from_ref(&flag),
+            24,
+            80,
+        )
+        .expect("spawn shim");
+
+        let mut collected = Vec::new();
+        while let Ok(Some(chunk)) = timeout(Duration::from_secs(2), rx.recv()).await {
+            collected.extend_from_slice(&chunk);
+            let s = String::from_utf8_lossy(&collected);
+            if s.contains("arg=--dangerously-bypass") {
+                break;
+            }
+        }
+        let _ = pty.shutdown();
+
+        let output = String::from_utf8_lossy(&collected);
+        assert!(
+            output.contains("codex-shim"),
+            "child argv[0] must be the shim basename, not the manager binary; got: {output}"
+        );
+        assert!(
+            output.contains("arg=--dangerously-bypass-approvals-and-sandbox"),
+            "provider flag must reach the shim as an argument (not be parsed by the manager); got: {output}"
+        );
     }
 }

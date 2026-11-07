@@ -1,6 +1,9 @@
 {
   "name": "@agent-relay/fleet",
-  "version": "10.1.0",
+  "version": "17.2.1",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "description": "Fleet node SDK for Agent Relay.",
   "type": "module",
   "main": "dist/index.js",
@@ -20,14 +23,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run --root ../.. packages/fleet/"
   },
   "dependencies": {
-    "@agent-relay/harness-driver": "10.1.0",
-    "@agent-relay/harnesses": "10.1.0",
-    "@relaycast/sdk": "^6.0.0",
+    "@agent-relay/harness-driver": "17.2.1",
+    "@agent-relay/harnesses": "17.2.1",
+    "@relaycast/sdk": "^8.0.7",
     "ws": "^8.18.3",
-    "zod": "^3.23.8"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1"

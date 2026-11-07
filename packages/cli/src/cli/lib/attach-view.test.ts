@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   extractMatchingChunk,
+  InputReportModeFilter,
   resolveViewBrokerConnection,
   runViewSession,
   toWsUrl,
@@ -22,6 +23,7 @@ class FakeWebSocket implements ViewWebSocket {
   readonly headers: Record<string, string>;
   readonly listeners = new Map<string, WsListener[]>();
   closed = false;
+  terminated = false;
   closeCode?: number;
   closeReason?: string;
 
@@ -48,6 +50,10 @@ class FakeWebSocket implements ViewWebSocket {
     this.closeCode = code;
     this.closeReason = reason;
   }
+
+  terminate(): void {
+    this.terminated = true;
+  }
 }
 
 interface HarnessOverrides {
@@ -63,6 +69,36 @@ interface HarnessOverrides {
   stdoutIsTty?: boolean;
 }
 
+class FakeStdin {
+  isTTY = true;
+  isRaw = false;
+  readonly listeners = new Map<string, Array<(chunk: Buffer) => void>>();
+  readonly setRawMode = vi.fn((mode: boolean) => {
+    this.isRaw = mode;
+  });
+  readonly resume = vi.fn();
+  readonly pause = vi.fn();
+
+  on(event: 'data', listener: (chunk: Buffer) => void): this {
+    const listeners = this.listeners.get(event) ?? [];
+    listeners.push(listener);
+    this.listeners.set(event, listeners);
+    return this;
+  }
+
+  off(event: 'data', listener: (chunk: Buffer) => void): this {
+    this.listeners.set(
+      event,
+      (this.listeners.get(event) ?? []).filter((candidate) => candidate !== listener)
+    );
+    return this;
+  }
+
+  emitData(chunk: Buffer): void {
+    for (const listener of this.listeners.get('data') ?? []) listener(chunk);
+  }
+}
+
 function createHarness(overrides: HarnessOverrides = {}): {
   deps: ViewDependencies;
   writes: string[];
@@ -70,17 +106,20 @@ function createHarness(overrides: HarnessOverrides = {}): {
   logs: unknown[][];
   signals: Map<NodeJS.Signals, () => void | Promise<void>>;
   sockets: FakeWebSocket[];
+  stdin: FakeStdin;
 } {
   const writes: string[] = [];
   const errors: unknown[][] = [];
   const logs: unknown[][] = [];
   const signals = new Map<NodeJS.Signals, () => void | Promise<void>>();
   const sockets: FakeWebSocket[] = [];
+  const stdin = new FakeStdin();
 
   const deps: ViewDependencies = {
     readConnectionFile: vi.fn(() => overrides.connectionFile ?? null),
     getDefaultStateDir: vi.fn(() => overrides.defaultStateDir ?? '/tmp/fake/.agentworkforce/relay'),
     env: overrides.env ?? {},
+    stdin,
     createWebSocket: vi.fn((url: string, headers: Record<string, string>) => {
       const socket = new FakeWebSocket(url, headers);
       sockets.push(socket);
@@ -114,7 +153,7 @@ function createHarness(overrides: HarnessOverrides = {}): {
     stdoutIsTty: overrides.stdoutIsTty ?? false,
   };
 
-  return { deps, writes, errors, logs, signals, sockets };
+  return { deps, writes, errors, logs, signals, sockets, stdin };
 }
 
 afterEach(() => {
@@ -170,6 +209,95 @@ describe('extractMatchingChunk', () => {
   });
 });
 
+describe('InputReportModeFilter', () => {
+  it('passes escape-free text through untouched (fast path)', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('plain text\r\n')).toBe('plain text\r\n');
+  });
+
+  it('strips mouse-tracking and SGR-encoding enables', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('before\x1b[?1000hafter')).toBe('beforeafter');
+    expect(filter.push('\x1b[?1002h\x1b[?1003h\x1b[?1006h')).toBe('');
+  });
+
+  it('strips focus, alternate-scroll, and bracketed-paste enables', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1004h\x1b[?1007h\x1b[?2004h')).toBe('');
+  });
+
+  it('keeps the matching disables so mode resets pass through', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1000l\x1b[?2004l')).toBe('\x1b[?1000l\x1b[?2004l');
+  });
+
+  it('keeps other DECSET enables (alt screen, cursor show) verbatim', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1049h\x1b[?25h\x1b[?1h')).toBe('\x1b[?1049h\x1b[?25h\x1b[?1h');
+  });
+
+  it('rewrites multi-mode sets, keeping only the non-report modes', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1002;25h')).toBe('\x1b[?25h');
+    expect(filter.push('\x1b[?1002;1006h')).toBe('');
+    expect(filter.push('\x1b[?25;1049h')).toBe('\x1b[?25;1049h');
+  });
+
+  it('passes non-DECSET CSIs, SGR colors, and 2-byte escapes through', () => {
+    const filter = new InputReportModeFilter();
+    const bytes = '\x1b[2J\x1b[H\x1b[31;1mRED\x1b[0m\x1b7\x1b8\x1b]0;title\x07';
+    expect(filter.push(bytes)).toBe(bytes);
+  });
+
+  it('filters a DECSET split across chunk boundaries', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('hi\x1b[?10')).toBe('hi');
+    expect(filter.push('06h there')).toBe(' there');
+  });
+
+  it('holds a bare trailing ESC and reassembles it with the next chunk', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('ok\x1b')).toBe('ok');
+    expect(filter.push('[?1000hrest')).toBe('rest');
+    expect(filter.push('ok\x1b')).toBe('ok');
+    expect(filter.push('[31mred')).toBe('\x1b[31mred');
+  });
+
+  it('gives up on pathologically long unterminated non-private CSIs instead of holding forever', () => {
+    const filter = new InputReportModeFilter();
+    const longCsi = '\x1b[' + '1;'.repeat(200);
+    expect(filter.push(longCsi)).toBe(longCsi);
+  });
+
+  it('holds and filters a large batched private-mode set split across frames', () => {
+    // A full private-mode init batches visual + input-report modes and can
+    // still split before the final `h`; the whole set must be held so the
+    // input-report modes are stripped while the visual ones survive.
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?1049;1000;1002;1003;1004;1006;1007;1015;1016;2004;25')).toBe('');
+    expect(filter.push(';47h')).toBe('\x1b[?1049;25;47h');
+  });
+
+  it('drops an over-long partial private-mode set instead of flushing it', () => {
+    // If a private-mode set overruns the hold cap, flushing the partial
+    // `CSI ? …` prefix would let a later chunk's `h` complete it locally and
+    // re-enable the input-report modes this filter exists to strip. Drop it.
+    const filter = new InputReportModeFilter();
+    const longPrivate = '\x1b[?' + '1000;'.repeat(80);
+    expect(longPrivate.length).toBeGreaterThan(256);
+    expect(filter.push(longPrivate)).toBe('');
+    // The completing `h` arriving next must not resurrect the sequence.
+    expect(filter.push('h')).toBe('h');
+  });
+
+  it('drops a held partial sequence on reset', () => {
+    const filter = new InputReportModeFilter();
+    expect(filter.push('\x1b[?10')).toBe('');
+    filter.reset();
+    expect(filter.push('normal')).toBe('normal');
+  });
+});
+
 describe('toWsUrl', () => {
   it('rewrites http://host:port to ws://host:port/ws', () => {
     expect(toWsUrl('http://localhost:3889')).toBe('ws://localhost:3889/ws');
@@ -185,6 +313,16 @@ describe('toWsUrl', () => {
 });
 
 describe('resolveViewBrokerConnection', () => {
+  it('preserves an internal per-request timeout override', () => {
+    const { deps } = createHarness();
+    const conn = resolveViewBrokerConnection(
+      { brokerUrl: 'http://loopback:3889', requestTimeoutMs: 162_500 },
+      deps
+    );
+
+    expect(conn).toEqual({ url: 'http://loopback:3889', apiKey: undefined, requestTimeoutMs: 162_500 });
+  });
+
   it('prefers --broker-url over env and connection.json', () => {
     const { deps } = createHarness({
       env: { RELAY_BROKER_URL: 'http://env-host:1234' },
@@ -355,6 +493,61 @@ describe('runViewSession', () => {
     expect(writes).toEqual([snapshotBytes, 'afterSnap']);
   });
 
+  it('strips input-report mode enables from snapshot and live output', async () => {
+    // A viewed TUI (or the snapshot's mode replay) enabling mouse tracking
+    // must not reach the local terminal: view never consumes the reports the
+    // terminal would start sending, so they'd echo as `^[[<35;22;25M` garbage
+    // over cooked stdin. Visual modes and the disables still pass through.
+    const { deps, writes, sockets } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+      snapshotChunk: '\x1b[?1049h\x1b[?1000h\x1b[?1006hSCREEN',
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    const socket = sockets[0];
+    socket.emit('open');
+    await settle();
+    expect(writes).toEqual(['\x1b[?1049hSCREEN']);
+
+    // Live enable split across two worker_stream frames is still stripped.
+    socket.emit(
+      'message',
+      JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: 'out\x1b[?10' })
+    );
+    socket.emit(
+      'message',
+      JSON.stringify({ kind: 'worker_stream', name: 'Alice', stream: 'stdout', chunk: '02hmore' })
+    );
+    socket.emit('close', 1000, Buffer.from(''));
+
+    await sessionPromise;
+    expect(writes).toEqual(['\x1b[?1049hSCREEN', 'out', 'more']);
+  });
+
+  it('consumes local input in raw mode so alternate-scroll reports are not echoed', async () => {
+    const { deps, sockets, stdin } = createHarness({
+      connectionFile: { url: 'http://localhost:3889' },
+    });
+
+    const sessionPromise = runViewSession('Alice', {}, deps);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(stdin.setRawMode).toHaveBeenCalledWith(true);
+    expect(stdin.resume).toHaveBeenCalledOnce();
+
+    // These are the bytes a terminal produces for mouse-wheel movement when
+    // alternate-scroll is enabled. View must consume them rather than let
+    // cooked stdin echo them as `^[[0A` and `^[[0B`.
+    stdin.emitData(Buffer.from('\x1b[0A\x1b[0B'));
+    expect(sockets[0].closed).toBe(false);
+
+    stdin.emitData(Buffer.from([0x03]));
+    await expect(sessionPromise).resolves.toBe(0);
+    expect(sockets[0].terminated).toBe(true);
+    expect(stdin.setRawMode).toHaveBeenLastCalledWith(false);
+    expect(stdin.pause).toHaveBeenCalledOnce();
+  });
+
   it('exits cleanly on SIGINT without surfacing an error', async () => {
     const { deps, sockets, signals } = createHarness({
       connectionFile: { url: 'http://localhost:3889' },
@@ -372,6 +565,7 @@ describe('runViewSession', () => {
     const code = await sessionPromise;
     expect(code).toBe(0);
     expect(socket.closed).toBe(true);
+    expect(socket.terminated).toBe(true);
   });
 
   it('emits a terminal reset on detach when stdout is a TTY', async () => {
@@ -442,7 +636,7 @@ describe('runViewSession', () => {
     const { deps, errors } = createHarness({ env: {}, connectionFile: null });
     const code = await runViewSession('Alice', {}, deps);
     expect(code).toBe(1);
-    expect(errors[0]?.[0]).toMatch(/could not locate broker connection/);
+    expect(errors[0]?.[0]).toMatch(/no broker connection at .*connection\.json \(project default\)/);
   });
 
   it('omits the X-API-Key header when no api key is available', async () => {

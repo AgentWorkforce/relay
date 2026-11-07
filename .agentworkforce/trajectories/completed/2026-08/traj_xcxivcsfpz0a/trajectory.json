@@ -1,0 +1,88 @@
+{
+  "id": "traj_xcxivcsfpz0a",
+  "version": 1,
+  "task": {
+    "title": "Fix placement node liveness and sandbox-only policy"
+  },
+  "status": "completed",
+  "startedAt": "2026-08-26T19:11:19.799Z",
+  "completedAt": "2026-08-26T19:22:45.372Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-26T19:11:20.665Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_jea2cb61wfqz",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-26T19:11:20.665Z",
+      "endedAt": "2026-08-26T19:22:45.372Z",
+      "events": [
+        {
+          "ts": 1787771480737,
+          "type": "decision",
+          "content": "Preserve Relaycast atomic automatic placement for unrestricted requests; use the established cloud node-type tag family for sandbox-only eligibility: Preserve Relaycast atomic automatic placement for unrestricted requests; use the established cloud node-type tag family for sandbox-only eligibility",
+          "raw": {
+            "question": "Preserve Relaycast atomic automatic placement for unrestricted requests; use the established cloud node-type tag family for sandbox-only eligibility",
+            "chosen": "Preserve Relaycast atomic automatic placement for unrestricted requests; use the established cloud node-type tag family for sandbox-only eligibility",
+            "alternatives": [],
+            "reasoning": "SDK preselection currently retargets automatic requests and creates a liveness TOCTOU; cloud explicitly defines roster tags as stable provenance while names are disposable"
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787772158093,
+          "type": "decision",
+          "content": "Defaulted sandbox-only placement to false and fail-fast placement to true: Defaulted sandbox-only placement to false and fail-fast placement to true",
+          "raw": {
+            "question": "Defaulted sandbox-only placement to false and fail-fast placement to true",
+            "chosen": "Defaulted sandbox-only placement to false and fail-fast placement to true",
+            "alternatives": [],
+            "reasoning": "Sandbox provenance is workload policy and generic Relay clients must retain local-node eligibility unless configured; fail-fast removes the production five-minute silent wait while preserving queueing as an explicit bounded opt-in."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787772158783,
+          "type": "reflection",
+          "content": "Diagnosis showed the SDK already checked the derived live bit, but trusted it without status/handler readiness and converted automatic placement into a targeted TOCTOU request. Strict roster readiness, atomic unconstrained dispatch, explicit sandbox policy, and fail-fast defaults now have independent ablation coverage.",
+          "raw": {
+            "focalPoints": [
+              "liveness",
+              "placement-atomicity",
+              "sandbox-policy",
+              "failure-latency"
+            ],
+            "adjustments": "Kept client targeting only for repo, explicit-node, or sandbox constraints; added named failures before action invocation.",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:liveness",
+            "focal:placement-atomicity",
+            "focal:sandbox-policy",
+            "focal:failure-latency",
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Hardened SDK placement with strict online/live/handler readiness, atomic automatic dispatch, named fail-fast errors, configurable Cloud JIT sandbox-only eligibility, documentation, focused regression tests, and independent ablation proofs.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "10fc5ce1c4b6f0ac557b8cc0a2d3febc1cc6b2e6",
+    "endRef": "10fc5ce1c4b6f0ac557b8cc0a2d3febc1cc6b2e6"
+  }
+}

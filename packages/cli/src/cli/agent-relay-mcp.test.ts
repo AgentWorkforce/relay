@@ -37,6 +37,304 @@ describe('registerAgentWithRebind', () => {
     });
   });
 
+  const IDENTITY = {
+    organization: 'AgentWorkforce',
+    project: 'chief-delegation-governance',
+    workstream: 'dispatch-contract',
+    role: 'lead',
+    reportsTo: 'chief-khaliq',
+  };
+
+  const strictSession = () => ({
+    workspaceKey: 'rk_live_test',
+    agentToken: 'at_live_existing',
+    agentName: 'WorkerA',
+    agents: new Map([['WorkerA', { agentName: 'WorkerA', agentToken: 'at_live_existing' }]]),
+  });
+
+  /**
+   * A relay that actually stores what it is given, so a test can read the
+   * record back instead of trusting that the call was made. Asserting only
+   * "registerOrRotate was called with metadata" would repeat the mistake this
+   * whole change is about: the parameter being passed is not the field
+   * landing. `persists: false` models the broken platform.
+   */
+  function fakeRelay({ persists = true }: { persists?: boolean } = {}) {
+    // The platform writes its own block; a verifier must ignore it.
+    const records = new Map<string, Record<string, unknown>>([['WorkerA', { fleet: { nodeId: 'node_x' } }]]);
+    const registerOrRotate = vi.fn(async (input: any) => {
+      if (persists && input.metadata) {
+        records.set(input.name, { ...records.get(input.name), ...input.metadata });
+      }
+      return { id: 'agent_123', name: input.name, token: 'at_live_rotated', status: 'online' };
+    });
+    const list = vi.fn(async () => [...records].map(([name, metadata]) => ({ name, metadata })));
+    return { agents: { registerOrRotate, list }, records };
+  }
+
+  it('writes supplied metadata through and proves it landed on the record', async () => {
+    // The short-circuit exists to avoid handing back a dead token. It must not
+    // also swallow a write: a caller supplying metadata is asking for the
+    // agent record to change, and returning a cached token discarded that
+    // silently — success, no warnings, record untouched.
+    const relay = fakeRelay();
+
+    const payload = await registerAgentWithRebind({
+      session: strictSession(),
+      setSession: vi.fn(),
+      getRelay: () => relay as never,
+      name: 'WorkerA',
+      metadata: IDENTITY,
+      verifyMetadata: true,
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(relay.agents.registerOrRotate).toHaveBeenCalledOnce();
+
+    // The round trip, not just the call: read the record back and assert the
+    // fields are actually there.
+    const [record] = (await relay.agents.list()).filter((a) => a.name === 'WorkerA');
+    expect(record.metadata).toMatchObject(IDENTITY);
+    expect(record.metadata.fleet, 'must not clobber platform keys').toEqual({ nodeId: 'node_x' });
+
+    expect(payload.metadata_verified).toBe(true);
+    expect(payload.warnings).toEqual([]);
+  });
+
+  it('verifies nested metadata even when the platform re-serializes keys in a different order', async () => {
+    // `metadata` accepts nested objects (z.record(z.string(), z.unknown())),
+    // and the platform is free to re-serialize a stored record with keys in a
+    // different order than the caller sent them — JSON round-tripping makes
+    // no ordering guarantee. A comparison via JSON.stringify would treat this
+    // as a mismatch and report `metadata_verified: false` on a registration
+    // that actually succeeded: a verifier failing on success, the exact
+    // defect class it exists to catch. This test fails against that
+    // implementation and passes against an order-insensitive one.
+    const supplied = {
+      context: { role: 'lead', team: 'delegation-governance' },
+    };
+    const storedWithDifferentKeyOrder = {
+      fleet: { nodeId: 'node_x' },
+      context: { team: 'delegation-governance', role: 'lead' },
+    };
+    const relay = {
+      agents: {
+        registerOrRotate: vi.fn(async (input: any) => ({
+          id: 'agent_123',
+          name: input.name,
+          token: 'at_live_rotated',
+          status: 'online',
+        })),
+        list: vi.fn(async () => [{ name: 'WorkerA', metadata: storedWithDifferentKeyOrder }]),
+      },
+    };
+
+    const payload = await registerAgentWithRebind({
+      session: strictSession(),
+      setSession: vi.fn(),
+      getRelay: () => relay as never,
+      name: 'WorkerA',
+      metadata: supplied,
+      verifyMetadata: true,
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(payload.metadata_verified).toBe(true);
+    expect(payload.warnings).toEqual([]);
+  });
+
+  it('still catches a genuine nested mismatch under the order-insensitive comparison', async () => {
+    // The order-insensitive switch (isDeepStrictEqual) must not become a
+    // rubber stamp: same shape, a value that is actually different rather
+    // than reordered, must still fail verification. Proving the positive arm
+    // (reordered-but-equal passes) discriminates says nothing about whether
+    // this control arm (genuinely different still fails) does too — an
+    // overly lenient comparison could pass both by accident.
+    const supplied = {
+      context: { role: 'lead', team: 'delegation-governance' },
+    };
+    const storedWithDifferentValue = {
+      fleet: { nodeId: 'node_x' },
+      context: { role: 'worker', team: 'delegation-governance' },
+    };
+    const relay = {
+      agents: {
+        registerOrRotate: vi.fn(async (input: any) => ({
+          id: 'agent_123',
+          name: input.name,
+          token: 'at_live_rotated',
+          status: 'online',
+        })),
+        list: vi.fn(async () => [{ name: 'WorkerA', metadata: storedWithDifferentValue }]),
+      },
+    };
+
+    const payload = await registerAgentWithRebind({
+      session: strictSession(),
+      setSession: vi.fn(),
+      getRelay: () => relay as never,
+      name: 'WorkerA',
+      metadata: supplied,
+      verifyMetadata: true,
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(payload.metadata_verified).toBe(false);
+    expect(payload.warnings).toHaveLength(1);
+    expect(payload.warnings[0]).toContain('context');
+  });
+
+  it('says so loudly when the platform accepts metadata and does not persist it', async () => {
+    // This is the exact defect being fixed, reproduced: the write is accepted,
+    // the response looks like success, and the record is untouched. A
+    // passthrough that fails this way is worse than none, because it looks
+    // like it worked. It must never again be reported as a clean success.
+    const relay = fakeRelay({ persists: false });
+
+    const payload = await registerAgentWithRebind({
+      session: strictSession(),
+      setSession: vi.fn(),
+      getRelay: () => relay as never,
+      name: 'WorkerA',
+      metadata: IDENTITY,
+      verifyMetadata: true,
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(payload.metadata_verified).toBe(false);
+    expect(payload.warnings).toHaveLength(1);
+    expect(payload.warnings[0]).toContain('was not persisted');
+    expect(payload.warnings[0]).toContain('organization');
+    expect(payload.warnings[0]).toContain('Treat this registration as unattributed');
+  });
+
+  it('reports unverified rather than throwing when the record cannot be read back', async () => {
+    // The registration itself succeeded; claiming it failed would be its own
+    // kind of lie. But it must not be reported as verified either.
+    const relay = fakeRelay();
+    relay.agents.list = vi.fn(async () => {
+      throw new Error('workspace unreachable');
+    }) as never;
+
+    const payload = await registerAgentWithRebind({
+      session: strictSession(),
+      setSession: vi.fn(),
+      getRelay: () => relay as never,
+      name: 'WorkerA',
+      metadata: IDENTITY,
+      verifyMetadata: true,
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(payload.token).toBe('at_live_rotated');
+    expect(payload.metadata_verified).toBe(false);
+    expect(payload.warnings[0]).toContain('could not read the record back');
+    expect(payload.warnings[0]).toContain('workspace unreachable');
+  });
+
+  it('bounds the metadata read-back so a hung listing cannot hang verify_metadata forever', async () => {
+    // The register call is bounded by withAgentRegistrationDeadline, but the
+    // verification read-back is a separate upstream call — it must be bounded
+    // too, or `verify_metadata: true` reintroduces the same class of hang the
+    // registration deadline was added to fix.
+    vi.useFakeTimers();
+    try {
+      const relay = fakeRelay();
+      relay.agents.list = vi.fn(() => new Promise(() => {})) as never;
+
+      const pending = registerAgentWithRebind({
+        session: strictSession(),
+        setSession: vi.fn(),
+        getRelay: () => relay as never,
+        name: 'WorkerA',
+        metadata: IDENTITY,
+        verifyMetadata: true,
+        strictAgentName: true,
+        preferredAgentName: 'WorkerA',
+        registrationTimeoutMs: 50,
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+      const payload = await pending;
+
+      expect(payload.metadata_verified).toBe(false);
+      expect(payload.warnings[0]).toContain('could not read the record back');
+      expect(payload.warnings[0]).toContain('did not complete within 50ms');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('writes a supplied persona through, and claims no metadata verification', async () => {
+    const relay = fakeRelay();
+
+    const payload = await registerAgentWithRebind({
+      session: strictSession(),
+      setSession: vi.fn(),
+      getRelay: () => relay as never,
+      name: 'WorkerA',
+      persona: 'Accountable lead for chief-delegation-governance',
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(relay.agents.registerOrRotate).toHaveBeenCalledOnce();
+    // No metadata was supplied, so there is nothing to verify and no read-back
+    // cost is paid.
+    expect(relay.agents.list).not.toHaveBeenCalled();
+    expect(payload.metadata_verified).toBeUndefined();
+  });
+
+  it("reports 'unchecked' rather than success when nobody verified the write", async () => {
+    // Verification costs a workspace listing, so the per-spawn `{model}` hint
+    // does not pay for it. But "nobody looked" must not be reported as "it is
+    // there" — collapsing those two is the same error as the silent discard.
+    const relay = fakeRelay({ persists: false });
+
+    const payload = await registerAgentWithRebind({
+      session: strictSession(),
+      setSession: vi.fn(),
+      getRelay: () => relay as never,
+      name: 'WorkerA',
+      metadata: { model: 'gpt-5' },
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(payload.metadata_verified).toBe('unchecked');
+    expect(relay.agents.list).not.toHaveBeenCalled();
+    // Not a warning: nothing is known to be wrong. The claim is simply scoped.
+    expect(payload.warnings).toEqual([]);
+  });
+
+  it('still short-circuits when the caller only wants a token', async () => {
+    // The original behaviour has to survive: a bare re-registration with no
+    // write to make should not rotate the token for nothing.
+    const registerOrRotate = vi.fn();
+
+    const payload = await registerAgentWithRebind({
+      session: {
+        workspaceKey: 'rk_live_test',
+        agentToken: 'at_live_existing',
+        agentName: 'WorkerA',
+        agents: new Map([['WorkerA', { agentName: 'WorkerA', agentToken: 'at_live_existing' }]]),
+      },
+      setSession: vi.fn(),
+      getRelay: () => ({ agents: { registerOrRotate } }) as never,
+      name: 'WorkerA',
+      strictAgentName: true,
+      preferredAgentName: 'WorkerA',
+    });
+
+    expect(registerOrRotate).not.toHaveBeenCalled();
+    expect(payload).toMatchObject({ token: 'at_live_existing' });
+  });
+
   it('re-registers when the strict-named identity was dropped from the agents map', async () => {
     // After an `agent_token_invalid` recovery, the active token is null and
     // the identity is missing from session.agents. The short-circuit must
@@ -174,10 +472,49 @@ describe('registerAgentWithRebind', () => {
       warnings: [],
     });
   });
+
+  it('returns promptly with the real recovery path when rotation hangs', async () => {
+    const never = new Promise<never>(() => undefined);
+
+    await expect(
+      registerAgentWithRebind({
+        session: {
+          workspaceKey: 'rk_live_test',
+          agentToken: null,
+          agentName: 'chief',
+          agents: new Map(),
+        },
+        setSession: vi.fn(),
+        getRelay: () =>
+          ({
+            agents: { registerOrRotate: vi.fn(() => never) },
+          }) as never,
+        name: 'chief',
+        strictAgentName: true,
+        preferredAgentName: 'chief',
+        registrationTimeoutMs: 10,
+      })
+    ).rejects.toThrow(/did not complete within 10ms.*agent rotate.*agent remove/s);
+  });
 });
 
 describe('optionsFromEnv', () => {
-  it('auto-selects an orchestrator identity when a workspace key is configured', () => {
+  it('sends a key bound by relay init to its own server, not the hosted default', () => {
+    vi.stubEnv('RELAY_WORKSPACE_KEY', 'rk_live_mcp_bound');
+    vi.stubEnv('RELAY_BASE_URL', 'http://127.0.0.1:8787');
+    try {
+      // The first resolution binds the key, as relay init or workspace join does.
+      expect(optionsFromEnv().baseUrl).toBe('http://127.0.0.1:8787');
+      vi.stubEnv('RELAY_BASE_URL', '');
+      expect(optionsFromEnv().baseUrl).toBe('http://127.0.0.1:8787');
+      vi.stubEnv('RELAY_BASE_URL', 'not a url');
+      expect(() => optionsFromEnv()).toThrow(/Relaycast base URL/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('names the session after its MCP client instead of a shared default when a workspace key is configured', () => {
     const previous = {
       workspaceKey: process.env.RELAY_WORKSPACE_KEY,
       apiKey: process.env.RELAY_API_KEY,
@@ -190,10 +527,14 @@ describe('optionsFromEnv', () => {
     delete process.env.RELAY_CLAW_NAME;
 
     try {
-      expect(optionsFromEnv()).toMatchObject({
+      const options = optionsFromEnv();
+      expect(options).toMatchObject({
         workspaceKey: 'rk_live_test',
-        agentName: 'orchestrator',
+        autoRegister: { cwd: process.cwd() },
       });
+      expect(options.agentName).toBeUndefined();
+      process.env.RELAY_AGENT_NAME = 'lead';
+      expect(optionsFromEnv()).toMatchObject({ agentName: 'lead', autoRegister: undefined });
     } finally {
       if (previous.workspaceKey === undefined) delete process.env.RELAY_WORKSPACE_KEY;
       else process.env.RELAY_WORKSPACE_KEY = previous.workspaceKey;
@@ -209,12 +550,14 @@ describe('optionsFromEnv', () => {
   it('ignores unresolved template environment placeholders', () => {
     const previous = {
       workspaceKey: process.env.RELAY_WORKSPACE_KEY,
+      agentRelayWorkspaceKey: process.env.AGENT_RELAY_WORKSPACE_KEY,
       apiKey: process.env.RELAY_API_KEY,
       agentName: process.env.RELAY_AGENT_NAME,
       clawName: process.env.RELAY_CLAW_NAME,
       agentToken: process.env.RELAY_AGENT_TOKEN,
     };
     process.env.RELAY_WORKSPACE_KEY = '${RELAY_WORKSPACE_KEY}';
+    delete process.env.AGENT_RELAY_WORKSPACE_KEY;
     delete process.env.RELAY_API_KEY;
     process.env.RELAY_AGENT_NAME = '${RELAY_AGENT_NAME}';
     process.env.RELAY_CLAW_NAME = 'ClawFallback';
@@ -229,6 +572,11 @@ describe('optionsFromEnv', () => {
     } finally {
       if (previous.workspaceKey === undefined) delete process.env.RELAY_WORKSPACE_KEY;
       else process.env.RELAY_WORKSPACE_KEY = previous.workspaceKey;
+      if (previous.agentRelayWorkspaceKey === undefined) {
+        delete process.env.AGENT_RELAY_WORKSPACE_KEY;
+      } else {
+        process.env.AGENT_RELAY_WORKSPACE_KEY = previous.agentRelayWorkspaceKey;
+      }
       if (previous.apiKey === undefined) delete process.env.RELAY_API_KEY;
       else process.env.RELAY_API_KEY = previous.apiKey;
       if (previous.agentName === undefined) delete process.env.RELAY_AGENT_NAME;

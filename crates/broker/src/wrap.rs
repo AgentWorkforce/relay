@@ -1,4 +1,10 @@
 use std::collections::VecDeque;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 use crate::{
@@ -16,11 +22,13 @@ use crate::{
     types::{BrokerCommandPayload, InboundKind, SenderKind},
 };
 use anyhow::{Context, Result};
+use futures_util::{stream::FuturesUnordered, StreamExt};
 use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::broker::{
     delivery_verification::{
-        check_echo_in_output, DeliveryOutcome, PendingActivity, PendingVerification, ThrottleState,
+        assess_harness_acceptance, draft_visible_at_cursor, failed_draft_released, DeliveryOutcome,
+        HarnessAcceptance, PendingActivity, PendingVerification, ThrottleState, VerificationOutput,
         ACTIVITY_BUFFER_KEEP_BYTES, ACTIVITY_BUFFER_MAX_BYTES, ACTIVITY_WINDOW,
         MAX_VERIFICATION_ATTEMPTS, VERIFICATION_WINDOW,
     },
@@ -32,14 +40,15 @@ use crate::runtime::{
     extract_mcp_message_ids, get_terminal_size, terminal_cols, terminal_rows, RelaySession,
     RelaySessionOptions, RelayWorkspace,
 };
-use crate::spawner::{spawn_env_vars, Spawner};
+use crate::snapshot::Snapshot;
+use crate::spawner::{spawn_env_vars, with_commit_attestation_env, Spawner};
 use crate::util::{
-    ansi::{floor_char_boundary, strip_ansi},
+    ansi::{floor_char_boundary, strip_ansi, AnsiStripper},
     terminal::{
-        detect_bypass_permissions_prompt, detect_claude_trust_prompt, detect_codex_model_prompt,
+        detect_bypass_permissions_prompt, detect_codex_model_prompt, detect_codex_trust_prompt,
         detect_gemini_action_required, detect_gemini_trust_prompt, detect_gemini_untrusted_banner,
         detect_opencode_permission_prompt, is_auto_suggestion, is_bypass_selection_menu,
-        is_in_editor_mode,
+        is_in_editor_mode, plan_claude_trust_response, ClaudeTrustPlan,
     },
 };
 use crate::worker::detection::ActivityDetector;
@@ -53,6 +62,126 @@ const MAX_AUTO_ENTER_RETRIES: u32 = 5;
 pub(crate) const AUTO_SUGGESTION_BLOCK_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_APPROVAL_TIMEOUT: Duration = Duration::from_secs(5);
 const GEMINI_ACTION_COOLDOWN: Duration = Duration::from_secs(2);
+const PASTE_INJECTION_SUBMIT_DELAY: Duration = Duration::from_millis(250);
+/// Pause between moving the trust-menu highlight and confirming it.
+const CLAUDE_TRUST_NAV_SETTLE: Duration = Duration::from_millis(150);
+/// Gap between successive trust-menu arrow keys, so a multi-row move repaints
+/// between steps instead of arriving as one burst.
+const CLAUDE_TRUST_KEY_PACE: Duration = Duration::from_millis(40);
+// Keep this aligned with the runtime PTY input acknowledgement bound. A wrap
+// session is retired when it expires because a blocked write may have been
+// partially delivered and is unsafe to requeue blindly.
+const WRAP_WRITE_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Claude Code, Codex, and Muse treat multiline input and a trailing Enter
+/// received in the same paste burst as editor content, leaving the task parked
+/// in the composer until a human presses Enter. Give its submit key a distinct,
+/// delayed PTY write. Other harnesses retain the established body-plus-Enter
+/// write shape.
+fn paste_submit_harness(cli: &str) -> bool {
+    let basename = cli
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(cli);
+    // PTY entry points accept arbitrary executable names, including company
+    // wrappers such as `company-claude` and `claude-code`, and absolute paths
+    // such as `/Users/.../.local/bin/muse`. Match the same substring identity
+    // signal used by readiness and activity detection so a wrapper or path
+    // spelling cannot silently fall back to the broken body-plus-Enter burst.
+    let lower = basename.to_ascii_lowercase();
+    lower.contains("claude")
+        || lower.contains("codex")
+        || lower.contains("muse")
+        || crate::readiness::is_devin_cli(cli)
+}
+
+/// Submit an injection body with the harness-specific submit sequence,
+/// returning the drainer ack plus the receive-time output watermark.
+/// Paste-aware harnesses get the body with a distinct delayed Enter in one
+/// atomic compound write (no terminal reply, later input, or other producer
+/// can splice into the pause); other harnesses keep the single body-plus-Enter
+/// burst. Finalization still waits for this ack.
+pub(crate) fn submit_injection_body(
+    pty: &PtySession,
+    resolved_cli: &str,
+    bytes: Vec<u8>,
+    pace: Duration,
+) -> anyhow::Result<(tokio::sync::oneshot::Receiver<std::io::Result<()>>, u64)> {
+    // Follow the already-selected wire. Capability can latch between body
+    // construction and queue admission; re-probing here could bulk-type raw bytes.
+    let wire = if bytes.starts_with(b"\x1b[200~") && bytes.ends_with(b"\x1b[201~") {
+        crate::injection_wire::InjectionWire::Paste
+    } else {
+        crate::injection_wire::InjectionWire::Typed
+    };
+    let limit = crate::injection_wire::effective_limit(wire, pace);
+    anyhow::ensure!(bytes.len().saturating_sub(if wire == crate::injection_wire::InjectionWire::Paste { 12 } else { 0 }) <= limit, "injection_too_large: {resolved_cli} effective limit is {limit} bytes; use a brief file pointer");
+    let paste = wire == crate::injection_wire::InjectionWire::Paste;
+    let pace = if paste { Duration::ZERO } else { pace };
+    if let Some(delay) = injection_submit_followup_delay(resolved_cli)
+        .or_else(|| paste.then_some(PASTE_INJECTION_SUBMIT_DELAY))
+    {
+        pty.submit_write_paced_with_followup_and_output_boundary(bytes, pace, delay, b"\r".to_vec())
+    } else {
+        let mut burst = bytes;
+        burst.extend_from_slice(b"\r");
+        pty.submit_write_paced_with_output_boundary(burst, pace)
+    }
+}
+
+pub(crate) fn injection_submit_followup_delay(cli: &str) -> Option<Duration> {
+    paste_submit_harness(cli).then_some(PASTE_INJECTION_SUBMIT_DELAY)
+}
+
+/// Retry only the submit gesture for a body proven to remain in the live
+/// composer. Never write the body twice: an accepted first write whose activity
+/// marker was missed would otherwise create a duplicate turn.
+///
+/// `cancel` lets human input withdraw the gesture until it reaches the child:
+/// the drainer skips a not-yet-started key and withholds Codex's delayed CR.
+pub(crate) fn submit_injection_recovery(
+    pty: &PtySession,
+    resolved_cli: &str,
+    completed_attempts: usize,
+    cancel: Arc<AtomicBool>,
+) -> anyhow::Result<(tokio::sync::oneshot::Receiver<std::io::Result<()>>, u64)> {
+    let lower = resolved_cli.to_ascii_lowercase();
+    if lower.contains("codex") && completed_attempts == 1 {
+        // Field recovery for Codex 0.150/0.160: a plain Enter left an idle
+        // multiline composer parked, while End followed by a distinct CR and
+        // later LF submitted it. First reproduce the non-destructive
+        // End+Enter half; the final bounded attempt below sends LF only if the
+        // same delivery is still visibly parked.
+        return pty.submit_cancellable_write_with_output_boundary(
+            b"\x1b[F".to_vec(),
+            Some((Duration::from_secs(1), b"\r".to_vec())),
+            cancel,
+        );
+    }
+
+    let key = if completed_attempts >= 2 {
+        b'\n'
+    } else {
+        b'\r'
+    };
+    pty.submit_cancellable_write_with_output_boundary(vec![key], None, cancel)
+}
+
+/// Cancel every queued submit-key recovery because a human now owns the input.
+pub(crate) fn cancel_recovery_writes(cancels: &mut Vec<Arc<AtomicBool>>) {
+    for cancel in cancels.drain(..) {
+        cancel.store(true, Ordering::Release);
+    }
+}
+
+/// Start a cancellable recovery, pruning flags whose writes already settled.
+pub(crate) fn new_recovery_cancel(cancels: &mut Vec<Arc<AtomicBool>>) -> Arc<AtomicBool> {
+    cancels.retain(|cancel| Arc::strong_count(cancel) > 1);
+    let cancel = Arc::new(AtomicBool::new(false));
+    cancels.push(cancel.clone());
+    cancel
+}
 
 /// Warn (without retrying) when a one-shot auto-response keystroke can't be
 /// enqueued to the PTY write drainer. These prompts — MCP approval, trust
@@ -139,6 +268,181 @@ pub(crate) struct PendingWrapInjection {
     pub(crate) queued_at: Instant,
 }
 
+/// Delivery state held until the PTY drainer confirms both the injection body
+/// and its harness-specific submit sequence were written and flushed.
+enum PendingWrapWrite {
+    Initial {
+        pending: PendingWrapInjection,
+        injection: String,
+        output_boundary: u64,
+        include_reminder: bool,
+        human_input_generation: u64,
+    },
+    Retry {
+        verification: PendingVerification,
+        output_boundary: u64,
+        human_input_generation: u64,
+    },
+}
+
+type WrapWriteAck =
+    std::result::Result<std::io::Result<()>, tokio::sync::oneshot::error::RecvError>;
+type PendingWrapWriteAck = (
+    PendingWrapWrite,
+    std::result::Result<WrapWriteAck, tokio::time::error::Elapsed>,
+);
+type PendingWrapWriteAckFuture = Pin<Box<dyn Future<Output = PendingWrapWriteAck> + Send>>;
+
+async fn await_wrap_write_ack(
+    ack_rx: tokio::sync::oneshot::Receiver<std::io::Result<()>>,
+    timeout: Duration,
+) -> std::result::Result<WrapWriteAck, tokio::time::error::Elapsed> {
+    tokio::time::timeout(timeout, ack_rx).await
+}
+
+fn wrap_write_ack_error(ack: WrapWriteAck) -> Option<String> {
+    match ack {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(error.to_string()),
+        Err(_) => Some("pty write drainer exited before acknowledging queued write".to_string()),
+    }
+}
+
+/// Keep wrap injections single-flight until the PTY drainer confirms the
+/// previous write. Besides preserving delivery order, this ensures an MCP
+/// reminder is recorded before the next delivery decides whether to include it.
+fn wrap_injection_timer_allowed(has_pending_write_ack: bool, has_pending_acceptance: bool) -> bool {
+    !has_pending_write_ack && !has_pending_acceptance
+}
+
+/// A lone Enter keystroke submits the composer and takes whatever it holds,
+/// including a failed relay draft, so it releases the wrap failed-draft latch.
+/// A multiline or bracketed paste also carries CR/LF bytes but adds text to
+/// the composer rather than submitting it, so it never releases the latch.
+fn human_input_submits_composer(data: &[u8]) -> bool {
+    !data.is_empty() && data.iter().all(|byte| matches!(byte, b'\r' | b'\n'))
+}
+
+// Readiness deferrals must not spend the bounded delivery retry budget.
+fn prepare_wrap_retry(
+    verification: &mut PendingVerification,
+    injectable: bool,
+    now: Instant,
+) -> bool {
+    if !injectable {
+        verification.injected_at = now;
+        return false;
+    }
+    verification.attempts += 1;
+    true
+}
+
+/// Format a wrap injection, replacing a body whose envelope would exceed the
+/// PTY injection limit with a bounded pointer to the message.
+///
+/// The entry has already left `pending_wrap_injections`, and wrap has no
+/// channel back to the sender, so skipping the write would make the message
+/// vanish silently. The notice tells the agent the message exists and where to
+/// read it; the full text stays in Relay (relay#1893 review).
+#[allow(clippy::too_many_arguments)]
+fn format_wrap_injection(
+    from: &str,
+    event_id: &str,
+    body: &str,
+    target: &str,
+    include_reminder: bool,
+    workspace_id: Option<&str>,
+    workspace_alias: Option<&str>,
+) -> String {
+    let format = |body: &str| {
+        format_injection_for_worker_with_workspace(
+            from,
+            event_id,
+            body,
+            target,
+            include_reminder,
+            true, // pre_registered
+            None, // assigned_name
+            workspace_id,
+            workspace_alias,
+        )
+    };
+    let injection = format(body);
+    if injection.len() <= crate::injection_wire::MAX_INJECTION_BODY_BYTES {
+        return injection;
+    }
+    tracing::warn!(
+        event_id,
+        bytes = injection.len(),
+        limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES,
+        "wrap: injection_too_large; delivering a pointer instead of the body"
+    );
+    let pointer = |event_id: &str| {
+        format!(
+            "[Message body not shown: {} bytes exceeds the {}-byte terminal delivery limit. \
+             The full message is stored in Relay as message {event_id}; read it with your Relay \
+             message tools before replying.]",
+            body.len(),
+            crate::injection_wire::MAX_INJECTION_BODY_BYTES
+        )
+    };
+    let injection = format(&pointer(event_id));
+    if injection.len() <= crate::injection_wire::MAX_INJECTION_BODY_BYTES {
+        return injection;
+    }
+    // Oversized sender, target or workspace metadata. A write that cannot fit
+    // is re-queued at the head of the queue, so the last resort must always
+    // fit: clip every field and drop the optional reminder and workspace label.
+    fn clip(value: &str) -> &str {
+        &value[..crate::util::ansi::floor_char_boundary(value, 256)]
+    }
+    format_injection_for_worker_with_workspace(
+        clip(from),
+        clip(event_id),
+        &pointer(clip(event_id)),
+        clip(target),
+        false,
+        true,
+        None,
+        None,
+        None,
+    )
+}
+
+/// Start echo verification after a PTY write ack without missing output that
+/// raced ahead of the ack select arm. Returns `true` when the echo was already
+/// present and the delivery was confirmed immediately.
+fn queue_or_confirm_wrap_verification(
+    mut verification: PendingVerification,
+    output: &VerificationOutput,
+    pty: &PtySession,
+    resolved_cli: &str,
+    throttle: &mut ThrottleState,
+    pending_verifications: &mut VecDeque<PendingVerification>,
+) -> bool {
+    let raced_output = output.since(verification.output_boundary).into_owned();
+    verification.observe(output, &raced_output);
+    verification.observe_raw_process_receipt(output, resolved_cli);
+    verification.observe_visible_composer(&Snapshot::capture(pty), resolved_cli);
+    if let HarnessAcceptance::Accepted(evidence) =
+        assess_harness_acceptance(resolved_cli, &verification, &Snapshot::capture(pty))
+    {
+        tracing::info!(
+            target = "agent_relay::worker::wrap",
+            delivery_id = %verification.delivery_id,
+            event_id = %verification.event_id,
+            attempts = verification.attempts,
+            evidence = %evidence,
+            "wrap: delivery accepted by harness before write ack was processed"
+        );
+        throttle.record(DeliveryOutcome::Success);
+        true
+    } else {
+        pending_verifications.push_back(verification);
+        false
+    }
+}
+
 // Shared PTY auto-response state used by run_wrap and run_pty_worker.
 #[derive(Debug)]
 pub(crate) struct PtyAutoState {
@@ -153,6 +457,9 @@ pub(crate) struct PtyAutoState {
     // Codex model upgrade prompt
     pub(crate) codex_model_prompt_handled: bool,
     pub(crate) codex_model_buffer: String,
+    // Codex directory trust prompt
+    pub(crate) codex_trust_buffer: String,
+    pub(crate) codex_trust_handled: bool,
     // Opencode/droid EXECUTE permission prompt
     pub(crate) opencode_perm_buffer: String,
     pub(crate) last_opencode_perm_approval: Option<Instant>,
@@ -166,7 +473,6 @@ pub(crate) struct PtyAutoState {
     pub(crate) gemini_untrusted_buffer: String,
     pub(crate) gemini_untrusted_handled: bool,
     // Claude Code folder trust prompt
-    pub(crate) claude_trust_buffer: String,
     pub(crate) claude_trust_handled: bool,
     // Auto-suggestion / injection state
     pub(crate) auto_suggestion_visible: bool,
@@ -184,6 +490,7 @@ pub(crate) struct PtyAutoState {
     /// split (`pty_worker`); `run_wrap` leaves it `false` since that mode is
     /// itself a live human passthrough where auto-responses are wanted.
     pub(crate) interactive_hold: bool,
+    pub(crate) automatic_responses_disabled: bool,
 }
 
 impl PtyAutoState {
@@ -197,6 +504,8 @@ impl PtyAutoState {
             bypass_perms_send_count: 0,
             codex_model_prompt_handled: false,
             codex_model_buffer: String::new(),
+            codex_trust_buffer: String::new(),
+            codex_trust_handled: false,
             opencode_perm_buffer: String::new(),
             last_opencode_perm_approval: None,
             gemini_action_buffer: String::new(),
@@ -205,7 +514,6 @@ impl PtyAutoState {
             gemini_trust_handled: false,
             gemini_untrusted_buffer: String::new(),
             gemini_untrusted_handled: false,
-            claude_trust_buffer: String::new(),
             claude_trust_handled: false,
             auto_suggestion_visible: false,
             last_injection_time: None,
@@ -215,6 +523,7 @@ impl PtyAutoState {
             last_output_time: Instant::now(),
             is_idle: false,
             interactive_hold: false,
+            automatic_responses_disabled: false,
         }
     }
 
@@ -231,7 +540,7 @@ impl PtyAutoState {
     /// Supports full match (header + option) and partial-match timeout (5s fallback).
     /// Handles edge cases where prompt text fragments across reads.
     pub(crate) async fn handle_mcp_approval(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if self.mcp_approved {
@@ -273,7 +582,7 @@ impl PtyAutoState {
 
     /// Detect and approve bypass-permissions prompts in PTY output.
     pub(crate) async fn handle_bypass_permissions(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         let in_cooldown = self
@@ -313,7 +622,7 @@ impl PtyAutoState {
 
     /// Detect and dismiss Codex model upgrade prompts by selecting "Use existing model".
     pub(crate) async fn handle_codex_model_prompt(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if self.codex_model_prompt_handled {
@@ -333,10 +642,31 @@ impl PtyAutoState {
         }
     }
 
+    /// Detect and accept Codex's startup directory-trust prompt.
+    /// "Yes, continue" is pre-selected as option 1, so Enter is sufficient.
+    pub(crate) async fn handle_codex_trust(&mut self, text: &str, pty: &PtySession) {
+        if self.automatic_responses_disabled || self.interactive_hold || self.codex_trust_handled {
+            return;
+        }
+        Self::append_buf(&mut self.codex_trust_buffer, text, 2500, 2000);
+        let clean = strip_ansi(&self.codex_trust_buffer);
+        // Codex redraws this TUI with cursor motion, so the raw byte stream can
+        // spell only fragments even though the terminal grid contains the
+        // complete menu. Check both representations, just like readiness does.
+        let visible_screen = pty.screen_text();
+        if detect_codex_trust_prompt(&clean) || detect_codex_trust_prompt(&visible_screen) {
+            tracing::info!("Detected Codex directory trust prompt, auto-accepting");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            warn_on_auto_response_write(pty.submit_write(b"\r".to_vec()), "codex_trust");
+            self.codex_trust_buffer.clear();
+            self.codex_trust_handled = true;
+        }
+    }
+
     /// Detect and auto-approve opencode/droid EXECUTE permission prompts.
     /// Selects "Yes, and always allow medium impact commands" (arrow down + Enter).
     pub(crate) async fn handle_opencode_permission(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         let in_cooldown = self
@@ -372,7 +702,7 @@ impl PtyAutoState {
 
     /// Detect and auto-approve Gemini "Action Required" permission prompts.
     pub(crate) async fn handle_gemini_action(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         let in_cooldown = self
@@ -398,7 +728,7 @@ impl PtyAutoState {
     /// Detect and auto-approve Gemini "Modify Trust Level" folder trust prompts.
     /// The menu shows "Trust this folder" pre-selected as option 1, so we just press Enter.
     pub(crate) async fn handle_gemini_trust(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if !self.gemini_trust_handled {
@@ -422,7 +752,7 @@ impl PtyAutoState {
     /// to open the trust menu. The existing `handle_gemini_trust` will then pick up the
     /// interactive "Modify Trust Level" prompt that appears in response.
     pub(crate) async fn handle_gemini_untrusted_banner(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if !self.gemini_untrusted_handled {
@@ -447,23 +777,63 @@ impl PtyAutoState {
     }
 
     /// Detect and auto-accept Claude Code folder trust prompts.
-    /// The prompt is a selection menu with "Yes, I trust this folder" pre-selected,
-    /// so we just press Enter to confirm.
-    pub(crate) async fn handle_claude_trust(&mut self, text: &str, pty: &PtySession) {
-        if self.interactive_hold {
+    ///
+    /// The affirmative row is located by its label and the highlighted row by
+    /// its `❯` glyph; we then step the highlight from one to the other before
+    /// confirming. Relay previously assumed the affirmative option was already
+    /// selected and sent a bare Enter — on Claude Code 2.1.259+ that confirmed
+    /// `No, exit`, killing the worker while its roster row survived.
+    pub(crate) async fn handle_claude_trust(&mut self, _text: &str, pty: &PtySession) {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
-        if !self.claude_trust_handled {
-            Self::append_buf(&mut self.claude_trust_buffer, text, 2500, 2000);
-            let clean = strip_ansi(&self.claude_trust_buffer);
-            let (has_trust_ref, has_confirmation) = detect_claude_trust_prompt(&clean);
-            if has_trust_ref && has_confirmation {
-                tracing::info!("Detected Claude Code folder trust prompt, auto-accepting");
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                // "Yes, I trust this folder" is pre-selected (option 1), press Enter
-                warn_on_auto_response_write(pty.submit_write(b"\r".to_vec()), "claude_trust");
-                self.claude_trust_buffer.clear();
-                self.claude_trust_handled = true;
+        if self.claude_trust_handled {
+            return;
+        }
+
+        // Read the terminal grid, which incorporates cursor-only repaints.
+        // Concatenated old menu text is not the current highlighted choice.
+        let steps = match plan_claude_trust_response(&pty.screen_text()) {
+            ClaudeTrustPlan::Confirm { steps } => steps,
+            ClaudeTrustPlan::Ambiguous | ClaudeTrustPlan::Absent => return,
+        };
+        tracing::info!(steps, "Detected Claude Code folder trust prompt; verifying affirmative selection before confirmation");
+        if steps != 0 {
+            let key: &[u8] = if steps > 0 { b"\x1b[B" } else { b"\x1b[A" };
+            let nav = key.repeat(steps.unsigned_abs() as usize);
+            let submitted = pty.submit_write_paced(nav, CLAUDE_TRUST_KEY_PACE);
+            let Ok(ack) = submitted else {
+                return;
+            };
+            if !matches!(
+                tokio::time::timeout(Duration::from_secs(1), ack).await,
+                Ok(Ok(Ok(())))
+            ) {
+                return;
+            }
+        }
+        // Require an affirmative selection to survive several independent
+        // repaints. Startup terminal negotiation can briefly select Yes and
+        // then reset No after the first navigation readback.
+        for sample in 0..4 {
+            tokio::time::sleep(CLAUDE_TRUST_NAV_SETTLE).await;
+            let confirmation_plan = plan_claude_trust_response(&pty.screen_text());
+            tracing::debug!(
+                sample,
+                ?confirmation_plan,
+                "Claude trust live confirmation sample"
+            );
+            if !matches!(confirmation_plan, ClaudeTrustPlan::Confirm { steps: 0 }) {
+                tracing::info!(
+                    "Claude trust selection changed or is incomplete; waiting for its next repaint"
+                );
+                return;
+            }
+        }
+        match pty.submit_write(b"\r".to_vec()) {
+            Ok(_) => self.claude_trust_handled = true,
+            Err(error) => {
+                tracing::warn!(%error, "trust confirmation write rejected; leaving prompt unhandled")
             }
         }
     }
@@ -473,7 +843,7 @@ impl PtyAutoState {
     pub(crate) fn try_auto_enter(&mut self, pty: &PtySession) {
         // Suppressed while a human drives: pressing Enter here would submit the
         // human's half-typed input.
-        if self.interactive_hold {
+        if self.automatic_responses_disabled || self.interactive_hold {
             return;
         }
         if let Some(injection_time) = self.last_injection_time {
@@ -507,12 +877,60 @@ impl PtyAutoState {
         }
     }
 
+    /// Acknowledgment confirms a PTY write, never a harness action. Claude,
+    /// Codex, and Muse already received a separate delayed submit; another Enter
+    /// after they become idle can submit unrelated composer text or repeat
+    /// a command.
+    /// Keep that distinction observable, including when the body only echoed.
+    pub(crate) fn note_completed_injection(&mut self, cli: &str) {
+        let delayed_submit = paste_submit_harness(cli);
+        self.last_injection_time = if delayed_submit {
+            None
+        } else {
+            Some(Instant::now())
+        };
+        if delayed_submit {
+            tracing::info!(
+                cli,
+                event = "injection_recovery_disabled",
+                harness_acceptance = "unconfirmed",
+                "PTY body and delayed submit written; background Enter recovery disabled; echo verification does not confirm harness action"
+            );
+        }
+        self.auto_enter_retry_count = 0;
+    }
+
     pub(crate) fn update_auto_suggestion(&mut self, text: &str) {
         if is_auto_suggestion(text) {
             self.auto_suggestion_visible = true;
         } else if !strip_ansi(text).trim().is_empty() {
             self.auto_suggestion_visible = false;
         }
+    }
+
+    /// Like [`update_auto_suggestion`](Self::update_auto_suggestion) but uses
+    /// `prev_tail` (the trailing bytes of the previous PTY read) *only* to
+    /// recognise a ghost-text marker pair that straddles the chunk boundary —
+    /// `\x1b[7m` at the end of the previous read and `\x1b[27m\x1b[2m` at the
+    /// start of this one. The clear/keep decision is made on `current` alone,
+    /// so a normal output chunk after the suggestion is gone clears visibility
+    /// promptly instead of being held while a stale pair lingers in the
+    /// lookbehind. `prev_tail` matching on its own is excluded so an
+    /// already-handled pair can't re-arm visibility every chunk.
+    pub(crate) fn update_auto_suggestion_windowed(&mut self, current: &str, prev_tail: &str) {
+        if !is_auto_suggestion(current)
+            && !prev_tail.is_empty()
+            && !is_auto_suggestion(prev_tail)
+            && is_auto_suggestion(&format!("{prev_tail}{current}"))
+        {
+            // Pair straddles the read boundary — arm visibility even though the
+            // current chunk alone doesn't contain the whole pair.
+            self.auto_suggestion_visible = true;
+            return;
+        }
+        // Otherwise the current chunk decides: arm on an in-chunk pair, clear on
+        // real output, leave unchanged on whitespace/ANSI-only.
+        self.update_auto_suggestion(current);
     }
 
     pub(crate) fn update_editor_buffer(&mut self, text: &str) {
@@ -616,6 +1034,151 @@ mod idle_tests {
 mod hold_tests {
     use super::*;
 
+    #[tokio::test]
+    async fn trust_confirmation_requires_observed_affirmative_after_navigation() {
+        let temp = tempfile::tempdir().unwrap();
+        let enabled = temp.path().join("allow-navigation");
+        let inputs = temp.path().join("inputs");
+        let script = r#"import os,sys,tty,threading
+from pathlib import Path
+tty.setraw(0)
+enabled,inputs=map(Path,sys.argv[1:])
+def paint(yes=False):
+ sys.stdout.write('\x1b[2J\x1b[HTrust this folder?\r\n'+('  No, exit\r\n❯ Yes, I trust this folder' if yes else '❯ No, exit\r\n  Yes, I trust this folder')+'\r\nEnter to confirm');sys.stdout.flush()
+paint()
+while True:
+ data=os.read(0,1024)
+ with inputs.open('ab') as f:f.write(data)
+ if b'\x1b[B' in data:
+  paint(enabled.exists())
+  if enabled.exists() and enabled.read_bytes()==b'reset':threading.Timer(0.25,paint).start()
+ if b'\r' in data:break
+"#;
+        let args = vec![
+            "-u".into(),
+            "-c".into(),
+            script.into(),
+            enabled.display().to_string(),
+            inputs.display().to_string(),
+        ];
+        let (pty, _rx) = PtySession::spawn("python3", &args, 24, 80).unwrap();
+        for _ in 0..40 {
+            if pty.screen_text().contains("Yes, I trust this folder") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let mut state = PtyAutoState::new();
+        state.handle_claude_trust(&pty.screen_text(), &pty).await;
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        let first = std::fs::read(&inputs).unwrap();
+        assert!(
+            !first.contains(&b'\r'),
+            "never confirm when navigation was ignored/reset"
+        );
+        assert!(!state.claude_trust_handled);
+        std::fs::write(&enabled, b"allow").unwrap();
+        // A repaint can briefly show Yes, then reset later than the first
+        // readback. Do not submit during that transient affirmative frame.
+        std::fs::write(&enabled, b"reset").unwrap();
+        state.handle_claude_trust(&pty.screen_text(), &pty).await;
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert!(
+            !state.claude_trust_handled,
+            "transient affirmative is not stable confirmation"
+        );
+        assert!(!std::fs::read(&inputs).unwrap().contains(&b'\r'));
+        std::fs::write(&enabled, b"allow").unwrap();
+        state.handle_claude_trust(&pty.screen_text(), &pty).await;
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        assert!(state.claude_trust_handled);
+        assert_eq!(
+            std::fs::read(&inputs)
+                .unwrap()
+                .iter()
+                .filter(|byte| **byte == b'\r')
+                .count(),
+            1
+        );
+        let _ = pty.shutdown();
+    }
+
+    #[tokio::test]
+    async fn acknowledged_paste_submit_never_arms_idle_enter_recovery() {
+        let (pty, _rx) = PtySession::spawn("sleep", &["30".into()], 24, 80).unwrap();
+        for cli in [
+            "codex",
+            "/usr/local/bin/Codex.EXE",
+            "company-codex",
+            "/opt/codex/",
+            "claude",
+            "claude-code",
+            "muse",
+            "/Users/khaliqgant/.local/bin/muse",
+        ] {
+            let mut state = PtyAutoState::new();
+            state.last_injection_time = Some(Instant::now() - Duration::from_secs(120));
+            state.auto_enter_retry_count = 3;
+            assert!(injection_submit_followup_delay(cli).is_some());
+            state.note_completed_injection(cli);
+            state.last_output_time = Instant::now() - Duration::from_secs(120);
+            for _ in 0..6 {
+                state.try_auto_enter(&pty);
+            }
+            assert_eq!(
+                state.auto_enter_retry_count, 0,
+                "acknowledged paste submit must never poke idle"
+            );
+            assert!(state.last_injection_time.is_none());
+        }
+        let mut legacy = PtyAutoState::new();
+        legacy.note_completed_injection("opencode");
+        assert!(
+            legacy.last_injection_time.is_some(),
+            "other harness recovery remains unchanged"
+        );
+        legacy.last_injection_time = Some(Instant::now() - Duration::from_secs(120));
+        legacy.last_output_time = Instant::now() - Duration::from_secs(120);
+        legacy.try_auto_enter(&pty);
+        assert_eq!(legacy.auto_enter_retry_count, 1);
+        let _ = pty.shutdown();
+    }
+
+    #[test]
+    fn delayed_submit_acknowledgment_never_claims_harness_acceptance() {
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+        #[derive(Clone)]
+        struct LogWriter(Arc<Mutex<Vec<u8>>>);
+        impl Write for LogWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let writer = log.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || LogWriter(writer.clone()))
+            .with_ansi(false)
+            .without_time()
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            // A parked composer can echo the entire body: only a write was
+            // acknowledged here, so never infer a consuming harness turn.
+            let mut state = PtyAutoState::new();
+            state.note_completed_injection("codex");
+            assert!(state.last_injection_time.is_none());
+        });
+        let output = String::from_utf8(log.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("injection_recovery_disabled"));
+        assert!(output.contains("unconfirmed"));
+        assert!(output.contains("echo verification does not confirm harness action"));
+    }
+
     /// While an interactive hold is active, `try_auto_enter` must not press
     /// Enter (which would submit a human driver's half-typed input). Releasing
     /// the hold resumes normal behaviour. We observe the effect via
@@ -648,6 +1211,64 @@ mod hold_tests {
         );
 
         let _ = pty.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod auto_suggestion_tests {
+    use super::*;
+
+    const OPEN: &str = "\x1b[7m"; // reverse-video (ghost text begins)
+    const CLOSE: &str = "\x1b[27m\x1b[2m"; // reverse off + dim (ghost text ends)
+
+    #[test]
+    fn pair_in_one_chunk_arms_visibility() {
+        let mut s = PtyAutoState::new();
+        s.update_auto_suggestion_windowed(&format!("{OPEN}ghost{CLOSE}"), "");
+        assert!(s.auto_suggestion_visible);
+    }
+
+    #[test]
+    fn pair_straddling_boundary_is_detected() {
+        let mut s = PtyAutoState::new();
+        // Chunk 1 ends with the opening marker; nothing arms yet.
+        s.update_auto_suggestion_windowed(&format!("prompt {OPEN}gho"), "");
+        assert!(
+            !s.auto_suggestion_visible,
+            "opening marker alone must not arm"
+        );
+        // Chunk 2 carries the closing markers; the previous tail completes the pair.
+        let tail = format!("prompt {OPEN}gho");
+        s.update_auto_suggestion_windowed(&format!("st{CLOSE}"), &tail);
+        assert!(
+            s.auto_suggestion_visible,
+            "a pair straddling the read boundary must be detected"
+        );
+    }
+
+    #[test]
+    fn normal_output_clears_even_with_stale_pair_in_tail() {
+        // The regression cubic flagged: a completed suggestion in the previous
+        // chunk's tail must NOT keep visibility armed once plain output arrives.
+        let mut s = PtyAutoState::new();
+        let stale_tail = format!("{OPEN}ghost{CLOSE}");
+        s.auto_suggestion_visible = true;
+        s.update_auto_suggestion_windowed("the user typed a real line", &stale_tail);
+        assert!(
+            !s.auto_suggestion_visible,
+            "real output must clear visibility even when a completed pair sits in the lookbehind"
+        );
+    }
+
+    #[test]
+    fn whitespace_only_chunk_leaves_visibility_unchanged() {
+        let mut s = PtyAutoState::new();
+        s.auto_suggestion_visible = true;
+        s.update_auto_suggestion_windowed("   \x1b[0m", "");
+        assert!(
+            s.auto_suggestion_visible,
+            "whitespace / ANSI-only output must not flip visibility"
+        );
     }
 }
 
@@ -737,7 +1358,21 @@ async fn register_broker_actions(workspace: &RelayWorkspace) {
                 "properties": {
                     "name": { "type": "string", "description": "Worker agent name" },
                     "cli": { "type": "string", "description": "CLI/harness to launch" },
-                    "args": { "type": "array", "items": { "type": "string" } }
+                    "args": { "type": "array", "items": { "type": "string" } },
+                    "metadata": {
+                        "type": "object",
+                        "properties": {
+                            "attestation": {
+                                "type": "object",
+                                "required": ["jti", "agentId", "sponsorId"],
+                                "properties": {
+                                    "jti": { "type": "string" },
+                                    "agentId": { "type": "string" },
+                                    "sponsorId": { "type": "string" }
+                                }
+                            }
+                        }
+                    }
                 }
             }),
         ),
@@ -887,6 +1522,20 @@ pub(crate) async fn run_wrap(
     // Spawner for child agents
     let mut spawner = Spawner::new();
 
+    if crate::readiness::is_devin_cli(&resolved_cli) && !skip_prompt {
+        let token = default_workspace
+            .http_client
+            .cached_agent_token(&default_workspace.self_name)
+            .context("Devin wrap requires the existing authenticated session token")?;
+        std::env::set_var("RELAY_AGENT_NAME", &default_workspace.self_name);
+        std::env::set_var("RELAY_AGENT_TOKEN", token);
+        std::env::set_var("RELAY_WORKSPACES_JSON", &child_workspaces_json);
+        if let Some(base) = child_base_url.as_deref() {
+            std::env::set_var("RELAY_BASE_URL", base);
+        }
+    }
+    let _devin_state = crate::devin::prepare_worker_config(&resolved_cli).await?;
+
     // --- Spawn CLI in PTY ---
     let (pty, mut pty_rx) = PtySession::spawn(
         &resolved_cli,
@@ -942,13 +1591,31 @@ pub(crate) async fn run_wrap(
     // Pre-seeding dedup with these IDs prevents self-echo when the same message
     // arrives via WS — regardless of what identity the MCP server uses.
     let mut mcp_response_buffer = String::new();
+    // Stateful ANSI stripper for auto-suggestion detection. `is_auto_suggestion`
+    // keys on raw markers (`\x1b[7m`, `\x1b[27m\x1b[2m`); scanning each PTY read
+    // independently misses a marker split across two reads. Stitching the raw
+    // stream here holds back an incomplete trailing escape and prepends it to
+    // the next chunk so the ghost-text guard sees whole markers (#1247).
+    let mut suggestion_stripper = AnsiStripper::new();
+    // Bounded tail of the *previous* scanned chunk for ghost-text detection.
+    // `is_auto_suggestion` requires a marker *pair* (`\x1b[7m` … `\x1b[27m\x1b[2m`)
+    // in one string; when the halves land in different PTY reads, neither chunk
+    // contains both. Passing this tail alongside the new chunk to
+    // `update_auto_suggestion_windowed` lets a pair straddling the boundary be
+    // seen whole. It holds only the previous chunk's tail (not accumulated
+    // history), so a stale suggestion can't keep the guard armed.
+    let mut suggestion_prev_tail = String::new();
+    const SUGGESTION_LOOKBEHIND_MAX: usize = 512;
 
     let mut pty_auto = PtyAutoState::new();
+    pty_auto.automatic_responses_disabled = crate::readiness::is_devin_cli(&resolved_cli);
     let mut auto_enter_interval = tokio::time::interval(Duration::from_secs(2));
     auto_enter_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut pending_injection_interval = tokio::time::interval(Duration::from_millis(50));
     pending_injection_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut pending_wrap_injections: VecDeque<PendingWrapInjection> = VecDeque::new();
+    let mut pending_wrap_writes: FuturesUnordered<PendingWrapWriteAckFuture> =
+        FuturesUnordered::new();
     let mut mcp_reminder_throttle = McpReminderThrottle::new();
 
     // Echo verification state
@@ -960,7 +1627,7 @@ pub(crate) async fn run_wrap(
         None
     };
     let mut throttle = ThrottleState::default();
-    let mut echo_buffer = String::new();
+    let mut echo_buffer = VerificationOutput::default();
     let mut verification_tick = tokio::time::interval(Duration::from_millis(200));
     verification_tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
@@ -1014,6 +1681,13 @@ pub(crate) async fn run_wrap(
     // this without limit — the oldest chunk is dropped with a warning if the cap
     // is hit (at which point the child is not consuming input anyway).
     let mut stdin_pending: VecDeque<Vec<u8>> = VecDeque::new();
+    let mut human_input_generation = 0u64;
+    let mut recovery_cancels: Vec<Arc<AtomicBool>> = Vec::new();
+    // Expected echo of a delivery whose body was written but never proven
+    // accepted. It may still be typed in the composer, so no later relay
+    // message is injected on top of it until the composer is provably idle or
+    // the human submits it.
+    let mut wrap_failed_draft: Option<String> = None;
     let mut stdin_retry_deadline: Option<tokio::time::Instant> = None;
     const STDIN_RETRY_INTERVAL: Duration = Duration::from_millis(4);
 
@@ -1029,6 +1703,27 @@ pub(crate) async fn run_wrap(
             // buffered and the retry-deadline arm below flushes it, so
             // keystrokes are never dropped or reordered under back-pressure.
             Some(data) = stdin_rx.recv() => {
+                human_input_generation = human_input_generation.saturating_add(1);
+                cancel_recovery_writes(&mut recovery_cancels);
+                if wrap_failed_draft.is_some() && human_input_submits_composer(&data) {
+                    tracing::info!(
+                        target = "agent_relay::worker::wrap",
+                        "wrap: human submitted the composer; releasing the failed-draft latch"
+                    );
+                    wrap_failed_draft = None;
+                }
+                if !pending_verifications.is_empty() {
+                    for verification in pending_verifications.drain(..) {
+                        tracing::warn!(
+                            target = "agent_relay::worker::wrap",
+                            delivery_id = %verification.delivery_id,
+                            event_id = %verification.event_id,
+                            attempts = verification.attempts,
+                            "wrap: human input took ownership before harness acceptance; automatic recovery cancelled"
+                        );
+                    }
+                    throttle.record(DeliveryOutcome::Failed);
+                }
                 let backlogged = buffer_and_drain_stdin(
                     &mut stdin_pending,
                     data,
@@ -1059,6 +1754,11 @@ pub(crate) async fn run_wrap(
             chunk = pty_rx.recv() => {
                 match chunk {
                     Some(chunk) => {
+                        // Preserve the producer-assigned read sequence before
+                        // any async handling. Output already queued when an
+                        // injection is submitted must remain ineligible as its
+                        // echo even though this arm consumes it afterward.
+                        echo_buffer.push_output(chunk.sequence(), chunk.as_bytes());
                         // Passthrough to user's terminal
                         use tokio::io::AsyncWriteExt;
                         let _ = stdout.write_all(&chunk).await;
@@ -1069,7 +1769,22 @@ pub(crate) async fn run_wrap(
                         pty_auto.last_output_time = Instant::now();
                         mcp_reminder_throttle.note_output_bytes(chunk.len());
 
-                        pty_auto.update_auto_suggestion(&text);
+                        // Scan the stitched raw stream so a `\x1b[7m` marker
+                        // split mid-sequence is reassembled, and pass the
+                        // previous chunk's tail so a marker *pair* straddling
+                        // the read boundary is still detected — while the
+                        // clear decision stays on the current chunk.
+                        let suggestion_scan = suggestion_stripper.feed_raw(&text);
+                        pty_auto
+                            .update_auto_suggestion_windowed(&suggestion_scan, &suggestion_prev_tail);
+                        if !suggestion_scan.is_empty() {
+                            let start = floor_char_boundary(
+                                &suggestion_scan,
+                                suggestion_scan.len().saturating_sub(SUGGESTION_LOOKBEHIND_MAX),
+                            );
+                            suggestion_prev_tail.clear();
+                            suggestion_prev_tail.push_str(&suggestion_scan[start..]);
+                        }
                         pty_auto.update_editor_buffer(&text);
                         pty_auto.reset_auto_enter_on_output(&text);
 
@@ -1104,6 +1819,7 @@ pub(crate) async fn run_wrap(
                             pty_auto.handle_mcp_approval(&text, &pty).await;
                             pty_auto.handle_bypass_permissions(&text, &pty).await;
                             pty_auto.handle_codex_model_prompt(&text, &pty).await;
+                            pty_auto.handle_codex_trust(&text, &pty).await;
                             pty_auto.handle_opencode_permission(&text, &pty).await;
                             pty_auto.handle_gemini_action(&text, &pty).await;
                             pty_auto.handle_gemini_untrusted_banner(&text, &pty).await;
@@ -1111,38 +1827,32 @@ pub(crate) async fn run_wrap(
                             pty_auto.handle_claude_trust(&text, &pty).await;
                         }
 
-                        // Accumulate echo buffer for verification matching
-                        echo_buffer.push_str(&text);
-                        if echo_buffer.len() > 16_000 {
-                            let start = floor_char_boundary(&echo_buffer, echo_buffer.len() - 12_000);
-                            echo_buffer = echo_buffer[start..].to_string();
-                        }
-
-                        // Check pending verifications against new output
-                        let mut verified_indices = Vec::new();
-                        for (i, pv) in pending_verifications.iter().enumerate() {
-                            if check_echo_in_output(&echo_buffer, &pv.expected_echo) {
-                                verified_indices.push(i);
+                        // Echo is editor receipt, not turn acceptance. Keep the
+                        // delivery pending until activity starts or the body is
+                        // gone from a proven idle composer.
+                        if !pending_verifications.is_empty() {
+                            let snapshot = Snapshot::capture(&pty);
+                            let mut verified_indices = Vec::new();
+                            for (i, pv) in pending_verifications.iter_mut().enumerate() {
+                                pv.observe(&echo_buffer, &clean_text);
+                                pv.observe_raw_process_receipt(&echo_buffer, &resolved_cli);
+                                pv.observe_visible_composer(&snapshot, &resolved_cli);
+                                if let HarnessAcceptance::Accepted(evidence) =
+                                    assess_harness_acceptance(&resolved_cli, pv, &snapshot)
+                                {
+                                    verified_indices.push((i, evidence));
+                                }
                             }
-                        }
-                        for &i in verified_indices.iter().rev() {
-                            let pv = pending_verifications.remove(i).unwrap();
-                            tracing::debug!(
-                                event_id = %pv.event_id,
-                                delivery_id = %pv.delivery_id,
-                                attempts = pv.attempts,
-                                "wrap: delivery echo verified"
-                            );
-                            throttle.record(DeliveryOutcome::Success);
-                            if let Some(detector) = activity_detector.as_ref() {
-                                pending_activities.push_back(PendingActivity {
-                                    delivery_id: pv.delivery_id,
-                                    event_id: pv.event_id,
-                                    expected_echo: pv.expected_echo,
-                                    verified_at: Instant::now(),
-                                    output_buffer: String::new(),
-                                    detector: detector.clone(),
-                                });
+                            for (i, evidence) in verified_indices.into_iter().rev() {
+                                let pv = pending_verifications.remove(i).unwrap();
+                                tracing::info!(
+                                    event_id = %pv.event_id,
+                                    delivery_id = %pv.delivery_id,
+                                    attempts = pv.attempts,
+                                    evidence = %evidence,
+                                    "wrap: delivery accepted by harness"
+                                );
+                                throttle.record(DeliveryOutcome::Success);
                             }
                         }
 
@@ -1282,80 +1992,91 @@ pub(crate) async fn run_wrap(
                                         // Per-worker: the harness this agent runs.
                                         crate::telemetry::infer_harness_from_command(&params.cli),
                                     );
+                                    let env_vars = with_commit_attestation_env(
+                                        env_vars,
+                                        params.metadata.attestation.as_ref(),
+                                    );
                                     // Pre-register the child agent so its MCP server
                                     // starts with a valid token (avoiding "Not registered"
                                     // errors when non-claude CLIs like codex try to use
                                     // relay tools before calling register() themselves).
-                                    let child_token = match retry_agent_registration(
+                                    match retry_agent_registration(
                                         &workspace_child_http,
                                         &params.name,
                                         Some(&params.cli),
                                     ).await {
-                                        Ok(token) => Some(token),
+                                        Ok(child_token) => {
+                                            match spawner
+                                                .spawn_wrap_with_token(
+                                                    &params.name,
+                                                    &params.cli,
+                                                    &params.args,
+                                                    &env_vars,
+                                                    Some(&action_ref.invoked_by),
+                                                    Some(&child_token),
+                                                )
+                                                .await
+                                            {
+                                                Ok(pid) => {
+                                                    agent_spawn_count += 1;
+                                                    telemetry.track(TelemetryEvent::AgentSpawn {
+                                                        cli: params.cli.clone(),
+                                                        // The wrap path handles child spawns requested by a
+                                                        // running agent through the broker action channel —
+                                                        // always agent-originated here.
+                                                        runtime: "pty".to_string(),
+                                                        spawn_source: ActionSource::Agent,
+                                                        has_task: false,
+                                                        is_shadow: false,
+                                                    });
+                                                    tracing::info!(
+                                                        child = %params.name,
+                                                        cli = %params.cli,
+                                                        pid = pid,
+                                                        invoked_by = %action_ref.invoked_by,
+                                                        "spawned child agent"
+                                                    );
+                                                    eprintln!(
+                                                        "\r\n[agent-relay] spawned child '{}' (pid {})\r",
+                                                        params.name, pid
+                                                    );
+                                                }
+                                                Err(error) => {
+                                                    tracing::error!(
+                                                        child = %params.name,
+                                                        error = %error,
+                                                        "failed to spawn child agent"
+                                                    );
+                                                    eprintln!(
+                                                        "\r\n[agent-relay] failed to spawn '{}': {}\r",
+                                                        params.name, error
+                                                    );
+                                                    completion_error = Some(format!(
+                                                        "failed to spawn '{}': {error}",
+                                                        params.name
+                                                    ));
+                                                }
+                                            }
+                                        }
                                         Err(RegRetryOutcome::RetryableExhausted(e)) => {
                                             tracing::warn!(
                                                 child = %params.name,
                                                 error = %e,
-                                                "pre-registration failed after retries, spawning without token"
+                                                "pre-registration failed after retries; refusing tokenless spawn"
                                             );
-                                            None
+                                            completion_error = Some(format!(
+                                                "pre-registration failed for '{}': {e}",
+                                                params.name
+                                            ));
                                         }
                                         Err(RegRetryOutcome::Fatal(e)) => {
                                             tracing::warn!(
                                                 child = %params.name,
                                                 error = %e,
-                                                "pre-registration fatal error, spawning without token"
-                                            );
-                                            None
-                                        }
-                                    };
-                                    match spawner
-                                        .spawn_wrap_with_token(
-                                            &params.name,
-                                            &params.cli,
-                                            &params.args,
-                                            &env_vars,
-                                            Some(&action_ref.invoked_by),
-                                            child_token.as_deref(),
-                                        )
-                                        .await
-                                    {
-                                        Ok(pid) => {
-                                            agent_spawn_count += 1;
-                                            telemetry.track(TelemetryEvent::AgentSpawn {
-                                                cli: params.cli.clone(),
-                                                runtime: "pty".to_string(),
-                                                // The wrap path handles child spawns requested by a
-                                                // running agent through the broker action channel —
-                                                // always agent-originated here.
-                                                spawn_source: ActionSource::Agent,
-                                                has_task: false,
-                                                is_shadow: false,
-                                            });
-                                            tracing::info!(
-                                                child = %params.name,
-                                                cli = %params.cli,
-                                                pid = pid,
-                                                invoked_by = %action_ref.invoked_by,
-                                                "spawned child agent"
-                                            );
-                                            eprintln!(
-                                                "\r\n[agent-relay] spawned child '{}' (pid {})\r",
-                                                params.name, pid
-                                            );
-                                        }
-                                        Err(error) => {
-                                            tracing::error!(
-                                                child = %params.name,
-                                                error = %error,
-                                                "failed to spawn child agent"
-                                            );
-                                            eprintln!(
-                                                "\r\n[agent-relay] failed to spawn '{}': {}\r",
-                                                params.name, error
+                                                "pre-registration fatal error; refusing tokenless spawn"
                                             );
                                             completion_error = Some(format!(
-                                                "failed to spawn '{}': {error}",
+                                                "pre-registration failed for '{}': {e}",
                                                 params.name
                                             ));
                                         }
@@ -1529,7 +2250,12 @@ pub(crate) async fn run_wrap(
                             event_id: mapped.event_id,
                             workspace_id: Some(mapped.workspace_id),
                             workspace_alias: mapped.workspace_alias,
-                            body: mapped.text,
+                            // The wrap path does not download attachments;
+                            // the agent gets each file id and a fetch command.
+                            body: crate::relaycast::bridge::text_with_attachment_references(
+                                &mapped.text,
+                                &mapped.attachments,
+                            ),
                             target: mapped.target,
                             queued_at: Instant::now(),
                         });
@@ -1542,7 +2268,11 @@ pub(crate) async fn run_wrap(
                 }
             }
 
-            _ = pending_injection_interval.tick() => {
+            _ = pending_injection_interval.tick(),
+                if wrap_injection_timer_allowed(
+                    !pending_wrap_writes.is_empty(),
+                    !pending_verifications.is_empty() || wrap_failed_draft.is_some(),
+                ) => {
                 // Give backlogged human keystrokes priority onto the PTY FIFO
                 // over a new automated injection — see the auto-responder gate
                 // above for why.
@@ -1559,8 +2289,13 @@ pub(crate) async fn run_wrap(
                 if should_block {
                     continue;
                 }
+                if !crate::devin::can_inject(&resolved_cli, &pty) { continue; }
                 if let Some(pending) = pending_wrap_injections.pop_front() {
                     tokio::time::sleep(throttle.delay()).await;
+                    if !crate::devin::can_inject(&resolved_cli, &pty) {
+                        pending_wrap_injections.push_front(pending);
+                        continue;
+                    }
                     if pty_auto.auto_suggestion_visible {
                         tracing::warn!(
                             event_id = %pending.event_id,
@@ -1576,102 +2311,309 @@ pub(crate) async fn run_wrap(
                     tracing::debug!("relay from {} → {}", pending.from, pending.target);
                     let include_reminder = !skip_prompt
                         && mcp_reminder_throttle.should_include(Instant::now());
-                    let injection = format_injection_for_worker_with_workspace(
+                    let injection = format_wrap_injection(
                         &pending.from,
                         &pending.event_id,
                         &pending.body,
                         &pending.target,
                         include_reminder,
-                        true, // pre_registered
-                        None, // assigned_name
                         pending.workspace_id.as_deref(),
                         pending.workspace_alias.as_deref(),
                     );
-                    // Submit the body and its trailing `\r` as a single write.
-                    // The Enter keystroke is mandatory for delivery — sending
-                    // it as a separate best-effort write meant a failed/lost
-                    // enqueue could still leave the delivery recorded as
-                    // injected (echo verification only checks the body).
-                    // Combining into one write also keeps the two adjacent on
-                    // the drainer FIFO, so no other writer can splice a byte
-                    // between the body and its Enter.
-                    let mut bytes = injection.as_bytes().to_vec();
-                    bytes.extend_from_slice(b"\r");
-                    if let Err(e) = pty.submit_write(bytes) {
-                        tracing::warn!(
-                            event_id = %pending.event_id,
-                            error = %e,
-                            "PTY injection write failed, re-queuing"
+                    let bytes = crate::injection_wire::injection_bytes(crate::injection_wire::injection_wire(&resolved_cli, &pty), &injection);
+                    let write = submit_injection_body(&pty, &resolved_cli, bytes, Duration::ZERO);
+                    match write {
+                        Ok((ack_rx, output_boundary)) => {
+                            let pending_write = PendingWrapWrite::Initial {
+                                pending,
+                                injection,
+                                output_boundary,
+                                include_reminder,
+                                human_input_generation,
+                            };
+                            pending_wrap_writes.push(Box::pin(async move {
+                                (
+                                    pending_write,
+                                    await_wrap_write_ack(ack_rx, WRAP_WRITE_ACK_TIMEOUT).await,
+                                )
+                            }));
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                event_id = %pending.event_id,
+                                error = %error,
+                                "PTY injection write failed, re-queuing"
+                            );
+                            pending_wrap_injections.push_front(pending);
+                        }
+                    }
+                }
+            }
+
+            Some((pending_write, ack)) = pending_wrap_writes.next(), if !pending_wrap_writes.is_empty() => {
+                let ack = match ack {
+                    Ok(ack) => ack,
+                    Err(_) => {
+                        let event_id = match &pending_write {
+                            PendingWrapWrite::Initial { pending, .. } => &pending.event_id,
+                            PendingWrapWrite::Retry { verification, .. } => &verification.event_id,
+                        };
+                        tracing::error!(
+                            event_id = %event_id,
+                            timeout_ms = WRAP_WRITE_ACK_TIMEOUT.as_millis(),
+                            "PTY injection write acknowledgement timed out; retiring wrap session because delivery outcome is unknown"
                         );
-                        pending_wrap_injections.push_front(PendingWrapInjection {
-                            from: pending.from,
+                        break;
+                    }
+                };
+                let error = wrap_write_ack_error(ack);
+
+                match pending_write {
+                    PendingWrapWrite::Initial {
+                        pending,
+                        injection,
+                        output_boundary,
+                        include_reminder,
+                        human_input_generation: submitted_generation,
+                    } => {
+                        if submitted_generation != human_input_generation {
+                            tracing::warn!(
+                                event_id = %pending.event_id,
+                                "wrap: human input followed the injection write; automatic verification cancelled"
+                            );
+                            throttle.record(DeliveryOutcome::Failed);
+                            if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &injection) {
+                                wrap_failed_draft = Some(injection.clone());
+                            }
+                            continue;
+                        }
+
+                        if let Some(error) = error {
+                            tracing::warn!(
+                                event_id = %pending.event_id,
+                                error = %error,
+                                "PTY injection write was not confirmed; re-queuing"
+                            );
+                            pending_wrap_injections.push_front(pending);
+                            continue;
+                        }
+
+                        if include_reminder {
+                            mcp_reminder_throttle.note_sent(Instant::now());
+                        }
+                        telemetry.track(TelemetryEvent::MessageSend {
+                            is_broadcast: pending.target.starts_with('#'),
+                            has_thread: false,
+                        });
+                        tracing::debug!(
+                            event_id = %pending.event_id,
+                            "wrap: delivery injection confirmed"
+                        );
+                        pty_auto.note_completed_injection(&resolved_cli);
+                        let verification = PendingVerification {
+                            delivery_id: DeliveryId::new(format!("wrap_{}", pending.event_id)),
                             event_id: pending.event_id,
+                            expected_echo: injection,
+                            output_boundary,
+                            injected_at: Instant::now(),
+                            verification_started_at: Instant::now(),
+                            attempts: 1,
+                            max_attempts: MAX_VERIFICATION_ATTEMPTS,
+                            request_id: None,
                             workspace_id: pending.workspace_id,
                             workspace_alias: pending.workspace_alias,
+                            from: pending.from,
                             body: pending.body,
                             target: pending.target,
-                            queued_at: pending.queued_at,
-                        });
-                        continue;
+                            echo_seen: false,
+                            activity_buffer: String::new(),
+                            detector: ActivityDetector::for_cli(&resolved_cli),
+                        };
+                        queue_or_confirm_wrap_verification(
+                            verification,
+                            &echo_buffer,
+                            &pty,
+                            &resolved_cli,
+                            &mut throttle,
+                            &mut pending_verifications,
+                        );
                     }
-                    if include_reminder {
-                        mcp_reminder_throttle.note_sent(Instant::now());
-                    }
-                    telemetry.track(TelemetryEvent::MessageSend {
-                        is_broadcast: pending.target.starts_with('#'),
-                        has_thread: false,
-                    });
-                    tracing::debug!(
-                        event_id = %pending.event_id,
-                        "wrap: delivery injected"
-                    );
-                    pty_auto.last_injection_time = Some(Instant::now());
-                    pty_auto.auto_enter_retry_count = 0;
+                    PendingWrapWrite::Retry {
+                        mut verification,
+                        output_boundary,
+                        human_input_generation: submitted_generation,
+                    } => {
+                        if submitted_generation != human_input_generation {
+                            tracing::warn!(
+                                event_id = %verification.event_id,
+                                "wrap: human input followed submit-key recovery; further automatic recovery cancelled"
+                            );
+                            throttle.record(DeliveryOutcome::Failed);
+                            if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &verification.expected_echo) {
+                                wrap_failed_draft = Some(verification.expected_echo.clone());
+                            }
+                            continue;
+                        }
 
-                    // Push to pending verifications for echo verification
-                    pending_verifications.push_back(PendingVerification {
-                        delivery_id: DeliveryId::new(format!("wrap_{}", pending.event_id)),
-                        event_id: pending.event_id,
-                        expected_echo: injection,
-                        injected_at: Instant::now(),
-                        attempts: 1,
-                        max_attempts: MAX_VERIFICATION_ATTEMPTS,
-                        request_id: None,
-                        workspace_id: pending.workspace_id,
-                        workspace_alias: pending.workspace_alias,
-                        from: pending.from,
-                        body: pending.body,
-                        target: pending.target,
-                    });
+                        if let Some(error) = error {
+                            tracing::error!(
+                                event_id = %verification.event_id,
+                                error = %error,
+                                "wrap: submit-key recovery was not confirmed; body left untouched"
+                            );
+                            throttle.record(DeliveryOutcome::Failed);
+                            if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &verification.expected_echo) {
+                                wrap_failed_draft = Some(verification.expected_echo.clone());
+                            }
+                            continue;
+                        }
+
+
+                        tracing::debug!(
+                            delivery_id = %verification.delivery_id,
+                            event_id = %verification.event_id,
+                            attempt = verification.attempts,
+                            "wrap: submit-key recovery confirmed"
+                        );
+                        verification.output_boundary = output_boundary;
+                        verification.injected_at = Instant::now();
+                        verification.activity_buffer.clear();
+                        queue_or_confirm_wrap_verification(
+                            verification,
+                            &echo_buffer,
+                            &pty,
+                            &resolved_cli,
+                            &mut throttle,
+                            &mut pending_verifications,
+                        );
+                    }
                 }
             }
 
             // Verification tick: check for timed-out wrap verifications
             _ = verification_tick.tick() => {
-                let mut retry_queue: Vec<PendingVerification> = Vec::new();
                 let mut i = 0;
                 while i < pending_verifications.len() {
                     if pending_verifications[i].injected_at.elapsed() >= VERIFICATION_WINDOW {
                         let mut pv = pending_verifications.remove(i).unwrap();
-                        if pv.attempts < pv.max_attempts {
-                            pv.attempts += 1;
-                            tracing::warn!(
-                                event_id = %pv.event_id,
-                                attempt = pv.attempts,
-                                max = pv.max_attempts,
-                                "wrap: echo verification timeout, retrying injection"
-                            );
-                            retry_queue.push(pv);
-                        } else {
-                            tracing::warn!(
-                                event_id = %pv.event_id,
-                                attempts = pv.attempts,
-                                "wrap: delivery verification failed after max retries"
-                            );
-                            throttle.record(DeliveryOutcome::Failed);
+                        pv.observe_raw_process_receipt(&echo_buffer, &resolved_cli);
+                        let snapshot = Snapshot::capture(&pty);
+                        pv.observe_visible_composer(&snapshot, &resolved_cli);
+                        match assess_harness_acceptance(
+                            &resolved_cli,
+                            &pv,
+                            &snapshot,
+                        ) {
+                            HarnessAcceptance::Accepted(evidence) => {
+                                tracing::info!(
+                                    target = "agent_relay::worker::wrap",
+                                    event_id = %pv.event_id,
+                                    attempts = pv.attempts,
+                                    evidence = %evidence,
+                                    "wrap: delivery accepted by harness"
+                                );
+                                throttle.record(DeliveryOutcome::Success);
+                            }
+                            HarnessAcceptance::Parked
+                                if pv.attempts < pv.max_attempts
+                                    && !pv.acceptance_expired()
+                                    && stdin_pending.is_empty()
+                                    && pending_wrap_writes.is_empty()
+                                    && crate::devin::can_inject(&resolved_cli, &pty) =>
+                            {
+                                let completed_attempts = pv.attempts;
+                                prepare_wrap_retry(&mut pv, true, Instant::now());
+                                tracing::warn!(
+                                    target = "agent_relay::worker::wrap",
+                                    event_id = %pv.event_id,
+                                    attempt = pv.attempts,
+                                    max = pv.max_attempts,
+                                    strategy = "submit_key_only",
+                                    "wrap: body remains parked; retrying only the submit gesture"
+                                );
+                                match submit_injection_recovery(
+                                    &pty,
+                                    &resolved_cli,
+                                    completed_attempts,
+                                    new_recovery_cancel(&mut recovery_cancels),
+                                ) {
+                                    Ok((ack_rx, output_boundary)) => {
+                                        let pending_write = PendingWrapWrite::Retry {
+                                            verification: pv,
+                                            output_boundary,
+                                            human_input_generation,
+                                        };
+                                        pending_wrap_writes.push(Box::pin(async move {
+                                            (
+                                                pending_write,
+                                                await_wrap_write_ack(
+                                                    ack_rx,
+                                                    WRAP_WRITE_ACK_TIMEOUT,
+                                                )
+                                                .await,
+                                            )
+                                        }));
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(
+                                            event_id = %pv.event_id,
+                                            error = %error,
+                                            "wrap: failed to queue submit-key recovery; body left untouched"
+                                        );
+                                        throttle.record(DeliveryOutcome::Failed);
+                                        if draft_visible_at_cursor(&Snapshot::capture(&pty), &resolved_cli, &pv.expected_echo) {
+                                            wrap_failed_draft = Some(pv.expected_echo.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            HarnessAcceptance::Parked
+                                if !pv.acceptance_expired()
+                                    && (!stdin_pending.is_empty()
+                                        || !pending_wrap_writes.is_empty()
+                                        || !crate::devin::can_inject(&resolved_cli, &pty)) =>
+                            {
+                                // An in-flight writer or a briefly unready
+                                // Devin prompt takes priority. Deferring spends
+                                // no retry budget and never resets the total
+                                // acceptance lifetime.
+                                prepare_wrap_retry(&mut pv, false, Instant::now());
+                                pending_verifications.push_back(pv);
+                            }
+                            HarnessAcceptance::Parked => {
+                                tracing::error!(
+                                    event_id = %pv.event_id,
+                                    attempts = pv.attempts,
+                                    "wrap: body remained parked after bounded submit-key recovery"
+                                );
+                                throttle.record(DeliveryOutcome::Failed);
+                                // Parked is the positive evidence.
+                                wrap_failed_draft = Some(pv.expected_echo.clone());
+                            }
+                            HarnessAcceptance::Inconclusive => {
+                                tracing::info!(
+                                    event_id = %pv.event_id,
+                                    attempts = pv.attempts,
+                                    "wrap: delivery unconfirmed; delivered without harness evidence"
+                                );
+                                throttle.record(DeliveryOutcome::Unverified);
+                            }
                         }
                     } else {
                         i += 1;
+                    }
+                }
+
+                if let Some(expected_echo) = wrap_failed_draft.as_deref() {
+                    if pending_verifications.is_empty()
+                        && pending_wrap_writes.is_empty()
+                        && failed_draft_released(&resolved_cli, expected_echo, &Snapshot::capture(&pty))
+                    {
+                        tracing::info!(
+                            target = "agent_relay::worker::wrap",
+                            "wrap: failed draft left the composer; resuming injection"
+                        );
+                        wrap_failed_draft = None;
                     }
                 }
 
@@ -1686,58 +2628,16 @@ pub(crate) async fn run_wrap(
                     }
                 }
 
-                // Re-inject retries
-                for mut pv in retry_queue {
-                    tokio::time::sleep(throttle.delay()).await;
-                    // Retries consult the throttle like first injections: the
-                    // failed attempt usually already echoed the full block, so
-                    // a fresh one within the cooldown is redundant.
-                    let include_reminder = !skip_prompt
-                        && mcp_reminder_throttle.should_include(Instant::now());
-                    let injection = format_injection_for_worker_with_workspace(
-                        &pv.from,
-                        &pv.event_id,
-                        &pv.body,
-                        &pv.target,
-                        include_reminder,
-                        true,
-                        None,
-                        pv.workspace_id.as_deref(),
-                        pv.workspace_alias.as_deref(),
-                    );
-                    // Combined into a single write for the same reason as the
-                    // first-attempt path above: the Enter must not be a
-                    // best-effort afterthought, and a single write can't be
-                    // spliced by another writer.
-                    let mut bytes = injection.as_bytes().to_vec();
-                    bytes.extend_from_slice(b"\r");
-                    if let Err(error) = pty.submit_write(bytes) {
-                        tracing::warn!(
-                            event_id = %pv.event_id,
-                            error = %error,
-                            "wrap: retry PTY injection write failed"
-                        );
-                    } else {
-                        if include_reminder {
-                            mcp_reminder_throttle.note_sent(Instant::now());
-                        }
-                        tracing::debug!(
-                            delivery_id = %pv.delivery_id,
-                            event_id = %pv.event_id,
-                            "wrap: delivery re-injected (retry)"
-                        );
-                    }
-                    pv.expected_echo = injection;
-                    pv.injected_at = Instant::now();
-                    pending_verifications.push_back(pv);
-                }
             }
 
             // Auto-enter for stuck agents. Gated on the same backlog check as
             // the other automation arms above — a stuck-agent nudge must not
             // jump ahead of keystrokes the human already typed.
             _ = auto_enter_interval.tick() => {
-                if stdin_pending.is_empty() {
+                if stdin_pending.is_empty()
+                    && pending_verifications.is_empty()
+                    && pending_wrap_writes.is_empty()
+                {
                     pty_auto.try_auto_enter(&pty);
                 }
             }
@@ -1801,8 +2701,360 @@ pub(crate) async fn run_wrap(
 
 #[cfg(test)]
 mod tests {
-    use super::{buffer_and_drain_stdin, drain_stdin_buffer, STDIN_PENDING_MAX_CHUNKS};
+    use super::{
+        await_wrap_write_ack, buffer_and_drain_stdin, drain_stdin_buffer,
+        injection_submit_followup_delay, submit_injection_body, submit_injection_recovery,
+        wrap_injection_timer_allowed, wrap_write_ack_error, STDIN_PENDING_MAX_CHUNKS,
+    };
+    use crate::broker::delivery_verification::{PendingVerification, MAX_VERIFICATION_ATTEMPTS};
+    use crate::ids::{DeliveryId, EventId, MessageTarget};
+    use crate::pty::PtySession;
+    use crate::worker::detection::ActivityDetector;
     use std::collections::VecDeque;
+    use std::io;
+    use std::time::{Duration, Instant};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn devin_disables_generic_prompt_approvals_and_idle_enter() {
+        let (pty, _rx) = crate::pty::PtySession::spawn("sleep", &["10".into()], 24, 80).unwrap();
+        let mut state = super::PtyAutoState::new();
+        state.automatic_responses_disabled = true;
+        state
+            .handle_mcp_approval("Do you want to allow this MCP server?", &pty)
+            .await;
+        state
+            .handle_opencode_permission("EXECUTE Permission required Yes, allow", &pty)
+            .await;
+        state
+            .handle_codex_trust("Do you trust this directory?", &pty)
+            .await;
+        state.last_injection_time = Some(Instant::now() - Duration::from_secs(60));
+        state.try_auto_enter(&pty);
+        assert!(state.mcp_detection_buffer.is_empty());
+        assert!(state.opencode_perm_buffer.is_empty());
+        assert!(state.codex_trust_buffer.is_empty());
+        assert!(state.last_auto_enter_time.is_none());
+        pty.shutdown().unwrap();
+    }
+
+    #[test]
+    fn paste_aware_harnesses_use_a_delayed_submit_followup() {
+        let expected = Some(Duration::from_millis(250));
+        assert_eq!(injection_submit_followup_delay("claude"), expected);
+        assert_eq!(
+            injection_submit_followup_delay("/usr/local/bin/Claude.EXE"),
+            expected
+        );
+        assert_eq!(
+            injection_submit_followup_delay(r"C:\Users\demo\bin\Claude.CMD"),
+            expected
+        );
+        assert_eq!(
+            injection_submit_followup_delay(r"C:\Users\demo\bin\Claude.BAT"),
+            expected
+        );
+        assert_eq!(
+            injection_submit_followup_delay("/opt/company/bin/company-claude"),
+            expected
+        );
+        assert_eq!(injection_submit_followup_delay("claude-code"), expected);
+        assert_eq!(injection_submit_followup_delay("codex"), expected);
+        assert_eq!(
+            injection_submit_followup_delay("/usr/local/bin/Codex.EXE"),
+            expected
+        );
+        // Regression: the reported Muse run used an absolute-path CLI and its
+        // task parked until a manual Enter — Muse missed this classification.
+        assert_eq!(injection_submit_followup_delay("muse"), expected);
+        assert_eq!(injection_submit_followup_delay("muse.exe"), expected);
+        assert_eq!(
+            injection_submit_followup_delay("/Users/khaliqgant/.local/bin/muse"),
+            expected
+        );
+        assert_eq!(injection_submit_followup_delay("opencode"), None);
+        for cli in ["devin", "/usr/bin/devin", "Devin.EXE"] {
+            assert_eq!(injection_submit_followup_delay(cli), expected);
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_recovery_writes_only_end_cr_then_lf() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("recovery-bytes");
+        let script = format!(
+            "stty raw -echo; dd bs=1 count=5 of='{}' 2>/dev/null; sleep 1",
+            log.display()
+        );
+        let (pty, mut rx) = PtySession::spawn("/bin/sh", &["-c".into(), script], 24, 80).unwrap();
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let (first_ack, _) =
+            submit_injection_recovery(&pty, "codex", 1, Default::default()).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), first_ack)
+            .await
+            .expect("End+CR recovery timed out")
+            .expect("drainer exited")
+            .expect("End+CR recovery failed");
+        let (second_ack, _) =
+            submit_injection_recovery(&pty, "codex", 2, Default::default()).unwrap();
+        tokio::time::timeout(Duration::from_secs(3), second_ack)
+            .await
+            .expect("LF recovery timed out")
+            .expect("drainer exited")
+            .expect("LF recovery failed");
+
+        for _ in 0..50 {
+            if std::fs::read(&log).is_ok_and(|bytes| bytes.len() == 5) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(std::fs::read(&log).unwrap(), b"\x1b[F\r\n");
+        pty.shutdown().unwrap();
+        drain.abort();
+    }
+
+    /// Fake Muse-like composer: raw stdin, then one verdict line. A submit key
+    /// that shares its read with multiline body bytes was swallowed into the
+    /// paste (PARKED — the reported manual-Enter bug); a submit key arriving
+    /// in a later read submits the task (SUBMITTED).
+    #[cfg(unix)]
+    const MUSE_LIKE_COMPOSER: &str = r#"import os, sys, tty
+tty.setraw(sys.stdin.fileno())
+sys.stdout.write("READY\n")
+sys.stdout.flush()
+chunks = []
+while True:
+    chunk = os.read(sys.stdin.fileno(), 4096)
+    if not chunk:
+        break
+    chunks.append(chunk)
+    if b"\r" in chunk:
+        break
+head, _, _ = chunks[-1].partition(b"\r")
+sys.stdout.write("PARKED\n" if b"\n" in head else "SUBMITTED\n")
+sys.stdout.flush()"#;
+
+    #[cfg(unix)]
+    async fn await_composer_ready(pty: &PtySession) {
+        for _ in 0..100 {
+            if pty.screen_text().contains("READY") {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!(
+            "Muse-like composer did not become ready: {:?}",
+            pty.screen_text()
+        );
+    }
+
+    #[cfg(unix)]
+    async fn composer_verdict(pty: &PtySession) -> String {
+        for _ in 0..100 {
+            let screen = pty.screen_text();
+            if screen.contains("SUBMITTED") || screen.contains("PARKED") {
+                return screen;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        pty.screen_text()
+    }
+
+    /// Regression for the reported Muse run
+    /// (`cli=/Users/khaliqgant/.local/bin/muse`): the injected task reached
+    /// the composer but sat parked until a manual Enter, because Muse missed
+    /// paste-submit classification and took the single body-plus-Enter burst.
+    /// Through the production submit path, the task must now submit with no
+    /// manual Enter for both the bare and absolute-path CLI spellings.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn muse_injected_task_submits_without_manual_enter() {
+        for resolved_cli in ["muse", "/Users/khaliqgant/.local/bin/muse"] {
+            let args = vec!["-u".into(), "-c".into(), MUSE_LIKE_COMPOSER.into()];
+            let (pty, _rx) = PtySession::spawn("python3", &args, 24, 80).unwrap();
+            await_composer_ready(&pty).await;
+            let bytes = b"relay task line one\nrelay task line two".to_vec();
+            let (ack_rx, _boundary) =
+                submit_injection_body(&pty, resolved_cli, bytes, Duration::ZERO)
+                    .expect("muse injection submit");
+            tokio::time::timeout(Duration::from_secs(10), ack_rx)
+                .await
+                .expect("submit ack in time")
+                .expect("drainer alive")
+                .expect("writes flushed");
+            let screen = composer_verdict(&pty).await;
+            assert!(
+                screen.contains("SUBMITTED"),
+                "{resolved_cli}: injected task must submit without a manual Enter, screen: {screen:?}"
+            );
+            let _ = pty.shutdown();
+        }
+    }
+
+    /// Control for the regression above: the same fake composer parks a
+    /// same-burst trailing Enter, proving the harness discriminates the
+    /// reported failure shape instead of passing vacuously.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn burst_trailing_enter_parks_in_muse_like_composer() {
+        let args = vec!["-u".into(), "-c".into(), MUSE_LIKE_COMPOSER.into()];
+        let (pty, _rx) = PtySession::spawn("python3", &args, 24, 80).unwrap();
+        await_composer_ready(&pty).await;
+        let mut burst = b"relay task line one\nrelay task line two".to_vec();
+        burst.extend_from_slice(b"\r");
+        let (ack_rx, _boundary) = pty
+            .submit_write_paced_with_output_boundary(burst, Duration::ZERO)
+            .expect("burst write");
+        tokio::time::timeout(Duration::from_secs(10), ack_rx)
+            .await
+            .expect("burst ack in time")
+            .expect("drainer alive")
+            .expect("burst flushed");
+        let screen = composer_verdict(&pty).await;
+        assert!(
+            screen.contains("PARKED"),
+            "same-burst trailing Enter must park in a Muse-like composer, screen: {screen:?}"
+        );
+        let _ = pty.shutdown();
+    }
+
+    #[test]
+    fn compound_write_ack_requires_both_writes_to_succeed() {
+        assert_eq!(wrap_write_ack_error(Ok(Ok(()))), None);
+
+        let error = wrap_write_ack_error(Ok(Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "forced delayed submit failure",
+        ))))
+        .expect("a failed delayed Enter must reject the compound write");
+        assert!(error.contains("forced delayed submit failure"));
+    }
+
+    #[tokio::test]
+    async fn compound_write_ack_rejects_a_lost_drainer() {
+        let (ack_tx, ack_rx) = tokio::sync::oneshot::channel::<io::Result<()>>();
+        drop(ack_tx);
+
+        let error = wrap_write_ack_error(ack_rx.await)
+            .expect("a dropped drainer ack must reject the compound write");
+        assert!(error.contains("drainer exited"));
+    }
+
+    #[tokio::test]
+    async fn compound_write_ack_is_bounded_when_the_drainer_stalls() {
+        let (_ack_tx, ack_rx) = tokio::sync::oneshot::channel::<io::Result<()>>();
+        let outcome = await_wrap_write_ack(ack_rx, Duration::from_millis(10)).await;
+        assert!(outcome.is_err(), "an unresolved write ack must time out");
+    }
+
+    #[test]
+    fn wrap_injection_timer_waits_for_write_ack_and_harness_acceptance() {
+        assert!(super::human_input_submits_composer(b"\r"));
+        assert!(super::human_input_submits_composer(b"\r\n"));
+        assert!(
+            !super::human_input_submits_composer(b"ok\n"),
+            "typed line plus newline is text"
+        );
+        assert!(
+            !super::human_input_submits_composer(b"\x1b[200~line one\rline two\x1b[201~"),
+            "a bracketed multiline paste is not a submit"
+        );
+        assert!(!super::human_input_submits_composer(b""));
+        assert!(!super::human_input_submits_composer(b"typing"));
+        assert!(wrap_injection_timer_allowed(false, false));
+        assert!(!wrap_injection_timer_allowed(true, false));
+        assert!(!wrap_injection_timer_allowed(false, true));
+    }
+
+    #[test]
+    fn busy_devin_deferrals_preserve_retry_budget_and_reset_deadline() {
+        let mut verification = PendingVerification {
+            delivery_id: DeliveryId::new("delivery"),
+            event_id: EventId::new("event"),
+            expected_echo: String::new(),
+            output_boundary: 0,
+            injected_at: Instant::now(),
+            verification_started_at: Instant::now(),
+            attempts: 1,
+            max_attempts: MAX_VERIFICATION_ATTEMPTS,
+            request_id: None,
+            workspace_id: None,
+            workspace_alias: None,
+            from: "sender".into(),
+            body: "task".into(),
+            target: MessageTarget::new("devin"),
+            echo_seen: false,
+            activity_buffer: String::new(),
+            detector: ActivityDetector::for_cli("devin"),
+        };
+        for _ in 0..20 {
+            let now = verification.injected_at + super::VERIFICATION_WINDOW;
+            assert!(!super::prepare_wrap_retry(&mut verification, false, now));
+            assert_eq!(verification.attempts, 1);
+            assert_eq!(verification.injected_at, now);
+        }
+        assert!(super::prepare_wrap_retry(
+            &mut verification,
+            true,
+            Instant::now()
+        ));
+        assert_eq!(verification.attempts, 2);
+    }
+
+    #[test]
+    fn oversized_wrap_messages_are_delivered_as_a_bounded_pointer() {
+        let limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES;
+        let normal =
+            super::format_wrap_injection("alice", "evt_ok", "hello", "bob", true, None, None);
+        assert!(normal.contains("Relay message from alice [evt_ok]: hello"));
+        // A body that fits on its own but whose reminder and attribution push
+        // the envelope past the limit (the reviewer's 16,000-byte DM), and one
+        // far over it.
+        for len in [limit - 384, limit * 2] {
+            let body = format!("UNIQUE-BODY-MARKER{}", "x".repeat(len));
+            let injection =
+                super::format_wrap_injection("alice", "evt_big", &body, "bob", true, None, None);
+            assert!(injection.len() <= limit, "{len}: {} bytes", injection.len());
+            assert!(
+                !injection.contains("UNIQUE-BODY-MARKER"),
+                "{len}: body leaked"
+            );
+            assert!(
+                injection.contains("Relay message from alice [evt_big]"),
+                "{injection}"
+            );
+            assert!(injection.contains("message evt_big"), "{injection}");
+            assert!(
+                injection.contains(&format!("{} bytes exceeds", body.len())),
+                "{injection}"
+            );
+        }
+    }
+
+    /// relay#1930 review (cubic): the pointer replaces only the body, so
+    /// oversized sender, target or workspace metadata kept the envelope over
+    /// the limit, failing submit and re-queuing the delivery at the head of
+    /// the queue forever. The final fallback must always fit.
+    #[test]
+    fn oversized_wrap_metadata_still_yields_a_bounded_pointer() {
+        let limit = crate::injection_wire::MAX_INJECTION_BODY_BYTES;
+        let huge = "é".repeat(limit);
+        let injection = super::format_wrap_injection(
+            &huge,
+            "evt_meta",
+            &"x".repeat(limit),
+            &huge,
+            true,
+            Some(&huge),
+            Some(&huge),
+        );
+        assert!(injection.len() <= limit, "{} bytes", injection.len());
+        assert!(injection.contains("message evt_meta"), "{injection}");
+    }
 
     #[test]
     fn stdin_drains_in_order_when_queue_accepts() {

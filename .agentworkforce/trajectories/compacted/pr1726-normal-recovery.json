@@ -1,0 +1,37 @@
+{
+  "id": "compact_vx8338g80q6c",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-10T19:36:29.991Z",
+  "sourceTrajectories": [
+    "traj_sn0ch8h9fihu"
+  ],
+  "dateRange": {
+    "start": "2026-09-10T19:32:41.173Z",
+    "end": "2026-09-10T19:36:29.408Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Treat prior local reconciliation as optional during normal startup",
+          "chosen": "Treat prior local reconciliation as optional during normal startup",
+          "reasoning": "The real-process regression exits before normal readiness when an unscoped backlog meets a configured destination. Preserve strict local-only startup checks, but retain an unmatched backlog with a warning and continue normal mode. Add process assertions for unscoped and differently scoped files, unchanged bytes, and no private audit upload. Reviewed the related Garden roster-cache and Relaycast retention changes; this does not change either ownership or roster policy.",
+          "fromTrajectory": "traj_sn0ch8h9fihu"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

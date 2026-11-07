@@ -3,10 +3,48 @@ export {
   writeStoredAuth,
   clearStoredAuth,
   refreshStoredAuth,
+  refreshStoredCloudIdentity,
+  hasCurrentStoredCloudIdentity,
+  toCloudIdentity,
   ensureAuthenticated,
   ensureCloudSession,
   authorizedApiFetch,
+  loginWithDevice,
 } from './auth.js';
+
+export {
+  isHeadlessEnvironment,
+  startDeviceAuthorization,
+  pollForDeviceToken,
+  runDeviceAuthorizationFlow,
+  formatDeviceInstructions,
+  type DeviceAuthorization,
+  type DeviceFlowHooks,
+} from './device-auth.js';
+
+export {
+  IDENTITY_ENV_KEYS,
+  IDENTITY_FILE_PATH,
+  identityFilePath,
+  readStoredIdentity,
+  readStoredIdentitySync,
+  writeStoredIdentity,
+  clearStoredIdentity,
+  resolveCloudIdentity,
+  normalizeCloudIdentity,
+  cloudIdentityEnv,
+  cloudIdentityFingerprint,
+  type CloudIdentity,
+} from './identity.js';
+
+export {
+  buildAgentRelayTelemetryHeaders,
+  appendAgentRelayTelemetryHeaders,
+  AGENT_RELAY_DISTINCT_ID_HEADER,
+  AGENT_RELAY_USER_ID_HEADER,
+  AGENT_RELAY_ORG_ID_HEADER,
+  AGENT_RELAY_ORG_SLUG_HEADER,
+} from './telemetry-headers.js';
 
 export {
   CloudApiClient,
@@ -37,7 +75,45 @@ export {
   type ConnectProviderResult,
 } from './connect.js';
 
-export { createWorkspace, issueWorkspaceToken, resolveActiveWorkspace } from './workspaces.js';
+export {
+  createWorkspace,
+  issueWorkspaceToken,
+  resolveActiveWorkspace,
+  resolveWorkspaceByKey,
+} from './workspaces.js';
+export { redactCredentialValues } from './redact.js';
+export {
+  ensureCloudFleetSandbox,
+  materializeCloudRelayfileRepository,
+  deleteCloudFleetSandbox,
+  attachCloudFleetSandboxRelayfile,
+  type AttachCloudFleetSandboxRelayfileInput,
+  type CloudFleetSandboxRelayfileAttachment,
+  CloudFleetSandboxProvisionError,
+  normalizeRelaycastTarget,
+  ARMADILLO_RELAYCAST_ORIGIN,
+  CANONICAL_RELAYCAST_ORIGIN,
+  AGENT37_RELAYCAST_ORIGIN,
+  DEV_CLOUD_API_URL,
+  DEV_RELAYCAST_ORIGIN,
+  type EnsureCloudFleetSandboxInput,
+  type EnsureCloudFleetSandboxResult,
+  type MaterializeCloudRelayfileRepositoryInput,
+  type CloudRelayfileRepositoryMaterialization,
+  type CloudRelayfileRepositoryMaterializeOptions,
+  type CloudFleetSandboxReady,
+  type CloudFleetSandboxReused,
+  type CloudFleetSandboxProvisioningTimeout,
+  type CloudFleetSandboxProviderId,
+  type CloudFleetSandboxCapacityExhaustion,
+  type CloudFleetSandboxWorkloadProfile,
+  type DeleteCloudFleetSandboxInput,
+  type CloudFleetSandboxRequestOptions,
+  type CloudFleetSandboxPreparationFailure,
+  type CloudFleetSandboxPreparationProgress,
+  type CloudFleetRelaycastRoute,
+  type CloudFleetRelaycastTarget,
+} from './fleet-sandbox.js';
 
 export {
   acknowledgeCloudWorkerAssignment,
@@ -90,8 +166,30 @@ export {
   validateWorkspaceName,
   workspaceStorePath,
   writeWorkspaceStore,
+  readRelaycastCredential,
+  relaycastCredentialRef,
+  relaycastCredentialStorePath,
+  writeRelaycastCredential,
+  type RelaycastCredential,
   type WorkspaceStore,
 } from './workspace-store.js';
+
+export {
+  projectWorkspaceKeyPath,
+  readProjectWorkspaceKey,
+  readProjectWorkspaceSession,
+  resolveActiveWorkspaceSelection,
+  resolveWorkspaceKey,
+  resolveWorkspaceKeyWithSource,
+  resolveWorkspaceSelection,
+  writeProjectWorkspaceKey,
+  writeProjectWorkspaceTargetIfSelectionCurrent,
+  type ProjectWorkspaceSession,
+  type ResolveWorkspaceKeyOptions,
+  type WorkspaceKeyFileSystem,
+  type WorkspaceKeySource,
+  type WorkspaceSelection,
+} from './project-workspace-key.js';
 
 export {
   deployProactiveAgent,
@@ -173,6 +271,8 @@ export {
   type ProactiveAgentRecord,
   type WorkspaceSecretRecord,
   type WorkflowFileType,
+  type RelayflowVersion,
+  type RunWorkflowOptions,
   type RunWorkflowResponse,
   type WorkflowSchedule,
   type ScheduleWorkflowOptions,

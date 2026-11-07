@@ -1,0 +1,79 @@
+{
+  "id": "traj_ks7jtngicq87",
+  "version": 1,
+  "task": {
+    "title": "Fix relay#1837 manual_flush ACK gap recovery",
+    "source": {
+      "system": "plain",
+      "id": "AgentWorkforce/relay#1837"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-22T08:38:27.918Z",
+  "completedAt": "2026-09-22T09:09:15.486Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-22T09:00:37.324Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_931zo9x9zku6",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-22T09:00:37.324Z",
+      "endedAt": "2026-09-22T09:09:15.486Z",
+      "events": [
+        {
+          "ts": 1790067637325,
+          "type": "decision",
+          "content": "Recover only exact unACKed replays whose local custody vanished, preserve fleet delivery IDs through the PTY, and re-ACK completed IDs from a bounded worker cache: Recover only exact unACKed replays whose local custody vanished, preserve fleet delivery IDs through the PTY, and re-ACK completed IDs from a bounded worker cache",
+          "raw": {
+            "question": "Recover only exact unACKed replays whose local custody vanished, preserve fleet delivery IDs through the PTY, and re-ACK completed IDs from a bounded worker cache",
+            "chosen": "Recover only exact unACKed replays whose local custody vanished, preserve fleet delivery IDs through the PTY, and re-ACK completed IDs from a bounded worker cache",
+            "alternatives": [],
+            "reasoning": "Skipping the cursor would violate cumulative-ACK safety; blindly replaying could duplicate user-visible instructions. Custody-aware replay plus stable end-to-end identity repairs the gap while the worker completion cache makes lost-ACK retries idempotent."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1790068155125,
+          "type": "reflection",
+          "content": "Implemented custody-aware replay recovery, stable fleet delivery IDs, a bounded PTY completion fence, ordered predecessor reinsertion, and explicit gap diagnostics. Full broker and client-focused suites pass after isolating injected git-hook environment.",
+          "raw": {
+            "focalPoints": [
+              "ack-safety",
+              "idempotence",
+              "observability",
+              "validation"
+            ],
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:ack-safety",
+            "focal:idempotence",
+            "focal:observability",
+            "focal:validation",
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Fixed relay#1837 manual_flush sequence-gap recovery with lossless exact replay, duplicate-injection fencing, deterministic gap diagnostics, and regression coverage.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "187732c98ba8ffdeeedd86e4618d5d3cb08226d8",
+    "endRef": "187732c98ba8ffdeeedd86e4618d5d3cb08226d8"
+  }
+}

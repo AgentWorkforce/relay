@@ -17,6 +17,7 @@ import {
   type TargetContext,
 } from '../lib/skills-install.js';
 import { selectHarnesses, selectScope } from '../lib/skills-tui.js';
+import { describeError } from '../lib/describe-error.js';
 
 type ExitFn = (code: number) => never;
 
@@ -184,7 +185,7 @@ export function registerSkillsCommands(program: Command, overrides: Partial<Skil
       try {
         raw = await deps.fetchSkill(ORCHESTRATE_SKILL.url);
       } catch (err) {
-        deps.error(err instanceof Error ? err.message : String(err));
+        deps.error(describeError(err));
         deps.exit(1);
         return;
       }

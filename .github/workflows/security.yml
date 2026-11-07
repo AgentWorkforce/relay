@@ -9,16 +9,29 @@ on:
     # Run weekly on Sundays at midnight
     - cron: '0 0 * * 0'
 
+# Reusable workflows cannot elevate the caller's token permissions.
+# detect-changes.yml reads pull-request file lists and commit comparisons.
+permissions:
+  contents: read
+  pull-requests: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/detect-changes.yml
+
   # NPM audit for known vulnerabilities
   npm-audit:
     name: NPM Audit
+    needs: changes
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -46,7 +59,9 @@ jobs:
   dependency-review:
     name: Dependency Review
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (github.event_name == 'pull_request')
     # This job requires the dependency graph to be enabled in repo settings
     # Make it non-blocking until that's configured
     continue-on-error: true
@@ -65,6 +80,10 @@ jobs:
   # CodeQL analysis for code security
   codeql:
     name: CodeQL Analysis
+    needs: changes
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -121,8 +140,11 @@ jobs:
   # License compliance check
   license-check:
     name: License Compliance
+    needs: changes
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

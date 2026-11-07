@@ -1,34 +1,58 @@
-export type RelayAgentType = 'agent' | 'human' | 'system';
-export type RelayAgentStatus = 'online' | 'offline' | 'away' | 'unknown';
-export type RelayChannelMemberRole = 'owner' | 'member';
-export type RelayMessageMode = 'wait' | 'steer';
+import type * as wire from '@relaycast/types';
+import type { AgentSessionEvent } from '../session/index.js';
+
+// The `Relay*` types below are derived from the canonical wire contract in
+// `@relaycast/types` (snake_case zod schemas shared with the Relaycast
+// engine). Where the relay surface deliberately reshapes a wire type
+// (camelCase fields, renames, optional-instead-of-null, enrichment), the
+// reshaped fields still index into the canonical type so a wire-contract
+// change surfaces as a compile error here instead of silent drift.
+
+type WireAgentChannel = NonNullable<wire.Agent['channels']>[number];
+type WireInboxChannelSummary = wire.InboxResponse['unread_channels'][number];
+type WireInboxDirectSummary = wire.InboxResponse['unread_dms'][number];
+type WireInboxLastMessage = NonNullable<WireInboxDirectSummary['last_message']>;
+type WireInboxReactionSummary = wire.InboxResponse['recent_reactions'][number];
+
+export type RelayAgentType = wire.AgentType;
+/** Canonical agent statuses plus the relay-only `unknown` fallback. */
+export type RelayAgentStatus = wire.AgentStatus | 'unknown';
+export type RelayChannelMemberRole = wire.ChannelMemberInfo['role'];
+/**
+ * Message injection policy. `wait` (the default when omitted) queues for the
+ * recipient's next safe idle boundary and can remain unread while they are
+ * busy. `steer` requests immediate injection and may interrupt active work.
+ * A successful send confirms enqueue only; use read receipts to confirm
+ * consumption.
+ */
+export type RelayMessageMode = wire.MessageInjectionMode;
 export type RelayMessageKind = 'channel' | 'dm' | 'group_dm' | 'thread_reply' | 'unknown';
 
 export interface RelayAgentChannel {
-  id: string;
-  name: string;
-  role: RelayChannelMemberRole;
-  joinedAt?: string;
+  id: WireAgentChannel['id'];
+  name: WireAgentChannel['name'];
+  role: WireAgentChannel['role'];
+  joinedAt?: WireAgentChannel['joined_at'];
 }
 
 export interface RelayAgent {
-  id: string;
-  name: string;
+  id: wire.Agent['id'];
+  name: wire.Agent['name'];
   type: RelayAgentType;
   status: RelayAgentStatus;
-  persona?: string;
-  metadata: Record<string, unknown>;
-  lastSeenAt?: string;
-  createdAt?: string;
+  persona?: NonNullable<wire.Agent['persona']>;
+  metadata: wire.Agent['metadata'];
+  lastSeenAt?: wire.Agent['last_seen'];
+  createdAt?: NonNullable<wire.Agent['created_at']>;
   channels: RelayAgentChannel[];
 }
 
 export interface RelayAgentRegistration {
-  id: string;
-  name: string;
-  token: string;
+  id: wire.CreateAgentResponse['id'];
+  name: wire.CreateAgentResponse['name'];
+  token: wire.CreateAgentResponse['token'];
   status: RelayAgentStatus;
-  createdAt?: string;
+  createdAt?: wire.CreateAgentResponse['created_at'];
 }
 
 export type RelayNodeStatus = 'online' | 'offline' | 'unknown';
@@ -81,37 +105,70 @@ export interface RelayTriggerInput {
 }
 
 export interface RelayAgentPresence {
-  agentId: string;
-  agentName: string;
-  status: Extract<RelayAgentStatus, 'online' | 'offline'>;
+  agentId: wire.AgentPresenceInfo['agent_id'];
+  agentName: wire.AgentPresenceInfo['agent_name'];
+  status: wire.AgentPresenceInfo['status'];
 }
 
 export interface RelayChannelMember {
-  agentId: string;
-  agentName: string;
-  role: RelayChannelMemberRole;
-  joinedAt?: string;
-  muted: boolean;
+  agentId: wire.ChannelMemberInfo['agent_id'];
+  agentName: wire.ChannelMemberInfo['agent_name'];
+  role: wire.ChannelMemberInfo['role'];
+  joinedAt?: wire.ChannelMemberInfo['joined_at'];
+  muted: NonNullable<wire.ChannelMemberInfo['is_muted']>;
 }
 
 export interface RelayChannel {
-  id: string;
-  name: string;
-  topic?: string;
-  metadata: Record<string, unknown>;
-  createdBy?: string;
-  createdAt?: string;
-  archived: boolean;
-  memberCount?: number;
+  id: wire.Channel['id'];
+  name: wire.Channel['name'];
+  topic?: NonNullable<wire.Channel['topic']>;
+  metadata: NonNullable<wire.Channel['metadata']>;
+  createdBy?: NonNullable<wire.Channel['created_by']>;
+  createdAt?: wire.Channel['created_at'];
+  archived: NonNullable<wire.Channel['is_archived']>;
+  memberCount?: wire.Channel['member_count'];
   members: RelayChannelMember[];
 }
 
+/** A stored file attachment; mirrors the canonical `FileAttachment` with `file_id` exposed as `id`. */
 export interface RelayStoredAttachment {
-  id: string;
+  id: wire.FileAttachment['file_id'];
   type?: 'stored';
-  filename?: string;
+  filename?: wire.FileAttachment['filename'];
+  contentType?: wire.FileAttachment['content_type'];
+  sizeBytes?: wire.FileAttachment['size_bytes'];
+}
+
+/** A stored Relaycast file, as returned by `files.upload`/`files.get`. */
+export interface RelayFileInfo {
+  id: wire.FileInfo['id'];
+  filename: wire.FileInfo['filename'];
+  contentType: wire.FileInfo['content_type'];
+  sizeBytes: wire.FileInfo['size_bytes'];
+  status?: NonNullable<wire.FileInfo['status']>;
+  /** Short-lived URL to GET the bytes; present once the upload is complete. */
+  downloadUrl?: string;
+  uploadedBy?: NonNullable<wire.FileInfo['uploaded_by']>;
+  createdAt?: NonNullable<wire.FileInfo['created_at']>;
+}
+
+export interface RelayUploadFileInput {
+  filename: string;
+  /** Defaults to `application/octet-stream`. */
   contentType?: string;
-  sizeBytes?: number;
+  data: Uint8Array | ArrayBuffer;
+}
+
+/** Cancellation and timeout controls for the signed byte-transfer request. */
+export interface RelayFileTransferOptions {
+  signal?: AbortSignal;
+  /** Signed PUT/GET timeout in milliseconds. Defaults to 30 seconds. */
+  timeoutMs?: number;
+}
+
+export interface RelayDownloadedFile {
+  file: RelayFileInfo;
+  data: Uint8Array;
 }
 
 export interface RelayTextAttachment {
@@ -176,11 +233,7 @@ export type RelayMessageAttachmentInput = string | RelayMessageAttachment;
 
 export type RelayMessageBlock = Record<string, unknown>;
 
-export interface RelayMessageReaction {
-  emoji: string;
-  count: number;
-  agents: string[];
-}
+export type RelayMessageReaction = wire.ReactionGroup;
 
 export interface RelayMessageSender {
   id?: string;
@@ -200,27 +253,27 @@ export type RelayMessageTarget =
   | { kind: string; [key: string]: unknown };
 
 export interface RelayMessage {
-  id: string;
+  id: wire.MessageWithMeta['id'];
   /** Public identifier for the message; mirrors `id`. */
-  messageId: string;
+  messageId: wire.MessageWithMeta['id'];
   kind?: RelayMessageKind;
-  text: string;
+  text: wire.MessageWithMeta['text'];
   from: RelayMessageSender;
   target?: RelayMessageTarget;
   channel?: RelayMessageChannelRef;
   conversationId?: string;
-  threadId?: string;
+  threadId?: NonNullable<wire.MessageWithMeta['thread_id']>;
   parentId?: string;
   mode?: RelayMessageMode;
-  createdAt?: string;
-  updatedAt?: string;
-  metadata?: Record<string, unknown>;
+  createdAt?: wire.MessageWithMeta['created_at'];
+  updatedAt?: NonNullable<wire.Message['updated_at']>;
+  metadata?: NonNullable<wire.MessageWithMeta['metadata']>;
   blocks?: RelayMessageBlock[];
   attachments?: RelayMessageAttachment[];
-  replyCount?: number;
+  replyCount?: wire.MessageWithMeta['reply_count'];
   reactions?: RelayMessageReaction[];
-  readByCount?: number;
-  mentions?: string[];
+  readByCount?: wire.MessageWithMeta['read_by_count'];
+  mentions?: NonNullable<wire.MessageWithMeta['mentions']>;
 }
 
 export interface RelayThread {
@@ -229,29 +282,29 @@ export interface RelayThread {
 }
 
 export interface RelayInboxChannelSummary {
-  channelName: string;
-  unreadCount: number;
+  channelName: WireInboxChannelSummary['channel_name'];
+  unreadCount: WireInboxChannelSummary['unread_count'];
 }
 
 export interface RelayInboxLastMessage {
-  id: string;
-  text: string;
-  createdAt?: string;
+  id: WireInboxLastMessage['id'];
+  text: WireInboxLastMessage['text'];
+  createdAt?: WireInboxLastMessage['created_at'];
 }
 
 export interface RelayInboxDirectSummary {
-  conversationId: string;
-  from: string;
-  unreadCount: number;
+  conversationId: WireInboxDirectSummary['conversation_id'];
+  from: WireInboxDirectSummary['from'];
+  unreadCount: WireInboxDirectSummary['unread_count'];
   lastMessage?: RelayInboxLastMessage;
 }
 
 export interface RelayInboxReactionSummary {
-  messageId: string;
-  channelName: string;
-  emoji: string;
-  agentName: string;
-  createdAt?: string;
+  messageId: WireInboxReactionSummary['message_id'];
+  channelName: WireInboxReactionSummary['channel_name'];
+  emoji: WireInboxReactionSummary['emoji'];
+  agentName: WireInboxReactionSummary['agent_name'];
+  createdAt?: WireInboxReactionSummary['created_at'];
 }
 
 export interface RelayInbox {
@@ -262,42 +315,56 @@ export interface RelayInbox {
 }
 
 export interface RelayReadReceipt {
-  messageId: string;
-  agentId?: string;
-  agentName?: string;
-  readAt?: string;
+  messageId: wire.ReadReceipt['message_id'];
+  agentId?: wire.ReadReceipt['agent_id'];
+  agentName?: wire.ReaderInfo['agent_name'];
+  readAt?: wire.ReadReceipt['read_at'];
 }
 
 export interface RelayChannelReadStatus {
-  agentName: string;
-  lastReadId?: string;
-  lastReadAt?: string;
+  agentName: wire.ChannelReadStatus['agent_name'];
+  lastReadId?: NonNullable<wire.ChannelReadStatus['last_read_id']>;
+  lastReadAt?: NonNullable<wire.ChannelReadStatus['last_read_at']>;
 }
 
 export interface RelaySearchResult {
-  id: string;
-  channelName: string;
-  agentName: string;
-  text: string;
-  createdAt?: string;
-  relevanceScore: number;
+  id: wire.SearchMessageResult['id'];
+  channelName: wire.SearchMessageResult['channel_name'];
+  agentName: wire.SearchMessageResult['agent_name'];
+  text: wire.SearchMessageResult['text'];
+  createdAt?: wire.SearchMessageResult['created_at'];
+  relevanceScore: wire.SearchMessageResult['relevance_score'];
 }
 
 export interface RelayListAgentsOptions {
-  status?: Exclude<RelayAgentStatus, 'unknown'> | 'all';
+  status?: NonNullable<wire.AgentListQuery['status']>;
 }
 
 export interface RelayRegisterAgentInput {
-  name: string;
+  name: wire.CreateAgentRequest['name'];
   type?: RelayAgentType;
-  persona?: string;
-  metadata?: Record<string, unknown>;
+  persona?: NonNullable<wire.CreateAgentRequest['persona']>;
+  metadata?: wire.CreateAgentRequest['metadata'];
 }
 
 export interface RelayUpdateAgentInput {
-  status?: Exclude<RelayAgentStatus, 'unknown'>;
-  persona?: string | null;
-  metadata?: Record<string, unknown>;
+  status?: wire.UpdateAgentRequest['status'];
+  persona?: wire.UpdateAgentRequest['persona'];
+  metadata?: wire.UpdateAgentRequest['metadata'];
+}
+
+export interface RelayReleaseAgentInput {
+  name: wire.ReleaseAgentRequest['name'];
+  reason?: NonNullable<wire.ReleaseAgentRequest['reason']>;
+  deleteAgent?: wire.ReleaseAgentRequest['delete_agent'];
+}
+
+/** Raw action-invocation acknowledgement returned by the release endpoint. */
+export interface RelayAgentReleaseResult {
+  invocationId?: string;
+  actionName?: string;
+  status?: string;
+  [key: string]: unknown;
 }
 
 export interface RelayListChannelsOptions {
@@ -305,14 +372,14 @@ export interface RelayListChannelsOptions {
 }
 
 export interface RelayCreateChannelInput {
-  name: string;
-  topic?: string | null;
-  metadata?: Record<string, unknown>;
+  name: wire.CreateChannelRequest['name'];
+  topic?: wire.CreateChannelRequest['topic'];
+  metadata?: wire.CreateChannelRequest['metadata'];
 }
 
 export interface RelayUpdateChannelInput {
-  topic?: string | null;
-  metadata?: Record<string, unknown>;
+  topic?: wire.UpdateChannelRequest['topic'];
+  metadata?: wire.UpdateChannelRequest['metadata'];
 }
 
 export interface RelayMessageListOptions {
@@ -328,6 +395,7 @@ export interface RelaySendChannelMessageInput {
   attachments?: RelayMessageAttachmentInput[];
   mode?: RelayMessageMode;
   idempotencyKey?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface RelayReplyMessageInput {
@@ -335,6 +403,7 @@ export interface RelayReplyMessageInput {
   text: string;
   blocks?: RelayMessageBlock[];
   idempotencyKey?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface RelaySendDirectMessageInput {
@@ -343,6 +412,7 @@ export interface RelaySendDirectMessageInput {
   attachments?: RelayMessageAttachmentInput[];
   mode?: RelayMessageMode;
   idempotencyKey?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface RelaySendGroupDirectMessageInput {
@@ -353,6 +423,7 @@ export interface RelaySendGroupDirectMessageInput {
   attachments?: RelayMessageAttachmentInput[];
   mode?: RelayMessageMode;
   idempotencyKey?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface RelayListDirectMessagesInput extends RelayMessageListOptions {
@@ -366,11 +437,17 @@ export interface RelayCreateGroupDirectMessageInput {
 }
 
 export interface RelayGroupDirectConversation {
-  id: string;
-  channelId?: string;
-  name?: string;
-  participants: string[];
-  createdAt?: string;
+  id: wire.CreateGroupDmResponse['id'];
+  channelId?: wire.CreateGroupDmResponse['channel_id'];
+  name?: NonNullable<wire.CreateGroupDmResponse['name']>;
+  /**
+   * Participant identifiers flattened from the canonical `{ agent_id }` rows.
+   * Canonical rows carry only `agent_id`; when an enriched row also provides
+   * `agent_name`, the name is preferred because the relay surface addresses
+   * agents by name.
+   */
+  participants: Array<wire.CreateGroupDmResponse['participants'][number]['agent_id']>;
+  createdAt?: wire.CreateGroupDmResponse['created_at'];
 }
 
 export interface RelayDeliveryUnsupportedResult {
@@ -417,14 +494,25 @@ export interface RelayWebhook {
   [key: string]: unknown;
 }
 
+/**
+ * Input for `integrations.webhooks.create`.
+ *
+ * The endpoint (`POST /v1/webhooks`) takes the channel to deliver into and
+ * returns the generated URL. It previously declared a required `url` and an
+ * `event`, neither of which the API accepts — `url` is part of the *response*,
+ * and `event` belongs to subscriptions — so every call was rejected with
+ * "channel is required".
+ */
 export interface RelayCreateWebhookInput {
-  url: string;
-  event?: string;
+  /** Channel the webhook posts into. A leading `#` is stripped. */
+  channel: string;
+  name?: string;
   [key: string]: unknown;
 }
 
 export interface RelayEventSubscription {
   id: string;
+  events?: string[];
   event?: string;
   createdAt?: string;
   [key: string]: unknown;
@@ -500,6 +588,7 @@ export interface RelayActionInvocationAck {
   handlerNodeId?: string | null;
   dispatchedNodeId?: string | null;
   input?: Record<string, unknown>;
+  output?: Record<string, unknown> | null;
   status?: string;
   createdAt?: string;
 }
@@ -510,6 +599,8 @@ export interface RelayActionInvocation {
   actionName: string;
   callerId?: string | null;
   callerName?: string | null;
+  handlerNodeId?: string | null;
+  dispatchedNodeId?: string | null;
   input?: Record<string, unknown>;
   output?: Record<string, unknown> | null;
   status: string;
@@ -530,9 +621,13 @@ export type RelayPlacementRejectReason =
   | 'capability_mismatch'
   | 'placement_queue_full'
   | 'placement_ttl_expired'
+  | 'no_eligible_node'
+  | 'node_unavailable'
+  | 'sandbox_policy_mismatch'
   | 'unmapped_repo';
 
-export type RelayPlacementReconcileReason = 'no_eligible_node' | 'target_offline' | 'unmapped_repo';
+export type RelayPlacementReconcileReason =
+  'no_eligible_node' | 'target_offline' | 'unmapped_repo' | 'sandbox_policy_mismatch';
 
 export interface RelayPlacementReconcileEvent {
   action: 'queued' | 'failed';
@@ -566,8 +661,57 @@ export interface RelaySpawnPlacementInput {
   ttlOverrideMs?: number;
   /** Poll cadence while a placement is queued. */
   pollIntervalMs?: number;
-  /** Fail immediately instead of queueing when no currently eligible node exists. */
+  /**
+   * Fail immediately instead of queueing when no currently eligible node exists.
+   * Defaults to `true`; pass `false` to opt into bounded queue/reconcile behavior.
+   */
   failFast?: boolean;
+  /**
+   * Restrict eligibility to Cloud-provisioned sandbox nodes. Overrides the
+   * client default; the client default is `false`.
+   */
+  sandboxOnly?: boolean;
+  /**
+   * Wait for the target node's terminal action result before resolving.
+   *
+   * Placement only proves the engine accepted the dispatch. A node running an
+   * obsolete broker advertises `spawn:<harness>` capacity, acknowledges the
+   * invocation, and launches nothing — without this the ack is identical to a
+   * real spawn. Defaults to `false` so plain dispatch keeps its semantics for
+   * non-spawn capabilities; agent-spawning callers should set it.
+   * Spawn success is judged against whichever contract this request asked the
+   * node for — see `verifyReady`. Either way a terminal success must carry
+   * `spawned:true` and an explicit `ready` boolean, so a handler that reports
+   * nothing is still a failure.
+   */
+  confirm?: boolean;
+  /**
+   * Request proven harness readiness from the broker. Defaults to `true` for
+   * spawn harnesses when `confirm: true` is set, and `false` otherwise
+   * (including `spawn:persona`, whose child is engine-owned and never reads
+   * `verify_ready`).
+   *
+   * Verified success carries `spawned:true, ready:true`; unverified success
+   * carries `spawned:true, ready:false`. Confirmation judges whichever contract
+   * was requested, so `verifyReady: false` with `confirm: true` accepts a
+   * launched-but-not-yet-ready worker.
+   *
+   * Setting this to `true` without `confirm: true` asks the broker to hold the
+   * action open until the harness is ready — and to release the worker if it
+   * never is — while this call returns as soon as the dispatch is accepted. Only
+   * do that if something else reads the invocation back.
+   */
+  verifyReady?: boolean;
+  /**
+   * How long to wait for that terminal result. Must exceed the node's own
+   * readiness window (the broker's `verify_ready` mode holds the action open
+   * for up to 90s, and starts that clock only once the launch completes).
+   * Defaults to 360000; `fleet spawn` enforces a 95000 floor for verified
+   * targeted spawns so the two windows nest.
+   */
+  confirmTimeoutMs?: number;
+  /** Poll cadence while awaiting confirmation. Defaults to 500. */
+  confirmPollIntervalMs?: number;
   /** Placement log sink. Defaults to the client placement logger. */
   log?: (message: string) => void;
   /** Reconcile hook for queue/fail visibility, e.g. Slack surfacing by callers. */
@@ -575,14 +719,26 @@ export interface RelaySpawnPlacementInput {
 }
 
 export interface RelaySpawnPlacementAck extends RelayActionInvocationAck {
-  node: RelayNode;
+  /** Resolved roster node when the dispatch acknowledgment identifies one. */
+  node?: RelayNode;
   placement: {
     capability: string;
-    node: string;
+    /** Resolved roster node name; absent when acknowledgment metadata is missing or not yet visible. */
+    node?: string;
     repo?: string;
     attempts: number;
     queued: boolean;
+    /** Evidence state for this placement receipt. */
+    state: 'accepted' | 'ready';
+    /**
+     * `true` only when the node reported a terminal success for this
+     * invocation. `false` means the dispatch was accepted but not confirmed —
+     * it was not observed to have launched anything.
+     */
+    confirmed: boolean;
   };
+  /** The node's terminal action result, present only when `confirm` was set. */
+  confirmation?: RelayActionInvocation;
 }
 
 // ── Workspace ───────────────────────────────────────────────────────────────
@@ -593,13 +749,16 @@ export interface RelayWorkspaceInfo {
   [key: string]: unknown;
 }
 
-export interface RelayWorkspaceFleetNodesConfig {
-  enabled: boolean;
-  defaultEnabled: boolean;
-  override: boolean | null;
-}
-
-export type InboxItemState = 'queued' | 'delivered' | 'failed' | 'deferred' | 'read';
+/**
+ * Relay inbox states built on the canonical delivery-status lifecycle:
+ * `queued`/`delivered`/`failed` surface directly, the terminal `acked` and
+ * `dead_lettered` ledger states surface as `read` and `failed`, and
+ * `deferred` is a relay-only extension (a deferred 6.x ledger row stays
+ * `queued` with a future `available_at`; legacy engines report a `deferred`
+ * status).
+ */
+export type InboxItemState =
+  Extract<wire.DeliveryStatus, 'queued' | 'delivered' | 'failed'> | 'deferred' | 'read';
 
 export interface InboxItem {
   id: string;
@@ -687,6 +846,13 @@ export interface RelayAgentPresenceEvent {
   agent: { name: string };
 }
 
+/**
+ * Spawn/release requests are legacy `api.relaycast.dev` engine events
+ * (`agent.spawn_requested` / `agent.release_requested`). The 6.x wire contract
+ * moved spawning to the fleet node-provider protocol, so these have no
+ * canonical schemas to derive from; the shapes below match the last published
+ * contract (`@relaycast/types` 3.x).
+ */
 export interface RelayAgentSpawnRequestedEvent {
   type: 'agentSpawnRequested';
   agent: {
@@ -724,24 +890,24 @@ export interface RelayChannelMembershipEvent {
 
 export interface RelayMessageReadEvent {
   type: 'messageRead';
-  messageId: string;
-  agentName: string;
-  readAt?: string;
+  messageId: wire.MessageReadEvent['message_id'];
+  agentName: wire.MessageReadEvent['agent_name'];
+  readAt?: wire.MessageReadEvent['read_at'];
 }
 
 export interface RelayReactionEvent {
   type: 'reactionAdded' | 'reactionRemoved';
-  messageId: string;
-  emoji: string;
-  agentName: string;
+  messageId: wire.MessageReactedEvent['message_id'];
+  emoji: wire.MessageReactedEvent['emoji'];
+  agentName: wire.MessageReactedEvent['agent_name'];
 }
 
 export interface RelayActionInvokedEvent {
   type: 'actionInvoked';
-  invocationId: string;
-  actionName: string;
-  callerName: string;
-  handlerAgentId: string;
+  invocationId: wire.ActionInvokedEvent['invocation_id'];
+  actionName: wire.ActionInvokedEvent['action_name'];
+  callerName: wire.ActionInvokedEvent['caller_name'];
+  handlerAgentId: wire.ActionInvokedEvent['handler_agent_id'];
 }
 
 export interface RelayConnectionEvent {
@@ -801,16 +967,27 @@ export interface RelayMessagingClient {
     get(name: string): Promise<RelayAgent>;
     register(input: RelayRegisterAgentInput): Promise<RelayAgentRegistration>;
     /**
-     * Register an agent, adopting the existing identity (with a rotated
-     * token) when the name is already taken. Optional: backends without
-     * rotation support fall back to plain `register`.
+     * Compatibility alias for `register`. Current Relaycast SDKs implement it
+     * as create-only registration: an existing name is rejected with
+     * `name_conflict` and its token is not rotated. Optional: when absent,
+     * callers fall back to plain `register`.
      */
     registerOrRotate?(input: RelayRegisterAgentInput): Promise<RelayAgentRegistration>;
     /** Resolve the identity of the agent the client is authenticated as. */
     me(): Promise<RelayAgent>;
     update(name: string, input: RelayUpdateAgentInput): Promise<RelayAgent>;
     delete(name: string): Promise<void>;
+    /** Release an agent lifecycle, optionally freeing its registered name. */
+    release(input: RelayReleaseAgentInput): Promise<RelayAgentReleaseResult>;
     presence(): Promise<RelayAgentPresence[]>;
+  };
+  /** Durable canonical harness events stored on the Relaycast agent record. */
+  readonly sessionEvents?: {
+    emit(agentName: string, event: AgentSessionEvent): Promise<unknown>;
+    list(
+      agentName: string,
+      options?: { type?: AgentSessionEvent['type']; limit?: number }
+    ): Promise<unknown[]>;
   };
   readonly channels: {
     list(options?: RelayListChannelsOptions): Promise<RelayChannel[]>;
@@ -923,11 +1100,16 @@ export interface RelayMessagingClient {
   };
   readonly workspace: {
     info(): Promise<RelayWorkspaceInfo>;
-    fleetNodes: {
-      get(): Promise<RelayWorkspaceFleetNodesConfig>;
-      set(enabled: boolean): Promise<RelayWorkspaceFleetNodesConfig>;
-      inherit(): Promise<RelayWorkspaceFleetNodesConfig>;
-    };
+  };
+  /**
+   * Stored file attachments. `upload` runs the full upload (request, byte
+   * PUT, complete) and returns a file whose `id` can be passed in a message's
+   * `attachments`.
+   */
+  readonly files?: {
+    upload(input: RelayUploadFileInput, options?: RelayFileTransferOptions): Promise<RelayFileInfo>;
+    get(id: string): Promise<RelayFileInfo>;
+    download(id: string, options?: RelayFileTransferOptions): Promise<RelayDownloadedFile>;
   };
 }
 

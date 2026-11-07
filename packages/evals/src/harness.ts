@@ -12,6 +12,7 @@ import type {
   ListAgent,
   RuntimeSpawnOptions,
   SendMessageInput,
+  SendMessageResult,
 } from '@agent-relay/harness-driver';
 
 export interface EventWaiter {
@@ -29,7 +30,7 @@ export interface BrokerHarness {
 
   releaseAgent(name: string): Promise<{ name: string }>;
 
-  sendMessage(input: SendMessageInput): Promise<{ event_id: string; targets: string[] }>;
+  sendMessage(input: SendMessageInput): Promise<SendMessageResult>;
 
   listAgents(): Promise<ListAgent[]>;
 

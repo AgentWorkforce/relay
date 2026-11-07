@@ -1,6 +1,660 @@
-use super::fleet::refresh_fleet_inventory_session_ref;
+use super::fleet::{
+    confirm_pending_delivery_and_resolve_fleet_ack, fail_terminal_session,
+    refresh_fleet_inventory_session_ref, try_send_terminal,
+};
 use super::*;
+use crate::terminal_control::{TerminalControlCommand, TerminalToCloud};
 use crate::worker::AgentWorkState;
+
+const TERMINAL_PENDING_OUTPUT_MAX_BYTES: usize = 1024 * 1024;
+
+/// Resolve the delivery mode to advertise in a `terminal.ready` frame for
+/// `session_id`. A fresh PTY has no prior entry in `delivery_states` — that
+/// must not be sent to the client as "no mode" (the attach client would then
+/// keep its own inferred default, which can be wrong, e.g. `manual_flush` for
+/// `--node drive`). The broker's logical default for a worker with no state
+/// entry is [`InboundDeliveryMode::AutoInject`], so fall back to it explicitly.
+fn resolve_ready_delivery_state(
+    terminal_sessions: &HashMap<String, TerminalSession>,
+    delivery_states: &HashMap<WorkerName, InboundDeliveryState>,
+    session_id: &str,
+) -> (Option<InboundDeliveryMode>, Option<String>) {
+    let Some(session) = terminal_sessions.get(session_id) else {
+        return (None, None);
+    };
+    let state = delivery_states.get(&session.agent);
+    (
+        Some(state.map(|value| value.mode).unwrap_or_default()),
+        Some(
+            state
+                .map(|value| value.revision)
+                .unwrap_or_default()
+                .to_string(),
+        ),
+    )
+}
+
+fn publish_terminal_output(
+    terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
+    terminal_sessions: &mut HashMap<String, TerminalSession>,
+    terminal_snapshot_requests: &mut HashMap<String, TerminalSnapshotRequest>,
+    terminal_input_requests: &mut HashMap<String, TerminalInputRequest>,
+    name: &WorkerName,
+    chunk: String,
+    offset: Option<u64>,
+) {
+    if terminal_sessions.is_empty() {
+        return;
+    }
+    let chunk_bytes = chunk.len();
+    let mut session_ids = Vec::new();
+    let mut saturated_sessions = Vec::new();
+    for (session_id, session) in terminal_sessions.iter_mut() {
+        if session.agent != *name {
+            continue;
+        }
+        if !session.ready {
+            if session.pending_output_bytes + chunk_bytes > TERMINAL_PENDING_OUTPUT_MAX_BYTES {
+                saturated_sessions.push(session_id.clone());
+            } else {
+                session.pending_output.push((chunk.clone(), offset));
+                session.pending_output_bytes += chunk_bytes;
+            }
+            continue;
+        }
+        session_ids.push(session_id.clone());
+    }
+    for session_id in saturated_sessions {
+        tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal snapshot wait exceeded bounded output buffer; ending session");
+        end_terminal_session(
+            terminal_control_tx,
+            terminal_sessions,
+            terminal_snapshot_requests,
+            terminal_input_requests,
+            &session_id,
+            "output_backpressure",
+            "terminal snapshot wait exceeded bounded output buffer",
+        );
+    }
+    for session_id in session_ids {
+        if !try_send_terminal(
+            terminal_control_tx,
+            TerminalToCloud::Output {
+                session_id: session_id.clone(),
+                chunk: chunk.clone(),
+                offset,
+            },
+        ) {
+            tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal output queue full or closed; ending session");
+            end_terminal_session(
+                terminal_control_tx,
+                terminal_sessions,
+                terminal_snapshot_requests,
+                terminal_input_requests,
+                &session_id,
+                "output_backpressure",
+                "terminal output queue is full",
+            );
+        }
+    }
+}
+
+fn end_terminal_session(
+    terminal_control_tx: &mpsc::Sender<TerminalControlCommand>,
+    terminal_sessions: &mut HashMap<String, TerminalSession>,
+    terminal_snapshot_requests: &mut HashMap<String, TerminalSnapshotRequest>,
+    terminal_input_requests: &mut HashMap<String, TerminalInputRequest>,
+    session_id: &str,
+    code: &str,
+    message: &str,
+) {
+    terminal_sessions.remove(session_id);
+    terminal_snapshot_requests.retain(|_, pending| pending.session_id != session_id);
+    terminal_input_requests.retain(|_, pending| pending.session_id != session_id);
+    if !try_send_terminal(
+        terminal_control_tx,
+        TerminalToCloud::Closed {
+            session_id: session_id.into(),
+            code: Some(code.into()),
+            message: Some(message.into()),
+        },
+    ) {
+        tracing::warn!(
+            target = "relay_broker::terminal",
+            session_id,
+            "terminal close could not be queued after session failure"
+        );
+    }
+}
+
+fn enqueue_pty_event(
+    states: &mut HashMap<WorkerName, PtyObservabilityState>,
+    tx: &mpsc::Sender<HostedAgentEvent>,
+    name: &WorkerName,
+    event_type: &str,
+    fidelity: &str,
+    turn_id: Option<&str>,
+    fields: Value,
+) {
+    let state = states.entry(name.clone()).or_default();
+    state.sequence += 1;
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    let mut payload = fields.as_object().cloned().unwrap_or_default();
+    payload.insert("at".to_string(), Value::String(timestamp.clone()));
+    let mut observability = json!({
+        "source":"broker", "fidelity":fidelity, "sequence":state.sequence,
+        "timestamp":timestamp,
+    });
+    if let (Some(turn_id), Some(object)) = (turn_id, observability.as_object_mut()) {
+        object.insert("turnId".to_string(), Value::String(turn_id.to_string()));
+    }
+    payload.insert("observability".to_string(), observability);
+    if let Err(error) = tx.try_send(HostedAgentEvent {
+        name: name.to_string(),
+        event_type: event_type.to_string(),
+        payload,
+        workspace_id: state.workspace_id.clone(),
+    }) {
+        tracing::warn!(worker = %name, error = %error, "Relaycast PTY observability queue is full or closed");
+    }
+}
+
+fn protocol_pid(value: &Value) -> Option<u32> {
+    value
+        .get("payload")
+        .and_then(|payload| payload.get("pid"))
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid != 0)
+}
+
+fn record_started_harness_pid(
+    runtime: &AgentRuntime,
+    harness_pid: &mut Option<u32>,
+    value: &Value,
+) -> bool {
+    if *runtime != AgentRuntime::Pty {
+        return false;
+    }
+    let Some(pid) = protocol_pid(value) else {
+        return false;
+    };
+    *harness_pid = Some(pid);
+    true
+}
+
+/// Validate a worker's `delivery_verified` frame before it clears custody.
+///
+/// PTY workers must name harness acceptance (or a replay of an already
+/// completed delivery). Legacy `echo` and `timeout_fallback` frames prove only
+/// that bytes reached the terminal, so they never confirm a delivery. Headless
+/// workers report process success without a verification field.
+fn accepted_delivery_verification(verification: Option<&str>, is_pty: bool) -> Option<&str> {
+    match verification {
+        Some("harness_acceptance" | "completed_replay") => verification,
+        Some("echo" | "timeout_fallback") => None,
+        Some(_) | None if is_pty => None,
+        Some(other) => Some(other),
+        None => Some("worker_confirmation"),
+    }
+}
+
+/// Worker state after a terminal `delivery_failed`, as `(state, published
+/// state, reason)`. The failed delivery is already dead-lettered, so the
+/// worker stays blocked only while another delivery for it awaits acceptance;
+/// otherwise later output and idle events must be able to move it on.
+fn state_after_terminal_delivery_failure(
+    pending_delivery_count: usize,
+) -> (AgentWorkState, &'static str, &'static str) {
+    if pending_delivery_count > 0 {
+        (AgentWorkState::BlockedOnSend, "stuck", "blocked_on_send")
+    } else {
+        (AgentWorkState::Working, "working", "delivery_failed")
+    }
+}
+
+#[cfg(test)]
+mod terminal_delivery_failure_state_tests {
+    use super::*;
+
+    #[test]
+    fn last_failed_delivery_publishes_a_non_stuck_state() {
+        assert_eq!(
+            state_after_terminal_delivery_failure(0),
+            (AgentWorkState::Working, "working", "delivery_failed"),
+            "a worker with no remaining deliveries must publish its way out of `stuck`"
+        );
+        assert_eq!(
+            state_after_terminal_delivery_failure(2),
+            (AgentWorkState::BlockedOnSend, "stuck", "blocked_on_send")
+        );
+    }
+}
+
+/// Whether a worker's `delivery_unconfirmed` frame is the terminal Unconfirmed
+/// outcome (delivered without harness evidence) rather than a mid-recovery
+/// progress report for a body still awaiting acceptance.
+fn is_terminal_unconfirmed(payload: &Value) -> bool {
+    payload.get("terminal").and_then(Value::as_bool) == Some(true)
+}
+
+fn worker_event_is_current(current_generation: Option<Uuid>, event_generation: Uuid) -> bool {
+    current_generation == Some(event_generation)
+}
+
+#[cfg(test)]
+mod terminal_ready_delivery_mode_tests {
+    use super::*;
+
+    fn terminal_session(agent: &WorkerName) -> TerminalSession {
+        TerminalSession {
+            agent: agent.clone(),
+            mode: TerminalMode::Drive,
+            ready: false,
+            pending_output: Vec::new(),
+            pending_output_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn falls_back_to_auto_inject_when_the_worker_has_no_delivery_state_entry() {
+        let agent = WorkerName::new("fresh-worker");
+        let mut terminal_sessions = HashMap::new();
+        terminal_sessions.insert("session-a".to_string(), terminal_session(&agent));
+        let delivery_states: HashMap<WorkerName, InboundDeliveryState> = HashMap::new();
+
+        let resolved =
+            resolve_ready_delivery_state(&terminal_sessions, &delivery_states, "session-a");
+
+        assert_eq!(
+            resolved,
+            (Some(InboundDeliveryMode::AutoInject), Some("0".into())),
+            "a fresh PTY with no delivery_states entry must still advertise the broker's \
+             logical default instead of omitting the mode"
+        );
+    }
+
+    #[test]
+    fn reports_the_worker_s_actual_mode_when_a_delivery_state_entry_exists() {
+        let agent = WorkerName::new("manual-worker");
+        let mut terminal_sessions = HashMap::new();
+        terminal_sessions.insert("session-b".to_string(), terminal_session(&agent));
+        let mut delivery_states: HashMap<WorkerName, InboundDeliveryState> = HashMap::new();
+        delivery_states.insert(
+            agent,
+            InboundDeliveryState {
+                mode: InboundDeliveryMode::ManualFlush,
+                revision: 3,
+                pending: Default::default(),
+            },
+        );
+
+        let resolved =
+            resolve_ready_delivery_state(&terminal_sessions, &delivery_states, "session-b");
+
+        assert_eq!(
+            resolved,
+            (Some(InboundDeliveryMode::ManualFlush), Some("3".into()))
+        );
+    }
+
+    #[test]
+    fn returns_no_delivery_state_for_an_unknown_session_id() {
+        let terminal_sessions: HashMap<String, TerminalSession> = HashMap::new();
+        let delivery_states: HashMap<WorkerName, InboundDeliveryState> = HashMap::new();
+
+        let resolved =
+            resolve_ready_delivery_state(&terminal_sessions, &delivery_states, "no-such-session");
+
+        assert_eq!(resolved, (None, None));
+    }
+}
+
+#[cfg(test)]
+mod pty_observability_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn broker_owned_pty_profile_is_ordered_and_deduplicates_busy_output() {
+        let (tx, mut rx) = mpsc::channel(32);
+        let mut states = HashMap::new();
+        let name = WorkerName::new("Worker");
+
+        publish_pty_starting(&mut states, &tx, &name, None);
+        publish_pty_busy(&mut states, &tx, &name);
+        publish_pty_busy(&mut states, &tx, &name);
+        publish_pty_idle(&mut states, &tx, &name);
+
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        let event_types: Vec<_> = events
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect();
+        assert_eq!(
+            event_types,
+            [
+                "session.starting",
+                "observability.capabilities",
+                "activity.changed",
+                "turn.started",
+                "activity.changed",
+                "turn.settled",
+                "activity.changed",
+            ]
+        );
+        let sequences: Vec<_> = events
+            .iter()
+            .map(|event| event.payload["observability"]["sequence"].as_u64().unwrap())
+            .collect();
+        assert_eq!(sequences, (1..=7).collect::<Vec<_>>());
+        assert_eq!(events[2].payload["activity"], "starting");
+        assert_eq!(events[4].payload["activity"], "thinking");
+        assert_eq!(events[6].payload["activity"], "idle");
+        assert_eq!(
+            events[1].payload["capabilities"]["activities"]["typing"]["available"],
+            false
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_diagnostics_are_not_hosted_as_a_second_canonical_stream() {
+        let name = WorkerName::new("Worker");
+        let diagnostic = json!({
+            "protocol_version": 1,
+            "sequence": 1,
+            "diagnostic": { "kind": "diagnostic", "message": "debug" }
+        });
+        assert!(
+            hosted_agent_event(&name, "native_harness_diagnostic", &diagnostic, None).is_none()
+        );
+
+        let canonical = json!({
+            "protocol_version":1, "sequence":9, "timestamp":"2026-07-16T00:00:00Z",
+            "event":{"kind":"diagnostic","message":"debug","observability":{"source":"ai-sdk","fidelity":"exact","sequence":9,"timestamp":"2026-07-16T00:00:00Z"}}
+        });
+        let workspace_id = WorkspaceId::new("ws_secondary");
+        let hosted =
+            hosted_agent_event(&name, "agent_event", &canonical, Some(workspace_id.clone()))
+                .expect("canonical event should be hosted");
+        assert_eq!(hosted.event_type, "diagnostic");
+        assert!(hosted.payload.get("kind").is_none());
+        assert_eq!(hosted.payload["protocol_version"], 1);
+        assert_eq!(hosted.payload["sequence"], 9);
+        assert_eq!(hosted.workspace_id, Some(workspace_id));
+    }
+
+    #[test]
+    fn protocol_pid_accepts_only_u32_payload_values() {
+        assert_eq!(protocol_pid(&json!({"payload": {"pid": 42}})), Some(42));
+        assert_eq!(protocol_pid(&json!({"payload": {"pid": 0}})), None);
+        assert_eq!(
+            protocol_pid(&json!({"payload": {"pid": u64::from(u32::MAX) + 1}})),
+            None
+        );
+        assert_eq!(protocol_pid(&json!({"payload": {"pid": "42"}})), None);
+    }
+
+    #[test]
+    fn worker_generation_gate_rejects_stale_same_name_events() {
+        let current = Uuid::new_v4();
+        assert!(worker_event_is_current(Some(current), current));
+        assert!(!worker_event_is_current(Some(current), Uuid::new_v4()));
+        assert!(!worker_event_is_current(None, current));
+    }
+
+    #[test]
+    fn harness_started_records_liveness_without_readiness() {
+        let mut harness_pid = None;
+        assert!(record_started_harness_pid(
+            &AgentRuntime::Pty,
+            &mut harness_pid,
+            &json!({"payload": {"pid": 42}})
+        ));
+        assert_eq!(harness_pid, Some(42));
+
+        let now = Instant::now();
+        let live_pid = std::process::id();
+        assert!(record_started_harness_pid(
+            &AgentRuntime::Pty,
+            &mut harness_pid,
+            &json!({"payload": {"pid": live_pid}})
+        ));
+        assert_eq!(
+            crate::worker::orphaned_worker(
+                harness_pid,
+                None,
+                now - std::time::Duration::from_secs(120),
+                now,
+            ),
+            None,
+            "reported harness liveness must bypass the never-ready deadline"
+        );
+
+        let mut zero_pid = None;
+        assert!(!record_started_harness_pid(
+            &AgentRuntime::Pty,
+            &mut zero_pid,
+            &json!({"payload": {"pid": 0}})
+        ));
+        assert_eq!(
+            crate::worker::orphaned_worker(
+                zero_pid,
+                None,
+                now - std::time::Duration::from_secs(120),
+                now,
+            ),
+            Some(crate::worker::OrphanedWorker::NeverReady),
+            "a zero pid must not suppress the never-ready deadline"
+        );
+
+        let mut headless_pid = None;
+        assert!(!record_started_harness_pid(
+            &AgentRuntime::Headless,
+            &mut headless_pid,
+            &json!({"payload": {"pid": 42}})
+        ));
+        assert_eq!(headless_pid, None);
+    }
+}
+
+pub(super) fn publish_pty_starting(
+    states: &mut HashMap<WorkerName, PtyObservabilityState>,
+    tx: &mpsc::Sender<HostedAgentEvent>,
+    name: &WorkerName,
+    workspace_id: Option<WorkspaceId>,
+) {
+    states.insert(
+        name.clone(),
+        PtyObservabilityState {
+            workspace_id,
+            ..PtyObservabilityState::default()
+        },
+    );
+    enqueue_pty_event(
+        states,
+        tx,
+        name,
+        "session.starting",
+        "exact",
+        None,
+        json!({"reason":"broker_spawn"}),
+    );
+    enqueue_pty_event(
+        states,
+        tx,
+        name,
+        "observability.capabilities",
+        "exact",
+        None,
+        json!({"capabilities":pty_capabilities()}),
+    );
+    let state = states
+        .get_mut(name)
+        .expect("PTY observability state exists");
+    let previous = state.activity;
+    state.activity = "starting";
+    enqueue_pty_event(
+        states,
+        tx,
+        name,
+        "activity.changed",
+        "exact",
+        None,
+        json!({
+            "activity":"starting", "previousActivity":previous, "reason":"broker_spawn"
+        }),
+    );
+}
+
+pub(super) fn publish_pty_busy(
+    states: &mut HashMap<WorkerName, PtyObservabilityState>,
+    tx: &mpsc::Sender<HostedAgentEvent>,
+    name: &WorkerName,
+) {
+    let state = states.entry(name.clone()).or_default();
+    if state.activity == "thinking" {
+        return;
+    }
+    let turn_id = format!("pty-{}-{}", name, state.sequence + 1);
+    let previous = state.activity;
+    state.activity = "thinking";
+    state.turn_id = Some(turn_id.clone());
+    enqueue_pty_event(
+        states,
+        tx,
+        name,
+        "turn.started",
+        "inferred",
+        Some(&turn_id),
+        json!({"turnId":turn_id}),
+    );
+    enqueue_pty_event(
+        states,
+        tx,
+        name,
+        "activity.changed",
+        "inferred",
+        Some(&turn_id),
+        json!({
+            "activity":"thinking", "previousActivity":previous, "reason":"broker_busy_boundary"
+        }),
+    );
+}
+
+pub(super) fn publish_pty_idle(
+    states: &mut HashMap<WorkerName, PtyObservabilityState>,
+    tx: &mpsc::Sender<HostedAgentEvent>,
+    name: &WorkerName,
+) {
+    let Some(state) = states.get_mut(name) else {
+        return;
+    };
+    let Some(turn_id) = state.turn_id.take() else {
+        return;
+    };
+    let previous = state.activity;
+    state.activity = "idle";
+    enqueue_pty_event(
+        states,
+        tx,
+        name,
+        "turn.settled",
+        "inferred",
+        Some(&turn_id),
+        json!({"turnId":turn_id}),
+    );
+    enqueue_pty_event(
+        states,
+        tx,
+        name,
+        "activity.changed",
+        "inferred",
+        Some(&turn_id),
+        json!({
+            "activity":"idle", "previousActivity":previous, "reason":"broker_idle_boundary"
+        }),
+    );
+}
+
+pub(super) fn publish_pty_error(
+    states: &mut HashMap<WorkerName, PtyObservabilityState>,
+    tx: &mpsc::Sender<HostedAgentEvent>,
+    name: &WorkerName,
+    error: &str,
+    code: Option<String>,
+) {
+    let state = states.entry(name.clone()).or_default();
+    if state.activity == "error" {
+        return;
+    }
+    let previous = state.activity;
+    state.activity = "error";
+    let turn_id = state.turn_id.clone();
+    let mut failure = json!({"error":error});
+    if let (Some(code), Some(object)) = (code, failure.as_object_mut()) {
+        object.insert("code".to_string(), Value::String(code));
+    }
+    enqueue_pty_event(
+        states,
+        tx,
+        name,
+        "session.failed",
+        "exact",
+        turn_id.as_deref(),
+        failure,
+    );
+    enqueue_pty_event(
+        states,
+        tx,
+        name,
+        "activity.changed",
+        "exact",
+        turn_id.as_deref(),
+        json!({
+            "activity":"error", "previousActivity":previous, "reason":"broker_runtime_failure"
+        }),
+    );
+}
+
+fn pty_capabilities() -> Value {
+    let unavailable = json!({"available":false});
+    let exact = json!({"available":true,"fidelities":["exact"]});
+    let inferred = json!({"available":true,"fidelities":["inferred"]});
+    json!({
+        "activities":{"starting":exact,"thinking":inferred,"typing":unavailable,"using_tool":unavailable,"waiting":unavailable,"idle":inferred,"error":exact},
+        "events":{"lifecycle":exact,"turns":inferred,"text":unavailable,"reasoning":unavailable,"tools":unavailable,"tool_approvals":unavailable,"files":unavailable,"compaction":unavailable,"model":unavailable,"warnings":unavailable,"usage":unavailable,"diagnostics":unavailable,"errors":exact}
+    })
+}
+
+fn hosted_agent_event(
+    name: &WorkerName,
+    msg_type: &str,
+    payload: &Value,
+    workspace_id: Option<WorkspaceId>,
+) -> Option<HostedAgentEvent> {
+    if msg_type != "agent_event" {
+        return None;
+    }
+    let mut event_payload = payload.get("event")?.as_object()?.clone();
+    let event_type = event_payload.remove("kind")?.as_str()?.to_string();
+    event_payload.insert(
+        "protocol_version".to_string(),
+        payload.get("protocol_version").cloned()?,
+    );
+    event_payload.insert("sequence".to_string(), payload.get("sequence").cloned()?);
+    if let Some(timestamp) = payload.get("timestamp") {
+        event_payload.insert("timestamp".to_string(), timestamp.clone());
+    }
+    Some(HostedAgentEvent {
+        name: name.to_string(),
+        event_type,
+        payload: event_payload,
+        workspace_id,
+    })
+}
 
 impl BrokerRuntime {
     pub(super) async fn handle_worker_event(&mut self, worker_event: WorkerEvent) {
@@ -8,20 +662,127 @@ impl BrokerRuntime {
         let state = &mut self.state;
         let sdk_out_tx = &self.sdk_out_tx;
         let relaycast_http = self.relaycast_http.clone();
+        let hosted_agent_event_tx = &self.hosted_agent_event_tx;
+        let pty_observability = &mut self.pty_observability;
         let ws_control_tx = &self.ws_control_tx;
         let workers = &mut self.workers;
         let dedup = &mut self.dedup;
         let pending_deliveries = &mut self.pending_deliveries;
+        let dead_letters = &mut self.dead_letters;
         let terminal_failed_deliveries = &mut self.terminal_failed_deliveries;
         let pending_requests = &mut self.pending_requests;
+        let pending_verified_spawns = &mut self.pending_verified_spawns;
         let delivery_retry_interval = self.delivery_retry_interval;
         let fleet_control_tx = &self.fleet_control_tx;
+        let fleet_delivery_book = &mut self.fleet_delivery_book;
         let fleet_inventory = &mut self.fleet_inventory;
         let delivery_states = &self.delivery_states;
+        let terminal_control_tx = &self.terminal_control_tx;
+        let terminal_sessions = &mut self.terminal_sessions;
+        let terminal_snapshot_requests = &mut self.terminal_snapshot_requests;
+        let terminal_input_requests = &mut self.terminal_input_requests;
 
         match worker_event {
-            WorkerEvent::Message { name, value } => {
+            WorkerEvent::WriterFailed {
+                name,
+                generation,
+                error,
+            } => {
+                let current_generation = workers.workers.get(&name).map(|handle| handle.generation);
+                if !worker_event_is_current(current_generation, generation) {
+                    tracing::debug!(
+                        target = "agent_relay::broker",
+                        worker = %name,
+                        event_generation = %generation,
+                        current_generation = ?current_generation,
+                        "ignoring writer failure from stale worker generation"
+                    );
+                    return;
+                }
+
+                tracing::warn!(
+                    target = "relay_broker::terminal",
+                    worker = %name,
+                    error = %error,
+                    "worker command writer failed; closing attached terminals and resetting worker"
+                );
+                workers.fail_native_delivery_custody_generation(
+                    &name,
+                    generation,
+                    &format!("worker command writer failed: {error}"),
+                );
+                let session_ids: Vec<String> = terminal_sessions
+                    .iter()
+                    .filter(|(_, session)| session.agent == name)
+                    .map(|(session_id, _)| session_id.clone())
+                    .collect();
+                for session_id in session_ids {
+                    fail_terminal_session(
+                        terminal_control_tx,
+                        terminal_sessions,
+                        terminal_snapshot_requests,
+                        terminal_input_requests,
+                        session_id,
+                        "worker_write_failed",
+                        format!("worker command writer failed: {error}"),
+                    );
+                }
+                if let Err(release_error) = workers.terminate_after_writer_failure(name.as_str()) {
+                    tracing::warn!(
+                        target = "relay_broker::terminal",
+                        worker = %name,
+                        error = %release_error,
+                        "failed to signal worker after command writer failure"
+                    );
+                }
+            }
+            WorkerEvent::Message {
+                name,
+                generation,
+                value,
+            } => {
+                let current_generation = workers.workers.get(&name).map(|handle| handle.generation);
+                if !worker_event_is_current(current_generation, generation) {
+                    tracing::debug!(
+                        target = "agent_relay::broker",
+                        worker = %name,
+                        event_generation = %generation,
+                        current_generation = ?current_generation,
+                        "ignoring event from stale worker generation"
+                    );
+                    return;
+                }
                 if let Some(msg_type) = value.get("type").and_then(Value::as_str) {
+                    if let Some(payload) = value.get("payload") {
+                        let delivery_id = payload
+                            .get("delivery_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        if !delivery_id.is_empty() {
+                            match msg_type {
+                                "delivery_queued" | "delivery_ack" => {
+                                    workers.confirm_native_delivery_custody(
+                                        &name,
+                                        generation,
+                                        delivery_id,
+                                    );
+                                }
+                                "delivery_failed" => {
+                                    let reason = payload
+                                        .get("reason")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("native sidecar rejected delivery");
+                                    workers.fail_native_delivery_custody(
+                                        &name,
+                                        generation,
+                                        delivery_id,
+                                        reason,
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     if msg_type == "delivery_ack" {
                         if let Some(payload) = value.get("payload") {
                             let delivery_id = payload
@@ -45,16 +806,36 @@ impl BrokerRuntime {
                             let pending_for_confirmation = if let Ok(ack) =
                                 serde_json::from_value::<DeliveryAckPayload>(payload.clone())
                             {
-                                let pending = clear_pending_delivery_if_event_matches(
-                                    pending_deliveries,
-                                    &ack.delivery_id,
-                                    Some(&ack.event_id),
-                                    &name,
-                                    "delivery_ack",
-                                );
+                                let (pending, resolved_fleet_ack) =
+                                    confirm_pending_delivery_and_resolve_fleet_ack(
+                                        pending_deliveries,
+                                        &ack.delivery_id,
+                                        Some(&ack.event_id),
+                                        &name,
+                                        "delivery_ack",
+                                        fleet_delivery_book,
+                                    );
                                 if pending.is_some() {
                                     terminal_failed_deliveries.remove(&ack.delivery_id);
                                 }
+
+                                // Resolve a fleet (engine-facing) ack withheld
+                                // pending confirmation of this exact PTY
+                                // injection (relay#1310). Restored sibling
+                                // confirmations are held and released only as
+                                // a contiguous per-agent prefix, so a higher
+                                // sequence can never cumulatively ACK a lower
+                                // delivery that has not landed (relay#1543).
+                                if let Some((agent, up_to_seq)) = resolved_fleet_ack {
+                                    super::fleet::enqueue_delivery_ack(
+                                        fleet_control_tx,
+                                        &self.node_delivery_probe,
+                                        agent,
+                                        up_to_seq,
+                                    )
+                                    .await;
+                                }
+
                                 pending
                             } else {
                                 None
@@ -112,9 +893,9 @@ impl BrokerRuntime {
                                 .unwrap_or("");
                             if let Some(pending) = pending_deliveries.get_mut(delivery_id) {
                                 pending.next_retry_at = Instant::now()
-                                    + std::cmp::max(
+                                    + delivery_ack_timeout(
+                                        &pending.delivery.injection_mode,
                                         delivery_retry_interval,
-                                        crate::broker::delivery_verification::VERIFICATION_WINDOW,
                                     );
                             }
                             if let Some(handle) = workers.workers.get_mut(&name) {
@@ -133,6 +914,142 @@ impl BrokerRuntime {
                             )
                             .await;
                         }
+                    } else if msg_type == "delivery_unconfirmed"
+                        || msg_type == "delivery_resubmitted"
+                    {
+                        if let Some(payload) = value.get("payload") {
+                            let delivery_id = payload
+                                .get("delivery_id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            let event_id = payload
+                                .get("event_id")
+                                .and_then(Value::as_str)
+                                .unwrap_or("");
+                            // A terminal `delivery_unconfirmed` is the
+                            // Unconfirmed outcome: the body was delivered
+                            // (custody already released by the preceding
+                            // delivery_ack) without harness evidence. It is
+                            // never a blocked worker and never `stuck`.
+                            let terminal_unconfirmed = msg_type == "delivery_unconfirmed"
+                                && is_terminal_unconfirmed(payload);
+                            if terminal_unconfirmed {
+                                if let Some(pending) = pending_verified_spawns
+                                    .get_mut(&name)
+                                    .filter(|pending| pending.matches_task(generation, event_id))
+                                {
+                                    pending.record_task_verification(
+                                        false,
+                                        Some("harness_acceptance_unproven"),
+                                    );
+                                }
+                                let resolved = pending_verified_spawns
+                                    .get(&name)
+                                    .is_some_and(|pending| pending.can_report_ready(generation))
+                                    .then(|| pending_verified_spawns.remove(&name))
+                                    .flatten();
+                                if let Some(pending) = resolved {
+                                    let _ = fleet_control_tx
+                                        .send(FleetControlCommand::Send(
+                                            crate::fleet_wire::BrokerToRelaycast::ActionResult(
+                                                pending.completion(&name),
+                                            ),
+                                        ))
+                                        .await;
+                                }
+                                if let Some(handle) = workers.workers.get_mut(&name) {
+                                    handle.last_activity_at = Instant::now();
+                                    if handle.state == AgentWorkState::BlockedOnSend {
+                                        handle.state = AgentWorkState::Working;
+                                    }
+                                }
+                                tracing::info!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    delivery_id = %delivery_id,
+                                    event_id = %event_id,
+                                    "delivery unconfirmed: delivered without harness evidence"
+                                );
+                                let _ = send_event(
+                                    sdk_out_tx,
+                                    json!({
+                                        "kind": "delivery_unconfirmed",
+                                        "name": name,
+                                        "delivery_id": payload.get("delivery_id"),
+                                        "event_id": payload.get("event_id"),
+                                        "outcome": "unconfirmed",
+                                        "terminal": true,
+                                        "reason": payload.get("reason"),
+                                        "attempts": payload.get("attempts"),
+                                    }),
+                                )
+                                .await;
+                                return;
+                            }
+                            let matching_pending = pending_deliveries
+                                .get_mut(delivery_id)
+                                .filter(|pending| pending.delivery.event_id.as_str() == event_id)
+                                .map(|pending| {
+                                    pending.next_retry_at = Instant::now()
+                                        + delivery_recovery_ack_timeout(
+                                            &pending.delivery.injection_mode,
+                                            delivery_retry_interval,
+                                        );
+                                })
+                                .is_some();
+                            if matching_pending {
+                                if let Some(handle) = workers.workers.get_mut(&name) {
+                                    handle.last_activity_at = Instant::now();
+                                    handle.state = AgentWorkState::BlockedOnSend;
+                                }
+                                if msg_type == "delivery_unconfirmed" {
+                                    let pending_delivery_count = pending_deliveries
+                                        .values()
+                                        .filter(|pending| pending.worker_name == name)
+                                        .count();
+                                    let _ = send_broker_event(
+                                        sdk_out_tx,
+                                        BrokerEvent::AgentBlockedOnSend {
+                                            name: name.clone(),
+                                            blocked_secs: 0,
+                                            pending_delivery_count,
+                                        },
+                                    )
+                                    .await;
+                                    publish_agent_state_transition(
+                                        ws_control_tx,
+                                        &name,
+                                        "stuck",
+                                        Some("blocked_on_send"),
+                                    )
+                                    .await;
+                                }
+                            }
+                            tracing::warn!(
+                                target = "agent_relay::broker",
+                                worker = %name,
+                                delivery_id = %delivery_id,
+                                event_id = %event_id,
+                                attempts = ?payload.get("attempts").or_else(|| payload.get("attempt")),
+                                kind = msg_type,
+                                "delivery is not yet accepted by the harness"
+                            );
+                            let _ = send_event(
+                                sdk_out_tx,
+                                json!({
+                                    "kind": msg_type,
+                                    "name": name,
+                                    "delivery_id": payload.get("delivery_id"),
+                                    "event_id": payload.get("event_id"),
+                                    "reason": payload.get("reason"),
+                                    "attempts": payload.get("attempts"),
+                                    "attempt": payload.get("attempt"),
+                                    "max_attempts": payload.get("max_attempts"),
+                                    "strategy": payload.get("strategy"),
+                                }),
+                            )
+                            .await;
+                        }
                     } else if msg_type == "delivery_verified" {
                         if let Some(payload) = value.get("payload") {
                             let delivery_id = payload
@@ -143,45 +1060,121 @@ impl BrokerRuntime {
                                 .get("event_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
-                            // "echo" when the injection was confirmed in PTY
-                            // output; "timeout_fallback" when the worker acked
-                            // without ever seeing the echo.
-                            let verification = payload
-                                .get("verification")
-                                .and_then(Value::as_str)
-                                .unwrap_or("echo");
-                            let reason = payload.get("reason").and_then(Value::as_str);
-                            if verification == "timeout_fallback" {
-                                tracing::info!(
-                                    target = "agent_relay::broker",
-                                    worker = %name,
-                                    delivery_id = %delivery_id,
-                                    event_id = %event_id,
-                                    reason = reason.unwrap_or(""),
-                                    "delivery acked via timeout fallback — echo never verified"
-                                );
-                            } else {
-                                tracing::debug!(
-                                    target = "agent_relay::broker",
-                                    worker = %name,
-                                    delivery_id = %delivery_id,
-                                    event_id = %event_id,
-                                    "delivery verified by echo detection"
-                                );
-                            }
-                            let pending_for_confirmation = clear_pending_delivery_if_event_matches(
-                                pending_deliveries,
-                                delivery_id,
-                                Some(event_id),
-                                &name,
-                                "delivery_verified",
+                            // The raw worker label, before the PTY default below:
+                            // an unlabelled frame (a headless exit) proves no
+                            // receipt of a verified spawn's task.
+                            let label = payload.get("verification").and_then(Value::as_str);
+                            // `verification_label_confirms_receipt` is the single
+                            // source of truth for which labels prove receipt:
+                            // "harness_acceptance" from a modern PTY worker.
+                            let receipt_confirmed = label.is_some_and(
+                                crate::broker::delivery_verification::verification_label_confirms_receipt,
                             );
+                            // Record the verdict whenever it belongs to this
+                            // spawn's task, even before readiness is proven: a
+                            // startup-fallback `worker_ready` releases the task
+                            // first, and the proven frame that follows resolves
+                            // the action from what was recorded here.
+                            if let Some(pending) = pending_verified_spawns
+                                .get_mut(&name)
+                                .filter(|pending| pending.matches_task(generation, event_id))
+                            {
+                                pending.record_task_verification(receipt_confirmed, label);
+                                if !receipt_confirmed {
+                                    tracing::warn!(
+                                        target = "agent_relay::broker",
+                                        worker = %name,
+                                        delivery_id = %delivery_id,
+                                        event_id = %event_id,
+                                        verification = label.unwrap_or("none"),
+                                        "verified spawn's initial task was acked without \
+                                         proof of harness acceptance; reporting it unconfirmed"
+                                    );
+                                }
+                            }
+                            // A spawn carrying a task succeeds only when that
+                            // task is proven received. An ack the worker could
+                            // not verify leaves the agent live, so the action
+                            // resolves as explicitly unconfirmed rather than as
+                            // either a success or a retryable failure.
+                            let resolved = pending_verified_spawns
+                                .get(&name)
+                                .is_some_and(|pending| pending.can_report_ready(generation))
+                                .then(|| pending_verified_spawns.remove(&name))
+                                .flatten();
+                            if let Some(pending) = resolved {
+                                let _ = fleet_control_tx
+                                    .send(FleetControlCommand::Send(
+                                        crate::fleet_wire::BrokerToRelaycast::ActionResult(
+                                            pending.completion(&name),
+                                        ),
+                                    ))
+                                    .await;
+                            }
+
+                            let is_pty = workers
+                                .workers
+                                .get(&name)
+                                .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty);
+                            let Some(verification) = accepted_delivery_verification(
+                                payload.get("verification").and_then(Value::as_str),
+                                is_pty,
+                            ) else {
+                                tracing::warn!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    delivery_id = %delivery_id,
+                                    event_id = %event_id,
+                                    verification = ?payload.get("verification"),
+                                    "ignoring delivery_verified without harness-acceptance evidence"
+                                );
+                                let _ = send_event(
+                                    sdk_out_tx,
+                                    json!({
+                                        "kind": "delivery_unconfirmed",
+                                        "name": name,
+                                        "delivery_id": delivery_id,
+                                        "event_id": event_id,
+                                        "reason": "PTY delivery verification did not prove harness acceptance",
+                                        "verification": payload.get("verification"),
+                                    }),
+                                )
+                                .await;
+                                return;
+                            };
+                            let completed_replay = verification == "completed_replay";
+                            let reason = payload.get("reason").and_then(Value::as_str);
+                            tracing::debug!(
+                                target = "agent_relay::broker",
+                                worker = %name,
+                                delivery_id = %delivery_id,
+                                event_id = %event_id,
+                                verification = %verification,
+                                "delivery acceptance verified"
+                            );
+                            // `completed_replay` accompanies a replayed
+                            // delivery_ack; it is useful lifecycle evidence but
+                            // must never independently confirm a fresh pending
+                            // delivery if frames are malformed or reordered.
+                            let pending_for_confirmation = (!completed_replay)
+                                .then(|| {
+                                    clear_pending_delivery_if_event_matches(
+                                        pending_deliveries,
+                                        delivery_id,
+                                        Some(event_id),
+                                        &name,
+                                        "delivery_verified",
+                                    )
+                                })
+                                .flatten();
                             let mut verified_event = json!({
                                 "kind": "delivery_verified",
                                 "name": name,
                                 "delivery_id": delivery_id,
                                 "event_id": event_id,
                                 "verification": verification,
+                                "evidence": payload.get("evidence"),
+                                "attempts": payload.get("attempts"),
                             });
                             if let (Some(reason), Some(map)) =
                                 (reason, verified_event.as_object_mut())
@@ -209,9 +1202,16 @@ impl BrokerRuntime {
                         }
                     } else if msg_type == "delivery_active" {
                         if let Some(payload) = value.get("payload") {
+                            let has_pending_delivery = pending_deliveries
+                                .values()
+                                .any(|pending| pending.worker_name == name);
                             if let Some(handle) = workers.workers.get_mut(&name) {
                                 handle.last_activity_at = Instant::now();
-                                handle.state = AgentWorkState::Working;
+                                if handle.state != AgentWorkState::BlockedOnSend
+                                    || !has_pending_delivery
+                                {
+                                    handle.state = AgentWorkState::Working;
+                                }
                             }
                             let _ = send_event(
                                 sdk_out_tx,
@@ -235,6 +1235,49 @@ impl BrokerRuntime {
                                 .get("event_id")
                                 .and_then(Value::as_str)
                                 .unwrap_or("");
+                            // Expire rather than reply: maintenance releases the
+                            // worker and its fleet identity, then reports this
+                            // reason, so a corrected retry can reuse the name.
+                            //
+                            // An acceptance window that closed without evidence
+                            // either way is not a loss: the agent may be working
+                            // on the task, so releasing it could kill a live run
+                            // and a retry could duplicate it. Report the spawn
+                            // unconfirmed instead, like an unproven ack.
+                            let failure_reason = payload
+                                .get("reason")
+                                .and_then(Value::as_str)
+                                .unwrap_or("initial_task_failed");
+                            if let Some(pending) = pending_verified_spawns
+                                .get_mut(&name)
+                                .filter(|pending| pending.matches_task(generation, event_id))
+                            {
+                                if failure_reason
+                                    == crate::broker::delivery_verification::HARNESS_ACCEPTANCE_UNPROVEN
+                                {
+                                    pending.record_task_verification(
+                                        false,
+                                        Some("harness_acceptance_unproven"),
+                                    );
+                                } else {
+                                    pending.initial_task_failed(generation, failure_reason);
+                                }
+                            }
+                            let resolved = pending_verified_spawns
+                                .get(&name)
+                                .is_some_and(|pending| pending.can_report_ready(generation))
+                                .then(|| pending_verified_spawns.remove(&name))
+                                .flatten();
+                            if let Some(pending) = resolved {
+                                let _ = fleet_control_tx
+                                    .send(FleetControlCommand::Send(
+                                        crate::fleet_wire::BrokerToRelaycast::ActionResult(
+                                            pending.completion(&name),
+                                        ),
+                                    ))
+                                    .await;
+                            }
+
                             let reason = payload
                                 .get("reason")
                                 .and_then(Value::as_str)
@@ -245,7 +1288,7 @@ impl BrokerRuntime {
                                 delivery_id = %delivery_id,
                                 event_id = %event_id,
                                 reason = %reason,
-                                "delivery failed — echo not detected"
+                                "delivery failed — harness acceptance not confirmed"
                             );
                             let pending_for_failure = clear_pending_delivery_if_event_matches(
                                 pending_deliveries,
@@ -269,81 +1312,469 @@ impl BrokerRuntime {
                             )
                             .await;
                             if let Some(pending) = pending_for_failure {
+                                let pending_delivery_count = pending_deliveries
+                                    .values()
+                                    .filter(|candidate| candidate.worker_name == name)
+                                    .count();
+                                let (state, published_state, transition_reason) =
+                                    state_after_terminal_delivery_failure(pending_delivery_count);
                                 if let Some(handle) = workers.workers.get_mut(&name) {
                                     handle.last_activity_at = Instant::now();
-                                    handle.state = AgentWorkState::Working;
+                                    handle.state = state;
                                 }
-                                let _ = send_broker_event(
+                                if state == AgentWorkState::BlockedOnSend {
+                                    let _ = send_broker_event(
+                                        sdk_out_tx,
+                                        BrokerEvent::AgentBlockedOnSend {
+                                            name: name.clone(),
+                                            blocked_secs: 0,
+                                            pending_delivery_count,
+                                        },
+                                    )
+                                    .await;
+                                }
+                                // Always publish: an earlier delivery_unconfirmed
+                                // may have published `stuck`, and an in-memory
+                                // reset alone would leave that status visible.
+                                publish_agent_state_transition(
+                                    ws_control_tx,
+                                    &name,
+                                    published_state,
+                                    Some(transition_reason),
+                                )
+                                .await;
+                                let _ = emit_dropped_delivery_failures(
                                     sdk_out_tx,
-                                    BrokerEvent::MessageDeliveryFailed {
-                                        name: name.clone(),
-                                        delivery_id: Some(pending.delivery.delivery_id),
-                                        event_id: Some(pending.delivery.event_id),
-                                        from: pending.delivery.from,
-                                        to: pending.delivery.target,
-                                        attempts: pending.attempts,
-                                        last_error: reason.to_string(),
-                                    },
+                                    dead_letters,
+                                    std::slice::from_ref(&pending),
+                                    reason,
                                 )
                                 .await;
                             }
                         }
                     } else if msg_type == "worker_error" {
+                        if value.pointer("/payload/code").and_then(Value::as_str)
+                            == Some("provider_auth_required")
+                        {
+                            if let Some(pending) = pending_verified_spawns.get_mut(&name) {
+                                pending.provider_auth_failed(generation);
+                            }
+                        }
+                        if value.pointer("/payload/code").and_then(Value::as_str)
+                            == Some("directory_trust_required")
+                        {
+                            if let Some(pending) = pending_verified_spawns.get_mut(&name) {
+                                pending.directory_trust_failed(generation);
+                            }
+                        }
+                        let is_pty = workers
+                            .workers
+                            .get(&name)
+                            .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty);
+                        if is_pty {
+                            let message = value
+                                .get("payload")
+                                .and_then(|payload| payload.get("message"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("PTY worker error");
+                            publish_pty_error(
+                                pty_observability,
+                                hosted_agent_event_tx,
+                                &name,
+                                message,
+                                value
+                                    .get("payload")
+                                    .and_then(|payload| payload.get("code"))
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                            );
+                        }
                         let _ = send_event(
                             sdk_out_tx,
                             json!({
                                 "kind": "worker_error",
                                 "name": name,
+                                "code": value.get("payload").and_then(|payload| payload.get("code")).and_then(Value::as_str).unwrap_or("worker_error"),
+                                "message": value.get("payload").and_then(|payload| payload.get("message")).and_then(Value::as_str).unwrap_or("worker reported an error"),
                                 "error": value.get("payload").cloned().unwrap_or(Value::Null)
                             }),
                         )
                         .await;
-                    } else if msg_type.ends_with("_response") {
-                        // Generic worker request/response dispatch.
-                        // Any frame whose `type` ends in
-                        // `_response` is routed by `request_id`
-                        // into the matching parked `oneshot` in
-                        // `pending_requests`. The pending entry
-                        // owns the format/error decoding logic
-                        // via `worker_request::fulfil_response_frame`.
-                        let routed =
-                            worker_request::fulfil_response_frame(pending_requests, &value);
-                        if !routed {
-                            let req_id = value
-                                .get("request_id")
-                                .and_then(Value::as_str)
-                                .unwrap_or("<missing>");
-                            tracing::debug!(
-                                target = "agent_relay::broker",
-                                worker = %name,
-                                msg_type = %msg_type,
-                                request_id = %req_id,
-                                "worker response with no pending caller — dropping"
-                            );
+                    } else if msg_type == "agent_event" || msg_type == "native_harness_diagnostic" {
+                        let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+                        let protocol_version =
+                            payload.get("protocol_version").and_then(Value::as_u64);
+                        let sequence = payload.get("sequence").and_then(Value::as_u64);
+                        let body_key = if msg_type == "agent_event" {
+                            "event"
+                        } else {
+                            "diagnostic"
+                        };
+                        if protocol_version != Some(1)
+                            || sequence.is_none_or(|sequence| sequence == 0)
+                            || !payload.get(body_key).is_some_and(Value::is_object)
+                        {
+                            let _ = send_event(
+                                sdk_out_tx,
+                                json!({
+                                    "kind": "worker_error",
+                                    "name": name,
+                                    "code": "invalid_native_harness_frame",
+                                    "message": "native harness frame requires protocol_version=1, a positive sequence, and an object payload",
+                                    "error": {
+                                        "code": "invalid_native_harness_frame",
+                                        "message": "native harness frame requires protocol_version=1, a positive sequence, and an object payload",
+                                        "retryable": false,
+                                    }
+                                }),
+                            )
+                            .await;
+                            return;
                         }
-                    } else if msg_type == "worker_stream" {
                         if let Some(handle) = workers.workers.get_mut(&name) {
                             handle.last_activity_at = Instant::now();
-                            handle.state = AgentWorkState::Working;
                         }
+                        // Transport diagnostics have their own sequence domain and are
+                        // also represented by the canonical `diagnostic` agent event.
+                        // Keep them on the local attach stream, but publish only the
+                        // canonical agent-event stream to Relaycast to avoid duplicates.
+                        let workspace_id = workers
+                            .workers
+                            .get(&name)
+                            .and_then(|handle| handle.workspace_id.clone());
+                        if let Some(hosted_event) =
+                            hosted_agent_event(&name, msg_type, &payload, workspace_id)
+                        {
+                            if let Err(error) = hosted_agent_event_tx.try_send(hosted_event) {
+                                tracing::warn!(worker = %name, error = %error, "Relaycast agent-event queue is full or closed");
+                            }
+                        }
+                        let mut agent_event = payload;
+                        if let Some(object) = agent_event.as_object_mut() {
+                            object.insert("kind".to_string(), Value::String(msg_type.to_string()));
+                            object.insert("name".to_string(), Value::String(name.to_string()));
+                        }
+                        let _ = send_event(sdk_out_tx, agent_event).await;
+                    } else if msg_type.ends_with("_response") {
+                        let terminal_input_session_id = value
+                            .get("request_id")
+                            .and_then(Value::as_str)
+                            .and_then(|request_id| terminal_input_requests.remove(request_id))
+                            .map(|request| request.session_id);
+                        let terminal_snapshot_request = value
+                            .get("request_id")
+                            .and_then(Value::as_str)
+                            .and_then(|request_id| terminal_snapshot_requests.remove(request_id))
+                            .map(|request| (request.session_id, request.client_request_id));
+                        if let Some(session_id) = terminal_input_session_id {
+                            if !terminal_sessions.contains_key(&session_id) {
+                                return;
+                            }
+                            let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+                            let message = if msg_type != "write_pty_response" {
+                                TerminalToCloud::Error {
+                                    session_id: session_id.clone(),
+                                    code: "input_failed".into(),
+                                    message:
+                                        "terminal input returned an unexpected worker response"
+                                            .into(),
+                                    request_id: None,
+                                }
+                            } else if let Some(error) = payload.get("error") {
+                                TerminalToCloud::Error {
+                                    session_id: session_id.clone(),
+                                    code: error
+                                        .get("code")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("input_failed")
+                                        .to_string(),
+                                    message: error
+                                        .get("message")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("terminal input failed")
+                                        .to_string(),
+                                    request_id: None,
+                                }
+                            } else if let Some(bytes_written) =
+                                payload.get("bytes_written").and_then(Value::as_u64)
+                            {
+                                TerminalToCloud::InputAck {
+                                    session_id: session_id.clone(),
+                                    bytes_written: usize::try_from(bytes_written)
+                                        .unwrap_or(usize::MAX),
+                                }
+                            } else {
+                                TerminalToCloud::Error {
+                                    session_id: session_id.clone(),
+                                    code: "input_failed".into(),
+                                    message: "terminal input response was malformed".into(),
+                                    request_id: None,
+                                }
+                            };
+                            if !try_send_terminal(terminal_control_tx, message) {
+                                tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while reporting PTY input result; ending session");
+                                end_terminal_session(
+                                    terminal_control_tx,
+                                    terminal_sessions,
+                                    terminal_snapshot_requests,
+                                    terminal_input_requests,
+                                    &session_id,
+                                    "output_backpressure",
+                                    "terminal output queue is full",
+                                );
+                            }
+                        } else if let Some((session_id, client_request_id)) =
+                            terminal_snapshot_request
+                        {
+                            if !terminal_sessions.contains_key(&session_id) {
+                                return;
+                            }
+                            let payload = value.get("payload").cloned().unwrap_or(Value::Null);
+                            // Look up the session's agent so we can include its
+                            // current delivery mode in the Ready frame, giving
+                            // the client an authoritative initial mode rather
+                            // than an inferred guess.
+                            let (session_delivery_mode, session_delivery_revision) =
+                                resolve_ready_delivery_state(
+                                    terminal_sessions,
+                                    delivery_states,
+                                    &session_id,
+                                );
+                            let message = if msg_type != "snapshot_response" {
+                                TerminalToCloud::Error {
+                                    session_id: session_id.clone(),
+                                    code: "snapshot_failed".into(),
+                                    message:
+                                        "terminal snapshot returned an unexpected worker response"
+                                            .into(),
+                                    request_id: client_request_id.clone(),
+                                }
+                            } else if let Some(error) = payload.get("error") {
+                                TerminalToCloud::Error {
+                                    session_id: session_id.clone(),
+                                    code: error
+                                        .get("code")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("snapshot_failed")
+                                        .to_string(),
+                                    message: error
+                                        .get("message")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("terminal snapshot failed")
+                                        .to_string(),
+                                    request_id: client_request_id.clone(),
+                                }
+                            } else if let (Some(screen), Some(rows), Some(cols)) = (
+                                payload.get("screen").and_then(Value::as_str),
+                                payload
+                                    .get("rows")
+                                    .and_then(Value::as_u64)
+                                    .and_then(|value| u16::try_from(value).ok()),
+                                payload
+                                    .get("cols")
+                                    .and_then(Value::as_u64)
+                                    .and_then(|value| u16::try_from(value).ok()),
+                            ) {
+                                if let Some(request_id) = client_request_id.clone() {
+                                    TerminalToCloud::Snapshot {
+                                        session_id: session_id.clone(),
+                                        request_id,
+                                        screen: screen.to_string(),
+                                        rows,
+                                        cols,
+                                        offset: payload
+                                            .get("offset")
+                                            .and_then(Value::as_u64)
+                                            .unwrap_or(0),
+                                    }
+                                } else {
+                                    TerminalToCloud::Ready {
+                                        session_id: session_id.clone(),
+                                        screen: screen.to_string(),
+                                        rows,
+                                        cols,
+                                        offset: payload
+                                            .get("offset")
+                                            .and_then(Value::as_u64)
+                                            .unwrap_or(0),
+                                        delivery_mode: session_delivery_mode,
+                                        delivery_revision: session_delivery_revision,
+                                    }
+                                }
+                            } else {
+                                TerminalToCloud::Error {
+                                    session_id: session_id.clone(),
+                                    code: "snapshot_failed".into(),
+                                    message: "terminal snapshot response was malformed".into(),
+                                    request_id: client_request_id.clone(),
+                                }
+                            };
+                            let snapshot_ready = matches!(&message, TerminalToCloud::Ready { .. });
+                            let snapshot_failure = match &message {
+                                TerminalToCloud::Error { code, message, .. } => {
+                                    Some((code.clone(), message.clone()))
+                                }
+                                _ => None,
+                            };
+                            if !try_send_terminal(terminal_control_tx, message) {
+                                tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while sending snapshot; ending session");
+                                end_terminal_session(
+                                    terminal_control_tx,
+                                    terminal_sessions,
+                                    terminal_snapshot_requests,
+                                    terminal_input_requests,
+                                    &session_id,
+                                    "output_backpressure",
+                                    "terminal output queue is full",
+                                );
+                            } else if snapshot_ready {
+                                let pending_output =
+                                    if let Some(session) = terminal_sessions.get_mut(&session_id) {
+                                        session.ready = true;
+                                        session.pending_output_bytes = 0;
+                                        std::mem::take(&mut session.pending_output)
+                                    } else {
+                                        Vec::new()
+                                    };
+                                for (chunk, offset) in pending_output {
+                                    if !try_send_terminal(
+                                        terminal_control_tx,
+                                        TerminalToCloud::Output {
+                                            session_id: session_id.clone(),
+                                            chunk,
+                                            offset,
+                                        },
+                                    ) {
+                                        tracing::warn!(target = "relay_broker::terminal", session_id = %session_id, "terminal queue full or closed while flushing buffered output; ending session");
+                                        end_terminal_session(
+                                            terminal_control_tx,
+                                            terminal_sessions,
+                                            terminal_snapshot_requests,
+                                            terminal_input_requests,
+                                            &session_id,
+                                            "output_backpressure",
+                                            "terminal output queue is full",
+                                        );
+                                        break;
+                                    }
+                                }
+                            } else if client_request_id.is_none() {
+                                if let Some((code, message)) = snapshot_failure {
+                                    end_terminal_session(
+                                        terminal_control_tx,
+                                        terminal_sessions,
+                                        terminal_snapshot_requests,
+                                        terminal_input_requests,
+                                        &session_id,
+                                        &code,
+                                        &message,
+                                    );
+                                }
+                            }
+                        } else {
+                            // Generic worker request/response dispatch.
+                            // Any frame whose `type` ends in
+                            // `_response` is routed by `request_id`
+                            // into the matching parked `oneshot` in
+                            // `pending_requests`. The pending entry
+                            // owns the format/error decoding logic
+                            // via `worker_request::fulfil_response_frame`.
+                            let routed =
+                                worker_request::fulfil_response_frame(pending_requests, &value);
+                            if !routed {
+                                let req_id = value
+                                    .get("request_id")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("<missing>");
+                                tracing::debug!(
+                                    target = "agent_relay::broker",
+                                    worker = %name,
+                                    msg_type = %msg_type,
+                                    request_id = %req_id,
+                                    "worker response with no pending caller — dropping"
+                                );
+                            }
+                        }
+                    } else if msg_type == "worker_stream" {
+                        let is_pty = workers
+                            .workers
+                            .get(&name)
+                            .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty);
+                        let has_pending_delivery = pending_deliveries
+                            .values()
+                            .any(|pending| pending.worker_name == name);
+                        if let Some(handle) = workers.workers.get_mut(&name) {
+                            handle.last_activity_at = Instant::now();
+                            if handle.state != AgentWorkState::BlockedOnSend
+                                || !has_pending_delivery
+                            {
+                                handle.state = AgentWorkState::Working;
+                            }
+                        }
+                        if is_pty {
+                            publish_pty_busy(pty_observability, hosted_agent_event_tx, &name);
+                        }
+                        let payload = value.get("payload");
+                        let chunk = payload
+                            .and_then(|payload| payload.get("chunk"))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string();
+                        let offset = payload
+                            .and_then(|payload| payload.get("offset"))
+                            .and_then(Value::as_u64);
                         let mut stream_event = json!({
                             "kind": "worker_stream",
                             "name": name,
-                            "stream": value.get("payload").and_then(|p| p.get("stream")).cloned().unwrap_or(Value::String("stdout".to_string())),
-                            "chunk": value.get("payload").and_then(|p| p.get("chunk")).cloned().unwrap_or(Value::String(String::new())),
+                            "stream": payload.and_then(|p| p.get("stream")).cloned().unwrap_or(Value::String("stdout".to_string())),
+                            "chunk": chunk.clone(),
                         });
                         // Forward the per-worker stream offset when present so
                         // attaching clients can correlate the live stream with
                         // a snapshot. Absent for headless workers (no grid).
-                        if let Some(offset) =
-                            value.get("payload").and_then(|p| p.get("offset")).cloned()
-                        {
+                        if let Some(offset) = offset {
                             if let Some(obj) = stream_event.as_object_mut() {
-                                obj.insert("offset".to_string(), offset);
+                                obj.insert("offset".to_string(), Value::from(offset));
                             }
                         }
+                        if !chunk.is_empty() {
+                            publish_terminal_output(
+                                terminal_control_tx,
+                                terminal_sessions,
+                                terminal_snapshot_requests,
+                                terminal_input_requests,
+                                &name,
+                                chunk,
+                                offset,
+                            );
+                        }
                         let _ = send_event(sdk_out_tx, stream_event).await;
+                    } else if msg_type == "harness_started" {
+                        // A running child process proves liveness but not that
+                        // its TUI is ready for injected input. Record the pid so
+                        // startup maintenance can distinguish a live, slow (or
+                        // unrecognized) prompt from a dead harness. Do not set
+                        // ready_at or release initial_tasks here.
+                        if let Some(handle) = workers.workers.get_mut(&name) {
+                            record_started_harness_pid(
+                                &handle.spec.runtime,
+                                &mut handle.harness_pid,
+                                &value,
+                            );
+                        }
                     } else if msg_type == "worker_ready" {
+                        // An auth failure is terminal for this verified spawn,
+                        // even if another frame arrives before maintenance runs.
+                        if pending_verified_spawns.get(&name).is_some_and(|pending| {
+                            pending.generation == generation && pending.failure_reason.is_some()
+                        }) {
+                            return;
+                        }
+                        let readiness_proven = value
+                            .get("payload")
+                            .and_then(|payload| payload.get("readiness_proven"))
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true);
                         // If this (re)spawned worker's inbound delivery mode is
                         // already manual_flush — e.g. it crashed and restarted
                         // while a human was driving — replay the interactive hold
@@ -355,12 +1786,45 @@ impl BrokerRuntime {
                             .get(&name)
                             .map(|handle| handle.spec.runtime == AgentRuntime::Pty)
                             .unwrap_or(false);
-                        if is_pty_worker
+                        let initial_task = workers.take_initial_task_for_injection(&name);
+                        let initial_event_id = initial_task
+                            .as_ref()
+                            .map(|_| format!("init_{}", Uuid::new_v4().simple()));
+                        if let Some(pending) = pending_verified_spawns.get_mut(&name) {
+                            if pending.generation == generation {
+                                pending.readiness_proven |= readiness_proven;
+                                if is_pty_worker && initial_event_id.is_some() {
+                                    pending.task_event_id = initial_event_id.clone();
+                                }
+                            }
+                        }
+                        // Resolve the verified Fleet action before optional SDK
+                        // notifications and initial-task work. A congested SDK
+                        // output queue must not turn a ready worker into an
+                        // action timeout.
+                        let pending = pending_verified_spawns
+                            .get(&name)
+                            .is_some_and(|pending| pending.can_report_ready(generation))
+                            .then(|| pending_verified_spawns.remove(&name))
+                            .flatten();
+                        if let Some(pending) = pending {
+                            tracing::info!(invocation_id = %pending.invocation_id, worker = %name,
+                                verify_ready = true, elapsed_ms = pending.started.elapsed().as_millis() as u64,
+                                "sending verified fleet spawn result");
+                            let _ = fleet_control_tx
+                                .send(FleetControlCommand::Send(
+                                    crate::fleet_wire::BrokerToRelaycast::ActionResult(
+                                        pending.completion(&name),
+                                    ),
+                                ))
+                                .await;
+                        }
+                        let interactive_hold_replayed = is_pty_worker
                             && delivery_states
                                 .get(&name)
                                 .map(|s| s.mode == InboundDeliveryMode::ManualFlush)
-                                .unwrap_or(false)
-                        {
+                                .unwrap_or(false);
+                        if interactive_hold_replayed {
                             if let Err(err) = workers
                                 .send_to_worker(
                                     &name,
@@ -377,8 +1841,8 @@ impl BrokerRuntime {
                                 );
                             }
                         }
-                        if let Some(task_text) = workers.initial_tasks.remove(&name) {
-                            let event_id = format!("init_{}", Uuid::new_v4().simple());
+                        if let (Some(task_text), Some(event_id)) = (initial_task, initial_event_id)
+                        {
                             if let Err(e) = queue_and_try_delivery_raw(
                                 workers,
                                 pending_deliveries,
@@ -393,10 +1857,46 @@ impl BrokerRuntime {
                                 2,
                                 MessageInjectionMode::Wait,
                                 delivery_retry_interval,
+                                None,
+                                None,
                             )
                             .await
                             {
                                 tracing::warn!(worker = %name, error = %e, "failed to deliver initial_task");
+                                if let Some(pending) = pending_verified_spawns.get_mut(&name) {
+                                    pending.initial_task_failed(generation, &e.to_string());
+                                }
+                            }
+                            // The initial task bypasses the delivery-mode queue, but the
+                            // hold replayed above freezes injection pops inside the PTY
+                            // worker — so without this frame the task the spawn was asked
+                            // to run sits invisibly in the worker's queue until the hold
+                            // lifts. A worker that restarts while explicitly held reaches
+                            // `worker_ready` in exactly that state. The spawn asked for
+                            // this task, so a one-shot exemption releases it; later relay
+                            // messages keep parking under the hold as usual.
+                            //
+                            // The flush is scoped to this task's own `event_id`. A blanket
+                            // flush would exempt the worker's whole queue, and a restart
+                            // keeps unacknowledged deliveries (see `maintenance.rs`), so a
+                            // relay message retried into the new worker before
+                            // `worker_ready` would splice into the human's session too.
+                            if interactive_hold_replayed {
+                                if let Err(err) = workers
+                                    .send_to_worker(
+                                        &name,
+                                        "flush_injections",
+                                        None,
+                                        json!({ "event_id": event_id }),
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        worker = %name,
+                                        error = %err,
+                                        "failed to release initial task through interactive hold"
+                                    );
+                                }
                             }
                         }
                         let runtime = value
@@ -404,18 +1904,31 @@ impl BrokerRuntime {
                             .and_then(|p| p.get("runtime"))
                             .and_then(Value::as_str)
                             .unwrap_or("pty");
-                        let payload_pid = value
-                            .get("payload")
-                            .and_then(|p| p.get("pid"))
-                            .and_then(Value::as_u64)
-                            .filter(|pid| *pid <= u32::MAX as u64)
-                            .map(|pid| pid as u32);
+                        if runtime == "pty" && !pty_observability.contains_key(&name) {
+                            let workspace_id = workers
+                                .workers
+                                .get(&name)
+                                .and_then(|handle| handle.workspace_id.clone());
+                            publish_pty_starting(
+                                pty_observability,
+                                hosted_agent_event_tx,
+                                &name,
+                                workspace_id,
+                            );
+                        }
+                        let payload_pid = protocol_pid(&value);
                         let (provider_val, cli_val, model_val, session_id_val, pid_val) = workers
                             .workers
                             .get_mut(&name)
                             .map(|h| {
                                 if let Some(pid) = payload_pid {
                                     h.harness_pid = Some(pid);
+                                }
+                                // Records that the harness actually came up, so
+                                // `reap_exited` can tell a slow start from one that
+                                // never happened.
+                                if readiness_proven {
+                                    h.ready_at.get_or_insert_with(Instant::now);
                                 }
                                 (
                                     h.spec.provider.clone(),
@@ -438,7 +1951,7 @@ impl BrokerRuntime {
                         let _ = send_event(
                             sdk_out_tx,
                             json!({
-                                "kind": "worker_ready",
+                                "kind": if readiness_proven { "worker_ready" } else { "worker_startup_fallback" },
                                 "name": name,
                                 "runtime": runtime,
                                 "provider": provider_val,
@@ -446,6 +1959,7 @@ impl BrokerRuntime {
                                 "model": model_val,
                                 "sessionId": session_id_val,
                                 "pid": pid_val,
+                                "generation": generation,
                             }),
                         )
                         .await;
@@ -457,8 +1971,24 @@ impl BrokerRuntime {
                             .unwrap_or(0);
                         let since =
                             chrono::Utc::now() - chrono::Duration::seconds(idle_secs as i64);
-                        if let Some(handle) = workers.workers.get_mut(&name) {
-                            handle.state = AgentWorkState::Idle;
+                        let remains_blocked =
+                            workers.workers.get(&name).is_some_and(|handle| {
+                                handle.state == AgentWorkState::BlockedOnSend
+                            }) && pending_deliveries
+                                .values()
+                                .any(|pending| pending.worker_name == name);
+                        if !remains_blocked {
+                            if let Some(handle) = workers.workers.get_mut(&name) {
+                                handle.state = AgentWorkState::Idle;
+                            }
+                        }
+                        if !remains_blocked
+                            && workers
+                                .workers
+                                .get(&name)
+                                .is_some_and(|handle| handle.spec.runtime == AgentRuntime::Pty)
+                        {
+                            publish_pty_idle(pty_observability, hosted_agent_event_tx, &name);
                         }
                         let _ = send_event(
                             sdk_out_tx,
@@ -467,16 +1997,19 @@ impl BrokerRuntime {
                                 "name": name,
                                 "idle_secs": idle_secs,
                                 "since": since,
+                                "generation": generation,
                             }),
                         )
                         .await;
-                        publish_agent_state_transition(
-                            ws_control_tx,
-                            &name,
-                            "idle",
-                            Some("idle_threshold"),
-                        )
-                        .await;
+                        if !remains_blocked {
+                            publish_agent_state_transition(
+                                ws_control_tx,
+                                &name,
+                                "idle",
+                                Some("idle_threshold"),
+                            )
+                            .await;
+                        }
                     } else if msg_type == "agent_blocked_on_send" {
                         let blocked_secs = value
                             .get("payload")
@@ -545,6 +2078,7 @@ impl BrokerRuntime {
                                 "kind": "agent_exit",
                                 "name": name,
                                 "reason": reason,
+                                "generation": generation,
                             }),
                         )
                         .await;
@@ -672,6 +2206,8 @@ impl BrokerRuntime {
                                                     2,
                                                     MessageInjectionMode::Wait,
                                                     delivery_retry_interval,
+                                                    None,
+                                                    None,
                                                 )
                                                 .await
                                                 {
@@ -727,6 +2263,11 @@ impl BrokerRuntime {
                             .and_then(|p| p.get("signal"))
                             .and_then(Value::as_str)
                             .map(String::from);
+                        workers.fail_native_delivery_custody_generation(
+                            &name,
+                            generation,
+                            "native worker reported exit before confirming delivery custody",
+                        );
                         tracing::info!(
                             agent = %name,
                             code = ?code,

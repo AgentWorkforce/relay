@@ -1,0 +1,53 @@
+{
+  "id": "traj_cyut1lxn0261",
+  "version": 1,
+  "task": {
+    "title": "Add semantic CLI attach support to the AI SDK harness adoption plan"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-15T23:19:38.327Z",
+  "completedAt": "2026-07-15T23:21:40.342Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-15T23:21:39.969Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_94d7924xo3d1",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-15T23:21:39.969Z",
+      "endedAt": "2026-07-15T23:21:40.342Z",
+      "events": [
+        {
+          "ts": 1784157699971,
+          "type": "decision",
+          "content": "Use semantic attach for AI SDK runtimes: Use semantic attach for AI SDK runtimes",
+          "raw": {
+            "question": "Use semantic attach for AI SDK runtimes",
+            "chosen": "Use semantic attach for AI SDK runtimes",
+            "alternatives": [],
+            "reasoning": "A separate CLI process cannot reach an in-process HarnessV1PromptControl. The broker must supervise a Node 22 sidecar, retain bounded normalized event history, broadcast live events, and acknowledge message-oriented input. Human attach renders those events; NDJSON is opt-in with --json."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Refined the AI SDK harness adoption plan with a broker-supervised semantic sidecar and first-class CLI attach contract.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "765e42535063b9d61262a537b1fd364d3e965000",
+    "endRef": "765e42535063b9d61262a537b1fd364d3e965000"
+  }
+}

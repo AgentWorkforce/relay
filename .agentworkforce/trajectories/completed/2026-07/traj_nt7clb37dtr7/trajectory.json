@@ -1,0 +1,53 @@
+{
+  "id": "traj_nt7clb37dtr7",
+  "version": 1,
+  "task": {
+    "title": "Resolve renewed PR 1268 conflicts after broker Swift parity merge"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-15T11:30:37.003Z",
+  "completedAt": "2026-07-15T11:31:36.846Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-15T11:31:36.445Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_47tubwavnk4u",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-15T11:31:36.445Z",
+      "endedAt": "2026-07-15T11:31:36.846Z",
+      "events": [
+        {
+          "ts": 1784115096446,
+          "type": "decision",
+          "content": "Compose broker parity APIs with stream lifecycle registries: Compose broker parity APIs with stream lifecycle registries",
+          "raw": {
+            "question": "Compose broker parity APIs with stream lifecycle registries",
+            "chosen": "Compose broker parity APIs with stream lifecycle registries",
+            "alternatives": [],
+            "reasoning": "Current main added independent decoding/path helpers and control/observability tests; PR 1268 added UUID continuation registries and lifecycle tests. Keeping both preserves all behavior, with connection-state fan-out continuing through registry values."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Merged current main into PR 1268, composed broker parity additions with stream lifecycle changes, and passed all 151 Swift tests",
+    "approach": "Standard approach",
+    "confidence": 0.98
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "38e00002cfba37694c8d0a9bd45d3c748d29c605",
+    "endRef": "38e00002cfba37694c8d0a9bd45d3c748d29c605"
+  }
+}

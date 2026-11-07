@@ -1,0 +1,92 @@
+{
+  "id": "traj_qmsa5rnmwycc",
+  "version": 1,
+  "task": {
+    "title": "Close fresh exact-head worktree review on PR #1642",
+    "source": {
+      "system": "plain",
+      "id": "PR-1642-REVIEW"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-02T19:45:34.937Z",
+  "completedAt": "2026-09-02T19:52:52.690Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-02T19:45:35.694Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_rcplbr0y64eq",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-02T19:45:35.694Z",
+      "endedAt": "2026-09-02T19:52:52.690Z",
+      "events": [
+        {
+          "ts": 1788378335698,
+          "type": "decision",
+          "content": "Isolate only the mutating autofix chain: Isolate only the mutating autofix chain",
+          "raw": {
+            "question": "Isolate only the mutating autofix chain",
+            "chosen": "Isolate only the mutating autofix chain",
+            "alternatives": [],
+            "reasoning": "Provenance and feature checks must keep the source checkout cwd so the checkout-local CLI and ignored build artifacts remain available. RelayFlow step-level cwd isolates attempt-fix, fix-integrity, and open-pr without moving the verification tiers away from the artifact under test."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788378758399,
+          "type": "reflection",
+          "content": "All nine fresh threads are addressed: verification keeps source-checkout provenance, only the mutating chain gets an isolated cwd, worktree timeouts kill descendant process groups, and retention/proof/trajectory edge cases have direct tests or evidence.",
+          "raw": {
+            "focalPoints": [
+              "provenance",
+              "step-cwd",
+              "process-tree",
+              "review-closure"
+            ],
+            "confidence": 0.93
+          },
+          "significance": "high",
+          "tags": [
+            "focal:provenance",
+            "focal:step-cwd",
+            "focal:process-tree",
+            "focal:review-closure",
+            "confidence:0.93"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Kept feature verification in the source checkout while isolating only the mutating autofix chain, made git worktree timeouts terminate descendants, and closed retention, proof, changelog, and trajectory review gaps.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [
+    "69d4cea1d"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/completed/2026-09/traj_1gnz83gpty4l/summary.md",
+    ".agentworkforce/trajectories/completed/2026-09/traj_jtwpjqd8h655/summary.md",
+    "CHANGELOG.md",
+    "scripts/verify-features/run-artifacts.mjs",
+    "scripts/verify-features/run-worktree.d.mts",
+    "scripts/verify-features/run-worktree.mjs",
+    "tests/fixtures/verify-features-escalation.test.ts",
+    "tests/relayflows/cases/1642-verify-features-escalation/run.mjs",
+    "workflows/verify-features.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "4a5bb96e09f007f6fcf1af2b99e2539c33a2f021",
+    "endRef": "69d4cea1d5a0553f40a663b9cbb0a994c1f2b8f8",
+    "traceId": "79ca9f59-2d1a-4aaf-985b-57e760a8150d"
+  }
+}

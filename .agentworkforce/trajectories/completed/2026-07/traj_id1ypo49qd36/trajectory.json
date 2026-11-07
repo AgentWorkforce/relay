@@ -1,0 +1,53 @@
+{
+  "id": "traj_id1ypo49qd36",
+  "version": 1,
+  "task": {
+    "title": "Make AI SDK observability the benchmark for all Relay runtimes"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-16T01:44:05.485Z",
+  "completedAt": "2026-07-16T01:47:30.117Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-16T01:47:29.732Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_brgzw7gunafx",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-16T01:47:29.732Z",
+      "endedAt": "2026-07-16T01:47:30.117Z",
+      "events": [
+        {
+          "ts": 1784166449734,
+          "type": "decision",
+          "content": "Use AI SDK HarnessV1 as Relay's reference observability profile: Use AI SDK HarnessV1 as Relay's reference observability profile",
+          "raw": {
+            "question": "Use AI SDK HarnessV1 as Relay's reference observability profile",
+            "chosen": "Use AI SDK HarnessV1 as Relay's reference observability profile",
+            "alternatives": [],
+            "reasoning": "HarnessV1 has the richest portable structured stream across supported runtimes. Relaycast will expose a runtime-neutral semantic vocabulary and activity reducer, while each runtime declares exact, inferred, and unavailable signals with provenance. PTY implementations improve against the same profile."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Extended the adoption plan with a canonical Relay observability contract, Relaycast activity events, capability/fidelity profiles, and PTY parity reporting against AI SDK.",
+    "approach": "Standard approach",
+    "confidence": 0.97
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "765e42535063b9d61262a537b1fd364d3e965000",
+    "endRef": "765e42535063b9d61262a537b1fd364d3e965000"
+  }
+}

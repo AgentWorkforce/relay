@@ -1,13 +1,35 @@
 use super::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PendingDelivery {
     pub(super) worker_name: WorkerName,
     pub(super) delivery: RelayDelivery,
     pub(super) attempts: u32,
+    /// Consecutive broker-to-worker handoff failures. Successful writes reset
+    /// this count because waiting for the PTY to acknowledge an already queued
+    /// delivery is not a failed delivery attempt.
+    pub(super) failed_attempts: u32,
     pub(super) next_retry_at: Instant,
     pub(super) queued_at_ms: u64,
     pub(super) last_error: Option<String>,
+    /// Fleet (engine-facing) `delivery_ack` withheld until the worker confirms
+    /// this specific PTY injection was accepted by the harness, rather than
+    /// acked the instant the write is merely handed to the worker. See
+    /// relay#1310.
+    ///
+    /// Lives on the `PendingDelivery` itself, not a second map keyed by
+    /// `DeliveryId`, so it cannot outlive the delivery it belongs to: every
+    /// path that disposes of a `PendingDelivery` (acceptance confirmation, dead
+    /// letter, worker teardown) disposes of its withheld ack with it, by
+    /// construction, instead of needing a matching removal remembered at
+    /// every one of those call sites. See relay#1543.
+    pub(super) withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
+    /// Lowest sequenced delivery that must be confirmed before this withheld
+    /// cumulative ACK may advance. Persisted independently of the lower
+    /// delivery entry so a terminal failure followed by another broker
+    /// restart cannot make a higher pending sequence look like a safe new
+    /// baseline.
+    pub(super) withheld_fleet_ack_floor: Option<u64>,
 }
 
 /// Serializable snapshot of pending deliveries for crash recovery.
@@ -17,25 +39,106 @@ pub(crate) struct PersistedPendingDelivery {
     pub(super) delivery: RelayDelivery,
     pub(super) attempts: u32,
     #[serde(default)]
+    pub(super) failed_attempts: u32,
+    #[serde(default)]
     pub(super) queued_at_ms: u64,
     #[serde(default)]
     pub(super) last_error: Option<String>,
+    /// See `PendingDelivery::withheld_fleet_ack`. `#[serde(default)]` so a
+    /// snapshot written before this field existed (or by a broker version
+    /// that predates it) deserializes as `None` instead of failing to load
+    /// — the same "nothing withheld" state that field already gets from a
+    /// fresh delivery. See relay#1543's restart-persistence follow-up.
+    #[serde(default)]
+    pub(super) withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
+    #[serde(default)]
+    pub(super) withheld_fleet_ack_floor: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Return the immutable fleet identity and the earliest sequence this pending
+/// delivery can safely acknowledge. A missing persisted floor falls back to
+/// the delivery's own sequence, and a corrupt floor above that sequence is
+/// clamped so it can never skip the delivery itself.
+pub(super) fn pending_fleet_ack_floor_candidate(
+    pending: &PendingDelivery,
+) -> Option<(&crate::fleet_wire::Deliver, u64)> {
+    let deliver = pending
+        .withheld_fleet_ack
+        .as_ref()
+        .filter(|deliver| deliver.seq > 0)?;
+    Some((
+        deliver,
+        pending
+            .withheld_fleet_ack_floor
+            .unwrap_or(deliver.seq)
+            .min(deliver.seq),
+    ))
+}
+
+/// Lightweight same-agent view used to rebuild the delivery cursor without
+/// cloning full JSON payloads. The floor is reduced in the same pass so every
+/// caller shares the exact fallback/minimum invariant above.
+pub(super) struct PendingFleetAckGroup<'a> {
+    pub(super) deliveries: Vec<&'a crate::fleet_wire::Deliver>,
+    pub(super) floor: Option<u64>,
+}
+
+pub(super) fn pending_fleet_ack_group<'a>(
+    deliveries: impl IntoIterator<Item = &'a PendingDelivery>,
+    agent_id: &str,
+) -> PendingFleetAckGroup<'a> {
+    let mut group = PendingFleetAckGroup {
+        deliveries: Vec::new(),
+        floor: None,
+    };
+    for pending in deliveries {
+        let Some((deliver, candidate)) = pending_fleet_ack_floor_candidate(pending) else {
+            continue;
+        };
+        if deliver.agent_id != agent_id {
+            continue;
+        }
+        group.deliveries.push(deliver);
+        group.floor = Some(group.floor.map_or(candidate, |floor| floor.min(candidate)));
+    }
+    group
+}
+
+/// A cumulative ACK through `acked_up_to_seq` proves every lower sequence is
+/// complete. Raise only the surviving same-agent floors to the next required
+/// sequence so a later broker restart cannot wait forever for an already
+/// acknowledged confirmation. Terminal failures never call this helper
+/// because they do not advance the cumulative ACK.
+pub(super) fn advance_pending_fleet_ack_floors(
+    deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
+    agent_id: &str,
+    acked_up_to_seq: u64,
+) {
+    let next_required_seq = acked_up_to_seq.saturating_add(1);
+    for pending in deliveries.values_mut() {
+        let Some(deliver) = pending
+            .withheld_fleet_ack
+            .as_ref()
+            .filter(|deliver| deliver.agent_id == agent_id && deliver.seq > acked_up_to_seq)
+        else {
+            continue;
+        };
+        pending.withheld_fleet_ack_floor = Some(next_required_seq.min(deliver.seq));
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum DeliveryAttemptOutcome {
     Attempted {
         worker_name: WorkerName,
         attempts: u32,
         event_id: EventId,
     },
+    /// Terminal failure: the entry was removed from the pending map. The full
+    /// [`PendingDelivery`] rides along so the caller can move it into the
+    /// dead-letter store instead of discarding the message.
     Failed {
-        worker_name: WorkerName,
-        delivery_id: DeliveryId,
-        event_id: EventId,
-        from: String,
-        to: MessageTarget,
-        attempts: u32,
+        pending: Box<PendingDelivery>,
         last_error: String,
     },
     Noop,
@@ -63,6 +166,12 @@ impl PendingDeliveryStore {
     /// Return whether the map was mutated since the last call, clearing the flag.
     pub(crate) fn take_dirty(&mut self) -> bool {
         std::mem::take(&mut self.dirty)
+    }
+
+    /// Re-mark the store dirty after a failed persist so the next flush retries
+    /// the write instead of silently dropping queued deliveries.
+    pub(crate) fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 }
 
@@ -126,18 +235,14 @@ pub(crate) fn save_pending_deliveries(
             worker_name: pd.worker_name.clone(),
             delivery: pd.delivery.clone(),
             attempts: pd.attempts,
+            failed_attempts: pd.failed_attempts,
             queued_at_ms: pd.queued_at_ms,
             last_error: pd.last_error.clone(),
+            withheld_fleet_ack: pd.withheld_fleet_ack.clone(),
+            withheld_fleet_ack_floor: pd.withheld_fleet_ack_floor,
         })
         .collect();
-    let json = serde_json::to_string_pretty(&persisted)?;
-    let dir = path.parent().unwrap_or(path);
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .with_context(|| format!("failed creating temp file in {}", dir.display()))?;
-    std::io::Write::write_all(&mut tmp, json.as_bytes())?;
-    tmp.persist(path)
-        .with_context(|| format!("failed persisting pending deliveries to {}", path.display()))?;
-    Ok(())
+    crate::util::fs::write_json_atomic(path, &persisted)
 }
 
 pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<DeliveryId, PendingDelivery> {
@@ -149,16 +254,24 @@ pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<DeliveryId, Pendin
         Ok(v) => v,
         Err(_) => return HashMap::new(),
     };
-    persisted
+    let mut loaded = persisted
         .into_iter()
         .map(|p| {
             let id = p.delivery.delivery_id.clone();
+            // A restarted local recipient gets a fresh transport budget even
+            // if it registers before maintenance first retries this snapshot.
+            let failed_attempts = if p.delivery.event_id.as_str().starts_with("local_") {
+                0
+            } else {
+                p.failed_attempts
+            };
             (
                 id,
                 PendingDelivery {
                     worker_name: p.worker_name,
                     delivery: p.delivery,
                     attempts: p.attempts,
+                    failed_attempts,
                     next_retry_at: Instant::now(), // retry immediately on restart
                     queued_at_ms: if p.queued_at_ms == 0 {
                         unix_timestamp_millis()
@@ -166,10 +279,47 @@ pub(crate) fn load_pending_deliveries(path: &Path) -> HashMap<DeliveryId, Pendin
                         p.queued_at_ms
                     },
                     last_error: p.last_error,
+                    // Restored from the snapshot (relay#1543 P1): the
+                    // fleet control connection itself doesn't survive a
+                    // restart, but the *fact* that this delivery's engine
+                    // ack is withheld must — otherwise a retried delivery
+                    // that goes on to land has no ack left to release, and
+                    // the engine stays unacknowledged. `#[serde(default)]`
+                    // on `PersistedPendingDelivery` makes a pre-relay#1543
+                    // snapshot deserialize this as `None`, matching the
+                    // "nothing withheld" state those deliveries actually had.
+                    withheld_fleet_ack: p.withheld_fleet_ack,
+                    withheld_fleet_ack_floor: p.withheld_fleet_ack_floor,
                 },
             )
         })
-        .collect()
+        .collect();
+    normalize_pending_fleet_ack_floors(&mut loaded);
+    loaded
+}
+
+fn normalize_pending_fleet_ack_floors(deliveries: &mut HashMap<DeliveryId, PendingDelivery>) {
+    let mut floors = HashMap::<String, u64>::new();
+    for pending in deliveries.values() {
+        let Some((deliver, candidate)) = pending_fleet_ack_floor_candidate(pending) else {
+            continue;
+        };
+        floors
+            .entry(deliver.agent_id.clone())
+            .and_modify(|floor| *floor = (*floor).min(candidate))
+            .or_insert(candidate);
+    }
+    for pending in deliveries.values_mut() {
+        let Some(deliver) = pending
+            .withheld_fleet_ack
+            .as_ref()
+            .filter(|deliver| deliver.seq > 0)
+        else {
+            pending.withheld_fleet_ack_floor = None;
+            continue;
+        };
+        pending.withheld_fleet_ack_floor = floors.get(&deliver.agent_id).copied();
+    }
 }
 
 // These payload structs were used by the stdio protocol handler (handle_sdk_frame).
@@ -194,6 +344,9 @@ pub(crate) fn synthetic_delivery_read_ack_reason(event_id: &EventId) -> Option<&
     let event_id = event_id.as_str().trim();
     if event_id.is_empty() {
         return Some("blank_event_id");
+    }
+    if event_id.starts_with("local_") {
+        return Some("local_only_synthetic_event_id");
     }
     if event_id.starts_with("http_") {
         return Some("http_api_synthetic_event_id");
@@ -400,6 +553,7 @@ fn emit_delivery_read_ack_telemetry(
 pub(crate) enum InboundQueueOutcome {
     Queued,
     DrainNow(Vec<PendingRelayMessage>),
+    RejectedFull,
     WorkerMissing,
 }
 
@@ -413,6 +567,26 @@ pub(crate) struct InboundQueueResult {
     pub(crate) outcome: InboundQueueOutcome,
     /// `from` of the oldest message evicted to make room, if any.
     pub(crate) evicted_from: Option<String>,
+}
+
+/// Per-worker count of messages that have not reached the agent yet: the
+/// un-injected inbound queue (`manual_flush` backlog) plus the in-flight
+/// deliveries still awaiting worker confirmation. Feeds `pending_messages` on
+/// `GET /api/spawned` and `GET /api/status`; workers with nothing waiting are
+/// left out of the map.
+pub(crate) fn pending_message_counts(
+    delivery_states: &HashMap<WorkerName, InboundDeliveryState>,
+    pending_deliveries: &HashMap<DeliveryId, PendingDelivery>,
+) -> HashMap<WorkerName, usize> {
+    let mut counts: HashMap<WorkerName, usize> = delivery_states
+        .iter()
+        .filter(|(_, state)| state.pending_len() > 0)
+        .map(|(name, state)| (name.clone(), state.pending_len()))
+        .collect();
+    for delivery in pending_deliveries.values() {
+        *counts.entry(delivery.worker_name.clone()).or_insert(0) += 1;
+    }
+    counts
 }
 
 /// Build the `delivery_dropped` broker event for a queue-cap eviction.
@@ -446,6 +620,7 @@ pub(crate) struct InboundContext<'a> {
     pub(super) priority: u8,
     pub(super) mode: MessageInjectionMode,
     pub(super) event_id: Option<&'a str>,
+    pub(super) relaycast_receipt: Option<crate::types::RelaycastDeliveryReceipt>,
 }
 
 /// Queue an inbound relay message through the per-worker [`InboundDeliveryMode`].
@@ -488,7 +663,33 @@ pub(crate) fn queue_inbound_for_delivery_mode(
         mode: ctx.mode,
         queued_at_ms,
         event_id: ctx.event_id.map(EventId::from),
+        relaycast_receipt: ctx.relaycast_receipt,
     };
+    let restoring_predecessor = state.can_restore_fleet_predecessor(&msg);
+    if state.pending.len() >= crate::types::MAX_PENDING_PER_WORKER && !restoring_predecessor {
+        tracing::warn!(
+            target = "agent_relay::broker",
+            worker = %worker_name,
+            from = %ctx.from,
+            mode = state.mode.as_wire_str(),
+            queue_len = state.pending.len(),
+            max_pending = crate::types::MAX_PENDING_PER_WORKER,
+            "pending queue full - rejecting newest message"
+        );
+        return InboundQueueResult {
+            outcome: InboundQueueOutcome::RejectedFull,
+            evicted_from: None,
+        };
+    }
+    if restoring_predecessor {
+        tracing::warn!(
+            target = "agent_relay::broker",
+            worker = %worker_name,
+            queue_len = state.pending.len(),
+            max_pending = crate::types::MAX_PENDING_PER_WORKER,
+            "temporarily exceeding the pending cap to restore a missing fleet predecessor"
+        );
+    }
     let evicted_from = match state.accept_inbound(msg) {
         InboundDeliveryDispatch::Queued { queue_len } => {
             tracing::debug!(
@@ -542,7 +743,17 @@ pub(crate) async fn try_inject_pending_relay_message(
     worker_name: &str,
     msg: &PendingRelayMessage,
     retry_interval: Duration,
-) -> Result<()> {
+    // Fleet-originated deliveries pass the withheld engine ack through so it
+    // is embedded into the `PendingDelivery` at the moment of insertion —
+    // synchronously, before the handoff attempt below can time out. Deliver
+    // it any later (e.g. as a follow-up step keyed off this function's
+    // return value) and a handoff that outlives `retry_interval` loses the
+    // race: the timeout below fires, the `DeliveryId` never reaches the
+    // caller, and the ack is never registered even though the delivery is
+    // still very much alive and retryable. See relay#1310 / relay#1543.
+    withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
+    withheld_fleet_ack_floor: Option<u64>,
+) -> Result<DeliveryId> {
     let event_id = msg
         .event_id
         .clone()
@@ -567,6 +778,8 @@ pub(crate) async fn try_inject_pending_relay_message(
             msg.priority,
             msg.mode.clone(),
             retry_interval,
+            withheld_fleet_ack,
+            withheld_fleet_ack_floor,
         ),
     )
     .await
@@ -579,38 +792,55 @@ pub(crate) async fn try_inject_pending_relay_message(
     }
 }
 
-/// Inject a previously-queued pending relay message into the worker via
-/// the existing `queue_and_try_delivery_raw` path. Used by the
-/// `/api/spawned/{name}/flush` handler and by the auto-drain on a
-/// `manual_flush → auto_inject` transition. Failures are logged but not
-/// propagated — the broker treats `flush` as best-effort fire-and-forget
-/// the same way `/api/send` does for individual targets.
-pub(crate) async fn inject_pending_relay_message(
+/// Attempt one PTY injection without transferring ownership to the broker's
+/// retry queue. Manual-flush callers keep the original message at the head of
+/// their FIFO on failure, along with its Relaycast receipt, so retrying cannot
+/// race a second broker-owned copy of the same delivery.
+/// Rebuild the `RelayDelivery` a parked message was queued from.
+///
+/// Shared by the injection path and the dead-letter path so a message that is
+/// discarded instead of injected is recorded under the same delivery and event
+/// ids the worker would have seen.
+pub(crate) fn relay_delivery_for_pending_message(msg: &PendingRelayMessage) -> RelayDelivery {
+    let event_id = msg
+        .event_id
+        .clone()
+        .unwrap_or_else(|| EventId::new(format!("flush_{}", Uuid::new_v4().simple())));
+    let delivery_id = msg
+        .relaycast_receipt
+        .as_ref()
+        .map(|receipt| receipt.delivery_id.clone())
+        .unwrap_or_else(|| DeliveryId::new(format!("del_{}", Uuid::new_v4().simple())));
+    RelayDelivery {
+        delivery_id,
+        event_id,
+        workspace_id: msg.workspace_id.clone(),
+        workspace_alias: msg.workspace_alias.clone(),
+        from: msg.from.clone(),
+        target: msg.target.clone(),
+        body: msg.body.clone(),
+        thread_id: msg.thread_id.clone(),
+        priority: Some(msg.priority),
+        injection_mode: msg.mode.clone(),
+    }
+}
+
+pub(crate) async fn try_inject_pending_relay_message_once(
     workers: &mut WorkerRegistry,
-    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
     worker_name: &str,
     msg: &PendingRelayMessage,
     retry_interval: Duration,
-) {
-    let event_id = msg.event_id.as_deref().unwrap_or("");
-    if let Err(error) = try_inject_pending_relay_message(
-        workers,
-        pending_deliveries,
-        worker_name,
-        msg,
-        retry_interval,
-    )
-    .await
-    {
-        tracing::warn!(
-            target = "agent_relay::broker",
-            worker = %worker_name,
-            from = %msg.from,
-            event_id = %event_id,
-            error = %error,
-            "failed to inject pending relay message during flush"
-        );
-    }
+) -> Result<()> {
+    let delivery = relay_delivery_for_pending_message(msg);
+
+    timeout(retry_interval, workers.deliver(worker_name, delivery))
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "pending relay delivery timed out after {}ms",
+                retry_interval.as_millis()
+            )
+        })?
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -628,9 +858,40 @@ pub(crate) async fn queue_and_try_delivery_raw(
     priority: u8,
     injection_mode: MessageInjectionMode,
     retry_interval: Duration,
-) -> Result<()> {
+    withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
+    withheld_fleet_ack_floor: Option<u64>,
+) -> Result<DeliveryId> {
+    // The envelope-sized cap exists because PTY delivery types the message into
+    // a terminal, so it applies to PTY and unknown recipients. The headless CLI
+    // runner (no harness config) hands the body to its provider as one argv
+    // entry, so it is bounded by the portable single-argument ceiling instead.
+    // App-server and native harness workers receive deliveries as frames and
+    // need neither bound.
+    let recipient = workers.workers.get(worker_name).map(|handle| &handle.spec);
+    if recipient.is_none_or(|spec| spec.runtime == AgentRuntime::Pty) {
+        anyhow::ensure!(
+            body.len() <= crate::injection_wire::MAX_BODY_BYTES,
+            "injection_too_large: body limit is {} bytes so the formatted envelope fits the {}-byte PTY limit; use a brief file pointer",
+            crate::injection_wire::MAX_BODY_BYTES,
+            crate::injection_wire::MAX_INJECTION_BODY_BYTES
+        );
+    } else if recipient.is_some_and(|spec| spec.harness_config.is_none()) {
+        anyhow::ensure!(
+            body.len() <= crate::worker::MUSE_STARTUP_PROMPT_MAX_BYTES,
+            "injection_too_large: a headless agent receives the body as one process argument, limited to {} bytes; use a brief file pointer",
+            crate::worker::MUSE_STARTUP_PROMPT_MAX_BYTES
+        );
+    }
+    // Fleet delivery IDs are stable across Relaycast retries. Preserve that
+    // identity all the way into the worker so its completed-delivery cache can
+    // re-ACK a replay without pasting the instruction a second time. Local
+    // broker deliveries still receive a fresh generated ID.
+    let delivery_id = withheld_fleet_ack
+        .as_ref()
+        .map(|deliver| DeliveryId::new(deliver.delivery_id.clone()))
+        .unwrap_or_else(|| DeliveryId::new(format!("del_{}", Uuid::new_v4().simple())));
     let delivery = RelayDelivery {
-        delivery_id: DeliveryId::new(format!("del_{}", Uuid::new_v4().simple())),
+        delivery_id,
         event_id: EventId::new(event_id),
         workspace_id,
         workspace_alias,
@@ -641,25 +902,75 @@ pub(crate) async fn queue_and_try_delivery_raw(
         priority: Some(priority),
         injection_mode,
     };
+    insert_and_attempt_delivery(
+        workers,
+        pending_deliveries,
+        worker_name,
+        delivery,
+        retry_interval,
+        withheld_fleet_ack,
+        withheld_fleet_ack_floor,
+    )
+    .await
+}
+
+/// Register a delivery and make its first handoff attempt, in one atomic
+/// step: the `PendingDelivery` — including any withheld fleet ack — is
+/// inserted into `pending_deliveries` before the handoff attempt starts, so
+/// a slow or cancelled attempt can never separate "this delivery exists and
+/// is retryable" from "its withheld ack is registered". Shared by the
+/// broker-generated-id path (`queue_and_try_delivery_raw`) and any caller
+/// that already has a fully-built [`RelayDelivery`] (the fleet
+/// `WorkerMissing` injection path, which must keep the engine's own
+/// `delivery_id`).
+pub(crate) async fn insert_and_attempt_delivery(
+    workers: &mut WorkerRegistry,
+    pending_deliveries: &mut HashMap<DeliveryId, PendingDelivery>,
+    worker_name: &str,
+    delivery: RelayDelivery,
+    retry_interval: Duration,
+    withheld_fleet_ack: Option<crate::fleet_wire::Deliver>,
+    explicit_withheld_fleet_ack_floor: Option<u64>,
+) -> Result<DeliveryId> {
     let delivery_id = delivery.delivery_id.clone();
+    let withheld_fleet_ack_floor = withheld_fleet_ack
+        .as_ref()
+        .filter(|deliver| deliver.seq > 0)
+        .map(|deliver| {
+            let requested_floor = explicit_withheld_fleet_ack_floor
+                .unwrap_or(deliver.seq)
+                .min(deliver.seq);
+            pending_fleet_ack_group(pending_deliveries.values(), &deliver.agent_id)
+                .floor
+                .map_or(requested_floor, |floor| floor.min(requested_floor))
+        });
     pending_deliveries.insert(
         delivery_id.clone(),
         PendingDelivery {
             worker_name: WorkerName::new(worker_name),
             delivery,
             attempts: 0,
+            failed_attempts: 0,
             next_retry_at: Instant::now(),
             queued_at_ms: unix_timestamp_millis(),
             last_error: None,
+            withheld_fleet_ack,
+            withheld_fleet_ack_floor,
         },
     );
 
-    if let DeliveryAttemptOutcome::Failed { last_error, .. } =
-        retry_pending_delivery(&delivery_id, workers, pending_deliveries, retry_interval).await?
+    if let DeliveryAttemptOutcome::Failed {
+        pending,
+        last_error,
+    } = retry_pending_delivery(&delivery_id, workers, pending_deliveries, retry_interval).await?
     {
+        // The raw queue path has no dead-letter store/event sender. Preserve
+        // ownership locally so the maintenance retry path can record the
+        // terminal failure instead of silently discarding it here.
+        pending_deliveries.insert(pending.delivery.delivery_id.clone(), *pending);
         anyhow::bail!(last_error);
     }
-    Ok(())
+    Ok(delivery_id)
 }
 
 pub(crate) async fn retry_pending_delivery(
@@ -673,32 +984,47 @@ pub(crate) async fn retry_pending_delivery(
         None => return Ok(DeliveryAttemptOutcome::Noop),
     };
 
-    if pending.attempts >= MAX_DELIVERY_RETRIES {
+    // A local queue can outlive its broker and worker. Check absence before
+    // retry exhaustion, and give a respawned recipient a fresh handoff budget.
+    // Explicit release still moves its pending deliveries to dead letters.
+    if pending.delivery.event_id.as_str().starts_with("local_")
+        && !workers.has_worker(&pending.worker_name)
+    {
+        if let Some(current) = pending_deliveries.get_mut(delivery_id) {
+            current.failed_attempts = 0;
+            current.next_retry_at = Instant::now() + retry_interval;
+            current.last_error = Some("waiting for local recipient to reconnect".into());
+        }
+        return Ok(DeliveryAttemptOutcome::Noop);
+    }
+
+    if pending.failed_attempts >= MAX_DELIVERY_RETRIES {
         let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);
+        let last_error = removed
+            .last_error
+            .clone()
+            .unwrap_or_else(|| "max delivery retries exceeded".to_string());
         return Ok(DeliveryAttemptOutcome::Failed {
-            worker_name: removed.worker_name,
-            delivery_id: removed.delivery.delivery_id,
-            event_id: removed.delivery.event_id,
-            from: removed.delivery.from,
-            to: removed.delivery.target,
-            attempts: removed.attempts,
-            last_error: removed
-                .last_error
-                .unwrap_or_else(|| "max delivery retries exceeded".to_string()),
+            pending: Box::new(removed),
+            last_error,
         });
     }
 
     if !workers.has_worker(&pending.worker_name) {
         let removed = pending_deliveries.remove(delivery_id).unwrap_or(pending);
         return Ok(DeliveryAttemptOutcome::Failed {
-            worker_name: removed.worker_name,
-            delivery_id: removed.delivery.delivery_id,
-            event_id: removed.delivery.event_id,
-            from: removed.delivery.from,
-            to: removed.delivery.target,
-            attempts: removed.attempts,
+            pending: Box::new(removed),
             last_error: "recipient gone".to_string(),
         });
+    }
+
+    // Keep early channel traffic out of the PTY until worker_ready queues the
+    // initial task. Startup waiting does not consume the transport retry budget.
+    if workers.initial_tasks.contains_key(&pending.worker_name) {
+        if let Some(current) = pending_deliveries.get_mut(delivery_id) {
+            current.next_retry_at = Instant::now() + retry_interval;
+        }
+        return Ok(DeliveryAttemptOutcome::Noop);
     }
 
     match workers
@@ -708,7 +1034,9 @@ pub(crate) async fn retry_pending_delivery(
         Ok(()) => {
             if let Some(current) = pending_deliveries.get_mut(delivery_id) {
                 current.attempts = current.attempts.saturating_add(1);
-                current.next_retry_at = Instant::now() + retry_interval;
+                current.failed_attempts = 0;
+                current.next_retry_at = Instant::now()
+                    + delivery_ack_timeout(&current.delivery.injection_mode, retry_interval);
                 current.last_error = None;
                 return Ok(DeliveryAttemptOutcome::Attempted {
                     worker_name: current.worker_name.clone(),
@@ -721,25 +1049,23 @@ pub(crate) async fn retry_pending_delivery(
         Err(error) => {
             let should_fail = if let Some(current) = pending_deliveries.get_mut(delivery_id) {
                 current.attempts = current.attempts.saturating_add(1);
+                current.failed_attempts = current.failed_attempts.saturating_add(1);
                 current.next_retry_at = Instant::now() + retry_interval;
                 current.last_error = Some(error.to_string());
-                current.attempts >= MAX_DELIVERY_RETRIES
+                current.failed_attempts >= MAX_DELIVERY_RETRIES
             } else {
                 false
             };
 
             if should_fail {
                 if let Some(removed) = pending_deliveries.remove(delivery_id) {
+                    let last_error = removed
+                        .last_error
+                        .clone()
+                        .unwrap_or_else(|| "max delivery retries exceeded".to_string());
                     return Ok(DeliveryAttemptOutcome::Failed {
-                        worker_name: removed.worker_name,
-                        delivery_id: removed.delivery.delivery_id,
-                        event_id: removed.delivery.event_id,
-                        from: removed.delivery.from,
-                        to: removed.delivery.target,
-                        attempts: removed.attempts,
-                        last_error: removed
-                            .last_error
-                            .unwrap_or_else(|| "max delivery retries exceeded".to_string()),
+                        pending: Box::new(removed),
+                        last_error,
                     });
                 }
                 return Ok(DeliveryAttemptOutcome::Noop);
@@ -749,8 +1075,36 @@ pub(crate) async fn retry_pending_delivery(
     }
 }
 
+pub(crate) fn delivery_ack_timeout(
+    injection_mode: &MessageInjectionMode,
+    retry_interval: Duration,
+) -> Duration {
+    let minimum = match injection_mode {
+        MessageInjectionMode::Wait => WAIT_DELIVERY_ACK_TIMEOUT,
+        MessageInjectionMode::Steer => {
+            crate::injection_wire::INJECTION_PROMPT_WAIT
+                + crate::injection_wire::MAX_TYPED_WRITE_TIME
+                + Duration::from_millis(250)
+                + crate::broker::delivery_verification::VERIFICATION_WINDOW
+        }
+    };
+    std::cmp::max(retry_interval, minimum)
+}
+
+/// A worker recovery progress event starts another bounded verification window
+/// after its submit key reaches the PTY. Keep the broker from replaying the
+/// delivery while that write and verification are in flight.
+pub(crate) fn delivery_recovery_ack_timeout(
+    injection_mode: &MessageInjectionMode,
+    retry_interval: Duration,
+) -> Duration {
+    delivery_ack_timeout(injection_mode, retry_interval)
+        .saturating_add(crate::broker::delivery_verification::VERIFICATION_WINDOW)
+}
+
 pub(crate) async fn emit_delivery_attempt_outcome(
     sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    dead_letters: &mut DeadLetterStore,
     delivery_id: &DeliveryId,
     was_retry: bool,
     outcome: DeliveryAttemptOutcome,
@@ -775,27 +1129,44 @@ pub(crate) async fn emit_delivery_attempt_outcome(
             }
         }
         DeliveryAttemptOutcome::Failed {
-            worker_name,
-            delivery_id,
-            event_id,
-            from,
-            to,
-            attempts,
+            pending,
             last_error,
         } => {
-            send_broker_event(
+            // Notify best-effort: a closed SDK channel must not (via `?`) abort
+            // before the dead-letter write below. The delivery has already been
+            // removed from the pending map, so gating the DLQ capture on the
+            // send would lose the terminally-failed delivery entirely.
+            let _ = send_broker_event(
                 sdk_out_tx,
                 BrokerEvent::MessageDeliveryFailed {
-                    name: worker_name,
-                    delivery_id: Some(delivery_id),
-                    event_id: Some(event_id),
-                    from,
-                    to,
-                    attempts,
-                    last_error,
+                    name: pending.worker_name.clone(),
+                    delivery_id: Some(pending.delivery.delivery_id.clone()),
+                    event_id: Some(pending.delivery.event_id.clone()),
+                    from: pending.delivery.from.clone(),
+                    to: pending.delivery.target.clone(),
+                    attempts: pending.attempts,
+                    last_error: last_error.clone(),
                 },
             )
-            .await?;
+            .await;
+            // A dead-lettered delivery never actually landed, so any fleet
+            // (engine-facing) ack withheld pending its confirmation must be
+            // dropped rather than sent — the engine keeps its own record of
+            // this delivery as un-acked and will redeliver it. See relay#1310:
+            // the whole point of withholding the ack is that "enqueued for
+            // injection" must not be reported the same as "delivered". The
+            // withheld ack lives on `pending` itself, so it is dropped here
+            // simply by `pending` going out of scope — nothing to remember to
+            // clean up separately. See relay#1543.
+            if pending.withheld_fleet_ack.is_some() {
+                tracing::info!(
+                    target = "relay_broker::fleet",
+                    worker = %pending.worker_name,
+                    delivery_id = %pending.delivery.delivery_id,
+                    "dropping withheld fleet delivery_ack for dead-lettered delivery"
+                );
+            }
+            dead_letter_pending_delivery(sdk_out_tx, dead_letters, &pending, &last_error).await;
         }
         DeliveryAttemptOutcome::Noop => {}
     }
@@ -826,13 +1197,31 @@ pub(crate) fn take_pending_for_worker(
         .collect()
 }
 
+/// Choke point for every worker-exit / teardown disposition (agent release,
+/// permanent worker death, unsupervised exit): whatever removed these
+/// `PendingDelivery`s from `pending_deliveries` (via [`take_pending_for_worker`])
+/// already carried their withheld fleet acks along as a struct field, so this
+/// is also the single place that drops them. See relay#1543.
 pub(crate) async fn emit_dropped_delivery_failures(
     sdk_out_tx: &mpsc::Sender<ProtocolEnvelope<Value>>,
+    dead_letters: &mut DeadLetterStore,
     dropped: &[PendingDelivery],
     reason: &str,
 ) -> Result<()> {
     for pending in dropped {
-        send_broker_event(
+        if pending.withheld_fleet_ack.is_some() {
+            tracing::info!(
+                target = "relay_broker::fleet",
+                worker = %pending.worker_name,
+                delivery_id = %pending.delivery.delivery_id,
+                reason = reason,
+                "dropping withheld fleet delivery_ack for a delivery dropped from the pending map"
+            );
+        }
+        // Notify best-effort: a send failure must not `?`-abort the loop and
+        // strand the remaining dropped deliveries out of the dead-letter store.
+        // The DLQ capture below runs regardless of the send's outcome.
+        let _ = send_broker_event(
             sdk_out_tx,
             BrokerEvent::MessageDeliveryFailed {
                 name: pending.worker_name.clone(),
@@ -844,7 +1233,8 @@ pub(crate) async fn emit_dropped_delivery_failures(
                 last_error: reason.to_string(),
             },
         )
-        .await?;
+        .await;
+        dead_letter_pending_delivery(sdk_out_tx, dead_letters, pending, reason).await;
     }
     Ok(())
 }
@@ -945,5 +1335,17 @@ mod reply_target_tests {
                 "expected non-target: {id:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod injection_budget_tests {
+    use super::*;
+    #[test]
+    fn steer_ack_covers_prompt_typing_submit_and_verification() {
+        let required = crate::injection_wire::INJECTION_PROMPT_WAIT
+            + Duration::from_millis(crate::injection_wire::MAX_TYPED_BYTES as u64 * 5 + 250)
+            + crate::broker::delivery_verification::VERIFICATION_WINDOW;
+        assert!(delivery_ack_timeout(&MessageInjectionMode::Steer, Duration::ZERO) >= required);
     }
 }

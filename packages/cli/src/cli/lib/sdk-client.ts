@@ -1,13 +1,41 @@
-import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
+import path from 'node:path';
 
-import { activeWorkspaceKey } from './workspace-store.js';
+import { AgentRelay, type AgentRelayAgent } from '@agent-relay/sdk';
+import {
+  AGENT37_RELAYCAST_ORIGIN,
+  ARMADILLO_RELAYCAST_ORIGIN,
+  CANONICAL_RELAYCAST_ORIGIN,
+  DEV_CLOUD_API_URL,
+  DEV_RELAYCAST_ORIGIN,
+} from '@agent-relay/cloud';
+import {
+  resolveWorkspaceSelection as resolveCloudWorkspaceSelection,
+  writeProjectWorkspaceTargetIfSelectionCurrent,
+  type WorkspaceSelection,
+  type WorkspaceKeySource,
+} from '@agent-relay/cloud/workspace-key';
+
+import { savedAgentToken } from './agent-token-store.js';
+import {
+  acceptDerivedDestination,
+  configuredOrigin,
+  guardCredentialOrigin,
+} from './relaycast-origin-binding.js';
 
 /** Options shared by the SDK-backed (Relaycast) CLI command groups. */
 export interface SdkClientOptions {
   workspaceKey?: string;
   token?: string;
+  /** Act as this agent, using the token `agent register` saved for it. */
+  asAgent?: string;
+  /** Non-authoritative session URL used only when no persisted route or explicit URL exists. */
+  fallbackBaseUrl?: string;
   baseUrl?: string;
   env?: NodeJS.ProcessEnv;
+  /** Explicit project root for nested invocations such as packages/web. */
+  projectRoot?: string;
+  /** Use the canonical gateway instead of a persisted server-selected route. */
+  ignorePersistedRelaycastTarget?: boolean;
 }
 
 function env(options: SdkClientOptions): NodeJS.ProcessEnv {
@@ -19,32 +47,296 @@ function trimOrUndefined(value: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+/** Where a resolved workspace key came from, in precedence order. */
+export type { WorkspaceKeySource };
+export type { WorkspaceSelection };
+
+export type WorkspaceTransport = {
+  workspaceKey: string;
+  baseUrl?: string;
+  source: WorkspaceKeySource;
+};
+
+/** Resolve the selected key and any previously persisted Relay workspace identity. */
+export function resolveWorkspaceSelection(options: SdkClientOptions = {}): WorkspaceSelection | undefined {
+  const explicitProject = trimOrUndefined(env(options).AGENT_RELAY_PROJECT);
+  const projectRoot = explicitProject ? path.resolve(explicitProject) : options.projectRoot;
+  return resolveCloudWorkspaceSelection({
+    workspaceKey: options.workspaceKey,
+    env: env(options),
+    ...(projectRoot ? { projectRoot } : {}),
+  });
+}
+
+/**
+ * Resolve the workspace key and report which source it came from. Precedence:
+ * explicit flag → `RELAY_WORKSPACE_KEY`/`RELAY_API_KEY` env → the key the local
+ * broker in this CWD was started with (`relay up`) → the machine-global active
+ * workspace. Callers use the source to warn when the key was inferred from the
+ * project broker rather than named explicitly.
+ */
+export function resolveWorkspaceKeyWithSource(options: SdkClientOptions = {}): {
+  key: string;
+  source: WorkspaceKeySource;
+} {
+  const transport = resolveWorkspaceTransport(options);
+  return { key: transport.workspaceKey, source: transport.source };
+}
+
 export function resolveWorkspaceKey(options: SdkClientOptions = {}): string {
-  const e = env(options);
-  const key =
-    trimOrUndefined(options.workspaceKey) ??
-    trimOrUndefined(e.RELAY_WORKSPACE_KEY) ??
-    trimOrUndefined(e.RELAY_API_KEY) ??
-    trimOrUndefined(activeWorkspaceKey(e));
-  if (!key) {
+  return resolveWorkspaceKeyWithSource(options).key;
+}
+
+/**
+ * Resolve the base URL for the selected workspace credential, applying the
+ * same origin binding as {@link resolveWorkspaceTransport}.
+ * @param options - CLI SDK options.
+ * @returns The base URL, or `undefined` for the hosted default.
+ */
+export function resolveBaseUrl(options: SdkClientOptions = {}): string | undefined {
+  const selection = selectionForTransport(options);
+  const resolved = resolveBaseUrlForSelection(selection, options);
+  return guardedBaseUrl(
+    selection ? selectionCredential(selection) : undefined,
+    resolved,
+    options,
+    usesPersistedRoute(selection, options) ? 'derived' : 'requested'
+  );
+}
+
+/** The URL the caller asked for, untrimmed, so a set-but-empty value is visible. */
+function requestedBaseUrl(options: SdkClientOptions): string | undefined {
+  if (options.baseUrl !== undefined) return options.baseUrl;
+  return trimOrUndefined(options.fallbackBaseUrl) ?? env(options).RELAY_BASE_URL;
+}
+
+function selectionCredential(selection: WorkspaceSelection): string {
+  return trimOrUndefined(selection.relaycastApiKey) ?? selection.key;
+}
+
+/** Whether a configured URL (flag, session fallback or RELAY_BASE_URL) names the server. */
+function hasConfiguredBaseUrl(options: SdkClientOptions): boolean {
+  return Boolean(
+    trimOrUndefined(options.baseUrl) ??
+    trimOrUndefined(options.fallbackBaseUrl) ??
+    trimOrUndefined(env(options).RELAY_BASE_URL)
+  );
+}
+
+/**
+ * Whether the destination comes from a persisted project route rather than a
+ * URL the caller passed. Such a route never moves a credential's binding.
+ */
+function usesPersistedRoute(selection: WorkspaceSelection | undefined, options: SdkClientOptions): boolean {
+  return validatePersistedRelaycastBaseUrl(selection) !== undefined && !trimOrUndefined(options.baseUrl);
+}
+
+/**
+ * Never let a credential silently fall through to the hosted default: an empty
+ * or malformed base URL is an error, and a credential bound to one server is
+ * only ever sent back to that server.
+ *
+ * `requested` mode treats the URL as the caller's choice, which may move the
+ * binding. `derived` mode (a persisted route, or the server of the workspace
+ * a saved token belongs to) only checks it against the binding.
+ */
+function guardedBaseUrl(
+  credential: string | undefined,
+  resolved: string | undefined,
+  options: SdkClientOptions,
+  mode: 'requested' | 'derived' = 'requested'
+): string | undefined {
+  const requested = resolved ?? requestedBaseUrl(options);
+  const label = 'The Relaycast base URL (--base-url or RELAY_BASE_URL)';
+  if (!credential) {
+    configuredOrigin(requested, label);
+    return resolved;
+  }
+  if (mode === 'derived') {
+    configuredOrigin(resolved, label);
+    acceptDerivedDestination(credential, resolved, env(options));
+    return resolved;
+  }
+  return guardCredentialOrigin(credential, requested, env(options));
+}
+
+function selectionForTransport(options: SdkClientOptions): WorkspaceSelection | undefined {
+  const selection = resolveWorkspaceSelection(options);
+  if (!selection || !options.ignorePersistedRelaycastTarget) return selection;
+  const {
+    relaycastRoute: _relaycastRoute,
+    relaycastBaseUrl: _relaycastBaseUrl,
+    relaycastApiKey: _relaycastApiKey,
+    relaycastApiKeyRef: _relaycastApiKeyRef,
+    ...canonicalSelection
+  } = selection;
+  return canonicalSelection;
+}
+
+/** Resolve an origin while keeping a persisted route paired with its credential. */
+function resolveBaseUrlForSelection(
+  selection: WorkspaceSelection | undefined,
+  options: SdkClientOptions
+): string | undefined {
+  const persisted = validatePersistedRelaycastBaseUrl(selection);
+  const explicit = trimOrUndefined(options.baseUrl);
+  const fallback = trimOrUndefined(options.fallbackBaseUrl) ?? trimOrUndefined(env(options).RELAY_BASE_URL);
+  const requested = explicit ?? fallback;
+  // Precedence is explicit --base-url (validated against a persisted route),
+  // then the persisted route, fallbackBaseUrl, and finally RELAY_BASE_URL.
+  // This keeps a server-selected route paired with its credential.
+  if (persisted && explicit) {
+    let parsed: URL;
+    try {
+      parsed = new URL(explicit);
+    } catch {
+      throw new Error('The requested Relaycast base URL is invalid.');
+    }
+    const authority = /^https:\/\/([^/?#]+)/i.exec(explicit)?.[1] ?? '';
+    if (
+      !/^https:\/\/[^/?#]+\/?$/i.test(explicit) ||
+      parsed.protocol !== 'https:' ||
+      parsed.username ||
+      parsed.password ||
+      parsed.port ||
+      /:\d+$/.test(authority) ||
+      parsed.search ||
+      parsed.hash ||
+      (parsed.pathname !== '' && parsed.pathname !== '/')
+    ) {
+      throw new Error('The requested Relaycast base URL is not a trusted origin.');
+    }
+    if (parsed.origin !== persisted) {
+      throw new Error('The requested Relaycast base URL does not match the persisted workspace route.');
+    }
+  }
+  return persisted ?? requested;
+}
+
+/** Resolve one credential/origin pair from one workspace selection. */
+export function resolveWorkspaceTransport(options: SdkClientOptions = {}): WorkspaceTransport {
+  const selection = selectionForTransport(options);
+  if (!selection) {
     throw new Error(
       'No workspace key found. Pass --workspace-key, set RELAY_WORKSPACE_KEY, or run `relay workspace set_key <name> <key>`.'
     );
   }
-  return key;
+  const baseUrl = guardedBaseUrl(
+    selectionCredential(selection),
+    resolveBaseUrlForSelection(selection, options),
+    options,
+    usesPersistedRoute(selection, options) ? 'derived' : 'requested'
+  );
+  // Project-session loading already validates the reference against the
+  // project/workspace/route/base tuple. Never re-read a ref here: doing so
+  // would let a tampered ref bypass that binding and pair an unrelated key
+  // with this route.
+  const routeCredential = trimOrUndefined(selection.relaycastApiKey);
+  if (selection.relaycastRoute === 'agent37-isolated' && !routeCredential) {
+    throw new Error(
+      'The persisted isolated Relaycast credential is unavailable or mismatched; rerun the sandbox command to mint a fresh route.'
+    );
+  }
+  return {
+    workspaceKey: routeCredential ?? selection.key,
+    ...(baseUrl ? { baseUrl } : {}),
+    source: selection.source,
+  };
 }
 
-export function resolveBaseUrl(options: SdkClientOptions = {}): string | undefined {
-  return trimOrUndefined(options.baseUrl) ?? trimOrUndefined(env(options).RELAY_BASE_URL);
+function validatePersistedRelaycastBaseUrl(selection: WorkspaceSelection | undefined): string | undefined {
+  const baseUrl = trimOrUndefined(selection?.relaycastBaseUrl);
+  const route = selection?.relaycastRoute;
+  const relaycastApiKey = trimOrUndefined(selection?.relaycastApiKey);
+  const relaycastCloudApiUrl = trimOrUndefined(selection?.relaycastCloudApiUrl);
+  if (!baseUrl && !route && !relaycastApiKey) return undefined;
+  if (!baseUrl || !route) {
+    throw new Error('The persisted Relaycast workspace route is incomplete.');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new Error('The persisted Relaycast workspace route is invalid.');
+  }
+  const expectedOrigins =
+    route === 'canonical'
+      ? relaycastCloudApiUrl === DEV_CLOUD_API_URL
+        ? [DEV_RELAYCAST_ORIGIN]
+        : [CANONICAL_RELAYCAST_ORIGIN, ARMADILLO_RELAYCAST_ORIGIN]
+      : route === 'agent37-isolated'
+        ? [AGENT37_RELAYCAST_ORIGIN]
+        : [];
+  if (
+    !expectedOrigins.includes(parsed.origin) ||
+    parsed.protocol !== 'https:' ||
+    parsed.username ||
+    parsed.password ||
+    parsed.port ||
+    parsed.search ||
+    parsed.hash ||
+    (parsed.pathname !== '' && parsed.pathname !== '/')
+  ) {
+    throw new Error('The persisted Relaycast workspace route is not trusted.');
+  }
+  return parsed.origin;
+}
+
+/** Persist a server-selected target only while the captured project selection is still current. */
+export function persistWorkspaceRelaycastTarget(
+  selection: WorkspaceSelection | undefined,
+  target: {
+    route: 'canonical' | 'agent37-isolated';
+    baseUrl: string;
+    workspaceId: string;
+    relaycastApiKey: string;
+  },
+  relaycastCloudApiUrl?: string
+): boolean {
+  if (!selection) return false;
+  if (
+    target.route === 'canonical' &&
+    target.baseUrl === DEV_RELAYCAST_ORIGIN &&
+    relaycastCloudApiUrl !== DEV_CLOUD_API_URL
+  ) {
+    return false;
+  }
+  const selectionWithProjectDir = selection as WorkspaceSelection & { projectDataDir?: string };
+  const dataDir =
+    selectionWithProjectDir?.projectDataDir ??
+    (selection?.source === 'project' && selection.origin ? path.dirname(selection.origin) : undefined);
+  if (!dataDir) return false;
+  return writeProjectWorkspaceTargetIfSelectionCurrent(dataDir, selection, {
+    workspaceId: target.workspaceId,
+    relaycastRoute: target.route,
+    relaycastBaseUrl: target.baseUrl,
+    ...(relaycastCloudApiUrl ? { relaycastCloudApiUrl } : {}),
+    relaycastApiKey: target.relaycastApiKey,
+  });
 }
 
 export function resolveAgentToken(options: SdkClientOptions = {}): string | undefined {
-  return trimOrUndefined(options.token) ?? trimOrUndefined(env(options).RELAY_AGENT_TOKEN);
+  const explicit = trimOrUndefined(options.token);
+  const asAgent = trimOrUndefined(options.asAgent);
+  if (explicit && asAgent) throw new Error('Pass either --token or --as, not both.');
+  if (explicit) return explicit;
+  if (asAgent) {
+    const { workspaceKey, baseUrl } = resolveWorkspaceTransport({ ...options, asAgent: undefined });
+    const saved = savedAgentToken(workspaceKey, baseUrl, asAgent, env(options));
+    if (!saved) {
+      throw new Error(
+        `No saved token for "${asAgent}" in this workspace. Run \`agent-relay agent register ${asAgent}\` first.`
+      );
+    }
+    return saved;
+  }
+  return trimOrUndefined(env(options).RELAY_AGENT_TOKEN);
 }
 
 /** Workspace-scoped client (no agent token). */
 export function createWorkspaceRelay(options: SdkClientOptions = {}): AgentRelay {
-  return new AgentRelay({ workspaceKey: resolveWorkspaceKey(options), baseUrl: resolveBaseUrl(options) });
+  const { workspaceKey, baseUrl } = resolveWorkspaceTransport(options);
+  return new AgentRelay({ workspaceKey, baseUrl });
 }
 
 /**
@@ -53,10 +345,47 @@ export function createWorkspaceRelay(options: SdkClientOptions = {}): AgentRelay
  * workspace-scoped client is returned.
  */
 export function createAgentRelay(options: SdkClientOptions = {}): AgentRelayAgent {
+  if (trimOrUndefined(options.workspaceKey) && !trimOrUndefined(options.asAgent)) {
+    if (trimOrUndefined(options.token)) {
+      throw new Error('Pass either --workspace-key or --token, not both.');
+    }
+    // A deliberate workspace credential wins over an ambient participant token.
+    // Inferred project/store credentials must still never elevate a participant.
+    return createWorkspaceRelay(options);
+  }
   const token = resolveAgentToken(options);
-  return new AgentRelay({
-    workspaceKey: resolveWorkspaceKey(options),
-    baseUrl: resolveBaseUrl(options),
-    ...(token ? { agentToken: token } : {}),
-  });
+  if (token && trimOrUndefined(options.asAgent)) {
+    // A saved token goes to the server of the workspace it was saved under.
+    // Only an explicit URL may move the token's binding; otherwise the
+    // workspace's server must agree with it.
+    const { baseUrl } = resolveWorkspaceTransport({ ...options, asAgent: undefined });
+    const mode =
+      hasConfiguredBaseUrl(options) && !usesPersistedRoute(selectionForTransport(options), options)
+        ? 'requested'
+        : 'derived';
+    return new AgentRelay({ agentToken: token, baseUrl: guardedBaseUrl(token, baseUrl, options, mode) });
+  }
+  // Agent tokens are valid Relaycast transport credentials and already bind
+  // the caller to exactly one workspace. Prefer the scoped token itself over
+  // every ambient workspace-key source so invited humans cannot accidentally
+  // inherit the local owner's rk_live credential from this project or machine.
+  if (token) {
+    return new AgentRelay({
+      agentToken: token,
+      // An agent token is already scoped by the caller, whether supplied by a
+      // flag or RELAY_AGENT_TOKEN. Do not let a persisted project route
+      // silently select a different gateway; only an explicit/ambient base URL
+      // may choose the token's origin.
+      baseUrl: guardedBaseUrl(
+        token,
+        resolveBaseUrlForSelection(
+          selectionForTransport({ ...options, ignorePersistedRelaycastTarget: true }),
+          options
+        ),
+        options
+      ),
+    });
+  }
+  const { workspaceKey, baseUrl } = resolveWorkspaceTransport(options);
+  return new AgentRelay({ workspaceKey, baseUrl });
 }

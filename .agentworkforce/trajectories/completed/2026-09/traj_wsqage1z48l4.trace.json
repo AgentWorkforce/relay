@@ -1,0 +1,237 @@
+{
+  "version": "1.0.0",
+  "id": "52531508-652c-4679-b1d1-58d5d0c57f64",
+  "timestamp": "2026-09-02T01:36:25.215Z",
+  "trajectory": "traj_wsqage1z48l4",
+  "files": [
+    {
+      "path": ".agentworkforce/trajectories/active/traj_wsqage1z48l4/trajectory.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 79,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 5,
+              "end_line": 15,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/pty_worker.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 40,
+              "end_line": 49,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 100,
+              "end_line": 117,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 1704,
+              "end_line": 1735,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/broker/src/wrap.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 6,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 18,
+              "end_line": 24,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 56,
+              "end_line": 78,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 159,
+              "end_line": 231,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 1174,
+              "end_line": 1181,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 1834,
+              "end_line": 1978,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 2017,
+              "end_line": 2023,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 2035,
+              "end_line": 2081,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 2147,
+              "end_line": 2243,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "crates/relay-pty/src/pty.rs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 91,
+              "end_line": 114,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 495,
+              "end_line": 527,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 549,
+              "end_line": 561,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 728,
+              "end_line": 734,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 755,
+              "end_line": 788,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 1428,
+              "end_line": 1436,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 1513,
+              "end_line": 1519,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 1522,
+              "end_line": 1528,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 1597,
+              "end_line": 1603,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 1636,
+              "end_line": 1642,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 1866,
+              "end_line": 1879,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 2053,
+              "end_line": 2059,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            },
+            {
+              "start_line": 2073,
+              "end_line": 2198,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1634-claude-multiline-task-submit/case.json",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 21,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1634-claude-multiline-task-submit/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 238,
+              "revision": "81a2bd7dd3f4cb790f12a87dff2151dc88dd4a3a"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

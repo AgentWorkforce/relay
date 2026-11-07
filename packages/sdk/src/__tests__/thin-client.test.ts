@@ -7,12 +7,20 @@ const relaycastMocks = vi.hoisted(() => {
   const relayCastInstances: Array<{
     config: Record<string, unknown>;
     as: Mock;
+    observerTokens: { create: Mock; list: Mock; revoke: Mock };
     agents: { list: Mock; registerOrRotate: Mock; spawn: Mock; release: Mock };
   }> = [];
   const wsClientInstances: Array<Record<string, unknown>> = [];
 
   const makeAgentClient = () => ({
     send: vi.fn(async (...args: unknown[]) => ({ raw: true, args })),
+    reply: vi.fn(async (...args: unknown[]) => ({ raw: true, args })),
+    dm: vi.fn(async (...args: unknown[]) => ({ raw: true, args })),
+    dms: {
+      sendMessage: vi.fn(async (...args: unknown[]) => ({ raw: true, args })),
+      conversations: vi.fn(async () => []),
+      createGroup: vi.fn(async () => ({ id: 'conv_1' })),
+    },
     inbox: vi.fn(async () => ({ unread_channels: [] })),
     markRead: vi.fn(async () => ({})),
     channels: {
@@ -32,6 +40,19 @@ const relaycastMocks = vi.hoisted(() => {
     const instance = {
       config,
       as,
+      observerTokens: {
+        create: vi.fn(async (data: Record<string, unknown>) => ({
+          id: 'ot_1',
+          name: data.name,
+          scopes: data.scopes,
+          status: 'active',
+          expiresAt: data.expiresAt ?? null,
+          createdAt: '2026-08-03T00:00:00.000Z',
+          token: 'ot_live_material',
+        })),
+        list: vi.fn(async () => [{ id: 'ot_1', name: 'a', status: 'active' }]),
+        revoke: vi.fn(async () => undefined),
+      },
       agents: {
         list: vi.fn(async () => [{ name: 'A' }]),
         registerOrRotate: vi.fn(async () => ({ name: 'A', token: 'at_live_a', extra_field: 1 })),
@@ -67,10 +88,14 @@ vi.mock('@relaycast/sdk', async (importOriginal) => {
 });
 
 import {
+  RELAY_OBSERVER_SCOPES,
   createAgentClient,
+  createObserverToken,
   createRealtimeClient,
   createWorkspace,
   createWorkspaceClient,
+  listObserverTokens,
+  revokeObserverToken,
 } from '../messaging/thin-client.js';
 
 beforeEach(() => {
@@ -80,6 +105,9 @@ beforeEach(() => {
   vi.stubEnv('RELAYCAST_HARNESS', '');
   vi.stubEnv('X_RELAYCAST_HARNESS', '');
   vi.stubEnv('AGENT_RELAY_DISTINCT_ID', '');
+  // Keeps write-stamping tests deterministic across dev machines that may
+  // export RELAY_ATTEST_SESSION_ID in the shell for orchestration work.
+  vi.stubEnv('RELAY_ATTEST_SESSION_ID', '');
 });
 
 afterEach(() => {
@@ -171,10 +199,15 @@ describe('createAgentClient', () => {
     });
     expect(instance.as).toHaveBeenCalledWith('at_live_test', { autoHeartbeatMs: false });
 
-    const agent = relaycastMocks.agentClients[0] as { send: ReturnType<typeof vi.fn> };
+    const agent = relaycastMocks.agentClients[0] as {
+      send: ReturnType<typeof vi.fn>;
+      dm: ReturnType<typeof vi.fn>;
+    };
     const sent = await client.send('general', 'hello', { mode: 'wait' });
     expect(agent.send).toHaveBeenCalledWith('general', 'hello', { mode: 'wait' });
     expect(sent).toEqual({ raw: true, args: ['general', 'hello', { mode: 'wait' }] });
+    await client.dm('chief', 'dm', { idempotencyKey: 'dm-logical-1' });
+    expect(agent.dm).toHaveBeenCalledWith('chief', 'dm', { idempotencyKey: 'dm-logical-1' });
   });
 
   it('honors an explicit heartbeat interval', () => {
@@ -197,6 +230,66 @@ describe('createAgentClient', () => {
     const failure = new Error('Invalid agent token');
     agent.inbox.mockRejectedValueOnce(failure);
     await expect(client.inbox()).rejects.toBe(failure);
+  });
+
+  it('stamps the current replay session on send, reply, dm, and group sendMessage writes', async () => {
+    vi.stubEnv('RELAY_ATTEST_SESSION_ID', '11111111-1111-4111-8111-111111111111');
+    const client = createAgentClient({ agentToken: 'at_live_test' });
+    const agent = relaycastMocks.agentClients[0] as {
+      send: ReturnType<typeof vi.fn>;
+      reply: ReturnType<typeof vi.fn>;
+      dm: ReturnType<typeof vi.fn>;
+      dms: { sendMessage: ReturnType<typeof vi.fn> };
+    };
+
+    await client.send('general', 'hello');
+    await client.reply('msg_parent', 'reply');
+    await client.dm('chief', 'dm', { idempotencyKey: 'dm-logical-1' });
+    await client.dms.sendMessage('conv_group', 'group');
+
+    const replayData = { session_ref: '11111111-1111-4111-8111-111111111111' };
+    expect(agent.send).toHaveBeenCalledWith('general', 'hello', { data: replayData });
+    expect(agent.reply).toHaveBeenCalledWith('msg_parent', 'reply', { data: replayData });
+    expect(agent.dm).toHaveBeenCalledWith('chief', 'dm', {
+      data: replayData,
+      idempotencyKey: 'dm-logical-1',
+    });
+    expect(agent.dms.sendMessage).toHaveBeenCalledWith('conv_group', 'group', { data: replayData });
+  });
+
+  it('does not require the unchecked upstream dms surface until a caller accesses it', async () => {
+    vi.stubEnv('RELAY_ATTEST_SESSION_ID', '11111111-1111-4111-8111-111111111111');
+    const send = vi.fn(async (...args: unknown[]) => ({ raw: true, args }));
+    relaycastMocks.relayCast.mockImplementationOnce(function () {
+      return { as: vi.fn(() => ({ send })) };
+    });
+
+    const client = createAgentClient({ agentToken: 'at_live_test' });
+    await client.send('general', 'hello');
+
+    expect(send).toHaveBeenCalledWith('general', 'hello', {
+      data: { session_ref: '11111111-1111-4111-8111-111111111111' },
+    });
+  });
+
+  it('respects an explicit data.session_ref instead of overwriting it with the replay session', async () => {
+    vi.stubEnv('RELAY_ATTEST_SESSION_ID', 'ambient-session');
+    const client = createAgentClient({ agentToken: 'at_live_test' });
+    const agent = relaycastMocks.agentClients[0] as { send: ReturnType<typeof vi.fn> };
+
+    await client.send('general', 'hello', { data: { session_ref: 'caller-owned' } });
+    expect(agent.send).toHaveBeenCalledWith('general', 'hello', { data: { session_ref: 'caller-owned' } });
+  });
+
+  it('does not fall back to RELAY_ATTEST_SESSION_ID when sessionRef is passed but unresolvable', async () => {
+    vi.stubEnv('RELAY_ATTEST_SESSION_ID', 'ambient-session');
+    // An explicit sessionRef that resolves to undefined (blank, or too long)
+    // must not silently be re-attributed to the ambient environment session.
+    const client = createAgentClient({ agentToken: 'at_live_test', sessionRef: '   ' });
+    const agent = relaycastMocks.agentClients[0] as { send: ReturnType<typeof vi.fn> };
+
+    await client.send('general', 'hello', { mode: 'wait' });
+    expect(agent.send).toHaveBeenCalledWith('general', 'hello', { mode: 'wait' });
   });
 });
 
@@ -255,5 +348,51 @@ describe('createWorkspace', () => {
     await createWorkspace('Test');
 
     expect(relaycastMocks.createWorkspace).toHaveBeenCalledWith('Test', {});
+  });
+});
+
+describe('observer tokens', () => {
+  it('defaults to every read scope with DMs excluded', async () => {
+    const token = await createObserverToken({
+      workspaceKey: 'rk_live_test',
+      name: 'observer-cli-1',
+    });
+
+    const instance = relaycastMocks.relayCastInstances[0];
+    expect(instance.config).toEqual({ apiKey: 'rk_live_test' });
+    const [payload] = instance.observerTokens.create.mock.calls[0] as [Record<string, unknown>];
+    expect(payload.scopes).toEqual([...RELAY_OBSERVER_SCOPES]);
+    // `stream:read` is what makes the token usable on the realtime endpoint.
+    expect(payload.scopes).toContain('stream:read');
+    // Recorded explicitly rather than left to the server default, so the
+    // token's stored filters show the decision.
+    expect(payload.filters).toEqual({ includeDms: false });
+    expect(token.token).toBe('ot_live_material');
+  });
+
+  it('passes channel and DM narrowing through', async () => {
+    await createObserverToken({
+      workspaceKey: 'rk_live_test',
+      name: 'observer-cli-2',
+      filters: { channelNames: ['general'], includeDms: true },
+      expiresAt: '2026-08-04T00:00:00.000Z',
+      scopes: ['stream:read', 'messages:read'],
+    });
+
+    const instance = relaycastMocks.relayCastInstances[0];
+    const [payload] = instance.observerTokens.create.mock.calls[0] as [Record<string, unknown>];
+    expect(payload).toMatchObject({
+      scopes: ['stream:read', 'messages:read'],
+      filters: { includeDms: true, channelNames: ['general'] },
+      expiresAt: '2026-08-04T00:00:00.000Z',
+    });
+  });
+
+  it('lists and revokes through the workspace client', async () => {
+    await listObserverTokens({ workspaceKey: 'rk_live_test' });
+    expect(relaycastMocks.relayCastInstances[0].observerTokens.list).toHaveBeenCalled();
+
+    await revokeObserverToken({ workspaceKey: 'rk_live_test', id: 'ot_1' });
+    expect(relaycastMocks.relayCastInstances[1].observerTokens.revoke).toHaveBeenCalledWith('ot_1');
   });
 });

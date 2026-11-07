@@ -7,6 +7,7 @@ import {
   actionToolInputSchema,
   serializableActionDescriptor,
 } from './action-schema.js';
+import { describeError } from '../lib/describe-error.js';
 import { jsonContent, jsonResult } from './tool-results.js';
 import type { AgentClientLike, SessionState } from './types.js';
 
@@ -35,7 +36,7 @@ function asInputRecord(input: unknown): Record<string, unknown> | undefined {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return describeError(error);
 }
 
 /**
@@ -87,7 +88,9 @@ export function registerAgentRelayActionTools(
     'list_actions',
     {
       title: 'List Actions',
-      description: 'List Agent Relay actions available to this agent.',
+      description:
+        'List Agent Relay actions available to this agent. ' +
+        'Returns an `actions` array of action descriptors, each with its name, description, and input schema. Use it to discover what can be passed to "invoke_action".',
       inputSchema: {},
       outputSchema: jsonResult,
       annotations: {

@@ -1,4 +1,5 @@
 import { authorizedApiFetch, ensureAuthenticated } from './auth.js';
+import { redactCredentialValues } from './redact.js';
 import {
   defaultApiUrl,
   type ProactiveAgentRecord,
@@ -51,7 +52,9 @@ function buildEndpointError(action: string, endpoint: string, response: Response
       response.statusText)
     : response.statusText;
 
-  return new Error(`${action} failed at ${endpoint}: ${response.status} ${detail}`.trim());
+  return new Error(
+    redactCredentialValues(`${action} failed at ${endpoint}: ${response.status} ${detail}`.trim())
+  );
 }
 
 function isUnsupported(response: Response): boolean {

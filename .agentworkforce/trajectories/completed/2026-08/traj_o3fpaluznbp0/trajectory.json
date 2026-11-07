@@ -1,0 +1,85 @@
+{
+  "id": "traj_o3fpaluznbp0",
+  "version": 1,
+  "task": {
+    "title": "Stop standalone smoke CI from creating throwaway Relaycast workspaces"
+  },
+  "status": "completed",
+  "startedAt": "2026-08-18T09:34:00.831Z",
+  "completedAt": "2026-08-18T10:03:44.381Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-18T09:39:45.723Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_vrkts5t6qnlp",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-18T09:39:45.723Z",
+      "endedAt": "2026-08-18T10:03:44.381Z",
+      "events": [
+        {
+          "ts": 1787045985724,
+          "type": "decision",
+          "content": "Reuse one secret-backed CI workspace and give every smoke process a unique broker name: Reuse one secret-backed CI workspace and give every smoke process a unique broker name",
+          "raw": {
+            "question": "Reuse one secret-backed CI workspace and give every smoke process a unique broker name",
+            "chosen": "Reuse one secret-backed CI workspace and give every smoke process a unique broker name",
+            "alternatives": [],
+            "reasoning": "The smoke asserts local status/down/up/readiness behavior; fresh workspace provisioning is incidental. A committed pin would expose a credential and create-and-delete is unavailable (relaycast#336). Temporary HOME/project directories isolate local state, while unique broker names and derived node identities prevent concurrent runs from colliding in the shared workspace. Missing credentials fail closed; fork PRs skip the live-cloud job because GitHub withholds repository secrets."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1787046771418,
+          "type": "reflection",
+          "content": "The shared-workspace design is behaving as intended: two concurrent real brokers and a follow-up all completed, with unique broker names preventing collision and temp HOME/project roots isolating state. One initial verification harness used relative binary paths and failed before startup; correcting to absolute paths proved the target behavior without creating another workspace.",
+          "raw": {
+            "focalPoints": [
+              "concurrency",
+              "isolation",
+              "credential-safety",
+              "ci"
+            ],
+            "adjustments": "Cleared ambient RELAY_WORKSPACES_JSON so the dedicated single key cannot be shadowed; added fork/Dependabot skip because GitHub withholds Actions secrets.",
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "focal:concurrency",
+            "focal:isolation",
+            "focal:credential-safety",
+            "focal:ci",
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Reworked standalone smoke CI to reuse one secret-backed workspace, fail closed without the key, clear higher-precedence multi-workspace state, use collision-resistant broker names, and assert/announce workspace reuse. Seeded the GitHub Actions secret without exposing it; validated two concurrent real smokes plus a follow-up, a green Package Validation run, the full 2,068-test suite, shell/format checks, and opened PR #1567 without merging.",
+    "approach": "Standard approach",
+    "confidence": 0.93
+  },
+  "commits": [
+    "09d73b040"
+  ],
+  "filesChanged": [
+    ".agentworkforce/trajectories/active/traj_o3fpaluznbp0/trajectory.json",
+    ".github/workflows/package-validation.yml",
+    ".github/workflows/publish.yml",
+    "packages/cli/src/cli/ci-standalone-smoke.test.ts",
+    "scripts/ci-standalone-smoke.sh"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "61da735c1bbb4a23678b91cd6dacd8ab7bafbed1",
+    "endRef": "09d73b0400815333df6a4bf5ff50a06276d67aa4",
+    "traceId": "38d0b7b0-ecf2-459a-bd54-8bd77c7a933d"
+  }
+}

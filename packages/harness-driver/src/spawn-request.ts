@@ -18,6 +18,7 @@ export function isBundledHeadlessCli(value: string): value is HeadlessProvider {
 }
 
 export function resolveSpawnTransport(input: SpawnCliInput): AgentTransport {
+  if (input.harnessConfig?.runtime === 'native') return 'headless';
   if (input.transport) return input.transport;
   if (input.harnessConfig) return input.harnessConfig.runtime;
   return input.cli === 'opencode' ? 'headless' : 'pty';
@@ -47,7 +48,7 @@ export function buildSpawnPtyBody(input: SpawnPtyInput): Record<string, unknown>
     ...(input.model !== undefined ? { model: input.model } : {}),
     args: input.args ?? [],
     ...(input.task !== undefined ? { task: input.task } : {}),
-    channels: input.channels ?? [],
+    ...(input.channels !== undefined ? { channels: input.channels } : {}),
     ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
     ...(input.team !== undefined ? { team: input.team } : {}),
     ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),
@@ -73,7 +74,7 @@ export function buildSpawnCliBody(input: SpawnCliInput, transport: AgentTranspor
     ...(input.model !== undefined ? { model: input.model } : {}),
     args: input.args ?? [],
     ...(input.task !== undefined ? { task: input.task } : {}),
-    channels: input.channels ?? [],
+    ...(input.channels !== undefined ? { channels: input.channels } : {}),
     ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
     ...(input.team !== undefined ? { team: input.team } : {}),
     ...(input.agentToken !== undefined ? { agentToken: input.agentToken } : {}),

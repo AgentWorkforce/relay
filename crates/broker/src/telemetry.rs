@@ -7,9 +7,12 @@
 //!   - Set `AGENT_RELAY_TELEMETRY_DISABLED=1` (or `true`)
 //!   - Set `DO_NOT_TRACK=1` (cross-tool convention, https://consoledonottrack.com)
 //!   - Or write `{"enabled": false}` to `~/.agentworkforce/relay/telemetry.json`
+//!     (or `$AGENT_RELAY_DATA_DIR/telemetry.json` when that is set — the same
+//!     file `agent-relay telemetry disable` writes)
 
 use std::path::PathBuf;
 
+use relaycast::sanitize_agent_relay_distinct_id;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -84,6 +87,13 @@ pub enum TelemetryEvent {
         exit_code: Option<i32>,
         lifetime_seconds: u64,
     },
+    /// The broker process itself panicked. Emitted synchronously from the
+    /// panic hook (see [`install_panic_hook`]). PII-safe by construction — it
+    /// carries only the compile-time source location, never the panic message.
+    BrokerPanic {
+        /// Source location of the panic as `file:line`.
+        location: String,
+    },
     MessageSend {
         is_broadcast: bool,
         has_thread: bool,
@@ -121,6 +131,7 @@ impl TelemetryEvent {
             Self::AgentSpawn { .. } => "agent_spawn",
             Self::AgentRelease { .. } => "agent_release",
             Self::AgentCrash { .. } => "agent_crash",
+            Self::BrokerPanic { .. } => "broker_panic",
             Self::MessageSend { .. } => "message_send",
             Self::CliCommandRun { .. } => "cli_command_run",
         }
@@ -170,6 +181,9 @@ impl TelemetryEvent {
                 "exit_code": exit_code,
                 "lifetime_seconds": lifetime_seconds,
             }),
+            Self::BrokerPanic { location } => json!({
+                "panic_location": location,
+            }),
             Self::MessageSend {
                 is_broadcast,
                 has_thread,
@@ -196,8 +210,33 @@ struct TelemetryPrefs {
     notified_at: Option<String>,
 }
 
+/// Override for both the preference file and the machine-id file, matching the
+/// TypeScript CLI (`telemetry/config.ts`, `telemetry/machine-id.ts`). When set,
+/// `agent-relay telemetry disable` writes the opt-out there — so the broker has
+/// to read it from the same place or it would ignore an explicit opt-out.
+const DATA_DIR_ENV: &str = "AGENT_RELAY_DATA_DIR";
+
+fn data_dir_override() -> Option<PathBuf> {
+    env_nonempty(DATA_DIR_ENV).map(PathBuf::from)
+}
+
+/// Resolve a telemetry data file: the `AGENT_RELAY_DATA_DIR` override wins,
+/// otherwise the platform default. Pure, so the precedence is testable without
+/// mutating process-wide env from a parallel test.
+fn data_file_path(
+    override_dir: Option<PathBuf>,
+    default_dir: Option<PathBuf>,
+    file_name: &str,
+) -> Option<PathBuf> {
+    override_dir.or(default_dir).map(|dir| dir.join(file_name))
+}
+
 fn prefs_path() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".agentworkforce/relay").join("telemetry.json"))
+    data_file_path(
+        data_dir_override(),
+        dirs::home_dir().map(|h| h.join(".agentworkforce/relay")),
+        "telemetry.json",
+    )
 }
 
 fn load_prefs() -> TelemetryPrefs {
@@ -227,15 +266,20 @@ fn save_prefs(prefs: &TelemetryPrefs) {
 // ---------------------------------------------------------------------------
 
 fn machine_id_path() -> Option<PathBuf> {
-    // Use ~/.local/share regardless of platform (matches the spec and
-    // the Node.js SDK convention).
-    dirs::home_dir().map(|h| {
-        h.join(".local")
-            .join("share")
-            .join("agentworkforce")
-            .join("relay")
-            .join("machine-id")
-    })
+    // `AGENT_RELAY_DATA_DIR` wins, then ~/.local/share regardless of platform
+    // (matches the spec and the Node.js SDK convention). Both halves mirror the
+    // CLI's `getMachineIdPath()`, so the CLI and the broker derive the same id
+    // from the same file instead of minting two ids for one machine.
+    data_file_path(
+        data_dir_override(),
+        dirs::home_dir().map(|h| {
+            h.join(".local")
+                .join("share")
+                .join("agentworkforce")
+                .join("relay")
+        }),
+        "machine-id",
+    )
 }
 
 fn load_or_create_machine_id() -> Option<String> {
@@ -351,6 +395,9 @@ pub(crate) fn infer_harness_from_command(command: &str) -> Option<&'static str> 
     if base == "goose" || lower.contains("goose") {
         return Some("goose");
     }
+    if relay_pty::readiness::is_devin_cli(command) {
+        return Some("devin");
+    }
     if base == "droid" || lower.contains("droid") {
         return Some("droid");
     }
@@ -457,11 +504,177 @@ pub(crate) fn orchestrator_harness_opt() -> Option<&'static str> {
     (harness != UNKNOWN_ORCHESTRATOR_HARNESS).then_some(harness)
 }
 
+// ---------------------------------------------------------------------------
+// Cloud identity
+// ---------------------------------------------------------------------------
+
+/// HTTP headers carrying the signed-in operator's identity to relaycast.
+pub(crate) const AGENT_RELAY_DISTINCT_ID_HEADER: &str = "X-Agent-Relay-Distinct-Id";
+pub(crate) const AGENT_RELAY_MACHINE_ID_HEADER: &str = "X-Agent-Relay-Machine-Id";
+pub(crate) const AGENT_RELAY_USER_ID_HEADER: &str = "X-Agent-Relay-User-Id";
+pub(crate) const AGENT_RELAY_ORG_ID_HEADER: &str = "X-Agent-Relay-Org-Id";
+pub(crate) const AGENT_RELAY_ORG_SLUG_HEADER: &str = "X-Agent-Relay-Org-Slug";
+
+/// Who is behind this broker process, as published by the Agent Relay CLI after
+/// `agent-relay cloud login` (see `@agent-relay/cloud/identity`).
+///
+/// The broker never resolves identity itself — it only forwards what its parent
+/// published. Every field is optional: an anonymous (not-logged-in) run has none
+/// of them, and the hashed machine id remains the only telemetry identity.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct CloudIdentity {
+    pub distinct_id: Option<String>,
+    /// Hashed machine id. Reported alongside — never instead of — the distinct
+    /// id, because after login the distinct id is the user id and the machine
+    /// dimension would otherwise disappear.
+    pub machine_id: Option<String>,
+    pub user_id: Option<String>,
+    pub org_id: Option<String>,
+    pub org_slug: Option<String>,
+}
+
+/// Same charset the relaycast wire contract accepts for a distinct id. Values
+/// that don't match are dropped rather than truncated — a malformed id would be
+/// rejected server-side anyway, and dropping it keeps a header-injection attempt
+/// from ever reaching the WAF.
+fn sanitize_identity_value(raw: &str, max_length: usize) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '-'))
+    {
+        return None;
+    }
+    Some(trimmed.chars().take(max_length).collect())
+}
+
+fn identity_env(key: &str, max_length: usize) -> Option<String> {
+    env_nonempty(key).and_then(|value| sanitize_identity_value(&value, max_length))
+}
+
+fn detect_cloud_identity() -> CloudIdentity {
+    // Opting out of telemetry must suppress the user/org dimensions too, not
+    // just the distinct id — otherwise an opted-out broker still tells the
+    // gateway who is running it.
+    if !TelemetryClient::check_enabled() {
+        return CloudIdentity::default();
+    }
+
+    let user_id = identity_env("AGENT_RELAY_USER_ID", 128);
+    // Prefer the value the CLI published so every process in one invocation
+    // reports the same machine; fall back to computing it from the shared
+    // machine-id file for a standalone broker.
+    let machine_id = identity_env("AGENT_RELAY_MACHINE_ID", 128)
+        .or_else(|| load_or_create_machine_id().map(|id| anonymous_id(&id)));
+
+    CloudIdentity {
+        // Reuse the shared resolver so the CLI, the broker's own PostHog
+        // events, and relaycast all report one person key. It already applies
+        // the env → machine-id fallback, sanitization, and the opt-out. A
+        // signed-in user id is the better key when the CLI published one.
+        distinct_id: agent_relay_distinct_id()
+            .map(str::to_string)
+            .or_else(|| user_id.clone())
+            .or_else(|| machine_id.clone()),
+        machine_id,
+        user_id,
+        org_id: identity_env("AGENT_RELAY_ORG_ID", 128),
+        org_slug: identity_env("AGENT_RELAY_ORG_SLUG", 120),
+    }
+}
+
+/// Process-wide cached cloud identity. Env vars don't change mid-process, and
+/// this is read on every outbound relaycast request.
+pub(crate) fn cloud_identity() -> &'static CloudIdentity {
+    static CACHE: std::sync::OnceLock<CloudIdentity> = std::sync::OnceLock::new();
+    CACHE.get_or_init(detect_cloud_identity)
+}
+
+/// Identity headers for an outbound relaycast request, as `(name, value)` pairs.
+/// Empty when the operator isn't signed in.
+pub(crate) fn cloud_identity_headers() -> Vec<(&'static str, String)> {
+    identity_headers(cloud_identity())
+}
+
+fn identity_headers(identity: &CloudIdentity) -> Vec<(&'static str, String)> {
+    let mut headers = Vec::with_capacity(4);
+    if let Some(ref value) = identity.distinct_id {
+        headers.push((AGENT_RELAY_DISTINCT_ID_HEADER, value.clone()));
+    }
+    if let Some(ref value) = identity.machine_id {
+        headers.push((AGENT_RELAY_MACHINE_ID_HEADER, value.clone()));
+    }
+    if let Some(ref value) = identity.user_id {
+        headers.push((AGENT_RELAY_USER_ID_HEADER, value.clone()));
+    }
+    if let Some(ref value) = identity.org_id {
+        headers.push((AGENT_RELAY_ORG_ID_HEADER, value.clone()));
+    }
+    if let Some(ref value) = identity.org_slug {
+        headers.push((AGENT_RELAY_ORG_SLUG_HEADER, value.clone()));
+    }
+    headers
+}
+
 /// `origin_actor` path for the broker's own relaycast traffic (the workspace
 /// stream + agent registration the broker performs on behalf of the CLI). The
 /// agent-relay CLI is the actor; spawned agents are attributed separately as
 /// `agent-relay-cli/agent/<harness>`. See cloud/plans/origin-actor.md.
 pub(crate) const BROKER_ORIGIN_ACTOR: &str = "agent-relay-cli/cli";
+
+/// Env var carrying the anonymous distinct id, exported by the agent-relay CLI
+/// so the broker and every spawned agent report as the same machine.
+const AGENT_RELAY_DISTINCT_ID_ENV: &str = "AGENT_RELAY_DISTINCT_ID";
+
+/// Anonymous machine id forwarded to relaycast as `X-Agent-Relay-Distinct-Id`,
+/// or `None` when the user has opted out of telemetry.
+///
+/// Relaycast's server-side product events key on this when present (see the
+/// engine's `emitServerEvent`), which is what lets a workspace-create or an
+/// agent-registration be attributed back to an install. Without it every
+/// broker-driven server event is keyed by workspace id alone, so "how many
+/// distinct installs are using this" is unanswerable.
+///
+/// Prefer the CLI-exported env var so the CLI, the broker, and the agents it
+/// spawns all report one id; fall back to the same hashed machine id the
+/// telemetry client uses, for a broker started outside the CLI. This is the
+/// same anonymous value already sent with the broker's own PostHog events —
+/// never a hostname, account, or path. Resolved once per process.
+pub(crate) fn agent_relay_distinct_id() -> Option<&'static str> {
+    static CACHE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            resolve_distinct_id(
+                TelemetryClient::check_enabled(),
+                env_nonempty(AGENT_RELAY_DISTINCT_ID_ENV),
+                || load_or_create_machine_id().map(|id| anonymous_id(&id)),
+            )
+        })
+        .as_deref()
+}
+
+/// Policy half of [`agent_relay_distinct_id`], split out so the opt-out
+/// behaviour is testable without touching process-wide env or the cache.
+/// `machine_id` is lazy: an opted-out broker must not even derive one.
+///
+/// The resolved value is sanitized against the SDK's wire contract before any
+/// caller builds a header from it. The env var is caller-supplied, and an
+/// invalid one (a newline, a non-ASCII character) would otherwise be handed to
+/// `RequestBuilder::header`, which stores the conversion error and fails the
+/// request on every retry — optional telemetry must never break connectivity.
+fn resolve_distinct_id(
+    enabled: bool,
+    env_value: Option<String>,
+    machine_id: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    sanitize_agent_relay_distinct_id(env_value.or_else(machine_id))
+}
 
 /// Build the `origin_actor` path for a spawned agent:
 /// `agent-relay-cli/agent/<harness>[@<model>]`. The model (when the broker knows
@@ -577,8 +790,13 @@ impl TelemetryClient {
             return Self::disabled();
         }
 
-        let distinct_id = load_or_create_machine_id()
-            .map(|id| anonymous_id(&id))
+        // A signed-in cloud user is the person; the hashed machine id is the
+        // anonymous fallback (already applied in `detect_cloud_identity`). Using
+        // the user id here is what keeps broker events on the same PostHog person
+        // as the CLI's and relaycast's.
+        let distinct_id = cloud_identity()
+            .distinct_id
+            .clone()
             .unwrap_or_else(|| "unknown".to_string());
 
         // First-run notice.
@@ -619,32 +837,8 @@ impl TelemetryClient {
         };
 
         let mut props = event.properties();
-        // Merge common properties. Version identification mirrors the
-        // TypeScript `CommonProperties` shape so dashboards can filter on
-        // `cli_version` / `sdk_version` / `broker_version` independent of
-        // which component emitted the event. `agent_relay_version` is kept
-        // as a back-compat alias that mirrors `broker_version` here.
         if let Some(obj) = props.as_object_mut() {
-            let broker_version = crate::util::version::broker_version();
-            obj.insert("app".to_string(), json!("broker"));
-            obj.insert("surface".to_string(), json!("broker"));
-            obj.insert(
-                "orchestrator_harness".to_string(),
-                json!(self.orchestrator_harness.as_str()),
-            );
-            obj.insert("agent_relay_version".to_string(), json!(broker_version));
-            obj.insert("broker_version".to_string(), json!(broker_version));
-            if let Some(ref v) = self.cli_version {
-                obj.insert("cli_version".to_string(), json!(v));
-            }
-            if let Some(ref v) = self.sdk_version {
-                obj.insert("sdk_version".to_string(), json!(v));
-            }
-            obj.insert("os".to_string(), json!(std::env::consts::OS));
-            if let Some(ref v) = self.os_version {
-                obj.insert("os_version".to_string(), json!(v));
-            }
-            obj.insert("arch".to_string(), json!(std::env::consts::ARCH));
+            obj.append(&mut self.common_properties());
         }
 
         // `posthog_api_key()` is guaranteed `Some` here — `TelemetryClient::new`
@@ -662,6 +856,75 @@ impl TelemetryClient {
 
         // Send is non-blocking; ignore errors (channel closed = shutting down).
         let _ = tx.send(capture);
+    }
+
+    /// Common properties merged onto every event. Version identification
+    /// mirrors the TypeScript `CommonProperties` shape so dashboards can filter
+    /// on `cli_version` / `sdk_version` / `broker_version` independent of which
+    /// component emitted the event. `agent_relay_version` is kept as a
+    /// back-compat alias that mirrors `broker_version` here.
+    fn common_properties(&self) -> serde_json::Map<String, Value> {
+        let mut obj = serde_json::Map::new();
+        let broker_version = crate::util::version::broker_version();
+        obj.insert("app".to_string(), json!("broker"));
+        obj.insert("surface".to_string(), json!("broker"));
+        obj.insert(
+            "orchestrator_harness".to_string(),
+            json!(self.orchestrator_harness.as_str()),
+        );
+        obj.insert("agent_relay_version".to_string(), json!(broker_version));
+        obj.insert("broker_version".to_string(), json!(broker_version));
+        if let Some(ref v) = self.cli_version {
+            obj.insert("cli_version".to_string(), json!(v));
+        }
+        if let Some(ref v) = self.sdk_version {
+            obj.insert("sdk_version".to_string(), json!(v));
+        }
+        obj.insert("os".to_string(), json!(std::env::consts::OS));
+        if let Some(ref v) = self.os_version {
+            obj.insert("os_version".to_string(), json!(v));
+        }
+        obj.insert("arch".to_string(), json!(std::env::consts::ARCH));
+
+        // Cloud identity. `$groups` is PostHog's group-analytics dimension, so
+        // org-level rollups work without a separate `$groupidentify` from here —
+        // the CLI owns the group's properties.
+        let identity = cloud_identity();
+        obj.insert(
+            "is_authenticated".to_string(),
+            json!(identity.user_id.is_some()),
+        );
+        if let Some(ref machine_id) = identity.machine_id {
+            obj.insert("machine_id".to_string(), json!(machine_id));
+        }
+        if let Some(ref user_id) = identity.user_id {
+            obj.insert("user_id".to_string(), json!(user_id));
+        }
+        if let Some(ref org_id) = identity.org_id {
+            obj.insert("organization_id".to_string(), json!(org_id));
+            obj.insert("$groups".to_string(), json!({ "organization": org_id }));
+        }
+        if let Some(ref org_slug) = identity.org_slug {
+            obj.insert("organization_slug".to_string(), json!(org_slug));
+        }
+        obj
+    }
+
+    /// Build a [`PanicReporter`] snapshot for use in a `std::panic` hook, or
+    /// `None` when telemetry is disabled (so callers install nothing). The
+    /// snapshot owns everything needed to emit `broker_panic` synchronously,
+    /// since the async sender loop and tokio runtime may already be gone by the
+    /// time the process panics.
+    pub fn panic_reporter(&self) -> Option<PanicReporter> {
+        if !self.enabled {
+            return None;
+        }
+        let api_key = posthog_api_key()?.to_string();
+        Some(PanicReporter {
+            api_key,
+            distinct_id: self.distinct_id.clone(),
+            common: self.common_properties(),
+        })
     }
 
     /// Flush pending events and shut down the background sender.
@@ -697,6 +960,141 @@ impl TelemetryClient {
 }
 
 // ---------------------------------------------------------------------------
+// Panic reporting
+// ---------------------------------------------------------------------------
+
+/// Owned snapshot of everything needed to synchronously emit a `broker_panic`
+/// event from a `std::panic` hook. Built via [`TelemetryClient::panic_reporter`]
+/// while the client is alive, then captured by the panic hook closure so the
+/// event can be sent even after the async sender loop has stopped.
+pub struct PanicReporter {
+    api_key: String,
+    distinct_id: String,
+    common: serde_json::Map<String, Value>,
+}
+
+impl PanicReporter {
+    /// Synchronously emit a `broker_panic` event for the given source location.
+    /// `location` is a sanitized compile-time `file:line` — never the panic
+    /// message, which can contain user data.
+    fn report(&self, location: &str) {
+        // Serialize through the shared event contract so the event name and
+        // payload can't drift from `TelemetryEvent`/the TypeScript schema.
+        let event = TelemetryEvent::BrokerPanic {
+            location: location.to_string(),
+        };
+        let mut props = event.properties();
+        if let Some(obj) = props.as_object_mut() {
+            for (key, value) in &self.common {
+                obj.insert(key.clone(), value.clone());
+            }
+        }
+        let capture = PostHogCapture {
+            api_key: self.api_key.clone(),
+            event: event.name().to_string(),
+            distinct_id: self.distinct_id.clone(),
+            properties: props,
+        };
+        send_capture_blocking(capture);
+    }
+}
+
+/// Reduce a panic source path to a PII-safe form before it leaves the process.
+///
+/// `PanicHookInfo::location().file()` is the path as passed to rustc. First-party
+/// workspace code compiles with repo-relative paths (`crates/broker/src/...`),
+/// which are safe. A panic inside a dependency can instead carry an absolute
+/// path such as `/home/<user>/.cargo/registry/.../src/lib.rs`, which embeds the
+/// OS username. Strip a leading home-directory prefix (replacing it with `~`) so
+/// no username leaks; if an absolute path remains outside the home dir, keep only
+/// the file name so no machine-specific directory structure is reported.
+fn sanitize_panic_file(file: &str, home: Option<&str>) -> String {
+    if let Some(rest) = home
+        .map(|h| h.trim_end_matches(['/', '\\']))
+        .filter(|h| !h.is_empty())
+        .and_then(|h| file.strip_prefix(h))
+        // Require a path-component boundary after the home prefix so a sibling
+        // dir like `/home/alice2` isn't mistaken for `/home/alice` (which would
+        // leak the `2` — i.e. a different username).
+        .filter(|rest| rest.is_empty() || rest.starts_with(['/', '\\']))
+    {
+        return format!("~{rest}");
+    }
+    if std::path::Path::new(file).is_absolute() {
+        return std::path::Path::new(file)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+    }
+    file.to_string()
+}
+
+/// Best-effort synchronous POST used only from the panic hook, where the shared
+/// async sender loop can't be relied on. Runs on a freshly-spawned OS thread
+/// with its own current-thread runtime so it's safe even when the panic
+/// originated on a tokio worker thread (creating a runtime inside a runtime
+/// thread would itself panic). The reqwest client timeout bounds how long the
+/// thread — and therefore process teardown — can wait on the network.
+fn send_capture_blocking(capture: PostHogCapture) {
+    let handle = std::thread::Builder::new()
+        .name("broker-panic-telemetry".to_string())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(_) => return,
+            };
+            runtime.block_on(async {
+                let client = match reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(3))
+                    .build()
+                {
+                    Ok(c) => c,
+                    Err(_) => return,
+                };
+                let url = format!("{}/capture/", POSTHOG_HOST);
+                let _ = client.post(&url).json(&capture).send().await;
+            });
+        });
+    // Wait for the send to finish (bounded by the reqwest timeout above) so the
+    // event has a chance to leave the process before it unwinds or aborts.
+    if let Ok(handle) = handle {
+        let _ = handle.join();
+    }
+}
+
+/// Install a process-global panic hook that emits a PII-safe `broker_panic`
+/// telemetry event before delegating to the previously-installed hook (so the
+/// default message/backtrace still prints). Call once during startup with the
+/// reporter from [`TelemetryClient::panic_reporter`]; a no-op reporter isn't
+/// built when telemetry is disabled, so callers simply skip installation then.
+pub fn install_panic_hook(reporter: PanicReporter) {
+    let home = dirs::home_dir().map(|p| p.to_string_lossy().into_owned());
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|l| {
+                format!(
+                    "{}:{}",
+                    sanitize_panic_file(l.file(), home.as_deref()),
+                    l.line()
+                )
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        // A panic inside the panic hook aborts the process, so guard the
+        // telemetry send — a failed report must never mask the real panic.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            reporter.report(&location);
+        }));
+        previous(info);
+    }));
+}
+
+// ---------------------------------------------------------------------------
 // Background sender
 // ---------------------------------------------------------------------------
 
@@ -724,6 +1122,86 @@ async fn sender_loop(mut rx: mpsc::UnboundedReceiver<PostHogCapture>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitizes_identity_values_to_the_wire_contract() {
+        assert_eq!(
+            sanitize_identity_value("  usr_abc123  ", 128),
+            Some("usr_abc123".to_string())
+        );
+        assert_eq!(sanitize_identity_value("", 128), None);
+        assert_eq!(sanitize_identity_value("   ", 128), None);
+        // Rejected rather than truncated: a malformed id must never reach the wire.
+        assert_eq!(sanitize_identity_value("usr\r\nX-Inject: bad", 128), None);
+        assert_eq!(sanitize_identity_value("org/slash", 128), None);
+        assert_eq!(
+            sanitize_identity_value(&"u".repeat(200), 128),
+            Some("u".repeat(128))
+        );
+    }
+
+    #[test]
+    fn identity_headers_carry_every_set_field() {
+        let headers = identity_headers(&CloudIdentity {
+            distinct_id: Some("usr_abc123".to_string()),
+            machine_id: Some("abc123def4567890".to_string()),
+            user_id: Some("usr_abc123".to_string()),
+            org_id: Some("org_xyz789".to_string()),
+            org_slug: Some("agentworkforce".to_string()),
+        });
+
+        assert_eq!(
+            headers,
+            vec![
+                ("X-Agent-Relay-Distinct-Id", "usr_abc123".to_string()),
+                ("X-Agent-Relay-Machine-Id", "abc123def4567890".to_string()),
+                ("X-Agent-Relay-User-Id", "usr_abc123".to_string()),
+                ("X-Agent-Relay-Org-Id", "org_xyz789".to_string()),
+                ("X-Agent-Relay-Org-Slug", "agentworkforce".to_string()),
+            ]
+        );
+    }
+
+    /// The machine id must ride alongside the user id, never be replaced by it:
+    /// after login the distinct id IS the user id, so this header is the only
+    /// thing that keeps machines-per-workspace answerable.
+    #[test]
+    fn identity_headers_keep_machine_and_user_separate() {
+        let headers = identity_headers(&CloudIdentity {
+            distinct_id: Some("usr_abc123".to_string()),
+            machine_id: Some("abc123def4567890".to_string()),
+            user_id: Some("usr_abc123".to_string()),
+            org_id: None,
+            org_slug: None,
+        });
+
+        let machine = headers
+            .iter()
+            .find(|(name, _)| *name == "X-Agent-Relay-Machine-Id");
+        assert_eq!(machine.map(|(_, v)| v.as_str()), Some("abc123def4567890"));
+        assert_ne!(machine.map(|(_, v)| v.as_str()), Some("usr_abc123"));
+    }
+
+    #[test]
+    fn identity_headers_omit_unset_fields() {
+        let headers = identity_headers(&CloudIdentity {
+            distinct_id: Some("abc123def4567890".to_string()),
+            machine_id: None,
+            user_id: None,
+            org_id: None,
+            org_slug: None,
+        });
+
+        assert_eq!(
+            headers,
+            vec![("X-Agent-Relay-Distinct-Id", "abc123def4567890".to_string())]
+        );
+    }
+
+    #[test]
+    fn an_anonymous_identity_contributes_no_headers() {
+        assert!(identity_headers(&CloudIdentity::default()).is_empty());
+    }
 
     #[test]
     fn anonymous_id_is_deterministic_and_16_chars() {
@@ -763,6 +1241,9 @@ mod tests {
                 exit_code: Some(1),
                 lifetime_seconds: 10,
             },
+            TelemetryEvent::BrokerPanic {
+                location: "crates/broker/src/wrap.rs:1862".into(),
+            },
             TelemetryEvent::MessageSend {
                 is_broadcast: true,
                 has_thread: false,
@@ -780,6 +1261,86 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn broker_panic_event_is_pii_safe() {
+        let event = TelemetryEvent::BrokerPanic {
+            location: "crates/broker/src/wrap.rs:42".into(),
+        };
+        assert_eq!(event.name(), "broker_panic");
+        let props = event.properties();
+        assert_eq!(
+            props["panic_location"],
+            json!("crates/broker/src/wrap.rs:42")
+        );
+        // Only the source location is carried — no message/payload key that
+        // could leak user data.
+        let obj = props.as_object().expect("object props");
+        assert_eq!(obj.len(), 1, "unexpected extra props: {obj:?}");
+    }
+
+    #[test]
+    fn sanitize_panic_file_keeps_relative_paths() {
+        // First-party workspace code is already repo-relative — leave it intact.
+        assert_eq!(
+            sanitize_panic_file("crates/broker/src/telemetry.rs", Some("/home/alice")),
+            "crates/broker/src/telemetry.rs"
+        );
+    }
+
+    #[test]
+    fn sanitize_panic_file_strips_home_prefix() {
+        // A dependency panic under the home dir must not leak the username.
+        assert_eq!(
+            sanitize_panic_file(
+                "/home/alice/.cargo/registry/src/index/tokio-1.0/src/lib.rs",
+                Some("/home/alice")
+            ),
+            "~/.cargo/registry/src/index/tokio-1.0/src/lib.rs"
+        );
+    }
+
+    #[test]
+    fn sanitize_panic_file_requires_home_path_boundary() {
+        // A sibling dir sharing the home string prefix must NOT be treated as
+        // home (`/home/alice2` != `/home/alice`) — it would leak `alice2`.
+        assert_eq!(
+            sanitize_panic_file("/home/alice2/secret/lib.rs", Some("/home/alice")),
+            "lib.rs"
+        );
+        // Exact home dir maps to `~`, trailing separators on home are ignored.
+        assert_eq!(
+            sanitize_panic_file("/home/alice/x/lib.rs", Some("/home/alice/")),
+            "~/x/lib.rs"
+        );
+    }
+
+    #[test]
+    fn sanitize_panic_file_reduces_other_absolute_paths_to_basename() {
+        // Absolute path outside the home dir (and no home known) → file name only.
+        assert_eq!(
+            sanitize_panic_file("/opt/build/secret-dir/src/lib.rs", None),
+            "lib.rs"
+        );
+        assert_eq!(
+            sanitize_panic_file("/opt/build/secret-dir/src/lib.rs", Some("/home/alice")),
+            "lib.rs"
+        );
+    }
+
+    #[test]
+    fn disabled_client_reports_no_panic_reporter() {
+        let client = TelemetryClient {
+            enabled: false,
+            distinct_id: String::new(),
+            tx: None,
+            cli_version: None,
+            sdk_version: None,
+            os_version: None,
+            orchestrator_harness: UNKNOWN_ORCHESTRATOR_HARNESS.to_string(),
+        };
+        assert!(client.panic_reporter().is_none());
     }
 
     #[test]
@@ -884,6 +1445,77 @@ mod tests {
         );
         assert_eq!(sanitize_orchestrator_harness("bad\nvalue"), None);
         assert_eq!(sanitize_orchestrator_harness(""), None);
+    }
+
+    #[test]
+    fn resolve_distinct_id_is_none_when_telemetry_is_disabled() {
+        // Opted out: neither the exported id nor a derived machine id may leak.
+        let mut derived = false;
+        let resolved = resolve_distinct_id(false, Some("abc123".to_string()), || {
+            derived = true;
+            Some("machine".to_string())
+        });
+        assert_eq!(resolved, None);
+        assert!(!derived, "machine id must not be derived when opted out");
+    }
+
+    #[test]
+    fn resolve_distinct_id_prefers_the_exported_env_value() {
+        let resolved = resolve_distinct_id(true, Some("abc123".to_string()), || {
+            Some("machine".to_string())
+        });
+        assert_eq!(resolved, Some("abc123".to_string()));
+    }
+
+    #[test]
+    fn resolve_distinct_id_falls_back_to_the_machine_id() {
+        let resolved = resolve_distinct_id(true, None, || Some("machine".to_string()));
+        assert_eq!(resolved, Some("machine".to_string()));
+        assert_eq!(resolve_distinct_id(true, None, || None), None);
+    }
+
+    #[test]
+    fn resolve_distinct_id_drops_a_header_invalid_env_value() {
+        // A caller-supplied value that can't be a header value must be dropped,
+        // not forwarded — reqwest would store the conversion error and fail the
+        // request on every retry. Matches the TS contract, which sends no header
+        // at all rather than falling back when the env value is malformed.
+        for bad in ["abc\ndef", "naïve", "has space"] {
+            assert_eq!(
+                resolve_distinct_id(true, Some(bad.to_string()), || Some("machine".to_string())),
+                None,
+                "expected {bad:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn data_file_path_prefers_the_configured_data_dir() {
+        // `agent-relay telemetry disable` writes the opt-out to
+        // AGENT_RELAY_DATA_DIR when set, so the broker must read it from there.
+        assert_eq!(
+            data_file_path(
+                Some(PathBuf::from("/custom/dir")),
+                Some(PathBuf::from("/home/u/.agentworkforce/relay")),
+                "telemetry.json",
+            ),
+            Some(PathBuf::from("/custom/dir/telemetry.json"))
+        );
+    }
+
+    #[test]
+    fn data_file_path_falls_back_to_the_platform_default() {
+        assert_eq!(
+            data_file_path(
+                None,
+                Some(PathBuf::from("/home/u/.agentworkforce/relay")),
+                "telemetry.json"
+            ),
+            Some(PathBuf::from(
+                "/home/u/.agentworkforce/relay/telemetry.json"
+            ))
+        );
+        assert_eq!(data_file_path(None, None, "telemetry.json"), None);
     }
 
     #[test]

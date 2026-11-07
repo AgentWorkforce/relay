@@ -3,13 +3,7 @@
  */
 
 import type { SafeParseSchema, ZodLikeSchema } from '@agent-relay/sdk/actions';
-import type {
-  AgentCurrentState,
-  AgentRuntime,
-  HeadlessProvider,
-  MessageInjectionMode,
-  RestartPolicy,
-} from './protocol.js';
+import type { AgentRuntime, MessageInjectionMode, RestartPolicy, SpawnMode } from './protocol.js';
 import type { ResolvedHarnessConfig } from './harness.js';
 
 export type JsonSchema = Record<string, unknown> | boolean;
@@ -21,7 +15,6 @@ export type JsonSchema = Record<string, unknown> | boolean;
  * the spawn request reaches the broker, matching the actions surface.
  */
 export type AgentResultSchema = JsonSchema | ZodLikeSchema<unknown> | SafeParseSchema;
-export type SpawnMode = 'interactive' | 'task_exit' | 'task-exit' | 'single_shot' | 'single-shot';
 
 export interface SpawnPtyInput {
   name: string;
@@ -88,6 +81,10 @@ export interface SpawnAgentResult {
   runtime: AgentRuntime;
   sessionId?: string;
   pid?: number;
+  /** Immutable broker-assigned identity for this same-name worker generation. */
+  generation?: string;
+  /** Effective requested channels; verify live engine membership independently. */
+  channels?: string[];
 }
 
 export interface SpawnCliInput {
@@ -132,19 +129,29 @@ export interface SendMessageInput {
   mode?: MessageInjectionMode;
 }
 
-export interface ListAgent {
-  name: string;
-  runtime: AgentRuntime;
-  provider?: HeadlessProvider;
-  cli?: string;
-  model?: string;
-  sessionId?: string;
-  team?: string;
-  channels: string[];
-  parent?: string;
-  pid?: number;
-  last_activity_at?: string;
-  last_activity_ms?: number;
-  context_budget_pct?: number | null;
-  current_state?: AgentCurrentState;
+/** Result of a broker `/api/send` publication.
+ *
+ * Relaycast publication is durable acceptance, not proof that bytes reached a
+ * recipient. Named direct-message targets therefore include the engine's
+ * best-effort reachability observation; channels and conversation IDs omit the
+ * recipient fields because they do not name one agent. */
+export interface SendMessageResult {
+  event_id: string;
+  targets: string[];
+  success?: boolean;
+  relaycast_published?: boolean;
+  delivery_status?: 'published_unconfirmed';
+  recipient_live?: boolean | null;
+  recipient_status?: string;
+  local?: boolean;
+  workspace_id?: string;
+  workspace_alias?: string | null;
 }
+
+/**
+ * Re-exported from the wire contract: `GET /api/spawned` and the `agents`
+ * array of `GET /api/status` are the same broker payload, so they share one
+ * declaration. `FleetInventoryAgent` is the sibling contract for the
+ * `GET /api/fleet-inventory` snapshot the broker also publishes to the engine.
+ */
+export type { ListAgent, FleetInventoryAgent } from './protocol.js';

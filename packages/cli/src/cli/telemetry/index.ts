@@ -3,6 +3,8 @@
  */
 
 export {
+  MACHINE_ID_ENV,
+  ORGANIZATION_GROUP_TYPE,
   initTelemetry,
   track,
   shutdown,
@@ -38,6 +40,7 @@ export type {
   AgentSpawnEvent,
   AgentReleaseEvent,
   AgentCrashEvent,
+  BrokerPanicEvent,
   MessageSendEvent,
   CliCommandRunEvent,
   CliCommandCompleteEvent,

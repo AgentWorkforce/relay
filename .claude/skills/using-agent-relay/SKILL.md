@@ -40,10 +40,10 @@ The current Agent Relay MCP server registers flat tool names. Use the final
 tool name exactly as listed here.
 
 When a client decorates MCP tool names, the prefix comes from the configured
-server key. Workflow prompts commonly show forms like
-`mcp__relaycast__send_dm`; a server configured as `agent-relay` may expose
-`mcp__agent_relay__send_dm`. In every case, the canonical tool name is the flat
-suffix, such as `send_dm`.
+server key. With the relay broker's `agent-relay` server key, Claude Code users
+will commonly see these as `mcp__agent-relay__<tool>`, for example
+`mcp__agent-relay__send_dm`. Codex and opencode users see the bare canonical
+names, such as `send_dm`.
 
 Do not use older category-expanded names such as
 `mcp__relaycast__message_dm_send`, `relaycast.message.dm.send`, or
@@ -77,6 +77,8 @@ Do not use older category-expanded names such as
 | `send_dm`             | Send a direct message to one agent                 |
 | `send_group_dm`       | Create a group DM and send the first message       |
 | `post_message`        | Post to a channel                                  |
+| `upload_file`         | Upload a local file (e.g. a screenshot) to attach  |
+| `download_file`       | Save a message attachment locally and get its path |
 | `list_messages`       | Read channel history                               |
 | `reply_to_thread`     | Reply to an existing message                       |
 | `get_message_thread`  | Read a thread                                      |
@@ -194,13 +196,13 @@ operations:
 
 ```bash
 agent-relay status
-agent-relay node up --verbose
-agent-relay node status --wait-for 10
-agent-relay node agent list
-agent-relay node agent spawn claude --name Worker --task "Use https://agentrelay.com/skill and ACK over Relay."
-agent-relay node tail --agent Worker
-agent-relay node agent attach Worker --mode view
-agent-relay node agent release Worker
+agent-relay local up --no-dashboard --verbose
+agent-relay local status --wait-for 10
+agent-relay local agent list
+agent-relay local agent spawn claude --name Worker --task "Use https://agentrelay.com/skill and ACK over Relay."
+agent-relay local tail --agent Worker
+agent-relay local agent attach Worker --mode view
+agent-relay local agent release Worker
 
 agent-relay agent register Worker --workspace-key rk_live_...
 agent-relay agent list --workspace-key rk_live_...

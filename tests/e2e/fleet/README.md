@@ -10,7 +10,8 @@ Boots a **real** stack and drives the fleet control wire end-to-end:
 Unlike the unit suites (in-process adapter / fake broker WS), this exercises the
 actual broker `node_control` connection, including the `Authorization: Bearer`
 node-token handshake and the `agent.register` token-authority reply — the two
-engine⇄broker mismatches this E2E surfaced (fixed in relaycast#194).
+engine⇄broker mismatches this E2E surfaced (fixed in relaycast#194), plus the
+omitted/null heartbeat-load compatibility added in relaycast#307.
 
 ## Scenario matrix
 
@@ -21,7 +22,7 @@ engine⇄broker mismatches this E2E surfaced (fixed in relaycast#194).
 | capability query        | `GET /v1/nodes?capability=` returns the right node(s), incl. a shared capability on both                                                                                                                                              |
 | cross-node dispatch     | `echo`→node-a, `ping`→node-b each dispatch over the owning node's control connection and ack                                                                                                                                          |
 | declarative trigger     | a `#general` `/deploy/` message fires the action exactly once; the action-generated reply does **not** re-trigger — asserted by counting the `echo:` **prefix** (a broken guard cascades to `echo:echo:…`, growing the total)         |
-| spawn completes E2E     | targeted spawn mints+injects the agent token, binds the agent via-node, and the node heartbeats the count up — the regression guard for the token-authority handshake                                                                 |
+| spawn completes E2E     | five consecutive targeted spawns across both nodes mint+inject agent tokens, bind via-node, wait for proven harness prompts, and cause each PTY child to record its unique brief nonce — registration alone is insufficient           |
 | capability-routed spawn | with no target, placement picks the only node advertising the capability                                                                                                                                                              |
 | scheduled spawn         | a shared-capability spawn routes to the least-loaded node (pre-loaded node is skipped)                                                                                                                                                |
 | resume                  | a resumable spawn carries `session_ref`; after release, the resume re-targets the **origin** node                                                                                                                                     |
@@ -29,6 +30,11 @@ engine⇄broker mismatches this E2E surfaced (fixed in relaycast#194).
 | reschedule + reconcile  | an in-flight invocation on a dying node reruns on the other eligible node; the node's `handlers_live` drops, the restart re-registers (inventory.sync), and the rescheduled invocation is **not re-claimed** by the restarted node    |
 | delivery seq/dedup      | per-agent deliveries carry strictly monotonic `agent_seq` (no duplicates); a resync from a mid-cursor replays only the tail (`gap_detected: false`, no duplicate seqs) — the exactly-once cursor the node-restart reconcile relies on |
 | mailbox TTL             | an undelivered message dead-letters after a short TTL **and the sender is notified** (`delivery.failed` naming the target)                                                                                                            |
+
+`worker-env.test.ts` boots a single `env-probe` node and asserts that a spawned
+worker sees only its own `RELAY_AGENT_TOKEN` plus the workspace credentials the
+broker delegates — never the broker API key, node token, or broker identity key.
+The probe records variable names only, never values.
 
 ### Coverage notes (intentionally not re-asserted here)
 
@@ -55,15 +61,15 @@ engine⇄broker mismatches this E2E surfaced (fixed in relaycast#194).
 ```bash
 npm run build:core                                   # relay CLI + fleet + harness-driver
 cargo build --release --bin agent-relay-broker       # broker
-RELAYCAST_ENGINE_DIR=/path/to/relaycast \            # must carry relaycast#194's compat fixes
+RELAYCAST_ENGINE_DIR=/path/to/relaycast \            # must carry relaycast#194 and #307 compat fixes
 BROKER_BINARY_PATH="$PWD/target/release/agent-relay-broker" \
   npm run test:e2e
 ```
 
 The suite **skips cleanly** (never fails) when prerequisites are missing — the
 default `npm test` does not run it. The `Fleet E2E` GitHub Actions workflow
-provisions the engine (pinned to the relaycast#194 SHA) + broker and runs the
-full matrix; the matrix itself is ~30s, the wall-clock is build-dominated.
+provisions a released compatible engine (including relaycast#194 and #307) + broker and runs the
+full matrix; the matrix itself is ~2 minutes, the wall-clock is build-dominated.
 
 ## Isolation notes
 
@@ -72,6 +78,8 @@ vars are stripped (so the broker never rejoins the operator's real workspace), w
 its own `HOME`, project dir, state dir, and broker port. The broker reads its
 node id from `<data_local_dir>/agent-relay/machine-id`, which the harness pre-seeds
 to match the enrolled node id (otherwise `node.register` is rejected
-`node_id_mismatch`). `FleetNode.stop()` kills the broker child too (by its
+`node_id_mismatch`) for direct-token fixtures. The Cloud-enrollment regression
+intentionally does not pre-seed that file; it verifies `cloud enroll` persistence
+drives `node up` through `RELAY_NODE_ID`/`RELAY_NODE_TOKEN` instead. `FleetNode.stop()` kills the broker child too (by its
 `connection.json` pid) so a SIGKILLed sidecar doesn't orphan a broker that would
 hold the node online + the state-dir flock and break a later restart.

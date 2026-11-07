@@ -1,6 +1,9 @@
 {
   "name": "@agent-relay/cloud",
-  "version": "10.1.0",
+  "version": "17.2.1",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "description": "Cloud SDK for Agent Relay — auth, workflow execution, and provider connections",
   "type": "module",
   "main": "dist/index.js",
@@ -9,6 +12,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./identity": {
+      "types": "./dist/identity.d.ts",
+      "import": "./dist/identity.js"
+    },
+    "./telemetry-headers": {
+      "types": "./dist/telemetry-headers.d.ts",
+      "import": "./dist/telemetry-headers.js"
     },
     "./permissions": {
       "types": "./dist/permissions.d.ts",
@@ -30,6 +41,14 @@
       "types": "./dist/audit.d.ts",
       "import": "./dist/audit.js"
     },
+    "./redact": {
+      "types": "./dist/redact.d.ts",
+      "import": "./dist/redact.js"
+    },
+    "./workspace-key": {
+      "types": "./dist/workspace-key.d.ts",
+      "import": "./dist/workspace-key.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -39,14 +58,14 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run --root ../.. packages/cloud/",
+    "test:watch": "vitest --root ../.. packages/cloud/"
   },
   "dependencies": {
-    "@agent-relay/config": "10.1.0",
+    "@agent-relay/config": "17.2.1",
     "@aws-sdk/client-s3": "3.1020.0",
     "ignore": "^7.0.5",
-    "tar": "^7.5.10"
+    "tar": "^7.5.21"
   },
   "optionalDependencies": {
     "ssh2": "^1.17.0"

@@ -111,6 +111,20 @@ struct DmMessageRow: Decodable, Sendable {
     }
 }
 
+struct RelayTerminalTicket: Decodable, Sendable {
+    let sessionId: String
+    let terminalUrl: String
+    let resumeToken: String
+    let expiresAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case terminalUrl = "terminal_url"
+        case resumeToken = "resume_token"
+        case expiresAt = "expires_at"
+    }
+}
+
 // MARK: - RelayRestClient
 
 /// Internal REST client for the hosted API endpoints the facade serves
@@ -284,6 +298,20 @@ struct RelayRestClient: Sendable {
         return Self.sortedOldestFirst(events)
     }
 
+    // MARK: - Fleet terminals
+
+    func createTerminalSession(
+        node: String,
+        agent: String,
+        mode: RelayTerminalMode
+    ) async throws -> RelayTerminalTicket {
+        let cleanAgent = HostedParticipantCore.normalizeTerminalAgent(agent)
+        return try await post(
+            "/v1/nodes/\(Self.encodePathSegment(node))/terminal/sessions",
+            body: TerminalSessionRequestBody(agent: cleanAgent, mode: mode)
+        )
+    }
+
     // MARK: - Generic transport
 
     /// `requestTimeout`, when set, becomes the `URLRequest.timeoutInterval` of
@@ -388,6 +416,11 @@ struct RelayRestClient: Sendable {
 
     private struct ActionInvokeRequestBody: Encodable {
         let input: JSONValue
+    }
+
+    private struct TerminalSessionRequestBody: Encodable {
+        let agent: String
+        let mode: RelayTerminalMode
     }
 
     private static func decodeEnvelope<T: Decodable>(data: Data, statusCode: Int, path: String) throws -> T {

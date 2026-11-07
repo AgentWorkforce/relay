@@ -1,4 +1,10 @@
 import { HarnessDriverClient, type BrokerInitArgs } from '@agent-relay/harness-driver';
+import {
+  createNativeHarnessLaunch,
+  resolveHarnessRuntime,
+  type HarnessRuntime,
+  type SelectedHarnessRuntime,
+} from '@agent-relay/harnesses';
 
 export interface CreateRuntimeClientOptions {
   cwd: string;
@@ -8,6 +14,10 @@ export interface CreateRuntimeClientOptions {
   brokerName?: string;
   env?: NodeJS.ProcessEnv;
   preferConnect?: boolean;
+  /** Descriptors to hand the spawned broker; see {@link RuntimeSpawnOptions.inheritFds}. */
+  inheritFds?: number[];
+  /** See {@link RuntimeSpawnOptions.onSpawn} — the broker child's pid, at spawn. */
+  onSpawn?: (pid: number) => void;
   /** Forward broker stderr lines to this callback (e.g. for `--verbose`). */
   onStderr?: (line: string) => void;
   /** Forward human-readable startup step markers to this callback (e.g. for `--verbose`). */
@@ -27,6 +37,28 @@ export interface ClientSpawnOptions {
   shadowMode?: 'subagent' | 'process';
   spawnMode?: 'interactive' | 'task_exit' | 'task-exit' | 'single_shot' | 'single-shot';
   exitAfterTask?: boolean;
+  /** Harness execution runtime. `auto` preserves each adapter's rollout default. */
+  runtime?: HarnessRuntime;
+}
+
+const NATIVE_SIDECAR_COMMAND = '__ai-sdk-sidecar';
+
+/** Bun standalone executables must re-enter the bundled CLI to run embedded sidecar code. */
+export function nativeSidecarLaunch(
+  argv: readonly string[] = process.argv,
+  execPath = process.execPath
+): { command: string; args: string[] } | undefined {
+  const bundledEntrypoint = argv[1] ?? '';
+  if (argv[0] === 'bun' && bundledEntrypoint.startsWith('/$bunfs/root/')) {
+    return { command: execPath, args: [NATIVE_SIDECAR_COMMAND] };
+  }
+  return undefined;
+}
+
+export function resolvedSpawnRuntime(
+  options: Pick<ClientSpawnOptions, 'cli' | 'runtime'>
+): SelectedHarnessRuntime {
+  return resolveHarnessRuntime(options.cli, options.runtime);
 }
 
 export async function createRuntimeClient(options: CreateRuntimeClientOptions): Promise<HarnessDriverClient> {
@@ -38,6 +70,8 @@ export async function createRuntimeClient(options: CreateRuntimeClientOptions): 
     brokerName,
     env = process.env,
     preferConnect = false,
+    inheritFds,
+    onSpawn,
     onStderr,
     onStep,
   } = options;
@@ -59,6 +93,8 @@ export async function createRuntimeClient(options: CreateRuntimeClientOptions): 
     channels,
     cwd,
     env: env as Record<string, string>,
+    ...(inheritFds?.length ? { inheritFds } : {}),
+    ...(onSpawn ? { onSpawn } : {}),
     onStderr,
     onStep,
   });
@@ -68,5 +104,32 @@ export async function spawnAgentWithClient(
   client: HarnessDriverClient,
   options: ClientSpawnOptions
 ): Promise<void> {
-  await client.spawnPty(options);
+  const runtime = resolvedSpawnRuntime(options);
+  if (runtime === 'pty') {
+    const { runtime: _runtime, ...ptyOptions } = options;
+    await client.spawnPty(ptyOptions);
+    return;
+  }
+
+  if (options.spawnMode && options.spawnMode !== 'interactive') {
+    throw new Error('Native harnesses currently support only interactive spawn mode');
+  }
+  if (options.exitAfterTask) {
+    throw new Error('Native harnesses do not currently support --exit-after-task');
+  }
+
+  const launch = createNativeHarnessLaunch(
+    options.cli,
+    {
+      runtime: 'native',
+      name: options.name,
+      channels: options.channels,
+      task: options.task,
+      model: options.model,
+      cwd: options.cwd,
+    },
+    nativeSidecarLaunch()
+  );
+  const { transport: _transport, ...headlessInput } = launch;
+  await client.spawnHeadless(headlessInput);
 }

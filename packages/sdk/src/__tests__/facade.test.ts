@@ -34,11 +34,6 @@ function createMessagingMock() {
   };
   const workspace = {
     info: vi.fn(async () => ({ id: 'ws_1', name: 'Ops' })),
-    fleetNodes: {
-      get: vi.fn(async () => ({ enabled: false, defaultEnabled: false, override: null })),
-      set: vi.fn(async (enabled: boolean) => ({ enabled, defaultEnabled: false, override: enabled })),
-      inherit: vi.fn(async () => ({ enabled: false, defaultEnabled: false, override: null })),
-    },
   };
   const messaging = { messages, agents, workspace, events: {} } as unknown as RelayMessaging;
   return { messaging, messages, agents, workspace };
@@ -78,31 +73,6 @@ describe('AgentRelay facade (Phase A)', () => {
     expect(client.id).toBe('id-self');
     expect(client.name).toBe('self');
     expect(client.token).toBe('tok-self');
-  });
-
-  it('workspace.fleetNodes delegates fleet node config calls', async () => {
-    const { messaging, workspace } = createMessagingMock();
-    const relay = new AgentRelay({ messaging });
-
-    await expect(relay.workspace.fleetNodes.get()).resolves.toEqual({
-      enabled: false,
-      defaultEnabled: false,
-      override: null,
-    });
-    await expect(relay.workspace.fleetNodes.set(true)).resolves.toEqual({
-      enabled: true,
-      defaultEnabled: false,
-      override: true,
-    });
-    await expect(relay.workspace.fleetNodes.inherit()).resolves.toEqual({
-      enabled: false,
-      defaultEnabled: false,
-      override: null,
-    });
-
-    expect(workspace.fleetNodes.get).toHaveBeenCalledTimes(1);
-    expect(workspace.fleetNodes.set).toHaveBeenCalledWith(true);
-    expect(workspace.fleetNodes.inherit).toHaveBeenCalledTimes(1);
   });
 
   it('sendMessage routes #channel to messages.send and a bare name to direct', async () => {
@@ -194,7 +164,10 @@ describe('AgentRelay facade (Phase A)', () => {
   });
 });
 
-describe('workspace.register idempotency', () => {
+describe('workspace.register backend routing', () => {
+  // This mock's registerOrRotate succeeds for a repeated name; it only checks
+  // which backend method the facade calls. Real Relaycast registration is
+  // create-only and rejects an existing name with name_conflict.
   function createRotatingMessagingMock() {
     const base = createMessagingMock();
     const registerOrRotate = vi.fn(async (input: { name: string }) => ({
@@ -208,7 +181,7 @@ describe('workspace.register idempotency', () => {
     return { ...base, registerOrRotate };
   }
 
-  it('uses registerOrRotate by default so re-registering a name succeeds', async () => {
+  it('routes default registration through registerOrRotate when the backend provides it', async () => {
     const { messaging, agents, registerOrRotate } = createRotatingMessagingMock();
     const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
 
@@ -222,7 +195,7 @@ describe('workspace.register idempotency', () => {
     expect(second.token).toBe('rotated-triager');
   });
 
-  it('register({ strict: true }) bypasses rotation and uses plain register', async () => {
+  it('register({ strict: true }) uses plain register instead of registerOrRotate', async () => {
     const { messaging, agents, registerOrRotate } = createRotatingMessagingMock();
     const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
 
@@ -251,5 +224,42 @@ describe('workspace.register idempotency', () => {
       code: 'name_conflict',
       retryable: false,
     });
+  });
+});
+
+describe('workspace.release', () => {
+  it('routes removal through the lifecycle release surface', async () => {
+    const { messaging } = createMessagingMock();
+    const release = vi.fn(async () => ({ status: 'completed' }));
+    (messaging.agents as typeof messaging.agents & { release: typeof release }).release = release;
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+
+    await relay.workspace.release({
+      name: 'talkative-agent',
+      reason: 'cleanup (actor: test)',
+      deleteAgent: true,
+    });
+
+    expect(release).toHaveBeenCalledWith({
+      name: 'talkative-agent',
+      reason: 'cleanup (actor: test)',
+      deleteAgent: true,
+    });
+  });
+
+  it('rejects on an agent-scoped client, which backs its workspace facade without deps', async () => {
+    // createWorkspaceFacade() without `deps` is what an agent-scoped client
+    // (returned by workspace.register()/reconnect()) gets for its own
+    // `.workspace` facade — it must not be able to release agents either.
+    const { messaging, agents } = createMessagingMock();
+    const release = vi.fn(async () => ({ status: 'completed' }));
+    (agents as typeof agents & { release: typeof release }).release = release;
+    const relay = new AgentRelay({ messaging, createAgentMessaging: () => messaging });
+    const sender = await relay.workspace.register({ name: 'sender' });
+
+    await expect(
+      sender.workspace.release({ name: 'talkative-agent', reason: 'cleanup', deleteAgent: true })
+    ).rejects.toThrow(/release\(\) is only available on the workspace client/);
+    expect(release).not.toHaveBeenCalled();
   });
 });

@@ -26,7 +26,7 @@ function getSchemaDescription(schema: ActionSchema | undefined): string | undefi
 }
 
 /** Convert a JSON-schema-lite node into an equivalent zod type. */
-export function zodFromJsonSchema(schema: ActionSchema | undefined): z.ZodTypeAny {
+export function zodFromJsonSchema(schema: ActionSchema | undefined): z.ZodType {
   if (schema === false) {
     return z.never();
   }
@@ -35,7 +35,7 @@ export function zodFromJsonSchema(schema: ActionSchema | undefined): z.ZodTypeAn
     return z.unknown();
   }
 
-  let zodType: z.ZodTypeAny;
+  let zodType: z.ZodType;
   const schemaType = Array.isArray(schema.type) ? schema.type[0] : schema.type;
   switch (schemaType) {
     case 'array':
@@ -53,12 +53,12 @@ export function zodFromJsonSchema(schema: ActionSchema | undefined): z.ZodTypeAn
     case 'object':
       if (schema.properties) {
         const required = new Set(schema.required ?? []);
-        const shape: Record<string, z.ZodTypeAny> = {};
+        const shape: Record<string, z.ZodType> = {};
         for (const [key, childSchema] of Object.entries(schema.properties)) {
           const child = zodFromJsonSchema(childSchema);
           shape[key] = required.has(key) ? child : child.optional();
         }
-        zodType = z.object(shape).passthrough();
+        zodType = z.looseObject(shape);
       } else {
         zodType = z.record(z.string(), z.unknown());
       }
@@ -75,7 +75,7 @@ export function zodFromJsonSchema(schema: ActionSchema | undefined): z.ZodTypeAn
   return description ? zodType.describe(description) : zodType;
 }
 
-function zodObjectShape(schema: ActionSchema | undefined): Record<string, z.ZodTypeAny> | undefined {
+function zodObjectShape(schema: ActionSchema | undefined): Record<string, z.ZodType> | undefined {
   if (schema instanceof z.ZodObject) {
     return schema.shape;
   }
@@ -83,7 +83,7 @@ function zodObjectShape(schema: ActionSchema | undefined): Record<string, z.ZodT
 }
 
 /** Build the MCP tool `inputSchema` (a zod shape) from an action input schema. */
-export function actionToolInputSchema(schema: ActionSchema | undefined): Record<string, z.ZodTypeAny> {
+export function actionToolInputSchema(schema: ActionSchema | undefined): Record<string, z.ZodType> {
   const zodShape = zodObjectShape(schema);
   if (zodShape) {
     return zodShape;
@@ -96,7 +96,7 @@ export function actionToolInputSchema(schema: ActionSchema | undefined): Record<
   }
 
   const required = new Set(schema.required ?? []);
-  const shape: Record<string, z.ZodTypeAny> = {};
+  const shape: Record<string, z.ZodType> = {};
   for (const [key, childSchema] of Object.entries(schema.properties ?? {})) {
     const child = zodFromJsonSchema(childSchema);
     shape[key] = required.has(key) ? child : child.optional();

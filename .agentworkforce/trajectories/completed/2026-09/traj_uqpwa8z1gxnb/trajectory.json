@@ -1,0 +1,65 @@
+{
+  "id": "traj_uqpwa8z1gxnb",
+  "version": 1,
+  "task": {
+    "title": "Close exact-head Cubic boundary findings",
+    "source": {
+      "system": "plain",
+      "id": "relay#1642"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-09-03T01:14:06.891Z",
+  "completedAt": "2026-09-03T01:16:01.602Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-03T01:15:53.339Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_oxjvixv747ef",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-03T01:15:53.339Z",
+      "endedAt": "2026-09-03T01:16:01.602Z",
+      "events": [
+        {
+          "ts": 1788398153343,
+          "type": "decision",
+          "content": "Preserve any worktree destination that existed before a failed add attempt: Preserve any worktree destination that existed before a failed add attempt",
+          "raw": {
+            "question": "Preserve any worktree destination that existed before a failed add attempt",
+            "chosen": "Preserve any worktree destination that existed before a failed add attempt",
+            "alternatives": [],
+            "reasoning": "Cleanup may remove only state this invocation could have created; an existing directory can hold another retry's uncommitted work."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Preserved pre-existing worktrees on duplicate add failure, rejected array provenance, and distinguished curl transport failure from HTTP responses",
+    "approach": "Standard approach",
+    "confidence": 0.96
+  },
+  "commits": [
+    "752719ccf"
+  ],
+  "filesChanged": [
+    "scripts/verify-features/escalate-infra.sh",
+    "scripts/verify-features/run-worktree.mjs",
+    "scripts/verify-features/slack-alert.sh",
+    "tests/fixtures/verify-features-escalation.test.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "67eb11dc8a43ca0c1401a16d545fc6488ddafcab",
+    "endRef": "752719ccf78eadebe9862ef8b12ff2af087bd50c",
+    "traceId": "a5f71efa-2b38-448d-93e3-d981adad6c0d"
+  }
+}

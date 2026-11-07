@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -6,6 +8,9 @@ import {
   defineDefaultLocalNode,
   defineNode,
   invokeNodeHandler,
+  MAX_FLEET_NODE_AGENTS,
+  nodeInfo,
+  nodeRegistrationTags,
   onMessage,
   spawn,
   triggerSyncInputs,
@@ -27,6 +32,19 @@ describe('@agent-relay/fleet', () => {
     expect(node.capabilities['run:build']).toMatchObject({ name: 'run:build', kind: 'action' });
   });
 
+  it('rejects maxAgents outside the broker-parseable range', () => {
+    const capabilities = { ping: async () => 'pong' };
+    // The boundary itself is the largest u32 the broker parses.
+    expect(defineNode({ name: 'capped', maxAgents: MAX_FLEET_NODE_AGENTS, capabilities }).maxAgents).toBe(
+      MAX_FLEET_NODE_AGENTS
+    );
+    for (const maxAgents of [0, -1, 1.5, Number.NaN, MAX_FLEET_NODE_AGENTS + 1, Number.MAX_SAFE_INTEGER]) {
+      expect(() => defineNode({ name: 'capped', maxAgents, capabilities })).toThrow(
+        /maxAgents must be a positive integer/
+      );
+    }
+  });
+
   it('accepts a plain async handler as an escape hatch', async () => {
     const node = defineNode({
       name: 'custom',
@@ -45,6 +63,73 @@ describe('@agent-relay/fleet', () => {
     ).resolves.toEqual({ input: { hello: 'world' } });
   });
 
+  it('normalizes node-local repo paths and exposes only deterministic placement keys', () => {
+    const factoryPath = resolve('node-private', 'factory');
+    const relayPath = resolve('node-private', 'relay');
+    const configured = {
+      ' AgentWorkforce/relay ': relayPath,
+      'AgentWorkforce/factory': factoryPath,
+    };
+    const node = defineNode({
+      name: 'repo-builder',
+      capabilities: { ping: async () => 'pong' },
+      tags: ['arm64', 'repo:legacy/manual-tag'],
+      repoPaths: configured,
+    });
+
+    configured[' AgentWorkforce/relay '] = resolve('different-private-path');
+
+    expect(node.repoPaths).toEqual({
+      'AgentWorkforce/relay': relayPath,
+      'AgentWorkforce/factory': factoryPath,
+    });
+    expect(Object.isFrozen(node.repoPaths)).toBe(true);
+    expect(nodeInfo(node)).toEqual({
+      name: 'repo-builder',
+      capabilities: ['ping'],
+      repoKeys: ['AgentWorkforce/factory', 'AgentWorkforce/relay'],
+    });
+    expect(nodeRegistrationTags(node)).toEqual([
+      'arm64',
+      'repo:AgentWorkforce/factory',
+      'repo:AgentWorkforce/relay',
+    ]);
+    expect(JSON.stringify(nodeInfo(node))).not.toContain(factoryPath);
+    expect(JSON.stringify(nodeInfo(node))).not.toContain(relayPath);
+  });
+
+  it('preserves legacy repo tags when repoPaths is not configured', () => {
+    const node = defineNode({
+      name: 'legacy-builder',
+      capabilities: { ping: async () => 'pong' },
+      tags: ['arm64', 'repo:legacy'],
+    });
+
+    expect(nodeRegistrationTags(node)).toEqual(['arm64', 'repo:legacy']);
+  });
+
+  it('rejects non-placement keys and relative checkout paths', () => {
+    const absolute = resolve('node-private', 'factory');
+    for (const invalidKey of ['/private/node/factory', './repo', '../repo']) {
+      expect(() =>
+        defineNode({
+          name: 'bad-key',
+          capabilities: { ping: async () => 'pong' },
+          repoPaths: { [invalidKey]: absolute },
+        })
+      ).toThrow(/owner\/repo format/);
+    }
+    for (const relativePath of ['relative/factory', './repo', '../repo']) {
+      expect(() =>
+        defineNode({
+          name: 'bad-path',
+          capabilities: { ping: async () => 'pong' },
+          repoPaths: { 'AgentWorkforce/factory': relativePath },
+        })
+      ).toThrow(/must be an absolute path/);
+    }
+  });
+
   it('builds spawn_agent payloads from a PTY harness', async () => {
     const node = defineNode({
       name: 'builder',
@@ -57,7 +142,17 @@ describe('@agent-relay/fleet', () => {
     await invokeNodeHandler(
       node,
       'spawn:codex',
-      { name: 'worker-a', model: 'gpt-5', session_ref: 'thread-1', task: 'ship it' },
+      {
+        name: 'worker-a',
+        model: 'gpt-5',
+        session_ref: 'thread-1',
+        task: 'ship it',
+        worker_cwd: '/srv/relay',
+        organization: 'AgentWorkforce',
+        project: 'relay',
+        workstream: 'fleet-metadata',
+        role: 'implementer',
+      },
       ctx
     );
 
@@ -68,12 +163,71 @@ describe('@agent-relay/fleet', () => {
         cli: 'codex',
         model: 'gpt-5',
         session_id: 'thread-1',
+        cwd: '/srv/relay',
         channels: ['general'],
       }),
       initialTask: 'ship it',
+      registrationMetadata: {
+        organization: 'AgentWorkforce',
+        project: 'relay',
+        workstream: 'fleet-metadata',
+        role: 'implementer',
+        objective: 'ship it',
+      },
       skipRelayPrompt: false,
       invocationId: undefined,
     });
+  });
+
+  // Blank declared values are dropped rather than forwarded as empty strings —
+  // the broker merges these over metadata the engine already holds, so an empty
+  // value would overwrite an engine-owned field. Matches the CLI's
+  // `declaredWorkforceMetadata` and the broker's `declared_metadata_map`.
+  it('trims declared metadata and omits blank values', async () => {
+    const node = defineNode({
+      name: 'builder',
+      capabilities: {
+        'spawn:codex': spawn({ runtime: 'pty', command: 'codex' }),
+      },
+    });
+    const ctx = stubContext(node.name, Object.keys(node.capabilities));
+
+    await invokeNodeHandler(
+      node,
+      'spawn:codex',
+      {
+        name: 'worker-a',
+        task: 'ship it',
+        // `''` cannot reach here — the spawn input schema already rejects it
+        // with `min(1)`. Whitespace-only is the value that gets through, so
+        // that is what this asserts on.
+        organization: '  AgentWorkforce  ',
+        workstream: '   ',
+        role: ' ',
+      },
+      ctx
+    );
+
+    expect(ctx.spawnAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        registrationMetadata: { organization: 'AgentWorkforce', objective: 'ship it' },
+      })
+    );
+  });
+
+  it('omits registration metadata entirely when nothing is declared', async () => {
+    const node = defineNode({
+      name: 'builder',
+      capabilities: {
+        'spawn:codex': spawn({ runtime: 'pty', command: 'codex' }),
+      },
+    });
+    const ctx = stubContext(node.name, Object.keys(node.capabilities));
+
+    await invokeNodeHandler(node, 'spawn:codex', { name: 'worker-a', role: '   ' }, ctx);
+
+    const [request] = (ctx.spawnAgent as unknown as { mock: { calls: unknown[][] } }).mock.calls[0];
+    expect(request).not.toHaveProperty('registrationMetadata');
   });
 
   it('threads invocation ids through concurrent spawn handlers', async () => {
@@ -135,8 +289,36 @@ describe('@agent-relay/fleet', () => {
       'spawn:claude',
       'spawn:codex',
       'spawn:gemini',
+      'spawn:muse',
       'spawn:aider',
     ]);
+  });
+
+  it('delegates Muse authentication environment and readiness to the broker spawn', async () => {
+    const env = { RELAY_MUSE_SHARED_AUTH_PATH: '/srv/muse/auth.json' };
+    const node = defineNode({
+      name: 'muse-node',
+      capabilities: {
+        'spawn:muse': spawn({ runtime: 'pty', command: 'muse', env }, { verifyReady: true }),
+      },
+    });
+    const ctx = stubContext(node.name, Object.keys(node.capabilities));
+    await invokeNodeHandler(node, 'spawn:muse', { name: 'muse-worker', task: 'ship it' }, ctx);
+    expect(ctx.spawnAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        verifyReady: true,
+        initialTask: 'ship it',
+        agent: expect.objectContaining({
+          cli: 'muse',
+          harness_config: expect.objectContaining({ env }),
+        }),
+      })
+    );
+  });
+
+  it('advertises spawn:muse from the default local node', () => {
+    const node = defineDefaultLocalNode({ name: 'local' });
+    expect(Object.keys(node.capabilities)).toContain('spawn:muse');
   });
 
   it('rejects invalid definitions early', () => {

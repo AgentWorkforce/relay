@@ -1,0 +1,5 @@
+#!/usr/bin/env node
+'use strict';
+// Native fixture only: the executable basename selects the broker's Codex
+// resume argument path. It never calls an AI service or claims AI behavior.
+import './stub-agent.cjs';

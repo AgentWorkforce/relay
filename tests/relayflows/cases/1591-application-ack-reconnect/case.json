@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1591-application-ack-reconnect",
+  "kind": "bugfix",
+  "title": "Reconnect when application acknowledgements stop",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1591-application-ack-reconnect/run.mjs"]
+  },
+  "timeoutSeconds": 240,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "application_ack_stall_not_detected"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "application_ack_stall_reconnects"
+    }
+  },
+  "requirements": ["broker-linux-x64"]
+}

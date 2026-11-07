@@ -1,23 +1,23 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createServer } from 'node:net';
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { createServer as createHttpServer } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AgentClient, HttpClient } from '@relaycast/sdk';
 import WebSocket from 'ws';
+import { withDefaults } from '../../../packages/cli/src/cli/commands/core.js';
+import {
+  matchesBrokerIdentity,
+  readBrokerIdentities,
+  removeBrokerIdentity,
+  type BrokerProcessIdentity,
+} from '../../../packages/cli/src/cli/lib/broker-process-identity.js';
 
 // Node <22 lacks a global WebSocket, which @relaycast/sdk's in-process
 // AgentClient requires. The spawned CLI installs its own via runCli; this
-// covers the test runner's own client on Node 20/21.
+// covers the test runner's own client on unsupported Node releases.
 if (typeof (globalThis as { WebSocket?: unknown }).WebSocket === 'undefined') {
   (globalThis as { WebSocket?: unknown }).WebSocket = WebSocket;
 }
@@ -26,6 +26,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HERE, '..', '..', '..');
 export const NODE_A_FILE = path.join(HERE, 'nodes', 'node-a.ts');
 export const NODE_B_FILE = path.join(HERE, 'nodes', 'node-b.ts');
+export const CLOUD_ENROLLED_NODE_FILE = path.join(HERE, 'nodes', 'cloud-enrolled.ts');
+export const ENV_PROBE_NODE_FILE = path.join(HERE, 'nodes', 'env-probe.ts');
 
 const CLI_ENTRY = path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'cli', 'index.js');
 
@@ -105,7 +107,7 @@ export function preflight(): Preflight {
 
 export function getFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
-    const srv = createServer();
+    const srv = createNetServer();
     srv.unref();
     srv.on('error', reject);
     srv.listen(0, '127.0.0.1', () => {
@@ -120,7 +122,10 @@ export async function waitFor<T>(
   opts: { timeoutMs?: number; intervalMs?: number; label?: string } = {}
 ): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? 30_000;
-  const intervalMs = opts.intervalMs ?? 400;
+  // The observer shares the workspace's real free-plan API budget with broker
+  // registration and served-spawn confirmation. Poll at most once per second so
+  // the scenario driver does not itself starve membership/cleanup requests.
+  const intervalMs = opts.intervalMs ?? 1_000;
   const deadline = Date.now() + timeoutMs;
   let last: unknown;
   while (Date.now() < deadline) {
@@ -249,6 +254,78 @@ export async function enrollNode(
   return body.data.token as string;
 }
 
+export interface CloudEnrollmentEndpoint {
+  url: string;
+  stop(): Promise<void>;
+}
+
+/**
+ * Serve one Cloud enrollment exchange locally. The exchange itself is a small
+ * stand-in for Cloud's control-plane endpoint; the returned node token was
+ * minted by the real relaycast engine, so the subsequent broker registration
+ * still exercises the real token-to-node binding and fails on node_id_mismatch.
+ */
+export async function startCloudEnrollmentEndpoint(input: {
+  enrollmentToken: string;
+  nodeId: string;
+  nodeName: string;
+  nodeToken: string;
+  relayWorkspaceId: string;
+  relaycastUrl: string;
+}): Promise<CloudEnrollmentEndpoint> {
+  const server = createHttpServer((request, response) => {
+    let raw = '';
+    request.setEncoding('utf-8');
+    request.on('error', () => {
+      if (response.writableEnded) return;
+      if (!response.headersSent) {
+        response.writeHead(400, { 'content-type': 'application/json' });
+      }
+      response.end(JSON.stringify({ error: 'Enrollment request stream error' }));
+    });
+    request.on('data', (chunk) => {
+      raw += chunk;
+    });
+    request.on('end', () => {
+      let token = '';
+      try {
+        token = String((JSON.parse(raw) as { enrollmentToken?: unknown }).enrollmentToken ?? '');
+      } catch {
+        // The 400 response below covers malformed JSON as an invalid exchange.
+      }
+      if (request.method !== 'POST' || token !== input.enrollmentToken) {
+        response.writeHead(400, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ error: 'Invalid enrollment token' }));
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(
+        JSON.stringify({
+          nodeId: input.nodeId,
+          nodeName: input.nodeName,
+          nodeToken: input.nodeToken,
+          relayWorkspaceId: input.relayWorkspaceId,
+          relaycastUrl: input.relaycastUrl,
+          websocketUrl: `${input.relaycastUrl}/v1/node/ws`,
+        })
+      );
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') {
+    throw new Error('cloud enrollment endpoint did not bind a TCP port');
+  }
+  return {
+    url: `http://127.0.0.1:${address.port}/api/v1/fleet/register`,
+    stop: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  };
+}
+
 export interface NodeRosterEntry {
   id: string;
   name: string;
@@ -259,6 +336,7 @@ export interface NodeRosterEntry {
   load: number;
   active_agents: number;
   max_agents: number;
+  tags?: string[];
 }
 
 export async function getNodes(
@@ -296,10 +374,15 @@ export class FleetNode {
       engineBaseUrl: string;
       brokerBinary: string;
       tmpRoot: string;
-      brokerPort: number;
+      /** Optional explicit broker base port; omission exercises the production
+       * `node up` default of an atomically OS-assigned API port. */
+      brokerPort?: number;
       /** Pins the broker's `spawn:<harness>` capacity set (AGENT_RELAY_NODE_HARNESSES)
        * so two nodes on one host advertise distinct capabilities. */
       capacityHarnesses?: string;
+      /** Exercise `cloud enroll` persistence + automatic `node up` pickup rather
+       * than injecting the node token and pre-seeding the broker machine id. */
+      usePersistedEnrollment?: boolean;
     }
   ) {
     this.projectDir = path.join(opts.tmpRoot, `node-${opts.name}`);
@@ -307,64 +390,124 @@ export class FleetNode {
     this.home = path.join(this.projectDir, 'home');
     mkdirSync(this.home, { recursive: true });
     this.logPath = path.join(this.projectDir, 'serve.log');
-    // The broker reads its node id from `<data_local_dir>/agent-relay/machine-id`
-    // (macOS: ~/Library/Application Support, Linux: ~/.local/share). Seed both so
-    // the broker's `node.register` node_id matches the enrolled token's node id —
-    // otherwise the engine rejects the register (node_id_mismatch) and the
-    // capability→action binding never happens.
-    for (const rel of [
-      ['Library', 'Application Support', 'agent-relay', 'machine-id'],
-      ['.local', 'share', 'agent-relay', 'machine-id'],
-    ]) {
-      const file = path.join(this.home, ...rel);
-      mkdirSync(path.dirname(file), { recursive: true });
-      writeFileSync(file, `${opts.nodeId}\n`);
+    if (!opts.usePersistedEnrollment) {
+      // Direct-token fixtures predate the Cloud enrollment store. Keep their
+      // explicit machine-id setup so those scenarios remain focused on their
+      // existing fleet behavior; the persisted-enrollment regression below
+      // intentionally takes the unseeded path that failed in production.
+      for (const rel of [
+        ['Library', 'Application Support', 'agent-relay', 'machine-id'],
+        ['.local', 'share', 'agent-relay', 'machine-id'],
+      ]) {
+        const file = path.join(this.home, ...rel);
+        mkdirSync(path.dirname(file), { recursive: true });
+        writeFileSync(file, `${opts.nodeId}\n`);
+      }
     }
   }
 
   private readonly home: string;
 
-  start(): void {
-    const o = this.opts;
-    const stateDir = path.join(this.projectDir, '.agentworkforce', 'relay');
-    this.child = spawn(
+  /** Redeem through the real CLI so the production enrollment store writer and
+   * subsequent `node up` resolver are both part of the regression boundary. */
+  async cloudEnroll(enrollmentUrl: string, enrollmentToken: string): Promise<void> {
+    if (!this.opts.usePersistedEnrollment) {
+      throw new Error('cloudEnroll requires usePersistedEnrollment');
+    }
+    const child = spawn(
       process.execPath,
       [
         CLI_ENTRY,
-        'node',
-        'up',
-        '--config',
-        o.nodeFile,
-        // `fleet serve --name` → `node up --broker-name` (the served node's name).
-        '--broker-name',
-        o.name,
-        // `fleet serve --workspace` → `node up --workspace-key`.
-        '--workspace-key',
-        o.workspaceKey,
-        // `node up` has no `--base-url`; the engine URL is carried by the
-        // RELAY_BASE_URL / RELAYCAST_BASE_URL env vars set below (as it was for
-        // `fleet serve --base-url`). Serve only — never auto-spawn teams.json
-        // agents (there are none in this hermetic project dir).
-        '--no-spawn',
+        'cloud',
+        'enroll',
+        '--token',
+        enrollmentToken,
+        '--enrollment-url',
+        enrollmentUrl,
+        '--name',
+        this.opts.name,
       ],
       {
         cwd: REPO_ROOT,
-        env: cleanEnv({
-          HOME: this.home,
-          BROKER_BINARY_PATH: o.brokerBinary,
-          RELAYCAST_BASE_URL: o.engineBaseUrl,
-          RELAY_BASE_URL: o.engineBaseUrl,
-          RELAY_NODE_TOKEN: o.nodeToken,
-          RELAY_WORKSPACE_KEY: o.workspaceKey,
-          RELAY_API_KEY: o.workspaceKey,
-          AGENT_RELAY_PROJECT: this.projectDir,
-          AGENT_RELAY_STATE_DIR: stateDir,
-          AGENT_RELAY_BROKER_PORT: String(o.brokerPort),
-          ...(o.capacityHarnesses ? { AGENT_RELAY_NODE_HARNESSES: o.capacityHarnesses } : {}),
-        }),
+        env: cleanEnv({ HOME: this.home, AGENT_RELAY_HOME: this.enrollmentHome }),
         stdio: ['ignore', 'pipe', 'pipe'],
       }
     );
+    let output = '';
+    child.stdout?.on('data', (chunk) => {
+      output += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk) => {
+      output += chunk.toString();
+    });
+    const exitCode = await new Promise<number | null>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', resolve);
+    });
+    if (exitCode !== 0) {
+      throw new Error(`cloud enroll exited ${exitCode}: ${output}`);
+    }
+    if (!output.includes(`Enrolled node "${this.opts.name}"`)) {
+      throw new Error(`cloud enroll did not report success: ${output}`);
+    }
+  }
+
+  private get enrollmentHome(): string {
+    return path.join(this.home, '.agentworkforce', 'relay');
+  }
+
+  start(): void {
+    const o = this.opts;
+    const stateDir = path.join(this.projectDir, '.agentworkforce', 'relay');
+    const args = [
+      CLI_ENTRY,
+      'node',
+      'up',
+      '--config',
+      o.nodeFile,
+      // `fleet serve --name` → `node up --broker-name` (the served node's name).
+      '--broker-name',
+      o.name,
+    ];
+    if (!o.usePersistedEnrollment) {
+      // Direct-token fixtures predate Cloud enrollment pickup and still model
+      // an explicit direct workspace selection. The persisted-enrollment
+      // regression must NOT pass this flag: `node up` intentionally treats it
+      // as an operator override and skips the enrollment store.
+      args.push('--workspace-key', o.workspaceKey);
+    }
+    // `node up` has no `--base-url`; the engine URL is carried by the
+    // RELAY_BASE_URL / RELAYCAST_BASE_URL env vars set below (as it was for
+    // `fleet serve --base-url`). Serve only — never auto-spawn teams.json
+    // agents (there are none in this hermetic project dir).
+    args.push('--no-spawn');
+    this.child = spawn(process.execPath, args, {
+      cwd: REPO_ROOT,
+      env: cleanEnv({
+        HOME: this.home,
+        BROKER_BINARY_PATH: o.brokerBinary,
+        RELAYCAST_BASE_URL: o.engineBaseUrl,
+        RELAY_BASE_URL: o.engineBaseUrl,
+        ...(o.usePersistedEnrollment
+          ? {
+              AGENT_RELAY_HOME: this.enrollmentHome,
+              // Supply the broker-self workspace membership without using
+              // RELAY_WORKSPACE_KEY, which is intentionally an explicit
+              // direct-workspace choice that disables enrollment pickup.
+              RELAY_WORKSPACES_JSON: JSON.stringify([{ workspace_id: 'fleet-e2e', api_key: o.workspaceKey }]),
+            }
+          : {
+              RELAY_NODE_TOKEN: o.nodeToken,
+              RELAY_WORKSPACE_KEY: o.workspaceKey,
+              RELAY_API_KEY: o.workspaceKey,
+            }),
+        AGENT_RELAY_PROJECT: this.projectDir,
+        AGENT_RELAY_STATE_DIR: stateDir,
+        ...(o.brokerPort === undefined ? {} : { AGENT_RELAY_BROKER_PORT: String(o.brokerPort) }),
+        ...(o.capacityHarnesses ? { AGENT_RELAY_NODE_HARNESSES: o.capacityHarnesses } : {}),
+      }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     // Persist the sidecar's output to serve.log (append across restarts) so the
     // CI "upload node logs on failure" step has something to attach.
     const record = (d: Buffer) => {
@@ -384,33 +527,68 @@ export class FleetNode {
     return this.lastLog;
   }
 
-  /** Kill the whole node host: the `node up` sidecar AND the broker it
-   * spawned. SIGKILLing only the sidecar orphans the broker (it keeps the node
-   * online + holds the state-dir flock), which breaks a later restart. */
+  /** Crash the verified broker and its directly owned supervisor. The harness
+   * itself observes the matched exit before retiring its unchanged identity. */
   async stop(): Promise<void> {
-    // Kill the broker first, by the pid it wrote to connection.json.
-    const connPath = path.join(this.projectDir, '.agentworkforce', 'relay', 'connection.json');
-    try {
-      const conn = JSON.parse(readFileSync(connPath, 'utf-8')) as { pid?: number };
-      if (typeof conn.pid === 'number') {
+    const child = this.child;
+    this.child = null;
+    if (child) {
+      const paths = {
+        projectRoot: this.projectDir,
+        dataDir: path.join(this.projectDir, '.agentworkforce', 'relay'),
+        teamDir: path.join(this.projectDir, '.agentworkforce', 'teams'),
+      };
+      const deps = withDefaults();
+      const identities = readBrokerIdentities(paths, deps);
+      const crashedBrokers: BrokerProcessIdentity[] = [];
+      for (const identity of identities ?? []) {
+        if (identity.brokerName !== this.opts.name) continue;
+        if (!(await matchesBrokerIdentity(identity, paths, deps))) continue;
         try {
-          process.kill(conn.pid, 'SIGKILL');
-        } catch {
-          /* already gone */
+          process.kill(identity.pid, 'SIGKILL');
+          crashedBrokers.push(identity);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+          removeBrokerIdentity(paths, identity, deps);
         }
       }
-    } catch {
-      /* no connection file */
-    }
-
-    if (this.child) {
-      const child = this.child;
-      this.child = null;
+      // An invalid-start fixture may never have persisted an identity. Only
+      // signal the ChildProcess handle we own; never trust connection-only PIDs.
+      if (child.exitCode === null && child.signalCode === null) {
+        // Graceful provider shutdown drains in-flight work, defeating the crash
+        // scenario. A verified broker crash must also stop its owned host now.
+        child.kill(crashedBrokers.length > 0 ? 'SIGKILL' : 'SIGTERM');
+      }
       await new Promise<void>((resolve) => {
-        child.once('exit', () => resolve());
-        child.kill('SIGKILL');
-        setTimeout(resolve, 2_000);
+        if (child.exitCode !== null || child.signalCode !== null) return resolve();
+        const finish = () => {
+          clearTimeout(timer);
+          child.removeListener('exit', finish);
+          resolve();
+        };
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL');
+          finish();
+        }, 5_000);
+        child.once('exit', finish);
       });
+      for (const identity of crashedBrokers) {
+        await waitFor(
+          () => {
+            try {
+              process.kill(identity.pid, 0);
+              return false;
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+              // Unlike discovery of a dead PID, this follows our verified kill
+              // of the exact live instance. Replacement records are preserved.
+              removeBrokerIdentity(paths, identity, deps);
+              return true;
+            }
+          },
+          { timeoutMs: 5_000, label: 'verified fixture broker exit' }
+        );
+      }
     }
     // Give the engine a moment to observe the dropped node control WS.
     await new Promise((r) => setTimeout(r, 500));
@@ -467,7 +645,7 @@ export async function getInvocation(
   agentToken: string,
   action: string,
   invocationId: string
-): Promise<{ status: string; output?: any; dispatched_node_id?: string }> {
+): Promise<{ status: string; output?: any; error?: string; dispatched_node_id?: string }> {
   const { body } = await engine.fetchJson(`/v1/actions/${action}/invocations/${invocationId}`, {
     headers: { authorization: `Bearer ${agentToken}` },
   });
@@ -527,6 +705,26 @@ export async function listMessages(
   return items as Array<{ text: string }>;
 }
 
+/** Read one agent's engine record, including the metadata bag.
+ *
+ * Returns null ONLY for 404 — "the agent does not exist yet", which callers
+ * poll on. Every other failure throws: mapping auth, server, and not-found
+ * errors all to null makes a broken read indistinguishable from a legitimately
+ * absent agent, and a `waitFor` polling on null would then time out (or an
+ * assertion would pass) for entirely the wrong reason. */
+export async function getAgent(
+  engine: EngineHandle,
+  workspaceKey: string,
+  name: string
+): Promise<{ name: string; metadata?: Record<string, unknown> } | null> {
+  const { status, body } = await engine.fetchJson(`/v1/agents/${name}`, {
+    headers: { authorization: `Bearer ${workspaceKey}` },
+  });
+  if (status === 404) return null;
+  if (status >= 300) throw new Error(`getAgent(${name}) ${status}: ${JSON.stringify(body)}`);
+  return body.data ?? null;
+}
+
 /** Release (delete) an agent, freeing its location — used to model a resumable
  * agent being released before a resume re-spawn. */
 export async function releaseAgent(
@@ -554,8 +752,8 @@ export async function sendDm(
   });
 }
 
-/** List an agent's own deliveries. Reading triggers the engine's TTL sweep, so
- * polling this is how the mailbox TTL dead-letter becomes observable. */
+/** List an agent's own deliveries. Polling makes a mailbox TTL transition
+ * observable after the engine's scheduled expiry maintenance runs. */
 export async function listDeliveries(
   engine: EngineHandle,
   agentToken: string,

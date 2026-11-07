@@ -1,42 +1,119 @@
+import { pendingSpawnError } from './spawn-liveness.js';
 import { describe, expect, it, vi } from 'vitest';
 
-const { createCloudWorkspaceMock, relaySdkCreateWorkspaceMock } = vi.hoisted(() => ({
-  createCloudWorkspaceMock: vi.fn(),
-  relaySdkCreateWorkspaceMock: vi.fn(),
-}));
+import { RelayPlacementError } from '@agent-relay/sdk';
 
-vi.mock('@agent-relay/cloud', () => ({
-  createWorkspace: createCloudWorkspaceMock,
-}));
+import { runSdk, withSdkDefaults, type SdkCommandDeps } from './sdk-command.js';
 
-vi.mock('@agent-relay/sdk', () => ({
-  AgentRelay: { createWorkspace: relaySdkCreateWorkspaceMock },
-}));
+// relay#1751 CodeRabbit thread / relay#1563: `runSdk` prints a structured
+// error body for `RelayPlacementError`, including `err.receipt`. That
+// receipt is the raw upstream spawn invocation record and must not cross
+// the CLI boundary unsanitized — only the allowlisted lifecycle-evidence
+// fields (status/ids/readiness) may be echoed back.
+describe('runSdk structured error output', () => {
+  function deps(overrides: Partial<SdkCommandDeps> = {}): { deps: SdkCommandDeps; errors: string[] } {
+    const errors: string[] = [];
+    const built = withSdkDefaults({
+      error: (...args: unknown[]) => errors.push(args.map(String).join(' ')),
+      exit: vi.fn() as never,
+      ...overrides,
+    });
+    return { deps: built, errors };
+  }
 
-vi.mock('./sdk-client.js', () => ({
-  createAgentRelay: vi.fn(),
-  createWorkspaceRelay: vi.fn(),
-}));
+  it('drops secret-bearing raw invocation fields from the printed receipt', async () => {
+    const { deps: sdkDeps, errors } = deps();
+    const receipt = {
+      status: 'failed',
+      invocation_id: 'inv_secret',
+      // Not part of the lifecycle-evidence allowlist. A raw upstream
+      // invocation record can carry broker/handler internals like this;
+      // they must never cross the CLI boundary.
+      api_key: 'sk_live_should_not_leak_1234567890',
+      env: { RELAY_API_KEY: 'sk_live_should_not_leak_1234567890' },
+    };
 
-import { withSdkDefaults } from './sdk-command.js';
-
-// Regression coverage for AgentWorkforce/relay#1260: `workspace create` must go
-// through Cloud's unified `/api/v1/workspaces` endpoint (which persists the
-// Postgres row `workspace active` looks up), never the direct-Relaycast
-// `AgentRelay.createWorkspace` path — a key minted that way is a permanent
-// orphan that 404s on every future `workspace active` / `agentworkforce login`.
-describe('withSdkDefaults createWorkspace', () => {
-  it('creates a workspace through @agent-relay/cloud, not the direct-Relaycast SDK', async () => {
-    createCloudWorkspaceMock.mockResolvedValueOnce({
-      workspaceId: 'rw_new',
-      relaycastApiKey: 'rk_live_new',
+    await runSdk(sdkDeps, async () => {
+      throw new RelayPlacementError('spawn_failed', 'Fleet spawn invocation reported a terminal failure.', {
+        capability: 'spawn:codex',
+        attempts: 1,
+        invocationId: 'inv_secret',
+        state: 'failed',
+        dispatchState: 'unknown',
+        receipt,
+      });
     });
 
-    const deps = withSdkDefaults();
-    const result = await deps.createWorkspace('new-ws', 'https://cloud.test');
+    expect(sdkDeps.exit).toHaveBeenCalledWith(1);
+    const printed = errors.join('\n');
+    expect(printed).not.toContain('sk_live_should_not_leak_1234567890');
+    expect(printed).not.toContain('RELAY_API_KEY');
+    expect(printed).not.toContain('api_key');
 
-    expect(createCloudWorkspaceMock).toHaveBeenCalledWith('new-ws', { apiUrl: 'https://cloud.test' });
-    expect(relaySdkCreateWorkspaceMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ workspaceId: 'rw_new', relaycastApiKey: 'rk_live_new' });
+    const jsonLine = printed.split('\n').find((line) => line.trim().startsWith('{'));
+    expect(jsonLine).toBeDefined();
+    const parsed = JSON.parse(jsonLine!);
+    // Lifecycle evidence must survive the projection...
+    expect(parsed.error.receipt).toMatchObject({ status: 'failed', invocation_id: 'inv_secret' });
+    // ...but the raw secret-bearing fields must not.
+    expect(parsed.error.receipt).not.toHaveProperty('api_key');
+    expect(parsed.error.receipt).not.toHaveProperty('env');
+  });
+
+  it('preserves lifecycle evidence (state, dispatchState, invocationId) for a non-secret receipt', async () => {
+    const { deps: sdkDeps, errors } = deps();
+
+    await runSdk(sdkDeps, async () => {
+      throw new RelayPlacementError('spawn_unconfirmed', 'node accepted spawn but never reported a result.', {
+        capability: 'spawn:codex',
+        attempts: 1,
+        invocationId: 'inv_lifecycle',
+        node: 'sf-mini',
+        state: 'unconfirmed_may_be_running',
+        dispatchState: 'dispatched',
+        receipt: { status: 'accepted', invocation_id: 'inv_lifecycle', handler_node_id: 'sf-mini' },
+      });
+    });
+
+    const printed = errors.join('\n');
+    const jsonLine = printed.split('\n').find((line) => line.trim().startsWith('{'));
+    const parsed = JSON.parse(jsonLine!);
+    expect(parsed.error).toMatchObject({
+      code: 'spawn_unconfirmed',
+      state: 'unconfirmed_may_be_running',
+      invocationId: 'inv_lifecycle',
+      node: 'sf-mini',
+      dispatchState: 'dispatched',
+      receipt: { status: 'accepted', invocation_id: 'inv_lifecycle', handler_node_id: 'sf-mini' },
+    });
+  });
+
+  it('renders pending evidence and honors only known error exit codes', async () => {
+    const { deps: sdkDeps, errors } = deps();
+    await runSdk(sdkDeps, async () => {
+      throw pendingSpawnError(
+        'worker',
+        { invocationId: 'inv', dispatchState: 'dispatched' },
+        { evidence: 'unknown' }
+      );
+    });
+    expect(sdkDeps.exit).toHaveBeenCalledWith(8);
+    expect(errors.join('')).toContain('"code":"spawn_unconfirmed"');
+    expect(errors.join('')).toContain('"liveness":{"evidence":"unknown"}');
+    await runSdk(sdkDeps, async () => {
+      throw Object.assign(new Error('plain'), { exitCode: 0 });
+    });
+    expect(sdkDeps.exit).toHaveBeenLastCalledWith(1);
+  });
+
+  it('does not attach a structured receipt for a plain Error', async () => {
+    const { deps: sdkDeps, errors } = deps();
+
+    await runSdk(sdkDeps, async () => {
+      throw new Error('boom');
+    });
+
+    expect(sdkDeps.exit).toHaveBeenCalledWith(1);
+    expect(errors.join('\n')).toBe('boom');
   });
 });

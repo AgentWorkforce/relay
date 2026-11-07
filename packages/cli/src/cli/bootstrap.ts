@@ -9,7 +9,16 @@ import { Command } from 'commander';
 import { config as dotenvConfig } from 'dotenv';
 
 import { checkForUpdatesInBackground } from '@agent-relay/utils';
+import { ensureCanonicalBroker } from '@agent-relay/harness-driver/broker-install';
+import { redactCredentialValues } from '@agent-relay/cloud';
 import {
+  cloudIdentityEnv,
+  readStoredIdentitySync,
+  IDENTITY_ENV_KEYS,
+  type CloudIdentity,
+} from '@agent-relay/cloud/identity';
+import {
+  MACHINE_ID_ENV,
   ORCHESTRATOR_HARNESS_ENV,
   detectOrchestratorHarness,
   getDistinctId,
@@ -20,7 +29,9 @@ import {
 } from './telemetry/index.js';
 
 import { ensureWebSocketGlobal } from './lib/ensure-websocket.js';
+import { assertSupportedNodeVersion } from './lib/node-version.js';
 import { CliExit } from './lib/exit.js';
+import { exitAfterFlush } from './lib/flush-stdio.js';
 import { errorClassName } from './lib/telemetry-helpers.js';
 import { registerSetupCommands } from './commands/setup.js';
 import { registerCoreCommands, registerCoreMaintenance } from './commands/core.js';
@@ -29,8 +40,9 @@ import { registerStatusCommand } from './commands/status.js';
 import { registerLocalAgentCommands } from './commands/local-agent.js';
 import { registerLocalWorkflowCommands } from './commands/local-workflow.js';
 import { registerCloudCommands } from './commands/cloud.js';
-import { registerReflexCommands } from './commands/reflex.js';
 import { registerWorkspaceCommands } from './commands/workspace.js';
+import { registerInitCommand } from './commands/init.js';
+import { registerObserverCommands } from './commands/observer.js';
 import { registerAgentCommands } from './commands/agent.js';
 import { registerChannelCommands } from './commands/channel.js';
 import { registerMessageCommands } from './commands/message.js';
@@ -38,6 +50,7 @@ import { registerIntegrationCommands } from './commands/integration.js';
 import { registerCapabilitiesCommands } from './commands/capabilities.js';
 import { registerFleetCommands } from './commands/fleet.js';
 import { registerSkillsCommands } from './commands/skills.js';
+import { registerProductSurfaceCommands } from './commands/product-surfaces.js';
 
 dotenvConfig({ quiet: true });
 
@@ -97,10 +110,6 @@ export const SDK_VERSION = resolveSdkVersion();
 const AGENT_RELAY_DISTINCT_ID_ENV = 'AGENT_RELAY_DISTINCT_ID';
 const TELEMETRY_CLIENT_ENV = 'AGENT_RELAY_TELEMETRY_CLIENT';
 
-function hasConfiguredTelemetryKey(): boolean {
-  return Boolean(process.env.POSTHOG_API_KEY?.trim() || process.env.AGENT_RELAY_POSTHOG_KEY?.trim());
-}
-
 function resolveProgramName(argv: string[] = process.argv): string {
   const invocationPath = String(argv[1] ?? '').trim();
   if (!invocationPath) {
@@ -112,6 +121,52 @@ function resolveProgramName(argv: string[] = process.argv): string {
 }
 
 /**
+ * Read the identity recorded at `agent-relay cloud login` and publish it on
+ * `process.env` so the broker, spawned agents, and the relaycast SDK all
+ * attribute their telemetry to the same user and org — without any of them
+ * needing to know where the identity file lives or how to call cloud.
+ *
+ * Env wins over the file (a parent process may already have published a
+ * different identity), and a missing identity is the normal not-logged-in case.
+ */
+function propagateCloudIdentityToChildren(): void {
+  // Inherited from a parent process: leave it exactly as-is.
+  if (process.env[IDENTITY_ENV_KEYS.userId]) return;
+
+  let identity: CloudIdentity | null = null;
+  try {
+    identity = readStoredIdentitySync();
+  } catch {
+    return;
+  }
+  if (!identity) return;
+
+  for (const [key, value] of Object.entries(cloudIdentityEnv(identity))) {
+    if (!process.env[key]) {
+      process.env[key] = value;
+    }
+  }
+}
+
+/**
+ * Strip any identity an ancestor process (or the user's shell) already exported.
+ *
+ * Not publishing is not enough on its own: these vars are inherited, so values
+ * set upstream would still reach every child we spawn. `resolveCloudIdentity`
+ * explicitly supports env-injected identity, so an inherited value is a real
+ * case rather than a hypothetical one.
+ *
+ * Deleting also makes `process.env` agree with what every consumer already
+ * believes when telemetry is off — the broker, the header builder, and
+ * `initTelemetry` all treat opted-out as "no identity".
+ */
+function clearInheritedIdentity(): void {
+  for (const key of [...Object.values(IDENTITY_ENV_KEYS), AGENT_RELAY_DISTINCT_ID_ENV, MACHINE_ID_ENV]) {
+    delete process.env[key];
+  }
+}
+
+/**
  * Export the resolved CLI + SDK versions on the current process env so that
  * any child process we spawn (the Rust broker, etc.)
  * inherits them and can attach them as common telemetry properties without
@@ -119,8 +174,12 @@ function resolveProgramName(argv: string[] = process.argv): string {
  *
  * We only set these if they're not already present — so a parent caller that
  * has set its own values (e.g. in tests or in nested CLI invocations) wins.
+ *
+ * Exported for tests: the telemetry opt-out must keep identity out of child
+ * environments, which is only observable through this function's `process.env`
+ * side effects.
  */
-function propagateTelemetryContextToChildren(): string {
+export function propagateTelemetryContextToChildren(): string {
   const orchestratorHarness = detectOrchestratorHarness();
 
   if (!process.env.AGENT_RELAY_CLI_VERSION) {
@@ -135,8 +194,37 @@ function propagateTelemetryContextToChildren(): string {
   if (!process.env[TELEMETRY_CLIENT_ENV]) {
     process.env[TELEMETRY_CLIENT_ENV] = 'agent-relay';
   }
-  if (!process.env[AGENT_RELAY_DISTINCT_ID_ENV] && hasConfiguredTelemetryKey() && isTelemetryEnabled()) {
-    process.env[AGENT_RELAY_DISTINCT_ID_ENV] = getDistinctId();
+  // Identity forwarding is gated on the telemetry *preference* only — not on
+  // whether this process happens to carry a PostHog key. The relaycast gateway
+  // captures with its own key, so gating on ours meant an npm-installed CLI
+  // (which bakes no key) forwarded nothing and every hosted event fell back to
+  // being keyed on the workspace.
+  if (isTelemetryEnabled()) {
+    // Must run before the distinct-id fallback below: a signed-in user id is a
+    // better person key than the machine hash, and children should inherit it.
+    //
+    // Gated with the rest of identity because these vars are inherited by every
+    // child we spawn, including third-party harness CLIs we don't control, and
+    // one of them carries the operator's email. An opted-out user expects their
+    // identity not to be published into those environments at all — not merely
+    // to go unsent.
+    propagateCloudIdentityToChildren();
+
+    if (!process.env[MACHINE_ID_ENV]) {
+      // Always published, signed in or not: the distinct id below becomes the
+      // user id after login, so this is the only thing that keeps the machine
+      // dimension (machines per account, accounts per machine, machines per
+      // workspace) answerable.
+      process.env[MACHINE_ID_ENV] = getDistinctId();
+    }
+    if (!process.env[AGENT_RELAY_DISTINCT_ID_ENV]) {
+      // Signed-in runs are keyed by the cloud user id so CLI, broker, and
+      // relaycast-server events all land on one PostHog person.
+      process.env[AGENT_RELAY_DISTINCT_ID_ENV] =
+        process.env[IDENTITY_ENV_KEYS.userId] || process.env[MACHINE_ID_ENV];
+    }
+  } else {
+    clearInheritedIdentity();
   }
 
   return orchestratorHarness;
@@ -289,10 +377,23 @@ function installExitHooks(): void {
 export function createProgram(options: { name?: string } = {}): Command {
   const program = new Command();
 
+  // Commander echoes offending tokens verbatim (`error: unknown option
+  // '--workspce-key=rk_live_…'`), so a mistyped credential flag would land a
+  // live key in stderr, scrollback, and CI logs. Redact at the output
+  // boundary; subcommands inherit this via copyInheritedSettings.
+  program.configureOutput({
+    writeErr: (str) => process.stderr.write(redactCredentialValues(str)),
+  });
+
   program
     .name(options.name ?? 'agent-relay')
     .description('Agent-to-agent messaging')
-    .version(VERSION, '-V, --version', 'Output the version number');
+    .version(VERSION, '-V, --version', 'Output the version number')
+    // Required for the mounted product groups: without positional options a
+    // product flag such as `agent-relay flows run --json` is parsed as a root
+    // option and rejected before the product ever sees it. Safe here because
+    // the root itself only defines -V and -h.
+    .enablePositionalOptions();
 
   registerNodeCommands(program);
 
@@ -318,24 +419,49 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerStatusCommand(program);
   registerSetupCommands(program);
   registerCloudCommands(program);
-  registerReflexCommands(program);
+  registerInitCommand(program, { cliVersion: VERSION });
   registerWorkspaceCommands(program);
+  registerObserverCommands(program);
   registerAgentCommands(program);
   registerChannelCommands(program);
   registerMessageCommands(program);
   registerIntegrationCommands(program);
   registerCapabilitiesCommands(program);
   registerSkillsCommands(program);
+  // The other Relay products, mounted from their own SDKs: `file` (relayfile),
+  // `flows` (relayflows), `sessions` (relayhistory). Each product ships its own
+  // command tree; nothing about those commands is reimplemented here. Loading
+  // is lazy, so this costs an unrelated invocation nothing.
+  registerProductSurfaceCommands(program);
 
   program
     .command('mcp')
     .description('Run the Agent Relay MCP stdio server')
-    .action(async () => {
+    .option('--sessions-only', 'Expose only Cloud shared-session tools')
+    .action(async (opts: { sessionsOnly?: boolean }) => {
       const mod = await import('./agent-relay-mcp.js');
-      await mod.startAgentRelayMcpStdio(mod.optionsFromEnv());
+      await mod.startAgentRelayMcpStdio({
+        ...mod.optionsFromEnv(),
+        sessionsOnly: opts.sessionsOnly === true,
+      });
     });
 
   return program;
+}
+
+/**
+ * npm installs ship the broker inside node_modules. On first run, copy it into
+ * the canonical bin directory (~/.agentworkforce/relay/bin) so the CLI, the
+ * broker it launches and the desktop app share one binary. Done here rather
+ * than in a postinstall script because many users install with ignore-scripts.
+ * Best effort: a failure leaves the npm broker as the resolver's fallback.
+ */
+function convergeBrokerInstall(): void {
+  try {
+    ensureCanonicalBroker();
+  } catch {
+    // ensureCanonicalBroker never throws; this guards the import boundary.
+  }
 }
 
 function maybeRunUpdateCheck(version: string, argv: string[]): void {
@@ -374,7 +500,9 @@ function collectTopLevelVerbs(program: Command): Set<string> {
 }
 
 export async function runCli(argv: string[] = process.argv): Promise<Command> {
+  assertSupportedNodeVersion();
   ensureWebSocketGlobal();
+  convergeBrokerInstall();
   maybeRunUpdateCheck(VERSION, argv);
   const orchestratorHarness = propagateTelemetryContextToChildren();
 
@@ -429,8 +557,10 @@ export async function runCli(argv: string[] = process.argv): Promise<Command> {
     }
 
     if (isCliExit) {
-      // Flush is done — now actually exit with the code the command asked for.
-      process.exit(err.code);
+      // Telemetry is flushed — now drain whatever the command printed (a piped
+      // stdout is asynchronous on macOS, so exiting in this tick would drop it)
+      // and exit with the code the command asked for.
+      await exitAfterFlush(err.code);
     }
     throw err;
   }

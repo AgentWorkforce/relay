@@ -1,0 +1,2 @@
+{"type":"system","subtype":"session_state_changed"}
+{"type":"system","subtype":"init","session_id":"redacted-session","claude_code_version":"2.1.299","mcp_servers":[{"name":"agent-relay-sessions","status":"pending","source":"dynamic"}],"tools":[]}

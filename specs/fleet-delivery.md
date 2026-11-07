@@ -137,7 +137,7 @@ Consequence: persistence _across process death_ is a **resumable-only** property
 ### 8.4 Where state lives
 
 - **Relaycast** holds all durable state (source of truth): mailboxes, agent records (`resumable`, `session_ref`, origin node), locations, node registry. Must survive Relaycast restarts.
-- **Broker** keeps only in-memory per-session state: `seq` cursor, dedup set, local pending-injection queue. **No disk needed for delivery durability.**
+- **Broker** keeps only in-memory per-session state: separate contiguous `received` and cumulative `acked` sequence cursors, a dedup set, and the local pending-injection queue. **No disk needed for delivery durability.**
   - Uplink blip, broker alive → cursor/dedup survive → clean replay, no duplicates.
   - Broker process dies → its child agents die too. When a resumable identity re-registers, Relaycast returns that identity's authoritative cumulative ACK cursor before replaying pending delivery, so the fresh broker can continue at `cursor + 1` without accepting an arbitrary first sequence.
 
@@ -156,6 +156,14 @@ the returned cursor. If the capability or reply field is absent, the broker uses
 the legacy fresh-session rule (`seq == 1`) and continues rejecting gaps. Relaycast
 omits the field for nodes that did not advertise the capability so older brokers
 with strict reply decoders remain compatible.
+
+The authoritative cursor initializes `received == acked`. Auto-inject advances
+both only after PTY injection. `manual_flush` may advance `received` as it accepts
+multiple contiguous frames into its bounded FIFO, but leaves `acked` unchanged;
+duplicates and gaps report only the `acked` cursor. A flush advances `acked` only
+across the successfully injected FIFO prefix, and a full FIFO rejects the newest
+frame without advancing either cursor. If the broker dies, received-only state is
+discarded and Relaycast replays from its authoritative ACK cursor on registration.
 
 ### 8.5 One durable store
 

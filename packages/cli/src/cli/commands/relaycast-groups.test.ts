@@ -12,14 +12,16 @@ beforeEach(() => {
   vi.stubGlobal(
     'fetch',
     vi.fn(
-      async () =>
+      async (url: string | URL) =>
         new Response(
           JSON.stringify({
             ok: true,
-            data: {
-              url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
-              secret: 'inbound-secret',
-            },
+            data: String(url).endsWith('/agents/slackbot/subscription-channel')
+              ? { name: 'agent-events-a1', members: [{ agent_name: 'slackbot' }] }
+              : {
+                  url: 'https://cast.test/v1/integrations/relayfile/inbound/ws/ch',
+                  secret: 'inbound-secret',
+                },
           }),
           {
             status: 201,
@@ -35,6 +37,12 @@ afterEach(() => {
 });
 
 function createRelayMock() {
+  const register = vi.fn(async (i: { name: string }) => ({
+    id: 'a1',
+    token: 't1',
+    name: i.name,
+    status: 'online',
+  }));
   return {
     agents: {
       register: vi.fn(async (i: { name: string }) => ({
@@ -45,6 +53,10 @@ function createRelayMock() {
       })),
       list: vi.fn(async () => [{ id: 'a1', name: 'lead' }]),
       delete: vi.fn(async () => undefined),
+    },
+    workspace: {
+      register,
+      release: vi.fn(async () => ({ status: 'completed' })),
     },
     channels: {
       create: vi.fn(async (i: { name: string }) => ({ id: 'c1', name: i.name })),
@@ -58,6 +70,8 @@ function createRelayMock() {
     messages: {
       send: vi.fn(async (i: unknown) => ({ id: 'm1', ...(i as object) })),
       direct: vi.fn(async (i: unknown) => ({ id: 'd1', ...(i as object) })),
+      groupDirect: vi.fn(async (i: unknown) => ({ id: 'g1', ...(i as object) })),
+      readers: vi.fn(async () => []),
       react: vi.fn(async () => ({ emoji: 'eyes', count: 1, agents: [] })),
     },
     integrations: {
@@ -70,7 +84,7 @@ function createRelayMock() {
       subscriptions: {
         create: vi.fn(async (i: unknown) => ({ id: 'sub1', ...(i as object) })),
         list: vi.fn(async () => []),
-        get: vi.fn(async (id: string) => ({ id })),
+        get: vi.fn(async (id: string) => ({ id, events: ['message.created', 'thread.reply'] })),
         delete: vi.fn(async () => undefined),
       },
     },
@@ -106,12 +120,15 @@ function memoryJournal() {
 
 function harness(register: (p: Command, o: Partial<SdkCommandDeps>) => void) {
   const relay = createRelayMock();
+  const workspaceRelay = createRelayMock();
   const log = vi.fn();
   const error = vi.fn();
   const exit = vi.fn();
+  const createAgentRelay = vi.fn(() => relay as never);
+  const createWorkspaceRelay = vi.fn(() => workspaceRelay as never);
   const deps: Partial<SdkCommandDeps> = {
-    createAgentRelay: () => relay as never,
-    createWorkspaceRelay: () => relay as never,
+    createAgentRelay,
+    createWorkspaceRelay,
     log,
     error,
     exit: exit as never,
@@ -119,15 +136,30 @@ function harness(register: (p: Command, o: Partial<SdkCommandDeps>) => void) {
   const program = new Command();
   program.exitOverride();
   register(program, deps);
-  return { program, relay, log, error };
+  return {
+    program,
+    relay,
+    workspaceRelay,
+    createAgentRelay,
+    createWorkspaceRelay,
+    log,
+    error,
+    exit,
+  };
 }
 
 describe('SDK-backed CLI groups', () => {
-  it('agent register calls agents.register and prints the registration', async () => {
-    const { program, relay, log } = harness(registerAgentCommands);
+  it('agent register calls workspace.register and prints the registration', async () => {
+    const { program, workspaceRelay, log } = harness(registerAgentCommands);
     await program.parseAsync(['agent', 'register', 'reviewer', '--type', 'agent'], { from: 'user' });
-    expect(relay.agents.register).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'reviewer', type: 'agent' })
+    // `agent register` resolves its client through createWorkspaceRelay (hence
+    // workspaceRelay, from main) and calls workspace.register with an explicit
+    // strict flag (hence this shape, from #1527). Taking either side of the
+    // merge alone asserts against a method or an object the implementation no
+    // longer uses.
+    expect(workspaceRelay.workspace.register).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'reviewer', type: 'agent' }),
+      { strict: false }
     );
     expect(log).toHaveBeenCalled();
   });
@@ -138,27 +170,150 @@ describe('SDK-backed CLI groups', () => {
     expect(relay.channels.update).toHaveBeenCalledWith('ops', { topic: 'New topic' });
   });
 
+  // The 16 KiB ceiling is a PTY injection limit enforced where the broker
+  // types into a terminal. Relaycast messages may target native agents or be
+  // stored for history only, so the generic message commands must not apply it.
+  it('message post, reply and dm send publish bodies larger than the PTY injection limit', async () => {
+    const text = 'x'.repeat(20 * 1024);
+    const { program, relay, error } = harness(registerMessageCommands);
+    const reply = vi.fn(async (i: unknown) => ({ id: 'r1', ...(i as object) }));
+    (relay.messages as Record<string, unknown>).reply = reply;
+    await program.parseAsync(['message', 'post', 'ops', text], { from: 'user' });
+    await program.parseAsync(['message', 'reply', 'm1', text], { from: 'user' });
+    await program.parseAsync(['message', 'dm', 'send', 'lead', text], { from: 'user' });
+    expect(error).not.toHaveBeenCalled();
+    expect(relay.messages.send).toHaveBeenCalledWith({ channel: 'ops', text });
+    expect(reply).toHaveBeenCalledWith({ messageId: 'm1', text });
+    expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'lead', text });
+  });
+
   it('message post routes to messages.send with the channel', async () => {
     const { program, relay } = harness(registerMessageCommands);
     await program.parseAsync(['message', 'post', 'ops', 'hello'], { from: 'user' });
     expect(relay.messages.send).toHaveBeenCalledWith({ channel: 'ops', text: 'hello' });
   });
 
-  it('message dm send routes to messages.direct', async () => {
-    const { program, relay } = harness(registerMessageCommands);
+  // A directory match remains a successful enqueue without claiming the
+  // recipient's transport or session can receive it.
+  it('message dm send exits cleanly when the workspace roster resolves the recipient', async () => {
+    const { program, relay, workspaceRelay, log, error, exit } = harness(registerMessageCommands);
     await program.parseAsync(['message', 'dm', 'send', 'lead', 'hi'], { from: 'user' });
+    expect(workspaceRelay.agents.list).toHaveBeenCalledOnce();
+    expect(relay.agents.list).not.toHaveBeenCalled();
     expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'lead', text: 'hi' });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "queued_unconfirmed"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"resolvedRecipient": "lead"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"directoryMatched": true'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"recipientMatched": null'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"deliveryConfirmed": false'));
+    expect(error).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  // MUST-FIRE: retaining the created message and receipt must not make an
+  // unresolved recipient look like CLI success.
+  it('message dm send exits non-zero after printing an unresolved-recipient receipt', async () => {
+    const { program, relay, workspaceRelay, log, error, exit } = harness(registerMessageCommands);
+    workspaceRelay.agents.list.mockResolvedValueOnce([]);
+
+    await program.parseAsync(['message', 'dm', 'send', 'missing-agent', 'hi'], { from: 'user' });
+
+    expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'missing-agent', text: 'hi' });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "recipient_unresolved"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"resolvedRecipient": null'));
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('recipient_unresolved'));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('message dm send reports failure when the independent workspace roster read rejects', async () => {
+    const { program, relay, workspaceRelay, log, error, exit } = harness(registerMessageCommands);
+    workspaceRelay.agents.list.mockRejectedValueOnce(
+      new Error('Workspace key required (rk_live_...) for this operation')
+    );
+
+    await program.parseAsync(['message', 'dm', 'send', 'lead', 'hi'], { from: 'user' });
+
+    expect(relay.messages.direct).toHaveBeenCalledWith({ to: 'lead', text: 'hi' });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "recipient_unresolved"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"resolvedRecipient": null'));
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('recipient_unresolved'));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('message dm send sends with the agent client but resolves with an explicitly keyed workspace client', async () => {
+    const { program, createAgentRelay, createWorkspaceRelay } = harness(registerMessageCommands);
+
+    await program.parseAsync(
+      [
+        'message',
+        'dm',
+        'send',
+        'lead',
+        'hi',
+        '--token',
+        'at_live_sender',
+        '--workspace-key',
+        'rk_live_workspace',
+      ],
+      { from: 'user' }
+    );
+
+    const expected = {
+      token: 'at_live_sender',
+      workspaceKey: 'rk_live_workspace',
+      baseUrl: undefined,
+    };
+    expect(createAgentRelay).toHaveBeenCalledWith(expected);
+    expect(createWorkspaceRelay).toHaveBeenCalledWith(expected);
+  });
+
+  it('message dm send exposes immediate Relay delivery', async () => {
+    const { program, relay, log } = harness(registerMessageCommands);
+    await program.parseAsync(['message', 'dm', 'send', 'lead', 'wake up', '--mode', 'steer'], {
+      from: 'user',
+    });
+    expect(relay.messages.direct).toHaveBeenCalledWith({
+      to: 'lead',
+      text: 'wake up',
+      mode: 'steer',
+    });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"mode": "steer"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('immediate injection'));
+  });
+
+  it('message dm send_group bypasses the single-recipient resolution and receipt path', async () => {
+    const { program, relay, createWorkspaceRelay, error, exit } = harness(registerMessageCommands);
+
+    await program.parseAsync(['message', 'dm', 'send_group', 'hello team', '--to', 'lead', 'worker'], {
+      from: 'user',
+    });
+
+    expect(relay.messages.groupDirect).toHaveBeenCalledWith({
+      participants: ['lead', 'worker'],
+      text: 'hello team',
+    });
+    expect(createWorkspaceRelay).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it('message inbox get_readers signals that an empty reader list is still queued or unread', async () => {
+    const { program, relay, log } = harness(registerMessageCommands);
+    await program.parseAsync(['message', 'inbox', 'get_readers', 'd1'], { from: 'user' });
+    expect(relay.messages.readers).toHaveBeenCalledWith('d1');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"status": "queued_or_unread"'));
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"readConfirmed": false'));
   });
 
   it('integration webhook create routes to integrations.webhooks.create', async () => {
     const { program, relay } = harness(registerIntegrationCommands);
     await program.parseAsync(
-      ['integration', 'webhook', 'create', 'https://x', '--event', 'message.created'],
+      ['integration', 'webhook', 'create', 'deploy-status', '--name', 'GitHub Alerts'],
       { from: 'user' }
     );
     expect(relay.integrations.webhooks.create).toHaveBeenCalledWith({
-      url: 'https://x',
-      event: 'message.created',
+      channel: 'deploy-status',
+      name: 'GitHub Alerts',
     });
   });
 
@@ -184,19 +339,21 @@ describe('SDK-backed CLI groups', () => {
       resolveLocalRelayOptions,
     } satisfies Partial<IntegrationCommandDependencies>);
 
-    await program.parseAsync(
-      ['integration', 'webhook', 'create', 'https://x', '--event', 'message.created'],
-      { from: 'user' }
-    );
+    await program.parseAsync(['integration', 'webhook', 'create', 'deploy-status'], {
+      from: 'user',
+    });
 
     expect(resolveLocalRelayOptions).toHaveBeenCalled();
     expect(createAgentRelay).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ workspaceKey: 'rk_live_local', baseUrl: 'https://relay.local' })
+      expect.objectContaining({
+        workspaceKey: 'rk_live_local',
+        fallbackBaseUrl: 'https://relay.local',
+      })
     );
     expect(secondRelay.integrations.webhooks.create).toHaveBeenCalledWith({
-      url: 'https://x',
-      event: 'message.created',
+      channel: 'deploy-status',
+      name: undefined,
     });
     expect(log).toHaveBeenCalled();
     expect(error).not.toHaveBeenCalled();
@@ -242,7 +399,10 @@ describe('SDK-backed CLI groups', () => {
     expect(resolveLocalRelayOptions).toHaveBeenCalled();
     expect(createAgentRelay).toHaveBeenNthCalledWith(
       2,
-      expect.objectContaining({ workspaceKey: 'rk_live_local', baseUrl: 'https://relay.local' })
+      expect.objectContaining({
+        workspaceKey: 'rk_live_local',
+        fallbackBaseUrl: 'https://relay.local',
+      })
     );
     expect(secondRelay.webhooks.createInbound).toHaveBeenCalledWith({
       channel: 'general',
@@ -392,7 +552,7 @@ describe('SDK-backed CLI groups', () => {
     const program = new Command();
     program.exitOverride();
     registerIntegrationCommands(program, {
-      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
       log,
       error,
       exit: exit as never,
@@ -422,8 +582,12 @@ describe('SDK-backed CLI groups', () => {
       { from: 'user' }
     );
 
+    expect(fetch).toHaveBeenCalledWith(
+      expect.objectContaining({ pathname: '/v1/agents/slackbot/subscription-channel' }),
+      expect.objectContaining({ method: 'POST', headers: { authorization: 'Bearer rk_live_local' } })
+    );
     expect(relay.webhooks.createInbound).toHaveBeenCalledWith({
-      channel: 'slackbot',
+      channel: 'agent-events-a1',
       name: expect.stringMatching(/^relayfile:slack:.+-[0-9a-f]{10}:[0-9a-f]{10}$/),
     });
     expect(relayfile.createWebhookSubscription).toHaveBeenCalledWith({
@@ -435,7 +599,7 @@ describe('SDK-backed CLI groups', () => {
     expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith({
       event: 'message.created',
       events: ['message.created', 'thread.reply'],
-      filter: { channel: 'slackbot' },
+      filter: { channel: 'agent-events-a1' },
       // The per-attempt marker uniquely identifies this subscription for
       // crash recovery without changing delivery (query is ignored).
       url: expect.stringMatching(/^https:\/\/bridge\.test\/writeback\?relaySubscribeAttempt=[0-9a-f]{16}$/),
@@ -444,7 +608,7 @@ describe('SDK-backed CLI groups', () => {
     expect(relayfile.bind).toHaveBeenCalledWith({
       provider: 'slack',
       resource: '#acme',
-      channel: 'slackbot',
+      channel: 'agent-events-a1',
       webhookId: 'in1',
       webhookToken: 'tok_once',
       subscriptionId: 'sub1',
@@ -476,7 +640,7 @@ describe('SDK-backed CLI groups', () => {
     const program = new Command();
     program.exitOverride();
     registerIntegrationCommands(program, {
-      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
       log: vi.fn(),
       error: vi.fn(),
       exit: vi.fn() as never,
@@ -491,7 +655,7 @@ describe('SDK-backed CLI groups', () => {
       { from: 'user' }
     );
 
-    expect(relayfile.resolveWritebackBinding).toHaveBeenCalledWith('slackbot');
+    expect(relayfile.resolveWritebackBinding).toHaveBeenCalledWith('agent-events-a1');
     expect(relay.integrations.subscriptions.create).toHaveBeenCalledWith(
       expect.objectContaining({
         url: expect.stringMatching(
@@ -527,6 +691,7 @@ describe('SDK-backed CLI groups', () => {
       })),
       createWebhookSubscription: vi.fn(async () => ({ subscriptionId: 'whsub_1' })),
       deleteWebhookSubscription: vi.fn(async () => undefined),
+      listWebhookSubscriptions: vi.fn(async () => ({ subscriptions: [] })),
     };
     const log = vi.fn();
     const error = vi.fn();
@@ -534,7 +699,7 @@ describe('SDK-backed CLI groups', () => {
     const program = new Command();
     program.exitOverride();
     registerIntegrationCommands(program, {
-      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
       log,
       error,
       exit: exit as never,
@@ -542,6 +707,9 @@ describe('SDK-backed CLI groups', () => {
       relayfile,
       cleanupJournal: memoryJournal(),
     } satisfies Partial<IntegrationCommandDependencies>);
+    relay.integrations.subscriptions.list.mockResolvedValueOnce([
+      { id: 'sub1', events: ['message.created', 'thread.reply'] } as never,
+    ]);
 
     await program.parseAsync(['integration', 'subscribe', '--list'], { from: 'user' });
 
@@ -558,6 +726,20 @@ describe('SDK-backed CLI groups', () => {
               channel: 'slackbot',
               webhookId: 'in1',
               subscriptionId: 'sub1',
+              to: null,
+              targetAgent: null,
+              lastDeliveryAt: null,
+              lastSuccessAt: null,
+              lastError: null,
+              lastChannelMessageAt: null,
+              lastDeliverySource: null,
+              writebackSubscription: {
+                id: 'sub1',
+                events: ['message.created', 'thread.reply'],
+                active: null,
+                deliveryStatus: null,
+              },
+              githubPrIdentityAuthorized: null,
             },
           ],
           webhooks: [],
@@ -579,7 +761,7 @@ describe('SDK-backed CLI groups', () => {
     const program = new Command();
     program.exitOverride();
     registerIntegrationCommands(program, {
-      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
       log,
       error,
       exit: exit as never,
@@ -607,9 +789,7 @@ describe('SDK-backed CLI groups', () => {
       from: 'user',
     });
 
-    expect(error).toHaveBeenCalledWith(
-      'Recipient agent @ghost does not exist. Run: agent-relay integration subscribe slack --to @ghost --spawn <cli>'
-    );
+    expect(error).toHaveBeenCalledWith('Recipient @ghost does not exist; use --spawn <cli> to launch it.');
     expect(exit).toHaveBeenCalledWith(1);
     expect(relay.webhooks.createInbound).not.toHaveBeenCalled();
   });
@@ -646,7 +826,7 @@ describe('SDK-backed CLI groups', () => {
     const program = new Command();
     program.exitOverride();
     registerIntegrationCommands(program, {
-      createAgentRelay: () => relay as never,
+      createWorkspaceRelay: () => relay as never,
       log,
       error,
       exit: exit as never,

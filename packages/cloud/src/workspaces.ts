@@ -1,4 +1,5 @@
-import { authorizedApiFetch, ensureAuthenticated } from './auth.js';
+import { authorizedApiFetch, ensureAuthenticated, ensureCloudSession, readStoredAuth } from './auth.js';
+import { redactCredentialValues } from './redact.js';
 import {
   type ActiveWorkspaceDescriptor,
   type ActiveWorkspaceUrls,
@@ -95,7 +96,9 @@ function buildEndpointError(action: string, endpoint: string, response: Response
       response.statusText)
     : response.statusText;
 
-  return new Error(`${action} failed at ${endpoint}: ${response.status} ${detail}`.trim());
+  return new Error(
+    redactCredentialValues(`${action} failed at ${endpoint}: ${response.status} ${detail}`.trim())
+  );
 }
 
 function normalizeWorkspaceCreateResponse(payload: unknown): WorkspaceCreateResponse {
@@ -383,10 +386,76 @@ export async function issueWorkspaceToken(
   );
 }
 
+function assertWorkspaceResolverTransport(apiUrl: string): void {
+  let url: URL;
+  try {
+    url = new URL(apiUrl);
+  } catch {
+    throw new Error('Project workspace resolution requires a valid Cloud API URL.');
+  }
+  if (url.username || url.password || url.protocol !== 'https:') {
+    throw new Error('Project workspace resolution requires HTTPS.');
+  }
+}
+
+/** Resolve a selected project pin without exposing its key in URLs or changing the active workspace. */
+export async function resolveWorkspaceByKey(
+  workspaceKey: string,
+  options: ResolveActiveWorkspaceOptions = {}
+): Promise<ActiveWorkspaceDescriptor> {
+  const key = workspaceKey.trim();
+  if (!/^(rk_live_|ar_ws_)[A-Za-z0-9_-]{1,512}$/.test(key))
+    throw new Error('A valid workspace key is required.');
+  const env = options.env ?? process.env;
+  const apiUrl = options.apiUrl || defaultApiUrl(env);
+  assertWorkspaceResolverTransport(apiUrl);
+  // Stored sessions keep their own API host; validate it before a refresh can
+  // send credentials, even when the requested/default host is secure.
+  const stored = await readStoredAuth(env);
+  if (stored) assertWorkspaceResolverTransport(stored.apiUrl);
+  const { auth } = await ensureCloudSession({
+    apiUrl,
+    interactive: false,
+    refreshTimeoutMs: options.refreshTimeoutMs,
+    env,
+    validateApiUrl: assertWorkspaceResolverTransport,
+  });
+  assertWorkspaceResolverTransport(auth.apiUrl);
+  const endpoint = '/api/v1/workspaces/current/resolve';
+  const { response } = await authorizedApiFetch(
+    auth,
+    endpoint,
+    {
+      method: 'POST',
+      redirect: 'error',
+      body: JSON.stringify({ workspaceKey: key }),
+      signal: AbortSignal.timeout(options.refreshTimeoutMs ?? 30_000),
+    },
+    {
+      interactive: false,
+      env,
+      validateApiUrl: assertWorkspaceResolverTransport,
+    }
+  );
+  const payload = await readJson(response);
+  if (!response.ok) throw buildEndpointError('Project workspace resolve', endpoint, response, payload);
+  // Unlike the legacy active-workspace resolver, this endpoint is an
+  // attestation for a specific project pin. A response that omits the echoed
+  // key must fail closed rather than being filled in from the request.
+  const resolved = normalizeActiveWorkspaceDescriptor(payload, '', auth.apiUrl);
+  if (resolved.key !== key)
+    throw new Error('Cloud resolved a different workspace credential than the selected project pin.');
+  return resolved;
+}
+
+type ResolveDescriptorResult =
+  | { descriptor: ActiveWorkspaceDescriptor }
+  | { lastUnsupported: Error | null; sawMethodNotAllowed: boolean };
+
 async function resolveWorkspaceDescriptor(
   key: string,
   options: ResolveActiveWorkspaceOptions
-): Promise<{ descriptor: ActiveWorkspaceDescriptor } | { lastUnsupported: Error | null }> {
+): Promise<ResolveDescriptorResult> {
   const encodedKey = encodeURIComponent(key);
   const endpoints = [
     `/api/v1/workspaces/${encodedKey}/resolve`,
@@ -394,6 +463,7 @@ async function resolveWorkspaceDescriptor(
     `/api/v1/workspaces/active?key=${encodedKey}`,
   ];
   let lastUnsupported: Error | null = null;
+  let sawMethodNotAllowed = false;
 
   for (const endpoint of endpoints) {
     const { response, payload, apiUrl } = await tryGetJson(endpoint, {
@@ -403,6 +473,7 @@ async function resolveWorkspaceDescriptor(
     });
 
     if (response.status === 404 || response.status === 405) {
+      sawMethodNotAllowed ||= response.status === 405;
       lastUnsupported = buildEndpointError('Workspace resolve', endpoint, response, payload);
       continue;
     }
@@ -416,7 +487,7 @@ async function resolveWorkspaceDescriptor(
     return { descriptor: normalizeActiveWorkspaceDescriptor(payload, key, apiUrl) };
   }
 
-  return { lastUnsupported };
+  return { lastUnsupported, sawMethodNotAllowed };
 }
 
 /**
@@ -476,9 +547,9 @@ export async function resolveActiveWorkspace(
   // signal — rethrow it unchanged so a transient blip can't mint a new key
   // and overwrite a perfectly valid one.
   const primary = await resolveWorkspaceDescriptor(entry.key, options).catch(
-    (err: unknown): { lastUnsupported: Error } => {
+    (err: unknown): ResolveDescriptorResult => {
       if (err instanceof WorkspaceResolveHttpError) {
-        return { lastUnsupported: err };
+        return { lastUnsupported: err, sawMethodNotAllowed: false };
       }
       throw err;
     }
@@ -520,7 +591,22 @@ export async function resolveActiveWorkspace(
     }
   }
 
-  throw (
-    primary.lastUnsupported ?? new Error('Workspace resolution is not supported by the configured cloud API.')
+  // Self-heal did not apply or did not help: report the original failure.
+  // A non-404 HTTP error is rethrown as-is; the 404/405 diagnosis below is
+  // unchanged from before self-heal existed.
+  const { lastUnsupported, sawMethodNotAllowed } = primary;
+  if (lastUnsupported instanceof WorkspaceResolveHttpError) {
+    throw lastUnsupported;
+  }
+  if (!lastUnsupported) {
+    throw new Error('Workspace resolution is not supported by the configured cloud API.');
+  }
+  if (sawMethodNotAllowed) {
+    // A 405 is an API-shape signal, not evidence about the workspace — don't
+    // steer the user toward a provisioning diagnosis that may be wrong.
+    throw lastUnsupported;
+  }
+  throw new Error(
+    `${lastUnsupported.message} — the active workspace has no record on the cloud API; a messaging-only workspace (minted by \`node up\` without cloud provisioning) resolves only through Relaycast.`
   );
 }

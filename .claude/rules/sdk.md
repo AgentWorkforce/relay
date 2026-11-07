@@ -53,9 +53,14 @@ The SDK uses subpath exports:
 
 ## Communication Protocol
 
-- **Primary**: MCP tools (`mcp__relaycast__message_dm_send`,
-  `mcp__relaycast__message_inbox_check`, `mcp__relaycast__agent_list`,
-  `mcp__relaycast__agent_add`, `mcp__relaycast__agent_remove`)
+- **Primary**: MCP tools. The canonical names are flat — `send_dm`,
+  `check_inbox`, `post_message`, `list_agents`, `add_agent`, `remove_agent`.
+  A client may decorate them with the configured server key, so Claude Code
+  users typically see `mcp__agent-relay__send_dm` while Codex and opencode see
+  the bare name.
+- Do **not** use the older category-expanded forms
+  (`mcp__relaycast__message_dm_send`, `relaycast.message.dm.send`,
+  `message.post`). They are not registered by `agent-relay mcp`.
 
 ## No Storage Layer
 

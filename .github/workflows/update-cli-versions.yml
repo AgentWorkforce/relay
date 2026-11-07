@@ -21,7 +21,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22.14.0'
           cache: 'npm'
 
       - name: Install dependencies
@@ -73,7 +73,6 @@ jobs:
             ### Files Modified
             - `packages/utils/cli-registry.yaml` - Updated versions
             - `packages/config/src/cli-registry.generated.ts` - Regenerated
-            - `packages/sdk-py/agent_relay/models.py` - Regenerated
 
             ---
             *Automated by [update-cli-versions](.github/workflows/update-cli-versions.yml)*

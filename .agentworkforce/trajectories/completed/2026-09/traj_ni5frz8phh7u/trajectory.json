@@ -1,0 +1,77 @@
+{
+  "id": "traj_ni5frz8phh7u",
+  "version": 1,
+  "task": {
+    "title": "Fix attach terminal reconnect over cast.agentrelay.com"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-20T02:02:41.517Z",
+  "completedAt": "2026-09-20T02:21:01.763Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-20T02:07:35.218Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_3le1345eh9r5",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-20T02:07:35.218Z",
+      "endedAt": "2026-09-20T02:21:01.763Z",
+      "events": [
+        {
+          "ts": 1789870055218,
+          "type": "decision",
+          "content": "Refresh an expired remote terminal session instead of retrying its dead resume token: Refresh an expired remote terminal session instead of retrying its dead resume token",
+          "raw": {
+            "question": "Refresh an expired remote terminal session instead of retrying its dead resume token",
+            "chosen": "Refresh an expired remote terminal session instead of retrying its dead resume token",
+            "alternatives": [],
+            "reasoning": "Cast terminal sessions expire after ten minutes; the CLI ignored expires_at, so a later transport flap made every bounded resume attempt target an irrecoverable 401/410 session. A fresh session preserves the local attach while keeping ordinary transport failures on the existing bounded resume path."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1789870807238,
+          "type": "decision",
+          "content": "Reused one bounded reconnect incident for expired sessions: Reused one bounded reconnect incident for expired sessions",
+          "raw": {
+            "question": "Reused one bounded reconnect incident for expired sessions",
+            "chosen": "Reused one bounded reconnect incident for expired sessions",
+            "alternatives": [],
+            "reasoning": "A replacement is allocated only for expires_at or an HTTP 401/410 resume refusal; 5xx and transient failures continue using the original resume budget."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1789870826688,
+          "type": "reflection",
+          "content": "Attach proxy now swaps the terminal session only when expiry is proven; focused lifecycle tests and monorepo typecheck pass.",
+          "raw": {
+            "confidence": 0.9
+          },
+          "significance": "high",
+          "tags": [
+            "confidence:0.9"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Expired fleet terminal sessions are refreshed once during attach reconnects; 410 resumes refresh while transient failures preserve the bounded resume budget.",
+    "approach": "Standard approach",
+    "confidence": 0.9
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "f23758c30a7b553b67f5a1afd5cc79bb83bc8144",
+    "endRef": "f23758c30a7b553b67f5a1afd5cc79bb83bc8144"
+  }
+}

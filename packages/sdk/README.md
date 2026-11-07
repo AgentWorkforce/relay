@@ -95,6 +95,11 @@ await lead.react({
 const thread = await lead.threads.get(messageId, { limit: 50 });
 ```
 
+When `RELAY_ATTEST_SESSION_ID` is present, channel posts, thread replies, direct
+messages, and group messages automatically persist it as `metadata.session_ref`
+so completed-session replay can recover the cross-agent conversation. Passing
+an explicit `metadata.session_ref` on a send or reply preserves that value.
+
 ## Actions
 
 Actions are **fire-and-forget**: invoking returns an acknowledgement immediately, the handler runs in the SDK process that registered it, and the relay emits `action.completed` (or `action.failed`) to listeners — not inline to the invoking agent. Registered actions are exposed as typed MCP tools to agents automatically.
@@ -127,6 +132,23 @@ relay.addListener(relay.action('github.open_pr').completed(), (event) => {
 // Later, if this process should stop exposing the action:
 handle.unregister();
 ```
+
+## Placement
+
+`placement.spawn` requires a live, online node with live action handlers and
+fails fast by default. Queueing is explicit: pass `failFast: false` together
+with a bounded `ttlMs` when waiting for a node to join is intentional.
+
+Set `placementSandboxOnly: true` on `RelaycastMessagingClient` to make Cloud
+JIT sandbox provenance a client-wide eligibility requirement, or pass
+`sandboxOnly: true` on one placement request. Both sandbox-policy switches
+default to `false`, so existing local and durable fleet nodes remain eligible
+unless the caller opts in.
+
+For unconstrained automatic placement, resolved `node` metadata is present on
+the result when the engine acknowledgment can be matched to the current
+roster. A successful dispatch remains successful if that optional metadata is
+missing or the roster read lags; the raw acknowledgment IDs remain available.
 
 ## Events
 

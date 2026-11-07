@@ -1,8 +1,11 @@
+/** Format an ISO timestamp as a compact non-negative age for terminal output. */
 export function formatRelativeTime(iso?: string): string {
   if (!iso) return 'unknown';
   const ts = Date.parse(iso);
   if (Number.isNaN(ts)) return 'unknown';
-  const diffMs = Date.now() - ts;
+  // Treat clock skew as a just-observed timestamp instead of rendering a
+  // nonsensical negative age (for example, "-10s ago").
+  const diffMs = Math.max(0, Date.now() - ts);
   const diffSec = Math.floor(diffMs / 1000);
   if (diffSec < 60) return `${diffSec}s ago`;
   const diffMin = Math.floor(diffSec / 60);
@@ -58,12 +61,17 @@ export function parseSince(input?: string): number | undefined {
 
 export function sanitizeForTerminal(input: string): string {
   /* eslint-disable no-control-regex -- intentionally matching ANSI/control bytes to strip them */
-  return input
-    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, '')
-    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\x9B[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\x1B[@-Z\\-_]/g, '')
-    .replace(/[\x00-\x08\x0B\x0C\x0D\x0E-\x1F\x7F-\x9F]/g, '');
+  return (
+    input
+      .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, '')
+      .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '')
+      .replace(/\x9B[0-?]*[ -/]*[@-~]/g, '')
+      .replace(/\x1B[@-Z\\-_]/g, '')
+      .replace(/[\x00-\x08\x0B\x0C\x0D\x0E-\x1F\x7F-\x9F]/g, '')
+      // Bidirectional overrides let server-provided text reorder the line it is
+      // printed on, so a name can visually impersonate another one.
+      .replace(/[\u202a-\u202e\u2066-\u2069]/g, '')
+  );
   /* eslint-enable no-control-regex */
 }
 

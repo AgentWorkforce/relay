@@ -22,7 +22,6 @@ import type {
   RelayTrigger,
   RelayTriggerInput,
   RelayWebhookSubscription,
-  RelayWorkspaceFleetNodesConfig,
 } from './types.js';
 
 // --- primitive record readers -------------------------------------------------
@@ -141,16 +140,22 @@ export function toRelayCapability(raw: unknown): RelayCapability {
 export function toRelayNode(raw: unknown): RelayNode {
   const node = (raw ?? {}) as Record<string, unknown>;
   const rawStatus = readStr(node, 'status');
+  const status = rawStatus === 'online' || rawStatus === 'offline' ? rawStatus : 'unknown';
+  const live = readBoolean(node, 'live');
+  // Relaycast may retain a stale numeric load after a provider goes offline.
+  // Preserve zero as a real measurement only while liveness is authoritative.
+  const activeAgents =
+    live !== true || status === 'offline' ? undefined : readNumber(node, 'activeAgents', 'active_agents');
   return {
     id: readStr(node, 'id', 'node_id'),
     nodeId: readStr(node, 'nodeId', 'node_id'),
     name: readStr(node, 'name') ?? '',
-    status: rawStatus === 'online' || rawStatus === 'offline' ? rawStatus : 'unknown',
-    live: readBoolean(node, 'live'),
+    status,
+    live,
     capabilities: Array.isArray(node.capabilities) ? node.capabilities.map(toRelayNodeCapability) : [],
     repoKeys: readRepoKeys(node),
     maxAgents: readNumber(node, 'maxAgents', 'max_agents'),
-    activeAgents: readNumber(node, 'activeAgents', 'active_agents'),
+    activeAgents,
     handlersLive: readBoolean(node, 'handlersLive', 'handlers_live'),
     load: readNumber(node, 'load'),
     lastHeartbeatAt: readStr(node, 'lastHeartbeatAt', 'last_heartbeat_at'),
@@ -164,7 +169,14 @@ function readRepoKeys(node: Record<string, unknown>): string[] | undefined {
   const direct = readStringArray(node, 'repoKeys') ?? readStringArray(node, 'repo_keys');
   if (direct) return direct;
   const repoPaths = readRecord(node, 'repoPaths', 'repo_paths');
-  return repoPaths ? Object.keys(repoPaths).filter(Boolean) : undefined;
+  if (repoPaths) return Object.keys(repoPaths).filter(Boolean);
+  // Registration carries repo advertisement as `repo:<key>` tags (the engine
+  // roster row has no dedicated repo field), so placement reads them here.
+  const tagged = readStringArray(node, 'tags')
+    ?.filter((tag) => tag.startsWith('repo:'))
+    .map((tag) => tag.slice('repo:'.length))
+    .filter(Boolean);
+  return tagged && tagged.length > 0 ? tagged : undefined;
 }
 
 export function toRelayNodeCapability(raw: unknown): RelayNodeCapability {
@@ -188,15 +200,6 @@ export function toRelayTrigger(raw: unknown): RelayTrigger {
   };
 }
 
-export function toRelayWorkspaceFleetNodesConfig(raw: unknown): RelayWorkspaceFleetNodesConfig {
-  const record = asRecord(raw);
-  return {
-    enabled: readBoolean(record, 'enabled') ?? false,
-    defaultEnabled: readBoolean(record, 'defaultEnabled', 'default_enabled') ?? false,
-    override: readBoolean(record, 'override') ?? null,
-  };
-}
-
 /** Normalize a relaycast invoke ack (camelized) into the relay `RelayActionInvocationAck`. */
 export function normalizeActionInvocationAck(raw: unknown): RelayActionInvocationAck {
   const record = asRecord(raw);
@@ -213,6 +216,7 @@ export function normalizeActionInvocationAck(raw: unknown): RelayActionInvocatio
       ? { dispatchedNodeId: readStr(record, 'dispatchedNodeId', 'dispatched_node_id') }
       : {}),
     ...(readRecord(record, 'input') ? { input: readRecord(record, 'input') } : {}),
+    ...(readRecord(record, 'output') ? { output: readRecord(record, 'output') } : {}),
     ...(readStr(record, 'status') ? { status: readStr(record, 'status') } : {}),
     ...(readStr(record, 'createdAt', 'created_at')
       ? { createdAt: readStr(record, 'createdAt', 'created_at') }
@@ -228,6 +232,12 @@ export function normalizeActionInvocation(raw: unknown): RelayActionInvocation {
     actionName: readStr(record, 'actionName', 'action_name') ?? '',
     callerId: (readStr(record, 'callerId', 'caller_id') ?? null) as string | null,
     callerName: (readStr(record, 'callerName', 'caller_name') ?? null) as string | null,
+    ...(readStr(record, 'handlerNodeId', 'handler_node_id')
+      ? { handlerNodeId: readStr(record, 'handlerNodeId', 'handler_node_id') }
+      : {}),
+    ...(readStr(record, 'dispatchedNodeId', 'dispatched_node_id')
+      ? { dispatchedNodeId: readStr(record, 'dispatchedNodeId', 'dispatched_node_id') }
+      : {}),
     input: readRecord(record, 'input') ?? {},
     output: readRecord(record, 'output') ?? null,
     status: readStr(record, 'status') ?? 'invoked',
@@ -263,9 +273,12 @@ export function normalizeInboundWebhook(raw: unknown): RelayInboundWebhook {
 /** Normalize a relaycast event subscription into `RelayWebhookSubscription`. */
 export function normalizeWebhookSubscription(raw: unknown): RelayWebhookSubscription {
   const record = asRecord(raw);
-  const events = Array.isArray(record.events)
-    ? record.events.filter((event): event is string => typeof event === 'string')
-    : undefined;
+  const rawEvents = record.events ?? record.event_types ?? record.eventTypes;
+  const events = Array.isArray(rawEvents)
+    ? rawEvents.filter((event): event is string => typeof event === 'string')
+    : typeof record.event === 'string'
+      ? [record.event]
+      : undefined;
   return {
     id: readStr(record, 'id') ?? '',
     ...(readStr(record, 'url') ? { url: readStr(record, 'url') } : {}),

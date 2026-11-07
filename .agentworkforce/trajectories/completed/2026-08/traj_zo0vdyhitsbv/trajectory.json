@@ -1,0 +1,78 @@
+{
+  "id": "traj_zo0vdyhitsbv",
+  "version": 1,
+  "task": {
+    "title": "Add fleet spawn worker cwd support",
+    "source": {
+      "system": "plain",
+      "id": "1540"
+    }
+  },
+  "status": "completed",
+  "startedAt": "2026-08-17T03:33:43.864Z",
+  "completedAt": "2026-08-17T04:57:39.168Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-08-17T04:51:18.480Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_2yp21uw81xxb",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-08-17T04:51:18.480Z",
+      "endedAt": "2026-08-17T04:57:39.168Z",
+      "events": [
+        {
+          "ts": 1786942278482,
+          "type": "decision",
+          "content": "Use worker_cwd as the Fleet action field while keeping CLI --cwd ergonomic and preserving cwd as a deprecated persona-registry alias: Use worker_cwd as the Fleet action field while keeping CLI --cwd ergonomic and preserving cwd as a deprecated persona-registry alias",
+          "raw": {
+            "question": "Use worker_cwd as the Fleet action field while keeping CLI --cwd ergonomic and preserving cwd as a deprecated persona-registry alias",
+            "chosen": "Use worker_cwd as the Fleet action field while keeping CLI --cwd ergonomic and preserving cwd as a deprecated persona-registry alias",
+            "alternatives": [],
+            "reasoning": "The existing MCP cwd means registry lookup, so a distinct wire field prevents silent misplacement; automatic placement carries it in metadata because the upstream spawn schema strips unknown top-level fields."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1786942634343,
+          "type": "reflection",
+          "content": "Fleet CLI, MCP, Fleet DSL, and broker now carry an explicit worker_cwd; live process and missing-path tests pass across the broker boundary",
+          "raw": {
+            "focalPoints": [
+              "wire-contract",
+              "node-validation",
+              "process-cwd"
+            ],
+            "adjustments": "Kept automatic placement in metadata to match the upstream spawn schema and retained persona_cwd as a separate registry-only field",
+            "confidence": 0.92
+          },
+          "significance": "high",
+          "tags": [
+            "focal:wire-contract",
+            "focal:node-validation",
+            "focal:process-cwd",
+            "confidence:0.92"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added fleet spawn --cwd and explicit worker_cwd action plumbing through targeted and automatic placement, validated absolute directories on the selected node, separated persona registry cwd naming, and added live-process plus rejection coverage.",
+    "approach": "Standard approach",
+    "confidence": 0.92
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "ec6425ea2023b38e846f3aaa58cd77efb0107e9f",
+    "endRef": "ec6425ea2023b38e846f3aaa58cd77efb0107e9f"
+  }
+}

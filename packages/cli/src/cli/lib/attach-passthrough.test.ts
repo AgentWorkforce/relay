@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { LOCAL_TERMINAL_RESET_SEQUENCE } from './attach.js';
 import type { CliPtyInputStream } from './attach-drive.js';
 import {
   PassthroughKeybindParser,
@@ -57,6 +58,7 @@ class FakeWebSocket implements PassthroughWebSocket {
 
 class FakeStdin implements PassthroughStdin {
   isTTY = true;
+  isRaw = false;
   setRawMode = vi.fn<(mode: boolean) => unknown>(() => undefined);
   resume = vi.fn(() => undefined);
   pause = vi.fn(() => undefined);
@@ -66,6 +68,7 @@ class FakeStdin implements PassthroughStdin {
   constructor() {
     this.setRawMode = vi.fn((mode: boolean) => {
       this.rawModeCalls.push(mode);
+      this.isRaw = mode;
       return undefined;
     });
   }
@@ -135,6 +138,9 @@ class FakeInputStream implements CliPtyInputStream {
   }
 
   async send(data: string): Promise<{ name: string; bytes_written: number }> {
+    // Mirror the real PtyInputStream: once the socket is gone the guard rejects
+    // immediately and permanently (transport.ts:199).
+    if (this.closed) throw new Error('PTY input stream is closed');
     if (this.sendError) throw this.sendError;
     this.writes.push(data);
     return { name: this.name, bytes_written: Buffer.byteLength(data, 'utf8') };
@@ -144,6 +150,11 @@ class FakeInputStream implements CliPtyInputStream {
     this.closed = true;
     this.closeCode = code;
     this.closeReason = reason;
+  }
+
+  /** Test helper: the broker/proxy drops the socket without telling the CLI. */
+  killFromServer(): void {
+    this.closed = true;
   }
 }
 
@@ -157,6 +168,16 @@ interface FetchScript {
   terminalSize?: { rows: number; cols: number } | null;
   inputStreamOpenError?: Error;
   inputStreamSendError?: Error;
+  /** Open-errors applied to reopen attempts only, in order. */
+  reopenOpenErrors?: Array<Error | undefined>;
+  inputReopenMaxAttempts?: number;
+  inputReopenBaseDelayMs?: number;
+  /**
+   * Worker identities returned by successive `getWorkerIdentity` calls. Index 0
+   * is the attach-time baseline; later entries answer post-reopen checks.
+   * Defaults to a stable pid, i.e. "same worker throughout".
+   */
+  workerIdentities?: Array<string | null>;
   /** When set, inject this fake engine via the createPredictiveEcho factory. */
   predictiveEcho?: FakePredictiveEcho;
 }
@@ -217,6 +238,7 @@ function createHarness(opts: FetchScript = {}): {
     body?: unknown;
     headers: Record<string, string>;
   }> = [];
+  const identityCalls: Array<string | null> = [];
   const stdin = new FakeStdin();
   const terminal = new FakeTerminal(
     opts.terminalSize === undefined ? { rows: 30, cols: 100 } : opts.terminalSize
@@ -367,13 +389,31 @@ function createHarness(opts: FetchScript = {}): {
     stdin,
     terminal,
     openInputStream: vi.fn((_connection, streamName) => {
-      const stream = new FakeInputStream(streamName, opts.inputStreamOpenError, opts.inputStreamSendError);
+      const reopenIndex = inputStreams.length - 1;
+      const openError =
+        reopenIndex >= 0 && opts.reopenOpenErrors
+          ? opts.reopenOpenErrors[reopenIndex]
+          : opts.inputStreamOpenError;
+      const stream = new FakeInputStream(streamName, openError, opts.inputStreamSendError);
       inputStreams.push(stream);
       return stream;
     }),
     createPredictiveEcho: opts.predictiveEcho ? () => opts.predictiveEcho ?? null : undefined,
     // Immediate, deterministic status repaints in tests (no coalescing timer).
     statusRepaintCoalesceMs: 0,
+    // Small, deterministic reopen policy so tests don't wait on real backoff.
+    inputReopenMaxAttempts: opts.inputReopenMaxAttempts ?? 2,
+    inputReopenBaseDelayMs: opts.inputReopenBaseDelayMs ?? 1,
+    getWorkerIdentity: vi.fn(async () => {
+      const scripted = opts.workerIdentities;
+      if (!scripted) return 'pid-1';
+      // Index explicitly: a scripted `null` is a meaningful value ("identity
+      // unavailable"), so `??` must not collapse it into the fallback.
+      const index = identityCalls.length;
+      const value = index < scripted.length ? scripted[index] : (scripted[scripted.length - 1] ?? null);
+      identityCalls.push(value);
+      return value;
+    }),
   };
 
   return {
@@ -493,6 +533,18 @@ describe('renderStatusLine', () => {
     expect(out).toContain('\x1b[7m');
     expect(out).toContain('\x1b[0m');
   });
+
+  // Same wrap-then-scroll cascade `drive` hits: a label wider than the pane
+  // scrolls the screen on every repaint and shreds the agent's TUI behind it.
+  it('truncates the label to the terminal width so it can never wrap', () => {
+    const cols = 40;
+    // eslint-disable-next-line no-control-regex -- matching the raw ESC bytes this module emits
+    const strip = (s: string) => s.replace(/\x1b(?:[78]|\[[?0-9;]*[A-Za-z])/g, '');
+    const text = strip(renderStatusLine({ name: 'Gamemaster', mode: 'auto_inject', rows: 24, cols }));
+    expect(text.length).toBeLessThan(cols);
+    expect(text).toContain('[passthrough');
+    expect(text).toContain('detach]');
+  });
 });
 
 describe('runPassthroughSession', () => {
@@ -526,6 +578,80 @@ describe('runPassthroughSession', () => {
     expect(stdin.rawModeCalls).toEqual([true, false]);
   });
 
+  it('keeps Ctrl+C available while a raw-mode snapshot is pending', async () => {
+    let releaseSnapshot!: () => void;
+    const snapshotPending = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    const { deps, sockets, stdin, inputStreams } = createHarness();
+    deps.captureAndRenderSnapshot = vi.fn(async () => {
+      await snapshotPending;
+      return { status: 'ok' };
+    }) as PassthroughDependencies['captureAndRenderSnapshot'];
+
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    expect(stdin.isRaw).toBe(true);
+
+    stdin.type(Buffer.from('\x1b[0A'));
+    stdin.type(Buffer.from([0x03]));
+    await expect(sessionPromise).resolves.toBe(0);
+    expect(inputStreams[0].writes).toEqual([]);
+    releaseSnapshot();
+  });
+
+  it('waits for predictive echo seeding before forwarding initial input', async () => {
+    let releaseSeed!: () => void;
+    const seedPending = new Promise<void>((resolve) => {
+      releaseSeed = resolve;
+    });
+    const predictiveEcho = new FakePredictiveEcho();
+    predictiveEcho.seed = vi.fn(() => seedPending);
+    const { deps, sockets, stdin, inputStreams } = createHarness({ predictiveEcho });
+
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    stdin.type(Buffer.from('before'));
+    expect(inputStreams[0].writes).toEqual([]);
+    expect(predictiveEcho.inputs).toEqual([]);
+
+    releaseSeed();
+    for (let i = 0; i < 3; i++) await new Promise((resolve) => setImmediate(resolve));
+    stdin.type(Buffer.from('after'));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(inputStreams[0].writes).toEqual(['after']);
+    expect(predictiveEcho.inputs).toEqual(['after']);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('takes stdin raw before replaying a TUI snapshot', async () => {
+    const { deps, sockets, stdin } = createHarness();
+    deps.captureAndRenderSnapshot = vi.fn(async () => {
+      expect(stdin.isRaw).toBe(true);
+      return { status: 'ok' };
+    }) as PassthroughDependencies['captureAndRenderSnapshot'];
+
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('preserves an already-raw stdin on detach', async () => {
+    const { deps, sockets, stdin } = createHarness();
+    stdin.isRaw = true;
+
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    expect(stdin.rawModeCalls).toEqual([]);
+
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+    expect(stdin.rawModeCalls).toEqual([]);
+  });
+
   it('flips to auto_inject even when the worker was in manual_flush mode on attach, then restores on detach', async () => {
     const { deps, sockets, fetchLog, stdin } = createHarness({ initialMode: 'manual_flush' });
     const sessionPromise = runPassthroughSession('Alice', {}, deps);
@@ -551,6 +677,18 @@ describe('runPassthroughSession', () => {
     expect(code).toBe(1);
     expect(sockets).toHaveLength(0);
     expect(errors.some((args) => String(args[0]).includes("no agent named 'Ghost'"))).toBe(true);
+  });
+
+  it('emits cross-node hint when mode flip returns 404 and fleetHint resolves a placement', async () => {
+    const { deps, sockets, errors } = createHarness({
+      modeFlipFailure: { status: 404, error: "no agent named 'Ghost'" },
+    });
+    deps.fleetHint = vi.fn(async () => "on node 'barry'");
+    const code = await runPassthroughSession('Ghost', {}, deps);
+    expect(code).toBe(1);
+    expect(sockets).toHaveLength(0);
+    expect(errors.some((args) => String(args[0]).includes("on node 'barry'"))).toBe(true);
+    expect(errors.some((args) => String(args[0]).includes('cross-node attach'))).toBe(true);
   });
 
   it('aborts on snapshot not_found', async () => {
@@ -587,16 +725,29 @@ describe('runPassthroughSession', () => {
     await sessionPromise;
   });
 
-  it('writes worker_stream chunks to stdout and repaints the status line', async () => {
+  it('writes worker_stream chunks and safely restores the reserved status row', async () => {
     const { deps, sockets, writes, stdin } = createHarness();
     const sessionPromise = runPassthroughSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'live output' }));
     expect(writes.includes('live output')).toBe(true);
-    const liveIdx = writes.indexOf('live output');
-    const repaintAfter = writes.slice(liveIdx + 1).some((w) => w.includes('passthrough Alice'));
-    expect(repaintAfter).toBe(true);
+    const paintsAfter = writes.filter((w) => w.includes('passthrough Alice')).length;
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'more output' }));
+    expect(writes.filter((w) => w.includes('passthrough Alice')).length).toBeGreaterThan(paintsAfter);
 
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it('repaints after worker output erases the full display', async () => {
+    const { deps, sockets, writes, stdin } = createHarness();
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+    const paintsBefore = writes.filter((w) => w.includes('passthrough Alice')).length;
+
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: '\x1b[2J' }));
+
+    expect(writes.filter((w) => w.includes('passthrough Alice')).length).toBeGreaterThan(paintsBefore);
     stdin.type(Buffer.from([0x03]));
     await sessionPromise;
   });
@@ -688,7 +839,7 @@ describe('runPassthroughSession', () => {
     deps.readConnectionFile = vi.fn(() => null);
     const code = await runPassthroughSession('Alice', {}, deps);
     expect(code).toBe(1);
-    expect(errors[0]?.[0]).toMatch(/could not locate broker connection/);
+    expect(errors[0]?.[0]).toMatch(/no broker connection at .*connection\.json \(project default\)/);
   });
 
   // ---- API-key header propagation ----
@@ -723,7 +874,7 @@ describe('runPassthroughSession', () => {
     }
   });
 
-  it('forwards the local terminal size to the broker on attach', async () => {
+  it('reserves the final local row when sizing the agent PTY on attach', async () => {
     const { deps, sockets, signals, fetchLog } = createHarness({
       terminalSize: { rows: 60, cols: 200 },
     });
@@ -732,10 +883,158 @@ describe('runPassthroughSession', () => {
 
     const resizeCalls = fetchLog.filter((c) => c.method === 'POST' && c.url.includes('/resize/'));
     expect(resizeCalls).toHaveLength(1);
-    expect(resizeCalls[0].body).toEqual({ rows: 60, cols: 200 });
+    const body = resizeCalls[0].body as { rows: number; cols: number; session_id?: string };
+    expect({ rows: body.rows, cols: body.cols }).toEqual({ rows: 59, cols: 199 });
+    // The on-attach sync carries a session id for the single-resizer policy.
+    expect(body.session_id).toEqual(expect.any(String));
 
     await signals.get('SIGINT')?.();
     await sessionPromise;
+  });
+
+  it('refreshes terminal size when it changes before the event socket opens', async () => {
+    const { deps, sockets, terminal, signals, fetchLog, writes } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    for (let i = 0; i < 10 && sockets.length === 0; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    terminal.setSize({ rows: 42, cols: 120 });
+    await openSocket(sockets);
+
+    const firstResize = fetchLog.find((call) => call.url.includes('/api/resize/'));
+    expect(firstResize?.body).toMatchObject({ rows: 41, cols: 119 });
+    expect([...writes].reverse().find((write) => write.includes('[passthrough Alice'))).toContain(
+      '\x1b[42;1H'
+    );
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+  });
+
+  it('reapplies the latest size after a stale initial resize completes', async () => {
+    let resolveInitialResize: ((response: Response) => void) | undefined;
+    let resizeCalls = 0;
+    const { deps, sockets, terminal, signals, fetchLog, writes } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+      routes: {
+        'POST /resize': async () => {
+          resizeCalls += 1;
+          if (resizeCalls === 1) {
+            return new Promise<Response>((resolve) => {
+              resolveInitialResize = resolve;
+            });
+          }
+          return new Response(JSON.stringify({ applied: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        },
+      },
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    for (let i = 0; i < 10 && sockets.length === 0; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    sockets[0]?.emit('open');
+    await new Promise((resolve) => setImmediate(resolve));
+    terminal.setSize({ rows: 42, cols: 120 });
+    await new Promise((resolve) => setImmediate(resolve));
+    // Without this the test can pass on the SIGWINCH resize alone: if setup
+    // never reached the first `POST /resize`, the optional resolve below is a
+    // no-op and the stale path is never exercised (silent false green).
+    expect(resolveInitialResize).toBeTypeOf('function');
+    resolveInitialResize?.(
+      new Response(JSON.stringify({ applied: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+
+    const activeResizes = fetchLog.filter(
+      (call) => call.url.includes('/api/resize/') && !(call.body as { release?: boolean }).release
+    );
+    expect(activeResizes.at(-1)?.body).toMatchObject({ rows: 41, cols: 119 });
+    expect([...writes].reverse().find((write) => write.includes('[passthrough Alice'))).toContain(
+      '\x1b[42;1H'
+    );
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+  });
+
+  it('waits for the initial resize before releasing ownership on detach', async () => {
+    let finishInitialResize: ((response: Response) => void) | undefined;
+    const { deps, sockets, signals, fetchLog } = createHarness({
+      routes: {
+        'POST /resize': async (init) => {
+          const body = JSON.parse(String(init?.body ?? '{}')) as { release?: boolean };
+          if (body.release === true) {
+            return new Response(JSON.stringify({ released: true }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Promise<Response>((resolve) => {
+            finishInitialResize = resolve;
+          });
+        },
+      },
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    expect(finishInitialResize).toBeDefined();
+
+    await signals.get('SIGINT')?.();
+    expect(
+      fetchLog.some(
+        (call) => call.url.includes('/resize/') && (call.body as { release?: boolean }).release === true
+      )
+    ).toBe(false);
+
+    finishInitialResize?.(
+      new Response(JSON.stringify({ applied: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+    await sessionPromise;
+    for (let i = 0; i < 10; i++) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    const resizeBodies = fetchLog
+      .filter((call) => call.url.includes('/resize/'))
+      .map((call) => call.body as { release?: boolean });
+    expect(resizeBodies.map((body) => body.release === true)).toEqual([false, true]);
+  });
+
+  it('restores the reserved row and column on the release itself', async () => {
+    const { deps, sockets, signals, fetchLog } = createHarness({
+      terminalSize: { rows: 30, cols: 100 },
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    // The attach sizes the worker one row and column short to reserve the
+    // status line.
+    const attachResize = fetchLog.find((call) => call.method === 'POST' && call.url.includes('/resize/'));
+    expect(attachResize?.body).toMatchObject({ rows: 29, cols: 99 });
+
+    await signals.get('SIGINT')?.();
+    await sessionPromise;
+
+    // Detach hands the reserved row and column back on the release request, so
+    // a later read-only `view` session doesn't inherit a short PTY. Doing it on
+    // the release keeps it atomic: a separate resize could land afterwards and
+    // re-claim ownership (#1247).
+    const releaseCalls = fetchLog.filter(
+      (call) => call.url.includes('/resize/') && (call.body as { release?: boolean }).release === true
+    );
+    expect(releaseCalls).toHaveLength(1);
+    expect(releaseCalls[0]?.body).toMatchObject({ rows: 30, cols: 100 });
   });
 
   // ---- predictive-echo wiring ----
@@ -817,16 +1116,69 @@ describe('runPassthroughSession', () => {
   // ---- status line boundary-hold (item 4) ----
 
   it('holds the status repaint while a worker chunk ends mid escape sequence', async () => {
-    const { deps, sockets, writes, stdin } = createHarness();
+    const { deps, sockets, writes, stdin, terminal } = createHarness();
     const sessionPromise = runPassthroughSession('Alice', {}, deps);
     const socket = await openSocket(sockets);
 
     const paintsBefore = writes.filter((w) => w.includes('passthrough Alice')).length;
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'data\x1b[' }));
+    const writesBeforeResize = writes.length;
+    // A local resize requests a status repaint, but it must wait until the
+    // worker completes its split CSI sequence.
+    terminal.setSize({ rows: 31, cols: 100 });
     expect(writes.filter((w) => w.includes('passthrough Alice')).length).toBe(paintsBefore);
+    expect(writes).toHaveLength(writesBeforeResize);
     socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: '2J' }));
     expect(writes.filter((w) => w.includes('passthrough Alice')).length).toBeGreaterThan(paintsBefore);
 
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+  });
+
+  it.each([1, 2])('disables status painting when a large terminal shrinks to %i rows', async (rows) => {
+    const { deps, sockets, writes, stdin, terminal, fetchLog } = createHarness({
+      terminalSize: { rows: 10, cols: 80 },
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    const socket = await openSocket(sockets);
+    terminal.setSize({ rows, cols: 80 });
+    const paintsAfterShrink = writes.filter((write) => write.includes('[passthrough Alice')).length;
+
+    socket.emit('message', jsonMessage({ kind: 'worker_stream', name: 'Alice', chunk: 'only row' }));
+
+    expect(writes.filter((write) => write.includes('[passthrough Alice'))).toHaveLength(paintsAfterShrink);
+    expect(
+      fetchLog.some(
+        (call) =>
+          call.url.includes('/api/resize/') &&
+          (call.body as { rows?: number; cols?: number }).rows === rows &&
+          (call.body as { rows?: number; cols?: number }).cols === 80
+      )
+    ).toBe(true);
+    stdin.type(Buffer.from([0x03]));
+    await sessionPromise;
+    expect(writes).toContain(LOCAL_TERMINAL_RESET_SEQUENCE);
+  });
+
+  it.each([1, 2])('activates row reservation when a %i-row terminal grows', async (rows) => {
+    const { deps, sockets, writes, stdin, terminal, fetchLog } = createHarness({
+      terminalSize: { rows, cols: 80 },
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+    expect(writes.some((write) => write.includes('[passthrough Alice'))).toBe(false);
+
+    terminal.setSize({ rows: 10, cols: 80 });
+
+    expect(writes.some((write) => write.includes('[passthrough Alice'))).toBe(true);
+    expect(
+      fetchLog.some(
+        (call) =>
+          call.url.includes('/api/resize/') &&
+          (call.body as { rows?: number; cols?: number }).rows === 9 &&
+          (call.body as { rows?: number; cols?: number }).cols === 79
+      )
+    ).toBe(true);
     stdin.type(Buffer.from([0x03]));
     await sessionPromise;
   });
@@ -894,5 +1246,75 @@ describe('runPassthroughSession', () => {
       { mode: 'auto_inject' },
       { mode: 'manual_flush', expected_mode: 'auto_inject', expected_revision: '1' },
     ]);
+  });
+});
+
+/**
+ * Passthrough carries the same lost-input-stream defect drive did (#1419) and
+ * now shares its recovery (`attach-input-recovery.ts`). These pin the two
+ * halves of the contract that matter most; the drive suite covers the rest of
+ * the shared behaviour.
+ */
+describe('runPassthroughSession — lost PTY input stream', () => {
+  async function settleRecovery(turns = 60): Promise<void> {
+    for (let i = 0; i < turns; i++) await new Promise((r) => setTimeout(r, 1));
+  }
+
+  it('reports the loss exactly once however much input arrives', async () => {
+    const { deps, sockets, stdin, logs, errors, inputStreams } = createHarness({
+      reopenOpenErrors: [new Error('still down'), new Error('still down')],
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    // Mouse reports, not keystrokes — the amplifier that made this a flood.
+    for (let i = 0; i < 200; i++) stdin.type(Buffer.from(`\x1b[<35;${i};10M`));
+    await settleRecovery();
+
+    const lost = [...logs, ...errors]
+      .map((args) => String(args[0]))
+      .filter((line) => line.includes('input stream lost'));
+    expect(lost).toHaveLength(1);
+    expect(lost[0]).toContain('[passthrough]');
+    await sessionPromise;
+  });
+
+  it('exits non-zero with a readable message when every reopen fails', async () => {
+    const { deps, sockets, stdin, errors, inputStreams } = createHarness({
+      inputReopenMaxAttempts: 2,
+      reopenOpenErrors: [new Error('broker down'), new Error('broker down')],
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    stdin.type(Buffer.from('a'));
+
+    expect(await sessionPromise).toBe(1);
+    const exhausted = errors
+      .map((args) => String(args[0]))
+      .find((line) => line.includes('could not be reopened'));
+    expect(exhausted).toContain('Alice is still running');
+  });
+});
+
+describe('runPassthroughSession — Ctrl+C during an input-stream outage', () => {
+  it('still detaches when Ctrl+C shares a chunk with other input', async () => {
+    // The dead-stream branch used to `return` before the keybind actions ran,
+    // so a chunk like "ab\x03" was swallowed whole and the user could not
+    // escape a broken session. Fails if the session never exits.
+    const { deps, sockets, stdin, inputStreams } = createHarness({
+      inputReopenMaxAttempts: 4,
+      inputReopenBaseDelayMs: 50,
+      reopenOpenErrors: [new Error('x'), new Error('x'), new Error('x'), new Error('x')],
+    });
+    const sessionPromise = runPassthroughSession('Alice', {}, deps);
+    await openSocket(sockets);
+
+    inputStreams[0].killFromServer();
+    stdin.type(Buffer.from([0x61, 0x62, 0x03]));
+
+    expect(await sessionPromise).toBe(0);
   });
 });

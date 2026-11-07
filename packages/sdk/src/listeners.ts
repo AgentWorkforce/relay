@@ -11,7 +11,14 @@ import type {
   RelayMessagingEventsSurface,
   RelayReactionEvent,
 } from './messaging/index.js';
-import type { AgentSessionEvent, AgentSessionStatus } from './session/index.js';
+import type {
+  AgentActivity,
+  AgentEventType,
+  AgentSessionEvent,
+  AgentSessionStatus,
+  ObservabilityFidelity,
+  ObservabilitySource,
+} from './session/index.js';
 
 /** A session event tagged with the id of the agent that produced it. */
 export interface SessionListenerEnvelope {
@@ -51,6 +58,12 @@ export type RelayErrorHook = (error: unknown, context: RelayErrorContext) => voi
 /** Default reporting for handler errors when no `onError` hook is registered. */
 export function logRelayHandlerError(error: unknown, context: RelayErrorContext): void {
   const where = context.action ? `action "${context.action}"` : `"${context.selector ?? 'unknown'}"`;
+  // A named `operation` (e.g. `connect`) is a wiring/transport failure, not a
+  // user handler throwing — word it so the two are distinguishable at a glance.
+  if (context.operation) {
+    console.warn(`[agent-relay] ${context.source} ${context.operation} for ${where} failed:`, error);
+    return;
+  }
   console.warn(`[agent-relay] ${context.source} handler for ${where} threw:`, error);
 }
 
@@ -354,6 +367,27 @@ export class StatusPredicate implements ListenerPredicate<AgentSessionEvent> {
   }
 }
 
+type ActivityChangedEvent = Extract<AgentSessionEvent, { type: 'activity.changed' }>;
+
+export class ActivityPredicate implements ListenerPredicate<ActivityChangedEvent> {
+  constructor(
+    private readonly agentId: string,
+    private readonly activity: AgentActivity
+  ) {}
+
+  subscribe(context: ListenerContext, handler: ListenerHandler<ActivityChangedEvent>): () => void {
+    const report = makeReporter(context, {
+      source: 'listener',
+      selector: `agent.activity.${this.activity}`,
+    });
+    return context.onSessionEvent(({ agentId, event }) => {
+      if (agentId !== this.agentId) return;
+      if (event.type !== 'activity.changed' || event.activity !== this.activity) return;
+      runHandler(handler, event, report);
+    });
+  }
+}
+
 type ToolCalledEvent = Extract<AgentSessionEvent, { type: 'tool.called' }>;
 
 export class ToolCalledPredicate implements ListenerPredicate<ToolCalledEvent> {
@@ -384,6 +418,10 @@ export interface AgentStatusBuilders {
   becomes(status: AgentSessionStatus): StatusPredicate;
 }
 
+export interface AgentActivityBuilders {
+  becomes(activity: AgentActivity): ActivityPredicate;
+}
+
 export interface AgentToolBuilders {
   called(tool: string): ToolCalledPredicate;
 }
@@ -398,6 +436,7 @@ export interface RelayAgentHandle {
   handle: string;
   token?: string;
   status: AgentStatusBuilders;
+  activity: AgentActivityBuilders;
   tools: AgentToolBuilders;
 }
 
@@ -421,11 +460,7 @@ export interface RelayEventEnvelope {
 }
 
 export type RelayMessageEventType =
-  | 'message.created'
-  | 'message.updated'
-  | 'thread.reply'
-  | 'dm.received'
-  | 'group_dm.received';
+  'message.created' | 'message.updated' | 'thread.reply' | 'dm.received' | 'group_dm.received';
 
 export interface RelayMessageEvent<TType extends RelayMessageEventType = RelayMessageEventType> {
   type: TType;
@@ -474,11 +509,32 @@ export interface RelayAgentStatusEvent {
   reason?: string;
 }
 
-export interface RelaySessionEvent {
-  type: string;
+export interface RelayAgentActivityEvent {
+  type: 'agent.activity.changed';
   agentId: string;
-  event: AgentSessionEvent;
+  activity: AgentActivity;
+  previousActivity: AgentActivity;
+  reason: string;
+  turnId?: string;
+  sequence: number;
+  timestamp: Date | string;
+  source: ObservabilitySource;
+  fidelity: ObservabilityFidelity;
+  tool?: { callId: string; name?: string };
+  approval?: { approvalId: string; callId?: string };
 }
+
+export interface RelaySessionEvent<TType extends AgentSessionEvent['type'] = AgentSessionEvent['type']> {
+  type: TType;
+  agentId: string;
+  event: Extract<AgentSessionEvent, { type: TType }>;
+}
+
+export type CanonicalSessionSelector = AgentEventType;
+
+export type RelayCanonicalSessionEventMap = {
+  [TType in CanonicalSessionSelector]: RelaySessionEvent<TType>;
+};
 
 /** The discriminated event object delivered to every `addListener` handler. */
 export type RelayEvent =
@@ -487,6 +543,7 @@ export type RelayEvent =
   | RelayMessageReactedEvent
   | RelayActionEvent
   | RelayAgentStatusEvent
+  | RelayAgentActivityEvent
   | RelaySessionEvent;
 
 /**
@@ -494,7 +551,7 @@ export type RelayEvent =
  * Wildcard selectors (`'*'`, `'message.*'`) and arbitrary strings keep the
  * full {@link RelayEvent} union.
  */
-export interface RelayEventMap {
+export interface RelayEventMap extends RelayCanonicalSessionEventMap {
   'message.created': RelayMessageEvent<'message.created'>;
   'message.updated': RelayMessageEvent<'message.updated'>;
   'thread.reply': RelayMessageEvent<'thread.reply'>;
@@ -512,6 +569,7 @@ export interface RelayEventMap {
   'agent.status.blocked': RelayAgentStatusEvent;
   'agent.status.waiting': RelayAgentStatusEvent;
   'agent.status.offline': RelayAgentStatusEvent;
+  'agent.activity.changed': RelayAgentActivityEvent;
 }
 
 const PUBLIC_MESSAGE_TYPE: Partial<Record<RelayMessagingEvent['type'], RelayMessageEvent['type']>> = {
@@ -581,6 +639,23 @@ function toPublicSessionEvent(agentId: string, event: AgentSessionEvent): RelayE
       ...('reason' in event && event.reason ? { reason: event.reason } : {}),
     };
   }
+  if (event.type === 'activity.changed') {
+    const { observability } = event;
+    return {
+      type: 'agent.activity.changed',
+      agentId,
+      activity: event.activity,
+      previousActivity: event.previousActivity,
+      reason: event.reason,
+      ...(observability.turnId ? { turnId: observability.turnId } : {}),
+      sequence: observability.sequence,
+      timestamp: observability.timestamp,
+      source: observability.source,
+      fidelity: observability.fidelity,
+      ...(event.tool ? { tool: event.tool } : {}),
+      ...(event.approval ? { approval: event.approval } : {}),
+    };
+  }
   return { type: event.type, agentId, event };
 }
 
@@ -648,12 +723,18 @@ export function createListenerHub(
   ): (() => void) => {
     // Open the event stream — `events.on(...)` only registers handlers; the
     // socket is opened by `events.connect()` (idempotent). Agent-scoped clients
-    // stream through their own connection; workspace-key clients stream all
-    // workspace-visible events through the workspace stream.
+    // stream through their own connection; the workspace-level hub streams
+    // through registered agent clients via the events fan-in. A connect
+    // failure must be surfaced, not swallowed: a listener attached to a
+    // stream that never opens receives nothing, silently.
     try {
       context.events.connect();
-    } catch {
-      // No stream available (no agent token and no workspace stream).
+    } catch (error) {
+      makeReporter(context, {
+        source: 'listener',
+        operation: 'connect',
+        selector: typeof selector === 'string' ? selector : 'predicate',
+      })(error);
     }
     if (typeof selector !== 'string') {
       return selector.subscribe(context, handler as ListenerHandler);
@@ -721,6 +802,9 @@ export function createAgentHandle(input: AgentHandleInput): RelayAgentHandle {
     token: input.token,
     status: {
       becomes: (status) => new StatusPredicate(input.id, status),
+    },
+    activity: {
+      becomes: (activity) => new ActivityPredicate(input.id, activity),
     },
     tools: {
       called: (tool) => new ToolCalledPredicate(input.id, tool),

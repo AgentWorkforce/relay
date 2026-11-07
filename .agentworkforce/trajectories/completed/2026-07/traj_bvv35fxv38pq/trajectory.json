@@ -1,0 +1,53 @@
+{
+  "id": "traj_bvv35fxv38pq",
+  "version": 1,
+  "task": {
+    "title": "Map AI SDK harness lifecycle events to Relaycast activity"
+  },
+  "status": "completed",
+  "startedAt": "2026-07-16T01:42:12.046Z",
+  "completedAt": "2026-07-16T01:42:12.938Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-07-16T01:42:12.512Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_z74mjfi7dow0",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-07-16T01:42:12.512Z",
+      "endedAt": "2026-07-16T01:42:12.938Z",
+      "events": [
+        {
+          "ts": 1784166132513,
+          "type": "decision",
+          "content": "Expose derived agent activity separately from durable session status: Expose derived agent activity separately from durable session status",
+          "raw": {
+            "question": "Expose derived agent activity separately from durable session status",
+            "chosen": "Expose derived agent activity separately from durable session status",
+            "alternatives": [],
+            "reasoning": "HarnessV1 provides structured turn events sufficient for thinking, typing, tool use, approval waiting, idle, starting, and error. These high-frequency activities should be reduced from events and published with reasons, while Relay's durable active/idle/blocked/offline status remains stable."
+          },
+          "significance": "high"
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Mapped HarnessV1 stream and lifecycle signals to a reliable Relaycast activity state machine.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [],
+  "filesChanged": [],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "765e42535063b9d61262a537b1fd364d3e965000",
+    "endRef": "765e42535063b9d61262a537b1fd364d3e965000"
+  }
+}

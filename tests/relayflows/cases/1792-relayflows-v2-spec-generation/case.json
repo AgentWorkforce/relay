@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1792-relayflows-v2-spec-generation",
+  "kind": "feature",
+  "title": "Generate runnable relayflows v2 specs whose every command parses",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1792-relayflows-v2-spec-generation/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 600,
+  "expected": {
+    "base": {
+      "outcome": "absent",
+      "signature": "relayflows_v2_specs_not_generatable"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "relayflows_v2_specs_generate_and_parse"
+    }
+  }
+}
