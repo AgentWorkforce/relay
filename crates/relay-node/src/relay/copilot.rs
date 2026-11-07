@@ -9,6 +9,7 @@ pub use settings::CopilotSettings;
 mod sessions;
 pub use sessions::{discover, hook_answer, session};
 mod receipts;
+pub(crate) mod stop_wait;
 pub use receipts::{context_accepted, final_answer};
 mod delivery;
 pub use delivery::send;
