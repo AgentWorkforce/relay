@@ -26,10 +26,18 @@ complete closed response matrix, and errors are never converted to bug data.
 The wrapper supplies all standard proof variables. For a local run, set those
 variables to the exact base/head checkouts and commit IDs. An optional
 `RELAY_PR_PROOF_CARGO_TARGET_DIR` lets the two local builds reuse one dedicated
-Cargo target directory. Without it, all build output and consumer storage stay
+Cargo target directory outside both the target and harness checkouts. The runner resolves existing and dangling symlink ancestors before creating scratch/build output, refusing a destination inside either checkout. Without it, all build output and consumer storage stay
 in one temporary directory that the runner removes. Both child duration and
-output are bounded; the runner verifies checkout identities before and after.
+output are bounded through the trusted `scripts/pr-proof/process-runner.mjs` process-tree runner, so Cargo/compiler descendants are terminated on timeout. The runner verifies checkout identities and rejects dirty consumed target crate or head-harness inputs before and after compilation/runtime. Tracked, staged, untracked and ignored source additions are checked; unrelated wrapper staging of `.relayflow/pr-proof-input.json` is allowed. The result path also stays outside both checkouts.
 
 This proves the public routing fix. It does not claim that private account
 attestation, hosted MCP delivery, Copilot wake or session upload has completed
 end to end.
+
+Run the guard regressions without building the production fixture:
+
+```sh
+node --test tests/relayflows/cases/2100-copilot-native-mcp-route/guards.test.mjs
+```
+
+These test output-path refusal before writes/Cargo, source integrity in both phases, sanitized child environment and timeout cleanup of a parent/compiler-shaped process tree. The actual-runner negative tests use a mock compiler only to reach the post-runtime refusal; they must never publish a result receipt and are not routing proof. The accepted base/head observations still require the real Rust consumer above.

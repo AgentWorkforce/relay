@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { copyFile, mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertProofInputs, childEnv, externalPath, run } from './guards.mjs';
 
 const CASE_ID = '2100-copilot-native-mcp-route';
 const caseDir = path.dirname(fileURLToPath(import.meta.url));
@@ -11,17 +11,20 @@ const arm = required('RELAY_PR_PROOF_ARM');
 assert(['base', 'head'].includes(arm), 'Unknown proof arm.');
 const target = await realpath(required('RELAY_PR_PROOF_TARGET_DIR'));
 const harness = await realpath(required('RELAY_PR_PROOF_HARNESS_DIR'));
-const resultPath = path.resolve(required('RELAY_PR_PROOF_RESULT_PATH'));
+const resultPath = await externalPath(required('RELAY_PR_PROOF_RESULT_PATH'), [target, harness], 'Result');
 const baseSha = sha('RELAY_PR_PROOF_BASE_SHA');
 const headSha = sha('RELAY_PR_PROOF_HEAD_SHA');
 assert.notEqual(baseSha, headSha, 'Base and head must differ.');
-assert.equal(gitSha(target), arm === 'base' ? baseSha : headSha, 'Target SHA mismatch.');
-assert.equal(gitSha(harness), headSha, 'Harness SHA mismatch.');
+const inputs = { target, harness, targetSha: arm === 'base' ? baseSha : headSha, headSha };
+await assertProofInputs(inputs, 'before');
 assert.equal(
   await realpath(caseDir),
   path.join(harness, 'tests/relayflows/cases', CASE_ID),
   'Runner is not from the exact-head harness.'
 );
+const cache = process.env.RELAY_PR_PROOF_CARGO_TARGET_DIR
+  ? await externalPath(process.env.RELAY_PR_PROOF_CARGO_TARGET_DIR, [target, harness])
+  : null;
 const scratch = await mkdtemp(path.join(os.tmpdir(), 'relay-2100-proof-'));
 try {
   const consumer = path.join(scratch, 'consumer');
@@ -33,22 +36,20 @@ try {
     path.join(consumer, 'Cargo.toml'),
     `[package]\nname = "relay-pr-2100-consumer"\nversion = "0.0.0"\nedition = "2021"\n\n[workspace]\n\n[dependencies]\nagent-relay-node = { path = ${JSON.stringify(path.join(target, 'crates/relay-node'))}, default-features = false }\nfutures-util = "0.3"\nserde_json = "1"\ntempfile = "3"\ntokio = { version = "1", features = ["rt-multi-thread", "macros"] }\n\n[profile.dev]\ndebug = 0\nincremental = false\n`
   );
-  const targetDir = process.env.RELAY_PR_PROOF_CARGO_TARGET_DIR
-    ? path.resolve(process.env.RELAY_PR_PROOF_CARGO_TARGET_DIR)
-    : path.join(scratch, 'target');
+  const targetDir = cache ?? path.join(scratch, 'target');
   const env = childEnv();
   env.CARGO_INCREMENTAL = '0';
   env.CARGO_BUILD_JOBS = '2';
   env.AGENT_RELAY_PROBE_GIT_DIR = target;
-  run(
+  await run(
     'cargo',
     ['build', '--quiet', '--manifest-path', path.join(consumer, 'Cargo.toml'), '--target-dir', targetDir],
-    { cwd: consumer, env, timeout: 1_050_000 }
+    { cwd: consumer, env, timeoutMs: 1_050_000 }
   );
-  const output = run(
+  const output = await run(
     path.join(targetDir, 'debug', `relay-pr-2100-consumer${process.platform === 'win32' ? '.exe' : ''}`),
     [],
-    { cwd: scratch, env, timeout: 30_000 }
+    { cwd: scratch, env, timeoutMs: 30_000 }
   );
   const actual = JSON.parse(output.trim());
   const missing = { status: 404, code: 'not_found' };
@@ -82,8 +83,9 @@ try {
         };
   // Unexpected errors and absent behavior are infrastructure failures, never an expected-red substitute.
   assert.deepEqual(actual, expected, 'Production route observation did not match the complete arm contract.');
-  assert.equal(gitSha(target), arm === 'base' ? baseSha : headSha, 'Target moved during proof.');
-  assert.equal(gitSha(harness), headSha, 'Harness moved during proof.');
+  await assertProofInputs(inputs, 'after');
+  if (cache)
+    assert.equal(await externalPath(cache, [target, harness]), cache, 'Cargo target changed during proof.');
   await mkdir(path.dirname(resultPath), { recursive: true });
   await writeFile(
     resultPath,
@@ -107,44 +109,4 @@ function sha(name) {
   const value = required(name);
   assert(/^[0-9a-f]{40}$/.test(value), `Invalid ${name}.`);
   return value;
-}
-
-/** Bound process duration/output; a nonzero exit always fails the proof. */
-function run(command, args, options) {
-  const result = spawnSync(command, args, {
-    encoding: 'utf8',
-    maxBuffer: 2 * 1024 * 1024,
-    killSignal: 'SIGKILL',
-    ...options,
-  });
-  if (result.error || result.status !== 0) {
-    throw new Error(
-      `Proof subprocess failed (${command}, status ${result.status}, signal ${result.signal}): ${result.error?.message ?? ''}\n${result.stderr?.slice(-6000) ?? ''}`
-    );
-  }
-  return result.stdout;
-}
-
-/** Read one checkout's actual identity through Git, not caller assertions. */
-function gitSha(directory) {
-  return run('git', ['-C', directory, 'rev-parse', 'HEAD'], { timeout: 10_000, env: childEnv() }).trim();
-}
-
-/** Exclude provider credentials, loader injections and Relay overrides from child processes. */
-function childEnv() {
-  return Object.fromEntries(
-    [
-      'PATH',
-      'HOME',
-      'CARGO_HOME',
-      'RUSTUP_HOME',
-      'TMPDIR',
-      'SSL_CERT_FILE',
-      'SSL_CERT_DIR',
-      'SystemRoot',
-      'WINDIR',
-    ]
-      .filter((name) => process.env[name])
-      .map((name) => [name, process.env[name]])
-  );
 }
