@@ -331,8 +331,8 @@ impl SessionDirectory for LocalSessions {
             self.config.uid,
             thread,
             &path,
-            || {
-                codex::rollout::RolloutSummary::read(&path)
+            |verified_path| {
+                codex::rollout::RolloutSummary::read(verified_path)
                     .is_some_and(|summary| summary.active_turn.as_deref() == Some(turn))
             },
         )

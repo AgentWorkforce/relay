@@ -391,6 +391,20 @@ the bridge socket is for UIs, the relay-send socket for sessions
   session's identity, and a lock file's recorded pid counts only while that
   pid still holds the lock. A process inside no supported session is
   `not_a_relay_session`; another user's is `not_this_user`.
+- **Codex hooks.** PostToolUse and Stop bind a nonempty hook `turn_id` to
+  the requested thread's active turn in its locally resolved, kernel-held
+  rollout, alongside the trusted writer and captured file-birth checks.
+  A missing turn ID, unavailable birth-time evidence, or an unresolved rollout
+  leaves offers and registration guidance pending; the hook client returns
+  `{}`. Rollout lookup uses the core's configured `CODEX_HOME` (default
+  `~/.codex`) and `CODEX_SQLITE_HOME`, so a different home set only on a hook
+  process is not discovered by this route. SessionStart has no turn ID and
+  runs only when the trusted writer holds that thread alone. Multi-chat
+  app-server/IDE sessions and CLI roots with live subagents skip the SessionStart
+  preamble and early auto-activation; those actions are not replayed later.
+  A later verified PostToolUse can still supply registration guidance.
+  These are local context-binding checks, not authentication against a
+  malicious process running as the same user.
 - **Routes.** `POST /send` and `GET /agents` need the caller's registration;
   `GET /whoami`, `POST`/`DELETE /register` and the setup routes do not.
   Every route except `/whoami` counts against the session's 30 requests a

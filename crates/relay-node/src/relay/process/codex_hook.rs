@@ -130,7 +130,7 @@ pub(crate) fn with_codex_hook_rollout(
     uid: u32,
     thread: &str,
     rollout: &Path,
-    read: impl FnOnce() -> bool,
+    read: impl FnOnce(&Path) -> bool,
 ) -> bool {
     let Some(chain) = writer_chain(table, pid, uid, thread) else {
         return false;
@@ -148,7 +148,7 @@ pub(crate) fn with_codex_hook_rollout(
         return false;
     };
     holds_rollout(table, writer.pid, &path, birth)
-        && read()
+        && read(&path)
         && file_birth_ns(&path) == Some(birth)
         && holds_rollout(table, writer.pid, &path, birth)
         && has_codex_writer_for_caller(table, pid, uid, thread)

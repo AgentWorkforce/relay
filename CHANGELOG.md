@@ -27,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `agent-relay-node` can deliver messages to registered VS Code Copilot chats on macOS and resume the same chat while it waits.
 - Copilot messages with uncertain delivery stay pending confirmation and are never blindly submitted again.
 
+### Changed
+
+- Codex SessionStart hooks skip the Relay preamble and early auto-activation for multi-chat app-server/IDE sessions and CLI roots holding live subagent locks.
+
 ### Fixed
 
 - `agent-relay-node` refreshes the running shared daemon's already-approved Codex hooks at startup or when enabling hook delivery.
