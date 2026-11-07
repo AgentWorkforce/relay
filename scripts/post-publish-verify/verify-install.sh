@@ -245,68 +245,9 @@ else
 fi
 
 # ============================================
-# Test 4: broker binary resolution via harness driver resolver
+# Test 4: SDK exports
 # ============================================
-# The broker is delivered as a platform-specific optional dependency
-# (@agent-relay/broker-<platform>-<arch>). getBrokerBinaryPath() is the
-# canonical way harness owners locate it at runtime.
-log_header "Test 4: broker binary resolution"
-
-BROKER_TEST=$(node --input-type=module -e "
-import { getBrokerBinaryPath, getOptionalDepPackageName } from '@agent-relay/harness-driver/broker-path';
-import os from 'node:os';
-import path from 'node:path';
-import { accessSync, constants } from 'node:fs';
-import { execFileSync } from 'node:child_process';
-try {
-    const expected = getOptionalDepPackageName();
-    const p = getBrokerBinaryPath();
-    console.log('expected:', expected);
-    console.log('resolved:', p);
-    if (!p) { console.log('BROKER_FAIL: resolver returned null'); process.exit(0); }
-    // npm installs resolve through the optional-dep package until the CLI's
-    // first run copies the broker into the install root's bin dir.
-    // Accept the install-root bin dir the resolver itself uses (honours
-    // AGENT_RELAY_INSTALL_DIR / AGENT_RELAY_HOME); mirror its rule for
-    // releases published before install-paths existed.
-    let canonicalBinDir;
-    try {
-      const { getRelayBinDir } = await import('@agent-relay/harness-driver/install-paths');
-      canonicalBinDir = getRelayBinDir();
-    } catch {
-      const root = (process.env.AGENT_RELAY_INSTALL_DIR || '').trim() || (process.env.AGENT_RELAY_HOME || '').trim();
-      canonicalBinDir = path.join(root ? path.resolve(root) : path.join(os.homedir(), '.agentworkforce', 'relay'), 'bin');
-    }
-    const canonical = path.join(canonicalBinDir, path.basename(p));
-    if (!p.replace(/\\\\/g, '/').includes(expected) && p !== canonical) {
-        console.log('BROKER_FAIL: neither via optional-dep package nor the canonical bin dir');
-        process.exit(0);
-    }
-    accessSync(p, constants.X_OK);
-    const out = execFileSync(p, ['--help'], { encoding: 'utf8' });
-    if (!out.includes('agent-relay-broker')) {
-        console.log('BROKER_FAIL: --help output missing agent-relay-broker');
-        process.exit(0);
-    }
-    console.log('BROKER_OK');
-} catch (e) {
-    console.log('BROKER_FAIL:', e && e.message ? e.message : String(e));
-}
-" 2>&1) || true
-
-log_info "Broker resolution output:"
-echo "$BROKER_TEST"
-
-if echo "$BROKER_TEST" | grep -q "BROKER_OK"; then
-    record_pass "broker binary resolves via optional-dep package and --help works"
-else
-    record_fail "broker binary resolution failed"
-fi
-
-# ============================================
-# Test 5: SDK exports
-# ============================================
-log_header "Test 5: SDK exports"
+log_header "Test 4: SDK exports"
 
 log_info "Testing if SDK exports are accessible..."
 SDK_TEST=$(node -e "
@@ -335,9 +276,9 @@ else
 fi
 
 # ============================================
-# Test 6: @agent-relay/utils resolution (regression guard for bundledDependencies)
+# Test 5: @agent-relay/utils resolution (regression guard for bundledDependencies)
 # ============================================
-log_header "Test 6: @agent-relay/utils resolution"
+log_header "Test 5: @agent-relay/utils resolution"
 
 log_info "Verifying @agent-relay/utils resolves from installed agent-relay..."
 UTILS_RESOLUTION=$(node -e "

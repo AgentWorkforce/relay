@@ -11,7 +11,7 @@ import {
   type CoreStatus,
 } from './relay-node.js';
 import { originBindingsPath } from './relaycast-origin-binding.js';
-import { isUsableBinary } from '@agent-relay/harness-driver/install-paths';
+import { isUsableBinary } from './install-paths.js';
 
 function subdirectories(dir: string): string[] {
   try {

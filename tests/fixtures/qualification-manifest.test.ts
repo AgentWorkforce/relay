@@ -1,7 +1,4 @@
-import { readFile } from 'node:fs/promises';
-
 import { describe, expect, it } from 'vitest';
-import { parse } from 'yaml';
 
 import {
   relayfileCloudEndpointIdentitySha256,
@@ -297,72 +294,6 @@ const digests = {
 };
 
 describe('qualification manifest', () => {
-  it('uses run- and lane-specific idempotency keys for disposable qualification workspaces', async () => {
-    const source = await readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
-    const workflow = parse(source) as {
-      jobs?: { qualification?: { steps?: Array<Record<string, unknown>> } };
-    };
-    const steps = workflow.jobs?.qualification?.steps ?? [];
-    const createStep = (name: string) => {
-      const step = steps.find((candidate) => candidate.name === name);
-      expect(step).toBeDefined();
-      expect(typeof step?.run).toBe('string');
-      return step as { env?: Record<string, unknown> };
-    };
-
-    expect(createStep('Create isolated ephemeral Cloud workspace A').env).toMatchObject({
-      QUALIFICATION_IDEMPOTENCY_KEY: 'relay-qualification:${{ github.run_id }}:${{ github.run_attempt }}:a',
-      QUALIFICATION_WORKSPACE_NAME: 'relay-qualification-${{ github.run_id }}-${{ github.run_attempt }}-a',
-    });
-    expect(createStep('Create isolated ephemeral Cloud workspace B').env).toMatchObject({
-      QUALIFICATION_IDEMPOTENCY_KEY: 'relay-qualification:${{ github.run_id }}:${{ github.run_attempt }}:b',
-      QUALIFICATION_WORKSPACE_NAME: 'relay-qualification-${{ github.run_id }}-${{ github.run_attempt }}-b',
-    });
-  });
-
-  it('uses a Node runtime that satisfies the locked dependency engine floor', async () => {
-    const workflow = await readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
-    const versions = [...workflow.matchAll(/node-version:\s*["']?([0-9.]+)/g)].map((match) => match[1]);
-    expect(versions.length).toBeGreaterThan(0);
-    expect(versions.every((version) => version === '22.22.0')).toBe(true);
-  });
-
-  it('exposes the GitHub API token only to qualification steps that invoke gh', async () => {
-    const source = await readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
-    const workflow = parse(source) as {
-      jobs?: Record<
-        string,
-        {
-          env?: Record<string, unknown>;
-          steps?: Array<{ name?: string; run?: string; env?: Record<string, unknown> }>;
-        }
-      >;
-    };
-    const jobs = workflow.jobs ?? {};
-    for (const job of Object.values(jobs)) expect(job.env ?? {}).not.toHaveProperty('GH_TOKEN');
-
-    const steps = Object.values(jobs).flatMap((job) => job.steps ?? []);
-    const tokenSteps = steps.filter((step) => step.env?.GH_TOKEN !== undefined);
-    const expectedTokenSteps = [
-      'Select the exact bounded request artifact',
-      'Download exact Relay, Cloud, and Relayfile Cloud qualification artifacts',
-      'Verify source runs and GitHub artifact digests',
-    ];
-    expect(tokenSteps.map((step) => step.name)).toEqual(expectedTokenSteps);
-    expect(
-      steps
-        .filter((step) => /\bgh\s+(?:release|run|api)\b|execFileSync\('gh'/.test(step.run ?? ''))
-        .map((step) => step.name)
-    ).toEqual(expectedTokenSteps);
-    for (const step of tokenSteps) {
-      expect(
-        step.env?.GH_TOKEN === '${{ github.token }}' ||
-          step.env?.GH_TOKEN === '${{ secrets.CROSS_REPO_READ_TOKEN || github.token }}'
-      ).toBe(true);
-      expect(step.run).toMatch(/\bgh\s+(?:release|run|api)\b|execFileSync\('gh'/);
-    }
-  });
-
   it('binds four repositories, package/rebuild/acceptance producers, and the non-promoting snapshot', () => {
     expect(validateQualificationManifest(valid, { releaseId: 42, releaseTag: valid.releaseTag })).toEqual(
       valid

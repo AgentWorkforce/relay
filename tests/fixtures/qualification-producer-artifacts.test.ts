@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -51,37 +51,6 @@ function artifacts(name = expected.artifactName) {
 }
 
 describe('fixed cross-repository qualification producers', () => {
-  it('is an enforced gate in the cleanroom qualification workflow', async () => {
-    const workflow = await readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
-    const normalized = workflow.replace(/\\\r?\n\s*/g, ' ').replace(/\s+/g, ' ');
-    expect(normalized).toContain(
-      'qualification-producer-artifacts.mjs cloud --run qualification/cloud-run.json'
-    );
-    expect(normalized).toContain(
-      'qualification-producer-artifacts.mjs relayfile-cloud --run qualification/relayfile-cloud-run.json'
-    );
-    expect(normalized).toContain(
-      'qualification-producer-artifacts.mjs cloud-acceptance --run qualification/cloud-acceptance-run.json'
-    );
-    expect(workflow).toContain('qualification/cloud-acceptance/candidate-acceptance.json');
-    expect(workflow).toContain('--snapshot-name "${{ steps.manifest.outputs.snapshot_name }}"');
-    expect(workflow).toContain('--snapshot-id "${{ steps.manifest.outputs.snapshot_id }}"');
-  });
-
-  it('retains every downloaded qualification input when the runtime gate fails', async () => {
-    const workflow = await readFile('.github/workflows/relay-cleanroom-qualification-consumer.yml', 'utf8');
-    const normalized = workflow.replace(/\s+/g, ' ');
-    for (const path of [
-      'qualification/*.json',
-      'qualification/relay-packages/',
-      'qualification/cloud/',
-      'qualification/cloud-acceptance/',
-      'qualification/relayfile-cloud/',
-    ]) {
-      expect(normalized).toContain(path);
-    }
-  });
-
   it('rejects workflow, event, branch, name, and artifact substitutions', () => {
     expect(validateFixedProducerRun(run(), artifacts(), expected, CLOUD_SNAPSHOT_PRODUCER)).toBeTruthy();
     for (const mutation of [

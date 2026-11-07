@@ -16,7 +16,7 @@
 import os from 'node:os';
 import path from 'node:path';
 
-import { RELAY_INSTALL_DIR_ENV, getRelayInstallDir } from '@agent-relay/harness-driver/install-paths';
+import { RELAY_INSTALL_DIR_ENV, getRelayInstallDir } from './install-paths.js';
 
 import type { CoreDependencies } from '../commands/core.js';
 import { isBundledBunEntrypointPath } from './agent-relay-mcp-command.js';
@@ -174,16 +174,17 @@ async function reportedVersion(deps: UpdateDeps, file: string, args: string[]): 
 
 /**
  * Standalone update: run the release's own install.sh, pinned to `version`,
- * against the install root of the running binary. install.sh downloads the CLI
- * and broker, checks them against the SHA-256 digests GitHub publishes, smoke
- * tests them on temp files and swaps both in with renames as one transaction
- * (rolled back together on failure); relaycast-engine is installed from its
- * pinned, `.sha256`-verified release the same way. Afterwards the binaries in
- * the install root must report `version`.
+ * against the install root of the running binary. install.sh downloads the CLI,
+ * checks it against the SHA-256 digest GitHub publishes, smoke tests it on a
+ * temp file and swaps it in with a rename (rolled back on failure);
+ * relaycast-engine is installed from its pinned, `.sha256`-verified release the
+ * same way. Afterwards the CLI in the install root must report `version`. A
+ * broker binary an older release left in the install root is left alone and
+ * not checked.
  * @param deps - Update dependencies
  * @param method - Detected standalone install
  * @param version - Version to install
- * @throws UpdateError when the installer fails or the binaries do not report `version`
+ * @throws UpdateError when the installer fails or the CLI does not report `version`
  */
 export async function updateStandaloneInstall(
   deps: UpdateDeps,
@@ -232,7 +233,7 @@ export async function updateStandaloneInstall(
   }
   if (exitCode !== 0) {
     throw new UpdateError(
-      `the installer exited with status ${exitCode} (see its output above); check \`agent-relay --version\` and \`agent-relay-broker --version\` before retrying`
+      `the installer exited with status ${exitCode} (see its output above); check \`agent-relay --version\` before retrying`
     );
   }
 
@@ -242,27 +243,6 @@ export async function updateStandaloneInstall(
       `the installer finished, but ${method.binaryPath} reports ${cliVersion ?? 'no version'} instead of ${version}`
     );
   }
-  const broker = await standaloneBrokerVersion(deps, method);
-  if (broker && broker.version !== version) {
-    throw new UpdateError(
-      `the CLI is now ${version}, but the broker at ${broker.path} reports ${broker.version ?? 'no version'}; re-run \`agent-relay update\` to repair it`
-    );
-  }
-}
-
-/**
- * Version of the broker beside a standalone CLI.
- * @param deps - Update dependencies
- * @param method - Detected standalone install
- * @returns The broker path and its reported version, or null when no broker is installed
- */
-export async function standaloneBrokerVersion(
-  deps: UpdateDeps,
-  method: Extract<InstallMethod, { kind: 'standalone' }>
-): Promise<{ path: string; version: string | null } | null> {
-  const brokerPath = path.join(method.installRoot, 'bin', 'agent-relay-broker');
-  if (!deps.fs.existsSync(brokerPath)) return null;
-  return { path: brokerPath, version: await reportedVersion(deps, brokerPath, []) };
 }
 
 /**
