@@ -5,7 +5,11 @@ All notable changes to Agent Relay will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased - Patch]
+## [Unreleased - Minor]
+
+### Added
+
+- New package `@agent-relay/core-bridge`: the Node client for the local Agent Relay core's bridge (connect, typed errors, events, and typed `spawn.*` helpers), extracted from the CLI. Replies over 16 MiB now close the connection and requests over 1 MiB are refused before they are sent.
 
 ### Changed
 

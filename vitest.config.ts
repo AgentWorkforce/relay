@@ -14,6 +14,7 @@ const workspacePackages = [
   'agent',
   'cloud',
   'config',
+  'core-bridge',
   'events',
   'gateway',
   'github-primitive',

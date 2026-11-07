@@ -15,10 +15,10 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import net from 'node:net';
 import path from 'node:path';
+
+import { tryConnectCore, type CoreClient } from '@agent-relay/core-bridge';
 
 import type { ToolId } from './agent-tools-mcp.js';
 import type { ClaudeFileState, OpenCodeState, PiState } from './init-leftovers.js';
@@ -26,13 +26,8 @@ import type { EnginePlatform } from './relaycast-engine-install.js';
 import { relaySkillRecordOf, type RelaySkillRecord } from './relay-skill.js';
 
 const RELEASE_BASE = 'https://github.com/AgentWorkforce/relay/releases/download';
-/** The bridge version this client speaks (`crates/relay-node/src/relay/protocol.rs`). */
-export const BRIDGE_VERSION = 2;
-/** Moves the core's bridge socket, for the core and its clients alike. */
-export const CORE_SOCKET_ENV = 'AGENT_RELAY_CORE_SOCKET';
 /** How long a started core gets to answer on its socket. */
 export const CORE_START_TIMEOUT_MS = 30_000;
-const CALL_TIMEOUT_MS = 15_000;
 
 /**
  * The release asset of the core for a platform, or undefined when none is published.
@@ -67,193 +62,16 @@ export function relayNodeAssetUrl(version: string, asset: string): string {
 }
 
 /**
- * The core's bridge socket, resolved as the core resolves it: an absolute
- * `AGENT_RELAY_CORE_SOCKET`, a relative one beside the default, else
- * `<home>/.agentworkforce/desktop/core.sock`.
- * @param env - Environment to read the override from
- * @param home - The user's home directory
- * @returns Absolute socket path
- */
-export function coreSocketPath(env: NodeJS.ProcessEnv, home: string): string {
-  const fallback = path.join(home, '.agentworkforce', 'desktop', 'core.sock');
-  const configured = env[CORE_SOCKET_ENV]?.trim();
-  if (!configured) return fallback;
-  return path.isAbsolute(configured) ? configured : path.join(path.dirname(fallback), configured);
-}
-
-/**
- * The Windows named pipe the core serves for a socket path
- * (`relay::transport::pipe_name`).
- * @param socket - The socket path
- * @returns `\\.\pipe\agent-relay-<16 hex>`
- */
-export function pipeName(socket: string): string {
-  let key = socket.replace(/\//g, '\\').toLowerCase();
-  if (key.startsWith('\\\\?\\')) key = key.slice(4);
-  while (key.length > 1 && key.endsWith('\\')) key = key.slice(0, -1);
-  const hex = createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 16);
-  return `\\\\.\\pipe\\agent-relay-${hex}`;
-}
-
-/** A failure the core reported, with its message. */
-export class CoreCallError extends Error {}
-
-/** A connection to the core's bridge. */
-export interface CoreClient {
-  /** Calls one bridge method and returns its result. */
-  call<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
-  close(): void;
-}
-
-/**
- * Refuse a socket whose directory another user could have planted it in: it
- * must be this user's, and writable by no one else (the core creates it 0700).
- */
-function trustedSocketDirectory(socket: string): void {
-  if (process.platform === 'win32' || typeof process.getuid !== 'function') return;
-  const directory = path.dirname(socket);
-  const entry = fs.lstatSync(directory);
-  const target = fs.statSync(directory);
-  const uid = process.getuid();
-  if (entry.uid !== uid || target.uid !== uid || !target.isDirectory() || (target.mode & 0o022) !== 0) {
-    throw new Error(
-      `${directory} must be a directory only you can write to; refusing the core socket in it.`
-    );
-  }
-}
-
-/**
- * Refuse a socket the core did not make for this user: the core binds it
- * 0600 and owned by the user it runs as. Node cannot read a Unix socket's
- * peer credentials, so the socket file's owner and mode stand in for them
- * (only its owner, or root, can make or chmod it in a directory only this
- * user can write to).
- */
-function trustedSocketFile(socket: string): void {
-  if (process.platform === 'win32' || typeof process.getuid !== 'function') return;
-  const entry = fs.lstatSync(socket);
-  if (!entry.isSocket() || entry.uid !== process.getuid() || (entry.mode & 0o077) !== 0) {
-    throw new Error(
-      `${socket} must be a socket only you can use (owned by you, mode 0600); refusing to speak to it.`
-    );
-  }
-}
-
-/**
- * Connect to the core at `socket` and greet it. Resolves undefined when
- * nothing is listening there.
+ * Connect to the core at `socket` and greet it (`@agent-relay/core-bridge`).
+ * Resolves undefined when nothing is listening there; a refused or foreign
+ * socket throws.
  * @param socket - The core's bridge socket path
- * @param timeoutMs - Bound on connecting and on each call
+ * @param timeoutMs - Bound on connecting and on each call (default 15 s)
  * @returns A client, or undefined when no core answers
  */
-export async function connectCore(
-  socket: string,
-  timeoutMs = CALL_TIMEOUT_MS
-): Promise<CoreClient | undefined> {
-  if (process.platform !== 'win32') {
-    if (!fs.existsSync(socket)) return undefined;
-    trustedSocketDirectory(socket);
-    trustedSocketFile(socket);
-  }
-  const address = process.platform === 'win32' ? pipeName(socket) : socket;
-  const stream = await new Promise<net.Socket | undefined>((resolve) => {
-    const s = net.createConnection(address);
-    const timer = setTimeout(() => {
-      s.destroy();
-      resolve(undefined);
-    }, timeoutMs);
-    s.once('connect', () => {
-      clearTimeout(timer);
-      resolve(s);
-    });
-    s.once('error', () => {
-      clearTimeout(timer);
-      resolve(undefined);
-    });
-  });
-  if (!stream) return undefined;
-
-  let nextId = 1;
-  let buffer = '';
-  let closed = false;
-  const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
-  const failAll = (error: Error) => {
-    closed = true;
-    for (const waiter of pending.values()) waiter.reject(error);
-    pending.clear();
-  };
-  stream.setEncoding('utf8');
-  stream.on('data', (chunk: string) => {
-    buffer += chunk;
-    let newline = buffer.indexOf('\n');
-    while (newline >= 0) {
-      const line = buffer.slice(0, newline);
-      buffer = buffer.slice(newline + 1);
-      newline = buffer.indexOf('\n');
-      let message: { id?: unknown; result?: unknown; error?: { message?: string } };
-      try {
-        message = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      // Events arrive between responses; only ids answer calls.
-      if (typeof message.id !== 'number') continue;
-      const waiter = pending.get(message.id);
-      if (!waiter) continue;
-      pending.delete(message.id);
-      if (message.error)
-        waiter.reject(new CoreCallError(message.error.message ?? 'The core refused the request.'));
-      else waiter.resolve(message.result ?? null);
-    }
-  });
-  stream.on('error', (error) => failAll(error));
-  stream.on('close', () => failAll(new CoreCallError('The Agent Relay core closed the connection.')));
-
-  const client: CoreClient = {
-    call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
-      if (closed) return Promise.reject(new CoreCallError('The Agent Relay core closed the connection.'));
-      const id = nextId++;
-      return new Promise<T>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          pending.delete(id);
-          reject(new CoreCallError(`The Agent Relay core did not answer ${method} in time.`));
-        }, timeoutMs);
-        pending.set(id, {
-          resolve: (value) => {
-            clearTimeout(timer);
-            resolve(value as T);
-          },
-          reject: (error) => {
-            clearTimeout(timer);
-            reject(error);
-          },
-        });
-        stream.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
-      });
-    },
-    close() {
-      closed = true;
-      stream.destroy();
-    },
-  };
-  let greeting: { bridge_version?: unknown; pid?: unknown } | null;
-  try {
-    greeting = await client.call('hello', { bridge_version: BRIDGE_VERSION });
-  } catch (error) {
-    client.close();
-    throw new Error(
-      `A core answers at ${socket} but refused this client (${(error as Error).message}). ` +
-        'Update the Agent Relay desktop app or the relay CLI so both speak the same bridge.',
-      { cause: error }
-    );
-  }
-  // The core's greeting names its bridge and pid; anything else is not the core.
-  if (typeof greeting?.bridge_version !== 'number' || typeof greeting.pid !== 'number') {
-    client.close();
-    throw new Error(`What answers at ${socket} is not an Agent Relay core; refusing to speak to it.`);
-  }
-  return client;
-}
+export const connectCore = (socket: string, timeoutMs?: number): Promise<CoreClient | undefined> =>
+  tryConnectCore({ socket, connectTimeoutMs: timeoutMs, callTimeoutMs: timeoutMs });
+export { coreSocketPath, type CoreClient } from '@agent-relay/core-bridge';
 
 /** `agent-relay-node --version` prints exactly this: clap's `<name> <version>`. */
 const RELAY_NODE_VERSION_LINE = /^agent-relay-node (\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)$/;

@@ -611,6 +611,7 @@ jobs:
           # an exact version, so it must land before publish-main.
           - cli-surface
           - connect
+          - core-bridge
           - utils
           - sdk
           - integration-prompts
@@ -672,6 +673,7 @@ jobs:
           # cloud and config are published by publish-sdk-internal-deps, which
           # this job depends on; listing them again races that publish.
           - cli-surface
+          - core-bridge
           - sdk
           - session
           - utils
