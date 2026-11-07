@@ -31,6 +31,7 @@ import {
 import { promoteWorkspaceKeyEnvAlias } from '../lib/workspace-env.js';
 import { registerLocalAgentCommands } from './local-agent.js';
 import { registerLocalWorkflowCommands } from './local-workflow.js';
+import { describeError } from '../lib/describe-error.js';
 
 type ExitFn = (code: number) => never;
 
@@ -473,7 +474,7 @@ async function runNodeUp(options: NodeUpCommandOptions, deps: NodeCommandDepende
     } catch (err) {
       // A missing store resolves to undefined (fine); only an ambiguous
       // multi-match throws, which must surface as a clear CLI error.
-      deps.error(err instanceof Error ? err.message : String(err));
+      deps.error(describeError(err));
       deps.exit(1);
       return;
     }

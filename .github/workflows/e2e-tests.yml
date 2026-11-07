@@ -7,6 +7,7 @@ on:
       - 'packages/**'
       - '!packages/sdk-swift/**'
       - 'crates/**'
+      - '!crates/relay-node/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'scripts/e2e-test.sh'
@@ -18,6 +19,7 @@ on:
       - 'packages/**'
       - '!packages/sdk-swift/**'
       - 'crates/**'
+      - '!crates/relay-node/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'scripts/e2e-test.sh'
@@ -56,6 +58,14 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
+
+      # Runner images don't reliably ship Rust; without it the build skips the
+      # local broker and the macOS job finds no broker binary.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
 
       - name: Install dependencies
         run: npm ci

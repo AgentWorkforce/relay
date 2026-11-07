@@ -34,6 +34,8 @@ export type CloudSession = {
 
 export type CloudSessionOptions = {
   apiUrl?: string;
+  /** Cancellation/deadline shared with the operation acquiring this session. */
+  signal?: AbortSignal;
   force?: boolean;
   interactive?: boolean;
   /**
@@ -176,7 +178,7 @@ export type WorkspaceSecretRecord = {
   [key: string]: unknown;
 };
 
-export type WorkflowFileType = 'yaml' | 'ts' | 'py';
+export type WorkflowFileType = 'yaml' | 'ts';
 export type RelayflowVersion = 'v1' | 'v2';
 
 export type PathSubmission = {

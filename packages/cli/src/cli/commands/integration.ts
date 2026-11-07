@@ -30,6 +30,7 @@ import {
   type SdkCommandDeps,
 } from '../lib/sdk-command.js';
 import { connectProjectBrokerClient } from '../lib/project-broker-client.js';
+import { UNBOUND_CREDENTIAL_ORIGIN } from '../lib/relaycast-origin-binding.js';
 import type { SdkClientOptions } from '../lib/sdk-client.js';
 import {
   MIN_RELAYFILE_VERSION,
@@ -39,6 +40,7 @@ import {
   type RelayfileClientOptions,
 } from '@relayfile/client';
 import { resolveBaseUrl, resolveWorkspaceKey, resolveWorkspaceTransport } from '../lib/sdk-client.js';
+import { describeError } from '../lib/describe-error.js';
 
 // Re-export the version gate so existing tests importing it from this module
 // (and any callers) keep working after it moved to the published client package.
@@ -566,7 +568,7 @@ function resolveInboundTargetTransport(options: SdkClientOptions, callerOptions:
 }
 
 function resolveInboundTargetBaseUrl(selectedBaseUrl: string | undefined): string {
-  const baseUrl = selectedBaseUrl ?? 'https://cast.agentrelay.com';
+  const baseUrl = selectedBaseUrl ?? UNBOUND_CREDENTIAL_ORIGIN;
   const parsed = new URL(baseUrl);
   if (parsed.protocol !== 'https:') {
     throw new Error('Inbound relayfile target provisioning requires an https Relaycast base URL.');
@@ -1004,7 +1006,7 @@ function startLeaseRenewal(
       })
       .catch((err) => {
         if (stopped) return;
-        failed = err instanceof Error ? err.message : String(err);
+        failed = describeError(err);
         deps.error(
           'Warning: could not renew the lifecycle lease; aborting before any further external mutation.'
         );
@@ -1059,9 +1061,9 @@ async function tryRecordCleanup(
     return true;
   } catch (journalErr) {
     deps.error(
-      `Warning: could not clean up a ${describeCleanupKind(entry.kind)} for ${context} AND could not record it for retry (${
-        journalErr instanceof Error ? journalErr.message : String(journalErr)
-      }).`
+      `Warning: could not clean up a ${describeCleanupKind(entry.kind)} for ${context} AND could not record it for retry (${describeError(
+        journalErr
+      )}).`
     );
     return false;
   }

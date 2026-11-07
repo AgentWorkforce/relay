@@ -46,6 +46,7 @@ const expectedLeafCommands = [
   // fleet (serve is a hidden error stub; config/enable/disable/inherit are hidden no-ops)
   'fleet agent list',
   'fleet nodes list',
+  'fleet relayfile attach',
   'fleet release',
   'fleet spawn',
   'fleet spawn-status',
@@ -83,6 +84,7 @@ const expectedLeafCommands = [
   'cloud integration disconnect',
   // workspace
   'workspace create',
+  'init',
   'workspace active',
   'workspace list',
   'workspace set_key',

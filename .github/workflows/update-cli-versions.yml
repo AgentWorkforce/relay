@@ -73,7 +73,6 @@ jobs:
             ### Files Modified
             - `packages/utils/cli-registry.yaml` - Updated versions
             - `packages/config/src/cli-registry.generated.ts` - Regenerated
-            - `packages/sdk-py/agent_relay/models.py` - Regenerated
 
             ---
             *Automated by [update-cli-versions](.github/workflows/update-cli-versions.yml)*

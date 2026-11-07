@@ -37,6 +37,7 @@ export interface RosterAgent {
 }
 
 import type { RemoteLiveAgent } from '../lib/fleet-live-agents.js';
+import { describeError } from '../lib/describe-error.js';
 
 export type { RemoteLiveAgent, RemoteLiveAgentRead } from '../lib/fleet-live-agents.js';
 export { LIVE_AGENT_CAPABILITY_NAME, readRemoteLiveAgents } from '../lib/fleet-live-agents.js';
@@ -675,5 +676,5 @@ export async function readLocalBrokerMaps(client: HarnessDriverClient): Promise<
 }
 
 function errorMessage(reason: unknown): string {
-  return reason instanceof Error ? reason.message : String(reason);
+  return describeError(reason);
 }

@@ -14,8 +14,8 @@ use crate::{
         HeadlessHarnessConfig, HeadlessHarnessDriver, ProtocolEnvelope, RelayDelivery,
         ResolvedHarnessConfig, PROTOCOL_VERSION,
     },
-    relaycast::configure_agent_relay_mcp_with_result,
-    snippets::{is_muse_executable, muse_clean_home_dir},
+    relaycast::{configure_agent_relay_mcp_launch, McpLaunch},
+    snippets::{is_muse_executable, muse_clean_home_dir, remove_muse_session_credentials},
     supervisor::Supervisor,
     types::{AgentResultMcpConfig, CommitAttestation},
 };
@@ -646,16 +646,16 @@ impl WorkerRegistry {
         worker_relay_api_key: Option<&str>,
         skip_relay_prompt: bool,
         agent_result: Option<&AgentResultMcpConfig>,
-    ) -> Result<Vec<String>> {
+    ) -> Result<McpLaunch> {
         // `skip_relay_prompt` is an explicit opt-out: the caller does not want the
         // Agent Relay MCP server (messaging/channel/etc. tools) injected, e.g. to
         // save tokens. We honor that even when `agent_result` is configured —
         // `AGENT_RELAY_RESULT_*` env vars are still set on the worker process
         // below, so a separately-configured Agent Relay MCP can pick them up.
         if skip_relay_prompt || self.env_value("AGENT_RELAY_LOCAL_ONLY") == Some("1") {
-            return Ok(Vec::new());
+            return Ok(McpLaunch::default());
         }
-        configure_agent_relay_mcp_with_result(
+        configure_agent_relay_mcp_launch(
             cli_name,
             agent_name,
             self.env_value("RELAY_API_KEY"),
@@ -954,6 +954,9 @@ impl WorkerRegistry {
         let mut initial_harness_pid: Option<u32> = None;
         let mut direct_native_harness_sidecar = false;
         let mut initial_task_in_argv = false;
+        // Credentials the harness's MCP config references by name; set on
+        // the worker process below so they reach the harness environment.
+        let mut mcp_env: Vec<(String, String)> = Vec::new();
 
         match spec.harness_config.clone() {
             Some(ResolvedHarnessConfig::Pty(config)) => {
@@ -1105,7 +1108,10 @@ impl WorkerRegistry {
                     );
                 }
 
-                let mcp_args = self
+                let McpLaunch {
+                    args: mcp_args,
+                    env: launch_env,
+                } = self
                     .build_mcp_args(
                         &resolved_cli,
                         &spec.name,
@@ -1116,6 +1122,7 @@ impl WorkerRegistry {
                         agent_result.as_ref(),
                     )
                     .await?;
+                mcp_env = launch_env;
 
                 let model_flag = resolve_model_flag_for_cli(
                     &resolved_cli,
@@ -1365,7 +1372,10 @@ impl WorkerRegistry {
                         );
                     }
 
-                    let mcp_args = self
+                    let McpLaunch {
+                        args: mcp_args,
+                        env: launch_env,
+                    } = self
                         .build_mcp_args(
                             cli,
                             &spec.name,
@@ -1376,6 +1386,7 @@ impl WorkerRegistry {
                             agent_result.as_ref(),
                         )
                         .await?;
+                    mcp_env = launch_env;
 
                     let model_flag = resolve_model_flag_for_cli(
                         &resolved_cli,
@@ -1429,7 +1440,10 @@ impl WorkerRegistry {
                         spec.model = Some(model);
                     }
 
-                    let mcp_args = self
+                    let McpLaunch {
+                        args: mcp_args,
+                        env: launch_env,
+                    } = self
                         .build_mcp_args(
                             provider_cli,
                             &spec.name,
@@ -1440,6 +1454,7 @@ impl WorkerRegistry {
                             agent_result.as_ref(),
                         )
                         .await?;
+                    mcp_env = launch_env;
 
                     let model_arg = resolve_model_flag_for_cli(
                         provider_cli,
@@ -1617,6 +1632,9 @@ impl WorkerRegistry {
             for (key, value) in config.env_pairs() {
                 command.env(key, value);
             }
+        }
+        for (key, value) in &mcp_env {
+            command.env(key, value);
         }
         // Node identity belongs only to the broker and node-provider helpers.
         // Neither the broker's worker env nor per-spawn harness/result env may
@@ -1982,6 +2000,7 @@ impl WorkerRegistry {
         }
 
         let result = terminate_child(&mut handle.child, release_grace).await;
+        remove_session_credentials(&handle.spec);
         match &result {
             Ok(()) => tracing::info!(target = "broker::release", name = %name, "worker released"),
             Err(error) => {
@@ -2126,7 +2145,9 @@ impl WorkerRegistry {
                     generation,
                     "native worker exited before confirming delivery custody",
                 );
-                self.workers.remove(&name);
+                if let Some(handle) = self.workers.remove(&name) {
+                    remove_session_credentials(&handle.spec);
+                }
                 self.initial_tasks.remove(&name);
                 self.argv_initial_tasks.remove(&name);
                 exited.push((name, generation, None, None, reason));
@@ -2155,7 +2176,9 @@ impl WorkerRegistry {
                     generation,
                     "native worker exited before confirming delivery custody",
                 );
-                self.workers.remove(&name);
+                if let Some(handle) = self.workers.remove(&name) {
+                    remove_session_credentials(&handle.spec);
+                }
                 self.initial_tasks.remove(&name);
                 self.argv_initial_tasks.remove(&name);
                 exited.push((name, generation, code, signal, reason));
@@ -2174,7 +2197,9 @@ impl WorkerRegistry {
                     generation,
                     "native worker exited before confirming delivery custody",
                 );
-                self.workers.remove(&name);
+                if let Some(handle) = self.workers.remove(&name) {
+                    remove_session_credentials(&handle.spec);
+                }
                 self.initial_tasks.remove(&name);
                 self.argv_initial_tasks.remove(&name);
                 exited.push((name, generation, None, None, reason));
@@ -2557,6 +2582,27 @@ fn muse_config_home_for_worker(
         Path::new(cwd.unwrap_or(".")),
         agent_name,
     ))
+}
+
+/// Remove the per-session credential files a released or exited worker left
+/// outside its project: today the Relay MCP `settings.json` in a Muse
+/// worker's clean home. A restarted worker is re-provisioned at spawn.
+fn remove_session_credentials(spec: &AgentSpec) {
+    let command = match spec.harness_config.as_ref() {
+        Some(ResolvedHarnessConfig::Pty(config)) => Some(config.command.as_str()),
+        _ => spec.cli.as_deref(),
+    };
+    let Some(command) = command else {
+        return;
+    };
+    let Ok((resolved_cli, _)) = parse_cli_command(command) else {
+        return;
+    };
+    if is_muse_executable(&normalize_cli_name(&resolved_cli)) {
+        let clean_home =
+            muse_clean_home_dir(Path::new(spec.cwd.as_deref().unwrap_or(".")), &spec.name);
+        remove_muse_session_credentials(&clean_home, &spec.name);
+    }
 }
 
 fn ordered_pty_cli_args(

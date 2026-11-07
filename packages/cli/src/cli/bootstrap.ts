@@ -9,6 +9,7 @@ import { Command } from 'commander';
 import { config as dotenvConfig } from 'dotenv';
 
 import { checkForUpdatesInBackground } from '@agent-relay/utils';
+import { ensureCanonicalBroker } from '@agent-relay/harness-driver/broker-install';
 import { redactCredentialValues } from '@agent-relay/cloud';
 import {
   cloudIdentityEnv,
@@ -40,6 +41,7 @@ import { registerLocalAgentCommands } from './commands/local-agent.js';
 import { registerLocalWorkflowCommands } from './commands/local-workflow.js';
 import { registerCloudCommands } from './commands/cloud.js';
 import { registerWorkspaceCommands } from './commands/workspace.js';
+import { registerInitCommand } from './commands/init.js';
 import { registerObserverCommands } from './commands/observer.js';
 import { registerAgentCommands } from './commands/agent.js';
 import { registerChannelCommands } from './commands/channel.js';
@@ -417,6 +419,7 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerStatusCommand(program);
   registerSetupCommands(program);
   registerCloudCommands(program);
+  registerInitCommand(program, { cliVersion: VERSION });
   registerWorkspaceCommands(program);
   registerObserverCommands(program);
   registerAgentCommands(program);
@@ -444,6 +447,21 @@ export function createProgram(options: { name?: string } = {}): Command {
     });
 
   return program;
+}
+
+/**
+ * npm installs ship the broker inside node_modules. On first run, copy it into
+ * the canonical bin directory (~/.agentworkforce/relay/bin) so the CLI, the
+ * broker it launches and the desktop app share one binary. Done here rather
+ * than in a postinstall script because many users install with ignore-scripts.
+ * Best effort: a failure leaves the npm broker as the resolver's fallback.
+ */
+function convergeBrokerInstall(): void {
+  try {
+    ensureCanonicalBroker();
+  } catch {
+    // ensureCanonicalBroker never throws; this guards the import boundary.
+  }
 }
 
 function maybeRunUpdateCheck(version: string, argv: string[]): void {
@@ -484,6 +502,7 @@ function collectTopLevelVerbs(program: Command): Set<string> {
 export async function runCli(argv: string[] = process.argv): Promise<Command> {
   assertSupportedNodeVersion();
   ensureWebSocketGlobal();
+  convergeBrokerInstall();
   maybeRunUpdateCheck(VERSION, argv);
   const orchestratorHarness = propagateTelemetryContextToChildren();
 

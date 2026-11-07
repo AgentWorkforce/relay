@@ -15,6 +15,7 @@ const DAYTONA_PROVIDER_SANDBOX_ID_PATTERN =
  * not a caller-controlled SDK override.
  */
 export const CANONICAL_RELAYCAST_ORIGIN = 'https://cast.agentrelay.com';
+export const ARMADILLO_RELAYCAST_ORIGIN = 'https://armadillo.agentrelay.com';
 export const AGENT37_RELAYCAST_ORIGIN = 'https://agent37-cast.agentrelay.com';
 export const DEV_CLOUD_API_URL = 'https://dev.agentrelay.com/cloud';
 export const DEV_RELAYCAST_ORIGIN = 'https://dev-cast.agentrelay.com';
@@ -74,12 +75,7 @@ export type CloudRelayfileRepositoryMaterializeOptions = CloudFleetSandboxReques
 };
 
 export type CloudFleetSandboxProviderId =
-  | 'daytona'
-  | 'e2b'
-  | 'vercel'
-  | 'freestyle'
-  | 'agent37'
-  | 'microsandbox';
+  'daytona' | 'e2b' | 'vercel' | 'freestyle' | 'agent37' | 'microsandbox';
 
 /** Safe aggregate provider-capacity detail returned before allocation. */
 export type CloudFleetSandboxCapacityExhaustion = {
@@ -199,9 +195,7 @@ export type EnsureCloudFleetSandboxInput = {
 };
 
 export type CloudFleetSandboxWorkloadProfile =
-  | 'standard'
-  | 'long-running-agent'
-  | 'standard-long-running-agent';
+  'standard' | 'long-running-agent' | 'standard-long-running-agent';
 
 const CLOUD_FLEET_SANDBOX_PROVIDER_IDS: readonly CloudFleetSandboxProviderId[] = [
   'daytona',
@@ -283,9 +277,7 @@ export type CloudFleetSandboxProvisioningTimeout =
     });
 
 export type EnsureCloudFleetSandboxResult =
-  | CloudFleetSandboxReady
-  | CloudFleetSandboxReused
-  | CloudFleetSandboxProvisioningTimeout;
+  CloudFleetSandboxReady | CloudFleetSandboxReused | CloudFleetSandboxProvisioningTimeout;
 
 export type DeleteCloudFleetSandboxInput = {
   cloudWorkspaceId: string;
@@ -315,8 +307,10 @@ function isExactDevCloudApiUrl(apiUrl: string | undefined): boolean {
   return apiUrl === DEV_CLOUD_API_URL;
 }
 
-function canonicalRelaycastOrigin(apiUrl: string | undefined): string {
-  return isExactDevCloudApiUrl(apiUrl) ? DEV_RELAYCAST_ORIGIN : CANONICAL_RELAYCAST_ORIGIN;
+function canonicalRelaycastOrigins(apiUrl: string | undefined): string[] {
+  return isExactDevCloudApiUrl(apiUrl)
+    ? [DEV_RELAYCAST_ORIGIN]
+    : [CANONICAL_RELAYCAST_ORIGIN, ARMADILLO_RELAYCAST_ORIGIN];
 }
 
 function normalizeRelaycastOrigin(
@@ -357,15 +351,16 @@ export function normalizeRelaycastTarget(value: unknown, apiUrl?: string): Cloud
   if (route !== 'canonical' && route !== 'agent37-isolated') {
     throw new Error('Cloud fleet sandbox response has an unknown Relaycast route.');
   }
-  const expectedCanonicalOrigin = canonicalRelaycastOrigin(apiUrl);
+  const expectedCanonicalOrigins = canonicalRelaycastOrigins(apiUrl);
   const trustedOrigins = new Set([
     CANONICAL_RELAYCAST_ORIGIN,
+    ARMADILLO_RELAYCAST_ORIGIN,
     AGENT37_RELAYCAST_ORIGIN,
     ...(isExactDevCloudApiUrl(apiUrl) ? [DEV_RELAYCAST_ORIGIN] : []),
   ]);
   const baseUrl = normalizeRelaycastOrigin(value.baseUrl, 'relaycastTarget.baseUrl', trustedOrigins);
-  const expectedOrigin = route === 'canonical' ? expectedCanonicalOrigin : AGENT37_RELAYCAST_ORIGIN;
-  if (baseUrl !== expectedOrigin) {
+  const expectedOrigins = route === 'canonical' ? expectedCanonicalOrigins : [AGENT37_RELAYCAST_ORIGIN];
+  if (!expectedOrigins.includes(baseUrl)) {
     throw new Error('Cloud fleet sandbox response mapped Relaycast route to the wrong origin.');
   }
   const workspaceId = readString(value, 'workspaceId');
@@ -373,7 +368,7 @@ export function normalizeRelaycastTarget(value: unknown, apiUrl?: string): Cloud
     throw new Error('Cloud fleet sandbox response is missing relaycastTarget.workspaceId.');
   }
   const relaycastApiKey = readString(value, 'relaycastApiKey');
-  if (!relaycastApiKey || !/^rk_live_[A-Za-z0-9_-]+$/.test(relaycastApiKey)) {
+  if (!relaycastApiKey || !/^(rk_live_|ar_ws_)[A-Za-z0-9_-]+$/.test(relaycastApiKey)) {
     throw new Error('Cloud fleet sandbox response has an invalid Relaycast API key.');
   }
   return { route, baseUrl, workspaceId, relaycastApiKey };
@@ -411,7 +406,7 @@ function assertProviderRelaycastTarget(
     return;
   }
   if (providerId !== undefined && target) {
-    if (target.route !== 'canonical' || target.baseUrl !== canonicalRelaycastOrigin(apiUrl)) {
+    if (target.route !== 'canonical' || !canonicalRelaycastOrigins(apiUrl).includes(target.baseUrl)) {
       throw new Error(
         `Cloud fleet sandbox response mapped ${providerId} to a non-canonical Relaycast target.`
       );
@@ -1746,4 +1741,139 @@ export async function deleteCloudFleetSandbox(
   );
   const payload = await readJson(response);
   if (!response.ok) throw endpointError('delete the fleet sandbox', response, payload);
+}
+
+export type AttachCloudFleetSandboxRelayfileInput = {
+  cloudWorkspaceId: string;
+  sandboxId: string;
+  /** Optional exact context roots; the server chooses a separate mount directory. */
+  paths?: string[];
+};
+
+export type CloudFleetSandboxRelayfileAttachment = {
+  sandboxId: string;
+  relayWorkspaceId: string;
+  relayfileMounted: true;
+  relayfileMountPath: string;
+};
+
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end -= 1;
+  return value.slice(0, end);
+}
+
+function comparableApiUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${trimTrailingSlashes(url.pathname)}`;
+  } catch {
+    return trimTrailingSlashes(value.trim());
+  }
+}
+
+/** Bound session acquisition too, including filesystem and lock waits. */
+function awaitAttachmentSession(signal: AbortSignal, task: () => ReturnType<typeof ensureCloudSession>) {
+  signal.throwIfAborted();
+  return new Promise<Awaited<ReturnType<typeof ensureCloudSession>>>((resolve, reject) => {
+    const aborted = () => reject(signal.reason ?? new Error('Relayfile attachment aborted'));
+    signal.addEventListener('abort', aborted, { once: true });
+    Promise.resolve()
+      .then(task)
+      .then(resolve, reject)
+      .finally(() => signal.removeEventListener('abort', aborted));
+  });
+}
+
+/** Attach optional live context to an existing sandbox without allocating or dispatching. */
+export async function attachCloudFleetSandboxRelayfile(
+  input: AttachCloudFleetSandboxRelayfileInput,
+  options: CloudFleetSandboxRequestOptions = {}
+): Promise<CloudFleetSandboxRelayfileAttachment> {
+  const cloudWorkspaceId = input.cloudWorkspaceId.trim();
+  const sandboxId = input.sandboxId.trim();
+  if (!CLOUD_WORKSPACE_ID_PATTERN.test(cloudWorkspaceId) || !CLOUD_SANDBOX_ID_PATTERN.test(sandboxId)) {
+    throw new Error('A Cloud workspace UUID and sbx_<UUID> sandbox ID are required.');
+  }
+  const paths = input.paths?.map((path) =>
+    path
+      .trim()
+      .replace(/\/{2,}/g, '/')
+      .replace(/\/$/, '')
+  );
+  if (
+    paths &&
+    (paths.length === 0 ||
+      paths.length > 8 ||
+      paths.some(
+        (path) =>
+          path.length < 2 ||
+          path.length > 512 ||
+          !path.startsWith('/') ||
+          /[\0\r\n*]/.test(path) ||
+          path
+            .slice(1)
+            .split('/')
+            .some((part) => part === '.' || part === '..')
+      ))
+  ) {
+    throw new Error('Relayfile context paths must be absolute exact roots without wildcards or traversal.');
+  }
+  const signal = boundedSignal(options, DEFAULT_ENSURE_TIMEOUT_MS);
+  const session = await awaitAttachmentSession(signal, () =>
+    ensureCloudSession({
+      apiUrl: options.apiUrl || defaultApiUrl(),
+      interactive: false,
+      signal,
+    })
+  );
+  // A stored login stays authoritative on its own host; never attach to a
+  // different environment than the one the caller explicitly selected.
+  if (options.apiUrl && comparableApiUrl(session.auth.apiUrl) !== comparableApiUrl(options.apiUrl)) {
+    throw new Error(
+      `Cloud login is bound to ${comparableApiUrl(session.auth.apiUrl)}. Run \`agent-relay cloud login --api-url ${comparableApiUrl(
+        options.apiUrl
+      )} --force\` before attaching on this host.`
+    );
+  }
+  let activeAuth = session.auth;
+  for (;;) {
+    signal.throwIfAborted();
+    const fetched = await authorizedApiFetch(
+      activeAuth,
+      `/api/v1/workspaces/${encodeURIComponent(cloudWorkspaceId)}/sandboxes/${encodeURIComponent(sandboxId)}/relayfile-mount`,
+      { method: 'POST', signal, body: JSON.stringify(paths ? { paths: [...new Set(paths)] } : {}) },
+      { interactive: false }
+    );
+    activeAuth = fetched.auth;
+    const response = fetched.response;
+    const payload = await readJson(response);
+    if (!response.ok) throw endpointError('attach Relayfile context', response, payload);
+    if (response.status === 202) {
+      if (
+        !isObject(payload) ||
+        payload.sandboxId !== sandboxId ||
+        payload.relayfileMounted !== false ||
+        payload.state !== 'pending' ||
+        ![
+          'relayfile_mount_bootstrap',
+          'relayfile_mount_readiness_incomplete',
+          'relayfile_mount_readiness_timed_out',
+        ].includes(readString(payload, 'phase') ?? '')
+      ) {
+        throw new Error('Cloud did not confirm pending attachment to the requested sandbox.');
+      }
+      await waitForDelay(retryAfterDelayMs(response) ?? 5_000, signal);
+      continue;
+    }
+    if (!isObject(payload) || payload.sandboxId !== sandboxId || payload.relayfileMounted !== true) {
+      throw new Error('Cloud did not confirm Relayfile attachment to the requested sandbox.');
+    }
+    return {
+      sandboxId,
+      relayfileMounted: true,
+      relayWorkspaceId: requiredString(payload, 'relayWorkspaceId', 'Relayfile attachment'),
+      relayfileMountPath: requiredString(payload, 'relayfileMountPath', 'Relayfile attachment'),
+    };
+  }
 }

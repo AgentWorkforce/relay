@@ -55,7 +55,6 @@ const workspacePackages = [
   'fleet',
   'harness-driver',
   'harnesses',
-  'policy',
   'sdk',
   'session',
   'utils',

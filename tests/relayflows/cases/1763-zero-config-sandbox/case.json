@@ -2,7 +2,7 @@
   "version": 1,
   "id": "1763-zero-config-sandbox",
   "kind": "feature",
-  "title": "Materialize a live exact repository tree through Relayfile by default",
+  "title": "Materialize a live exact repository tree through Relayfile with --sandbox-relayfile",
   "runner": {
     "command": ["node", "tests/relayflows/cases/1763-zero-config-sandbox/run.mjs"]
   },

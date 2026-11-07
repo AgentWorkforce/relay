@@ -2059,10 +2059,10 @@ describe('complete Daytona Fleet board', () => {
     const actual = await collectFleetCliInventory('packages/cli/dist/cli/index.js');
     // The trusted verifier runs from current main while the candidate CLI is
     // hydrated separately. Keep this assertion pinned to main's known
-    // 32-executable-leaf/38-record surface; candidate inventory equality is checked in
+    // 33-executable-leaf/40-record surface; candidate inventory equality is checked in
     // the qualification job against the hydrated artifact.
-    expect(actual.commands).toHaveLength(38);
-    expect(actual.commands.filter(({ leaf }: { leaf: boolean }) => leaf)).toHaveLength(32);
+    expect(actual.commands).toHaveLength(40);
+    expect(actual.commands.filter(({ leaf }: { leaf: boolean }) => leaf)).toHaveLength(33);
     // Records this machine's node as the signed-in person's own in Cloud; public
     // so the trusted-sender docs can name it.
     expect(actual.commands.find(({ path }: { path: string }) => path === 'node claim')).toMatchObject({

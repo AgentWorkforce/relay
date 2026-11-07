@@ -1,0 +1,12 @@
+{
+  "credential": " rk_live_self_hosted ",
+  "fingerprint": "0dcecdc46ef84167c45e73cf1e859dd4",
+  "base_url_input": "https://relay.corp.test:8443/relaycast///",
+  "normalized_base_url": "https://relay.corp.test:8443/relaycast",
+  "binding_file": {
+    "version": 1,
+    "origins": {
+      "0dcecdc46ef84167c45e73cf1e859dd4": "https://relay.corp.test:8443/relaycast"
+    }
+  }
+}
