@@ -45,11 +45,8 @@ pub fn run(executable: &Path, directory: &Path, runtime: &Path, launch_id: &str)
     // initialize.mcpServers is additive, not an established configuration-source
     // boundary. Refuse before even creating runtime state or launching Droid:
     // inherited servers can execute at startup before any tool permission gate.
-    if let Some(reason) = super::unsupported() {
-        // This fixed, credential-free guidance is safe even when the CLI's
-        // generic error renderer deliberately hides arbitrary provider errors.
-        eprintln!("{reason}");
-        return Err(anyhow!(reason));
+    if let Some(reason) = super::unavailable_reason() {
+        return Err(crate::relay::daemon::SafeError(reason).into());
     }
     if !crate::relay::store::is_uuid(launch_id)
         || !directory.is_absolute()

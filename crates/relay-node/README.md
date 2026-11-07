@@ -156,7 +156,9 @@ and refuses before launching either the helper or Droid. The installed CLI
 inherits user, project and organization MCP configuration; adding a private
 `initialize.mcpServers` entry does not establish that other servers will not
 start. Tool permission checks happen too late to prevent startup registration
-or credential rotation by an inherited server. There is no opt-out or bypass.
+or credential rotation by an inherited server. There is no opt-out or bypass. Existing detached workers are also withheld from
+discovery, caller attribution, reply availability and prompt delivery while
+the hold is active; their records remain usable for ownership checks and cleanup.
 
 The persistent JSON-RPC protocol, delivery journal and identity checks remain
 covered by unit tests for a future verified startup-isolation contract. The

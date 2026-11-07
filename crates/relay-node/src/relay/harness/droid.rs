@@ -17,7 +17,7 @@ pub mod host {
         _runtime: &Path,
         _launch_id: &str,
     ) -> anyhow::Result<()> {
-        anyhow::bail!(super::unsupported().unwrap_or_default())
+        anyhow::bail!(super::unavailable_reason().unwrap_or_default())
     }
 }
 #[cfg(unix)]
@@ -67,7 +67,7 @@ pub(crate) const MARKER: &str = "AGENT_RELAY_DROID_SPAWN";
 const TIMEOUT: Duration = Duration::from_secs(30);
 const STARTUP_GUIDANCE: &str = "Droid did not open its native session. Check `droid --version` (verified with 1.6.0) and Factory sign-in.";
 pub(crate) const STARTUP_ISOLATION_GUIDANCE: &str = "Factory Droid managed messaging is unavailable until inherited MCP server startup can be isolated. Factory history collection remains available.";
-fn unsupported() -> Option<String> {
+pub(crate) fn unavailable_reason() -> Option<String> {
     Some(if cfg!(unix) {
         STARTUP_ISOLATION_GUIDANCE.into()
     } else {
@@ -213,7 +213,7 @@ impl HarnessAdapter for DroidAdapter {
     fn detect(&self) -> Installed {
         // The initial JSON-RPC host uses a Unix socket; this does not
         // prevent Factory history collection on Windows.
-        if let Some(reason) = unsupported() {
+        if let Some(reason) = unavailable_reason() {
             return Installed::Unusable(reason);
         }
         if self.executable.is_some() && self.helper.is_some() {
@@ -233,7 +233,7 @@ impl SpawnFacet for DroidAdapter {
     }
     fn launch(&self, launch: &Launch, started: Started) -> Result<Launched, LaunchError> {
         // Refused with the sentence alone: there is no launch to diagnose.
-        if let Some(reason) = unsupported() {
+        if let Some(reason) = unavailable_reason() {
             return Err(LaunchError::Unavailable(reason));
         }
         let mut initial_saved = false;

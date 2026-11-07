@@ -192,6 +192,9 @@ pub fn deliver(
     if !is_session_id(session) {
         return None;
     }
+    if let Some(reason) = super::unavailable_reason() {
+        return Some(InjectOutcome::Refused(reason));
+    }
     let path = runtime(config).join(format!("{session}.json"));
     if !path.exists() {
         return None;

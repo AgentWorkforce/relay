@@ -124,6 +124,8 @@ try {
     assert.ifError(held.error);
     assert.notEqual(held.status, 0);
     assert.match(held.stderr, /unavailable until inherited MCP server startup can be isolated/);
+    assert.equal(held.stderr.trim().split('\n').length, 1);
+    assert.doesNotMatch(held.stderr, /Check your connection/);
     await assert.rejects(readFile(events), { code: 'ENOENT' });
     await assert.rejects(readFile(path.join(runtime, `${launch}.ready.json`)), { code: 'ENOENT' });
     await assert.rejects(readFile(path.join(runtime, `${launch}.droid.log`)), { code: 'ENOENT' });

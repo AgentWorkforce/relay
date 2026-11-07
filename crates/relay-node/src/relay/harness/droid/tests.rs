@@ -97,6 +97,7 @@ fn unreadable_spawn_record_fails_closed_instead_of_using_legacy_inbox() {
     let dir = runtime(&config);
     crate::relay::paths::socket_directory(&dir).unwrap();
     std::fs::write(dir.join("11111111-2222-4333-8444-555555555555.json"), "{}").unwrap();
+    assert!(read_record(&dir.join("11111111-2222-4333-8444-555555555555.json")).is_none());
     assert!(matches!(
         deliver(
             &config,
@@ -105,7 +106,7 @@ fn unreadable_spawn_record_fails_closed_instead_of_using_legacy_inbox() {
             "m1",
             "hello"
         ),
-        Some(InjectOutcome::Waiting(_))
+        Some(InjectOutcome::Refused(reason)) if reason == STARTUP_ISOLATION_GUIDANCE
     ));
     assert_eq!(
         deliver(
@@ -247,8 +248,11 @@ fn restart_finds_only_its_live_host_and_never_adopts_a_reused_pid() {
     let rows = sessions
         .discover_partition(SessionPartition::Droid)
         .unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].target, target);
+    assert_eq!(
+        crate::relay::droid::records(&adapter.config, &*table).len(),
+        1
+    );
+    assert!(rows.is_empty(), "held workers must not be registered");
     assert!(sessions
         .discover_partition(SessionPartition::Devin)
         .unwrap()
@@ -262,7 +266,10 @@ fn restart_finds_only_its_live_host_and_never_adopts_a_reused_pid() {
             ..Default::default()
         },
     );
-    assert_eq!(sessions.caller(42).unwrap().target, target);
+    assert!(matches!(
+        sessions.caller(42),
+        Err(crate::relay::sessions::CallerMiss::NotASession)
+    ));
     // A dead host must not free its still-owned child or block cleanup.
     table.remove(40);
     assert!(registry::child_owned(&record, &*table));

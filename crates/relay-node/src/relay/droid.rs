@@ -44,6 +44,9 @@ pub fn records(config: &DroidConfig, table: &dyn ProcessTable) -> Vec<Record> {
         .collect()
 }
 pub fn discover(config: &DroidConfig, table: &dyn ProcessTable) -> Vec<DiscoveredSession> {
+    if crate::relay::harness::droid::unavailable_reason().is_some() {
+        return Vec::new();
+    }
     records(config, table)
         .into_iter()
         .map(|record| DiscoveredSession {
