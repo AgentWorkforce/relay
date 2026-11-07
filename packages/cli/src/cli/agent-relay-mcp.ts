@@ -935,6 +935,7 @@ async function invokeVerifiedSpawn(
     const liveness = await probeSpawnLiveness({
       name,
       targetNode,
+      requireReady: true,
       ...(error.invocationId
         ? { getInvocation: () => commands.getInvocation(error.actionName ?? 'spawn', error.invocationId!) }
         : {}),

@@ -1299,6 +1299,7 @@ export function registerFleetCommands(
             const liveness = await probeSpawnLiveness({
               name,
               targetNode,
+              requireReady: confirm,
               ...(error.invocationId
                 ? {
                     getInvocation: () => relay.messaging.commands.getInvocation('spawn', error.invocationId!),

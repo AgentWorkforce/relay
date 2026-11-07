@@ -1176,11 +1176,16 @@ describe('fleet command support', () => {
         { from: 'user' }
       );
       expect(getInvocation).toHaveBeenCalledWith('spawn', invocationId);
-      if (evidence === 'collision' || evidence === 'missing_ready') {
+      if (evidence === 'collision') {
         expect(exit).toHaveBeenCalledWith(1);
-        expect(errors.join('')).toContain(
-          evidence === 'collision' ? '"code":"spawn_name_taken"' : '"code":"spawn_failed"'
-        );
+        expect(errors.join('')).toContain('"code":"spawn_name_taken"');
+      } else if (evidence === 'missing_ready') {
+        // A completed read without readiness proof does not show the worker
+        // failed; only an explicit `spawned:false` does. The spawn stays pending.
+        expect(exit).toHaveBeenCalledWith(8);
+        expect(logs).toEqual([]);
+        expect(errors.join('')).toContain('"code":"spawn_unconfirmed"');
+        expect(errors.join('')).toContain(`"invocationId":"${invocationId}"`);
       } else if (evidence === 'live') {
         // Heartbeats carry worker names only: an existing worker with this
         // name is indistinguishable from this invocation's worker, so the

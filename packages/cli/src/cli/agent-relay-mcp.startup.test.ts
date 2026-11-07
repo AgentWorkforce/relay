@@ -1574,63 +1574,72 @@ describe('createAgentRelayMcpServer', () => {
       contract: 'readiness',
       output: { spawned: true },
       code: 'spawn_unconfirmed',
-      state: 'unconfirmed_may_be_running',
+      state: 'pending',
+      node: 'node-a',
     },
     {
       contract: 'spawn confirmation',
       output: { ready: true },
       code: 'spawn_unconfirmed',
-      state: 'unconfirmed_may_be_running',
+      state: 'pending',
+      node: 'node-a',
     },
     {
       contract: 'explicit negative spawn confirmation',
       output: { spawned: false, ready: true },
       code: 'spawn_failed',
       state: 'failed',
+      node: 'registered-handler-node',
     },
-  ])('does not report a raw CLI spawn as ready without $contract proof', async ({ output, code, state }) => {
-    const { mod, mocks } = await loadAgentRelayMcpModule();
-    mod.createAgentRelayMcpServer({
-      workspaceKey: 'rk_live_existing',
-      agentToken: 'at_live_fleet',
-      agentName: 'orchestrator',
-    });
-    const server = mocks.serverInstances[0];
-    mocks.agentRelayMessagingCommands.getInvocation.mockResolvedValueOnce({
-      invocationId: 'inv_1',
-      actionName: 'spawn',
-      status: 'completed',
-      handler_node_id: 'registered-handler-node',
-      output,
-    });
+  ])(
+    'does not report a raw CLI spawn as ready without $contract proof',
+    async ({ output, code, state, node }) => {
+      const { mod, mocks } = await loadAgentRelayMcpModule();
+      mod.createAgentRelayMcpServer({
+        workspaceKey: 'rk_live_existing',
+        agentToken: 'at_live_fleet',
+        agentName: 'orchestrator',
+      });
+      const server = mocks.serverInstances[0];
+      mocks.agentRelayMessagingCommands.getInvocation.mockResolvedValue({
+        invocationId: 'inv_1',
+        actionName: 'spawn',
+        status: 'completed',
+        handler_node_id: 'registered-handler-node',
+        output,
+      });
 
-    const failure = await server.tools.get('spawn')?.handler({
-      name: 'RawWorker',
-      cli: 'codex',
-      target_node: 'node-a',
-    });
-    expect(failure).toMatchObject({
-      isError: true,
-      structuredContent: {
-        error: {
-          code,
-          state,
-          dispatchState: 'dispatched',
-          invocationId: 'inv_1',
-          node: 'registered-handler-node',
+      const failure = await server.tools.get('spawn')?.handler({
+        name: 'RawWorker',
+        cli: 'codex',
+        target_node: 'node-a',
+      });
+      expect(failure).toMatchObject({
+        isError: true,
+        structuredContent: {
+          error: {
+            code,
+            state,
+            dispatchState: 'dispatched',
+            invocationId: 'inv_1',
+            node,
+          },
         },
-      },
-    });
-    expect(failure.structuredContent.error.message).toContain(
-      'Resolved handler node: registered-handler-node; invocation: inv_1.'
-    );
-    expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledWith('spawn', {
-      name: 'RawWorker',
-      cli: 'codex',
-      verify_ready: true,
-      target_node: 'node-a',
-    });
-  });
+      });
+      // An unproven completion is pending, not failed; the missing-proof detail
+      // is kept as the diagnostic.
+      const error = failure.structuredContent.error;
+      expect(code === 'spawn_failed' ? error.message : error.diagnostic).toContain(
+        'Resolved handler node: registered-handler-node; invocation: inv_1.'
+      );
+      expect(mocks.agentRelayMessagingCommands.invoke).toHaveBeenCalledWith('spawn', {
+        name: 'RawWorker',
+        cli: 'codex',
+        verify_ready: true,
+        target_node: 'node-a',
+      });
+    }
+  );
 
   it('surfaces a raw CLI early-exit failure instead of the invocation acknowledgement', async () => {
     const { mod, mocks } = await loadAgentRelayMcpModule();
