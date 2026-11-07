@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getProjectPaths } from '@agent-relay/config';
 import { formatBrokerNotFoundError, getBrokerBinaryPath } from '@agent-relay/harness-driver/broker-path';
+import { describeError } from '../lib/describe-error.js';
 
 /**
  * Durable, project-local journal of external cleanup work that failed or may
@@ -441,7 +442,7 @@ async function beginJournalTransaction(lockFile: string, journalFile: string): P
         await finish(undefined, '');
         throw new CleanupJournalError(
           'io',
-          `Could not frame the pending-cleanup journal payload: ${err instanceof Error ? err.message : String(err)}`
+          `Could not frame the pending-cleanup journal payload: ${describeError(err)}`
         );
       }
       await finish(
@@ -465,7 +466,7 @@ export function fileCleanupJournal(dataDirOverride?: string): CleanupJournal {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
       throw new CleanupJournalError(
         'io',
-        `Could not read the pending-cleanup journal at ${file}: ${err instanceof Error ? err.message : String(err)}`
+        `Could not read the pending-cleanup journal at ${file}: ${describeError(err)}`
       );
     }
     return parseEntries(raw, file);
