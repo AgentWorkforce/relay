@@ -149,6 +149,7 @@ describe('resolveActiveWorkspace', () => {
 
     expect(readWorkspaceStore()).toEqual({
       active: 'Default',
+      previous: 'stale',
       workspaces: {
         stale: { key: 'rk_live_stale' },
         Default: { key: 'rk_live_repaired' },
