@@ -18,6 +18,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { assertProofInputs, CASE_PATH, childEnv, externalPath, run } from './guards.mjs';
+import { processIsRunning } from './process-probe.mjs';
+import { createReceipt } from './receipt.mjs';
 
 const caseDir = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(caseDir, '../../../..');
@@ -60,7 +62,7 @@ async function fixture() {
   await put(target, 'crates/relay-node/src/lib.rs', '// consumed production source fixture\n');
   await put(target, 'crates/relay-node/Cargo.lock', '# consumed lock fixture\n');
   await put(target, '.gitignore', '*.ignored.rs\n');
-  for (const name of ['run.mjs', 'guards.mjs', 'fixture.rs']) {
+  for (const name of ['run.mjs', 'guards.mjs', 'receipt.mjs', 'fixture.rs']) {
     await mkdir(path.join(harness, CASE_PATH), { recursive: true });
     await copyFile(path.join(caseDir, name), path.join(harness, CASE_PATH, name));
   }
@@ -162,6 +164,38 @@ for (const phase of ['before', 'after']) {
     });
   }
 }
+// Real index flags can hide dirty working bytes while HEAD and status stay unchanged.
+for (const phase of ['before', 'after']) {
+  for (const location of ['target', 'harness']) {
+    for (const [label, flags, tag] of [
+      ['assume-unchanged', ['--assume-unchanged'], 'h'],
+      ['skip-worktree', ['--skip-worktree'], 'S'],
+      ['both index flags', ['--skip-worktree', '--assume-unchanged'], 's'],
+    ]) {
+      test(`refuses hidden dirty ${location} ${label} ${phase}`, async () => {
+        const f = await fixture();
+        try {
+          const file = location === 'target' ? 'crates/relay-node/src/lib.rs' : `${CASE_PATH}/fixture.rs`;
+          for (const flag of flags) git(f[location], 'update-index', flag, '--', file);
+          await put(f[location], file, '// actual dirty bytes hidden by Git index flags\n');
+          assert.equal(
+            git(f[location], 'status', '--porcelain=v1', '--', file),
+            '',
+            'Fixture did not reproduce the hidden dirty-source defect.'
+          );
+          assert.equal(
+            git(f[location], 'ls-files', '-v', '--', file),
+            `${tag} ${file}`,
+            'Unexpected local Git index-flag semantics.'
+          );
+          await assert.rejects(assertProofInputs(f.inputs, phase), new RegExp(`index flags.*\\(${phase}\\)`));
+        } finally {
+          await f.dispose();
+        }
+      });
+    }
+  }
+}
 test('child environment omits credentials, loader hooks and Relay overrides without changing HOME', () => {
   const blocked = [
     'FACTORY_API_KEY',
@@ -189,9 +223,57 @@ test('child environment omits credentials, loader hooks and Relay overrides with
   }
 });
 
+test('process probe verifies a real live process and a real no-match', { skip: !posix }, () => {
+  assert.equal(processIsRunning(process.pid), true);
+  const exited = spawnSync(process.execPath, ['-e', ''], { env: childEnv(), timeout: 2_000 });
+  assert.equal(exited.status, 0);
+  assert(Number.isInteger(exited.pid));
+  assert.equal(processIsRunning(exited.pid), false);
+});
+for (const [name, body] of [
+  ['failing exit', 'process.exit(2)'],
+  ['quiet failure rather than no-match', 'process.exit(1)'],
+  ['stderr query error', "process.stderr.write('fixture query error');console.log('S')"],
+  ['empty successful output', 'process.exit(0)'],
+  ['invalid successful output', "console.log('not-a-state')"],
+  ['multiple successful states', "console.log('S\\nR')"],
+  ['no-match with output', "console.log('S');process.exit(1)"],
+  ['terminated query', "process.kill(process.pid,'SIGTERM')"],
+  ['timed out query', 'setInterval(()=>{},1000)'],
+]) {
+  test(`process probe refuses ${name}`, { skip: !posix, timeout: 8_000 }, async () => {
+    const scratch = await mkdtemp(path.join(os.tmpdir(), 'relay-2100-ps-'));
+    try {
+      const command = path.join(scratch, 'ps-fixture');
+      await writeFile(command, `#!${process.execPath}\n${body}\n`, { mode: 0o700 });
+      assert.throws(
+        () => processIsRunning(process.pid, { command, timeoutMs: name === 'timed out query' ? 500 : 2_000 }),
+        /Process-state/
+      );
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  });
+}
+test(
+  'process probe refuses missing ps instead of treating it as a stopped child',
+  { skip: !posix },
+  async () => {
+    const scratch = await mkdtemp(path.join(os.tmpdir(), 'relay-2100-no-ps-'));
+    try {
+      assert.throws(
+        () => processIsRunning(process.pid, { command: path.join(scratch, 'missing-ps') }),
+        /Process-state query failed/
+      );
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
+);
+
 test(
   'bounded subprocess timeout terminates a Cargo-shaped parent and compiler descendant',
-  { skip: !posix, timeout: 10_000 },
+  { skip: !posix, timeout: 15_000 },
   async () => {
     const scratch = await mkdtemp(path.join(os.tmpdir(), 'relay-2100-process-'));
     const pidsPath = path.join(scratch, 'pids.json');
@@ -199,19 +281,14 @@ test(
     try {
       const code = `const{spawn}=require('node:child_process');const{writeFileSync}=require('node:fs');const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore'});writeFileSync(process.argv[1],JSON.stringify([process.pid,child.pid]));process.on('SIGTERM',()=>{});setInterval(()=>{},1000);`;
       await assert.rejects(
-        run(process.execPath, ['-e', code, pidsPath], { timeoutMs: 500, terminationGraceMs: 100 }),
+        run(process.execPath, ['-e', code, pidsPath], { timeoutMs: 5_000, terminationGraceMs: 100 }),
         /timedOut true/
       );
       pids = JSON.parse(await readFile(pidsPath, 'utf8'));
       for (const pid of pids) {
         let running = true;
         for (let attempt = 0; attempt < 30 && running; attempt++) {
-          const state = spawnSync('ps', ['-p', String(pid), '-o', 'stat='], {
-            encoding: 'utf8',
-            env: childEnv(),
-          });
-          running =
-            state.status === 0 && Boolean(state.stdout.trim()) && !state.stdout.trim().startsWith('Z');
+          running = processIsRunning(pid);
           if (running) await delay(25);
         }
         assert.equal(running, false, `Proof descendant ${pid} survived timeout.`);
@@ -227,9 +304,73 @@ test(
   }
 );
 
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  test(
+    `runner ${signal} interruption stops its Cargo-shaped process tree`,
+    { skip: !posix, timeout: 15_000 },
+    async () => {
+      const f = await fixture();
+      const pidsPath = path.join(f.scratch, 'interrupted-pids.json');
+      const result = path.join(f.scratch, 'interrupted-observation.json');
+      const helper = path.join(f.scratch, 'interruption-helper.mjs');
+      let pids;
+      let completion;
+      try {
+        const cargo = `const{spawn}=require('node:child_process');const{writeFileSync}=require('node:fs');const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore'});writeFileSync(process.argv[1],JSON.stringify([process.ppid,process.pid,child.pid]));process.on('SIGTERM',()=>{});setInterval(()=>{},1000);`;
+        const code = `import{run}from ${JSON.stringify(new URL('./guards.mjs', import.meta.url).href)};import{createReceipt}from ${JSON.stringify(new URL('./receipt.mjs', import.meta.url).href)};const receipt=await createReceipt(${JSON.stringify(result)},${JSON.stringify([f.target, f.harness])});try{await run(process.execPath,['-e',${JSON.stringify(cargo)},${JSON.stringify(pidsPath)}],{timeoutMs:10000});await receipt.write('{"unexpectedObservation":true}');}finally{await receipt.close();}`;
+        await writeFile(helper, code);
+        // Convert rejection immediately so readiness polling cannot cause an unhandled rejection.
+        completion = run(process.execPath, [helper], { timeoutMs: 12_000, terminationGraceMs: 100 }).then(
+          () => ({ succeeded: true }),
+          (error) => ({ error })
+        );
+        for (let attempt = 0; attempt < 200 && !(await exists(pidsPath)); attempt++) await delay(25);
+        pids = JSON.parse(await readFile(pidsPath, 'utf8'));
+        assert.equal(pids.length, 3);
+        process.kill(pids[0], signal);
+        const outcome = await completion;
+        assert(outcome.error, 'Interrupted helper returned success.');
+        for (const pid of pids.slice(1)) {
+          let running = true;
+          for (let attempt = 0; attempt < 30 && running; attempt++) {
+            running = processIsRunning(pid);
+            if (running) await delay(25);
+          }
+          assert.equal(running, false, `Interrupted proof descendant ${pid} survived.`);
+        }
+        assert.match(outcome.error.message, /aborted true/, 'Helper did not propagate cancellation.');
+        const placeholder = await readFile(result, 'utf8');
+        assert.equal(placeholder, '', 'Interrupted helper published observation data.');
+        assert.throws(() => JSON.parse(placeholder));
+      } finally {
+        if (!pids && (await exists(pidsPath))) pids = JSON.parse(await readFile(pidsPath, 'utf8'));
+        for (const pid of pids ?? []) {
+          try {
+            process.kill(pid, 'SIGKILL');
+          } catch (error) {
+            if (error.code !== 'ESRCH') throw error;
+          }
+        }
+        if (completion) await completion;
+        await f.dispose();
+      }
+    }
+  );
+}
+
+test('subprocess signal listeners are removed after success and failure', async () => {
+  const before = ['SIGTERM', 'SIGINT'].map((signal) => process.listenerCount(signal));
+  await run(process.execPath, ['-e', ''], { timeoutMs: 2_000 });
+  await assert.rejects(run(process.execPath, ['-e', 'process.exit(7)'], { timeoutMs: 2_000 }));
+  assert.deepEqual(
+    ['SIGTERM', 'SIGINT'].map((signal) => process.listenerCount(signal)),
+    before
+  );
+});
+
 // These simulate ONLY compile/runtime completion to exercise refusal guards.
 // They must never produce accepted routing evidence; real base/head proof uses Cargo/Rust.
-async function runGuardScenario(f, { cache, dirtyAfter }) {
+async function runGuardScenario(f, { cache, dirtyAfter, tmpdir, replaceParent, existingReceipt }) {
   const bin = path.join(f.scratch, 'bin');
   await mkdir(bin);
   const called = path.join(f.scratch, 'cargo-called');
@@ -246,10 +387,25 @@ async function runGuardScenario(f, { cache, dirtyAfter }) {
     declinedCalls: 0,
     peerForwarding: false,
   };
-  const cargoCode = `#!${process.execPath}\nconst fs=require('node:fs');const path=require('node:path');fs.writeFileSync(${JSON.stringify(called)},'called');const output=process.argv[process.argv.indexOf('--target-dir')+1];fs.mkdirSync(path.join(output,'debug'),{recursive:true});fs.writeFileSync(path.join(output,'debug','relay-pr-2100-consumer'),${JSON.stringify(`#!${process.execPath}\nconsole.log(${JSON.stringify(JSON.stringify(matrix))});\n`)},{mode:0o700});${dirtyAfter ? `fs.writeFileSync(${JSON.stringify(path.join(f[dirtyAfter], dirtyAfter === 'target' ? 'crates/relay-node/src/lib.rs' : `${CASE_PATH}/fixture.rs`))},'// changed during subprocess\\n');` : ''}\n`;
+  const result = replaceParent
+    ? path.join(f.scratch, 'receipt-parent', 'observation.json')
+    : path.join(f.scratch, 'result.json');
+  const victim = path.join(f.target, 'observation.json'),
+    original = 'original tracked checkout bytes';
+  if (replaceParent) {
+    await mkdir(path.dirname(result));
+    await put(f.target, 'observation.json', original);
+    git(f.target, 'add', 'observation.json');
+    git(f.target, 'commit', '--quiet', '-m', 'Tracked replacement victim');
+    f.inputs.targetSha = git(f.target, 'rev-parse', 'HEAD');
+  }
+  if (existingReceipt) await writeFile(result, 'prior receipt must remain unchanged');
+  const replace = replaceParent
+    ? `fs.renameSync(${JSON.stringify(path.dirname(result))},${JSON.stringify(path.join(f.scratch, 'moved-receipt-parent'))});fs.symlinkSync(${JSON.stringify(f.target)},${JSON.stringify(path.dirname(result))},'dir');`
+    : '';
+  const cargoCode = `#!${process.execPath}\nconst fs=require('node:fs');const path=require('node:path');fs.writeFileSync(${JSON.stringify(called)},'called');const output=process.argv[process.argv.indexOf('--target-dir')+1];fs.mkdirSync(path.join(output,'debug'),{recursive:true});fs.writeFileSync(path.join(output,'debug','relay-pr-2100-consumer'),${JSON.stringify(`#!${process.execPath}\nconsole.log(${JSON.stringify(JSON.stringify(matrix))});\n`)},{mode:0o700});${replace}${dirtyAfter ? `fs.writeFileSync(${JSON.stringify(path.join(f[dirtyAfter], dirtyAfter === 'target' ? 'crates/relay-node/src/lib.rs' : `${CASE_PATH}/fixture.rs`))},'// changed during subprocess\\n');` : ''}\n`;
   await put(bin, 'cargo', cargoCode);
   await chmod(path.join(bin, 'cargo'), 0o700);
-  const result = path.join(f.scratch, 'result.json');
   await assert.rejects(
     run(process.execPath, [path.join(f.harness, CASE_PATH, 'run.mjs')], {
       env: {
@@ -262,13 +418,38 @@ async function runGuardScenario(f, { cache, dirtyAfter }) {
         RELAY_PR_PROOF_BASE_SHA: f.inputs.targetSha,
         RELAY_PR_PROOF_HEAD_SHA: f.inputs.headSha,
         RELAY_PR_PROOF_CARGO_TARGET_DIR: cache,
+        ...(tmpdir ? { TMPDIR: tmpdir, TMP: tmpdir, TEMP: tmpdir } : {}),
       },
       timeoutMs: 10_000,
     }),
-    dirtyAfter ? /consumed inputs are dirty \(after\)/ : /outside|protected checkout/
+    dirtyAfter
+      ? /consumed inputs are dirty \(after\)/
+      : existingReceipt
+        ? /EEXIST/
+        : /outside|protected checkout|Receipt.*changed/
   );
-  assert.equal(await exists(result), false, 'A refused guard produced accepted evidence.');
-  assert.equal(await exists(called), Boolean(dirtyAfter), 'Cargo ran before the output-directory guard.');
+  if (replaceParent) {
+    assert.equal(
+      await readFile(victim, 'utf8'),
+      original,
+      'Receipt publication changed tracked checkout bytes.'
+    );
+    assert.equal(
+      await readFile(path.join(f.scratch, 'moved-receipt-parent', 'observation.json'), 'utf8'),
+      ''
+    );
+  } else if (existingReceipt)
+    assert.equal(await readFile(result, 'utf8'), 'prior receipt must remain unchanged');
+  else if (dirtyAfter) {
+    const placeholder = await readFile(result, 'utf8');
+    assert.equal(placeholder, '', 'A refused guard published observation data.');
+    assert.throws(() => JSON.parse(placeholder));
+  } else assert.equal(await exists(result), false, 'A preflight refusal created a receipt.');
+  assert.equal(
+    await exists(called),
+    Boolean(dirtyAfter || replaceParent),
+    'Cargo ran before the preflight guard.'
+  );
 }
 for (const kind of ['inside', 'symlink']) {
   test(
@@ -304,3 +485,62 @@ for (const dirtyAfter of ['target', 'harness']) {
     }
   );
 }
+
+for (const location of ['target', 'harness']) {
+  test(
+    `the actual runner rejects TMPDIR within ${location} before Cargo can inherit uncommitted config`,
+    { skip: !posix },
+    async () => {
+      const f = await fixture();
+      try {
+        const config = '[build]\nrustflags=["--cfg=uncommitted_proof_input"]\n';
+        await put(f[location], '.cargo/config.toml', config);
+        await runGuardScenario(f, { cache: path.join(f.scratch, 'cache'), tmpdir: f[location] });
+        assert.equal(await readFile(path.join(f[location], '.cargo/config.toml'), 'utf8'), config);
+        assert(!(await readdir(f[location])).some((name) => name.startsWith('relay-2100-proof-')));
+      } finally {
+        await f.dispose();
+      }
+    }
+  );
+}
+test(
+  'the actual runner refuses a replaced receipt parent without overwriting tracked checkout bytes',
+  { skip: !posix },
+  async () => {
+    const f = await fixture();
+    try {
+      await runGuardScenario(f, { cache: path.join(f.scratch, 'cache'), replaceParent: true });
+    } finally {
+      await f.dispose();
+    }
+  }
+);
+test(
+  'the actual runner never truncates an existing receipt and refuses before Cargo',
+  { skip: !posix },
+  async () => {
+    const f = await fixture();
+    try {
+      await runGuardScenario(f, { cache: path.join(f.scratch, 'cache'), existingReceipt: true });
+    } finally {
+      await f.dispose();
+    }
+  }
+);
+
+test('a fresh handle-bound receipt writes only its reserved regular file', async () => {
+  const f = await fixture();
+  try {
+    const result = path.join(f.scratch, 'receipt-unit.json');
+    const receipt = await createReceipt(result, [f.target, f.harness]);
+    try {
+      await receipt.write('{"receiptUnitOnly":true}\n');
+    } finally {
+      await receipt.close();
+    }
+    assert.deepEqual(JSON.parse(await readFile(result, 'utf8')), { receiptUnitOnly: true });
+  } finally {
+    await f.dispose();
+  }
+});

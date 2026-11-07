@@ -32,18 +32,28 @@ export function childEnv() {
 
 /** Reuse the trusted wrapper's bounded process-group termination, including Cargo descendants. */
 export async function run(command, args, options = {}) {
-  const result = await runBoundedProcess(command, args, {
-    env: childEnv(),
-    echo: false,
-    maxCaptureBytes: 2 * 1024 * 1024,
-    ...options,
-  });
-  if (result.exitCode !== 0 || result.timedOut || result.aborted) {
-    throw new Error(
-      `Proof subprocess failed (${command}, status ${result.exitCode}, signal ${result.signal}, timedOut ${result.timedOut}, aborted ${result.aborted}):\n${result.stderr.slice(-6000)}`
-    );
+  const interruption = new AbortController();
+  const abort = () => interruption.abort();
+  for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, abort);
+  try {
+    const result = await runBoundedProcess(command, args, {
+      env: childEnv(),
+      echo: false,
+      maxCaptureBytes: 2 * 1024 * 1024,
+      // Finish inner group cleanup before the wrapper's five-second hard-kill grace.
+      terminationGraceMs: 1_000,
+      ...options,
+      signal: options.signal ? AbortSignal.any([options.signal, interruption.signal]) : interruption.signal,
+    });
+    if (result.exitCode !== 0 || result.timedOut || result.aborted || interruption.signal.aborted) {
+      throw new Error(
+        `Proof subprocess failed (${command}, status ${result.exitCode}, signal ${result.signal}, timedOut ${result.timedOut}, aborted ${result.aborted || interruption.signal.aborted}):\n${result.stderr.slice(-6000)}`
+      );
+    }
+    return result.stdout;
+  } finally {
+    for (const signal of ['SIGTERM', 'SIGINT']) process.removeListener(signal, abort);
   }
-  return result.stdout;
 }
 
 export async function gitSha(directory) {
@@ -107,6 +117,19 @@ export async function assertProofInputs({ target, harness, targetSha, headSha },
     ['Harness', harness, headSha, HARNESS_INPUTS],
   ]) {
     assert.equal(await gitSha(directory), expected, `${label} SHA mismatch (${phase}).`);
+    // -v lowercases assume-unchanged entries; S/s denotes skip-worktree.
+    // Only ordinary tracked H entries are admissible. Never trust status alone:
+    // either index flag can conceal different working-tree bytes.
+    const tagged = await run('git', ['-C', directory, 'ls-files', '-v', '-z', '--', ...inputs], {
+      timeoutMs: 10_000,
+    });
+    assert(
+      tagged
+        .split('\0')
+        .filter(Boolean)
+        .every((entry) => entry.startsWith('H ')),
+      `${label} consumed inputs have unsafe index flags (${phase}).`
+    );
     const status = await run(
       'git',
       ['-C', directory, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...inputs],

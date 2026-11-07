@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assertProofInputs, childEnv, externalPath, run } from './guards.mjs';
+import { createReceipt } from './receipt.mjs';
 
 const CASE_ID = '2100-copilot-native-mcp-route';
 const caseDir = path.dirname(fileURLToPath(import.meta.url));
@@ -25,8 +26,16 @@ assert.equal(
 const cache = process.env.RELAY_PR_PROOF_CARGO_TARGET_DIR
   ? await externalPath(process.env.RELAY_PR_PROOF_CARGO_TARGET_DIR, [target, harness])
   : null;
-const scratch = await mkdtemp(path.join(os.tmpdir(), 'relay-2100-proof-'));
+const scratchParent = await externalPath(os.tmpdir(), [target, harness], 'Scratch parent');
+const receipt = await createReceipt(resultPath, [target, harness]);
+let scratch;
 try {
+  scratch = await mkdtemp(path.join(scratchParent, 'relay-2100-proof-'));
+  assert.equal(
+    await externalPath(scratch, [target, harness], 'Scratch'),
+    scratch,
+    'Scratch directory changed.'
+  );
   const consumer = path.join(scratch, 'consumer');
   await mkdir(path.join(consumer, 'src'), { recursive: true });
   await copyFile(path.join(caseDir, 'fixture.rs'), path.join(consumer, 'src/main.rs'));
@@ -86,15 +95,16 @@ try {
   await assertProofInputs(inputs, 'after');
   if (cache)
     assert.equal(await externalPath(cache, [target, harness]), cache, 'Cargo target changed during proof.');
-  await mkdir(path.dirname(resultPath), { recursive: true });
-  await writeFile(
-    resultPath,
-    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome: arm === 'base' ? 'bug' : 'fixed', signature: arm === 'base' ? 'copilot_native_mcp_route_unreachable' : 'copilot_native_mcp_route_reaches_account', details: JSON.stringify(actual) })}\n`,
-    { mode: 0o600 }
+  await receipt.write(
+    `${JSON.stringify({ version: 1, caseId: CASE_ID, arm, outcome: arm === 'base' ? 'bug' : 'fixed', signature: arm === 'base' ? 'copilot_native_mcp_route_unreachable' : 'copilot_native_mcp_route_reaches_account', details: JSON.stringify(actual) })}\n`
   );
   console.log(JSON.stringify({ caseId: CASE_ID, arm, observed: actual }));
 } finally {
-  await rm(scratch, { recursive: true, force: true });
+  try {
+    await receipt.close();
+  } finally {
+    if (scratch) await rm(scratch, { recursive: true, force: true });
+  }
 }
 
 /** Require one wrapper-supplied value without inferring an arm or checkout. */
