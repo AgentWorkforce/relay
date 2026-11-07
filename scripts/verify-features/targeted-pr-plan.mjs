@@ -587,7 +587,7 @@ export function changedFilesFromGit(base, head, { cwd = process.cwd() } = {}) {
   if (result.status !== 0) throw new Error(`git diff failed: ${(result.stderr ?? '').trim()}`);
   const fields = result.stdout.split('\0').filter(Boolean);
   const files = [];
-  for (let index = 0; index < fields.length; ) {
+  for (let index = 0; index < fields.length;) {
     const status = fields[index++];
     if (/^[RC]/.test(status)) {
       files.push(fields[index++], fields[index++]);

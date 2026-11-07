@@ -42,6 +42,7 @@ mod channel;
 pub mod channel_text;
 pub mod final_answer;
 mod inbox_watch;
+mod integration_routing;
 pub mod policy;
 pub(crate) mod session_text;
 mod stuck;
@@ -64,7 +65,7 @@ use crate::relay::store::{SessionKind, Target};
 use crate::relay::workspace::Secret;
 use cadence::{claim_due, heartbeat_interval, is_due, queue_poll_interval};
 use futures_util::{future::BoxFuture, stream, StreamExt};
-use policy::{decide_for_agent, Attachment, Decision, Delivery};
+use policy::{Attachment, Delivery};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -229,6 +230,8 @@ pub struct DeliveryState {
     /// Deliveries tried and not yet settled, by delivery id. Dropped once
     /// a delivery settles, leaves its queue, or its agent is removed.
     retries: HashMap<String, Retry>,
+    /// One delayed integration retry per name and immutable agent identity.
+    integration_retries: HashMap<String, String>,
     /// Deliveries waiting to go into their session (`stuck`).
     waiting: HashMap<String, stuck::Waited>,
     /// The last queue read's problem, per agent.
@@ -854,6 +857,7 @@ impl Core {
         let queue_error = {
             let mut state = self.delivery.lock().unwrap();
             state.queue_errors.remove(name);
+            state.integration_retries.remove(name);
             state.retries.retain(|_, retry| retry.agent != name);
             state.waiting.retain(|_, waited| waited.agent != name);
             state.inbox.remove(name);
@@ -1131,26 +1135,13 @@ impl Core {
                 .await;
             return;
         }
-        let webhook_channel = registration.webhook.as_ref().map(|w| w.channel_id.as_str());
-        let integration_channel = registration.integration_channel_id.as_deref();
-        let decision = decide_for_agent(
-            delivery,
-            &registration.name,
-            webhook_channel,
-            integration_channel,
-        );
-        if let Decision::Skip(reason) = decision {
-            let _ = self
-                .relaycast_ack(&workspace, base, token, &delivery.id)
-                .await;
-            self.record(
-                registration,
-                delivery,
-                DeliveryOutcome::Skipped,
-                Some(reason),
-            );
+        let Some(current) = self
+            .admit_delivery(registration, delivery, &workspace, token)
+            .await
+        else {
             return;
-        }
+        };
+        let registration = &current;
         // The owner's reply to a live app-server request is a protocol
         // answer, not a new user turn (`spawn::drive`).
         if self
@@ -1238,8 +1229,8 @@ impl Core {
         }
         let from =
             |channel: Option<&str>| channel.is_some() && delivery.channel_id.as_deref() == channel;
-        let via_webhook = from(webhook_channel);
-        let via_integration = from(integration_channel);
+        let via_webhook = from(registration.webhook.as_ref().map(|w| w.channel_id.as_str()));
+        let via_integration = from(registration.integration_channel_id.as_deref());
         let mut saved = self.with_saved_attachments(delivery, base, token).await;
         if let Some(saved) = saved.as_mut() {
             self.add_fetch_hints(&registration.target, &mut saved.attachments)

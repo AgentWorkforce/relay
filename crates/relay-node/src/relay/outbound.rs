@@ -303,6 +303,7 @@ pub struct Outbound {
     rosters: Arc<Mutex<Rosters>>,
     connect_broadcasts: connect_send::Broadcasts,
     mobile_permissions: mobile_handoff_permission::Tickets,
+    copilot_identities: Mutex<HashMap<String, String>>,
 }
 
 /// A request: its query (for `GET /agents` and `?to=` sends) and body.
@@ -363,6 +364,7 @@ impl Outbound {
             rosters: Arc::default(),
             connect_broadcasts: connect_send::Broadcasts::default(),
             mobile_permissions: mobile_handoff_permission::Tickets::default(),
+            copilot_identities: Mutex::default(),
         }
     }
 
@@ -403,7 +405,7 @@ impl Outbound {
             }
             ("DELETE", "/register") => self.unregister(pid, uid).await,
             ("GET" | "PATCH", "/settings") => self.settings_route(pid, uid, request).await,
-            ("POST", "/codex/stop-hook" | "/claude/attestation") => {
+            ("POST", "/codex/stop-hook" | "/claude/attestation" | "/copilot/hook") => {
                 self.hook_route(pid, uid, request).await
             }
             ("GET", "/setup/status") => {

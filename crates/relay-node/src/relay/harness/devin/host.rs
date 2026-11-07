@@ -239,9 +239,7 @@ fn accept_control(
                 let response = engine.request(&request);
                 // The answer is one short line; give a slow reader a moment.
                 let _ = control.stream.set_nonblocking(false);
-                let _ = control
-                    .stream
-                    .set_write_timeout(Some(CONTROL_READ_BUDGET));
+                let _ = control.stream.set_write_timeout(Some(CONTROL_READ_BUDGET));
                 let _ = writeln!(control.stream, "{response}");
                 if request["op"] == "stop" {
                     // Nothing after the stop is answered: a prompt accepted

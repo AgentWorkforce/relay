@@ -28,14 +28,14 @@ rust_roots = ["src"]
 
 [baseline.file_loc]
 "src/cli/connect.rs" = 518
-"src/relay/agents.rs" = 1450
+"src/relay/agents.rs" = 1347
 "src/relay/claude.rs" = 878
 "src/relay/cloud_chat.rs" = 1304
 "src/relay/connect.rs" = 1787
 "src/relay/contract/codegen.rs" = 969
 "src/relay/contractor_access.rs" = 920
 "src/relay/daemon.rs" = 808
-"src/relay/delivery.rs" = 1484
+"src/relay/delivery.rs" = 1464
 "src/relay/devin.rs" = 763
 "src/relay/existing_session/enablement.rs" = 570
 "src/relay/existing_session/grok.rs" = 816
@@ -44,7 +44,7 @@ rust_roots = ["src"]
 "src/relay/grok.rs" = 678
 "src/relay/harness/devin.rs" = 517
 "src/relay/incoming.rs" = 630
-"src/relay/integrations.rs" = 738
+"src/relay/integrations.rs" = 688
 "src/relay/local.rs" = 1803
 "src/relay/mailbox.rs" = 783
 "src/relay/managed_sessions.rs" = 960
@@ -55,23 +55,22 @@ rust_roots = ["src"]
 "src/relay/outbox/codex_delivery.rs" = 611
 "src/relay/outbox/store.rs" = 602
 "src/relay/people.rs" = 514
-"src/relay/process.rs" = 1000
-"src/relay/setup.rs" = 783
-"src/relay/store.rs" = 1916
+"src/relay/process.rs" = 895
+"src/relay/setup.rs" = 728
+"src/relay/store.rs" = 1814
 "src/relay/telemetry.rs" = 823
 
 [baseline.cyclomatic]
 "src/cli/connect.rs::run_inner" = 33
 "src/relay/agents.rs::Core::register_session_with_origin" = 26
 "src/relay/connect.rs::Core::poll_connects" = 49
-"src/relay/delivery.rs::Core::handle" = 38
-"src/relay/integrations.rs::Core::subscribe_integration" = 28
+"src/relay/delivery.rs::Core::handle" = 37
 "src/relay/integrations.rs::Core::unsubscribe_integration" = 31
 "src/relay/local.rs::LocalInjector::fleet_codex_binding" = 23
-"src/relay/local.rs::LocalSessions::caller_target" = 25
+"src/relay/local.rs::LocalSessions::caller_target" = 24
 "src/relay/mailbox.rs::activate" = 26
 "src/relay/managed_sessions.rs::ManagedSessions::launch" = 26
-"src/relay/methods.rs::call" = 38
+"src/relay/methods.rs::call" = 37
 "src/relay/opencode_existing.rs::exact_process_credentials" = 29
 "src/relay/opencode_existing.rs::parse_http_response" = 23
 "src/relay/outbound.rs::Outbound::connect_join" = 30
@@ -80,7 +79,7 @@ rust_roots = ["src"]
 "src/relay/outbox/codex_delivery.rs::CodexDelivery::deliver" = 40
 "src/relay/outbox/codex_delivery.rs::CodexDelivery::settle_interrupted_sends" = 23
 "src/relay/probe_copy.rs::pe_imports" = 27
-"src/relay/setup.rs::Setup::handle" = 41
+"src/relay/setup.rs::Setup::handle" = 34
 "src/relay/setup.rs::Setup::sign_in" = 23
 
 [baseline.cognitive]
@@ -90,7 +89,7 @@ rust_roots = ["src"]
 "src/relay/agents.rs::Core::set_settings" = 27
 "src/relay/connect.rs::Core::poll_connects" = 135
 "src/relay/contract/codegen.rs::swift_tagged" = 24
-"src/relay/delivery.rs::Core::handle" = 50
+"src/relay/delivery.rs::Core::handle" = 49
 "src/relay/existing_session/muse.rs::SystemMspHost::page_evidence" = 32
 "src/relay/existing_session/muse.rs::SystemMspHost::submit" = 33
 "src/relay/harness/devin.rs::DevinAdapter::launch" = 23
@@ -103,7 +102,6 @@ rust_roots = ["src"]
 "src/relay/outbound.rs::Outbound::send" = 37
 "src/relay/outbox/codex_delivery.rs::CodexDelivery::deliver" = 31
 "src/relay/outbox/codex_delivery.rs::CodexDelivery::settle_interrupted_sends" = 27
-"src/relay/setup.rs::Setup::handle" = 29
 "src/relay/store.rs::Legacy::apply" = 33
 
 [baseline.unsafe]

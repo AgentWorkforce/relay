@@ -26,12 +26,7 @@ import { onboardingText } from './onboarding.js';
 import { RESPONSE_MS, STARTUP_MS } from './helpers.js';
 
 export type PhrasingVariant =
-  | 'neutral-worker'
-  | 'neutral-agent'
-  | 'relay-worker'
-  | 'relay-agent'
-  | 'arw-worker'
-  | 'arw-agent';
+  'neutral-worker' | 'neutral-agent' | 'relay-worker' | 'relay-agent' | 'arw-worker' | 'arw-agent';
 
 export const PHRASING_VARIANTS: PhrasingVariant[] = [
   'neutral-worker',

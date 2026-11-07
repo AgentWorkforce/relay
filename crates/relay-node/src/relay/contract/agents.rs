@@ -214,9 +214,22 @@ impl From<&crate::relay::store::Webhook> for AgentWebhook {
 
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema, Deserialize)]
 pub struct AgentIntegration {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_types: Vec<String>,
     pub provider: String,
     pub resource: String,
     pub ready: bool,
+}
+
+impl From<&crate::relay::store::Integration> for AgentIntegration {
+    fn from(value: &crate::relay::store::Integration) -> Self {
+        Self {
+            provider: value.provider.clone(),
+            resource: value.resource.clone(),
+            event_types: value.effective_event_types().to_vec(),
+            ready: value.ready == Some(true),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
@@ -288,6 +301,9 @@ pub struct RevokedWebhook {
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize)]
 pub struct IntegrationParams {
+    /// Exact provider event names for subscribe; omitted means all events.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_types: Vec<String>,
     pub name: String,
     pub provider: String,
     pub resource: String,
@@ -296,6 +312,9 @@ pub struct IntegrationParams {
 /// A subscription made or undone.
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema, Deserialize)]
 pub struct IntegrationChange {
+    /// Effective exact provider event filter; omitted means all events.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_types: Vec<String>,
     pub subscribed: bool,
     pub provider: String,
     pub resource: String,

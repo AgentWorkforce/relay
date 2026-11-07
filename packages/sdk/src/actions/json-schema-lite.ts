@@ -6,8 +6,7 @@
 function nodeCreateRequire(): ((path: string) => (id: string) => unknown) | undefined {
   const proc = (globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } }).process;
   const mod = proc?.getBuiltinModule?.('node:module') as
-    | { createRequire?: (path: string) => (id: string) => unknown }
-    | undefined;
+    { createRequire?: (path: string) => (id: string) => unknown } | undefined;
   return mod?.createRequire;
 }
 

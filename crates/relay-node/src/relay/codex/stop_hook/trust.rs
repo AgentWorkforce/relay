@@ -8,6 +8,8 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+pub(super) mod live;
+
 /// How long Codex's app-server is given to list or trust hooks.
 const APP_SERVER_TIMEOUT: Duration = Duration::from_secs(15);
 

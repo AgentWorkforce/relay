@@ -56,6 +56,7 @@ libc = "0.2"
 # Gravatar addresses avatars by the MD5 of an email; nothing else uses it.
 md-5 = "0.10"
 same-file = "1"
+shell-words = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 relaycast = "10.0.0"
 serde = { version = "1", features = ["derive", "rc"] }

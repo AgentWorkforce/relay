@@ -25,6 +25,7 @@ impl Store {
             let mut result = theirs.clone();
             result.archived_session_keys = Store::merged_archive_keys(ours, theirs);
             preserve_spawn_origins(&mut result, &[ours, base]);
+            super::integration::preserve_filters(&mut result, &[ours, base]);
             result.retire_unregistered_refusals(&[base, ours, theirs]);
             return result;
         }
@@ -32,6 +33,7 @@ impl Store {
             let mut result = ours.clone();
             result.archived_session_keys = Store::merged_archive_keys(ours, theirs);
             preserve_spawn_origins(&mut result, &[theirs, base]);
+            super::integration::preserve_filters(&mut result, &[theirs, base]);
             result.retire_unregistered_refusals(&[base, ours, theirs]);
             return result;
         }
@@ -285,6 +287,7 @@ impl Store {
         // the journal to the newest blockers.
         result.tidy_activation_failures();
         preserve_spawn_origins(&mut result, &[ours, theirs, base]);
+        super::integration::preserve_filters(&mut result, &[ours, theirs, base]);
         result
     }
 

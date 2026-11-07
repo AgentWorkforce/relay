@@ -280,11 +280,7 @@ export interface CliUpdateEvent {
 }
 
 export type AgentRelayToolCallType =
-  | 'agent.create'
-  | 'agent.release'
-  | 'agent.attach'
-  | 'agent.status'
-  | (string & {});
+  'agent.create' | 'agent.release' | 'agent.attach' | 'agent.status' | (string & {});
 
 export type AgentRelayToolCallCategory =
   | 'spawn'

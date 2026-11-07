@@ -23,6 +23,7 @@ pub const SESSION_ROUTES: &[(&str, &str)] = &[
     ("GET", "/settings"),
     ("PATCH", "/settings"),
     ("POST", "/codex/stop-hook"),
+    ("POST", "/copilot/hook"),
     ("POST", "/claude/attestation"),
     ("GET", "/setup/status"),
     ("POST", "/setup/sign-in"),
