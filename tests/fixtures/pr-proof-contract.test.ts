@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { execFileSync, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { closeSync, existsSync, openSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -86,6 +86,20 @@ const CASE_ID = '1591-application-ack-reconnect';
 const HANDOFF_NONCE = 'a'.repeat(32);
 const PS_PATH = ['/bin/ps', '/usr/bin/ps'].find((candidate) => existsSync(candidate));
 const HAS_TRUSTED_LANDLOCK_RUNTIME = probeLandlockedProcessSupport();
+
+// Run before ctypes or pty: runtime imports may allocate their own descriptors.
+// Sharing this guard with the sentinel test keeps inherited FDs fail-closed.
+const INHERITED_FD_GUARD = [
+  'import errno',
+  'import os',
+  'for fd in range(3, 256):',
+  '    try:',
+  '        os.fstat(fd)',
+  '    except OSError as error:',
+  '        assert error.errno == errno.EBADF',
+  '    else:',
+  '        raise AssertionError(f"inherited file descriptor {fd}")',
+];
 
 function proofBody(type = 'bugfix', caseId = CASE_ID) {
   return [
@@ -1350,6 +1364,30 @@ describe('exact broker artifact handoff', () => {
     }
   );
 
+  it.skipIf(process.platform === 'win32' || !existsSync('/usr/bin/python3'))(
+    'rejects an intentionally inherited descriptor before runtime imports',
+    async () => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'relay-pr-proof-inherited-fd-'));
+      let sentinel: number | undefined;
+      try {
+        const filename = path.join(root, 'sentinel');
+        await writeFile(filename, 'owned descriptor sentinel');
+        sentinel = openSync(filename, 'r');
+        const result = spawnSync('/usr/bin/python3', ['-c', INHERITED_FD_GUARD.join('\n')], {
+          stdio: ['ignore', 'pipe', 'pipe', sentinel],
+          encoding: 'utf8',
+          timeout: 2_000,
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain('AssertionError: inherited file descriptor 3');
+      } finally {
+        if (sentinel !== undefined) closeSync(sentinel);
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
   it.skipIf(!HAS_TRUSTED_LANDLOCK_RUNTIME)(
     'allows private PTY allocation only after dropping bootstrap privileges',
     async () => {
@@ -1360,10 +1398,26 @@ describe('exact broker artifact handoff', () => {
           [
             '-c',
             [
+              ...INHERITED_FD_GUARD,
+              'def descriptor_census():',
+              '    rows = []',
+              '    for fd in range(3, 256):',
+              '        try:',
+              '            mode = os.fstat(fd).st_mode & 0o170000',
+              '            link = os.readlink(f"/proc/self/fd/{fd}")[:256]',
+              '        except OSError as error:',
+              '            if error.errno == errno.EBADF:',
+              '                continue',
+              '            raise',
+              '        rows.append({"fd": fd, "type": mode, "link": link})',
+              '    return rows',
+              'census = {"before_imports": descriptor_census()}',
               'import ctypes',
-              'import errno',
-              'import os',
+              'census["after_ctypes"] = descriptor_census()',
               'import pty',
+              'census["after_pty"] = descriptor_census()',
+              'import json',
+              'print("descriptor census: " + json.dumps(census), flush=True)',
               'status = {}',
               'with open("/proc/self/status", encoding="utf-8") as status_file:',
               '    for line in status_file:',
@@ -1373,13 +1427,6 @@ describe('exact broker artifact handoff', () => {
               'for capability_set in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"):',
               '    assert int(status[capability_set], 16) == 0',
               'assert status["NoNewPrivs"] == "1"',
-              'for fd in range(3, 256):',
-              '    try:',
-              '        os.fstat(fd)',
-              '    except OSError as error:',
-              '        assert error.errno == errno.EBADF',
-              '    else:',
-              '        raise AssertionError(f"inherited file descriptor {fd}")',
               'assert not [entry for entry in os.listdir("/dev/pts") if entry.isdecimal()]',
               'libc = ctypes.CDLL(None, use_errno=True)',
               'mount_result = libc.mount(None, b"/", None, 0, None)',
@@ -1414,6 +1461,9 @@ describe('exact broker artifact handoff', () => {
           result,
           `private PTY launcher failed:\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
         ).toMatchObject({ exitCode: 0, timedOut: false });
+        // Include metadata in trusted Linux CI so post-exec allocations can be
+        // distinguished from an actual inherited capability. No FD contents.
+        console.info(result.stdout.trim());
       } finally {
         await rm(root, { recursive: true, force: true });
       }
