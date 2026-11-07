@@ -73,3 +73,8 @@ The case defaults to a one-second inner termination grace, below the shared
 wrapper's five-second hard-kill grace, so an ignoring Cargo/compiler group is
 killed before the wrapper can kill the case runner. Both signal regressions
 exercise that default with parent and compiler processes that ignore TERM.
+
+All provenance Git queries disable `core.fsmonitor` for that command without
+changing checkout settings. A stale monitor can otherwise keep ordinary `H`
+index tags while hiding changed working bytes. Real stale-hook regressions
+cover both target and harness checks before and after runtime.

@@ -57,7 +57,11 @@ export async function run(command, args, options = {}) {
 }
 
 export async function gitSha(directory) {
-  return (await run('git', ['-C', directory, 'rev-parse', 'HEAD'], { timeoutMs: 10_000 })).trim();
+  return (
+    await run('git', ['-c', 'core.fsmonitor=false', '-C', directory, 'rev-parse', 'HEAD'], {
+      timeoutMs: 10_000,
+    })
+  ).trim();
 }
 
 function inside(root, candidate) {
@@ -120,9 +124,13 @@ export async function assertProofInputs({ target, harness, targetSha, headSha },
     // -v lowercases assume-unchanged entries; S/s denotes skip-worktree.
     // Only ordinary tracked H entries are admissible. Never trust status alone:
     // either index flag can conceal different working-tree bytes.
-    const tagged = await run('git', ['-C', directory, 'ls-files', '-v', '-z', '--', ...inputs], {
-      timeoutMs: 10_000,
-    });
+    const tagged = await run(
+      'git',
+      ['-c', 'core.fsmonitor=false', '-C', directory, 'ls-files', '-v', '-z', '--', ...inputs],
+      {
+        timeoutMs: 10_000,
+      }
+    );
     assert(
       tagged
         .split('\0')
@@ -132,7 +140,18 @@ export async function assertProofInputs({ target, harness, targetSha, headSha },
     );
     const status = await run(
       'git',
-      ['-C', directory, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...inputs],
+      [
+        '-c',
+        'core.fsmonitor=false',
+        '-C',
+        directory,
+        'status',
+        '--porcelain=v1',
+        '-z',
+        '--untracked-files=all',
+        '--',
+        ...inputs,
+      ],
       {
         timeoutMs: 10_000,
       }
@@ -141,6 +160,8 @@ export async function assertProofInputs({ target, harness, targetSha, headSha },
     const ignored = await run(
       'git',
       [
+        '-c',
+        'core.fsmonitor=false',
         '-C',
         directory,
         'ls-files',

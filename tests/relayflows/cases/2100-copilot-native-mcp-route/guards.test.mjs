@@ -196,6 +196,41 @@ for (const phase of ['before', 'after']) {
     }
   }
 }
+// A stale fsmonitor can preserve ordinary H tags while hiding different working bytes.
+for (const phase of ['before', 'after']) {
+  for (const location of ['target', 'harness']) {
+    test(`refuses stale fsmonitor dirty ${location} ${phase}`, { skip: !posix }, async () => {
+      const f = await fixture();
+      try {
+        const directory = f[location];
+        const file = location === 'target' ? 'crates/relay-node/src/lib.rs' : `${CASE_PATH}/fixture.rs`;
+        const hook = path.join(f.scratch, 'stale-fsmonitor');
+        await writeFile(hook, "#!/bin/sh\nprintf 'stable-token\\0'\n", { mode: 0o700 });
+        git(directory, 'config', 'core.fsmonitor', hook);
+        git(directory, 'config', 'core.fsmonitorHookVersion', '2');
+        const enabled = ['-c', `core.fsmonitor=${hook}`];
+        // Explicit refresh writes the monitor's valid bits despite optional-locks=0.
+        git(directory, ...enabled, 'update-index', '--refresh');
+        assert.equal(git(directory, ...enabled, 'ls-files', '-f', '--', file), `h ${file}`);
+        const dirty = '// actual modified bytes omitted by the stale monitor\n';
+        await put(directory, file, dirty);
+        assert.notEqual(git(directory, 'show', `HEAD:${file}`), dirty.trim());
+        assert.equal(git(directory, ...enabled, 'ls-files', '-v', '--', file), `H ${file}`);
+        assert.equal(
+          git(directory, ...enabled, 'status', '--porcelain=v1', '--untracked-files=all', '--', file),
+          '',
+          'Fixture did not reproduce stale fsmonitor hiding dirty input.'
+        );
+        await assert.rejects(
+          assertProofInputs(f.inputs, phase),
+          new RegExp(`inputs are dirty.*\\(${phase}\\)`)
+        );
+      } finally {
+        await f.dispose();
+      }
+    });
+  }
+}
 test('child environment omits credentials, loader hooks and Relay overrides without changing HOME', () => {
   const blocked = [
     'FACTORY_API_KEY',
