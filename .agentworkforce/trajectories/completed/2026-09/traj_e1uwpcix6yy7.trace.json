@@ -1,0 +1,272 @@
+{
+  "version": "1.0.0",
+  "id": "0b72069d-26d9-4e7b-8a4d-bfa15b0b2394",
+  "timestamp": "2026-09-03T00:01:54.658Z",
+  "trajectory": "traj_e1uwpcix6yy7",
+  "files": [
+    {
+      "path": "scripts/verify-features/escalate-infra.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 95,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/escalation-status.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 3,
+              "end_line": 9,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 12,
+              "end_line": 18,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 193,
+              "end_line": 204,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 210,
+              "end_line": 216,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 232,
+              "end_line": 247,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 264,
+              "end_line": 279,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 284,
+              "end_line": 290,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 318,
+              "end_line": 328,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/slack-alert.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 111,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/slack-post.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 27,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/verify-features-escalation.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 30,
+              "end_line": 43,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 79,
+              "end_line": 85,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 91,
+              "end_line": 98,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 102,
+              "end_line": 168,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 277,
+              "end_line": 283,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 295,
+              "end_line": 318,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 327,
+              "end_line": 333,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 383,
+              "end_line": 389,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 396,
+              "end_line": 402,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/relayflows/cases/1642-verify-features-escalation/run.mjs",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 1,
+              "end_line": 15,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 43,
+              "end_line": 51,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 79,
+              "end_line": 86,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 112,
+              "end_line": 118,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 125,
+              "end_line": 134,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 205,
+              "end_line": 336,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 341,
+              "end_line": 351,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 371,
+              "end_line": 377,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 399,
+              "end_line": 415,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "workflows/verify-features.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 88,
+              "end_line": 95,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 324,
+              "end_line": 329,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 1877,
+              "end_line": 1883,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 1892,
+              "end_line": 1906,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 2515,
+              "end_line": 2561,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 2573,
+              "end_line": 2579,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            },
+            {
+              "start_line": 2588,
+              "end_line": 2594,
+              "revision": "2e179d2a454b5770bb00291e10e5cc2facf4eeda"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "id": "compact_drrcx6ih8b5e",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-10T19:24:28.621Z",
+  "sourceTrajectories": [
+    "traj_glcziiq16vc3"
+  ],
+  "dateRange": {
+    "start": "2026-09-10T19:16:15.407Z",
+    "end": "2026-09-10T19:24:27.985Z"
+  },
+  "summary": {
+    "totalDecisions": 2,
+    "totalEvents": 3,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Preserve both changelog entries and strengthen delivery proof",
+          "chosen": "Preserve both changelog entries and strengthen delivery proof",
+          "reasoning": "Only CHANGELOG conflicted on latest main. All four pending-review replies were already posted and resolved. The queue regression must test live exhausted state before load resets the budget; the process proof must verify retained worker delivery separately from audit reconciliation.",
+          "fromTrajectory": "traj_glcziiq16vc3"
+        }
+      ]
+    },
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Validate both live retry ordering and crash recovery against pre-fix delivery code",
+          "chosen": "Validate both live retry ordering and crash recovery against pre-fix delivery code",
+          "reasoning": "The strengthened unit regression fails with exhaustion before absence handling (exit 101). The expanded real-process proof passes fixed code and fails with delivery.rs from initial feature commit 0aaac651e (exit 1, absent work dead-lettered). The marker was shortened to fit the PTY line width after confirming payload rendering.",
+          "fromTrajectory": "traj_glcziiq16vc3"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    "CHANGELOG.md",
+    "packages/cli/src/cli/commands/fleet.test.ts",
+    "packages/cli/src/cli/commands/fleet.ts",
+    "packages/cloud/src/fleet-sandbox.test.ts",
+    "packages/cloud/src/fleet-sandbox.ts",
+    "tests/relayflows/cases/1630-scoped-relayfile-sandbox-mount/run.mjs",
+    "tests/relayflows/cases/1732-daytona-provider-sandbox-identity/case.json",
+    "tests/relayflows/cases/1732-daytona-provider-sandbox-identity/run.mjs"
+  ],
+  "commits": [
+    "4ea088d93",
+    "10a7bac1c",
+    "2bac41acb",
+    "94138ffbc",
+    "0930799d6",
+    "6c816f0bb",
+    "7c9aa708b",
+    "0531e38f5",
+    "0aaac651e",
+    "6e44912d9",
+    "39ca68f5d"
+  ]
+}

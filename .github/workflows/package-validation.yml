@@ -21,11 +21,14 @@ env:
 
 jobs:
   changes:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/detect-changes.yml
   validate:
     name: Build & Validate
     needs: changes
-    if: needs.changes.outputs.node_changed == 'true'
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     env:
       NPM_CONFIG_FUND: false
@@ -98,7 +101,7 @@ jobs:
           # Check dist files exist (skip non-Node package directories).
           # broker-* packages ship a Rust-built binary in bin/, not a JS
           # dist — they live under packages/ only for workspace linkage.
-          SKIP_PACKAGES="build-plans brand broker-darwin-arm64 broker-darwin-x64 broker-linux-arm64 broker-linux-x64 broker-win32-x64 personas"
+          SKIP_PACKAGES="build-plans broker-darwin-arm64 broker-darwin-x64 broker-linux-arm64 broker-linux-x64 broker-win32-x64 personas"
           for pkg_dir in packages/*/; do
             pkg_name=$(basename "$pkg_dir")
             if [ ! -f "$pkg_dir/package.json" ]; then
@@ -199,7 +202,9 @@ jobs:
   publish-fresh-install-build:
     name: Publish Fresh Install Build
     needs: changes
-    if: needs.changes.outputs.node_changed == 'true'
+    if: >-
+      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (needs.changes.outputs.node_changed == 'true')
     runs-on: ubuntu-latest
     env:
       NPM_CONFIG_FUND: false
@@ -213,6 +218,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22.14.0'
+
+      - name: Upgrade npm before fresh resolution
+        # See publish.yml's "Upgrade npm before fresh resolution" step: npm
+        # <=10.9.x's arborist crashes re-resolving the harnesses package's
+        # peer set once the lockfile is gone (npm/cli#8261). Fixed by npm
+        # version, not Node version — confirmed via repro on npm 10.9.4/Node
+        # 22.22.0 still crashing and npm 11.19.1/Node 22.14.0 succeeding.
+        run: npm install -g npm@11.19.1
 
       # The publish workflow bumps versions, removes package-lock.json, then
       # runs npm install. This catches range-resolved dependency breaks before merge.
@@ -239,10 +252,7 @@ jobs:
     # secrets. Skip this live-cloud smoke there instead of falling back to
     # provisioning an undeletable workspace; other same-repository PRs and
     # main pushes must reuse the CI workspace.
-    if: >-
-      needs.changes.outputs.node_changed == 'true' &&
-      github.actor != 'dependabot[bot]' &&
-      (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: needs.changes.outputs.node_changed == 'true' && github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: macos-latest
     env:
       NPM_CONFIG_FUND: false
@@ -343,8 +353,10 @@ jobs:
           scripts/verify-macos-binary.sh "release-binaries/${OUTPUT}" "$EXPECTED_ARCH" -- --version
           echo "STANDALONE_CLI=$PWD/release-binaries/${OUTPUT}" >> "$GITHUB_ENV"
 
+      - name: Verify standalone MCP dispatches each request once
+        run: node scripts/verify-standalone-mcp-single-dispatch.mjs "$STANDALONE_CLI"
+
       - name: Smoke standalone lifecycle
         env:
           AGENT_RELAY_STARTUP_DEBUG: 1
-          RELAY_WORKSPACE_KEY: ${{ secrets.RELAY_CI_WORKSPACE_KEY }}
         run: bash scripts/ci-standalone-smoke.sh "$STANDALONE_CLI" "$STANDALONE_BROKER"

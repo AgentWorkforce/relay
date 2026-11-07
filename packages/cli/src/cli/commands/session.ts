@@ -2,10 +2,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import type { RelayCliIo, RelayCliSurface } from '@agent-relay/cli-surface';
 import { SessionClient, type ReplaySessionResult } from '@agent-relay/session';
 import { Command, InvalidArgumentError } from 'commander';
 
 import { defaultExit } from '../lib/exit.js';
+import { resolveWorkspaceSessionKey } from '../lib/workspace-session.js';
+import { describeError } from '../lib/describe-error.js';
 
 /** The durable reference is Relay's ai-hist session UUID, never a local alias. */
 const SESSION_REF_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -25,12 +28,14 @@ export interface StoredRelayhistoryAuth {
 export interface SessionCommandDependencies {
   createClient: (storedAuth: StoredRelayhistoryAuth | null) => SessionReplayClient;
   readStoredAuth: () => StoredRelayhistoryAuth | null;
+  resolveWorkspaceKey: () => string | undefined;
   log: (...args: unknown[]) => void;
   error: (...args: unknown[]) => void;
   exit: (code: number) => never;
 }
 
-function readStoredRelayhistoryAuth(): StoredRelayhistoryAuth | null {
+/** Exported so the mounted `sessions` group can build a cloud client from the same credentials. */
+export function readStoredRelayhistoryAuth(): StoredRelayhistoryAuth | null {
   try {
     const authDir =
       process.env.RELAYHISTORY_HOME ?? path.join(os.homedir(), '.agentworkforce', 'relayhistory');
@@ -92,17 +97,39 @@ export function resolveRelayhistoryConfig(storedAuth: StoredRelayhistoryAuth | n
   };
 }
 
-function withDefaults(overrides: Partial<SessionCommandDependencies> = {}): SessionCommandDependencies {
+/** Resolve the workspace-wide Relaycast replay credential independently of Relayhistory auth. */
+export function resolveRelaycastConfig(persistedWorkspaceKey?: string): {
+  baseUrl: string | undefined;
+  workspaceKey: string | undefined;
+} {
   return {
-    createClient: (storedAuth) => {
-      const config = resolveRelayhistoryConfig(storedAuth);
-      return new SessionClient({ baseUrl: config.baseUrl, token: config.token });
-    },
-    readStoredAuth: readStoredRelayhistoryAuth,
-    log: (...args: unknown[]) => console.log(...args),
-    error: (...args: unknown[]) => console.error(...args),
-    exit: defaultExit,
-    ...overrides,
+    baseUrl: nonBlankEnv('RELAY_BASE_URL'),
+    workspaceKey:
+      nonBlankEnv('RELAY_WORKSPACE_KEY', 'AGENT_RELAY_WORKSPACE_KEY') ??
+      (persistedWorkspaceKey?.trim() || undefined),
+  };
+}
+
+function withDefaults(overrides: Partial<SessionCommandDependencies> = {}): SessionCommandDependencies {
+  const resolveWorkspaceKey = overrides.resolveWorkspaceKey ?? resolveWorkspaceSessionKey;
+  return {
+    createClient:
+      overrides.createClient ??
+      ((storedAuth) => {
+        const config = resolveRelayhistoryConfig(storedAuth);
+        const relaycast = resolveRelaycastConfig(resolveWorkspaceKey());
+        return new SessionClient({
+          baseUrl: config.baseUrl,
+          token: config.token,
+          relaycastBaseUrl: relaycast.baseUrl,
+          workspaceKey: relaycast.workspaceKey,
+        });
+      }),
+    readStoredAuth: overrides.readStoredAuth ?? readStoredRelayhistoryAuth,
+    resolveWorkspaceKey,
+    log: overrides.log ?? ((...args: unknown[]) => console.log(...args)),
+    error: overrides.error ?? ((...args: unknown[]) => console.error(...args)),
+    exit: overrides.exit ?? defaultExit,
   };
 }
 
@@ -114,17 +141,17 @@ function parseSessionRef(value: string): string {
   return sessionRef;
 }
 
-/** Register durable completed-session replay backed by Relayhistory's existing journal. */
+/** Register durable completed-session replay joined across Relayhistory and Relaycast. */
 export function registerSessionCommands(
   program: Command,
   overrides: Partial<SessionCommandDependencies> = {}
 ): void {
   const deps = withDefaults(overrides);
-  const group = program.command('session').description('Read durable Relayhistory sessions');
+  const group = program.command('session').description('Read durable completed Relay sessions');
 
   group
     .command('replay')
-    .description('Reconstruct a completed Relay session as attributed Relayhistory context')
+    .description('Reconstruct a completed Relay session from Relayhistory and Relaycast')
     .argument('<id>', 'Relay-emitted session UUID', parseSessionRef)
     .action(async (sessionId: string) => {
       const storedAuth = deps.readStoredAuth();
@@ -149,4 +176,78 @@ export function registerSessionCommands(
       const replay = await deps.createClient(storedAuth).replaySession(sessionId);
       deps.log(replay.contextPrompt);
     });
+}
+
+/**
+ * Session replay as a mountable surface part.
+ *
+ * `agent-relay sessions` is one tree spanning three owners: ai-hist's local
+ * history, its cloud client, and this — replay, which joins Relayhistory turns
+ * with Relaycast conversation. Replay stays in this repo because Relaycast is
+ * Relay's own surface, not something ai-hist should learn about; composing it
+ * keeps the package boundary out of the user's command line.
+ *
+ * @param version - Version to report, normally the surface it composes with.
+ * @param overrides - Same dependency seams as the commander registration.
+ * @returns A single-command surface providing `replay`.
+ */
+export function createSessionReplaySurface(
+  version: string,
+  overrides: Partial<SessionCommandDependencies> = {}
+): RelayCliSurface {
+  const deps = withDefaults(overrides);
+
+  return {
+    id: 'relay-session-replay',
+    version,
+    contract: 1,
+    commands: [
+      {
+        name: 'replay',
+        description: 'Reconstruct a completed Relay session from Relayhistory and Relaycast',
+        args: [{ name: 'id', description: 'Relay-emitted session UUID', required: true }],
+      },
+    ],
+    async run(argv: readonly string[], io: RelayCliIo): Promise<number> {
+      const [, rawId, ...rest] = ['replay', ...argv.slice(1)];
+      if (rest.length > 0) {
+        io.stderr(`error: unexpected argument '${rest[0]}'\n`);
+        return 2;
+      }
+      if (!rawId) {
+        io.stderr("error: missing required argument 'id'\n");
+        return 2;
+      }
+
+      let sessionId: string;
+      try {
+        sessionId = parseSessionRef(rawId);
+      } catch (error) {
+        io.stderr(`error: ${describeError(error)}\n`);
+        return 2;
+      }
+
+      const storedAuth = deps.readStoredAuth();
+      const config = resolveRelayhistoryConfig(storedAuth);
+      if (!config.baseUrl) {
+        io.stderr(
+          'No Relayhistory endpoint is configured. Set RELAYHISTORY_URL, or sign in so ' +
+            '~/.agentworkforce/relayhistory/auth.json has a base_url.\n'
+        );
+        return 1;
+      }
+      if (!config.token) {
+        io.stderr(
+          'No Relayhistory credential is configured. Set RELAYHISTORY_TOKEN ' +
+            '(or RELAYHISTORY_ACCESS_TOKEN/RELAY_AGENT_TOKEN), or sign in so ' +
+            '~/.agentworkforce/relayhistory/auth.json has an access_token.\n'
+        );
+        return 1;
+      }
+
+      const replay = await deps.createClient(storedAuth).replaySession(sessionId);
+      io.stdout(`${replay.contextPrompt}\n`);
+      return 0;
+    },
+  };
 }

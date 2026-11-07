@@ -4,6 +4,28 @@ use crate::terminal_control::TerminalToCloud;
 
 impl BrokerRuntime {
     pub(super) async fn handle_maintenance_tick(&mut self) {
+        let expired_staging = self.attachment_staging.expire_stalled(
+            Instant::now(),
+            crate::attachments::ATTACHMENT_STAGING_MAX_HOLD,
+        );
+        for (deliver, block) in expired_staging {
+            tracing::warn!(
+                target = "relay_broker::attachments",
+                agent = %deliver.agent,
+                delivery_id = %deliver.delivery_id,
+                "attachment staging task did not complete; releasing delivery with fetch references"
+            );
+            self.handle_fleet_deliver(deliver, block.as_deref()).await;
+        }
+        self.maintain_tasks().await;
+        self.reconcile_identity_cleanups().await;
+        // The awaited maintenance handoffs above give workers time to enqueue
+        // delivery confirmations. Apply those confirmations before taking the
+        // retry-deadline snapshot so an accepted delivery cannot be retried or
+        // dead-lettered merely because its event was already queued.
+        while let Ok(worker_event) = self.worker_event_rx.try_recv() {
+            self.handle_worker_event(worker_event).await;
+        }
         let paths = &self.paths;
         let state = &mut self.state;
         let sdk_out_tx = &self.sdk_out_tx;
@@ -208,7 +230,7 @@ impl BrokerRuntime {
             .map(|(name, pending)| (name.clone(), pending.invocation_id.clone()))
             .collect();
         for (name, invocation_id) in &expired_verified_spawns {
-            pending_verified_spawns.remove(name);
+            let pending = pending_verified_spawns.remove(name);
             let _ = super::relaycast_events::release_worker_locally(
                 name.clone(),
                 default_workspace,
@@ -229,38 +251,51 @@ impl BrokerRuntime {
                 terminal_input_requests,
             )
             .await;
-            match super::fleet::deregister_fleet_agent(fleet_control_tx, fleet_delivery_book, name)
-                .await
-            {
-                Ok(_) => {
+            let owned = workers.owned_spawn_generations.get(name).cloned();
+            let completion = super::fleet::verified_spawn_failed_result(
+                invocation_id.clone(),
+                pending.as_ref().and_then(|pending| pending.failure_reason.as_deref()).unwrap_or(
+                    "spawn_readiness_timeout: worker released after failing to reach harness readiness"),
+            );
+            // This result goes out through identity cleanup or the fleet channel
+            // directly rather than `send_fleet_action_result`, so it would
+            // otherwise be the one spawn outcome missing the correlation log —
+            // and it is the outcome most likely to be investigated.
+            tracing::info!(invocation_id = %invocation_id, worker = %name, verify_ready = true,
+                deferred_to_identity_cleanup = owned.is_some(),
+                "sending fleet action result");
+            if let Some((_, http)) = owned {
+                super::identity_cleanup::schedule_identity_cleanup(
+                    workers,
+                    fleet_control_tx,
+                    fleet_delivery_book,
+                    fleet_inventory,
+                    &http,
+                    name,
+                    true,
+                    Some(super::identity_cleanup::CleanupCompletion::Fleet(
+                        completion,
+                    )),
+                );
+            } else {
+                if super::fleet::deregister_fleet_agent(fleet_control_tx, fleet_delivery_book, name)
+                    .await
+                    .is_ok()
+                {
                     super::fleet::prune_fleet_agent_state(
                         fleet_control_tx,
                         fleet_inventory,
                         fleet_delivery_book,
                         name,
                     )
-                    .await
-                }
-                Err(error) => {
-                    tracing::warn!(worker = %name, %error, "retaining fleet identity after readiness timeout cleanup");
-                    super::fleet::prune_fleet_inventory_entry(
-                        fleet_control_tx,
-                        fleet_inventory,
-                        name,
-                    )
                     .await;
                 }
+                let _ = fleet_control_tx
+                    .send(FleetControlCommand::Send(
+                        crate::fleet_wire::BrokerToRelaycast::ActionResult(completion),
+                    ))
+                    .await;
             }
-            let _ = fleet_control_tx
-                .send(FleetControlCommand::Send(
-                    crate::fleet_wire::BrokerToRelaycast::ActionResult(
-                        super::fleet::verified_spawn_failed_result(
-                            invocation_id.clone(),
-                            "spawn_readiness_timeout",
-                        ),
-                    ),
-                ))
-                .await;
         }
 
         let exited = match workers.reap_exited().await {
@@ -272,7 +307,15 @@ impl BrokerRuntime {
         };
         let mut fleet_load_changed = !expired_verified_spawns.is_empty() || !exited.is_empty();
         for (name, generation, code, signal, exit_reason) in &exited {
-            let mut retain_fleet_identity = false;
+            let mut retain_fleet_identity = workers
+                .owned_spawn_generations
+                .get(name)
+                .is_some_and(|(owned_generation, _)| owned_generation == generation);
+            if retain_fleet_identity {
+                tracing::info!(worker = %name, %generation,
+                    binding_retained = fleet_delivery_book.active_agent_id(name.as_str()).is_some(),
+                    "retaining reaped owned generation and fleet binding for confirmed cleanup");
+            }
             let pending = pending_verified_spawns
                 .get(name)
                 .is_some_and(|pending| pending.generation == *generation)
@@ -282,29 +325,43 @@ impl BrokerRuntime {
                 // A failed verified launch has no owner after its action is
                 // failed. Do not let the normal supervisor revive it later.
                 workers.supervisor.unregister(name);
-                match super::fleet::deregister_fleet_agent(
-                    fleet_control_tx,
-                    fleet_delivery_book,
-                    name,
-                )
-                .await
-                {
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::warn!(worker = %name, %error, "retaining fleet identity after early verified-spawn exit");
-                        retain_fleet_identity = true;
-                    }
+                let owned = workers
+                    .owned_spawn_generations
+                    .get(name)
+                    .filter(|(owned_generation, _)| owned_generation == generation)
+                    .cloned();
+                let completion = super::fleet::verified_spawn_failed_result(
+                    pending.invocation_id,
+                    "spawn_harness_not_ready",
+                );
+                if let Some((_, http)) = owned {
+                    super::identity_cleanup::schedule_identity_cleanup(
+                        workers,
+                        fleet_control_tx,
+                        fleet_delivery_book,
+                        fleet_inventory,
+                        &http,
+                        name,
+                        true,
+                        Some(super::identity_cleanup::CleanupCompletion::Fleet(
+                            completion,
+                        )),
+                    );
+                    retain_fleet_identity = true;
+                } else {
+                    retain_fleet_identity = super::fleet::deregister_fleet_agent(
+                        fleet_control_tx,
+                        fleet_delivery_book,
+                        name,
+                    )
+                    .await
+                    .is_err();
+                    let _ = fleet_control_tx
+                        .send(FleetControlCommand::Send(
+                            crate::fleet_wire::BrokerToRelaycast::ActionResult(completion),
+                        ))
+                        .await;
                 }
-                let _ = fleet_control_tx
-                    .send(FleetControlCommand::Send(
-                        crate::fleet_wire::BrokerToRelaycast::ActionResult(
-                            super::fleet::verified_spawn_failed_result(
-                                pending.invocation_id,
-                                "spawn_harness_not_ready",
-                            ),
-                        ),
-                    ))
-                    .await;
             }
             let lifecycle_reason = exit_reason.as_deref().unwrap_or("worker_exited");
             if (code.is_some_and(|code| code != 0) || signal.is_some())
@@ -629,6 +686,7 @@ impl BrokerRuntime {
                         worker_relay_key,
                         rst.payload.skip_relay_prompt,
                         None,
+                        rst.payload.initial_task.clone(),
                         rst.payload.agent_result.clone(),
                         None,
                     )
@@ -636,12 +694,21 @@ impl BrokerRuntime {
                 {
                     Ok(effective_spec) => {
                         fleet_load_changed = true;
+                        // A supervised tokenless worker owns the identity
+                        // across respawns, but each process is a new exact
+                        // generation. Refresh custody before any later
+                        // name-only release can infer the generation.
+                        if workers.owned_spawn_generations.contains_key(&name) {
+                            if let Some(worker) = workers.workers.get(&name) {
+                                workers.owned_spawn_generations.insert(
+                                    name.clone(),
+                                    (worker.generation, relaycast_http.clone()),
+                                );
+                            }
+                        }
                         workers.supervisor.on_restarted(&name);
                         workers.metrics.on_restart(&name);
                         let initial_task = rst.payload.initial_task.clone();
-                        if let Some(task) = initial_task.clone() {
-                            workers.initial_tasks.insert(name.clone(), task);
-                        }
                         let pid = workers.worker_pid(&name);
                         let restart_policy = state
                             .agents
@@ -706,7 +773,11 @@ impl BrokerRuntime {
             }
         }
 
-        let live_fleet_workers = workers.live_fleet_inventory_candidates();
+        let live_fleet_workers = workers
+            .live_fleet_inventory_candidates()
+            .into_iter()
+            .filter(|worker| !workers.identity_cleanups.contains_key(&worker.name))
+            .collect();
         if super::fleet::reconcile_fleet_inventory_with_live_workers(
             fleet_control_tx,
             relaycast_http,
@@ -729,6 +800,11 @@ impl BrokerRuntime {
             super::fleet::publish_fleet_load_snapshot(
                 fleet_control_tx,
                 u32::try_from(workers.workers.len()).unwrap_or(u32::MAX),
+                workers
+                    .workers
+                    .keys()
+                    .map(|name| name.as_str().to_string())
+                    .collect(),
                 fleet_max_agents,
                 fleet_handlers_live,
                 true,
@@ -747,7 +823,9 @@ impl BrokerRuntime {
         self.obligation_store.gc(now);
         if crate::obligation::boomerang_enabled() {
             let interval = std::time::Duration::from_millis(crate::obligation::interval_ms());
-            let due = self.obligation_store.drain_due(now, interval);
+            let due = self.obligation_store.drain_due(now, interval, |recipient| {
+                !self.workers.initial_tasks.contains_key(recipient)
+            });
             for (msg_id, recipient) in due {
                 let boomerang_body = crate::obligation::build_return_body(&msg_id);
                 let delivery_id = DeliveryId::new(uuid::Uuid::new_v4().to_string());

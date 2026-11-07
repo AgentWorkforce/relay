@@ -14,7 +14,11 @@ import { action, defineNode, spawn } from '@agent-relay/fleet';
  * drains stdin and idles, so spawn completes without a real AI CLI.
  */
 const stubPath = fileURLToPath(new URL('./stub-agent.cjs', import.meta.url));
-const stub = definePtyHarness({ runtime: 'pty', command: process.execPath, args: [stubPath] });
+const stub = definePtyHarness({
+  runtime: 'pty',
+  command: fileURLToPath(new URL('./codex', import.meta.url)),
+  env: { RELAY_E2E_NODE_NAME: 'node-a', RELAY_INJECT_RATE_MS: '0' },
+});
 const delayedReadyStub = definePtyHarness({
   runtime: 'pty',
   command: process.execPath,

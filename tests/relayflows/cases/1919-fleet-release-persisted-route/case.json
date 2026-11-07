@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1919-fleet-release-persisted-route",
+  "kind": "bugfix",
+  "title": "Keep fleet release on the persisted workspace route",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1919-fleet-release-persisted-route/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "fleet_release_rejected_persisted_route"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "fleet_release_used_persisted_route"
+    }
+  }
+}

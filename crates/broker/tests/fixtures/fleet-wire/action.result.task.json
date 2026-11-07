@@ -1,0 +1,15 @@
+{
+  "v": 1,
+  "id": "task_receipt_final",
+  "type": "action.result",
+  "invocation_id": "inv-task",
+  "execution_id": "inv-task/1",
+  "worker_generation": "worker-1",
+  "final": true,
+  "output": {
+    "answer": 42
+  },
+  "accounting": {
+    "tokens": 17
+  }
+}

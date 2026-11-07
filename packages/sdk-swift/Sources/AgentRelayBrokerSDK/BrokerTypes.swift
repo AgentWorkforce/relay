@@ -245,6 +245,8 @@ public enum BrokerEvent: Sendable {
     case deliveryDropped(DeliveryDroppedEvent)
     case deliveryQueued(DeliveryStateEvent)
     case deliveryInjected(DeliveryStateEvent)
+    case deliveryUnconfirmed(DeliveryUnconfirmedEvent)
+    case deliveryResubmitted(DeliveryResubmittedEvent)
     case deliveryVerified(DeliveryStateEvent)
     case deliveryFailed(DeliveryFailedEvent)
     case deliveryActive(DeliveryStateEvent)
@@ -277,6 +279,8 @@ extension BrokerEvent: Codable {
         case "delivery_dropped": self = .deliveryDropped(try DeliveryDroppedEvent(from: decoder))
         case "delivery_queued": self = .deliveryQueued(try DeliveryStateEvent(from: decoder))
         case "delivery_injected": self = .deliveryInjected(try DeliveryStateEvent(from: decoder))
+        case "delivery_unconfirmed": self = .deliveryUnconfirmed(try DeliveryUnconfirmedEvent(from: decoder))
+        case "delivery_resubmitted": self = .deliveryResubmitted(try DeliveryResubmittedEvent(from: decoder))
         case "delivery_verified": self = .deliveryVerified(try DeliveryStateEvent(from: decoder))
         case "delivery_failed": self = .deliveryFailed(try DeliveryFailedEvent(from: decoder))
         case "delivery_active": self = .deliveryActive(try DeliveryStateEvent(from: decoder))
@@ -308,6 +312,8 @@ extension BrokerEvent: Codable {
         case .deliveryDropped(let value): try value.encode(to: encoder)
         case .deliveryQueued(let value): try value.encode(to: encoder)
         case .deliveryInjected(let value): try value.encode(to: encoder)
+        case .deliveryUnconfirmed(let value): try value.encode(to: encoder)
+        case .deliveryResubmitted(let value): try value.encode(to: encoder)
         case .deliveryVerified(let value): try value.encode(to: encoder)
         case .deliveryFailed(let value): try value.encode(to: encoder)
         case .deliveryActive(let value): try value.encode(to: encoder)
@@ -409,7 +415,9 @@ public struct RelayInboundEvent: Codable, Sendable { public var kind: String = "
 public struct WorkerStreamEvent: Codable, Sendable { public var kind: String = "worker_stream"; public var name: String; public var stream: String; public var chunk: String }
 public struct DeliveryRetryEvent: Codable, Sendable { public var kind: String = "delivery_retry"; public var name: String; public var deliveryId: String; public var eventId: String; public var attempts: Int; enum CodingKeys: String, CodingKey { case kind, name, attempts; case deliveryId = "delivery_id"; case eventId = "event_id" } }
 public struct DeliveryDroppedEvent: Codable, Sendable { public var kind: String = "delivery_dropped"; public var name: String; public var count: Int; public var reason: String }
-public struct DeliveryStateEvent: Codable, Sendable { public var kind: String; public var name: String; public var deliveryId: String; public var eventId: String; enum CodingKeys: String, CodingKey { case kind, name; case deliveryId = "delivery_id"; case eventId = "event_id" } }
+public struct DeliveryStateEvent: Codable, Sendable { public var kind: String; public var name: String; public var deliveryId: String; public var eventId: String; public var verification: String?; public var reason: String?; public var evidence: String?; public var attempts: Int?; enum CodingKeys: String, CodingKey { case kind, name, verification, reason, evidence, attempts; case deliveryId = "delivery_id"; case eventId = "event_id" } }
+public struct DeliveryUnconfirmedEvent: Codable, Sendable { public var kind: String = "delivery_unconfirmed"; public var name: String; public var deliveryId: String; public var eventId: String; public var reason: String; public var attempts: Int; public var maxAttempts: Int; enum CodingKeys: String, CodingKey { case kind, name, reason, attempts; case deliveryId = "delivery_id"; case eventId = "event_id"; case maxAttempts = "max_attempts" } }
+public struct DeliveryResubmittedEvent: Codable, Sendable { public var kind: String = "delivery_resubmitted"; public var name: String; public var deliveryId: String; public var eventId: String; public var attempt: Int; public var strategy: String; enum CodingKeys: String, CodingKey { case kind, name, attempt, strategy; case deliveryId = "delivery_id"; case eventId = "event_id" } }
 public struct DeliveryFailedEvent: Codable, Sendable { public var kind: String = "delivery_failed"; public var name: String; public var deliveryId: String; public var eventId: String; public var reason: String; enum CodingKeys: String, CodingKey { case kind, name, reason; case deliveryId = "delivery_id"; case eventId = "event_id" } }
 public struct WorkerReadyEvent: Codable, Sendable { public var kind: String = "worker_ready"; public var name: String; public var runtime: AgentRuntime; public var provider: HeadlessProvider?; public var cli: String?; public var model: String?; public var sessionId: String?; enum CodingKeys: String, CodingKey { case kind, name, runtime, provider, cli, model; case sessionId = "session_id" } }
 public struct WorkerErrorEvent: Codable, Sendable { public var kind: String = "worker_error"; public var name: String; public var code: String; public var message: String }
@@ -524,8 +532,38 @@ public struct ResizePtyResult: Codable, Sendable {
 }
 
 /// Result of `POST /api/spawned/{name}/flush`.
+///
+/// `flushed` alone cannot tell an empty queue from one the broker could not
+/// drain. The remaining fields carry that distinction and are absent on
+/// brokers older than the change that added them.
 public struct FlushResult: Codable, Sendable {
     public var flushed: Int
+    /// Messages dead-lettered instead of injected because their Relaycast
+    /// identity no longer holds the worker's name.
+    public var deadLettered: Int?
+    /// Messages still parked when the flush stopped.
+    public var held: Int?
+    /// Why the flush stopped short, when it did.
+    public var blockedReason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case flushed
+        case deadLettered = "dead_lettered"
+        case held
+        case blockedReason = "blocked_reason"
+    }
+
+    public init(
+        flushed: Int,
+        deadLettered: Int? = nil,
+        held: Int? = nil,
+        blockedReason: String? = nil
+    ) {
+        self.flushed = flushed
+        self.deadLettered = deadLettered
+        self.held = held
+        self.blockedReason = blockedReason
+    }
 }
 
 /// A PTY screen snapshot (`GET /api/spawned/{name}/snapshot`).
@@ -549,21 +587,70 @@ public struct SendMessageResult: Codable, Sendable {
     /// empty array when absent. It is retained for parity with the TS driver's
     /// `{ event_id, targets }` result shape.
     public var targets: [String]
+    /// Whether the broker accepted the request.
+    public var success: Bool?
+    /// Durable Relaycast publication; this is not recipient delivery proof.
+    public var relaycastPublished: Bool?
+    /// Current broker contract is `published_unconfirmed` after publication.
+    public var deliveryStatus: String?
+    /// Best-effort Relaycast presence for a named recipient. `nil` means the
+    /// observation was unavailable or the target was not a named recipient.
+    public var recipientLive: Bool?
+    /// Effective Relaycast status observed for a named recipient.
+    public var recipientStatus: String?
+    public var local: Bool?
+    public var workspaceId: String?
+    public var workspaceAlias: String?
 
     enum CodingKeys: String, CodingKey {
         case eventId = "event_id"
         case targets
+        case success
+        case relaycastPublished = "relaycast_published"
+        case deliveryStatus = "delivery_status"
+        case recipientLive = "recipient_live"
+        case recipientStatus = "recipient_status"
+        case local
+        case workspaceId = "workspace_id"
+        case workspaceAlias = "workspace_alias"
     }
 
-    public init(eventId: String, targets: [String] = []) {
+    public init(
+        eventId: String,
+        targets: [String] = [],
+        success: Bool? = nil,
+        relaycastPublished: Bool? = nil,
+        deliveryStatus: String? = nil,
+        recipientLive: Bool? = nil,
+        recipientStatus: String? = nil,
+        local: Bool? = nil,
+        workspaceId: String? = nil,
+        workspaceAlias: String? = nil
+    ) {
         self.eventId = eventId
         self.targets = targets
+        self.success = success
+        self.relaycastPublished = relaycastPublished
+        self.deliveryStatus = deliveryStatus
+        self.recipientLive = recipientLive
+        self.recipientStatus = recipientStatus
+        self.local = local
+        self.workspaceId = workspaceId
+        self.workspaceAlias = workspaceAlias
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.eventId = try container.decode(String.self, forKey: .eventId)
         self.targets = try container.decodeIfPresent([String].self, forKey: .targets) ?? []
+        self.success = try container.decodeIfPresent(Bool.self, forKey: .success)
+        self.relaycastPublished = try container.decodeIfPresent(Bool.self, forKey: .relaycastPublished)
+        self.deliveryStatus = try container.decodeIfPresent(String.self, forKey: .deliveryStatus)
+        self.recipientLive = try container.decodeIfPresent(Bool.self, forKey: .recipientLive)
+        self.recipientStatus = try container.decodeIfPresent(String.self, forKey: .recipientStatus)
+        self.local = try container.decodeIfPresent(Bool.self, forKey: .local)
+        self.workspaceId = try container.decodeIfPresent(String.self, forKey: .workspaceId)
+        self.workspaceAlias = try container.decodeIfPresent(String.self, forKey: .workspaceAlias)
     }
 }
 

@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1797-cloud-schedule-code-snapshot",
+  "kind": "bugfix",
+  "title": "Upload an immutable code snapshot when creating a Cloud workflow schedule",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1797-cloud-schedule-code-snapshot/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "schedule_submitted_without_code_snapshot"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "schedule_uploads_immutable_code_snapshot"
+    }
+  }
+}

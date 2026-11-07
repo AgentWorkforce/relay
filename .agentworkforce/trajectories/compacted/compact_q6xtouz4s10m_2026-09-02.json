@@ -1,0 +1,69 @@
+{
+  "id": "compact_q6xtouz4s10m",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-02T07:49:34.020Z",
+  "sourceTrajectories": [
+    "traj_amm49zai5ffq"
+  ],
+  "dateRange": {
+    "start": "2026-09-02T06:42:47.917Z",
+    "end": "2026-09-02T07:17:52.447Z"
+  },
+  "summary": {
+    "totalDecisions": 4,
+    "totalEvents": 4,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Replay outage input automatically only after positive same-worker identity verification",
+          "chosen": "Replay outage input automatically only after positive same-worker identity verification",
+          "reasoning": "Drive attach is a raw interactive stream; prompting would require intercepting terminal control data and stall the session. A positive PID/context match preserves destination safety, while rejected or unavailable identity discards the buffer and detaches.",
+          "fromTrajectory": "traj_amm49zai5ffq"
+        },
+        {
+          "question": "Bound each outage buffer at 64 KiB and poison the whole pending buffer on overflow or replay refusal",
+          "chosen": "Bound each outage buffer at 64 KiB and poison the whole pending buffer on overflow or replay refusal",
+          "reasoning": "The bound accommodates human typeahead through the retry window but caps paste and mouse-report floods. Whole-buffer discard prevents a truncated prefix or suffix from becoming a different executable command.",
+          "fromTrajectory": "traj_amm49zai5ffq"
+        },
+        {
+          "question": "Do not replay the live write whose rejection initiated recovery",
+          "chosen": "Do not replay the live write whose rejection initiated recovery",
+          "reasoning": "That write may have crossed the socket before its acknowledgement failed, so replay would risk duplicate execution. Only input observed after recovery starts is known not to have been sent.",
+          "fromTrajectory": "traj_amm49zai5ffq"
+        }
+      ]
+    },
+    {
+      "category": "testing",
+      "decisions": [
+        {
+          "question": "Classify defect A as relaycast-cloud hard terminal-session expiry",
+          "chosen": "Classify defect A as relaycast-cloud hard terminal-session expiry",
+          "reasoning": "A read-only production probe reproduced session_expired and WebSocket close 4002 at 602.999 seconds; local attach has no Relaycast terminal-session lease, explaining cross-node specificity.",
+          "fromTrajectory": "traj_amm49zai5ffq"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [
+    "CHANGELOG.md",
+    "packages/cli/src/cli/lib/attach-drive.test.ts",
+    "packages/cli/src/cli/lib/attach-drive.ts",
+    "packages/cli/src/cli/lib/attach-input-recovery.test.ts",
+    "packages/cli/src/cli/lib/attach-input-recovery.ts",
+    "packages/cli/src/cli/lib/attach-passthrough.ts",
+    "tests/relayflows/cases/1638-attach-input-replay/case.json",
+    "tests/relayflows/cases/1638-attach-input-replay/run.mjs"
+  ],
+  "commits": ["4e7c64f48", "8d72be6ea", "1ef58b7c1"]
+}

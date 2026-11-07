@@ -4,6 +4,8 @@ import { registerHooks } from './hooks.js';
 import { registerTools, type ToolContext } from './tools.js';
 
 export const DEFAULT_RELAYCAST_API_BASE_URL = 'https://cast.agentrelay.com';
+/** The server that issues `ar_ws_` workspace keys. */
+export const ARMADILLO_RELAYCAST_API_BASE_URL = 'https://armadillo.agentrelay.com';
 export const DEFAULT_IDLE_POLL_INTERVAL_MS = 3_000;
 
 export interface SessionIdleResult {

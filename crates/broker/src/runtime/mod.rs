@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::listen_api::{
-    broadcast_if_relevant, listen_api_router, DeliveryRouteError, ListenApiConfig,
+    broadcast_if_relevant, listen_api_router, DeliveryRouteError, FlushPendingOk, ListenApiConfig,
     ListenApiRequest, SetInboundDeliveryModeOk,
 };
 use crate::util::ansi::floor_char_boundary;
@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    sync::{broadcast, mpsc, Notify, RwLock},
+    sync::{broadcast, mpsc, watch, Notify, RwLock},
     time::{timeout, MissedTickBehavior},
 };
 use uuid::Uuid;
@@ -26,8 +26,8 @@ use crate::{
     dedup::DedupCache,
     fleet_wire::InventoryAgent,
     ids::{
-        AgentId, ChannelName, DeliveryId, EventId, MessageTarget, RequestId, ThreadId, WorkerName,
-        WorkspaceAlias, WorkspaceId,
+        AgentId, ChannelName, DeliveryId, EventId, MessageTarget, MessageTargetKind, RequestId,
+        ThreadId, WorkerName, WorkspaceAlias, WorkspaceId,
     },
     node_control::{FleetControlCommand, FleetControlEvent, FleetDeliveryBook, FleetLoadSnapshot},
     protocol::{
@@ -72,10 +72,12 @@ mod api;
 mod app_server;
 mod connection;
 mod dead_letter;
+mod degraded;
 mod delivery;
 mod event_loop;
 mod fleet;
 mod headless;
+mod identity_cleanup;
 mod identity_recovery;
 mod init;
 mod io;
@@ -86,6 +88,8 @@ mod relaycast_events;
 mod session;
 mod spawn_spec;
 mod system;
+mod task_store;
+mod tasks;
 #[cfg(test)]
 mod tests;
 mod util;
@@ -103,6 +107,7 @@ pub(crate) use dead_letter::*;
 pub(crate) use delivery::*;
 pub(crate) use event_loop::*;
 pub(crate) use headless::*;
+pub(crate) use identity_cleanup::PendingIdentityCleanup;
 pub(crate) use identity_recovery::*;
 pub(crate) use init::*;
 pub(crate) use io::*;
@@ -112,3 +117,7 @@ pub(crate) use session::*;
 pub(crate) use spawn_spec::*;
 pub(crate) use system::*;
 pub(crate) use util::*;
+
+pub(crate) fn task_request_prefix() -> &'static str {
+    task_store::TASK_REQUEST_PREFIX
+}

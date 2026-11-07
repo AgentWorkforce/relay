@@ -5,6 +5,8 @@ import {
   normalizeInbox,
   normalizeMessagingEvent,
   normalizeThread,
+  replayMessageMetadata,
+  resolveReplaySessionRef,
   type RelayMessagingEvent,
 } from '../messaging/index.js';
 import { toRelayNode } from '../messaging/relaycast-translate.js';
@@ -156,11 +158,6 @@ function createWorkspace() {
     },
     workspace: {
       info: vi.fn(async () => ({ id: 'ws_1', name: 'Ops' })),
-      fleetNodes: {
-        get: vi.fn(async () => ({ enabled: true, default_enabled: false, override: true })),
-        set: vi.fn(async (enabled: boolean) => ({ enabled, default_enabled: false, override: enabled })),
-        inherit: vi.fn(async () => ({ enabled: false, default_enabled: false, override: null })),
-      },
     },
   };
 }
@@ -280,6 +277,37 @@ function createAgentClient() {
 }
 
 describe('RelaycastMessagingClient', () => {
+  it('normalizes inherited replay ids and preserves an explicit message session reference', () => {
+    expect(resolveReplaySessionRef('  session-current  ')).toBe('session-current');
+    expect(resolveReplaySessionRef('x'.repeat(256))).toBeUndefined();
+    expect(replayMessageMetadata({ work_unit_id: 'relay#1522' }, 'session-current')).toEqual({
+      work_unit_id: 'relay#1522',
+      session_ref: 'session-current',
+    });
+    expect(replayMessageMetadata({ session_ref: 'session-explicit' }, 'session-current')).toEqual({
+      session_ref: 'session-explicit',
+    });
+    // Passing an explicit sessionRef that resolves to undefined must opt
+    // out of the RELAY_ATTEST_SESSION_ID fallback — otherwise a client
+    // that supplied a broken ref would be silently re-attributed to the
+    // inherited environment session.
+    const previous = process.env.RELAY_ATTEST_SESSION_ID;
+    process.env.RELAY_ATTEST_SESSION_ID = 'ambient-session';
+    try {
+      expect(replayMessageMetadata({ work_unit_id: 'relay#1522' }, undefined)).toEqual({
+        work_unit_id: 'relay#1522',
+      });
+      // No sessionRef argument at all: the ambient env session is stamped.
+      expect(replayMessageMetadata({ work_unit_id: 'relay#1522' })).toEqual({
+        work_unit_id: 'relay#1522',
+        session_ref: 'ambient-session',
+      });
+    } finally {
+      if (previous === undefined) delete process.env.RELAY_ATTEST_SESSION_ID;
+      else process.env.RELAY_ATTEST_SESSION_ID = previous;
+    }
+  });
+
   it('publishes canonical session events to local listeners and Relaycast storage', async () => {
     const workspace = createWorkspace();
     const messaging = new RelaycastMessagingClient({ relaycast: workspace });
@@ -429,31 +457,6 @@ describe('RelaycastMessagingClient', () => {
     });
   });
 
-  it('delegates workspace fleet node config calls to Relaycast', async () => {
-    const workspace = createWorkspace();
-    const client = new RelaycastMessagingClient({ relaycast: workspace });
-
-    await expect(client.workspace.fleetNodes.get()).resolves.toEqual({
-      enabled: true,
-      defaultEnabled: false,
-      override: true,
-    });
-    await expect(client.workspace.fleetNodes.set(false)).resolves.toEqual({
-      enabled: false,
-      defaultEnabled: false,
-      override: false,
-    });
-    await expect(client.workspace.fleetNodes.inherit()).resolves.toEqual({
-      enabled: false,
-      defaultEnabled: false,
-      override: null,
-    });
-
-    expect(workspace.workspace.fleetNodes.get).toHaveBeenCalledTimes(1);
-    expect(workspace.workspace.fleetNodes.set).toHaveBeenCalledWith(false);
-    expect(workspace.workspace.fleetNodes.inherit).toHaveBeenCalledTimes(1);
-  });
-
   it('normalizes fleet node roster fields and passes node query options through', async () => {
     const workspace = createWorkspace();
     const client = new RelaycastMessagingClient({ relaycast: workspace });
@@ -482,13 +485,13 @@ describe('RelaycastMessagingClient', () => {
       name: 'builder-2',
       status: 'offline',
       live: false,
-      activeAgents: 0,
       handlersLive: false,
       maxAgents: 4,
       load: 0,
       lastHeartbeatAt: '2026-06-16T09:55:00.000Z',
       createdAt: '2026-06-16T08:00:00.000Z',
     });
+    expect(nodes[1].activeAgents).toBeUndefined();
     expect(nodes[2]).toMatchObject({
       name: 'builder-3',
       status: 'unknown',
@@ -516,19 +519,24 @@ describe('RelaycastMessagingClient', () => {
     expect(toRelayNode({ name: 'builder-6', tags: ['factory'] }).repoKeys).toBeUndefined();
     expect(toRelayNode({ name: 'builder-unbounded', max_agents: 0, load: null }).load).toBeUndefined();
 
-    await expect(client.nodes.get('builder-2')).resolves.toMatchObject({
+    const offlineNode = await client.nodes.get('builder-2');
+    expect(offlineNode).toMatchObject({
       name: 'builder-2',
       status: 'offline',
       live: false,
-      activeAgents: 0,
       load: 0,
     });
+    expect(offlineNode.activeAgents).toBeUndefined();
   });
 
   it('delegates write operations through an agent client and normalizes responses', async () => {
     const workspace = createWorkspace();
     const { client: agentClient } = createAgentClient();
-    const client = new RelaycastMessagingClient({ relaycast: workspace, agentClient });
+    const client = new RelaycastMessagingClient({
+      relaycast: workspace,
+      agentClient,
+      sessionRef: 'session-replay-1',
+    });
 
     const sent = await client.messages.send({
       channel: '#general',
@@ -536,16 +544,20 @@ describe('RelaycastMessagingClient', () => {
       attachments: [{ type: 'link', url: 'https://example.com/repro', label: 'repro' }],
       mode: 'steer',
       idempotencyKey: 'idem-1',
+      metadata: { work_unit_id: 'relay#1522' },
     });
     expect(agentClient.send).toHaveBeenCalledWith('#general', 'sent', {
       attachments: ['{"type":"link","url":"https://example.com/repro","label":"repro"}'],
+      data: { work_unit_id: 'relay#1522', session_ref: 'session-replay-1' },
       mode: 'steer',
       idempotencyKey: 'idem-1',
     });
     expect(sent).toMatchObject({ id: 'm-send', kind: 'channel', channel: { name: 'general' } });
 
     const direct = await client.messages.direct({ to: 'Lead', text: 'direct' });
-    expect(agentClient.dm).toHaveBeenCalledWith('Lead', 'direct', {});
+    expect(agentClient.dm).toHaveBeenCalledWith('Lead', 'direct', {
+      data: { session_ref: 'session-replay-1' },
+    });
     expect(direct).toMatchObject({
       id: 'dm-send',
       kind: 'dm',
@@ -562,8 +574,15 @@ describe('RelaycastMessagingClient', () => {
       { participants: ['Lead', 'WorkerB'], name: 'team' },
       {}
     );
-    expect(agentClient.dms.sendMessage).toHaveBeenCalledWith('gdm-1', 'group direct', {});
+    expect(agentClient.dms.sendMessage).toHaveBeenCalledWith('gdm-1', 'group direct', {
+      data: { session_ref: 'session-replay-1' },
+    });
     expect(groupDirect).toMatchObject({ id: 'gdm-send', kind: 'group_dm', conversationId: 'gdm-1' });
+
+    await client.messages.reply({ messageId: 'm-1', text: 'thread reply' });
+    expect(agentClient.reply).toHaveBeenCalledWith('m-1', 'thread reply', {
+      data: { session_ref: 'session-replay-1' },
+    });
   });
 
   it('normalizes threads and inbox payloads', async () => {

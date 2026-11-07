@@ -29,15 +29,39 @@ function recordBriefNonce(nonce) {
       nonce,
       agent: process.env.RELAY_AGENT_NAME ?? null,
       node: process.env.RELAY_E2E_NODE_NAME ?? null,
+      args: process.argv.slice(2),
       observedAt: new Date().toISOString(),
     })
   );
 }
 
+// Invoked as `codex`, model Codex's composer closely enough for the broker's
+// chunked initial-task path: raw input (no kernel echo, so discarded
+// pre-ready keystrokes never appear), typed text rendered after the `›`
+// prompt, and Enter submitting the turn and redrawing an empty composer. A
+// composer that keeps the submitted text visible looks like a parked task, so
+// the broker would retry the submit and report the delivery incomplete.
+const codexComposer = path.basename(process.argv[1]) === 'codex';
+if (codexComposer && process.stdin.isTTY) process.stdin.setRawMode(true);
+
+function renderCodexComposer(text) {
+  for (const ch of text) {
+    if (ch === '\r') process.stdout.write('\r\n› ');
+    else if (ch === '\n') process.stdout.write('\r\n  ');
+    else process.stdout.write(ch);
+  }
+}
+
 try {
+  // Decode as a stream: a UTF-8 character can straddle two PTY reads.
+  process.stdin.setEncoding('utf8');
   process.stdin.resume();
   process.stdin.on('data', (chunk) => {
     if (!ready) return;
+    if (codexComposer) renderCodexComposer(chunk.toString());
+    // Like a real harness, Enter submits the turn and repaints the prompt, so
+    // the broker can see the composer clear and confirm acceptance.
+    else if (/[\r\n]/.test(chunk.toString())) process.stdout.write('\r\n❯ ');
     input += chunk.toString();
     // Require a delimiter after the nonce. PTY chunks can split anywhere, so
     // treating the current buffer end as a complete token could record a
@@ -68,6 +92,12 @@ try {
 setTimeout(() => {
   ready = true;
   process.stdout.write('->pty:ready\n');
+  // Model Codex's actual composer glyph and cursor, rather than Claude's ❯.
+  // The broker verifies the settled composer without requiring a transient
+  // MCP boot label. This native stub starts no MCP/AI service.
+  if (path.basename(process.argv[1]) === 'codex') {
+    process.stdout.write('› ');
+  }
 }, readyDelayMs);
 
 setInterval(() => {}, 1 << 30);

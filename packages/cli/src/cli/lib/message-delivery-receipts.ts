@@ -7,7 +7,9 @@ export type DirectMessageDeliveryReceipt = Record<string, unknown> & {
     mode: DirectMessageMode;
     requestedRecipient: string;
     resolvedRecipient: string | null;
+    directoryMatched: boolean | null;
     recipientMatched: boolean | null;
+    deliveryConfirmed: false;
     readConfirmed: false;
     note: string;
   };
@@ -48,31 +50,38 @@ export function directMessageReceipt(
   const message = asRecord(value);
   const messageWithoutUntrustedTarget = { ...message };
   delete messageWithoutUntrustedTarget.target;
-  const recipientMatched = resolvedRecipient ? resolvedRecipient === requestedRecipient : null;
+  const directoryMatched = resolvedRecipient === undefined ? null : resolvedRecipient === requestedRecipient;
+  // Directory equality proves the address exists, not that its current node,
+  // provider socket, or agent session can receive the queued message.
+  const recipientMatched = directoryMatched === false ? false : null;
   const status =
-    recipientMatched === null
+    directoryMatched === null
       ? 'recipient_unresolved'
-      : recipientMatched
+      : directoryMatched
         ? 'queued_unconfirmed'
         : 'recipient_mismatch';
   const note =
-    recipientMatched === null
+    directoryMatched === null
       ? `Recipient resolution was unavailable for ${requestedRecipient}; enqueue is not reported as successful delivery.`
-      : recipientMatched
+      : directoryMatched
         ? mode === 'steer'
-          ? 'Queued as an immediate injection request that may interrupt active work. This receipt does not confirm delivery or reading; call get_message_readers with the message id.'
-          : "Queued for injection at the recipient's next safe idle boundary. It can remain unread while the recipient is busy. This receipt does not confirm delivery or reading; call get_message_readers with the message id."
+          ? 'Enqueued; routing and injection are unconfirmed. Mode steer requests immediate injection. Check get_message_readers with this ID before resending; retries may duplicate delivery.'
+          : 'Enqueued; routing and injection are unconfirmed. Mode wait requests the next safe idle boundary. Check get_message_readers with this ID before resending; retries may duplicate delivery.'
         : `Recipient mismatch: requested ${requestedRecipient}, but the directory resolved ${resolvedRecipient}.`;
 
   return {
     ...messageWithoutUntrustedTarget,
-    ...(resolvedRecipient ? { target: { kind: 'agent' as const, agentName: resolvedRecipient } } : {}),
+    ...(resolvedRecipient !== undefined
+      ? { target: { kind: 'agent' as const, agentName: resolvedRecipient } }
+      : {}),
     delivery: {
       status,
       mode,
       requestedRecipient,
       resolvedRecipient: resolvedRecipient ?? null,
+      directoryMatched,
       recipientMatched,
+      deliveryConfirmed: false,
       readConfirmed: false,
       note,
     },
@@ -104,5 +113,48 @@ export function messageReadersReceipt(readers: unknown[]): {
         ? 'At least one agent has read this message.'
         : 'No agent has read this message. A send receipt confirms enqueue only; the recipient may still be busy or offline.',
     },
+  };
+}
+
+/**
+ * Project a direct-message send receipt down to what the caller needs to act on
+ * it, dropping the echoed message body.
+ *
+ * The upstream create-message response carries the body twice — once at `text`
+ * and once at the nested `message.text` — and `directMessageReceipt` spreads
+ * that response wholesale. On the MCP path that puts two further copies of a DM
+ * into the *sender's* own context window, on top of the `tool_use` parameter
+ * that already holds it. The sender wrote the text; echoing it back informs no
+ * decision, and it is charged against the context budget of exactly the
+ * long-lived resident agents that send the most DMs.
+ *
+ * The projection is an allowlist rather than a denylist on purpose: deleting
+ * known body fields would start leaking the body again the first time the
+ * upstream response grows another text-bearing field.
+ *
+ * Everything kept is fixed-size, so the receipt no longer grows with the
+ * message. `delivery` is kept whole because it is the part that stops an agent
+ * reporting an enqueue as a confirmed delivery; `id` because it is how the
+ * caller follows up with `get_message_readers`; and `target` because its
+ * presence — versus its absence on an unresolved recipient — is an existing
+ * signal that the directory independently confirmed who was addressed.
+ */
+export function compactDirectMessageReceipt(
+  receipt: DirectMessageDeliveryReceipt
+): DirectMessageDeliveryReceipt {
+  // The upstream response names the identifier `id` or `messageId` depending on
+  // the endpoint — `directMessageDeliveryFailure` already reads both. Collapse
+  // them to the single `id` the tool's output schema advertises, so a caller
+  // told to follow up with `get_message_readers` always finds it under the
+  // documented name rather than under whichever alias the endpoint happened to
+  // use. An existing `id` wins; `messageId` is a fallback, never an extra field.
+  const id = typeof receipt.id === 'string' ? receipt.id : receipt.messageId;
+  const conversationId = receipt.conversationId;
+
+  return {
+    ...(typeof id === 'string' ? { id } : {}),
+    ...(typeof conversationId === 'string' ? { conversationId } : {}),
+    ...(receipt.target ? { target: receipt.target } : {}),
+    delivery: receipt.delivery,
   };
 }

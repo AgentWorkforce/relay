@@ -1,0 +1,4 @@
+{"type":"user","message":{"role":"user","content":"[via Agent Relay — ref 123456abcdef]\nQuestion"}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{}}],"stop_reason":"tool_use"}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"contents"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Claude answer"}],"stop_reason":"end_turn"}}

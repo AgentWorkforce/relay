@@ -1,0 +1,38 @@
+[
+  {
+    "provider": "github",
+    "resource": "/github/repos/AgentWorkforce/cloud/pulls/3896/**",
+    "channel": "agent-events-227666016525594624",
+    "webhookId": "wh_227668032397963264",
+    "subscriptionId": "sub_227668035883429888",
+    "webhookSubscriptionId": "whsub_9171d549-7f7a-4ae5-a340-bc1c01dba11b",
+    "webhookSubscriptionWorkspaceId": "rw_7ccfea89"
+  },
+  {
+    "provider": "github",
+    "resource": "/github/repos/AgentWorkforce/relay/pulls/1834/**",
+    "channel": "agent-events-227666016525594624",
+    "webhookId": "wh_227674523242795008",
+    "subscriptionId": "sub_227674526870867968",
+    "webhookSubscriptionId": "whsub_74bb3bec-bf6e-4953-86af-4c3e1ef7d0b8",
+    "webhookSubscriptionWorkspaceId": "rw_7ccfea89"
+  },
+  {
+    "provider": "github",
+    "resource": "/github/repos/AgentWorkforce/relayfile-cloud/pulls/238/**",
+    "channel": "agent-events-227666016525594624",
+    "webhookId": "wh_227669931394633728",
+    "subscriptionId": "sub_227669934972375040",
+    "webhookSubscriptionId": "whsub_d1a74cda-3a57-45cf-882d-70e24b4d9fb0",
+    "webhookSubscriptionWorkspaceId": "rw_7ccfea89"
+  },
+  {
+    "provider": "github",
+    "resource": "/github/repos/AgentWorkforce/relayfile/pulls/515/**",
+    "channel": "agent-events-227666016525594624",
+    "webhookId": "wh_227673937327886336",
+    "subscriptionId": "sub_227673941069205504",
+    "webhookSubscriptionId": "whsub_45079f6f-a330-46d9-b9b7-b167834cf253",
+    "webhookSubscriptionWorkspaceId": "rw_7ccfea89"
+  }
+]

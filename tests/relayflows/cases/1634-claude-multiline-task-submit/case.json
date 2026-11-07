@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1634-claude-multiline-task-submit",
+  "kind": "bugfix",
+  "title": "Submit multiline fleet tasks to Claude instead of leaving them in the composer",
+  "requirements": ["broker-linux-x64"],
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1634-claude-multiline-task-submit/run.mjs"]
+  },
+  "timeoutSeconds": 300,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "claude_multiline_task_left_in_composer"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "claude_multiline_task_submitted"
+    }
+  }
+}

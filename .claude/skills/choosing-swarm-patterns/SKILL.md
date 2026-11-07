@@ -1,46 +1,27 @@
 ---
 name: choosing-swarm-patterns
-description: Use when coordinating multiple AI agents with Agent Relay's workflow engine and need to pick the right orchestration pattern - covers the 10 core patterns (fan-out, pipeline, hub-spoke, consensus, mesh, handoff, cascade, dag, debate, hierarchical) plus 14 specialized ones, with decision framework and accurate workflow/YAML examples.
+description: Use when coordinating multiple AI agents with Agent Relay's workflow engine and need to pick the right orchestration pattern - covers the 10 core patterns (fan-out, pipeline, hub-spoke, consensus, mesh, handoff, cascade, dag, debate, hierarchical) plus 14 specialized ones, with decision framework and accurate SDK/YAML examples.
 ---
 
-# Choosing Swarm Patterns
+### Overview
 
-## Overview
+The Agent Relay SDK (`@agent-relay/sdk`) supports 24 swarm patterns via a single `swarm.pattern` field. Patterns are configured declaratively in YAML — there are no standalone `fanOut(...)` / `hubAndSpoke(...)` helpers. Pick the simplest pattern that solves the problem; add complexity only when the system proves it's insufficient.
 
-The Agent Relay workflow engine (`@relayflows/core`) supports 24 swarm patterns via a single `swarm.pattern` field. Patterns are configured declaratively in YAML or programmatically via the `workflow()` fluent builder — there are no standalone `fanOut(...)` / `hubAndSpoke(...)` helpers. Pick the simplest pattern that solves the problem; add complexity only when the system proves it's insufficient.
+### Run a pattern
 
-## Two ways to run a pattern
-
-**1. YAML (portable):**
+#### TypeScript SDK runner
 
 ```ts
-import { runWorkflow } from '@relayflows/core';
+import { runWorkflow } from '@agent-relay/sdk/workflows';
 
 const run = await runWorkflow('workflows/feature-dev.yaml', {
   vars: { task: 'Add OAuth login' },
 });
 ```
 
-**2. Fluent builder (programmatic):**
+### Quick Decision Framework
 
-```ts
-import { workflow } from '@relayflows/core';
-
-const run = await workflow('feature-dev')
-  .pattern('hub-spoke')
-  .channel('swarm-feature-dev')
-  .agent('lead', { cli: 'claude', role: 'lead' })
-  .agent('developer', { cli: 'codex', role: 'worker', interactive: false })
-  .step('plan', { agent: 'lead', task: 'Plan {{task}}' })
-  .step('implement', { agent: 'developer', task: 'Implement: {{steps.plan.output}}', dependsOn: ['plan'] })
-  .run();
-```
-
-Both paths hit the same `WorkflowRunner`.
-
-## Quick Decision Framework
-
-```
+```text
 Is the task independent per agent?
   YES → fan-out (parallel workers, hub collects)
 
@@ -69,12 +50,12 @@ Is cost the primary concern?
         decides whether to pass through or redo the prior output)
 ```
 
-## Pattern Reference (Core 10)
+### Pattern Reference (Core 10)
 
 | #   | Pattern          | Topology (actual edges)                                                                                             | Best For                                                                    |
 | --- | ---------------- | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
 | 1   | **fan-out**      | Hub broadcasts to N workers; workers reply to hub only                                                              | Independent subtasks (reviews, research, tests)                             |
-| 2   | **pipeline**     | Linear chain (agent*i → agent*{i+1})                                                                                | Ordered stages (design → implement → test)                                  |
+| 2   | **pipeline**     | Linear chain (`agent_i` → `agent_{i+1}`)                                                                            | Ordered stages (design → implement → test)                                  |
 | 3   | **hub-spoke**    | Hub ↔ spokes (bidirectional); no spoke-to-spoke                                                                     | Dynamic coordination, lead reviews/adjusts                                  |
 | 4   | **consensus**    | Full mesh; decision via `coordination.consensusStrategy`                                                            | Architecture decisions, approval gates                                      |
 | 5   | **mesh**         | Full mesh (every agent ↔ every other)                                                                               | Brainstorming, collaborative debugging                                      |
@@ -86,7 +67,7 @@ Is cost the primary concern?
 
 > **Heads up:** `hierarchical` resolves to the same edge structure as `hub-spoke` in `coordinator.ts:313-319`. Multi-level tree topology is not currently implemented — use pattern name for intent, but expect the same runtime graph.
 
-## Additional Patterns (role-driven)
+### Additional Patterns (role-driven)
 
 These 14 additional patterns exist in `SwarmPattern` (types.ts:114-139). The coordinator has role-based auto-selection heuristics (`coordinator.ts:51-165`), but they only fire when `swarm.pattern` is **omitted** — YAML validation requires it (`runner.ts:2105-2117`), so auto-selection is effectively a programmatic-API feature. In YAML, set `swarm.pattern` explicitly.
 
@@ -109,54 +90,41 @@ Topology is still resolved per-pattern once selected; the "Triggering roles" col
 | `competitive`     | — (declared explicitly)                                 | independent parallel implementations + judge   |
 | `review-loop`     | `implement*` + 2+ `reviewer*`                           | implementer ↔ reviewers                        |
 
-## Structured Squad Review Loop
+### Structured Squad Review Loop
 
-For serious implementation work, especially workflow generation or product-contract changes, prefer a composite **squad-review-loop** recipe over a plain single implementer plus final reviewer. This is a workflow authoring recipe built from existing patterns, not a separate SDK enum unless the local runner has added one.
-
-Use this when the fastest reliable path is small teams of 2-3 agents working in parallel with live feedback:
-
-1. Split the work into bounded implementation squads. Each squad owns a non-overlapping file or subsystem scope.
-2. Give each squad an implementer plus a shadow/review partner. The shadow follows the implementer in real time, checks alignment with the spec, and posts concise feedback before the work drifts.
-3. Require the implementer to self-reflect before external review: compare the final diff against the spec, AGENTS.md / CLAUDE.md, recent local conventions, tests, and declared non-goals.
-4. Run an independent self-review/fresh-eyes agent that reads the actual files and recent repo context, not just the chat transcript.
-5. Send that review back to the implementer for one repair round.
-6. After squads converge, run a final two-agent review team, usually one Claude reviewer and one Codex reviewer, independently. They compare notes, merge findings, and produce one final verdict.
-7. Spawn fresh fix agents for final-review findings. Those fix agents self-reflect, then the final reviewers re-check the post-fix state until the spec is fully satisfied or a blocker is documented.
-
-Pattern selection for this recipe:
-
+- Split the work into bounded implementation squads. Each squad owns a non-overlapping file or subsystem scope.
+- Give each squad an implementer plus a shadow/review partner. The shadow follows the implementer in real time, checks alignment with the spec, and posts concise feedback before the work drifts.
+- Require the implementer to self-reflect before external review: compare the final diff against the spec, AGENTS.md / CLAUDE.md, recent local conventions, tests, and declared non-goals.
+- Run an independent self-review/fresh-eyes agent that reads the actual files and recent repo context, not just the chat transcript.
+- Send that review back to the implementer for one repair round.
+- After squads converge, run a final two-agent review team, usually one Claude reviewer and one Codex reviewer, independently. They compare notes, merge findings, and produce one final verdict.
+- Spawn fresh fix agents for final-review findings. Those fix agents self-reflect, then the final reviewers re-check the post-fix state until the spec is fully satisfied or a blocker is documented.
 - Use `supervisor` or `hub-spoke` when a lead needs to coordinate live squads.
 - Use `review-loop` when the main risk is code quality and feedback iteration.
 - Use `reflection` when critic feedback should loop directly back to producers.
 - Use `verifier` when completion evidence matters more than design debate.
 - Use `competitive` only when independent alternative implementations are useful; otherwise split by ownership scope.
 
-Keep squads small. Two or three agents per squad is usually the useful limit: implementer, shadow/reviewer, and optionally test/validation owner. More agents belong in separate squads or in the final review team.
+### Pattern Details
 
-## Pattern Details
+The per-pattern YAML snippets below show only the pattern-relevant fields. A runnable YAML file also needs the required top-level `version` and `name`; see the [Complete YAML Example](#complete-yaml-example).
 
-All examples below use real API shapes (`WorkflowBuilder` / YAML), verified against `@relayflows/core`'s `builder.d.ts` and `schema.d.ts`.
+#### 1. fan-out — Parallel Workers
 
-> **YAML fragments vs complete configs:** The per-pattern YAML snippets below are fragments that show only the pattern-relevant shape. A runnable YAML file also requires `version: "1.0"` and `name: <id>` at the top (`runner.ts:2105-2117`). See the [Complete YAML Example](#complete-yaml-example) for the full structure.
->
-> **Topology edges exclude `interactive: false` agents.** `resolveTopology` (`coordinator.ts:218-237`) drops non-interactive agents from the message graph — they run as one-shot subprocesses with no relay connection. Topology claims like "hub ↔ spokes" describe the interactive-agent edges; workers marked `interactive: false` are spawned and collected via stdout, not via relay messages.
-
-### 1. fan-out — Parallel Workers
-
-```ts
-await workflow('review')
-  .pattern('fan-out')
-  .agent('lead', { cli: 'claude', role: 'lead' })
-  .agent('auth-rev', { cli: 'claude', role: 'worker', interactive: false })
-  .agent('db-rev', { cli: 'claude', role: 'worker', interactive: false })
-  .step('review-auth', { agent: 'auth-rev', task: 'Review auth.ts' })
-  .step('review-db', { agent: 'db-rev', task: 'Review db.ts' })
-  .run();
+```yaml
+swarm: { pattern: fan-out }
+agents:
+  - { name: lead, cli: claude, role: lead }
+  - { name: auth-rev, cli: claude, role: worker, interactive: false }
+  - { name: db-rev, cli: claude, role: worker, interactive: false }
+workflows:
+  - name: review
+    steps:
+      - { name: review-auth, agent: auth-rev, task: 'Review auth.ts' }
+      - { name: review-db, agent: db-rev, task: 'Review db.ts' }
 ```
 
-Workers run independently; hub aggregates. No inter-worker edges.
-
-### 2. pipeline — Sequential Stages
+#### 2. pipeline — Sequential Stages
 
 ```yaml
 swarm: { pattern: pipeline }
@@ -182,28 +150,25 @@ workflows:
       - { name: test, agent: tester, dependsOn: [implement], task: 'Write integration tests' }
 ```
 
-Each stage receives the previous stage's output via `{{steps.<name>.output}}`. Halts on step failure unless `onError: retry` / `continue`.
+#### 3. hub-spoke — Persistent Coordinator
 
-### 3. hub-spoke — Persistent Coordinator
-
-```ts
-await workflow('api-build')
-  .pattern('hub-spoke')
-  .channel('swarm-api')
-  .agent('lead', { cli: 'claude', role: 'lead' })
-  .agent('db-worker', { cli: 'claude', role: 'worker' }) // interactive by default — hub DMs it
-  .agent('api-worker', { cli: 'claude', role: 'worker' }) // interactive by default — hub DMs it
-  .step('models', { agent: 'db-worker', task: 'Build database models' })
-  .step('routes', { agent: 'api-worker', task: 'Build route handlers', dependsOn: ['models'] })
-  .step('review', { agent: 'lead', task: 'Review everything', dependsOn: ['routes'] })
-  .run();
+```yaml
+swarm:
+  pattern: hub-spoke
+  channel: swarm-api
+agents:
+  - { name: lead, cli: claude, role: lead }
+  - { name: db-worker, cli: claude, role: worker }
+  - { name: api-worker, cli: claude, role: worker }
+workflows:
+  - name: api-build
+    steps:
+      - { name: models, agent: db-worker, task: 'Build database models' }
+      - { name: routes, agent: api-worker, task: 'Build route handlers', dependsOn: [models] }
+      - { name: review, agent: lead, task: 'Review everything', dependsOn: [routes] }
 ```
 
-Hub (picked via `role: lead` or first agent) stays on the channel and direct-messages interactive workers via the flat `send_dm` MCP tool, exposed by Claude for the canonical server key as `mcp__agent-relay__send_dm`.
-
-> **Don't set `interactive: false` on a hub-spoke worker** if you want it to receive coordination DMs — `resolveTopology` strips non-interactive agents from the message graph (`coordinator.ts:218-237`). Use `interactive: false` only when the worker is a one-shot subprocess whose stdout you collect via `{{steps.X.output}}` without any mid-run coordination.
-
-### 4. consensus — Cooperative Voting
+#### 4. consensus — Cooperative Voting
 
 ```yaml
 swarm: { pattern: consensus }
@@ -222,26 +187,25 @@ workflows:
       - { name: evaluate-sec, agent: sec, task: 'Evaluate security of Fastify migration' }
 ```
 
-Full-mesh topology. **Caveat:** `coordination.consensusStrategy` and `votingThreshold` are declared in `CoordinationConfig` (`types.ts:768-772`) but the runner has **no built-in vote-tallying logic** — the fields only influence coordinator auto-selection (`coordinator.ts:63-64`). To implement voting, aggregate the step outputs in a downstream lead/judge step that reads `{{steps.evaluate-*.output}}`.
+#### 5. mesh — Peer Collaboration
 
-### 5. mesh — Peer Collaboration
-
-```ts
-await workflow('debug-auth')
-  .pattern('mesh')
-  .channel('swarm-debug')
-  .agent('logs', { cli: 'claude' })
-  .agent('code', { cli: 'claude' })
-  .agent('repro', { cli: 'claude' })
-  .step('logs', { agent: 'logs', task: 'Check server logs' })
-  .step('code', { agent: 'code', task: 'Review auth code' })
-  .step('repro', { agent: 'repro', task: 'Write repro test' })
-  .run();
+```yaml
+swarm:
+  pattern: mesh
+  channel: swarm-debug
+agents:
+  - { name: logs, cli: claude }
+  - { name: code, cli: claude }
+  - { name: repro, cli: claude }
+workflows:
+  - name: debug-auth
+    steps:
+      - { name: logs, agent: logs, task: 'Check server logs' }
+      - { name: code, agent: code, task: 'Review auth code' }
+      - { name: repro, agent: repro, task: 'Write repro test' }
 ```
 
-Every agent ↔ every other agent. Use for collaborative exploration without hierarchy.
-
-### 6. handoff — Dynamic Routing
+#### 6. handoff — Dynamic Routing
 
 ```yaml
 swarm: { pattern: handoff }
@@ -257,51 +221,46 @@ workflows:
       - { name: tech, agent: tech, dependsOn: [triage], task: 'Handle tech issues' }
 ```
 
-Chain passes control forward. **Note:** The runner doesn't support "route to one branch and skip the others" declaratively — `dependsOn` steps all run when their dependencies complete, and skipping is only triggered by upstream **failure** (`runner.ts:7057-7088`). For true pick-one routing, have the triage step emit a routing token in its output and let each downstream step's prompt check `{{steps.triage.output}}` and no-op if it doesn't match.
+#### 7. cascade — Cost-Aware Fallthrough
 
-### 7. cascade — Cost-Aware Fallthrough
-
-```ts
-await workflow('answer')
-  .pattern('cascade')
-  .agent('haiku', { cli: 'claude', model: 'claude-haiku-4-5-20251001' })
-  .agent('sonnet', { cli: 'claude', model: 'claude-sonnet-4-6' })
-  .agent('opus', { cli: 'claude', model: 'claude-opus-4-7' })
-  .step('try-haiku', { agent: 'haiku', task: '{{question}}' })
-  .step('try-sonnet', {
-    agent: 'sonnet',
-    task: 'If this is a complete answer, echo it verbatim. Otherwise answer anew:\n{{steps.try-haiku.output}}',
-    dependsOn: ['try-haiku'],
-  })
-  .step('try-opus', {
-    agent: 'opus',
-    task: 'Final-tier answer, using prior attempts for context:\n{{steps.try-sonnet.output}}',
-    dependsOn: ['try-sonnet'],
-  })
-  .run();
+```yaml
+swarm: { pattern: cascade }
+agents:
+  - { name: haiku, cli: claude, model: claude-haiku-4-5-20251001 }
+  - { name: sonnet, cli: claude, model: claude-sonnet-4-6 }
+  - { name: opus, cli: claude, model: claude-opus-4-7 }
+workflows:
+  - name: answer
+    steps:
+      - { name: try-haiku, agent: haiku, task: '{{question}}' }
+      - name: try-sonnet
+        agent: sonnet
+        dependsOn: [try-haiku]
+        task: "If this is a complete answer, echo it verbatim. Otherwise answer anew:\n{{steps.try-haiku.output}}"
+      - name: try-opus
+        agent: opus
+        dependsOn: [try-sonnet]
+        task: "Final-tier answer, using prior attempts for context:\n{{steps.try-sonnet.output}}"
 ```
 
-**Important:** `cascade` only sets edge topology. The runner has **no skip-on-success logic** for the cascade pattern — a chain of `dependsOn` steps all execute in order on success, and failed upstream steps mark their dependents as **skipped** (`step-executor.ts:329-334`, `runner.ts:7057-7088`). So a verification-gated first step won't "fall through" to later steps on failure, and won't skip them on success either. The idiom above delegates the escalation decision to the prompt of each downstream step (read the upstream answer and pass-through or redo). No confidence-score parsing exists in-engine.
+#### 8. dag — Directed Acyclic Graph
 
-### 8. dag — Directed Acyclic Graph
-
-```ts
-await workflow('fullstack')
-  .pattern('dag')
-  .maxConcurrency(3)
-  .agent('dev', { cli: 'codex', role: 'worker' })
-  .step('scaffold', { agent: 'dev', task: 'Create project scaffold' })
-  .step('frontend', { agent: 'dev', task: 'Build React UI', dependsOn: ['scaffold'] })
-  .step('backend', { agent: 'dev', task: 'Build API', dependsOn: ['scaffold'] })
-  .step('integrate', { agent: 'dev', task: 'Wire together', dependsOn: ['frontend', 'backend'] })
-  .run();
+```yaml
+swarm:
+  pattern: dag
+  maxConcurrency: 3
+agents:
+  - { name: dev, cli: codex, role: worker }
+workflows:
+  - name: fullstack
+    steps:
+      - { name: scaffold, agent: dev, task: 'Create project scaffold' }
+      - { name: frontend, agent: dev, task: 'Build React UI', dependsOn: [scaffold] }
+      - { name: backend, agent: dev, task: 'Build API', dependsOn: [scaffold] }
+      - { name: integrate, agent: dev, task: 'Wire together', dependsOn: [frontend, backend] }
 ```
 
-Runner derives execution waves from `dependsOn`; independent nodes run in parallel up to `swarm.maxConcurrency`. The `dag` pattern is auto-selected when any step has `dependsOn`.
-
-### 9. debate — Adversarial Refinement
-
-Debate currently shares the **full-mesh** topology with `mesh` and `consensus`. Differentiate via roles + task prompts:
+#### 9. debate — Adversarial Refinement
 
 ```yaml
 swarm: { pattern: debate }
@@ -314,38 +273,29 @@ coordination:
     - { name: debate-done, waitFor: [pro-round-3, con-round-3] }
 ```
 
-Drive rounds and verdicts through the agent's system prompt/task, not a dedicated `maxRounds` knob — there isn't one at the pattern level.
+#### 10. hierarchical — Multi-Level (structurally hub-spoke today)
 
-### 10. hierarchical — Multi-Level (structurally hub-spoke today)
-
-```ts
-await workflow('large-team')
-  .pattern('hierarchical')
-  .agent('lead', { cli: 'claude', role: 'lead' })
-  .agent('fe-coord', { cli: 'claude', role: 'coordinator' })
-  .agent('be-coord', { cli: 'claude', role: 'coordinator' })
-  .agent('fe-dev', { cli: 'codex', role: 'worker', interactive: false })
-  .agent('be-dev', { cli: 'codex', role: 'worker', interactive: false })
-  .step('plan', { agent: 'lead', task: 'Coordinate full-stack app' })
-  .step('fe-plan', { agent: 'fe-coord', task: 'Manage frontend', dependsOn: ['plan'] })
-  .step('be-plan', { agent: 'be-coord', task: 'Manage backend', dependsOn: ['plan'] })
-  .step('fe-impl', { agent: 'fe-dev', task: 'Build components', dependsOn: ['fe-plan'] })
-  .step('be-impl', { agent: 'be-dev', task: 'Build API', dependsOn: ['be-plan'] })
-  .run();
+```yaml
+swarm: { pattern: hierarchical }
+agents:
+  - { name: lead, cli: claude, role: lead }
+  - { name: fe-coord, cli: claude, role: coordinator }
+  - { name: be-coord, cli: claude, role: coordinator }
+  - { name: fe-dev, cli: codex, role: worker, interactive: false }
+  - { name: be-dev, cli: codex, role: worker, interactive: false }
+workflows:
+  - name: large-team
+    steps:
+      - { name: plan, agent: lead, task: 'Coordinate full-stack app' }
+      - { name: fe-plan, agent: fe-coord, task: 'Manage frontend', dependsOn: [plan] }
+      - { name: be-plan, agent: be-coord, task: 'Manage backend', dependsOn: [plan] }
+      - { name: fe-impl, agent: fe-dev, task: 'Build components', dependsOn: [fe-plan] }
+      - { name: be-impl, agent: be-dev, task: 'Build API', dependsOn: [be-plan] }
 ```
 
-Coordinator/worker distinction is expressed in step `dependsOn` graph, not topology. Agent edges collapse to single-level hub-spoke.
+### Verification & Completion Signals
 
-## Verification & Completion Signals
-
-An agent step can complete in several ways (`runner.ts:5353-5395`, `runner.ts:4527-4538`):
-
-- **Verification pass** — when the step declares a `verification` block and the output satisfies it.
-- **Clean process exit** — agent exits 0 with no verification configured.
-- **Evidence-based** — channel posts, file changes, or coordination signals trigger completion.
-- **Owner decision** — a `lead`-role agent posts `COMPLETE` / `INCOMPLETE_RETRY` / `INCOMPLETE_FAIL` for the step.
-
-Verification block shape:
+#### An agent step can complete in several ways (`runner.ts:5353-5395`, `runner.ts:4527-4538`):
 
 ```yaml
 verification:
@@ -353,35 +303,29 @@ verification:
   value: DONE # or: PLAN_COMPLETE, IMPLEMENTATION_COMPLETE, REVIEW_COMPLETE
 ```
 
-Conventional signals expected by the `@relayflows/core` runner:
-
-- `ACK: ...` — received a task
-- `DONE: ...` — task complete
-
-The runner captures PTY chunks as step output and also records channel posts + file changes as `StepCompletionEvidence`. Legacy fallback: a file at `.relay/summaries/{stepName}.md` is read if PTY output is empty.
-
-## Agent Relay MCP - Correct Tool Names
+### Agent Relay MCP — Correct Tool Names
 
 The old category-expanded names are wrong. Current Agent Relay MCP tools are
 flat names. In a client that decorates MCP tools, the prefix comes from the
-configured server key. Claude preserves the canonical `agent-relay` key,
-including its hyphen; `mcp__relaycast__*` belongs only to legacy configurations.
+configured server key. With the relay broker's `agent-relay` server key, Claude
+Code users commonly see `mcp__agent-relay__send_dm`; Codex and opencode users
+see the bare canonical name `send_dm`.
 
-| Purpose                  | Canonical tool    | Claude-prefixed form                |
-| ------------------------ | ----------------- | ----------------------------------- |
-| Send DM to another agent | `send_dm`         | `mcp__agent-relay__send_dm`         |
-| Check inbox              | `check_inbox`     | `mcp__agent-relay__check_inbox`     |
-| List agents              | `list_agents`     | `mcp__agent-relay__list_agents`     |
-| Post to a channel        | `post_message`    | `mcp__agent-relay__post_message`    |
-| Reply in a thread        | `reply_to_thread` | `mcp__agent-relay__reply_to_thread` |
-| Spawn sub-agent          | `add_agent`       | `mcp__agent-relay__add_agent`       |
-| Remove sub-agent         | `remove_agent`    | `mcp__agent-relay__remove_agent`    |
+| Purpose                  | Canonical tool    | Claude Code form with `agent-relay` key |
+| ------------------------ | ----------------- | --------------------------------------- |
+| Send DM to another agent | `send_dm`         | `mcp__agent-relay__send_dm`             |
+| Check inbox              | `check_inbox`     | `mcp__agent-relay__check_inbox`         |
+| List agents              | `list_agents`     | `mcp__agent-relay__list_agents`         |
+| Post to a channel        | `post_message`    | `mcp__agent-relay__post_message`        |
+| Reply in a thread        | `reply_to_thread` | `mcp__agent-relay__reply_to_thread`     |
+| Spawn sub-agent          | `add_agent`       | `mcp__agent-relay__add_agent`           |
+| Remove sub-agent         | `remove_agent`    | `mcp__agent-relay__remove_agent`        |
 
 > `interactive: false` agents run as non-interactive subprocesses with no relay connection. They must not call Relay MCP tools.
 
-## Reflection (Trajectories)
+### Reflection (Trajectories)
 
-Reflection is **not** a `reflectionThreshold` callback. It's configured via the `trajectories:` block:
+#### Reflection is **not** a `reflectionThreshold` callback. It's configured via the `trajectories:` block:
 
 ```yaml
 trajectories:
@@ -391,17 +335,7 @@ trajectories:
   autoDecisions: true # record retry/skip/fail decisions
 ```
 
-**What actually runs today:** only `reflectOnConverge` is wired into the runner (`runner.ts:2762-2779`). `shouldReflectOnBarriers` is defined in `trajectory.ts:486-487` but not called — set the flag if you want forward compatibility, but don't depend on it.
-
-Programmatic equivalent:
-
-```ts
-workflow('x').trajectories({ enabled: true, reflectOnConverge: true });
-```
-
-For a first-class critic loop, use the `reflection` **pattern** (agents with `role: critic` get wired as reviewers in `coordinator.ts:363-378`).
-
-## Common Mistakes
+### Common Mistakes
 
 | Mistake                                      | Why It Fails                                                                  | Fix                                                                                              |
 | -------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -414,9 +348,9 @@ For a first-class critic loop, use the `reflection` **pattern** (agents with `ro
 | Relying on `reflectOnBarriers`               | Config flag exists but runner never calls it                                  | Use `reflectOnConverge` for convergence reflection; use `reflection` pattern for critic loops    |
 | `interactive: false` agent calling MCP       | Non-interactive subprocess has no relay                                       | Use `interactive: true` (default) or emit output on stdout                                       |
 | Relying on multi-level `hierarchical`        | Topology is single-level hub in current impl                                  | Use pattern for naming; model levels via `dependsOn` graph                                       |
-| Writing `mcp__relaycast__send(...)`          | Wrong server prefix and tool name                                             | Use `post_message` / `mcp__agent-relay__post_message` or `send_dm` / `mcp__agent-relay__send_dm` |
+| Writing `mcp__relaycast__send(...)`          | Wrong tool name                                                               | Use `post_message` / `mcp__agent-relay__post_message` or `send_dm` / `mcp__agent-relay__send_dm` |
 
-## Resume & Re-run
+### Resume & Re-run
 
 ```ts
 // Resume a failed run:
@@ -429,9 +363,7 @@ await runWorkflow('feature-dev.yaml', {
 });
 ```
 
-Cached outputs live in `.agent-relay/step-outputs/`; runs in `.agent-relay/workflow-runs.jsonl`. Env vars `RESUME_RUN_ID`, `START_FROM`, `PREVIOUS_RUN_ID` are auto-detected.
-
-## Complete YAML Example
+### Complete YAML Example
 
 ```yaml
 version: '1.0'
@@ -485,19 +417,18 @@ errorHandling:
   retryDelayMs: 5000
 ```
 
-Built-in templates live in `@relayflows/core/dist/builtin-templates/` (feature-dev, bug-fix, code-review, competitive, documentation, refactor, review-loop, security-audit).
+### Source of Truth
 
-## Source of Truth
-
-| Claim                                                             | File                                                                                    |
-| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| Pattern enum (24 patterns)                                        | `@relayflows/core/dist/schema.d.ts` (`SwarmPattern`)                                    |
-| Topology resolution per pattern                                   | `@relayflows/core/dist/coordinator.js`                                                  |
-| Interactive-only topology edges                                   | `@relayflows/core/dist/coordinator.js` filters `interactive: false` agents              |
-| Pattern auto-selection heuristics                                 | `@relayflows/core/dist/coordinator.js`                                                  |
-| `WorkflowBuilder` fluent API                                      | `@relayflows/core/dist/builder.d.ts`                                                    |
-| `runWorkflow(yamlPath, options)`                                  | `@relayflows/core/dist/run.d.ts`                                                        |
-| YAML validation requires `version` + `name` + `swarm.pattern`     | `@relayflows/core/dist/runner.js`                                                       |
-| MCP tool names                                                    | `packages/cli/src/cli/agent-relay-mcp.ts`, `@relayflows/core/dist/channel-messenger.js` |
-| Completion modes (verification / evidence / owner / process-exit) | `@relayflows/core/dist/runner.js`, `@relayflows/core/dist/step-executor.js`             |
-| Trajectory reflection                                             | `@relayflows/core/dist/trajectory.js`, `@relayflows/core/dist/runner.js`                |
+| Claim                                                             | File                                                                         |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Pattern enum (24 patterns)                                        | `packages/sdk/src/workflows/types.ts:114-139`                                |
+| Topology resolution per pattern                                   | `packages/sdk/src/workflows/coordinator.ts:240-450`                          |
+| Interactive-only topology edges                                   | `packages/sdk/src/workflows/coordinator.ts:218-237`                          |
+| Pattern auto-selection heuristics (programmatic API only)         | `packages/sdk/src/workflows/coordinator.ts:51-165`                           |
+| `runWorkflow(yamlPath, options)`                                  | `packages/sdk/src/workflows/run.ts`                                          |
+| YAML validation requires `version` + `name` + `swarm.pattern`     | `packages/sdk/src/workflows/runner.ts:2105-2117`                             |
+| MCP tool names cited in convention-injection                      | `packages/sdk/src/relay-adapter.ts:29-36`                                    |
+| Completion modes (verification / evidence / owner / process-exit) | `packages/sdk/src/workflows/runner.ts:5353-5395`, `4527-4538`                |
+| Completion via PTY + summary fallback                             | `packages/sdk/src/workflows/runner.ts:6600-6615`                             |
+| Downstream skip on upstream failure (not success)                 | `packages/sdk/src/workflows/runner.ts:7057-7088`, `step-executor.ts:329-334` |
+| Trajectory reflection (only `reflectOnConverge` wired)            | `packages/sdk/src/workflows/runner.ts:2762-2779`, `trajectory.ts:173-190`    |

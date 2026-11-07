@@ -1,0 +1,76 @@
+{
+  "id": "traj_s0fzcugvhd9u",
+  "version": 1,
+  "task": {
+    "title": "Gate private devpts regressions on trusted proof runtime prerequisites"
+  },
+  "status": "completed",
+  "startedAt": "2026-09-02T02:46:29.933Z",
+  "completedAt": "2026-09-02T02:47:53.876Z",
+  "agents": [
+    {
+      "name": "default",
+      "role": "lead",
+      "joinedAt": "2026-09-02T02:47:53.339Z"
+    }
+  ],
+  "chapters": [
+    {
+      "id": "chap_9yqhcbhi30do",
+      "title": "Work",
+      "agentName": "default",
+      "startedAt": "2026-09-02T02:47:53.339Z",
+      "endedAt": "2026-09-02T02:47:53.876Z",
+      "events": [
+        {
+          "ts": 1788317273339,
+          "type": "decision",
+          "content": "Gate the five private-devpts regressions on the complete trusted runtime capability: Gate the five private-devpts regressions on the complete trusted runtime capability",
+          "raw": {
+            "question": "Gate the five private-devpts regressions on the complete trusted runtime capability",
+            "chosen": "Gate the five private-devpts regressions on the complete trusted runtime capability",
+            "alternatives": [],
+            "reasoning": "Node install-compatibility containers are Linux but intentionally lack /usr/bin/sudo, so platform-only selection executed infrastructure-specific tests where the trusted launcher cannot exist. Requiring Linux plus executable-path presence keeps standard trusted runners eligible while treating exact Daytona 5/5 evidence as the behavioral gate."
+          },
+          "significance": "high"
+        },
+        {
+          "ts": 1788317273605,
+          "type": "reflection",
+          "content": "The selection-only patch leaves production code unchanged. Focused tests pass 68 with 5 skips locally; the full suite passed 2280 with 21 skips after one unrelated lsof-dependent test passed on isolated rerun.",
+          "raw": {
+            "focalPoints": [
+              "ci-portability",
+              "proof-coverage"
+            ],
+            "confidence": 0.95
+          },
+          "significance": "high",
+          "tags": [
+            "focal:ci-portability",
+            "focal:proof-coverage",
+            "confidence:0.95"
+          ]
+        }
+      ]
+    }
+  ],
+  "retrospective": {
+    "summary": "Added a named trusted Landlock runtime capability predicate so private-devpts tests skip Linux install containers without Python/sudo while remaining executable in Daytona and fully provisioned Linux proof runners.",
+    "approach": "Standard approach",
+    "confidence": 0.95
+  },
+  "commits": [
+    "371add22a"
+  ],
+  "filesChanged": [
+    "tests/fixtures/pr-proof-contract.test.ts"
+  ],
+  "projectId": "AgentWorkforce/relay",
+  "tags": [],
+  "_trace": {
+    "startRef": "2f2b2b9797fef604f7c8169f5d5afba33932f00c",
+    "endRef": "371add22aff63a72b20de2bb64731f715028f0a7",
+    "traceId": "a030739e-67cf-46b3-bb7e-5cb3a7dc384e"
+  }
+}

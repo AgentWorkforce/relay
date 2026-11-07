@@ -177,7 +177,11 @@ export async function clearStoredAuth(): Promise<void> {
  */
 export async function refreshStoredCloudIdentity(
   auth: StoredAuth,
-  options: { env?: NodeJS.ProcessEnv } = {}
+  options: {
+    env?: NodeJS.ProcessEnv;
+    /** Apply the caller's credential transport policy to the whoami request. */
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
 ): Promise<CloudIdentity | null> {
   const env = options.env ?? process.env;
 
@@ -185,8 +189,14 @@ export async function refreshStoredCloudIdentity(
     const { response } = await authorizedApiFetch(
       auth,
       '/api/v1/auth/whoami',
-      { method: 'GET' },
-      { interactive: false }
+      {
+        method: 'GET',
+        ...(options.validateApiUrl ? { redirect: 'error' as const } : {}),
+      },
+      {
+        interactive: false,
+        validateApiUrl: options.validateApiUrl,
+      }
     );
     if (!response.ok) return null;
 
@@ -563,10 +573,17 @@ async function beginBrowserLogin(apiUrl: string): Promise<StoredAuth> {
 
 export async function refreshStoredAuth(
   auth: StoredAuth,
-  options: { force?: boolean; refreshTimeoutMs?: number; signal?: AbortSignal } = {}
+  options: {
+    force?: boolean;
+    refreshTimeoutMs?: number;
+    signal?: AbortSignal;
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
 ): Promise<StoredAuth> {
   if (isEnvBackedAuth(auth)) {
-    return markEnvBackedAuth(await requestStoredAuthRefresh(auth, options));
+    const nextAuth = await requestStoredAuthRefresh(auth, options);
+    options.validateApiUrl?.(nextAuth.apiUrl);
+    return markEnvBackedAuth(nextAuth);
   }
 
   return withStoredAuthLock(async () => {
@@ -578,6 +595,10 @@ export async function refreshStoredAuth(
     }
 
     const nextAuth = await requestStoredAuthRefresh(refreshSource, options);
+    // Some credentialed callers impose a stricter transport contract than the
+    // general Cloud client. Validate a refresh-selected host before persisting
+    // the rotated credentials or allowing a retry to send them there.
+    options.validateApiUrl?.(nextAuth.apiUrl);
     await writeStoredAuth(nextAuth);
     return nextAuth;
   }, options);
@@ -585,8 +606,13 @@ export async function refreshStoredAuth(
 
 async function requestStoredAuthRefresh(
   auth: StoredAuth,
-  options: { refreshTimeoutMs?: number; signal?: AbortSignal } = {}
+  options: {
+    refreshTimeoutMs?: number;
+    signal?: AbortSignal;
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
 ): Promise<StoredAuth> {
+  options.validateApiUrl?.(auth.apiUrl);
   const response = await fetchWithRefreshTimeout(
     buildApiUrl(auth.apiUrl, '/api/v1/auth/token/refresh'),
     {
@@ -595,6 +621,9 @@ async function requestStoredAuthRefresh(
         'content-type': 'application/json',
       },
       body: JSON.stringify({ refreshToken: auth.refreshToken }),
+      // An opt-in host policy also refuses HTTP redirects so a 307 cannot
+      // replay the refresh token to an unvalidated destination.
+      ...(options.validateApiUrl ? { redirect: 'error' as const } : {}),
     },
     options
   );
@@ -633,11 +662,20 @@ async function requestStoredAuthRefresh(
  * path — that is what keeps `cloud session --json --reveal-token` working
  * regardless of how the machine logged in.
  */
-async function completeLogin(auth: StoredAuth): Promise<StoredAuth> {
+async function completeLogin(
+  auth: StoredAuth,
+  options: { validateApiUrl?: (apiUrl: string) => void } = {}
+): Promise<StoredAuth> {
+  // Validate the server-selected host before either persisting its credentials
+  // or sending its new bearer to whoami. This is the final common boundary for
+  // both browser callbacks and device-code grants.
+  options.validateApiUrl?.(auth.apiUrl);
   await writeStoredAuth(auth);
   // Record who just logged in so subsequent CLI/broker runs can attribute
   // telemetry to this user and org. Never blocks the login from succeeding.
-  const identity = await refreshStoredCloudIdentity(auth);
+  const identity = await refreshStoredCloudIdentity(auth, {
+    validateApiUrl: options.validateApiUrl,
+  });
   console.log(`Logged in to ${auth.apiUrl}`);
   if (identity?.email) {
     const org = identity.organizationName ?? identity.organizationSlug;
@@ -646,8 +684,12 @@ async function completeLogin(auth: StoredAuth): Promise<StoredAuth> {
   return auth;
 }
 
-async function loginWithBrowser(apiUrl: string): Promise<StoredAuth> {
-  return completeLogin(await beginBrowserLogin(apiUrl));
+async function loginWithBrowser(
+  apiUrl: string,
+  options: { validateApiUrl?: (apiUrl: string) => void } = {}
+): Promise<StoredAuth> {
+  options.validateApiUrl?.(apiUrl);
+  return completeLogin(await beginBrowserLogin(apiUrl), options);
 }
 
 /**
@@ -658,9 +700,24 @@ async function loginWithBrowser(apiUrl: string): Promise<StoredAuth> {
  */
 export async function loginWithDevice(
   apiUrl: string,
-  options: { clientName?: string } & DeviceFlowHooks = {}
+  options: {
+    clientName?: string;
+    validateApiUrl?: (apiUrl: string) => void;
+  } & DeviceFlowHooks = {}
 ): Promise<StoredAuth> {
-  return completeLogin(await runDeviceAuthorizationFlow(apiUrl, options));
+  const { validateApiUrl, ...deviceOptions } = options;
+  validateApiUrl?.(apiUrl);
+  const deviceFetch = deviceOptions.fetchImpl ?? fetch;
+  const policyDeviceOptions = validateApiUrl
+    ? {
+        ...deviceOptions,
+        fetchImpl: ((input, init) =>
+          deviceFetch(input, { ...init, redirect: 'error' })) satisfies typeof fetch,
+      }
+    : deviceOptions;
+  return completeLogin(await runDeviceAuthorizationFlow(apiUrl, policyDeviceOptions), {
+    validateApiUrl,
+  });
 }
 
 /**
@@ -671,13 +728,17 @@ export async function loginWithDevice(
  */
 async function loginInteractive(
   apiUrl: string,
-  options: { device?: boolean; env?: NodeJS.ProcessEnv } = {}
+  options: {
+    device?: boolean;
+    env?: NodeJS.ProcessEnv;
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
 ): Promise<StoredAuth> {
   const env = options.env ?? process.env;
   if (options.device === true || isHeadlessEnvironment(env)) {
-    return loginWithDevice(apiUrl);
+    return loginWithDevice(apiUrl, { validateApiUrl: options.validateApiUrl });
   }
-  return loginWithBrowser(apiUrl);
+  return loginWithBrowser(apiUrl, { validateApiUrl: options.validateApiUrl });
 }
 
 export async function ensureAuthenticated(
@@ -700,12 +761,14 @@ export async function ensureAuthenticated(
 }
 
 export async function ensureCloudSession(options: CloudSessionOptions = {}): Promise<CloudSession> {
+  options.signal?.throwIfAborted();
   const env = options.env ?? process.env;
-  const apiUrl = options.apiUrl || env.CLOUD_API_URL?.trim() || defaultApiUrl();
+  const apiUrl = options.apiUrl || defaultApiUrl(env);
   const force = options.force === true;
   const interactive = options.interactive !== false;
   const refreshTimeoutMs = options.refreshTimeoutMs;
   const stored = !force ? await readStoredAuth(env) : null;
+  options.signal?.throwIfAborted();
 
   // Stored auth is authoritative on its own host. A host mismatch between
   // `apiUrl` (typically defaultApiUrl()) and `stored.apiUrl` is NOT a reason
@@ -722,18 +785,40 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
           : 'Cloud login required. Run `agent-relay login`.'
       );
     }
-    const auth = await loginInteractive(apiUrl, { device: options.device, env });
-    return createCloudSession(auth, { refreshTimeoutMs });
+    const auth = await loginInteractive(apiUrl, {
+      device: options.device,
+      env,
+      validateApiUrl: options.validateApiUrl,
+    });
+    return createCloudSession(auth, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
   }
 
+  // A caller-supplied transport policy must run before an expired stored
+  // session can send its refresh token to the stored host.
+  options.validateApiUrl?.(stored.apiUrl);
+
   if (!shouldRefreshStoredAuth(stored)) {
-    return createCloudSession(stored, { refreshTimeoutMs });
+    return createCloudSession(stored, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
   }
 
   try {
-    const auth = await refreshStoredAuth(stored, { refreshTimeoutMs });
-    return createCloudSession(auth, { refreshTimeoutMs });
+    const auth = await refreshStoredAuth(stored, {
+      signal: options.signal,
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
+    return createCloudSession(auth, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
   } catch (error) {
+    options.signal?.throwIfAborted();
     if (isEnvBackedAuth(stored)) {
       throw toEnvAuthRefreshError(error);
     }
@@ -742,15 +827,29 @@ export async function ensureCloudSession(options: CloudSessionOptions = {}): Pro
       throw error;
     }
 
-    const auth = await loginInteractive(stored.apiUrl, { device: options.device, env });
-    return createCloudSession(auth, { refreshTimeoutMs });
+    const auth = await loginInteractive(stored.apiUrl, {
+      device: options.device,
+      env,
+      validateApiUrl: options.validateApiUrl,
+    });
+    return createCloudSession(auth, {
+      refreshTimeoutMs,
+      validateApiUrl: options.validateApiUrl,
+    });
   }
 }
 
-function createCloudSession(auth: StoredAuth, options: { refreshTimeoutMs?: number } = {}): CloudSession {
+function createCloudSession(
+  auth: StoredAuth,
+  options: {
+    refreshTimeoutMs?: number;
+    validateApiUrl?: (apiUrl: string) => void;
+  } = {}
+): CloudSession {
   const clientOptions: CloudApiClientOptions = {
     ...auth,
     refreshTimeoutMs: options.refreshTimeoutMs,
+    validateApiUrl: options.validateApiUrl,
   };
 
   if (!isEnvBackedAuth(auth)) {
@@ -760,6 +859,7 @@ function createCloudSession(auth: StoredAuth, options: { refreshTimeoutMs?: numb
           force: refreshOptions.force,
           refreshTimeoutMs: options.refreshTimeoutMs,
           signal: refreshOptions.signal,
+          validateApiUrl: options.validateApiUrl,
         })
       );
   }
@@ -816,23 +916,30 @@ export async function authorizedApiFetch(
      */
     device?: boolean;
     env?: NodeJS.ProcessEnv;
+    /** Validate every host before a bearer-authenticated request uses it. */
+    validateApiUrl?: (apiUrl: string) => void;
   } = {}
 ): Promise<{ response: Response; auth: StoredAuth }> {
   let activeAuth = auth;
-  let response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
+  const policyInit = options.validateApiUrl ? { ...init, redirect: 'error' as const } : init;
+  options.validateApiUrl?.(activeAuth.apiUrl);
+  let response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, policyInit);
 
   if (response.status !== 401) {
     return { response, auth: activeAuth };
   }
 
+  let refreshableAuth: StoredAuth = activeAuth;
   try {
-    activeAuth = await refreshStoredAuth(activeAuth, {
+    refreshableAuth = await refreshStoredAuth(refreshableAuth, {
       force: true,
       refreshTimeoutMs: options.refreshTimeoutMs,
       signal: init.signal ?? undefined,
+      validateApiUrl: options.validateApiUrl,
     });
+    activeAuth = refreshableAuth;
   } catch (error) {
-    if (isEnvBackedAuth(activeAuth)) {
+    if (isEnvBackedAuth(refreshableAuth)) {
       throw toEnvAuthRefreshError(error);
     }
 
@@ -855,9 +962,11 @@ export async function authorizedApiFetch(
     activeAuth = await loginInteractive(activeAuth.apiUrl, {
       device: options.device,
       env: options.env,
+      validateApiUrl: options.validateApiUrl,
     });
   }
 
-  response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, init);
+  options.validateApiUrl?.(activeAuth.apiUrl);
+  response = await apiFetch(activeAuth.apiUrl, activeAuth.accessToken, requestPath, policyInit);
   return { response, auth: activeAuth };
 }

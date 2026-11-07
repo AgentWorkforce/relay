@@ -6,11 +6,24 @@ import {
   BridgeConfigSchema,
   RelayRuntimeConfigSchema,
   ShadowConfigSchema,
+  TeamsConfigSchema,
   jsonSchemas,
 } from './schemas.js';
 import { DEFAULT_CONNECTION_CONFIG, DEFAULT_TMUX_WRAPPER_CONFIG } from './relay-config.js';
 
 describe('config schemas', () => {
+  it('preserves per-agent model pins when parsing teams config', () => {
+    const config = {
+      team: 'platform',
+      agents: [{ name: 'Worker', cli: 'claude', model: 'opus' }],
+    };
+    expect(TeamsConfigSchema.parse(config)).toEqual(config);
+  });
+
+  it('describes the per-agent model field in the published schema', () => {
+    expect(jsonSchemas.teams).toHaveProperty('properties.agents.items.properties.model', { type: 'string' });
+  });
+
   it('validates connection defaults', () => {
     expect(ConnectionConfigSchema.parse(DEFAULT_CONNECTION_CONFIG)).toEqual(DEFAULT_CONNECTION_CONFIG);
   });

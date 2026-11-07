@@ -25,6 +25,7 @@
   ],
   "max_agents": 8,
   "tags": ["darwin", "arm64", "ssd"],
+  "repo_keys": ["AgentWorkforce/factory", "AgentWorkforce/relay"],
   "version": "relay-broker/0.7.0",
   "resume_cursor": null
 }

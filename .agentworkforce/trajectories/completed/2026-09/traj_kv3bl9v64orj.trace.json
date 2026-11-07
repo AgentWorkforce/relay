@@ -1,0 +1,96 @@
+{
+  "version": "1.0.0",
+  "id": "2f97f7a8-c4e2-4be6-8789-7a2e4ba6ccb6",
+  "timestamp": "2026-09-03T01:43:20.654Z",
+  "trajectory": "traj_kv3bl9v64orj",
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 10,
+              "end_line": 16,
+              "revision": "edc9f9ab54ec83479f6a5eb50623f3ec48900ea1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "scripts/verify-features/escalate-infra.sh",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 20,
+              "end_line": 29,
+              "revision": "edc9f9ab54ec83479f6a5eb50623f3ec48900ea1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "tests/fixtures/verify-features-escalation.test.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 375,
+              "end_line": 406,
+              "revision": "edc9f9ab54ec83479f6a5eb50623f3ec48900ea1"
+            },
+            {
+              "start_line": 411,
+              "end_line": 425,
+              "revision": "edc9f9ab54ec83479f6a5eb50623f3ec48900ea1"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "path": "workflows/verify-features.ts",
+      "conversations": [
+        {
+          "contributor": {
+            "type": "ai"
+          },
+          "ranges": [
+            {
+              "start_line": 2279,
+              "end_line": 2286,
+              "revision": "edc9f9ab54ec83479f6a5eb50623f3ec48900ea1"
+            },
+            {
+              "start_line": 2383,
+              "end_line": 2392,
+              "revision": "edc9f9ab54ec83479f6a5eb50623f3ec48900ea1"
+            },
+            {
+              "start_line": 2498,
+              "end_line": 2509,
+              "revision": "edc9f9ab54ec83479f6a5eb50623f3ec48900ea1"
+            },
+            {
+              "start_line": 2766,
+              "end_line": 2786,
+              "revision": "edc9f9ab54ec83479f6a5eb50623f3ec48900ea1"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

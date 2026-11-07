@@ -40,10 +40,10 @@ The current Agent Relay MCP server registers flat tool names. Use the final
 tool name exactly as listed here.
 
 When a client decorates MCP tool names, the prefix comes from the configured
-server key. Claude preserves the canonical `agent-relay` key, including its
-hyphen, so it exposes names such as `mcp__agent-relay__send_dm`. The old
-`mcp__relaycast__*` prefix belongs only to legacy configurations. In every case,
-the canonical tool name is the flat suffix, such as `send_dm`.
+server key. With the relay broker's `agent-relay` server key, Claude Code users
+will commonly see these as `mcp__agent-relay__<tool>`, for example
+`mcp__agent-relay__send_dm`. Codex and opencode users see the bare canonical
+names, such as `send_dm`.
 
 Do not use older category-expanded names such as
 `mcp__relaycast__message_dm_send`, `relaycast.message.dm.send`, or
@@ -77,6 +77,8 @@ Do not use older category-expanded names such as
 | `send_dm`             | Send a direct message to one agent                 |
 | `send_group_dm`       | Create a group DM and send the first message       |
 | `post_message`        | Post to a channel                                  |
+| `upload_file`         | Upload a local file (e.g. a screenshot) to attach  |
+| `download_file`       | Save a message attachment locally and get its path |
 | `list_messages`       | Read channel history                               |
 | `reply_to_thread`     | Reply to an existing message                       |
 | `get_message_thread`  | Read a thread                                      |
@@ -160,19 +162,10 @@ Prefer `send_dm` for lead/worker coordination. Use `post_message` when the
 whole channel needs the update. Use `reply_to_thread` for follow-ups on a
 specific message.
 
-Choose the injection mode deliberately. Omit `mode` (or use `mode: "wait"`)
-for normal coordination: Relay queues the message until the recipient reaches
-a safe idle boundary, so it can remain unread while that agent is busy. Use
-`mode: "steer"` only when immediate injection justifies interrupting active
-work. In either mode, a successful send and message ID confirm enqueue, not
-consumption; call `get_message_readers(message_id: "...")` before interpreting
-silence as acknowledgement or refusal.
-
 Examples:
 
 ```text
-send_dm(to: "Lead", text: "STATUS: Auth routes are implemented; running tests next.", mode: "wait")
-send_dm(to: "Lead", text: "URGENT: Stop the deploy.", mode: "steer")
+send_dm(to: "Lead", text: "STATUS: Auth routes are implemented; running tests next.")
 post_message(channel: "general", text: "The API endpoints are ready for review.")
 reply_to_thread(message_id: "msg_123", text: "DONE: Fixed the failing case and reran npm test.")
 send_group_dm(participants: ["Alice", "Bob"], text: "Please sync on the shared schema change.")
@@ -198,21 +191,18 @@ remove_agent(name: "reviewer-1", reason: "Review accepted")
 
 ## Current CLI Reference
 
-Startup and status commands are intentionally omitted from these agent-facing
-examples. Published Agent Relay versions through 11.3.0 can print live
-workspace credentials when those commands run in a transcribed session. Upgrade
-to Agent Relay 11.3.1 or later before running them there.
-
 These are the current CLI forms for local broker and SDK-backed messaging
 operations:
 
 ```bash
 agent-relay status
-agent-relay node agent list
-agent-relay node agent spawn claude --name Worker --task "Use https://agentrelay.com/skill and ACK over Relay."
-agent-relay node tail --agent Worker
-agent-relay node agent attach Worker --mode view
-agent-relay node agent release Worker
+agent-relay local up --no-dashboard --verbose
+agent-relay local status --wait-for 10
+agent-relay local agent list
+agent-relay local agent spawn claude --name Worker --task "Use https://agentrelay.com/skill and ACK over Relay."
+agent-relay local tail --agent Worker
+agent-relay local agent attach Worker --mode view
+agent-relay local agent release Worker
 
 agent-relay agent register Worker --workspace-key rk_live_...
 agent-relay agent list --workspace-key rk_live_...

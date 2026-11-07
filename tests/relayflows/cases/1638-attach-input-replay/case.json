@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "id": "1638-attach-input-replay",
+  "kind": "bugfix",
+  "title": "Replay attach outage input only after verifying the replacement worker",
+  "runner": {
+    "command": ["node", "tests/relayflows/cases/1638-attach-input-replay/run.mjs"]
+  },
+  "requirements": [],
+  "timeoutSeconds": 900,
+  "expected": {
+    "base": {
+      "outcome": "bug",
+      "signature": "verified_attach_outage_input_dropped"
+    },
+    "head": {
+      "outcome": "fixed",
+      "signature": "verified_attach_outage_input_replayed"
+    }
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "runId": "ghsub-demo-unique-run",
+  "environment": "intended-demo",
+  "outputDir": "/absolute/path/to/evidence",
+  "repos": ["AgentWorkforce/cloud", "AgentWorkforce/relay", "AgentWorkforce/software-garden"],
+  "castUrl": "https://cast.agentrelay.com",
+  "brokerConnectionPath": "/absolute/project/.agentworkforce/relay/connection.json",
+  "receiver": "ghsub-demo-worker",
+  "actors": {
+    "ghsub-demo-worker": "agent-events-REPLACE_WITH_ID"
+  },
+  "actorIds": {
+    "ghsub-demo-worker": "REPLACE_WITH_VERIFIED_ID"
+  },
+  "webhookAgentId": "REPLACE_WITH_VERIFIED_SYSTEM_AGENT_ID",
+  "negativeChannels": ["ghsub-demo-negative"],
+  "collectionSeconds": 1800,
+  "negativeWindowSeconds": 120,
+  "deployedVersions": {
+    "relay": {
+      "revision": "REPLACE_WITH_OBSERVED_REVISION",
+      "version": "REPLACE"
+    },
+    "relaycast": {
+      "revision": "REPLACE_WITH_OBSERVED_REVISION",
+      "version": "REPLACE"
+    },
+    "relayfile": {
+      "revision": "REPLACE_WITH_OBSERVED_REVISION",
+      "version": "REPLACE"
+    }
+  },
+  "brokerProjectRoot": "/absolute/project",
+  "receiverCwd": "/absolute/fixture-workdir",
+  "receiverCli": "claude",
+  "subscriptionScope": "issue",
+  "spawnReceiver": true,
+  "relayfileWorkspaceId": "rw_REPLACE_WITH_CLOUD_BOUND_WORKSPACE"
+}

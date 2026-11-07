@@ -3,47 +3,23 @@ name: using-agent-relay
 description: Use when you are a registered relay agent (a spawned worker, or a lead that called register_agent) coordinating with peers in real time over current Agent Relay MCP tools - messaging, channels, threads, reactions, search, inbox, actions, and worker spawn/release. For role selection and orchestrator startup instructions, use https://agentrelay.com/skill and the orchestrating-agent-relay skill.
 ---
 
-# Using Agent Relay
-
-Use this skill when you are already a registered Agent Relay participant, or
-when your session can register itself with `register_agent`.
-
-If you are deciding how to start Relay, spawn workers, or choose the right role,
-use the hosted handoff first:
-
-```text
-https://agentrelay.com/skill
-```
-
-That page links both sides of the workflow:
-
-- outside orchestrators and human drivers use
-  [`orchestrating-agent-relay`](https://github.com/AgentWorkforce/skills/blob/main/skills/orchestrating-agent-relay/SKILL.md)
-- spawned or registered participants use this `using-agent-relay` skill
-
-## Role Check
-
-Use this skill if:
+### Role Check
 
 - you were spawned into a Relay team
 - the prompt gave you a workspace key or Relay identity
 - you can call `set_workspace_key`, `create_workspace`, or `register_agent`
 - you need to ACK, report status, DM peers, post to channels, or check inbox
 
-Do not use this as the outside orchestrator playbook. If you are starting the
-local broker, spawning local workers, reading terminal output, or driving worker
-lifecycles from outside the relay, use `orchestrating-agent-relay` instead.
-
-## Current MCP Tool Names
+### Current MCP Tool Names
 
 The current Agent Relay MCP server registers flat tool names. Use the final
 tool name exactly as listed here.
 
 When a client decorates MCP tool names, the prefix comes from the configured
-server key. Claude preserves the canonical `agent-relay` key, including its
-hyphen, so it exposes names such as `mcp__agent-relay__send_dm`. The old
-`mcp__relaycast__*` prefix belongs only to legacy configurations. In every case,
-the canonical tool name is the flat suffix, such as `send_dm`.
+server key. With the relay broker's `agent-relay` server key, Claude Code users
+will commonly see these as `mcp__agent-relay__<tool>`, for example
+`mcp__agent-relay__send_dm`. Codex and opencode users see the bare canonical
+names, such as `send_dm`.
 
 Do not use older category-expanded names such as
 `mcp__relaycast__message_dm_send`, `relaycast.message.dm.send`, or
@@ -77,6 +53,8 @@ Do not use older category-expanded names such as
 | `send_dm`             | Send a direct message to one agent                 |
 | `send_group_dm`       | Create a group DM and send the first message       |
 | `post_message`        | Post to a channel                                  |
+| `upload_file`         | Upload a local file (e.g. a screenshot) to attach  |
+| `download_file`       | Save a message attachment locally and get its path |
 | `list_messages`       | Read channel history                               |
 | `reply_to_thread`     | Reply to an existing message                       |
 | `get_message_thread`  | Read a thread                                      |
@@ -101,86 +79,28 @@ Do not use older category-expanded names such as
 collection. `list_actions` and `invoke_action` are present when actions are
 enabled.
 
-## Startup Protocol
+### Startup Protocol
 
-Do this before substantive work:
-
-1. Join or create the workspace.
-
-   ```text
-   set_workspace_key(workspace_key: "rk_live_...")
-   ```
-
-   If no workspace key was provided:
-
-   ```text
-   create_workspace(name: "project-or-task-name")
-   ```
-
-2. Register this session if it is not already registered.
-
-   ```text
-   register_agent(name: "api-worker", type: "agent", persona: "Backend implementer")
-   ```
-
-3. Check who else is present and join the working channel if needed.
-
-   ```text
-   list_agents(status: "online")
-   list_channels()
-   join_channel(channel: "general")
-   ```
-
-4. Check your inbox.
-
-   ```text
-   check_inbox(limit: 20)
-   ```
-
-5. ACK the lead before doing the task.
-
-   ```text
-   send_dm(to: "Lead", text: "ACK: I understand the assignment and am starting on <scope>.")
-   ```
-
-If a tool returns `Not registered. Call agent.register first.`, register with
-`register_agent` before using participant-only tools. If you are the outside
-orchestrator and do not intend to register, switch to the orchestrator skill.
-
-## Communication Protocol
-
-Use concise status messages:
-
-- `ACK: I understand the assignment and am starting on <scope>.`
-- `STATUS: Finished <milestone>; next I am doing <next step>.`
-- `BLOCKED: I cannot continue because <blocker>. Need <specific input>.`
-- `DONE: Completed <scope>. Evidence: <files, commands, tests, or results>.`
-
-Prefer `send_dm` for lead/worker coordination. Use `post_message` when the
-whole channel needs the update. Use `reply_to_thread` for follow-ups on a
-specific message.
-
-Choose the injection mode deliberately. Omit `mode` (or use `mode: "wait"`)
-for normal coordination: Relay queues the message until the recipient reaches
-a safe idle boundary, so it can remain unread while that agent is busy. Use
-`mode: "steer"` only when immediate injection justifies interrupting active
-work. In either mode, a successful send and message ID confirm enqueue, not
-consumption; call `get_message_readers(message_id: "...")` before interpreting
-silence as acknowledgement or refusal.
-
-Examples:
+#### Do this before substantive work:
 
 ```text
-send_dm(to: "Lead", text: "STATUS: Auth routes are implemented; running tests next.", mode: "wait")
-send_dm(to: "Lead", text: "URGENT: Stop the deploy.", mode: "steer")
+set_workspace_key(workspace_key: "rk_live_...")
+```
+
+### Communication Protocol
+
+#### Use concise status messages:
+
+```text
+send_dm(to: "Lead", text: "STATUS: Auth routes are implemented; running tests next.")
 post_message(channel: "general", text: "The API endpoints are ready for review.")
 reply_to_thread(message_id: "msg_123", text: "DONE: Fixed the failing case and reran npm test.")
 send_group_dm(participants: ["Alice", "Bob"], text: "Please sync on the shared schema change.")
 ```
 
-## Spawning and Releasing Workers
+### Spawning and Releasing Workers
 
-Only spawn workers when your role allows delegation.
+#### Only spawn workers when your role allows delegation.
 
 ```text
 add_agent(
@@ -190,29 +110,19 @@ add_agent(
 )
 ```
 
-Release workers after their work is accepted:
+### Current CLI Reference
 
-```text
-remove_agent(name: "reviewer-1", reason: "Review accepted")
-```
-
-## Current CLI Reference
-
-Startup and status commands are intentionally omitted from these agent-facing
-examples. Published Agent Relay versions through 11.3.0 can print live
-workspace credentials when those commands run in a transcribed session. Upgrade
-to Agent Relay 11.3.1 or later before running them there.
-
-These are the current CLI forms for local broker and SDK-backed messaging
-operations:
+#### These are the current CLI forms for local broker and SDK-backed messaging
 
 ```bash
 agent-relay status
-agent-relay node agent list
-agent-relay node agent spawn claude --name Worker --task "Use https://agentrelay.com/skill and ACK over Relay."
-agent-relay node tail --agent Worker
-agent-relay node agent attach Worker --mode view
-agent-relay node agent release Worker
+agent-relay local up --no-dashboard --verbose
+agent-relay local status --wait-for 10
+agent-relay local agent list
+agent-relay local agent spawn claude --name Worker --task "Use https://agentrelay.com/skill and ACK over Relay."
+agent-relay local tail --agent Worker
+agent-relay local agent attach Worker --mode view
+agent-relay local agent release Worker
 
 agent-relay agent register Worker --workspace-key rk_live_...
 agent-relay agent list --workspace-key rk_live_...
@@ -223,15 +133,24 @@ agent-relay message list general --workspace-key rk_live_... --token at_live_...
 agent-relay message reply msg_123 "Thread reply" --workspace-key rk_live_... --token at_live_...
 ```
 
-Use environment variables instead of flags when available:
+### Overview
 
-```bash
-RELAY_WORKSPACE_KEY=rk_live_...
-RELAY_AGENT_TOKEN=at_live_...
-RELAY_BASE_URL=https://gateway.relaycast.dev
+Use this skill when you are already a registered Agent Relay participant, or
+when your session can register itself with `register_agent`.
+If you are deciding how to start Relay, spawn workers, or choose the right role,
+use the hosted handoff first:
+
+```text
+https://agentrelay.com/skill
 ```
 
-## Common Mistakes
+That page links both sides of the workflow:
+
+- outside orchestrators and human drivers use
+  [`orchestrating-agent-relay`](https://github.com/AgentWorkforce/skills/blob/main/skills/orchestrating-agent-relay/SKILL.md)
+- spawned or registered participants use this `using-agent-relay` skill
+
+### Common Mistakes
 
 | Mistake                                       | Fix                                                                            |
 | --------------------------------------------- | ------------------------------------------------------------------------------ |

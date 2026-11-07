@@ -1,3 +1,5 @@
+import type { SessionMessagesResult } from '@relaycast/sdk';
+
 /** AI harnesses that can originate a portable Relay session. */
 export type SessionCli = 'claude' | 'codex' | 'opencode' | 'grok' | 'cursor';
 
@@ -52,8 +54,7 @@ export interface Turn {
 }
 
 export type ResumeMode =
-  | { mode: 'native'; nativeResumeId: string }
-  | { mode: 'inject'; contextPrompt: string };
+  { mode: 'native'; nativeResumeId: string } | { mode: 'inject'; contextPrompt: string };
 
 export interface ResumeSessionResult {
   session: RelaySession;
@@ -62,9 +63,37 @@ export interface ResumeSessionResult {
   resume: ResumeMode;
 }
 
-/** Durable replay context fetched from Relayhistory without selecting a native resume mode. */
+export type RelaycastSessionMessage = SessionMessagesResult['messages'][number];
+
+export type ReplayConversationReason =
+  | NonNullable<SessionMessagesResult['reason']>
+  | 'workspace_key_unavailable'
+  | 'pagination_incomplete'
+  | 'query_failed'
+  | 'response_invalid';
+
+/** Workspace-wide Relaycast conversation slice joined by the stable Relay session id. */
+export type ReplayConversationResult = Omit<SessionMessagesResult, 'reason'> & {
+  reason?: ReplayConversationReason;
+};
+
+export type ReplayTimelineEntry =
+  | {
+      source: 'relayhistory';
+      timestamp: string;
+      turn: Turn;
+    }
+  | {
+      source: 'relaycast';
+      timestamp: string;
+      message: RelaycastSessionMessage;
+    };
+
+/** Durable completed-session replay joined across Relayhistory and Relaycast. */
 export interface ReplaySessionResult {
   session: RelaySession;
   turns: Turn[];
+  conversation: ReplayConversationResult;
+  timeline: ReplayTimelineEntry[];
   contextPrompt: string;
 }

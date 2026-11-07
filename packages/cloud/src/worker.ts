@@ -6,7 +6,7 @@ import path from 'node:path';
 import { buildApiUrl } from './api-client.js';
 import { defaultApiUrl } from './types.js';
 
-export type WorkerFileType = 'yaml' | 'ts' | 'py';
+export type WorkerFileType = 'yaml' | 'ts';
 
 export type WorkerWorkflowPayload = {
   runId: string;
@@ -21,6 +21,17 @@ export type WorkerWorkflowPayload = {
   sourceFileType: WorkerFileType | 'workflow';
   workflowFileName: string;
   envSecrets?: Record<string, string>;
+  /**
+   * Subscription logins for the run: a short-lived reference the worker
+   * exchanges, with its worker token, for CLI auth files (see
+   * packages/cli/src/cli/commands/cloud-worker-cli-credentials.ts).
+   */
+  cliCredentials?: {
+    ref: string;
+    expiresAt?: string;
+    path: string;
+    credentials?: Array<{ credentialId: string; provider: string; cli: string }>;
+  };
   metadata?: Record<string, string>;
   s3CodeKey?: string;
   paths?: Array<{
@@ -525,10 +536,9 @@ function isWorkerWorkflowPayload(value: unknown): value is WorkerWorkflowPayload
     typeof value.relayfileUrl === 'string' &&
     typeof value.relayfileToken === 'string' &&
     typeof value.workflow === 'string' &&
-    (value.fileType === 'yaml' || value.fileType === 'ts' || value.fileType === 'py') &&
+    (value.fileType === 'yaml' || value.fileType === 'ts') &&
     (value.sourceFileType === 'yaml' ||
       value.sourceFileType === 'ts' ||
-      value.sourceFileType === 'py' ||
       value.sourceFileType === 'workflow') &&
     typeof value.workflowFileName === 'string'
   );

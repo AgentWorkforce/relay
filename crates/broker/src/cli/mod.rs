@@ -270,6 +270,11 @@ pub(crate) struct McpArgsCommand {
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct InitCommand {
+    /// Run local agents only; retain delivery records for background reconciliation.
+    /// Fleet routing and remote attachment remain disabled until a normal restart.
+    #[arg(long)]
+    pub(crate) local_only: bool,
+
     /// Legacy broker instance name flag. Prefer --instance-name.
     #[arg(long, default_value = "", alias = "broker-name")]
     pub(crate) name: String,
@@ -371,6 +376,7 @@ mod tests {
 
     fn init_command(name: &str, instance_name: Option<&str>) -> InitCommand {
         InitCommand {
+            local_only: false,
             name: name.to_string(),
             instance_name: instance_name.map(ToOwned::to_owned),
             workspace_key: None,
@@ -499,6 +505,15 @@ pub(crate) struct PtyCommand {
 
     #[arg(long)]
     pub(crate) agent_name: Option<String>,
+
+    /// Isolated Muse config home for this worker (path only, never a
+    /// secret): the worker points `XDG_CONFIG_HOME` and `MUSE_NO_AUTO_UPDATE`
+    /// at it before spawning Muse. `MUSE_AUTH_PATH` points at an absolute
+    /// `RELAY_MUSE_SHARED_AUTH_PATH` when set, otherwise at the host Muse
+    /// login; it falls back to `<config_home>/muse/auth.json` when
+    /// `RELAY_MUSE_ISOLATED_AUTH=1` or no absolute host login path resolves.
+    #[arg(long)]
+    pub(crate) muse_config_home: Option<String>,
 
     /// Emit delivery_active events when output matches progress patterns.
     #[arg(long)]

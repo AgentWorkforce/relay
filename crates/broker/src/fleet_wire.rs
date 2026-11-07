@@ -80,6 +80,8 @@ pub struct FleetCapability {
         skip_serializing_if = "Option::is_none"
     )]
     pub queue: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<String>,
     #[serde(
         default,
         deserialize_with = "deserialize_optional_presence",
@@ -87,6 +89,12 @@ pub struct FleetCapability {
     )]
     pub metadata: Option<BTreeMap<String, Value>>,
 }
+
+/// Reserved node capability carrying the broker's live WorkerName set in its
+/// `metadata.names` array. It rides the existing heartbeat descriptor refresh,
+/// so it does not depend on per-agent provider registration or a separate
+/// control-plane write.
+pub const LIVE_AGENT_CAPABILITY_NAME: &str = "relay:live-agents:v1";
 
 /// Provider identity carried on connection-scoped node frames. `name` is the
 /// provider's stable identity — persistence, capability-conflict checks, and the
@@ -124,6 +132,9 @@ pub struct NodeRegister {
     pub capabilities: Vec<FleetCapability>,
     pub max_agents: u32,
     pub tags: Vec<String>,
+    /// Placement-safe repository keys; absolute node-local paths are forbidden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_keys: Option<Vec<String>>,
     pub version: String,
     #[serde(
         default,
@@ -165,6 +176,9 @@ pub struct NodeHeartbeat {
     // the engine's server-stamped single source of truth for liveness.
     pub name: String,
     pub node_id: String,
+    // The broker appends reserved live-agent capabilities on every heartbeat;
+    // their names come directly from its worker registry, independently of
+    // provider registration and inventory.sync.
     pub capabilities: Vec<FleetCapability>,
     pub max_agents: u32,
     pub version: String,
@@ -207,6 +221,12 @@ pub struct NodeDeregister {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentRegister {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_presence",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub auto_join_general: Option<bool>,
     pub v: FleetWireVersion,
     #[serde(
         default,
@@ -357,6 +377,7 @@ pub struct ActionResult {
     pub id: Option<String>,
     pub invocation_id: String,
     pub result: ActionResultPayload,
+    pub task: Option<TaskResultFields>,
 }
 
 impl Serialize for ActionResult {
@@ -402,6 +423,14 @@ struct ActionResultWire {
         skip_serializing_if = "Option::is_none"
     )]
     pub error: Option<String>,
+    #[serde(default, rename = "final", skip_serializing_if = "Option::is_none")]
+    pub final_result: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_generation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accounting: Option<BTreeMap<String, serde_json::Number>>,
 }
 
 fn deserialize_optional_presence<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -465,6 +494,13 @@ impl From<&ActionResult> for ActionResultWire {
                 v: value.v,
                 id: value.id.clone(),
                 invocation_id: value.invocation_id.clone(),
+                final_result: value.task.as_ref().map(|task| task.final_result),
+                execution_id: value.task.as_ref().map(|task| task.execution_id.clone()),
+                worker_generation: value
+                    .task
+                    .as_ref()
+                    .map(|task| task.worker_generation.clone()),
+                accounting: value.task.as_ref().and_then(|task| task.accounting.clone()),
                 output: Some(output.output.clone()),
                 error: None,
             },
@@ -472,6 +508,13 @@ impl From<&ActionResult> for ActionResultWire {
                 v: value.v,
                 id: value.id.clone(),
                 invocation_id: value.invocation_id.clone(),
+                final_result: value.task.as_ref().map(|task| task.final_result),
+                execution_id: value.task.as_ref().map(|task| task.execution_id.clone()),
+                worker_generation: value
+                    .task
+                    .as_ref()
+                    .map(|task| task.worker_generation.clone()),
+                accounting: value.task.as_ref().and_then(|task| task.accounting.clone()),
                 output: None,
                 error: Some(error.error.clone()),
             },
@@ -491,11 +534,44 @@ impl TryFrom<ActionResultWire> for ActionResult {
             }
         };
 
+        let task = if value.final_result.is_some()
+            || value.execution_id.is_some()
+            || value.worker_generation.is_some()
+            || value.accounting.is_some()
+        {
+            if value.id.as_ref().is_none_or(|id| id.is_empty()) {
+                return Err("task result requires a request id".into());
+            }
+            let execution_id = value
+                .execution_id
+                .filter(|id| !id.is_empty())
+                .ok_or("task result requires execution_id")?;
+            let worker_generation = value
+                .worker_generation
+                .filter(|id| !id.is_empty() && id.len() <= 512)
+                .ok_or("task result requires worker_generation")?;
+            if value.accounting.as_ref().is_some_and(|values| {
+                values
+                    .values()
+                    .any(|n| n.as_f64().is_none_or(|n| !n.is_finite() || n < 0.0))
+            }) {
+                return Err("task accounting must be finite and nonnegative".into());
+            }
+            Some(TaskResultFields {
+                final_result: value.final_result.ok_or("task result requires final")?,
+                execution_id,
+                worker_generation,
+                accounting: value.accounting,
+            })
+        } else {
+            None
+        };
         Ok(Self {
             v: value.v,
             id: value.id,
             invocation_id: value.invocation_id,
             result,
+            task,
         })
     }
 }
@@ -587,12 +663,28 @@ pub struct ActionInvoke {
         skip_serializing_if = "Option::is_none"
     )]
     pub agent_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_execution: Option<Box<TaskExecution>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ping {
     pub v: FleetWireVersion,
+}
+
+/// Best-effort control-plane hint that the cloud-side terminal lane is dark.
+///
+/// The terminal WebSocket is independent from the node-control WebSocket, so
+/// the latter can remain healthy after the former disappears. `generation` is
+/// the cloud's last accepted terminal-lane generation; the broker uses it to
+/// coalesce duplicate hints and to avoid tearing down a freshly reconnected
+/// lane for a stale request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalReconnectRequested {
+    pub v: FleetWireVersion,
+    pub generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -702,6 +794,38 @@ where
     }
 }
 
+// Nested inside the inbound ActionInvoke frame, so this must retain the same
+// forward-compatibility rule: a future engine field cannot make the broker
+// drop the entire invocation before acknowledging it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskExecution {
+    pub execution_id: String,
+    pub run_id: String,
+    pub step_id: String,
+    pub dispatch_id: String,
+    pub deadline: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionAccept {
+    pub v: FleetWireVersion,
+    pub id: String,
+    pub invocation_id: String,
+    pub execution_id: String,
+    pub worker_generation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskResultFields {
+    #[serde(rename = "final")]
+    pub final_result: bool,
+    pub execution_id: String,
+    pub worker_generation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accounting: Option<BTreeMap<String, serde_json::Number>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum NodeToServer {
@@ -719,6 +843,8 @@ pub enum NodeToServer {
     DeliveryAck(DeliveryAck),
     #[serde(rename = "action.result")]
     ActionResult(ActionResult),
+    #[serde(rename = "action.accept")]
+    ActionAccept(ActionAccept),
     #[serde(rename = "inventory.sync")]
     InventorySync(InventorySync),
 }
@@ -732,6 +858,8 @@ pub enum ServerToNode {
     ActionInvoke(ActionInvoke),
     #[serde(rename = "ping")]
     Ping(Ping),
+    #[serde(rename = "terminal.reconnect_requested")]
+    TerminalReconnectRequested(TerminalReconnectRequested),
     #[serde(rename = "reply")]
     Reply(Reply),
     #[serde(rename = "error")]
@@ -749,12 +877,13 @@ mod tests {
         validate_agent_register_reply_data, validate_finite_nonnegative_f64, ActionResult,
         ActionResultError, ActionResultPayload, AgentRegister, AgentRegistrationMetadata,
         BrokerToRelaycast, Deliver, DeliveryMode, Error, FleetCapability, NodeHeartbeat,
-        RelaycastToBroker, Reply, FLEET_WIRE_VERSION,
+        RelaycastToBroker, Reply, TerminalReconnectRequested, FLEET_WIRE_VERSION,
     };
 
     #[test]
     fn skips_absent_optional_fields() {
         let msg = BrokerToRelaycast::AgentRegister(AgentRegister {
+            auto_join_general: None,
             v: FLEET_WIRE_VERSION,
             id: None,
             name: "codex-1".to_string(),
@@ -774,36 +903,53 @@ mod tests {
         );
     }
 
-    /// Regression guard for the whole reason declared metadata is published over
-    /// HTTP rather than on this frame. The engine parses `agent.register` with a
-    /// `.strict()` schema whose only keys are v/id/name/invocation_id/
-    /// session_ref/resumable; ANY additional key makes it reject the frame with
-    /// a freshly generated id, which the broker's id-keyed correlation cannot
-    /// match, so the registration waiter stalls for the full 30s
-    /// `FLEET_AGENT_REGISTER_TIMEOUT`. Assert the serialized key set exactly, so
-    /// re-adding a field here fails loudly instead of surfacing as a timeout.
+    #[test]
+    fn terminal_reconnect_request_decodes_as_an_additive_control_frame() {
+        let decoded: RelaycastToBroker = serde_json::from_value(json!({
+            "v": 1,
+            "type": "terminal.reconnect_requested",
+            "generation": 42
+        }))
+        .unwrap();
+        assert_eq!(
+            decoded,
+            RelaycastToBroker::TerminalReconnectRequested(TerminalReconnectRequested {
+                v: FLEET_WIRE_VERSION,
+                generation: 42,
+            })
+        );
+
+        assert!(serde_json::from_value::<RelaycastToBroker>(json!({
+            "v": 1,
+            "type": "terminal.reconnect_requested",
+            "generation": -1
+        }))
+        .is_err());
+    }
+
+    /// Cover both legacy-compatible default membership and the candidate
+    /// engine's explicit isolation extension. Metadata belongs on HTTP.
     #[test]
     fn agent_register_carries_no_keys_the_engine_schema_rejects() {
-        let msg = BrokerToRelaycast::AgentRegister(AgentRegister {
-            v: FLEET_WIRE_VERSION,
-            id: Some("register-1".to_string()),
-            name: "fleet-worker".to_string(),
-            invocation_id: Some("inv-1".to_string()),
-            session_ref: Some("sess-1".to_string()),
-            resumable: Some(true),
-        });
-
-        let value = serde_json::to_value(msg).unwrap();
-        let mut keys: Vec<&str> = value
-            .as_object()
-            .expect("agent.register serializes to an object")
-            .keys()
-            .map(String::as_str)
-            .collect();
-        keys.sort_unstable();
-        assert_eq!(
-            keys,
-            vec![
+        for auto_join_general in [None, Some(false)] {
+            let msg = BrokerToRelaycast::AgentRegister(AgentRegister {
+                auto_join_general,
+                v: FLEET_WIRE_VERSION,
+                id: Some("register-1".to_string()),
+                name: "fleet-worker".to_string(),
+                invocation_id: Some("inv-1".to_string()),
+                session_ref: Some("sess-1".to_string()),
+                resumable: Some(true),
+            });
+            let value = serde_json::to_value(msg).unwrap();
+            let mut keys: Vec<&str> = value
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            let mut expected = vec![
                 "id",
                 "invocation_id",
                 "name",
@@ -811,8 +957,13 @@ mod tests {
                 "session_ref",
                 "type",
                 "v",
-            ]
-        );
+            ];
+            if auto_join_general.is_some() {
+                expected.insert(0, "auto_join_general");
+                assert_eq!(value["auto_join_general"], false);
+            }
+            assert_eq!(keys, expected);
+        }
     }
 
     #[test]
@@ -846,6 +997,7 @@ mod tests {
     #[test]
     fn action_result_allows_error_payloads() {
         let msg = BrokerToRelaycast::ActionResult(ActionResult {
+            task: None,
             v: FLEET_WIRE_VERSION,
             id: None,
             invocation_id: "inv_2".to_string(),
@@ -976,6 +1128,7 @@ mod tests {
             name: "builder-1".to_string(),
             node_id: "node_1".to_string(),
             capabilities: vec![FleetCapability {
+                execution_mode: None,
                 name: "spawn:codex".to_string(),
                 kind: Some("capacity".to_string()),
                 global: None,
@@ -1111,6 +1264,40 @@ mod tests {
                 "resume_cursor": null
             })
         );
+        assert_eq!(encoded.get("repo_keys"), None);
+    }
+
+    #[test]
+    fn node_register_accepts_public_repo_keys_and_rejects_private_repo_paths() {
+        let public = json!({
+            "type": "node.register",
+            "v": 1,
+            "name": "builder-1",
+            "node_id": "node_1",
+            "capabilities": [],
+            "max_agents": 1,
+            "tags": [],
+            "repo_keys": ["AgentWorkforce/factory", "AgentWorkforce/relay"],
+            "version": "relay-broker/test",
+            "resume_cursor": null
+        });
+        let decoded: BrokerToRelaycast = serde_json::from_value(public.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), public);
+
+        let private = json!({
+            "type": "node.register",
+            "v": 1,
+            "name": "builder-1",
+            "node_id": "node_1",
+            "capabilities": [],
+            "max_agents": 1,
+            "tags": [],
+            "repo_keys": ["AgentWorkforce/factory"],
+            "repo_paths": {"AgentWorkforce/factory": "/private/node/factory"},
+            "version": "relay-broker/test",
+            "resume_cursor": null
+        });
+        assert!(serde_json::from_value::<BrokerToRelaycast>(private).is_err());
     }
 
     #[test]
@@ -1278,5 +1465,30 @@ mod tests {
         assert_eq!(value["payload"]["metadata"]["channel"], "general");
         let decoded: RelaycastToBroker = serde_json::from_value(value).unwrap();
         assert_eq!(decoded, msg);
+    }
+
+    #[test]
+    fn action_invoke_accepts_future_nested_task_execution_fields() {
+        let invoke: RelaycastToBroker = serde_json::from_value(json!({
+            "type": "action.invoke",
+            "v": 1,
+            "invocation_id": "inv_task_1",
+            "action": "task.run",
+            "input": {},
+            "task_execution": {
+                "execution_id": "inv_task_1/1",
+                "run_id": "run_1",
+                "step_id": "step_1",
+                "dispatch_id": "dispatch_1",
+                "deadline": "2026-09-15T12:00:00.000Z",
+                "future_engine_field": { "value": 1 }
+            }
+        }))
+        .expect("inbound task execution metadata must be forward compatible");
+
+        let RelaycastToBroker::ActionInvoke(invoke) = invoke else {
+            panic!("action invoke")
+        };
+        assert_eq!(invoke.task_execution.unwrap().execution_id, "inv_task_1/1");
     }
 }

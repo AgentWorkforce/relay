@@ -1,0 +1,37 @@
+{
+  "id": "compact_wx0ujsgwtaqd",
+  "version": 1,
+  "type": "compacted",
+  "compactedAt": "2026-09-22T18:45:48.437Z",
+  "sourceTrajectories": [
+    "traj_4yi8dr1zi7ud"
+  ],
+  "dateRange": {
+    "start": "2026-09-22T18:37:03.545Z",
+    "end": "2026-09-22T18:45:47.737Z"
+  },
+  "summary": {
+    "totalDecisions": 1,
+    "totalEvents": 1,
+    "uniqueAgents": [
+      "default"
+    ]
+  },
+  "decisionGroups": [
+    {
+      "category": "other",
+      "decisions": [
+        {
+          "question": "Keep action-result reconnect durability out of this fix",
+          "chosen": "Keep action-result reconnect durability out of this fix",
+          "reasoning": "Reviewed plan requires readiness contract repair plus diagnostics; engine replay idempotency is unproven.",
+          "fromTrajectory": "traj_4yi8dr1zi7ud"
+        }
+      ]
+    }
+  ],
+  "keyLearnings": [],
+  "keyFindings": [],
+  "filesAffected": [],
+  "commits": []
+}

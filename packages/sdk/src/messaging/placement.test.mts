@@ -7,8 +7,10 @@ type RawNode = {
   name: string;
   status: string;
   live?: boolean;
+  handlers_live?: boolean;
   capabilities: Array<{ name: string; kind?: string }>;
   repo_keys?: string[];
+  tags?: string[];
 };
 
 function createClient(
@@ -18,9 +20,12 @@ function createClient(
     ...options
   }: {
     placementLog?: (message: string) => void;
+    placementTtlMs?: number;
     selfNodeName?: string;
     maxQueuedPlacements?: number;
+    placementSandboxOnly?: boolean;
     getInvocation?: (name: string, invocationId: string) => Promise<unknown>;
+    listNodes?: (query?: { capability?: string; name?: string }) => Promise<RawNode[]>;
   } = {}
 ) {
   const invoke = vi.fn(async (name: string, input?: Record<string, unknown>) => ({
@@ -43,15 +48,21 @@ function createClient(
     channels: { list: vi.fn(async () => []), get: vi.fn() },
     messages: { list: vi.fn(async () => []), get: vi.fn(), thread: vi.fn(), reactions: vi.fn() },
     nodes: {
-      list: vi.fn(async (query?: { capability?: string; name?: string }) =>
-        nodes.filter(
-          (node) =>
-            (!query?.name || node.name === query.name) &&
-            (!query?.capability ||
-              node.capabilities.some((capability) => capability.name === query.capability))
-        )
-      ),
-      get: vi.fn(async (name: string) => nodes.find((node) => node.name === name) ?? null),
+      list: vi.fn(async (query?: { capability?: string; name?: string }) => {
+        if (options.listNodes) return options.listNodes(query);
+        return nodes
+          .filter(
+            (node) =>
+              (!query?.name || node.name === query.name) &&
+              (!query?.capability ||
+                node.capabilities.some((capability) => capability.name === query.capability))
+          )
+          .map((node) => ({ handlers_live: true, ...node }));
+      }),
+      get: vi.fn(async (name: string) => {
+        const node = nodes.find((candidate) => candidate.name === name);
+        return node ? { handlers_live: true, ...node } : null;
+      }),
     },
   };
   const getInvocation = vi.fn(getInvocationOverride ?? (async () => undefined));
@@ -254,6 +265,108 @@ describe('RelaycastMessagingClient placement', () => {
     expect(ack.placement).toMatchObject({ queued: false, attempts: 1 });
   });
 
+  it('leaves unconstrained automatic placement atomic in the engine', async () => {
+    const { client, invoke } = createClient([LIVE_NODE_A]);
+
+    const ack = await client.placement.spawn({
+      capability: 'spawn:claude',
+      input: { node: 'caller-target', target_node: 'caller-target' },
+    });
+
+    expect(ack.placement.node).toBe('node-a');
+    expect(invoke).toHaveBeenCalledWith('spawn', {
+      capability: 'spawn:claude',
+      ttl_override_ms: 60,
+      cli: 'claude',
+    });
+  });
+
+  it('preserves a successful automatic dispatch when ack node metadata is unavailable', async () => {
+    const { client, invoke } = createClient([LIVE_NODE_A]);
+    invoke.mockResolvedValueOnce({
+      invocation_id: 'inv-without-node',
+      action_name: 'spawn',
+      status: 'invoked',
+    });
+
+    const ack = await client.placement.spawn({ capability: 'spawn:claude' });
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(ack.invocationId).toBe('inv-without-node');
+    expect(ack.node).toBeUndefined();
+    expect(ack.placement.node).toBeUndefined();
+  });
+
+  it('preserves an accepted automatic dispatch when roster refresh and placement logging fail', async () => {
+    const placementLog = vi.fn(() => {
+      throw new Error('observability sink down');
+    });
+    let rosterReads = 0;
+    const { client, invoke } = createClient([LIVE_NODE_A], {
+      placementLog,
+      listNodes: async () => {
+        rosterReads += 1;
+        if (rosterReads > 1) throw new Error('roster refresh down');
+        return [{ handlers_live: true, ...LIVE_NODE_A }];
+      },
+    });
+
+    await expect(client.placement.spawn({ capability: 'spawn:claude' })).resolves.toMatchObject({
+      invocationId: 'inv-1',
+      placement: { queued: false, attempts: 1 },
+    });
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(placementLog).toHaveBeenCalledWith(expect.stringContaining('roster refresh down'));
+  });
+
+  it('never selects a roster-offline node even when its live bit is stale', async () => {
+    const { client, invoke } = createClient([
+      {
+        id: 'node_a',
+        name: 'stale-node',
+        status: 'offline',
+        live: true,
+        capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
+        repo_keys: ['relay'],
+      },
+      {
+        id: 'node_b',
+        name: 'ready-node',
+        status: 'online',
+        live: true,
+        capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
+        repo_keys: ['relay'],
+      },
+    ]);
+
+    const ack = await client.placement.spawn({ capability: 'spawn:claude', repo: 'relay' });
+
+    expect(ack.placement.node).toBe('ready-node');
+    expect(invoke).toHaveBeenCalledWith(
+      'spawn',
+      expect.objectContaining({ node: 'ready-node', target_node: 'ready-node' })
+    );
+  });
+
+  it('never selects a node whose action handlers are not live', async () => {
+    const { client, invoke } = createClient([
+      {
+        id: 'node_a',
+        name: 'dead-handlers',
+        status: 'online',
+        live: true,
+        handlers_live: false,
+        capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
+        repo_keys: ['relay'],
+      },
+    ]);
+
+    await expect(client.placement.spawn({ capability: 'spawn:claude', repo: 'relay' })).rejects.toMatchObject(
+      { name: 'RelayPlacementError', code: 'no_eligible_node', attempts: 1 }
+    );
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it('rejects with placement_queue_full and reconciles a failed event when the queue is full', async () => {
     const reconciled: unknown[] = [];
     const logs: string[] = [];
@@ -266,6 +379,7 @@ describe('RelaycastMessagingClient placement', () => {
       client.placement.spawn({
         capability: 'spawn:claude',
         repo: 'relay',
+        failFast: false,
         input: { name: 'worker-overflow' },
         ttlMs: 1_000,
         pollIntervalMs: 25,
@@ -293,19 +407,64 @@ describe('RelaycastMessagingClient placement', () => {
     await expect(
       client.placement.spawn({
         capability: 'workflow:run',
-        failFast: true,
         onReconcile: (event) => {
           reconciled.push(event);
         },
       })
     ).rejects.toMatchObject({
       name: 'RelayPlacementError',
-      code: 'placement_ttl_expired',
+      code: 'no_eligible_node',
       attempts: 1,
     });
 
     expect(invoke).not.toHaveBeenCalled();
     expect(reconciled).toEqual([expect.objectContaining({ action: 'failed', reason: 'no_eligible_node' })]);
+  });
+
+  it('defaults sandbox policy off so ordinary live nodes remain eligible', async () => {
+    const { client, invoke } = createClient([LIVE_NODE_A]);
+
+    await expect(client.placement.spawn({ capability: 'spawn:claude' })).resolves.toMatchObject({
+      placement: { node: 'node-a' },
+    });
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('sandbox-only placement excludes non-sandbox nodes and selects Cloud JIT nodes', async () => {
+    const { client, invoke } = createClient(
+      [
+        LIVE_NODE_A,
+        {
+          id: 'node_b',
+          name: 'daytona-jit',
+          status: 'online',
+          live: true,
+          capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
+          repo_keys: ['relay'],
+          tags: ['cloud:node-type:daytona-jit'],
+        },
+      ],
+      { placementSandboxOnly: true }
+    );
+
+    const ack = await client.placement.spawn({ capability: 'spawn:claude', repo: 'relay' });
+
+    expect(ack.placement.node).toBe('daytona-jit');
+    expect(invoke).toHaveBeenCalledWith(
+      'spawn',
+      expect.objectContaining({ node: 'daytona-jit', target_node: 'daytona-jit' })
+    );
+  });
+
+  it('sandbox-only placement fails closed when no live Cloud sandbox is eligible', async () => {
+    const { client, invoke } = createClient([LIVE_NODE_A], { placementSandboxOnly: true });
+
+    await expect(client.placement.spawn({ capability: 'spawn:claude' })).rejects.toMatchObject({
+      name: 'RelayPlacementError',
+      code: 'sandbox_policy_mismatch',
+      attempts: 1,
+    });
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('fails fast with code unmapped_repo when a live capable node never maps the repo', async () => {
@@ -343,17 +502,82 @@ describe('RelaycastMessagingClient placement', () => {
     ]);
   });
 
-  it('isolates a throwing onReconcile hook so placement still drains', async () => {
-    const { client, invoke, nodes } = createClient([
+  it('fails open on a node with no repo_keys field — absent is not "explicitly denies"', async () => {
+    // A node that has not opted into per-repo scoping (no `repo:*` tags, so
+    // `repo_keys` is absent from its roster row) must remain eligible for
+    // repo-scoped placements. Treating an absent field as a hard denial breaks
+    // every deployment that has not yet published tags — the entire fleet
+    // stopped accepting repo-scoped placements this way when the check first
+    // landed.
+    const { client, invoke } = createClient([
       {
         id: 'node_a',
         name: 'node-a',
-        status: 'offline',
-        live: false,
+        status: 'online',
+        live: true,
+        handlers_live: true,
         capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
-        repo_keys: ['relay'],
+        // repo_keys deliberately omitted.
       },
     ]);
+
+    const ack = await client.placement.spawn({
+      capability: 'spawn:claude',
+      node: 'node-a',
+      repo: 'relay',
+      input: { name: 'worker-no-repo-keys', cli: 'claude' },
+    });
+
+    expect(ack.placement).toMatchObject({ node: 'node-a', repo: 'relay' });
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('still denies when repo_keys is present but empty — explicit opt-out is honoured', async () => {
+    // The opt-in semantic is preserved for operators who deliberately publish
+    // `repo_keys: []`. Absent means permissive; empty means "this node hosts
+    // no repos".
+    const { client, invoke } = createClient([
+      {
+        id: 'node_a',
+        name: 'node-a',
+        status: 'online',
+        live: true,
+        handlers_live: true,
+        capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
+        repo_keys: [],
+      },
+    ]);
+
+    await expect(
+      client.placement.spawn({
+        capability: 'spawn:claude',
+        node: 'node-a',
+        repo: 'relay',
+        input: { name: 'worker-empty-repo-keys', cli: 'claude' },
+        failFast: true,
+      })
+    ).rejects.toMatchObject({
+      name: 'RelayPlacementError',
+      code: 'unmapped_repo',
+      repo: 'relay',
+    });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('isolates a throwing onReconcile hook so placement still drains', async () => {
+    const { client, invoke, nodes } = createClient(
+      [
+        {
+          id: 'node_a',
+          name: 'node-a',
+          status: 'offline',
+          live: false,
+          capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
+          repo_keys: ['relay'],
+        },
+      ],
+      { placementTtlMs: 500 }
+    );
 
     const placement = client.placement.spawn({
       capability: 'spawn:claude',
@@ -361,6 +585,7 @@ describe('RelaycastMessagingClient placement', () => {
       repo: 'relay',
       input: { name: 'worker-throwing-hook' },
       pollIntervalMs: 25,
+      failFast: false,
       onReconcile: () => {
         throw new Error('observability sink down');
       },
@@ -375,16 +600,19 @@ describe('RelaycastMessagingClient placement', () => {
 
   it('queues a targeted offline node with reason target_offline and drains once it is live', async () => {
     const reconciled: unknown[] = [];
-    const { client, invoke, nodes } = createClient([
-      {
-        id: 'node_a',
-        name: 'node-a',
-        status: 'offline',
-        live: false,
-        capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
-        repo_keys: ['relay'],
-      },
-    ]);
+    const { client, invoke, nodes } = createClient(
+      [
+        {
+          id: 'node_a',
+          name: 'node-a',
+          status: 'offline',
+          live: false,
+          capabilities: [{ name: 'spawn:claude', kind: 'spawn' }],
+          repo_keys: ['relay'],
+        },
+      ],
+      { placementTtlMs: 500 }
+    );
 
     const placement = client.placement.spawn({
       capability: 'spawn:claude',
@@ -392,6 +620,7 @@ describe('RelaycastMessagingClient placement', () => {
       repo: 'relay',
       input: { name: 'worker-offline' },
       pollIntervalMs: 25,
+      failFast: false,
       onReconcile: (event) => {
         reconciled.push(event);
       },
@@ -422,7 +651,7 @@ describe('RelaycastMessagingClient placement', () => {
           repo_keys: ['cloud'],
         },
       ],
-      { placementLog: (line) => logs.push(line) }
+      { placementLog: (line) => logs.push(line), placementTtlMs: 500 }
     );
 
     const placement = client.placement.spawn({
@@ -431,6 +660,7 @@ describe('RelaycastMessagingClient placement', () => {
       repo: 'relay',
       input: { name: 'worker-targeted-unmapped' },
       pollIntervalMs: 25,
+      failFast: false,
       onReconcile: (event) => {
         reconciled.push(event);
       },
@@ -462,7 +692,7 @@ describe('RelaycastMessagingClient placement', () => {
           repo_keys: ['cloud'],
         },
       ],
-      { placementLog: (line) => logs.push(line) }
+      { placementLog: (line) => logs.push(line), placementTtlMs: 500 }
     );
 
     const placement = client.placement.spawn({
@@ -470,6 +700,7 @@ describe('RelaycastMessagingClient placement', () => {
       repo: 'relay',
       input: { name: 'worker-2' },
       pollIntervalMs: 25,
+      failFast: false,
       onReconcile: (event) => {
         reconciled.push(event);
       },
@@ -498,22 +729,26 @@ describe('RelaycastMessagingClient placement', () => {
   });
 
   it('queues when no eligible node is live and drains before TTL', async () => {
-    const { client, nodes } = createClient([
-      {
-        id: 'node_a',
-        name: 'node-a',
-        status: 'offline',
-        live: false,
-        capabilities: [{ name: 'spawn:codex', kind: 'spawn' }],
-        repo_keys: ['relay'],
-      },
-    ]);
+    const { client, nodes } = createClient(
+      [
+        {
+          id: 'node_a',
+          name: 'node-a',
+          status: 'offline',
+          live: false,
+          capabilities: [{ name: 'spawn:codex', kind: 'spawn' }],
+          repo_keys: ['relay'],
+        },
+      ],
+      { placementTtlMs: 500 }
+    );
 
     const placement = client.placement.spawn({
       capability: 'spawn:codex',
       repo: 'relay',
       input: { name: 'worker-3' },
       pollIntervalMs: 25,
+      failFast: false,
     });
     await new Promise((resolve) => setTimeout(resolve, 35));
     nodes[0] = { ...nodes[0], status: 'online', live: true };
@@ -528,7 +763,12 @@ describe('RelaycastMessagingClient placement', () => {
     const { client, invoke } = createClient([], { placementLog: (line) => logs.push(line) });
 
     await expect(
-      client.placement.spawn({ capability: 'workflow:run', ttlMs: 30, pollIntervalMs: 25 })
+      client.placement.spawn({
+        capability: 'workflow:run',
+        ttlMs: 30,
+        pollIntervalMs: 25,
+        failFast: false,
+      })
     ).rejects.toBeInstanceOf(RelayPlacementError);
 
     expect(invoke).not.toHaveBeenCalled();
@@ -554,6 +794,7 @@ describe('RelaycastMessagingClient placement', () => {
       // never read back, and the ack says so rather than implying a launch.
       expect(getInvocation).not.toHaveBeenCalled();
       expect(ack.placement.confirmed).toBe(false);
+      expect(ack.placement.state).toBe('accepted');
       expect(ack.confirmation).toBeUndefined();
     });
 
@@ -563,7 +804,7 @@ describe('RelaycastMessagingClient placement', () => {
           invocation_id: invocationId,
           action_name: name,
           status: 'completed',
-          output: { spawned: true, name: 'worker-confirmed' },
+          output: { spawned: true, ready: true, name: 'worker-confirmed' },
         }),
       });
 
@@ -577,7 +818,36 @@ describe('RelaycastMessagingClient placement', () => {
 
       expect(getInvocation).toHaveBeenCalled();
       expect(ack.placement.confirmed).toBe(true);
+      expect(ack.placement.state).toBe('ready');
       expect(ack.confirmation?.status).toBe('completed');
+    });
+
+    it('does not report readiness without explicit spawned and ready proof', async () => {
+      const { client } = createClient([LIVE_NODE_A], {
+        getInvocation: async (name, invocationId) => ({
+          invocation_id: invocationId,
+          action_name: name,
+          status: 'completed',
+          output: { spawned: true, name: 'worker-without-ready-proof' },
+        }),
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          confirm: true,
+          confirmTimeoutMs: 1_000,
+          input: { name: 'worker-without-ready-proof' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_failed');
+      expect((error as RelayPlacementError).state).toBe('failed');
+      expect((error as RelayPlacementError).invocationId).toBeDefined();
+      expect((error as RelayPlacementError).receipt).toMatchObject({ status: 'completed' });
+      expect((error as Error).message).toContain('explicit spawned:true and ready:true proof');
     });
 
     // The sf-mini reproduction: capacity advertised, invocation accepted, no
@@ -607,6 +877,8 @@ describe('RelaycastMessagingClient placement', () => {
       expect(error).toBeInstanceOf(RelayPlacementError);
       expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
       expect((error as RelayPlacementError).node).toBe('node-a');
+      expect((error as RelayPlacementError).invocationId).toBeDefined();
+      expect((error as RelayPlacementError).state).toBe('unconfirmed_may_be_running');
       expect((error as Error).message).toContain('never reported a result');
     });
 
@@ -635,9 +907,423 @@ describe('RelaycastMessagingClient placement', () => {
 
       expect(error).toBeInstanceOf(RelayPlacementError);
       expect((error as RelayPlacementError).code).toBe('spawn_failed');
+      expect((error as RelayPlacementError).state).toBe('failed');
+      expect((error as RelayPlacementError).invocationId).toBeDefined();
       // The broker's detail (exit status + log path) must survive to the caller.
       expect((error as Error).message).toContain('exit status: 19');
       expect((error as Error).message).toContain('/tmp/worker-dead.log');
+    });
+
+    // relay#1563: dispatch evidence comes from the ack's node id, not from
+    // however the confirmation later resolves. A `pending` ack with no
+    // `dispatchedNodeId`/`handlerNodeId` never actually routed — timing out
+    // or reading a later terminal status must not retroactively report
+    // `dispatched`. The CLI's shared spawn-lifecycle helper classifies this
+    // exact shape as `not_dispatched`; the SDK must agree.
+    it('reports dispatchState not_dispatched on timeout when the ack never routed to a node', async () => {
+      const { client, invoke } = createClient([LIVE_NODE_A], {
+        getInvocation: async () => undefined,
+      });
+      invoke.mockResolvedValueOnce({
+        invocation_id: 'inv-pending-no-route',
+        action_name: 'spawn',
+        status: 'pending',
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          confirm: true,
+          confirmTimeoutMs: 60,
+          confirmPollIntervalMs: 10,
+          input: { name: 'worker-pending-no-route' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
+      expect((error as RelayPlacementError).dispatchState).toBe('not_dispatched');
+    });
+
+    // The engine's 201 for a placed spawn snapshots the chosen node in
+    // handler_node_id before it sends. A send that fails leaves
+    // dispatched_node_id null, so the placed node alone is not a route.
+    it('reports dispatchState not_dispatched on timeout when the ack names only the placed handler node', async () => {
+      const { client, invoke } = createClient([LIVE_NODE_A], {
+        getInvocation: async (name, invocationId) => ({
+          invocation_id: invocationId,
+          action_name: name,
+          status: 'pending',
+          dispatched_node_id: null,
+        }),
+      });
+      invoke.mockResolvedValueOnce({
+        invocation_id: 'inv-placed-unsent',
+        action_name: 'spawn',
+        handler_node_id: 'node_a',
+        dispatched_node_id: null,
+        status: 'pending',
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          confirm: true,
+          confirmTimeoutMs: 60,
+          confirmPollIntervalMs: 10,
+          input: { name: 'worker-placed-unsent' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
+      expect((error as RelayPlacementError).dispatchState).toBe('not_dispatched');
+    });
+
+    // The engine can dispatch a pending invocation after acknowledging it
+    // (a node that reconnects drains it). A read that shows the route is
+    // evidence the ack lacked.
+    it('reports dispatchState dispatched when a confirmation read shows a route the pending ack lacked', async () => {
+      let reads = 0;
+      const { client, invoke } = createClient([LIVE_NODE_A], {
+        getInvocation: async (name, invocationId) => {
+          reads += 1;
+          return reads === 1
+            ? {
+                invocation_id: invocationId,
+                action_name: name,
+                status: 'dispatched',
+                dispatched_node_id: 'node_a',
+              }
+            : {
+                invocation_id: invocationId,
+                action_name: name,
+                status: 'failed',
+                error: 'harness exited before readiness',
+              };
+        },
+      });
+      invoke.mockResolvedValueOnce({
+        invocation_id: 'inv-pending-then-dispatched',
+        action_name: 'spawn',
+        handler_node_id: 'node_a',
+        dispatched_node_id: null,
+        status: 'pending',
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          confirm: true,
+          confirmTimeoutMs: 1_000,
+          confirmPollIntervalMs: 10,
+          input: { name: 'worker-pending-then-dispatched' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_failed');
+      expect((error as RelayPlacementError).dispatchState).toBe('dispatched');
+    });
+
+    it('reports dispatchState not_dispatched on a terminal failure when the ack never routed to a node', async () => {
+      const { client, invoke } = createClient([LIVE_NODE_A], {
+        getInvocation: async (name, invocationId) => ({
+          invocation_id: invocationId,
+          action_name: name,
+          status: 'failed',
+          error: 'harness exited before readiness',
+        }),
+      });
+      invoke.mockResolvedValueOnce({
+        invocation_id: 'inv-pending-no-route-failed',
+        action_name: 'spawn',
+        status: 'pending',
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          confirm: true,
+          confirmTimeoutMs: 1_000,
+          confirmPollIntervalMs: 10,
+          input: { name: 'worker-pending-no-route-failed' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_failed');
+      expect((error as RelayPlacementError).dispatchState).toBe('not_dispatched');
+    });
+
+    it('reports dispatchState dispatched on timeout when the ack carries a real route', async () => {
+      const { client } = createClient([LIVE_NODE_A], {
+        getInvocation: async () => undefined,
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          confirm: true,
+          confirmTimeoutMs: 60,
+          confirmPollIntervalMs: 10,
+          input: { name: 'worker-routed-timeout' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
+      expect((error as RelayPlacementError).dispatchState).toBe('dispatched');
+    });
+
+    it('reports dispatchState dispatched on a terminal failure when the ack carries a real route', async () => {
+      const { client } = createClient([LIVE_NODE_A], {
+        getInvocation: async (name, invocationId) => ({
+          invocation_id: invocationId,
+          action_name: name,
+          status: 'failed',
+          error: 'harness exited before readiness',
+        }),
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          confirm: true,
+          confirmTimeoutMs: 1_000,
+          confirmPollIntervalMs: 10,
+          input: { name: 'worker-routed-failed' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_failed');
+      expect((error as RelayPlacementError).dispatchState).toBe('dispatched');
+    });
+
+    // relay#1563 P1: `confirm: false` is the default, including `fleet spawn
+    // --no-confirm`. Terminal-status checks previously lived only inside the
+    // confirmation poll, so a synchronous handler that acked with an
+    // immediate terminal `failed`/`denied` status resolved as `accepted`
+    // instead of throwing — the caller received a "successful" placement for
+    // a spawn already known to have failed.
+    it('rejects a terminal failed ack as spawn_failed even when confirm is left at its default (false)', async () => {
+      const { client, invoke } = createClient([LIVE_NODE_A]);
+      invoke.mockResolvedValueOnce({
+        invocation_id: 'inv-immediate-failure',
+        action_name: 'spawn:claude',
+        handler_node_id: 'node_a',
+        dispatched_node_id: 'node_a',
+        status: 'failed',
+        error: 'harness rejected the spawn before accepting it',
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          input: { name: 'worker-immediate-failure' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_failed');
+      expect((error as RelayPlacementError).dispatchState).toBe('dispatched');
+      expect((error as RelayPlacementError).invocationId).toBe('inv-immediate-failure');
+      expect((error as RelayPlacementError).receipt).toMatchObject({
+        invocationId: 'inv-immediate-failure',
+        status: 'failed',
+      });
+    });
+
+    it('rejects a terminal denied ack as spawn_failed with confirm: false (fleet spawn --no-confirm)', async () => {
+      const { client, invoke } = createClient([LIVE_NODE_A]);
+      invoke.mockResolvedValueOnce({
+        invocation_id: 'inv-immediate-denial',
+        action_name: 'spawn:claude',
+        status: 'denied',
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          confirm: false,
+          input: { name: 'worker-immediate-denial' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_failed');
+      expect((error as RelayPlacementError).invocationId).toBe('inv-immediate-denial');
+      expect((error as RelayPlacementError).receipt).toMatchObject({
+        invocationId: 'inv-immediate-denial',
+        status: 'denied',
+      });
+      // No node id, and `denied` isn't itself route evidence either way —
+      // the shared classifier reports `unknown`, not a manufactured route.
+      expect((error as RelayPlacementError).dispatchState).toBe('unknown');
+    });
+
+    it('rejects an immediate completed ack without explicit spawn/readiness proof by default', async () => {
+      const { client, invoke } = createClient([LIVE_NODE_A]);
+      invoke.mockResolvedValueOnce({
+        invocation_id: 'inv-immediate-unproven-success',
+        action_name: 'spawn:claude',
+        handler_node_id: 'node_a',
+        dispatched_node_id: 'node_a',
+        status: 'completed',
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          input: { name: 'worker-immediate-unproven-success' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_failed');
+      expect((error as RelayPlacementError).dispatchState).toBe('dispatched');
+      expect((error as RelayPlacementError).invocationId).toBe('inv-immediate-unproven-success');
+      expect((error as RelayPlacementError).receipt).toMatchObject({
+        invocationId: 'inv-immediate-unproven-success',
+        status: 'completed',
+      });
+    });
+
+    it('accepts an immediate completed ack when it carries explicit spawn/readiness proof', async () => {
+      const { client, invoke } = createClient([LIVE_NODE_A]);
+      invoke.mockResolvedValueOnce({
+        invocation_id: 'inv-immediate-proven-success',
+        action_name: 'spawn:claude',
+        handler_node_id: 'node_a',
+        dispatched_node_id: 'node_a',
+        status: 'completed',
+        output: { spawned: true, ready: true },
+      });
+
+      const ack = await client.placement.spawn({
+        capability: 'spawn:claude',
+        node: 'node-a',
+        repo: 'relay',
+        input: { name: 'worker-immediate-proven-success' },
+      });
+
+      expect(ack.placement).toMatchObject({ state: 'accepted', confirmed: false });
+    });
+
+    it('still resolves as accepted with confirm: false when the ack is non-terminal', async () => {
+      const { client, invoke } = createClient([LIVE_NODE_A]);
+
+      const ack = await client.placement.spawn({
+        capability: 'spawn:claude',
+        node: 'node-a',
+        repo: 'relay',
+        input: { name: 'worker-non-terminal-ack' },
+      });
+
+      expect(invoke).toHaveBeenCalled();
+      expect(ack.placement.confirmed).toBe(false);
+      expect(ack.placement.state).toBe('accepted');
+    });
+
+    // relay#1563 Low: every `spawn_unconfirmed` exit in confirmPlacementInvocation
+    // must carry `dispatchState` from the same classifier the timeout/failure
+    // paths already use — including the two *early* exits (missing invocation
+    // id, and a client with no actions API), which previously omitted it even
+    // though the ack was already available to classify.
+    it('includes dispatchState on the early spawn_unconfirmed exit when the ack has no invocation id', async () => {
+      const { client, invoke } = createClient([LIVE_NODE_A]);
+      invoke.mockResolvedValueOnce({
+        action_name: 'spawn:claude',
+        status: 'invoked',
+        handler_node_id: 'node_a',
+        dispatched_node_id: 'node_a',
+      });
+
+      const error = await client.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          confirm: true,
+          input: { name: 'worker-no-invocation-id' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
+      expect((error as RelayPlacementError).dispatchState).toBe('dispatched');
+    });
+
+    it('includes dispatchState on the early spawn_unconfirmed exit when no actions API is available', async () => {
+      const { client, invoke } = createClient([LIVE_NODE_A]);
+      invoke.mockResolvedValueOnce({
+        invocation_id: 'inv-no-actions-api',
+        action_name: 'spawn:claude',
+        status: 'pending',
+      });
+      // Construct a second client sharing the same mocked relaycast/nodes but
+      // with an agent-scoped client that has no `actions` API.
+      const relaycast = {
+        agents: {
+          list: vi.fn(async () => []),
+          get: vi.fn(),
+          register: vi.fn(),
+          update: vi.fn(),
+          delete: vi.fn(),
+          presence: vi.fn(async () => []),
+        },
+        channels: { list: vi.fn(async () => []), get: vi.fn() },
+        messages: { list: vi.fn(async () => []), get: vi.fn(), thread: vi.fn(), reactions: vi.fn() },
+        nodes: {
+          list: vi.fn(async () => [{ handlers_live: true, ...LIVE_NODE_A }]),
+          get: vi.fn(async () => ({ handlers_live: true, ...LIVE_NODE_A })),
+        },
+      };
+      const { RelaycastMessagingClient } = await import('./index.js');
+      const noActionsClient = new RelaycastMessagingClient({
+        relaycast: relaycast as never,
+        agentClient: { actions: undefined } as never,
+        placementTtlMs: 60,
+      });
+      vi.spyOn(noActionsClient.commands, 'invoke').mockResolvedValueOnce({
+        invocationId: 'inv-no-actions-api',
+        actionName: 'spawn:claude',
+        status: 'pending',
+      } as never);
+
+      const error = await noActionsClient.placement
+        .spawn({
+          capability: 'spawn:claude',
+          node: 'node-a',
+          repo: 'relay',
+          confirm: true,
+          input: { name: 'worker-no-actions-api' },
+        })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(RelayPlacementError);
+      expect((error as RelayPlacementError).code).toBe('spawn_unconfirmed');
+      expect((error as RelayPlacementError).dispatchState).toBe('not_dispatched');
+      void invoke;
     });
 
     it('times out as spawn_unconfirmed when the invocation cannot be read at all', async () => {

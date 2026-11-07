@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createInputStreamRecovery,
   isBackpressureRejection,
+  isWriteRefusedRejection,
   isWriteTimeoutRejection,
   type InputStreamRecoveryOptions,
 } from './attach-input-recovery.js';
@@ -13,7 +14,10 @@ class FakeStream implements CliPtyInputStream {
   closeReason?: string;
   readonly writes: string[] = [];
 
-  constructor(private readonly openError?: Error) {}
+  constructor(
+    private readonly openError?: Error,
+    private readonly sendHook?: (data: string) => Promise<void>
+  ) {}
 
   async waitUntilOpen(): Promise<void> {
     if (this.openError) throw this.openError;
@@ -22,6 +26,7 @@ class FakeStream implements CliPtyInputStream {
   async send(data: string): Promise<{ name: string; bytes_written: number }> {
     if (this.closed) throw new Error('PTY input stream is closed');
     this.writes.push(data);
+    await this.sendHook?.(data);
     return { name: 'agent', bytes_written: data.length };
   }
 
@@ -364,5 +369,187 @@ describe('recover', () => {
     expect(verify).toHaveBeenCalledTimes(1);
     expect(h.logs.filter((l) => l.includes('reconnected'))).toHaveLength(1);
     expect(h.first.closed).toBe(true); // the dead handle was released
+  });
+
+  it('MUST-FIRE: replays buffered input only after the replacement passes identity verification', async () => {
+    const verify = vi.fn(async () => ({ ok: true as const }));
+    const h = harness({ verifyIdentity: verify });
+
+    h.recovery.recover('stream closed');
+    h.recovery.bufferInput('typed during outage');
+    await settle();
+
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(h.opened[0].writes).toEqual(['typed during outage']);
+    expect(h.logs.some((line) => line.includes('Replayed 19 buffered bytes'))).toBe(true);
+  });
+
+  it('MUST-NOT-FIRE: discards buffered input when identity verification rejects the replacement', async () => {
+    const resetDecoder = vi.fn();
+    const h = harness({
+      verifyIdentity: async () => ({ ok: false, reason: 'worker process changed' }),
+      onBufferedInputDiscarded: resetDecoder,
+    });
+
+    h.recovery.recover('stream closed');
+    h.recovery.bufferInput('private command');
+    await settle();
+
+    expect(h.opened[0].writes).toEqual([]);
+    expect(h.opened[0].closed).toBe(true);
+    expect(h.errors.some((line) => line.includes('Discarded 15 buffered bytes'))).toBe(true);
+    expect(resetDecoder).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards the complete pending buffer on overflow instead of replaying a truncated command', async () => {
+    const h = harness({ bufferLimitBytes: 4 });
+
+    h.recovery.recover('stream closed');
+    h.recovery.bufferInput('abc');
+    h.recovery.bufferInput('de');
+    await settle();
+
+    expect(h.opened[0].writes).toEqual([]);
+    expect(h.logs.some((line) => line.includes('4-byte safety limit'))).toBe(true);
+    expect(h.logs.some((line) => line.includes('Discarded 5 buffered bytes'))).toBe(true);
+  });
+
+  it('sends a replay payload at most once when its local acknowledgement deadline expires', async () => {
+    const replacement = new FakeStream(undefined, () => new Promise(() => {}));
+    const h = harness({
+      attemptTimeoutMs: 10,
+      openStream: () => replacement,
+    });
+
+    h.recovery.recover('stream closed', 'only once');
+    await settle(40);
+
+    expect(replacement.writes).toEqual(['only once']);
+    expect(h.recovery.isRecovering()).toBe(false);
+    expect(h.getCurrent()).toBe(replacement);
+    expect(h.logs.some((line) => line.includes('sent once but not confirmed'))).toBe(true);
+  });
+
+  it('retries a failed replacement without replaying its delivery-ambiguous payload twice', async () => {
+    const firstReplacement = new FakeStream(undefined, async () => {
+      throw Object.assign(new Error('replacement socket failed'), { code: 'input_stream_error' });
+    });
+    const secondReplacement = new FakeStream();
+    const replacements = [firstReplacement, secondReplacement];
+    const h = harness({ openStream: () => replacements.shift() ?? new FakeStream() });
+
+    h.recovery.recover('stream closed', 'at most once');
+    await settle(40);
+
+    expect(firstReplacement.writes).toEqual(['at most once']);
+    expect(firstReplacement.closed).toBe(true);
+    expect(secondReplacement.writes).toEqual([]);
+    expect(h.getCurrent()).toBe(secondReplacement);
+    expect(h.logs.some((line) => line.includes('sent once but not confirmed'))).toBe(true);
+  });
+
+  it('does not adopt a replacement when the session settles during replay', async () => {
+    let releaseSend: (() => void) | undefined;
+    const sendGate = new Promise<void>((resolve) => {
+      releaseSend = resolve;
+    });
+    const replacement = new FakeStream(undefined, () => sendGate);
+    const h = harness({ openStream: () => replacement });
+
+    h.recovery.recover('stream closed', 'queued input');
+    await settle(10);
+    expect(replacement.writes).toEqual(['queued input']);
+
+    h.settle();
+    h.recovery.cancel();
+    releaseSend?.();
+    await settle(20);
+
+    expect(replacement.closed).toBe(true);
+    expect(h.getCurrent()).toBeNull();
+    expect(h.recovery.isRecovering()).toBe(false);
+  });
+});
+
+describe('isWriteRefusedRejection', () => {
+  it('matches only the queue-full code, and only as a structured code', () => {
+    expect(isWriteRefusedRejection(Object.assign(new Error('x'), { code: 'pty_write_queue_full' }))).toBe(
+      true
+    );
+    // `pty_write_failed` is the *other* worker write error — a confirmed I/O
+    // failure or a dead drainer. It must stay fatal.
+    expect(isWriteRefusedRejection(Object.assign(new Error('x'), { code: 'pty_write_failed' }))).toBe(false);
+    expect(isWriteRefusedRejection(Object.assign(new Error('x'), { code: 'worker_timeout' }))).toBe(false);
+    expect(isWriteRefusedRejection(new Error('pty write queue full (128 writes pending)'))).toBe(false);
+    expect(isWriteRefusedRejection(null)).toBe(false);
+  });
+});
+
+describe('handleSendFailure — refused write (relay#1597)', () => {
+  it('relay#1597 MUST-FIRE: a full PTY write queue does not tear down the input stream', () => {
+    // The worker refusing one write because its drainer queue is full proves
+    // it is ALIVE — it answered. Reconnecting cannot drain that queue (it
+    // empties when the child resumes reading, not when a new socket opens), so
+    // recovering here produced one `input stream lost … / reconnected after 1
+    // attempt(s)` flap per keystroke for as long as the agent stayed busy.
+    // Delete the `isWriteRefusedRejection` branch in `handleSendFailure` and
+    // this goes red on `isRecovering()` and on the `input stream lost` line.
+    const h = harness();
+    const queueFull = Object.assign(
+      new Error('pty write queue full (128 writes pending; drainer wedged behind child not reading stdin)'),
+      { code: 'pty_write_queue_full' }
+    );
+
+    for (let i = 0; i < 50; i++) h.recovery.handleSendFailure(queueFull);
+
+    expect(h.recovery.isRecovering()).toBe(false);
+    expect(h.getCurrent()).toBe(h.first);
+    expect(h.first.closed).toBe(false);
+    expect(h.logs.some((l) => l.includes('input stream lost'))).toBe(false);
+    // One line for the episode, not one per keystroke.
+    expect(h.logs.filter((l) => l.includes('is not reading input right now'))).toHaveLength(1);
+    // The refusal IS confirmed — the byte never reached the child — so unlike
+    // `worker_timeout` every optimistic echo must come back off the screen.
+    expect(h.counts().rollbacks).toBe(50);
+  });
+
+  it('tells the operator the session survived and what to do, without blaming their typing', () => {
+    const h = harness();
+    h.recovery.handleSendFailure(
+      Object.assign(new Error('pty write queue full (128 writes pending)'), {
+        code: 'pty_write_queue_full',
+      })
+    );
+    const line = h.logs.find((l) => l.includes('is not reading input right now'));
+    expect(line).toBeDefined();
+    expect(line).toContain('still attached');
+    // The 128 slots are shared with terminal-query replies, injections and
+    // auto-responder writes, so the operator usually did not fill them.
+    expect(line).not.toContain('faster than');
+  });
+
+  it('reports a second episode after a successful send in between', () => {
+    const h = harness();
+    const queueFull = Object.assign(new Error('full'), { code: 'pty_write_queue_full' });
+    h.recovery.handleSendFailure(queueFull);
+    h.recovery.noteSendSuccess();
+    h.recovery.handleSendFailure(queueFull);
+    expect(h.logs.filter((l) => l.includes('is not reading input right now'))).toHaveLength(2);
+  });
+
+  it('relay#1597 MUST-NOT-FIRE: a confirmed write failure still enters recovery', () => {
+    // The companion guard: only the queue-full code is exempt. `pty_write_failed`
+    // (drainer exited / I/O error) is real transport loss and must still tear
+    // the stream down and reconnect. If a future edit widens the exemption to
+    // every `pty_write_*` code, this goes red — which is the point.
+    const h = harness();
+    h.recovery.handleSendFailure(
+      Object.assign(new Error('pty write queue is closed (drainer exited)'), {
+        code: 'pty_write_failed',
+      })
+    );
+    expect(h.recovery.isRecovering()).toBe(true);
+    expect(h.logs.some((l) => l.includes('input stream lost'))).toBe(true);
+    expect(h.counts().rollbacks).toBe(1);
   });
 });

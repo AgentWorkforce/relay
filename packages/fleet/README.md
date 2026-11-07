@@ -48,6 +48,25 @@ agent-relay fleet nodes      # list registered nodes
 agent-relay fleet status     # show node + capability health
 ```
 
+### Repository placement
+
+A node can declare the checkouts it can serve with an `owner/repo` keyed map:
+
+```ts
+export default defineNode({
+  name: 'builder',
+  repoPaths: {
+    'AgentWorkforce/factory': '/srv/repos/factory',
+    'AgentWorkforce/relay': '/srv/repos/relay',
+  },
+  capabilities: {/* … */},
+});
+```
+
+Each value must be an absolute path on that node. Registration derives the
+placement-safe `AgentWorkforce/factory` and `AgentWorkforce/relay` keys; the
+absolute values are never sent to Relaycast, exposed in the roster, or logged.
+
 ### Serving a node programmatically
 
 `@agent-relay/fleet` also ships the node runtime, so you can start a node in
@@ -58,9 +77,7 @@ import { defineNode, serveNode, startServeNode } from '@agent-relay/fleet';
 
 const definition = defineNode({
   name: 'builder',
-  capabilities: {
-    /* … */
-  },
+  capabilities: {/* … */},
 });
 const connection = { url: 'http://127.0.0.1:8787' }; // broker HTTP API base URL (apiKey optional)
 
@@ -74,6 +91,18 @@ await serveNode({ definition, connection });
 ```
 
 ### AgentWorkforce personas
+
+Served `spawn(...)` handlers request verified readiness and finish only after the
+delegated broker reports a ready worker. Launch failure propagates to the caller.
+The engine must support node-owned spawn invocation status reads; confirmation
+is bounded at 130 seconds. If confirmation is interrupted, reconcile the reported
+child invocation before retrying, since the broker may still be finishing setup.
+Release the compatible engine before publishing/upgrading the fleet package against
+the hosted service. For legacy placement-only handlers, an operator may explicitly
+set `spawn(harness, { verifyReady: false })` or `ctx.spawnAgent({ agent, verifyReady: false })`.
+This skips readiness polling and returns `{ placement, ready: false, readiness: 'unverified' }`;
+it cannot be used as confirmed startup or authorize subscription creation. Verified
+readiness remains the default and must stay enabled for subscription recipients.
 
 The built-in `spawn:<harness>` capabilities launch raw harnesses. An
 AgentWorkforce persona also carries its standing instructions, installed skills,

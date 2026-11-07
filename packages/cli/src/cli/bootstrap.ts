@@ -9,6 +9,7 @@ import { Command } from 'commander';
 import { config as dotenvConfig } from 'dotenv';
 
 import { checkForUpdatesInBackground } from '@agent-relay/utils';
+import { ensureCanonicalBroker } from '@agent-relay/harness-driver/broker-install';
 import { redactCredentialValues } from '@agent-relay/cloud';
 import {
   cloudIdentityEnv,
@@ -39,8 +40,9 @@ import { registerStatusCommand } from './commands/status.js';
 import { registerLocalAgentCommands } from './commands/local-agent.js';
 import { registerLocalWorkflowCommands } from './commands/local-workflow.js';
 import { registerCloudCommands } from './commands/cloud.js';
-import { registerReflexCommands } from './commands/reflex.js';
 import { registerWorkspaceCommands } from './commands/workspace.js';
+import { registerInitCommand } from './commands/init.js';
+import { registerObserverCommands } from './commands/observer.js';
 import { registerAgentCommands } from './commands/agent.js';
 import { registerChannelCommands } from './commands/channel.js';
 import { registerMessageCommands } from './commands/message.js';
@@ -48,7 +50,7 @@ import { registerIntegrationCommands } from './commands/integration.js';
 import { registerCapabilitiesCommands } from './commands/capabilities.js';
 import { registerFleetCommands } from './commands/fleet.js';
 import { registerSkillsCommands } from './commands/skills.js';
-import { registerSessionCommands } from './commands/session.js';
+import { registerProductSurfaceCommands } from './commands/product-surfaces.js';
 
 dotenvConfig({ quiet: true });
 
@@ -386,7 +388,12 @@ export function createProgram(options: { name?: string } = {}): Command {
   program
     .name(options.name ?? 'agent-relay')
     .description('Agent-to-agent messaging')
-    .version(VERSION, '-V, --version', 'Output the version number');
+    .version(VERSION, '-V, --version', 'Output the version number')
+    // Required for the mounted product groups: without positional options a
+    // product flag such as `agent-relay flows run --json` is parsed as a root
+    // option and rejected before the product ever sees it. Safe here because
+    // the root itself only defines -V and -h.
+    .enablePositionalOptions();
 
   registerNodeCommands(program);
 
@@ -412,25 +419,49 @@ export function createProgram(options: { name?: string } = {}): Command {
   registerStatusCommand(program);
   registerSetupCommands(program);
   registerCloudCommands(program);
-  registerReflexCommands(program);
+  registerInitCommand(program, { cliVersion: VERSION });
   registerWorkspaceCommands(program);
+  registerObserverCommands(program);
   registerAgentCommands(program);
   registerChannelCommands(program);
   registerMessageCommands(program);
   registerIntegrationCommands(program);
   registerCapabilitiesCommands(program);
   registerSkillsCommands(program);
-  registerSessionCommands(program);
+  // The other Relay products, mounted from their own SDKs: `file` (relayfile),
+  // `flows` (relayflows), `sessions` (relayhistory). Each product ships its own
+  // command tree; nothing about those commands is reimplemented here. Loading
+  // is lazy, so this costs an unrelated invocation nothing.
+  registerProductSurfaceCommands(program);
 
   program
     .command('mcp')
     .description('Run the Agent Relay MCP stdio server')
-    .action(async () => {
+    .option('--sessions-only', 'Expose only Cloud shared-session tools')
+    .action(async (opts: { sessionsOnly?: boolean }) => {
       const mod = await import('./agent-relay-mcp.js');
-      await mod.startAgentRelayMcpStdio(mod.optionsFromEnv());
+      await mod.startAgentRelayMcpStdio({
+        ...mod.optionsFromEnv(),
+        sessionsOnly: opts.sessionsOnly === true,
+      });
     });
 
   return program;
+}
+
+/**
+ * npm installs ship the broker inside node_modules. On first run, copy it into
+ * the canonical bin directory (~/.agentworkforce/relay/bin) so the CLI, the
+ * broker it launches and the desktop app share one binary. Done here rather
+ * than in a postinstall script because many users install with ignore-scripts.
+ * Best effort: a failure leaves the npm broker as the resolver's fallback.
+ */
+function convergeBrokerInstall(): void {
+  try {
+    ensureCanonicalBroker();
+  } catch {
+    // ensureCanonicalBroker never throws; this guards the import boundary.
+  }
 }
 
 function maybeRunUpdateCheck(version: string, argv: string[]): void {
@@ -471,6 +502,7 @@ function collectTopLevelVerbs(program: Command): Set<string> {
 export async function runCli(argv: string[] = process.argv): Promise<Command> {
   assertSupportedNodeVersion();
   ensureWebSocketGlobal();
+  convergeBrokerInstall();
   maybeRunUpdateCheck(VERSION, argv);
   const orchestratorHarness = propagateTelemetryContextToChildren();
 

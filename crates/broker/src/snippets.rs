@@ -247,16 +247,13 @@ async fn probe_agent_relay_mcp_command_with_timeout(
     command: &AgentRelayMcpCommand,
     timeout: Duration,
 ) -> io::Result<()> {
-    let mut child = Command::new(&command.command)
+    let mut probe = Command::new(&command.command);
+    // Tool discovery is local and must not rotate an agent identity or
+    // print credentials while diagnosing a broken MCP executable.
+    crate::spawner::remove_inherited_relay_credentials(&mut probe);
+    let mut child = probe
         .args(&command.args)
-        // Tool discovery is local and must not rotate an agent identity or
-        // print credentials while diagnosing a broken MCP executable.
         .env("RELAY_SKIP_BOOTSTRAP", "1")
-        .env_remove("RELAY_API_KEY")
-        .env_remove("RELAY_WORKSPACE_KEY")
-        .env_remove("AGENT_RELAY_WORKSPACE_KEY")
-        .env_remove("RELAY_AGENT_TOKEN")
-        .env_remove("RELAY_WORKSPACES_JSON")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -375,7 +372,7 @@ async fn probe_agent_relay_mcp_command_with_timeout(
 }
 
 #[cfg(not(test))]
-async fn validate_agent_relay_mcp_command() -> io::Result<()> {
+pub(crate) async fn validate_agent_relay_mcp_command() -> io::Result<()> {
     static PREFLIGHT_COMPLETE: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
     let command = required_agent_relay_mcp_command()?;
@@ -411,7 +408,7 @@ pub fn ensure_agent_relay_mcp_config(
 ) -> io::Result<McpInstallReport> {
     let mut report = McpInstallReport::default();
     let path = root.join(MCP_FILE);
-    let agent_relay_server = agent_relay_mcp_server_config(
+    let mut agent_relay_server = agent_relay_mcp_server_config(
         relay_api_key,
         relay_base_url,
         relay_agent_name,
@@ -420,6 +417,13 @@ pub fn ensure_agent_relay_mcp_config(
         None,
         None,
     );
+    // `.mcp.json` is a project file: credentials stay environment references.
+    if let Some(env) = agent_relay_server
+        .get_mut("env")
+        .and_then(Value::as_object_mut)
+    {
+        secrets_to_env_refs(env, EnvRefSyntax::Shell);
+    }
 
     if !path.exists() {
         let mut servers = Map::new();
@@ -702,6 +706,71 @@ fn apply_agent_result_env(
     }
 }
 
+/// Relay credential variables that are never written as values into a
+/// harness config file inside a project working tree. File-based harnesses
+/// get an environment reference instead and the broker sets the value on the
+/// agent process (see [`McpLaunch::env`]).
+pub const SECRET_MCP_ENV_KEYS: [&str; 3] = [
+    "RELAY_API_KEY",
+    "RELAY_AGENT_TOKEN",
+    "RELAY_WORKSPACES_JSON",
+];
+
+/// How a harness spells "the value of environment variable NAME" in its
+/// MCP server config. Each syntax was verified against the installed CLI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnvRefSyntax {
+    /// cursor-agent `.cursor/mcp.json`: `${env:NAME}`. Cursor does not pass
+    /// its own environment to MCP servers, so an explicit reference is needed.
+    Cursor,
+    /// OpenCode `opencode.json`: `{env:NAME}`.
+    OpenCode,
+    /// Gemini, Grok and Claude `.mcp.json`: `${NAME}`.
+    Shell,
+}
+
+impl EnvRefSyntax {
+    fn reference(self, key: &str) -> String {
+        match self {
+            Self::Cursor => format!("${{env:{key}}}"),
+            Self::OpenCode => format!("{{env:{key}}}"),
+            Self::Shell => format!("${{{key}}}"),
+        }
+    }
+}
+
+/// Replace every secret value in an MCP `env` object with a reference to the
+/// same-named environment variable.
+fn secrets_to_env_refs(env: &mut Map<String, Value>, syntax: EnvRefSyntax) {
+    for key in SECRET_MCP_ENV_KEYS {
+        if let Some(value) = env.get_mut(key) {
+            *value = Value::String(syntax.reference(key));
+        }
+    }
+}
+
+/// The credential values a file-based harness reads through environment
+/// references: each present secret, keyed by the variable its config names.
+fn secret_env_pairs(
+    api_key: Option<&str>,
+    agent_token: Option<&str>,
+    workspaces_json: Option<&str>,
+) -> Vec<(String, String)> {
+    [
+        ("RELAY_API_KEY", api_key),
+        ("RELAY_AGENT_TOKEN", agent_token),
+        ("RELAY_WORKSPACES_JSON", workspaces_json),
+    ]
+    .into_iter()
+    .filter_map(|(key, value)| {
+        value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| (key.to_string(), value.to_string()))
+    })
+    .collect()
+}
+
 fn escape_toml_basic_string(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -862,6 +931,10 @@ pub fn ensure_opencode_config_with_result(
             Value::String(dw.to_string()),
         );
     }
+    // opencode.json lives in the project: credentials are `{env:NAME}`
+    // references that opencode resolves from the agent process environment
+    // the broker sets (see `McpLaunch::env`).
+    secrets_to_env_refs(&mut env, EnvRefSyntax::OpenCode);
     if !env.is_empty() {
         mcp_server.insert("environment".into(), Value::Object(env));
     }
@@ -904,7 +977,12 @@ pub fn ensure_opencode_config_with_result(
         agents.insert(OPENCODE_AGENT_NAME.into(), Value::Object(agent));
         top.insert("agent".into(), Value::Object(agents));
         top.insert(OPENCODE_PERMISSION_KEY.into(), permission_block.clone());
-        write_pretty_json(&path, &Value::Object(top))?;
+        if let Err(error) = write_pretty_json(&path, &Value::Object(top)) {
+            // Never leave the empty claimed file behind: opencode would fail
+            // to parse it on the next start.
+            let _ = fs::remove_file(&path);
+            return Err(error);
+        }
         return Ok(true);
     }
 
@@ -1023,9 +1101,11 @@ pub fn ensure_cursor_mcp_config(
             format!("MCP config serialization error: {e}"),
         )
     })?;
-    // Cursor does not pass parent process env vars to MCP server subprocesses,
-    // so RELAY_API_KEY must be in the .cursor/mcp.json env block explicitly.
-    // (The shared agent_relay_mcp_server_config omits it because codex strips API keys.)
+    // Cursor does not pass its own environment to MCP server subprocesses, so
+    // RELAY_API_KEY must be named in the env block explicitly. The file lives
+    // in the project, so every credential is a `${env:NAME}` reference that
+    // cursor-agent interpolates from the agent process environment the
+    // broker sets (see `McpLaunch::env`) — never the value itself.
     if let Some(key) = relay_api_key.map(str::trim).filter(|s| !s.is_empty()) {
         if let Some(env_obj) = new_value
             .pointer_mut("/mcpServers/agent-relay/env")
@@ -1040,6 +1120,12 @@ pub fn ensure_cursor_mcp_config(
             env_map.insert("RELAY_API_KEY".into(), Value::String(key.to_string()));
             server.insert("env".into(), Value::Object(env_map));
         }
+    }
+    if let Some(env_obj) = new_value
+        .pointer_mut("/mcpServers/agent-relay/env")
+        .and_then(Value::as_object_mut)
+    {
+        secrets_to_env_refs(env_obj, EnvRefSyntax::Cursor);
     }
 
     if !path.exists() {
@@ -1076,7 +1162,523 @@ pub fn ensure_cursor_mcp_config(
     Ok(changed)
 }
 
-/// - `cli`: CLI tool name (e.g. "claude", "codex", "gemini", "droid", "grok", "opencode", "cursor")
+/// True when a CLI string names the Muse executable: basename match with
+/// Windows executable suffixes tolerated (`muse`, `muse.exe`, `muse.cmd`,
+/// `muse.bat`, any directory prefix). Used everywhere Relay must classify a
+/// Muse invocation independent of spelling.
+pub fn is_muse_executable(cli: &str) -> bool {
+    let basename = cli
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(cli);
+    let lower = basename.to_ascii_lowercase();
+    let stem = lower
+        .strip_suffix(".exe")
+        .or_else(|| lower.strip_suffix(".cmd"))
+        .or_else(|| lower.strip_suffix(".bat"))
+        .unwrap_or(&lower);
+    stem == "muse"
+}
+
+/// Clean Muse config home for one worker:
+/// `<session root>/muse-<agent>-<hash>/`, where the session root is the
+/// private per-user directory from [`crate::worktree_guard::agent_session_root`]
+/// (`$AGENT_RELAY_HOME/sessions`, else `~/.agentworkforce/relay/sessions`) —
+/// never inside the worker's project working tree, because the clean home's
+/// `settings.json` carries Relay credential values.
+/// Pointing `XDG_CONFIG_HOME` there gives the worker an isolated Muse settings
+/// scope, so Relay MCP credentials never touch the user's shared config or
+/// `auth.json`. The agent name is sanitized so a hostile name cannot escape
+/// the base directory, and a stable sha256 suffix of the worker's project
+/// directory plus its full original name keeps distinct workers apart
+/// (`a/b` vs `a_b`, or the same name in two projects, must not share
+/// credentials). Relative bases resolve against the process cwd.
+pub fn muse_clean_home_dir(base: &Path, agent_name: &str) -> PathBuf {
+    let mut sanitized: String = agent_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(48)
+        .collect();
+    if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
+        sanitized = "worker".to_string();
+    }
+    let base = if base.is_absolute() {
+        base.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(base)
+    };
+    let digest = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(base.to_string_lossy().as_bytes());
+        hasher.update([0]);
+        hasher.update(agent_name.as_bytes());
+        hasher.finalize()[..6]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    crate::worktree_guard::agent_session_root(&base).join(format!("muse-{sanitized}-{digest}"))
+}
+
+/// Remove the Relay credentials provisioned for one Muse worker (the
+/// `muse/settings.json` under its [`muse_clean_home_dir`]) once the worker is
+/// released. The clean home
+/// itself stays so an isolated per-worker Muse login survives a respawn.
+/// Best effort: a missing file is not an error.
+pub fn remove_muse_session_credentials(clean_home: &Path, agent_name: &str) {
+    let settings = clean_home.join("muse").join("settings.json");
+    match fs::remove_file(&settings) {
+        Ok(()) => tracing::info!(
+            agent = %agent_name,
+            path = %settings.display(),
+            "removed released Muse worker's Relay MCP credentials"
+        ),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => tracing::warn!(
+            agent = %agent_name,
+            path = %settings.display(),
+            error = %error,
+            "could not remove released Muse worker's Relay MCP credentials"
+        ),
+    }
+}
+
+/// Remove the Relay MCP `settings.json` that earlier broker versions wrote
+/// inside the project (`<cwd>/.agent-relay/muse-<agent>-<hash>/muse/`). That
+/// file carries live credentials; the clean home now lives outside the
+/// working tree. Best effort; the rest of the legacy directory is left alone.
+fn remove_legacy_in_tree_muse_settings(cwd: &Path, agent_name: &str) {
+    let mut sanitized: String = agent_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(48)
+        .collect();
+    if sanitized.is_empty() || sanitized == "." || sanitized == ".." {
+        sanitized = "worker".to_string();
+    }
+    let digest = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(agent_name.as_bytes());
+        hasher.finalize()[..6]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let legacy = cwd
+        .join(".agent-relay")
+        .join(format!("muse-{sanitized}-{digest}"))
+        .join("muse")
+        .join("settings.json");
+    if fs::symlink_metadata(&legacy).is_ok_and(|meta| meta.is_file())
+        && fs::remove_file(&legacy).is_ok()
+    {
+        tracing::info!(
+            agent = %agent_name,
+            path = %legacy.display(),
+            "removed legacy in-project Muse settings carrying Relay credentials"
+        );
+    }
+}
+
+/// Enforce restrictive permissions on a provisioned Muse clean home (Unix):
+/// `0700` on the home and its `muse/` subdir, `0600` on `settings.json` when
+/// present, so `RELAY_API_KEY`/`RELAY_AGENT_TOKEN` are not exposed to other
+/// local users by a permissive umask. Runs on every provision, so re-spawns
+/// tighten pre-existing entries too. No-op on non-Unix platforms.
+///
+/// Split into directory and file phases on purpose: the settings file must
+/// never be chmodded before its symlink reject runs, or provisioning would
+/// mutate a planted link target's mode before failing.
+fn restrict_muse_home_dirs(clean_home: &Path, muse_dir: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for dir in [clean_home, muse_dir] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (clean_home, muse_dir);
+    }
+    Ok(())
+}
+
+fn restrict_muse_settings_file(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if path.exists() {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
+/// Env overrides that point one spawned Muse worker at its clean home:
+/// isolated settings scope, a per-worker credential path, and launcher
+/// auto-update off so a spawn performs no network update checks or
+/// install-dir state writes. Spawns use [`muse_clean_home_env_with_auth`] to
+/// share the host Muse login instead (see [`muse_shared_auth_path`]).
+pub fn muse_clean_home_env(clean_home: &Path) -> Vec<(String, String)> {
+    muse_clean_home_env_with_auth(clean_home, None)
+}
+
+/// Absolute path to the Muse `auth.json` every Muse worker shares, overriding
+/// the host default resolved by [`muse_shared_auth_path`].
+pub const MUSE_SHARED_AUTH_PATH_ENV: &str = "RELAY_MUSE_SHARED_AUTH_PATH";
+
+/// Gives each Muse worker its own `auth.json` inside its clean home (one
+/// provider login per worker name), e.g. on multi-tenant hosts. Fails closed:
+/// any non-empty value enables isolation except `0`, `false`, `no` or `off`
+/// (trimmed, case-insensitive), so a whitespace-only value also isolates;
+/// unset or empty keeps the shared login, and a non-UTF-8 value isolates.
+pub const MUSE_ISOLATED_AUTH_ENV: &str = "RELAY_MUSE_ISOLATED_AUTH";
+
+/// Inputs for [`muse_shared_auth_path`], read from the broker's environment
+/// *before* the worker's `XDG_CONFIG_HOME` is redirected to its clean home.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MuseAuthEnv<'a> {
+    pub shared_auth_path: Option<&'a std::ffi::OsStr>,
+    pub isolated_auth: Option<&'a std::ffi::OsStr>,
+    /// The host's own `MUSE_AUTH_PATH`, when the operator relocated the login.
+    pub muse_auth_path: Option<&'a std::ffi::OsStr>,
+    pub xdg_config_home: Option<&'a std::ffi::OsStr>,
+    pub home: Option<&'a std::ffi::OsStr>,
+    /// Windows user home, used when `HOME` is unset (as elsewhere in the broker).
+    pub userprofile: Option<&'a std::ffi::OsStr>,
+}
+
+/// The `auth.json` Muse workers share so one host login serves every worker,
+/// the same way Claude and Codex workers reuse the host login. Only the
+/// credential path is shared: `XDG_CONFIG_HOME` (and the Relay MCP
+/// `settings.json` holding per-worker Relay tokens) stays per-worker.
+///
+/// Resolution: `None` when isolation is requested; otherwise an absolute
+/// `RELAY_MUSE_SHARED_AUTH_PATH`; otherwise the host's absolute
+/// `MUSE_AUTH_PATH`; otherwise Muse's own default
+/// (`$XDG_CONFIG_HOME/muse/auth.json`, falling back to
+/// `$HOME/.config/muse/auth.json`, with `%USERPROFILE%` standing in for an
+/// unset `HOME`). Empty or relative values are ignored, and
+/// `None` falls back to the per-worker credential path.
+pub fn muse_shared_auth_path(env: MuseAuthEnv<'_>) -> Option<PathBuf> {
+    fn absolute(raw: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+        raw.filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    }
+    let isolated = env.isolated_auth.is_some_and(|raw| match raw.to_str() {
+        // Check emptiness before trimming: a whitespace-only value is a
+        // non-empty setting and must isolate, not fall back to sharing.
+        Some(v) => {
+            !v.is_empty()
+                && !matches!(
+                    v.trim().to_ascii_lowercase().as_str(),
+                    "0" | "false" | "no" | "off"
+                )
+        }
+        None => true,
+    });
+    if isolated {
+        return None;
+    }
+    absolute(env.shared_auth_path)
+        .or_else(|| absolute(env.muse_auth_path))
+        .or_else(|| absolute(env.xdg_config_home).map(|d| d.join("muse").join("auth.json")))
+        .or_else(|| {
+            absolute(env.home)
+                .or_else(|| absolute(env.userprofile))
+                .map(|h| h.join(".config").join("muse").join("auth.json"))
+        })
+}
+
+/// `MUSE_AUTH_PATH` for a worker: the shared path when resolved, otherwise
+/// `<clean_home>/muse/auth.json`.
+pub fn muse_auth_path(clean_home: &Path, shared_auth: Option<&Path>) -> PathBuf {
+    shared_auth
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| clean_home.join("muse").join("auth.json"))
+}
+
+/// Filesystem usability only; Muse remains responsible for token validity.
+#[derive(Debug, PartialEq, Eq)]
+pub enum MuseAuthState {
+    Usable(PathBuf),
+    Unusable {
+        path: Option<PathBuf>,
+        reason: &'static str,
+    },
+}
+
+pub fn muse_auth_state(
+    lookup: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+    clean_home: Option<&Path>,
+) -> MuseAuthState {
+    let shared = lookup("RELAY_MUSE_SHARED_AUTH_PATH");
+    let isolated = lookup("RELAY_MUSE_ISOLATED_AUTH");
+    let auth = lookup("MUSE_AUTH_PATH");
+    let xdg = lookup("XDG_CONFIG_HOME");
+    let home = lookup("HOME");
+    let profile = lookup("USERPROFILE");
+    let resolved = muse_shared_auth_path(MuseAuthEnv {
+        shared_auth_path: clean_home.and(shared.as_deref()),
+        isolated_auth: clean_home.and(isolated.as_deref()),
+        muse_auth_path: auth.as_deref(),
+        xdg_config_home: xdg.as_deref(),
+        home: home.as_deref(),
+        userprofile: profile.as_deref(),
+    });
+    let path = match clean_home {
+        Some(home) => Some(muse_auth_path(home, resolved.as_deref())),
+        None => resolved,
+    };
+    let Some(path) = path else {
+        return MuseAuthState::Unusable {
+            path: None,
+            reason: "unresolved",
+        };
+    };
+    // Follow symlinks: host logins may legitimately be managed through one.
+    let reason = match std::fs::metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "missing",
+        Err(_) => "unreadable",
+        Ok(metadata) if !metadata.is_file() => "not a regular file",
+        Ok(_) => match std::fs::File::open(&path) {
+            Err(_) => "unreadable",
+            Ok(file) => match serde_json::from_reader::<_, serde_json::Value>(file) {
+                Ok(serde_json::Value::Object(value)) if !value.is_empty() => {
+                    return MuseAuthState::Usable(path);
+                }
+                _ => "not a non-empty JSON object",
+            },
+        },
+    };
+    MuseAuthState::Unusable {
+        path: Some(path),
+        reason,
+    }
+}
+
+pub fn muse_clean_home_env_with_auth(
+    clean_home: &Path,
+    shared_auth: Option<&Path>,
+) -> Vec<(String, String)> {
+    vec![
+        (
+            "XDG_CONFIG_HOME".to_string(),
+            clean_home.to_string_lossy().into_owned(),
+        ),
+        (
+            "MUSE_AUTH_PATH".to_string(),
+            muse_auth_path(clean_home, shared_auth)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        ("MUSE_NO_AUTO_UPDATE".to_string(), "1".to_string()),
+    ]
+}
+
+/// Muse `settings.json` schema version accepted by the installed Muse 1.3.0
+/// (`missing field 'schema_version'` otherwise). Update here (and the unit
+/// tests) if Muse bumps the accepted version.
+pub const MUSE_SETTINGS_SCHEMA_VERSION: u64 = 1;
+
+/// Write (or merge) `<clean_home>/muse/settings.json` with the Agent Relay
+/// MCP server configured with per-agent credentials (name + token), reusing
+/// the shared stdio server definition the other file-based harnesses use.
+/// Key names follow the Muse 1.3.0 `mcpServers` schema verified against the
+/// installed binary: a stdio entry carries `{command, args, env}`; update
+/// here (and the unit tests) if Muse renames these fields.
+/// Secrets land only in this isolated per-worker home — never in shared user
+/// state. Returns the settings file path.
+#[allow(clippy::too_many_arguments)]
+pub fn ensure_muse_mcp_config(
+    clean_home: &Path,
+    relay_api_key: Option<&str>,
+    relay_base_url: Option<&str>,
+    relay_agent_name: Option<&str>,
+    relay_agent_token: Option<&str>,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
+    agent_result: Option<&AgentResultMcpConfig>,
+) -> io::Result<PathBuf> {
+    let muse_dir = clean_home.join("muse");
+    let path = muse_dir.join("settings.json");
+    // The clean-home layout is predictable, so fail closed on pre-planted
+    // links before touching anything: provisioning must never chmod, read
+    // through, or write credentials into a link target.
+    for component in [clean_home, &muse_dir] {
+        reject_muse_provision_symlink(component)?;
+    }
+    if let Some(parent) = clean_home.parent() {
+        reject_muse_provision_symlink(parent)?;
+    }
+    fs::create_dir_all(&muse_dir)?;
+    // The session root holds every worker's credentials: owner-only.
+    if let Some(parent) = clean_home.parent() {
+        crate::worktree_guard::restrict_dir(parent);
+    }
+    // Re-check after creation: a component swapped for a link in between
+    // must not receive credentials or permission changes.
+    for component in [clean_home, &muse_dir] {
+        reject_muse_provision_symlink(component)?;
+    }
+    // Directories only here: the settings file is chmodded after its own
+    // symlink reject below, so a planted link target's mode is never
+    // mutated before provisioning fails.
+    restrict_muse_home_dirs(clean_home, &muse_dir)?;
+
+    let server = agent_relay_mcp_server_config(
+        relay_api_key,
+        relay_base_url,
+        relay_agent_name,
+        relay_agent_token,
+        workspaces_json,
+        default_workspace,
+        agent_result,
+    );
+    // Carry RELAY_API_KEY in the server entry's env block (same shape as
+    // Cursor's file config) so the tools authenticate regardless of how Muse
+    // scopes subprocess environments.
+    let mut server = server;
+    if let Some(key) = relay_api_key.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(env_obj) = server.get_mut("env").and_then(Value::as_object_mut) {
+            env_obj.insert("RELAY_API_KEY".into(), Value::String(key.to_string()));
+        } else {
+            let mut env_map = Map::new();
+            env_map.insert("RELAY_API_KEY".into(), Value::String(key.to_string()));
+            if let Some(obj) = server.as_object_mut() {
+                obj.insert("env".into(), Value::Object(env_map));
+            }
+        }
+    }
+
+    // A pre-planted settings link must fail, never leak credentials into its
+    // target on the merge read below.
+    reject_muse_provision_symlink(&path)?;
+    let mut envelope = if path.exists() {
+        let existing = fs::read_to_string(&path)?;
+        serde_json::from_str::<Value>(&existing).unwrap_or(Value::Object(Map::new()))
+    } else {
+        Value::Object(Map::new())
+    };
+    let obj = envelope.as_object_mut().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "muse settings must be an object",
+        )
+    })?;
+    obj.entry("schema_version")
+        .or_insert_with(|| Value::Number(MUSE_SETTINGS_SCHEMA_VERSION.into()));
+    let servers = obj
+        .entry("mcpServers")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if let Some(servers_obj) = servers.as_object_mut() {
+        servers_obj.remove(LEGACY_RELAYCAST_SERVER);
+        servers_obj.insert(AGENT_RELAY_MCP_SERVER.to_string(), server);
+    } else {
+        let mut servers_obj = Map::new();
+        servers_obj.insert(AGENT_RELAY_MCP_SERVER.to_string(), server);
+        *servers = Value::Object(servers_obj);
+    }
+
+    write_muse_settings_atomic(&muse_dir, &path, &envelope)?;
+    // Tighten again after the write (covers fresh files and pre-existing
+    // entries on the merge path) — never rely on the ambient umask.
+    restrict_muse_home_dirs(clean_home, &muse_dir)?;
+    restrict_muse_settings_file(&path)?;
+    // The atomic replace swaps a raced-in link itself rather than following
+    // it, but verify anyway: credentials must never sit behind a link.
+    reject_muse_provision_symlink(&path)?;
+    Ok(path)
+}
+
+/// Reject a pre-planted symbolic link inside the Muse clean-home tree:
+/// provisioning must never chmod, read through, or write credentials into a
+/// link target. Fails closed so the operator removes the plant. (A swap
+/// racing between this check and use needs directory-handle-relative
+/// no-follow syscalls unavailable in std; the atomic settings replace below
+/// still neutralizes a raced settings link by swapping the link itself.)
+fn reject_muse_provision_symlink(path: &Path) -> io::Result<()> {
+    if fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "refusing to provision Muse config through a symbolic link (remove it first): {}",
+                path.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Write `settings.json` without ever following a link: stage to a uniquely
+/// named temp file created with `O_EXCL` (a pre-planted temp link fails the
+/// create instead of capturing the write), then atomically rename over the
+/// target — a rename swaps a raced-in link itself rather than writing through
+/// it. Temp file starts `0600` on Unix so no umask window exposes secrets.
+fn write_muse_settings_atomic(muse_dir: &Path, path: &Path, envelope: &Value) -> io::Result<()> {
+    use std::io::Write;
+    let bytes = serde_json::to_vec_pretty(envelope)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    for attempt in 0..8u32 {
+        let tmp = muse_dir.join(format!(
+            ".settings.json.tmp.{}.{attempt}",
+            std::process::id()
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&tmp) {
+            Ok(mut staged) => {
+                let result = staged
+                    .write_all(&bytes)
+                    .and_then(|()| staged.sync_all())
+                    .and_then(|()| fs::rename(&tmp, path));
+                if result.is_err() {
+                    let _ = fs::remove_file(&tmp);
+                }
+                return result;
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not stage a unique Muse settings temp file",
+    ))
+}
+
+/// - `cli`: CLI tool name (e.g. "claude", "codex", "gemini", "droid", "grok", "muse", "opencode", "cursor")
 /// - `agent_name`: the name of the agent being spawned
 /// - `api_key`: optional relay API key (empty or `None` means omit)
 /// - `base_url`: optional relay base URL (empty or `None` means omit)
@@ -1148,6 +1750,51 @@ pub async fn configure_agent_relay_mcp_with_result(
     default_workspace: Option<&str>,
     agent_result: Option<&AgentResultMcpConfig>,
 ) -> Result<Vec<String>> {
+    configure_agent_relay_mcp_launch(
+        cli,
+        agent_name,
+        api_key,
+        base_url,
+        existing_args,
+        cwd,
+        agent_token,
+        workspaces_json,
+        default_workspace,
+        agent_result,
+    )
+    .await
+    .map(|launch| launch.args)
+}
+
+/// What the spawner must add to a harness launch for Agent Relay MCP.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McpLaunch {
+    /// Extra CLI arguments for the harness.
+    pub args: Vec<String>,
+    /// Credential variables the harness config references by name
+    /// (`RELAY_API_KEY`, `RELAY_AGENT_TOKEN`, `RELAY_WORKSPACES_JSON`). The
+    /// spawner must set these on the agent process: file-based harnesses
+    /// (Cursor, OpenCode, Gemini, Grok) never get the values in their config.
+    pub env: Vec<(String, String)>,
+}
+
+/// Configure Agent Relay MCP for `cli` and return both the extra arguments
+/// and the credential environment the harness needs. Config files written
+/// into `cwd` (the project) carry environment references, never credential
+/// values.
+#[allow(clippy::too_many_arguments)]
+pub async fn configure_agent_relay_mcp_launch(
+    cli: &str,
+    agent_name: &str,
+    api_key: Option<&str>,
+    base_url: Option<&str>,
+    existing_args: &[String],
+    cwd: &Path,
+    agent_token: Option<&str>,
+    workspaces_json: Option<&str>,
+    default_workspace: Option<&str>,
+    agent_result: Option<&AgentResultMcpConfig>,
+) -> Result<McpLaunch> {
     let cli_lower = detect_cli_name(cli).to_lowercase();
     let is_claude = cli_lower == "claude" || cli_lower.starts_with("claude:");
     let is_codex = cli_lower == "codex";
@@ -1155,6 +1802,7 @@ pub async fn configure_agent_relay_mcp_with_result(
     let is_droid = cli_lower == "droid";
     let is_opencode = cli_lower == "opencode";
     let is_grok = cli_lower == "grok";
+    let is_muse = is_muse_executable(&cli_lower);
     let is_cursor = cli_lower == "cursor" || cli_lower == "cursor-agent" || cli_lower == "agent"; // "agent" is cursor-agent's binary name
 
     let injects_agent_relay_mcp = (is_claude
@@ -1167,9 +1815,11 @@ pub async fn configure_agent_relay_mcp_with_result(
             }))
         || is_gemini
         || is_droid
+        || crate::readiness::is_devin_cli(&cli_lower)
         || is_grok
         || (is_opencode && !existing_args.iter().any(|a| a == "--agent"))
-        || is_cursor;
+        || is_cursor
+        || is_muse;
     #[cfg(not(test))]
     if injects_agent_relay_mcp {
         validate_agent_relay_mcp_command().await?;
@@ -1181,6 +1831,9 @@ pub async fn configure_agent_relay_mcp_with_result(
     let base_url = base_url.map(str::trim).filter(|s| !s.is_empty());
 
     let mut args: Vec<String> = Vec::new();
+    // Credentials file-based harnesses read through environment references.
+    let secret_env = secret_env_pairs(api_key, agent_token, workspaces_json);
+    let mut env: Vec<(String, String)> = Vec::new();
 
     if is_claude
         && !existing_args
@@ -1317,6 +1970,8 @@ pub async fn configure_agent_relay_mcp_with_result(
         // limited to the worker process env instead of persisting it in those files.
         if is_gemini {
             ensure_gemini_folder_trusted(cwd);
+            // Gemini's project settings name credentials as `${NAME}`.
+            env.clone_from(&secret_env);
         }
         configure_gemini_droid_mcp(
             cli,
@@ -1328,6 +1983,7 @@ pub async fn configure_agent_relay_mcp_with_result(
             workspaces_json,
             default_workspace,
             None,
+            cwd,
         )
         .await?;
     } else if is_grok {
@@ -1341,6 +1997,7 @@ pub async fn configure_agent_relay_mcp_with_result(
             default_workspace,
         )
         .await?;
+        env.clone_from(&secret_env);
     } else if is_opencode && !existing_args.iter().any(|a| a == "--agent") {
         ensure_opencode_config_with_result(
             cwd,
@@ -1358,6 +2015,7 @@ pub async fn configure_agent_relay_mcp_with_result(
         })?;
         args.push("--agent".to_string());
         args.push(AGENT_RELAY_MCP_SERVER.to_string());
+        env.clone_from(&secret_env);
     } else if is_cursor {
         ensure_cursor_mcp_config(
             cwd,
@@ -1373,9 +2031,30 @@ pub async fn configure_agent_relay_mcp_with_result(
             "failed to write .cursor/mcp.json for Agent Relay MCP. \
                  Please configure the Agent Relay MCP server manually in .cursor/mcp.json"
         })?;
+        env.clone_from(&secret_env);
+    } else if is_muse {
+        // Muse has no MCP launch flags: provision an isolated clean config
+        // home instead. The worker process picks it up via --muse-config-home
+        // (no argv is needed here). Result-callback config flows through like
+        // every other harness so listen/task callbacks keep working.
+        remove_legacy_in_tree_muse_settings(cwd, agent_name);
+        ensure_muse_mcp_config(
+            &muse_clean_home_dir(cwd, agent_name),
+            api_key,
+            base_url,
+            Some(agent_name),
+            agent_token,
+            workspaces_json,
+            default_workspace,
+            agent_result,
+        )
+        .with_context(|| {
+            "failed to write Muse settings.json for Agent Relay MCP. \
+                 Please configure the Agent Relay MCP server manually in settings.json"
+        })?;
     }
 
-    Ok(args)
+    Ok(McpLaunch { args, env })
 }
 
 fn detect_cli_name(cli: &str) -> String {
@@ -1487,9 +2166,27 @@ fn gemini_droid_mcp_add_args_with_result(
 ) -> Vec<String> {
     let env_flag = gemini_droid_mcp_env_flag(is_gemini);
     let mut args = vec!["mcp".to_string(), "add".to_string()];
+    // Gemini writes this server into the project's `.gemini/settings.json`
+    // (`-s project`, pinned explicitly), so credentials are `${NAME}`
+    // references Gemini expands from the agent process environment; the
+    // values never reach the file or this command's argv. Gemini also strips
+    // `*TOKEN*`/`*KEY*` variables from the environment MCP servers inherit,
+    // so the explicit references are required. Droid writes its user-level
+    // config and keeps literal values.
+    let secret = |key: &str, value: &str| -> String {
+        if is_gemini {
+            EnvRefSyntax::Shell.reference(key)
+        } else {
+            value.to_string()
+        }
+    };
+    if is_gemini {
+        args.push("-s".to_string());
+        args.push("project".to_string());
+    }
     if let Some(key) = api_key {
         args.push(env_flag.to_string());
-        args.push(format!("RELAY_API_KEY={key}"));
+        args.push(format!("RELAY_API_KEY={}", secret("RELAY_API_KEY", key)));
     }
     if let Some(url) = base_url {
         args.push(env_flag.to_string());
@@ -1505,7 +2202,10 @@ fn gemini_droid_mcp_add_args_with_result(
     }
     if let Some(token) = agent_token.map(str::trim).filter(|s| !s.is_empty()) {
         args.push(env_flag.to_string());
-        args.push(format!("RELAY_AGENT_TOKEN={token}"));
+        args.push(format!(
+            "RELAY_AGENT_TOKEN={}",
+            secret("RELAY_AGENT_TOKEN", token)
+        ));
         // Skip bootstrap when the broker has already pre-registered the agent.
         args.push(env_flag.to_string());
         args.push("RELAY_SKIP_BOOTSTRAP=1".to_string());
@@ -1513,7 +2213,10 @@ fn gemini_droid_mcp_add_args_with_result(
     // Forward multi-workspace context to gemini/droid child agents.
     if let Some(wj) = workspaces_json.map(str::trim).filter(|s| !s.is_empty()) {
         args.push(env_flag.to_string());
-        args.push(format!("RELAY_WORKSPACES_JSON={wj}"));
+        args.push(format!(
+            "RELAY_WORKSPACES_JSON={}",
+            secret("RELAY_WORKSPACES_JSON", wj)
+        ));
     }
     if let Some(dw) = default_workspace.map(str::trim).filter(|s| !s.is_empty()) {
         args.push(env_flag.to_string());
@@ -1547,9 +2250,13 @@ fn grok_mcp_add_args(
         "add".to_string(),
         AGENT_RELAY_MCP_SERVER.to_string(),
     ];
-    if let Some(key) = api_key {
+    // Credentials are `${NAME}` references Grok expands from the agent
+    // process environment, so its shared config file (and this argv) never
+    // carries the values.
+    let reference = |key: &str| EnvRefSyntax::Shell.reference(key);
+    if api_key.is_some() {
         args.push("--env".to_string());
-        args.push(format!("RELAY_API_KEY={key}"));
+        args.push(format!("RELAY_API_KEY={}", reference("RELAY_API_KEY")));
     }
     if let Some(url) = base_url {
         args.push("--env".to_string());
@@ -1563,15 +2270,24 @@ fn grok_mcp_add_args(
         args.push("--env".to_string());
         args.push("RELAY_STRICT_AGENT_NAME=1".to_string());
     }
-    if let Some(token) = agent_token.map(str::trim).filter(|s| !s.is_empty()) {
+    if agent_token.map(str::trim).is_some_and(|s| !s.is_empty()) {
         args.push("--env".to_string());
-        args.push(format!("RELAY_AGENT_TOKEN={token}"));
+        args.push(format!(
+            "RELAY_AGENT_TOKEN={}",
+            reference("RELAY_AGENT_TOKEN")
+        ));
         args.push("--env".to_string());
         args.push("RELAY_SKIP_BOOTSTRAP=1".to_string());
     }
-    if let Some(wj) = workspaces_json.map(str::trim).filter(|s| !s.is_empty()) {
+    if workspaces_json
+        .map(str::trim)
+        .is_some_and(|s| !s.is_empty())
+    {
         args.push("--env".to_string());
-        args.push(format!("RELAY_WORKSPACES_JSON={wj}"));
+        args.push(format!(
+            "RELAY_WORKSPACES_JSON={}",
+            reference("RELAY_WORKSPACES_JSON")
+        ));
     }
     if let Some(dw) = default_workspace.map(str::trim).filter(|s| !s.is_empty()) {
         args.push("--env".to_string());
@@ -1627,7 +2343,7 @@ fn grok_manual_mcp_add_cmd(cli: &str) -> String {
 
 async fn remove_grok_mcp_servers(exe: &str) {
     for server_name in [AGENT_RELAY_MCP_SERVER, LEGACY_RELAYCAST_SERVER] {
-        let mut cmd = Command::new(exe);
+        let mut cmd = crate::spawner::scrubbed_command(exe);
         cmd.args(["mcp", "remove", server_name])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -1655,7 +2371,7 @@ async fn configure_grok_mcp(
 
     remove_grok_mcp_servers(&exe).await;
 
-    let mut mcp_cmd = Command::new(&exe);
+    let mut mcp_cmd = crate::spawner::scrubbed_command(&exe);
     mcp_cmd.args(grok_mcp_add_args(
         api_key,
         base_url,
@@ -1716,6 +2432,7 @@ async fn configure_gemini_droid_mcp(
     workspaces_json: Option<&str>,
     default_workspace: Option<&str>,
     agent_result: Option<&AgentResultMcpConfig>,
+    cwd: &Path,
 ) -> Result<()> {
     // Extract the executable from cli which may contain inline args
     // (e.g. "gemini --model foo"). Command::new needs just the binary.
@@ -1723,6 +2440,19 @@ async fn configure_gemini_droid_mcp(
         .and_then(|parts| parts.first().cloned())
         .unwrap_or_else(|| cli.trim().to_string());
     let manual_cmd = gemini_droid_manual_mcp_add_cmd(&exe, is_gemini);
+
+    // Gemini writes project scope relative to its own cwd: run it in the
+    // agent's project (not the broker's cwd) and keep the settings file out
+    // of `git status` before it is created.
+    let project_dir = if is_gemini {
+        let settings = cwd.join(".gemini").join("settings.json");
+        if fs::create_dir_all(cwd.join(".gemini")).is_ok() {
+            crate::worktree_guard::ensure_git_ignored(&settings);
+        }
+        Some(cwd)
+    } else {
+        None
+    };
 
     let add_args = gemini_droid_mcp_add_args_with_result(
         api_key,
@@ -1735,14 +2465,34 @@ async fn configure_gemini_droid_mcp(
         agent_result,
     );
 
-    run_gemini_droid_mcp_add(&exe, &add_args, cli, &manual_cmd).await
+    run_gemini_droid_mcp_add(&exe, &add_args, cli, &manual_cmd, project_dir).await?;
+
+    if let Some(dir) = project_dir {
+        let settings = dir.join(".gemini").join("settings.json");
+        if let Ok(content) = fs::read_to_string(&settings) {
+            if let Some(prefix) = crate::worktree_guard::find_credential_prefix(&content) {
+                tracing::warn!(
+                    path = %settings.display(),
+                    prefix,
+                    "Gemini project settings contain a credential-shaped value outside the Agent Relay entry; remove it before committing"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
-/// Remove all known relay MCP server names from the gemini/droid shared config.
-async fn remove_gemini_droid_mcp_servers(exe: &str) {
+/// Remove all known relay MCP server names from the gemini/droid config.
+/// `project_dir` is set for Gemini, whose entry lives in that project's
+/// `.gemini/settings.json`.
+async fn remove_gemini_droid_mcp_servers(exe: &str, project_dir: Option<&Path>) {
     for server_name in [AGENT_RELAY_MCP_SERVER, LEGACY_RELAYCAST_SERVER] {
-        let mut cmd = Command::new(exe);
-        cmd.args(["mcp", "remove", server_name])
+        let mut cmd = crate::spawner::scrubbed_command(exe);
+        cmd.args(["mcp", "remove"]);
+        if let Some(dir) = project_dir {
+            cmd.args(["-s", "project"]).current_dir(dir);
+        }
+        cmd.arg(server_name)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -1760,14 +2510,15 @@ async fn run_gemini_droid_mcp_add(
     add_args: &[String],
     cli: &str,
     manual_cmd: &str,
+    project_dir: Option<&Path>,
 ) -> Result<()> {
     const MAX_ATTEMPTS: u32 = 4;
     let mut last_stderr = String::new();
     for attempt in 0..MAX_ATTEMPTS {
         // Remove first for idempotency — ignore errors (may not exist yet).
-        remove_gemini_droid_mcp_servers(exe).await;
+        remove_gemini_droid_mcp_servers(exe, project_dir).await;
 
-        let output = spawn_mcp_add(exe, add_args, cli, manual_cmd).await?;
+        let output = spawn_mcp_add(exe, add_args, cli, manual_cmd, project_dir).await?;
         if output.status.success() {
             return Ok(());
         }
@@ -1807,8 +2558,12 @@ async fn spawn_mcp_add(
     add_args: &[String],
     cli: &str,
     manual_cmd: &str,
+    project_dir: Option<&Path>,
 ) -> Result<std::process::Output> {
-    let mut mcp_cmd = Command::new(exe);
+    let mut mcp_cmd = crate::spawner::scrubbed_command(exe);
+    if let Some(dir) = project_dir {
+        mcp_cmd.current_dir(dir);
+    }
     mcp_cmd
         .args(add_args)
         .stdin(Stdio::null())
@@ -1836,16 +2591,106 @@ async fn spawn_mcp_add(
     }
 }
 
+/// Write a harness config file inside a project working tree. Every caller
+/// writes into the agent's project, so the content goes through
+/// [`crate::worktree_guard::write_project_file`]: credential-shaped values are
+/// refused and the path is kept out of `git status`.
 fn write_pretty_json(path: &Path, value: &Value) -> io::Result<()> {
     let mut body = serde_json::to_string_pretty(value).map_err(|error| {
         io::Error::other(format!("failed to serialize {}: {error}", path.display()))
     })?;
     body.push('\n');
-    fs::write(path, body)
+    crate::worktree_guard::write_project_file(path, &body)
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn muse_auth_state_checks_files_without_interpreting_tokens() {
+        use super::{muse_auth_state, MuseAuthState};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("auth.json");
+        let lookup = |key: &str| (key == "MUSE_AUTH_PATH").then(|| path.as_os_str().to_owned());
+        assert!(matches!(
+            muse_auth_state(&lookup, None),
+            MuseAuthState::Unusable {
+                reason: "missing",
+                ..
+            }
+        ));
+        for contents in [
+            "",
+            "{}",
+            "[]",
+            "null",
+            "not-json",
+            r#"{"token":"secret",broken}"#,
+        ] {
+            std::fs::write(&path, contents).unwrap();
+            let state = muse_auth_state(&lookup, None);
+            assert!(matches!(
+                state,
+                MuseAuthState::Unusable {
+                    reason: "not a non-empty JSON object",
+                    ..
+                }
+            ));
+            assert!(!format!("{state:?}").contains("secret"));
+        }
+        std::fs::write(&path, r#"{"token":"expired-or-valid"}"#).unwrap();
+        assert_eq!(
+            muse_auth_state(&lookup, None),
+            MuseAuthState::Usable(path.clone())
+        );
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(matches!(
+            muse_auth_state(&lookup, None),
+            MuseAuthState::Unusable {
+                reason: "not a regular file",
+                ..
+            }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn muse_auth_state_accepts_host_login_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("managed-auth.json");
+        let link = temp.path().join("auth.json");
+        std::fs::write(&target, r#"{"token":"fixture"}"#).unwrap();
+        std::os::unix::fs::symlink(target, &link).unwrap();
+        let lookup = |key: &str| (key == "MUSE_AUTH_PATH").then(|| link.as_os_str().to_owned());
+        assert_eq!(
+            super::muse_auth_state(&lookup, None),
+            super::MuseAuthState::Usable(link)
+        );
+    }
+
+    #[test]
+    fn muse_auth_state_isolation_only_applies_to_clean_home() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth = temp.path().join("auth.json");
+        std::fs::write(&auth, r#"{"token":"fixture"}"#).unwrap();
+        let lookup = |key: &str| match key {
+            "MUSE_AUTH_PATH" => Some(auth.as_os_str().to_owned()),
+            "RELAY_MUSE_ISOLATED_AUTH" => Some("1".into()),
+            _ => None,
+        };
+        assert_eq!(
+            super::muse_auth_state(&lookup, None),
+            super::MuseAuthState::Usable(auth.clone())
+        );
+        assert!(matches!(
+            super::muse_auth_state(&lookup, Some(temp.path())),
+            super::MuseAuthState::Unusable {
+                reason: "missing",
+                ..
+            }
+        ));
+    }
+
     use std::{env, ffi::OsString, fs};
 
     #[cfg(unix)]
@@ -1874,6 +2719,603 @@ mod tests {
             token: "arr_test".to_string(),
             schema: Some(json!({"type": "object"})),
         }
+    }
+
+    #[test]
+    fn is_muse_executable_matches_spellings_without_false_positives() {
+        for cli in [
+            "muse",
+            "Muse",
+            "MUSE",
+            "muse.exe",
+            "muse.cmd",
+            "muse.bat",
+            "MUSE.EXE",
+            "/Users/khaliqgant/.local/bin/muse",
+            "/usr/local/bin/muse.exe",
+            r"C:\Tools\Muse.CMD",
+        ] {
+            assert!(
+                super::is_muse_executable(cli),
+                "{cli} must classify as Muse"
+            );
+        }
+        for cli in [
+            "claude",
+            "codex",
+            "opencode",
+            "xmuse",
+            "muse2",
+            "amuse.exe",
+            "my-muse",
+        ] {
+            assert!(
+                !super::is_muse_executable(cli),
+                "{cli} must not classify as Muse"
+            );
+        }
+    }
+
+    #[test]
+    fn muse_clean_home_dir_is_absolute_and_traversal_safe() {
+        let temp = tempdir().expect("tempdir");
+        let home = super::muse_clean_home_dir(temp.path(), "agent-1");
+        assert!(home.is_absolute());
+        let name = home
+            .file_name()
+            .expect("dir name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            name.starts_with("muse-agent-1-") && name.len() == "muse-agent-1-".len() + 12,
+            "readable prefix plus stable hash suffix, got {name:?}"
+        );
+        // Stability: same input always maps to the same home.
+        assert_eq!(home, super::muse_clean_home_dir(temp.path(), "agent-1"));
+        // Distinct names that sanitize alike must not share credentials.
+        let slash = super::muse_clean_home_dir(temp.path(), "a/b");
+        let underscore = super::muse_clean_home_dir(temp.path(), "a_b");
+        assert_ne!(slash, underscore, "a/b and a_b must map apart");
+        // Long names stay bounded: 48 readable chars plus hash.
+        let long = "a".repeat(200);
+        let home = super::muse_clean_home_dir(temp.path(), &long);
+        let name = home.file_name().expect("dir name").to_string_lossy();
+        assert!(name.len() <= "muse-".len() + 48 + 1 + 12, "got {name:?}");
+        let session_root = crate::worktree_guard::agent_session_root(temp.path());
+        for hostile in ["../evil", "..", "", "a/b\\c", "x:y*z?"] {
+            let home = super::muse_clean_home_dir(temp.path(), hostile);
+            assert_eq!(
+                home.parent(),
+                Some(session_root.as_path()),
+                "{hostile:?} must stay directly inside the session root, got {home:?}"
+            );
+            assert!(home.is_absolute());
+        }
+        // Credentials never live in the worker's project working tree.
+        assert!(
+            !home.starts_with(temp.path()),
+            "Muse clean home must sit outside the project, got {home:?}"
+        );
+        // The same agent name in another project gets its own home.
+        let other = tempfile::tempdir().unwrap();
+        assert_ne!(
+            super::muse_clean_home_dir(temp.path(), "agent-1"),
+            super::muse_clean_home_dir(other.path(), "agent-1")
+        );
+    }
+
+    #[test]
+    fn muse_clean_home_env_isolates_settings_auth_and_updates() {
+        let home = std::path::Path::new("/tmp/relay-muse-home");
+        let env = super::muse_clean_home_env(home);
+        let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+        assert_eq!(
+            get("XDG_CONFIG_HOME").as_deref(),
+            Some("/tmp/relay-muse-home")
+        );
+        assert_eq!(
+            get("MUSE_AUTH_PATH").as_deref(),
+            Some("/tmp/relay-muse-home/muse/auth.json")
+        );
+        assert_eq!(get("MUSE_NO_AUTO_UPDATE").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn muse_shared_auth_override_shares_only_the_credential_path() {
+        let home = std::path::Path::new("/tmp/relay-muse-home");
+        let shared = std::path::Path::new("/Users/op/.config/muse/auth.json");
+        let env = super::muse_clean_home_env_with_auth(home, Some(shared));
+        let get = |k: &str| env.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+        assert_eq!(
+            get("XDG_CONFIG_HOME").as_deref(),
+            Some("/tmp/relay-muse-home"),
+            "settings scope must stay per-worker"
+        );
+        assert_eq!(
+            get("MUSE_AUTH_PATH").as_deref(),
+            Some("/Users/op/.config/muse/auth.json")
+        );
+        assert_eq!(get("MUSE_NO_AUTO_UPDATE").as_deref(), Some("1"));
+    }
+
+    /// Absolute fixture paths that are absolute on every platform: Windows
+    /// needs a drive prefix for `Path::is_absolute`.
+    fn abs_path(unix: &str) -> std::path::PathBuf {
+        if cfg!(windows) {
+            std::path::PathBuf::from(format!("C:{unix}"))
+        } else {
+            std::path::PathBuf::from(unix)
+        }
+    }
+
+    fn abs_os(unix: &str) -> &'static std::ffi::OsStr {
+        Box::leak(abs_path(unix).into_os_string().into_boxed_os_str())
+    }
+
+    #[test]
+    fn muse_shared_auth_path_defaults_to_the_host_muse_login() {
+        let env = super::MuseAuthEnv {
+            home: Some(abs_os("/Users/op")),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::muse_shared_auth_path(env),
+            Some(abs_path("/Users/op/.config/muse/auth.json"))
+        );
+        let env = super::MuseAuthEnv {
+            xdg_config_home: Some(abs_os("/xdg")),
+            ..env
+        };
+        assert_eq!(
+            super::muse_shared_auth_path(env),
+            Some(abs_path("/xdg/muse/auth.json"))
+        );
+        let env = super::MuseAuthEnv {
+            muse_auth_path: Some(abs_os("/host/muse-auth.json")),
+            ..env
+        };
+        assert_eq!(
+            super::muse_shared_auth_path(env),
+            Some(abs_path("/host/muse-auth.json")),
+            "a host-relocated Muse login wins over the XDG default"
+        );
+        let env = super::MuseAuthEnv {
+            shared_auth_path: Some(abs_os("/abs/auth.json")),
+            ..env
+        };
+        assert_eq!(
+            super::muse_shared_auth_path(env),
+            Some(abs_path("/abs/auth.json"))
+        );
+    }
+
+    #[test]
+    fn muse_shared_auth_path_falls_back_to_userprofile_without_home() {
+        let env = super::MuseAuthEnv {
+            userprofile: Some(abs_os("/profiles/op")),
+            ..Default::default()
+        };
+        assert_eq!(
+            super::muse_shared_auth_path(env),
+            Some(abs_path("/profiles/op/.config/muse/auth.json"))
+        );
+        let env = super::MuseAuthEnv {
+            home: Some(abs_os("/Users/op")),
+            ..env
+        };
+        assert_eq!(
+            super::muse_shared_auth_path(env),
+            Some(abs_path("/Users/op/.config/muse/auth.json")),
+            "HOME wins when both are set"
+        );
+    }
+
+    #[test]
+    fn muse_shared_auth_path_honours_isolation_opt_out() {
+        use std::ffi::OsStr;
+        let base = super::MuseAuthEnv {
+            shared_auth_path: Some(abs_os("/abs/auth.json")),
+            home: Some(abs_os("/Users/op")),
+            ..Default::default()
+        };
+        // Fails closed: anything that is not an explicit "off" isolates.
+        for value in [
+            "1", "true", "TRUE", "yes", "on", "enabled", " 1 ", " ", "\t",
+        ] {
+            let env = super::MuseAuthEnv {
+                isolated_auth: Some(OsStr::new(value)),
+                ..base
+            };
+            assert_eq!(super::muse_shared_auth_path(env), None, "{value:?}");
+        }
+        for value in ["", "0", "false", "No", " off "] {
+            let env = super::MuseAuthEnv {
+                isolated_auth: Some(OsStr::new(value)),
+                ..base
+            };
+            assert!(super::muse_shared_auth_path(env).is_some(), "{value:?}");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let env = super::MuseAuthEnv {
+                isolated_auth: Some(OsStr::from_bytes(b"\xff")),
+                ..base
+            };
+            assert_eq!(
+                super::muse_shared_auth_path(env),
+                None,
+                "non-UTF-8 isolates"
+            );
+        }
+    }
+
+    #[test]
+    fn muse_shared_auth_path_ignores_empty_and_relative_values() {
+        use std::ffi::OsStr;
+        assert_eq!(super::muse_shared_auth_path(Default::default()), None);
+        let env = super::MuseAuthEnv {
+            shared_auth_path: Some(OsStr::new("")),
+            muse_auth_path: Some(OsStr::new("muse/auth.json")),
+            xdg_config_home: Some(OsStr::new("relative")),
+            home: Some(OsStr::new("also/relative")),
+            ..Default::default()
+        };
+        assert_eq!(super::muse_shared_auth_path(env), None);
+    }
+
+    #[test]
+    fn ensure_muse_mcp_config_writes_schema_backed_settings() {
+        let temp = tempdir().expect("tempdir");
+        let home = temp.path().join("clean");
+        let settings = super::ensure_muse_mcp_config(
+            &home,
+            Some("rk_test"),
+            Some("https://relay.example"),
+            Some("agent-1"),
+            Some("at_test"),
+            None,
+            None,
+            None,
+        )
+        .expect("write muse settings");
+        assert_eq!(settings, home.join("muse").join("settings.json"));
+
+        let contents = fs::read_to_string(&settings).expect("read settings");
+        let parsed: Value = serde_json::from_str(&contents).expect("parse settings");
+        assert_eq!(
+            parsed["schema_version"].as_u64(),
+            Some(super::MUSE_SETTINGS_SCHEMA_VERSION)
+        );
+        let server = &parsed["mcpServers"]["agent-relay"];
+        // Same stdio server shape the other file-based harnesses use.
+        assert_is_agent_relay_mcp_config(server);
+        // Per-worker credentials land in this isolated file only.
+        assert_eq!(server["env"]["RELAY_AGENT_TOKEN"].as_str(), Some("at_test"));
+        assert_eq!(server["env"]["RELAY_SKIP_BOOTSTRAP"].as_str(), Some("1"));
+        assert_eq!(server["env"]["RELAY_AGENT_NAME"].as_str(), Some("agent-1"));
+        assert_eq!(server["env"]["RELAY_API_KEY"].as_str(), Some("rk_test"));
+    }
+
+    #[test]
+    fn ensure_muse_mcp_config_merges_without_clobbering() {
+        let temp = tempdir().expect("tempdir");
+        let home = temp.path().join("clean");
+        let dir = home.join("muse");
+        fs::create_dir_all(&dir).expect("muse dir");
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"schema_version": 1, "theme": "dark", "mcpServers": {"other": {"command": "other-mcp"}}}"#,
+        )
+        .expect("seed settings");
+        super::ensure_muse_mcp_config(
+            &home,
+            None,
+            None,
+            Some("agent-9"),
+            Some("at_9"),
+            None,
+            None,
+            None,
+        )
+        .expect("merge muse settings");
+        let parsed: Value = serde_json::from_str(
+            &fs::read_to_string(dir.join("settings.json")).expect("read merged"),
+        )
+        .expect("parse merged");
+        assert_eq!(parsed["theme"].as_str(), Some("dark"));
+        assert_eq!(
+            parsed["mcpServers"]["other"]["command"].as_str(),
+            Some("other-mcp")
+        );
+        assert_eq!(
+            parsed["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
+            Some("at_9")
+        );
+    }
+
+    #[tokio::test]
+    async fn configure_muse_provisions_clean_home_settings() {
+        // End-to-end of the spawn path minus the TUI: the public configurator
+        // returns no argv for Muse (no launch flags exist) and provisions the
+        // isolated settings file Relay tools come from.
+        let temp = tempdir().expect("tempdir");
+        let args = super::configure_agent_relay_mcp_with_token(
+            "muse",
+            "agent-7",
+            Some("rk_live_test"),
+            Some("https://relay.example"),
+            &[],
+            temp.path(),
+            Some("at_live_test"),
+            None,
+            None,
+        )
+        .await
+        .expect("configure muse");
+        assert!(args.is_empty(), "muse takes no MCP argv, got {args:?}");
+        let settings = super::muse_clean_home_dir(temp.path(), "agent-7")
+            .join("muse")
+            .join("settings.json");
+        let parsed: Value =
+            serde_json::from_str(&fs::read_to_string(&settings).expect("read settings"))
+                .expect("parse settings");
+        assert_eq!(
+            parsed["schema_version"].as_u64(),
+            Some(super::MUSE_SETTINGS_SCHEMA_VERSION)
+        );
+        assert_is_agent_relay_mcp_config(&parsed["mcpServers"]["agent-relay"]);
+        assert_eq!(
+            parsed["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
+            Some("at_live_test")
+        );
+    }
+
+    #[test]
+    fn ensure_muse_mcp_config_forwards_result_callbacks() {
+        // Cursor r4056178535: AGENT_RELAY_RESULT_* must reach the isolated
+        // settings or listen/task callbacks fail silently for Muse workers.
+        let temp = tempdir().expect("tempdir");
+        let home = temp.path().join("clean");
+        super::ensure_muse_mcp_config(
+            &home,
+            None,
+            None,
+            Some("agent-r"),
+            Some("at_r"),
+            None,
+            None,
+            Some(&test_agent_result_config()),
+        )
+        .expect("write muse settings with result config");
+        let parsed: Value = serde_json::from_str(
+            &fs::read_to_string(home.join("muse").join("settings.json")).expect("read"),
+        )
+        .expect("parse");
+        let env = &parsed["mcpServers"]["agent-relay"]["env"];
+        assert_eq!(
+            env["AGENT_RELAY_RESULT_URL"].as_str(),
+            Some("http://127.0.0.1:3889/api/agent-result")
+        );
+        assert_eq!(env["AGENT_RELAY_RESULT_TOKEN"].as_str(), Some("arr_test"));
+        assert!(env["AGENT_RELAY_RESULT_SCHEMA"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_muse_mcp_config_enforces_restrictive_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempdir().expect("tempdir");
+        let home = temp.path().join("clean");
+        super::ensure_muse_mcp_config(
+            &home,
+            Some("rk_perm"),
+            None,
+            Some("agent-p"),
+            Some("at_p"),
+            None,
+            None,
+            None,
+        )
+        .expect("write muse settings");
+        let mode =
+            |p: &std::path::Path| fs::metadata(p).expect("meta").permissions().mode() & 0o777;
+        assert_eq!(mode(&home), 0o700, "clean home must be 0700");
+        assert_eq!(mode(&home.join("muse")), 0o700, "muse dir must be 0700");
+        assert_eq!(
+            mode(&home.join("muse").join("settings.json")),
+            0o600,
+            "settings.json must be 0600"
+        );
+        // Re-provisioning tightens pre-existing permissive entries too.
+        let loose_dir = temp.path().join("loose");
+        let loose_muse = loose_dir.join("muse");
+        fs::create_dir_all(&loose_muse).expect("loose dirs");
+        let loose_settings = loose_muse.join("settings.json");
+        fs::write(&loose_settings, r#"{"mcpServers": {}}"#).expect("seed");
+        fs::set_permissions(&loose_dir, fs::Permissions::from_mode(0o755)).expect("loosen");
+        fs::set_permissions(&loose_muse, fs::Permissions::from_mode(0o755)).expect("loosen");
+        fs::set_permissions(&loose_settings, fs::Permissions::from_mode(0o644)).expect("loosen");
+        super::ensure_muse_mcp_config(
+            &loose_dir,
+            None,
+            None,
+            Some("agent-q"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("re-provision");
+        assert_eq!(
+            mode(&loose_dir),
+            0o700,
+            "existing home must tighten to 0700"
+        );
+        assert_eq!(
+            mode(&loose_muse),
+            0o700,
+            "existing muse dir must tighten to 0700"
+        );
+        assert_eq!(
+            mode(&loose_settings),
+            0o600,
+            "existing settings must tighten to 0600"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_muse_mcp_config_refuses_planted_symlinks() {
+        use std::os::unix::fs::symlink;
+        // A workspace user plants links in the predictable tree; provisioning
+        // must fail closed without chmodding, reading through, or writing
+        // credentials into any link target.
+        let temp = tempdir().expect("tempdir");
+
+        // Planted clean home pointing at a victim dir.
+        let victim = temp.path().join("victim");
+        fs::create_dir_all(&victim).expect("victim dir");
+        let home = temp.path().join("clean");
+        symlink(&victim, &home).expect("plant home link");
+        let err = super::ensure_muse_mcp_config(
+            &home,
+            Some("rk_link"),
+            None,
+            Some("agent-link"),
+            Some("at_link"),
+            None,
+            None,
+            None,
+        )
+        .expect_err("planted home link must fail");
+        assert!(
+            err.to_string().contains("symbolic link"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            !victim.join("muse").exists(),
+            "victim dir must stay untouched"
+        );
+
+        // Planted settings link pointing at a victim file.
+        let home2 = temp.path().join("clean2");
+        let muse_dir = home2.join("muse");
+        fs::create_dir_all(&muse_dir).expect("muse dir");
+        let victim_file = temp.path().join("victim.txt");
+        fs::write(&victim_file, "original-contents").expect("seed victim");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&victim_file, fs::Permissions::from_mode(0o644))
+                .expect("seed victim mode");
+        }
+        symlink(&victim_file, muse_dir.join("settings.json")).expect("plant settings link");
+        let err = super::ensure_muse_mcp_config(
+            &home2,
+            Some("rk_link"),
+            None,
+            Some("agent-link"),
+            Some("at_link"),
+            None,
+            None,
+            None,
+        )
+        .expect_err("planted settings link must fail");
+        assert!(
+            err.to_string().contains("symbolic link"),
+            "unexpected error: {err}"
+        );
+        let contents = fs::read_to_string(&victim_file).expect("read victim");
+        assert_eq!(
+            contents, "original-contents",
+            "victim file must stay intact"
+        );
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&victim_file)
+                .expect("victim meta")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(
+                mode, 0o644,
+                "victim mode must be untouched: no chmod before the reject"
+            );
+        }
+        assert!(
+            !contents.contains("rk_link") && !contents.contains("at_link"),
+            "no credentials may leak through the link"
+        );
+
+        // Planted muse subdir link.
+        let home3 = temp.path().join("clean3");
+        fs::create_dir_all(&home3).expect("home3");
+        symlink(&victim, home3.join("muse")).expect("plant muse link");
+        super::ensure_muse_mcp_config(
+            &home3,
+            Some("rk_link"),
+            None,
+            Some("agent-link"),
+            Some("at_link"),
+            None,
+            None,
+            None,
+        )
+        .expect_err("planted muse link must fail");
+        assert!(
+            !victim.join("settings.json").exists(),
+            "victim dir must stay untouched"
+        );
+    }
+
+    #[test]
+    fn muse_clean_home_startup_accepts_generated_settings() {
+        // Startup/config acceptance against the real Muse binary when it is
+        // installed; skipped loudly otherwise. Boots `muse exec` (headless,
+        // no pty needed) with XDG_CONFIG_HOME pointed at a generated clean
+        // home and asserts startup parses it. Live-TUI MCP attach (the worker
+        // actually calling Relay tools) remains supervisor-verified: this
+        // sandbox cannot allocate a pty.
+        let temp = tempdir().expect("tempdir");
+        let home = temp.path().join("clean");
+        super::ensure_muse_mcp_config(
+            &home,
+            None,
+            None,
+            Some("agent-probe"),
+            Some("at_probe"),
+            None,
+            None,
+            None,
+        )
+        .expect("write probe settings");
+        let muse = std::process::Command::new("muse")
+            .arg("exec")
+            .arg("--provider")
+            .arg("echo")
+            .arg("probe")
+            .env("XDG_CONFIG_HOME", &home)
+            .env("MUSE_AUTH_PATH", home.join("muse").join("auth.json"))
+            .env("MUSE_NO_AUTO_UPDATE", "1")
+            .output();
+        let output = match muse {
+            Err(_) => {
+                eprintln!("SKIP: muse binary not installed; clean-home startup untested");
+                return;
+            }
+            Ok(output) => output,
+        };
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "muse exec must start on the generated clean home: {stderr}"
+        );
+        assert!(
+            !stderr.contains("malformed settings") && !stderr.contains("missing field"),
+            "generated settings must parse: {stderr}"
+        );
     }
 
     #[test]
@@ -2038,28 +3480,33 @@ printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"send_dm"},{"n
         let relay = temp.path().join("agent-relay");
         fs::write(
             &relay,
-            r#"#!/bin/sh
-cat >/dev/null &
+            r#"cat >/dev/null &
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"agent-relay","version":"test"}}}'
 printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"check_inbox"}]}}'
 "#,
         )
-        .expect("write fake MCP executable");
-        fs::set_permissions(&relay, fs::Permissions::from_mode(0o755))
-            .expect("make MCP executable");
+        .expect("write fake MCP script");
+        // Run through `sh` rather than executing the file just written: a
+        // test on another thread that forks while the write is open makes
+        // exec fail with `ETXTBSY` on Linux.
         let command = super::AgentRelayMcpCommand {
-            command: relay.to_string_lossy().into_owned(),
-            args: Vec::new(),
+            command: "/bin/sh".into(),
+            args: vec![relay.to_string_lossy().into_owned()],
         };
 
+        // The budget only bounds a hung server; this one answers at once,
+        // so a loaded runner must not turn it into a timeout.
         let error = super::probe_agent_relay_mcp_command_with_timeout(
             &command,
-            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(10),
         )
         .await
         .expect_err("incomplete MCP tool list must fail");
 
-        assert!(error.to_string().contains("send_dm, post_message"));
+        assert!(
+            error.to_string().contains("send_dm, post_message"),
+            "{error}"
+        );
     }
 
     #[cfg(unix)]
@@ -2475,9 +3922,16 @@ exit 0
         assert_eq!(args[1], "add");
         assert_eq!(args[2], "agent-relay");
         assert!(args.contains(&"--env".to_string()));
-        assert!(args.contains(&"RELAY_API_KEY=rk_live_xyz".to_string()));
+        // Grok's config file is shared: credentials are env references only.
+        assert!(args.contains(&"RELAY_API_KEY=${RELAY_API_KEY}".to_string()));
         assert!(args.contains(&"RELAY_AGENT_NAME=GrokWorker".to_string()));
-        assert!(args.contains(&"RELAY_AGENT_TOKEN=tok_grok_123".to_string()));
+        assert!(args.contains(&"RELAY_AGENT_TOKEN=${RELAY_AGENT_TOKEN}".to_string()));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.contains("rk_live_xyz") || arg.contains("tok_grok_123")),
+            "grok mcp add argv must not carry credential values: {args:?}"
+        );
         let command_idx = args
             .iter()
             .position(|arg| arg == "--command")
@@ -2523,12 +3977,21 @@ exit 0
         );
 
         assert!(args.contains(&"-e".to_string()));
-        assert!(args.contains(&"RELAY_API_KEY=rk_live_xyz".to_string()));
+        // Gemini writes the project's .gemini/settings.json: pinned to
+        // project scope, credentials as `${NAME}` references only.
+        assert_eq!(&args[..4], ["mcp", "add", "-s", "project"]);
+        assert!(args.contains(&"RELAY_API_KEY=${RELAY_API_KEY}".to_string()));
         assert!(args.contains(&"RELAY_BASE_URL=https://cast.agentrelay.com".to_string()));
         assert!(args.contains(&"RELAY_AGENT_NAME=GeminiWorker".to_string()));
         assert!(args.contains(&"RELAY_AGENT_TYPE=agent".to_string()));
         assert!(args.contains(&"RELAY_STRICT_AGENT_NAME=1".to_string()));
-        assert!(args.contains(&"RELAY_AGENT_TOKEN=tok_gem_123".to_string()));
+        assert!(args.contains(&"RELAY_AGENT_TOKEN=${RELAY_AGENT_TOKEN}".to_string()));
+        assert!(
+            !args
+                .iter()
+                .any(|arg| arg.contains("rk_live_xyz") || arg.contains("tok_gem_123")),
+            "gemini mcp add argv must not carry credential values: {args:?}"
+        );
 
         let agent_relay_idx = args
             .iter()
@@ -2831,8 +4294,12 @@ exit 0
         let oc_env = &mcp["environment"];
         assert_eq!(
             oc_env["RELAY_API_KEY"].as_str(),
-            Some("rk_live_oc"),
-            "Opencode includes RELAY_API_KEY in environment"
+            Some("{env:RELAY_API_KEY}"),
+            "opencode.json names RELAY_API_KEY by env reference, never by value"
+        );
+        assert!(
+            !contents.contains("rk_live_oc"),
+            "opencode.json must not carry the workspace key: {contents}"
         );
         assert_eq!(
             oc_env["RELAY_BASE_URL"].as_str(),
@@ -2969,7 +4436,11 @@ exit 0
         assert_is_agent_relay_mcp_config(&json["mcpServers"]["agent-relay"]);
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_API_KEY"].as_str(),
-            Some("rk_live_cursor")
+            Some("${env:RELAY_API_KEY}")
+        );
+        assert!(
+            !contents.contains("rk_live_cursor"),
+            ".cursor/mcp.json must not carry the workspace key: {contents}"
         );
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_BASE_URL"].as_str(),
@@ -3047,7 +4518,11 @@ exit 0
 
         assert_eq!(
             json["mcpServers"]["agent-relay"]["env"]["RELAY_AGENT_TOKEN"].as_str(),
-            Some("tok_cursor_123")
+            Some("${env:RELAY_AGENT_TOKEN}")
+        );
+        assert!(
+            !contents.contains("tok_cursor_123"),
+            ".cursor/mcp.json must not carry the agent token: {contents}"
         );
     }
 
@@ -4238,10 +5713,19 @@ exit 0
         let contents = fs::read_to_string(&path).expect("read opencode.json");
         let json: Value = serde_json::from_str(&contents).expect("parse opencode.json");
         let env = &json["mcp"]["agent-relay"]["environment"];
-        assert_eq!(env["RELAY_API_KEY"].as_str(), Some("rk_live_hl"));
-        assert_eq!(env["RELAY_AGENT_TOKEN"].as_str(), Some("tok_hl_123"));
-        assert_eq!(env["RELAY_WORKSPACES_JSON"].as_str(), Some("[\"ws-a\"]"));
+        assert_eq!(env["RELAY_API_KEY"].as_str(), Some("{env:RELAY_API_KEY}"));
+        assert_eq!(
+            env["RELAY_AGENT_TOKEN"].as_str(),
+            Some("{env:RELAY_AGENT_TOKEN}")
+        );
+        assert_eq!(
+            env["RELAY_WORKSPACES_JSON"].as_str(),
+            Some("{env:RELAY_WORKSPACES_JSON}")
+        );
         assert_eq!(env["RELAY_DEFAULT_WORKSPACE"].as_str(), Some("ws-a"));
+        for secret in ["rk_live_hl", "tok_hl_123", "ws-a\\\"]"] {
+            assert!(!contents.contains(secret), "{secret} leaked: {contents}");
+        }
     }
 
     #[tokio::test]
@@ -4292,5 +5776,473 @@ exit 0
             Some("wj-from-env"),
             "public configure_agent_relay_mcp must read RELAY_WORKSPACES_JSON from process env"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Credentials never land in the project working tree
+    // -----------------------------------------------------------------------
+
+    const LIVE_KEY: &str = "rk_live_PROJECTLEAKkey123";
+    const LIVE_TOKEN: &str = "at_live_PROJECTLEAKtoken456";
+    const LIVE_WORKSPACES: &str =
+        r#"[{"workspace_id":"ws1","api_key":"rk_live_PROJECTLEAKws789"}]"#;
+    const LIVE_SECRETS: [&str; 3] = [
+        "rk_live_PROJECTLEAKkey123",
+        "at_live_PROJECTLEAKtoken456",
+        "rk_live_PROJECTLEAKws789",
+    ];
+
+    fn git_in(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .expect("run git")
+    }
+
+    fn init_git_repo() -> tempfile::TempDir {
+        let repo = tempdir().expect("repo");
+        assert!(git_in(repo.path(), &["init", "-q"]).status.success());
+        repo
+    }
+
+    /// Every file under `root` (excluding `.git/`) as (path, contents).
+    fn project_files(root: &std::path::Path) -> Vec<(std::path::PathBuf, String)> {
+        let mut files = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).expect("read dir") {
+                let path = entry.expect("entry").path();
+                if path.file_name().is_some_and(|name| name == ".git") {
+                    continue;
+                }
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    let contents = fs::read_to_string(&path).unwrap_or_default();
+                    files.push((path, contents));
+                }
+            }
+        }
+        files
+    }
+
+    fn assert_no_credentials_in_project(root: &std::path::Path) {
+        for (path, contents) in project_files(root) {
+            for secret in LIVE_SECRETS {
+                assert!(
+                    !contents.contains(secret),
+                    "{} carries a live credential",
+                    path.display()
+                );
+            }
+            assert_eq!(
+                crate::worktree_guard::find_credential_prefix(&contents),
+                None,
+                "{} carries a credential-shaped value",
+                path.display()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_fake_cli(dir: &std::path::Path, name: &str, body: &str) -> String {
+        let path = dir.join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write fake cli");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod fake cli");
+        path.to_string_lossy().into_owned()
+    }
+
+    #[tokio::test]
+    async fn file_based_harnesses_get_credentials_through_launch_env_only() {
+        for (cli, file, reference) in [
+            ("cursor", ".cursor/mcp.json", "${env:RELAY_AGENT_TOKEN}"),
+            ("opencode", "opencode.json", "{env:RELAY_AGENT_TOKEN}"),
+        ] {
+            let repo = init_git_repo();
+            let launch = super::configure_agent_relay_mcp_launch(
+                cli,
+                "LeakProbe",
+                Some(LIVE_KEY),
+                Some("https://cast.agentrelay.com"),
+                &[],
+                repo.path(),
+                Some(LIVE_TOKEN),
+                Some(LIVE_WORKSPACES),
+                Some("ws1"),
+                None,
+            )
+            .await
+            .expect("configure");
+            let contents = fs::read_to_string(repo.path().join(file)).expect("config written");
+            assert!(contents.contains(reference), "{cli}: {contents}");
+            assert_no_credentials_in_project(repo.path());
+            // The values reach the harness through the process env instead.
+            let env: std::collections::HashMap<_, _> = launch.env.into_iter().collect();
+            assert_eq!(env.get("RELAY_API_KEY").map(String::as_str), Some(LIVE_KEY));
+            assert_eq!(
+                env.get("RELAY_AGENT_TOKEN").map(String::as_str),
+                Some(LIVE_TOKEN)
+            );
+            assert_eq!(
+                env.get("RELAY_WORKSPACES_JSON").map(String::as_str),
+                Some(LIVE_WORKSPACES)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn argv_harnesses_need_no_launch_env() {
+        let repo = init_git_repo();
+        for cli in ["claude", "codex"] {
+            let launch = super::configure_agent_relay_mcp_launch(
+                cli,
+                "ArgvProbe",
+                Some(LIVE_KEY),
+                None,
+                &[],
+                repo.path(),
+                Some(LIVE_TOKEN),
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("configure");
+            assert!(launch.env.is_empty(), "{cli}: {:?}", launch.env);
+        }
+        assert!(
+            project_files(repo.path()).is_empty(),
+            "argv-configured harnesses write nothing into the project"
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_raw_credentials_are_scrubbed_on_rewrite() {
+        // Earlier broker versions wrote live values into these files; the
+        // next spawn must replace them with references.
+        let repo = init_git_repo();
+        fs::create_dir_all(repo.path().join(".cursor")).unwrap();
+        fs::write(
+            repo.path().join(".cursor/mcp.json"),
+            json!({"mcpServers": {
+                "agent-relay": {"command": "agent-relay", "env": {"RELAY_API_KEY": LIVE_KEY, "RELAY_AGENT_TOKEN": LIVE_TOKEN}},
+                "relaycast": {"command": "old", "env": {"RELAY_API_KEY": LIVE_KEY}},
+                "user-server": {"command": "user-mcp"}
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            repo.path().join("opencode.json"),
+            json!({"mcp": {"agent-relay": {"type": "local", "command": ["agent-relay", "mcp"], "environment": {"RELAY_AGENT_TOKEN": LIVE_TOKEN, "RELAY_WORKSPACES_JSON": LIVE_WORKSPACES}}}})
+                .to_string(),
+        )
+        .unwrap();
+        for cli in ["cursor", "opencode"] {
+            super::configure_agent_relay_mcp_launch(
+                cli,
+                "LegacyProbe",
+                Some(LIVE_KEY),
+                None,
+                &[],
+                repo.path(),
+                Some(LIVE_TOKEN),
+                Some(LIVE_WORKSPACES),
+                None,
+                None,
+            )
+            .await
+            .expect("configure");
+        }
+        assert_no_credentials_in_project(repo.path());
+        let cursor: Value = serde_json::from_str(
+            &fs::read_to_string(repo.path().join(".cursor/mcp.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            cursor["mcpServers"]["user-server"].is_object(),
+            "user servers survive"
+        );
+    }
+
+    #[tokio::test]
+    async fn project_writer_refuses_credential_shaped_user_content() {
+        // A credential the user pasted into another server entry must not be
+        // re-written (and git-excluded) by the broker: refuse instead.
+        let repo = init_git_repo();
+        fs::create_dir_all(repo.path().join(".cursor")).unwrap();
+        let original =
+            json!({"mcpServers": {"pasted": {"command": "x", "env": {"KEY": LIVE_KEY}}}})
+                .to_string();
+        fs::write(repo.path().join(".cursor/mcp.json"), &original).unwrap();
+        let error = super::configure_agent_relay_mcp_launch(
+            "cursor",
+            "RefuseProbe",
+            None,
+            None,
+            &[],
+            repo.path(),
+            Some(LIVE_TOKEN),
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect_err("credential-shaped content must be refused");
+        let message = format!("{error:#}");
+        assert!(message.contains("credential-shaped"), "{message}");
+        for secret in LIVE_SECRETS {
+            assert!(
+                !message.contains(secret),
+                "refusal echoed a secret: {message}"
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(repo.path().join(".cursor/mcp.json")).unwrap(),
+            original,
+            "refused write leaves the file untouched"
+        );
+    }
+
+    #[test]
+    fn mcp_json_writer_keeps_credentials_out() {
+        let repo = init_git_repo();
+        super::ensure_agent_relay_mcp_config(repo.path(), Some(LIVE_KEY), None, Some("a"))
+            .expect("write .mcp.json");
+        assert_no_credentials_in_project(repo.path());
+        assert!(git_in(repo.path(), &["status", "--porcelain"])
+            .stdout
+            .is_empty());
+    }
+
+    #[test]
+    fn muse_settings_live_outside_project_and_are_removed_on_release() {
+        let repo = init_git_repo();
+        let sessions = tempdir().expect("session root");
+        let clean_home = sessions.path().join("muse-probe-0123456789ab");
+        let settings = super::ensure_muse_mcp_config(
+            &clean_home,
+            Some(LIVE_KEY),
+            None,
+            Some("probe"),
+            Some(LIVE_TOKEN),
+            None,
+            None,
+            None,
+        )
+        .expect("provision muse");
+        assert!(fs::read_to_string(&settings).unwrap().contains(LIVE_TOKEN));
+        assert!(!settings.starts_with(repo.path()));
+        #[cfg(unix)]
+        assert_eq!(
+            fs::metadata(&settings).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        super::remove_muse_session_credentials(&clean_home, "probe");
+        assert!(!settings.exists(), "release removes the credentials");
+        assert!(clean_home.is_dir(), "the clean home (and any login) stays");
+        // Idempotent.
+        super::remove_muse_session_credentials(&clean_home, "probe");
+    }
+
+    #[test]
+    fn legacy_in_tree_muse_settings_are_removed() {
+        use sha2::{Digest, Sha256};
+        let repo = init_git_repo();
+        let digest: String = Sha256::digest(b"probe")[..6]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let legacy_dir = repo
+            .path()
+            .join(".agent-relay")
+            .join(format!("muse-probe-{digest}"))
+            .join("muse");
+        fs::create_dir_all(&legacy_dir).unwrap();
+        fs::write(legacy_dir.join("settings.json"), LIVE_TOKEN).unwrap();
+        super::remove_legacy_in_tree_muse_settings(repo.path(), "probe");
+        assert_no_credentials_in_project(repo.path());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn gemini_mcp_add_runs_in_project_with_env_references() {
+        let repo = init_git_repo();
+        let bin = tempdir().expect("bin");
+        // Stands in for `gemini`: `mcp add` persists everything it was given
+        // into project settings in its cwd, as the real CLI does.
+        let gemini = write_fake_cli(
+            bin.path(),
+            "gemini",
+            r#"if [ "$2" = "add" ]; then mkdir -p .gemini && printf '%s\n' "$@" > .gemini/settings.json; fi"#,
+        );
+        super::configure_gemini_droid_mcp(
+            &gemini,
+            Some(LIVE_KEY),
+            None,
+            Some("GeminiProbe"),
+            Some(LIVE_TOKEN),
+            true,
+            Some(LIVE_WORKSPACES),
+            None,
+            None,
+            repo.path(),
+        )
+        .await
+        .expect("configure gemini");
+        let settings = fs::read_to_string(repo.path().join(".gemini/settings.json"))
+            .expect("gemini ran in the project directory");
+        assert!(
+            settings.contains("RELAY_AGENT_TOKEN=${RELAY_AGENT_TOKEN}"),
+            "{settings}"
+        );
+        assert_no_credentials_in_project(repo.path());
+        assert!(
+            git_in(
+                repo.path(),
+                &["status", "--porcelain", "--untracked-files=all"]
+            )
+            .stdout
+            .is_empty(),
+            ".gemini/settings.json must be git-excluded"
+        );
+    }
+
+    /// End to end: configure every file-based harness against one git repo,
+    /// launch a fake harness with the broker's launch env, then prove nothing
+    /// shows in `git status` and no project file carries a credential, while
+    /// the harness process still received every credential it references.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawned_fake_harness_leaves_no_credentials_in_git_repo() {
+        let repo = init_git_repo();
+        let outside = tempdir().expect("outside");
+        let bin = tempdir().expect("bin");
+        let gemini = write_fake_cli(
+            bin.path(),
+            "gemini",
+            r#"if [ "$2" = "add" ]; then mkdir -p .gemini && printf '%s\n' "$@" > .gemini/settings.json; fi"#,
+        );
+        let grok_log = outside.path().join("grok-argv.txt");
+        let grok = write_fake_cli(
+            bin.path(),
+            "grok",
+            &format!(r#"printf '%s\n' "$@" >> '{}'"#, grok_log.display()),
+        );
+
+        let mut launch_env = Vec::new();
+        for cli in ["cursor", "opencode"] {
+            let launch = super::configure_agent_relay_mcp_launch(
+                cli,
+                "LeakProbe",
+                Some(LIVE_KEY),
+                Some("https://cast.agentrelay.com"),
+                &[],
+                repo.path(),
+                Some(LIVE_TOKEN),
+                Some(LIVE_WORKSPACES),
+                Some("ws1"),
+                None,
+            )
+            .await
+            .expect("configure");
+            launch_env.extend(launch.env);
+        }
+        super::configure_gemini_droid_mcp(
+            &gemini,
+            Some(LIVE_KEY),
+            None,
+            Some("LeakProbe"),
+            Some(LIVE_TOKEN),
+            true,
+            Some(LIVE_WORKSPACES),
+            None,
+            None,
+            repo.path(),
+        )
+        .await
+        .expect("configure gemini");
+        super::configure_grok_mcp(
+            &grok,
+            Some(LIVE_KEY),
+            None,
+            Some("LeakProbe"),
+            Some(LIVE_TOKEN),
+            Some(LIVE_WORKSPACES),
+            None,
+        )
+        .await
+        .expect("configure grok");
+
+        // The fake harness runs in the project with the broker's launch env
+        // and records the credentials it can resolve — outside the repo.
+        let observed = outside.path().join("harness-env.txt");
+        let status = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                r#"printf '%s\n%s\n%s\n' "$RELAY_API_KEY" "$RELAY_AGENT_TOKEN" "$RELAY_WORKSPACES_JSON" > '{}'"#,
+                observed.display()
+            ))
+            .current_dir(repo.path())
+            .envs(launch_env)
+            .status()
+            .await
+            .expect("run fake harness");
+        assert!(status.success());
+        let observed = fs::read_to_string(observed).unwrap();
+        for secret in LIVE_SECRETS {
+            assert!(observed.contains(secret), "harness env lacks a credential");
+        }
+
+        let porcelain = git_in(
+            repo.path(),
+            &["status", "--porcelain", "--untracked-files=all"],
+        );
+        assert!(
+            porcelain.stdout.is_empty(),
+            "git status must be clean: {}",
+            String::from_utf8_lossy(&porcelain.stdout)
+        );
+        let grep = git_in(
+            repo.path(),
+            &[
+                "grep",
+                "--untracked",
+                "--no-exclude-standard",
+                "-I",
+                "-l",
+                "-E",
+                "(rk|at|nt)_(live|test)_[A-Za-z0-9]",
+            ],
+        );
+        assert!(
+            grep.stdout.is_empty(),
+            "credential found in project files: {}",
+            String::from_utf8_lossy(&grep.stdout)
+        );
+        assert!(
+            project_files(repo.path()).len() >= 3,
+            "cursor, opencode and gemini configs were written"
+        );
+        assert_no_credentials_in_project(repo.path());
+        let exclude = fs::read_to_string(repo.path().join(".git/info/exclude")).unwrap();
+        for pattern in [
+            "/.cursor/mcp.json",
+            "/opencode.json",
+            "/.gemini/settings.json",
+        ] {
+            assert!(exclude.lines().any(|line| line == pattern), "{exclude}");
+        }
+        let grok_argv = fs::read_to_string(grok_log).unwrap();
+        for secret in LIVE_SECRETS {
+            assert!(
+                !grok_argv.contains(secret),
+                "grok mcp add argv carried a credential"
+            );
+        }
     }
 }
