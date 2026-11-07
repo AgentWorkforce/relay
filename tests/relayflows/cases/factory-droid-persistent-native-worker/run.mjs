@@ -8,6 +8,12 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 const caseId = 'factory-droid-persistent-native-worker';
+// PR proof and targeted verification run on Linux. A manual Windows run is
+// unsupported and must never emit a passing proof observation.
+if (process.platform === 'win32') {
+  console.error('Factory Droid managed messaging proof is unsupported on Windows.');
+  process.exit(77);
+}
 const required = (name) => {
   assert(process.env[name], `Missing ${name}`);
   return process.env[name];
@@ -32,6 +38,7 @@ const directory = await mkdtemp(path.join(tmpdir(), 'relay-factory-proof-'));
 const targetDir = process.env.RELAY_PR_PROOF_CARGO_TARGET_DIR ?? path.join(directory, 'target');
 let host;
 let logs = '';
+let proofError;
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, {
     cwd: target,
@@ -118,6 +125,12 @@ try {
     const runtime = path.join(directory, 'runtime');
     const events = path.join(directory, 'events');
     const launch = randomUUID();
+    await mkdir(runtime, { mode: 0o700 });
+    await writeFile(
+      path.join(runtime, `${launch}.task.json`),
+      JSON.stringify({ id: 'one', text: 'synthetic owned turn one' }),
+      { mode: 0o600 }
+    );
     host = spawn(
       binary,
       [
@@ -153,9 +166,10 @@ try {
     }, 'native initialization');
     assert.equal(record.session_id, '11111111-2222-4333-8444-555555555555');
     assert.equal(record.host.pid, host.pid);
+    assert.equal(record.initial_message_id, 'one');
     for (const id of ['one', 'two']) {
       const request = { op: 'prompt', id, text: `synthetic owned turn ${id}` };
-      assert.equal((await exchange(record.socket, request)).status, 'accepted');
+      assert(['accepted', 'delivered'].includes((await exchange(record.socket, request)).status));
       await waitFor(
         async () => (await exchange(record.socket, request)).status === 'delivered',
         `completion ${id}`
@@ -184,16 +198,31 @@ try {
     await observe(
       'fixed',
       'factory_native_worker_reuses_session_and_deduplicates',
-      'The exact production host initializes a disposable compiled Droid wire peer, injects the pinned MCP definition, admits only its send permission and denies foreign/Execute permissions. Two idle-separated turns retain the same native session/PID; duplicates are not emitted and changed payloads are refused. Stop reaps the child. This uses no Factory credential/model/network and does not claim a live Relay MCP or hosted-history roundtrip.'
+      'The exact production host initializes a disposable compiled Droid wire peer, injects the pinned MCP definition, admits only its send permission and denies foreign/Execute permissions. The initial task is queued before readiness, and two idle-separated turns retain the same native session/PID; duplicates are not emitted and changed payloads are refused. Stop reaps the child. This uses no Factory credential/model/network and does not claim a live Relay MCP or hosted-history roundtrip.'
     );
   }
+} catch (error) {
+  proofError = error;
+  throw error;
 } finally {
+  const cleanupErrors = [];
   if (host && host.exitCode === null) {
     try {
       process.kill(-host.pid, 'SIGKILL');
     } catch (error) {
-      if (error.code !== 'ESRCH') throw error;
+      if (error.code !== 'ESRCH') cleanupErrors.push(error);
     }
   }
-  await rm(directory, { recursive: true, force: true });
+  try {
+    await rm(directory, { recursive: true, force: true });
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  if (cleanupErrors.length) {
+    if (proofError) console.error('Additional cleanup errors:', ...cleanupErrors);
+    else {
+      console.error('Cleanup errors:', ...cleanupErrors);
+      process.exitCode = 1;
+    }
+  }
 }

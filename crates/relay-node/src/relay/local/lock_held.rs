@@ -58,29 +58,28 @@ pub(super) fn caller(
                 .ok_or(CallerMiss::NotASession),
         );
     }
-    let (kind, session) = if crate::relay::droid::is_droid_process(table, current) {
-        (
-            SessionKind::Droid,
-            crate::relay::droid::session(
-                &crate::relay::droid::DroidConfig::from_local(config),
-                table,
-                current,
-            ),
-        )
-    } else if devin::is_devin_process(table, current) {
-        (
-            SessionKind::Devin,
-            devin::held_session(&config.devin, table, current),
-        )
-    } else if cursor_cli::is_cursor_process(table, current) {
-        let session = cursor_cli::held_session(&config.cursor, table, current);
-        if session.is_none() && cursor_cli::editor::is_editor_worker(table, current) {
+    let droid = crate::relay::droid::session(
+        &crate::relay::droid::DroidConfig::from_local(config),
+        table,
+        current,
+    );
+    let (kind, session) =
+        if droid.is_some() || crate::relay::droid::is_droid_process(table, current) {
+            (SessionKind::Droid, droid)
+        } else if devin::is_devin_process(table, current) {
+            (
+                SessionKind::Devin,
+                devin::held_session(&config.devin, table, current),
+            )
+        } else if cursor_cli::is_cursor_process(table, current) {
+            let session = cursor_cli::held_session(&config.cursor, table, current);
+            if session.is_none() && cursor_cli::editor::is_editor_worker(table, current) {
+                return None;
+            }
+            (SessionKind::CursorCli, session)
+        } else {
             return None;
-        }
-        (SessionKind::CursorCli, session)
-    } else {
-        return None;
-    };
+        };
     // Still the same process after its files were read.
     let same = table.process(current) == Some(process);
     Some(

@@ -34,6 +34,10 @@ fn permission(
     assert_eq!(field(&reply, "selectedOption"), expected);
 }
 fn main() {
+    assert_eq!(
+        std::env::var("FACTORY_DROID_AUTO_UPDATE_ENABLED").as_deref(),
+        Ok("false")
+    );
     let session = "11111111-2222-4333-8444-555555555555";
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
@@ -56,6 +60,7 @@ fn main() {
                 ));
             }
             "droid.add_user_message" => {
+                assert_eq!(field(&line, "userMessageSource"), "sdk");
                 let mut events = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)

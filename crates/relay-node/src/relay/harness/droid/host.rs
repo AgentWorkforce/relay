@@ -3,9 +3,11 @@
 //! prompt is never re-sent and permission requests cannot hang it.
 
 use super::{protocol::Engine, write_record, Record, MARKER};
+mod input;
 use crate::relay::process::{ProcessTable, SystemProcesses};
 use crate::relay::spawn::launch::SpawnedProcess;
 use anyhow::{anyhow, Result};
+use input::Input;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -16,6 +18,12 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 const FRAME_LIMIT: u64 = 8 * 1024 * 1024;
+struct BoundSocket(std::path::PathBuf);
+impl Drop for BoundSocket {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
 
 struct Provider(Child, std::path::PathBuf);
 impl Drop for Provider {
@@ -49,6 +57,7 @@ pub fn run(executable: &Path, directory: &Path, runtime: &Path, launch_id: &str)
     let socket = sockets.join(format!("{launch_id}.sock"));
     // Never unlink a socket that an earlier host might still own.
     let listener = UnixListener::bind(&socket)?;
+    let _socket_cleanup = BoundSocket(socket.clone());
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
     listener.set_nonblocking(true)?;
     let (mut provider, mut input, rx) = provider(
@@ -87,21 +96,46 @@ pub fn run(executable: &Path, directory: &Path, runtime: &Path, launch_id: &str)
         .process(provider.0.id() as i32)
         .map(SpawnedProcess::of)
         .ok_or_else(|| anyhow!("Droid JSON-RPC process unavailable"))?;
+    let mut engine = Engine::new(&alias, &runtime.join(format!("{launch_id}.deliveries.db")))?;
+    let initial_message_id = admit_initial(&mut engine, runtime, launch_id)?;
     let record = Record {
         launch_id: launch_id.into(),
         session_id: session.clone(),
         host,
         child,
         socket: socket.clone(),
-        executable: executable.into(),
+        executable: table
+            .executable(child.pid)
+            .and_then(|p| std::fs::canonicalize(p).ok())
+            .ok_or_else(|| anyhow!("Droid executable identity unavailable"))?,
         directory: directory.into(),
+        initial_message_id,
     };
     write_record(&runtime.join(format!("{session}.json")), &record)?;
     write_record(&runtime.join(format!("{launch_id}.ready.json")), &record)?;
-    let result = drive(&listener, &mut provider, &mut input, &rx, &session, &alias);
+    let result = drive(
+        &listener,
+        &mut provider,
+        &mut input,
+        &rx,
+        &session,
+        &mut engine,
+    );
     // Retain the identity record as evidence for an unreleased, ended worker.
-    let _ = std::fs::remove_file(socket);
     result
+}
+
+fn admit_initial(engine: &mut Engine, runtime: &Path, launch_id: &str) -> Result<Option<String>> {
+    let Some(task) = super::registry::initial(runtime, launch_id)? else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        engine.request(&json!({"op":"prompt","id":task.id,"text":task.text}))["status"]
+            == "accepted",
+        "Droid initial task was refused"
+    );
+    std::fs::remove_file(runtime.join(format!("{launch_id}.task.json")))?;
+    Ok(Some(task.id))
 }
 
 fn provider(
@@ -109,7 +143,7 @@ fn provider(
     directory: &Path,
     launch_id: &str,
     log: &Path,
-) -> Result<(Provider, std::process::ChildStdin, Receiver<Value>)> {
+) -> Result<(Provider, Input, Receiver<Value>)> {
     use std::os::unix::fs::OpenOptionsExt;
     let stderr = std::fs::OpenOptions::new()
         .create_new(true)
@@ -125,6 +159,7 @@ fn provider(
             "stream-jsonrpc",
         ])
         .env(MARKER, launch_id)
+        .env("FACTORY_DROID_AUTO_UPDATE_ENABLED", "false")
         .current_dir(directory)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -136,6 +171,7 @@ fn provider(
         .stdin
         .take()
         .ok_or_else(|| anyhow!("Droid JSON-RPC has no input"))?;
+    let input = Input::new(input)?;
     let output = provider
         .0
         .stdout
@@ -148,10 +184,11 @@ fn provider(
             let mut line = String::new();
             match (&mut reader).take(FRAME_LIMIT + 1).read_line(&mut line) {
                 Ok(n) if n > 0 && n as u64 <= FRAME_LIMIT && line.ends_with('\n') => {
-                    if let Ok(frame) = serde_json::from_str::<Value>(&line) {
-                        if tx.send(frame).is_err() {
-                            break;
-                        }
+                    let Ok(frame) = serde_json::from_str::<Value>(&line) else {
+                        break;
+                    };
+                    if tx.send(frame).is_err() {
+                        break;
                     }
                 }
                 _ => break,
@@ -168,7 +205,7 @@ struct Control {
 }
 
 /// The longest request line a control client may send.
-const CONTROL_LINE_LIMIT: usize = 131_072;
+const CONTROL_LINE_LIMIT: usize = 512 * 1024;
 /// How long a control client has to send its request line.
 const CONTROL_READ_BUDGET: Duration = Duration::from_secs(1);
 /// How many control clients may wait on their request line at once; the
@@ -192,7 +229,9 @@ fn accept_control(
         }
         // macOS hands an accepted socket the listener's non-blocking mode and
         // Linux does not; set it either way, since reads below must not wait.
-        stream.set_nonblocking(true)?;
+        if stream.set_nonblocking(true).is_err() {
+            continue;
+        }
         if pending.len() >= CONTROL_PENDING_LIMIT {
             continue;
         }
@@ -270,22 +309,29 @@ fn read_control(control: &mut Control) -> ControlRead {
 fn drive(
     listener: &UnixListener,
     provider: &mut Provider,
-    input: &mut std::process::ChildStdin,
+    input: &mut Input,
     rx: &Receiver<Value>,
     session: &str,
-    alias: &str,
+    engine: &mut Engine,
 ) -> Result<()> {
-    let mut engine = Engine::new(alias);
     let mut pending = Vec::new();
     loop {
-        while let Ok(frame) = rx.try_recv() {
+        loop {
+            let frame = match rx.try_recv() {
+                Ok(frame) => frame,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    engine.uncertain();
+                    return Err(anyhow!("Droid native output channel closed"));
+                }
+            };
             engine.observe(&frame);
-            answer_request(input, &frame, Some(&engine))?;
+            answer_request(input, &frame, Some(engine))?;
         }
         if provider.0.try_wait()?.is_some() {
             return Err(anyhow!("Droid JSON-RPC exited"));
         }
-        if accept_control(listener, &mut pending, &mut engine)? {
+        if accept_control(listener, &mut pending, engine)? {
             return Ok(());
         }
         if let Some(frame) = engine.next(session) {
@@ -305,7 +351,8 @@ fn send(input: &mut impl Write, mut frame: Value) -> Result<()> {
     } else {
         "response"
     });
-    writeln!(input, "{frame}")?;
+    input.write_all(&serde_json::to_vec(&frame)?)?;
+    input.write_all(b"\n")?;
     input.flush()?;
     Ok(())
 }
@@ -336,9 +383,7 @@ fn reply(
         answer_request(input, &frame, None)?;
         if frame["id"] == id && frame.get("method").is_none() {
             if frame.get("error").is_some() {
-                return Err(anyhow!(
-                    "Droid JSON-RPC refused initialization; check Droid sign-in"
-                ));
+                return Err(anyhow!(super::STARTUP_GUIDANCE));
             }
             return Ok(frame);
         }
@@ -374,5 +419,88 @@ mod tests {
         .unwrap();
         let response: Value = serde_json::from_slice(&output).unwrap();
         assert_eq!(response["error"]["code"], -32601);
+    }
+}
+
+#[cfg(test)]
+mod resilience_tests {
+    use super::*;
+    #[test]
+    fn loss_of_output_ends_the_host_even_while_the_provider_is_alive() {
+        let directory = tempfile::tempdir().unwrap();
+        let listener = UnixListener::bind(directory.path().join("test.sock")).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut provider = Provider(
+            Command::new("/bin/sleep")
+                .arg("60")
+                .stdin(Stdio::piped())
+                .spawn()
+                .unwrap(),
+            directory.path().join("exit"),
+        );
+        let mut input = Input::new(provider.0.stdin.take().unwrap()).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        drop(sender);
+        let mut engine = Engine::testing();
+        assert!(provider.0.try_wait().unwrap().is_none());
+        assert!(drive(
+            &listener,
+            &mut provider,
+            &mut input,
+            &receiver,
+            "session",
+            &mut engine
+        )
+        .is_err());
+        assert_eq!(engine.request(&json!({"op":"status"}))["state"], "unknown");
+        // Provider's RAII owner kills and waits for this exact child.
+        drop(provider);
+    }
+    #[test]
+    fn setup_failure_removes_its_new_socket_but_never_an_existing_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("test.sock");
+        let _listener = UnixListener::bind(&path).unwrap();
+        assert!(UnixListener::bind(&path).is_err());
+        assert!(path.exists());
+        {
+            let _cleanup = BoundSocket(path.clone());
+        }
+        assert!(!path.exists());
+    }
+    #[test]
+    fn control_frames_fit_the_maximum_json_escaped_prompt() {
+        let (mut sender, receiver) = UnixStream::pair().unwrap();
+        receiver.set_nonblocking(true).unwrap();
+        let body =
+            json!({"op":"prompt","id":"escaped","text":"\0".repeat(65_536)}).to_string() + "\n";
+        assert!(body.len() > 131_072 && body.len() < CONTROL_LINE_LIMIT);
+        let writer = std::thread::spawn(move || {
+            sender.write_all(body.as_bytes()).unwrap();
+        });
+        let mut control = Control {
+            stream: receiver,
+            line: Vec::new(),
+            deadline: Instant::now() + Duration::from_secs(5),
+        };
+        loop {
+            match read_control(&mut control) {
+                ControlRead::Line(line) => {
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(&line).unwrap()["text"]
+                            .as_str()
+                            .unwrap()
+                            .len(),
+                        65_536
+                    );
+                    break;
+                }
+                ControlRead::Waiting if Instant::now() < control.deadline => {
+                    std::thread::sleep(Duration::from_millis(1))
+                }
+                _ => panic!("bounded encoded prompt was discarded"),
+            }
+        }
+        writer.join().unwrap();
     }
 }

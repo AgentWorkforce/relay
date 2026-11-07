@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Factory Droid workers can join Relay with persistent native sessions, receive queued messages while idle, and reply through an automatically installed session-scoped MCP transport.
+- Factory Droid workers can join Relay through `spawn:droid`, receive queued messages while idle, and send replies through Relay.
 
 ## [17.2.1] - 2026-11-07
 

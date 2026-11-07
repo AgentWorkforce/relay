@@ -21,6 +21,8 @@ pub struct Record {
     pub socket: PathBuf,
     pub executable: PathBuf,
     pub directory: PathBuf,
+    #[serde(default)]
+    pub initial_message_id: Option<String>,
 }
 
 pub fn runtime(config: &DroidConfig) -> PathBuf {
@@ -65,31 +67,46 @@ pub(super) fn write_record(path: &Path, record: &Record) -> std::io::Result<()> 
     std::fs::rename(tmp, path)
 }
 
-pub(crate) fn verified(record: &Record, table: &dyn ProcessTable) -> bool {
-    let uid = crate::relay::peer::current_uid();
+pub(crate) fn host_owned(record: &Record, table: &dyn ProcessTable) -> bool {
     record.host.is(table.process(record.host.pid))
-        && record.child.is(table.process(record.child.pid))
-        && table.process(record.host.pid).is_some_and(|p| p.uid == uid)
+        && table
+            .process(record.host.pid)
+            .is_some_and(|p| p.uid == crate::relay::peer::current_uid())
+        && table.environment_var(record.host.pid, MARKER).as_deref() == Some(&record.launch_id)
+        && !table.zombie(record.host.pid)
+}
+pub(crate) fn child_owned(record: &Record, table: &dyn ProcessTable) -> bool {
+    record.child.is(table.process(record.child.pid))
         && table
             .process(record.child.pid)
-            .is_some_and(|p| p.uid == uid && p.parent == record.host.pid)
-        && table.environment_var(record.host.pid, MARKER).as_deref() == Some(&record.launch_id)
+            .is_some_and(|p| p.uid == crate::relay::peer::current_uid())
         && table.environment_var(record.child.pid, MARKER).as_deref() == Some(&record.launch_id)
-        && std::fs::canonicalize(&record.executable).is_ok_and(|expected| {
-            table
-                .executable(record.child.pid)
-                .and_then(|p| std::fs::canonicalize(p).ok())
-                == Some(expected)
+        && table.executable(record.child.pid).is_some_and(|actual| {
+            actual == record.executable
+                || std::fs::canonicalize(actual).ok().as_ref() == Some(&record.executable)
         })
-        && !table.zombie(record.host.pid)
         && !table.zombie(record.child.pid)
 }
-
+pub(crate) fn verified(record: &Record, table: &dyn ProcessTable) -> bool {
+    host_owned(record, table)
+        && child_owned(record, table)
+        && table
+            .process(record.child.pid)
+            .is_some_and(|p| p.parent == record.host.pid)
+}
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ExchangeFailure {
+    Unavailable,
+    #[cfg(unix)]
+    Uncertain,
+}
 /// One request to the host's control socket, admitted only from the host
 /// the kernel reports at the other end.
 #[cfg(unix)]
-pub(super) fn exchange(record: &Record, table: &dyn ProcessTable, request: Value) -> Option<Value> {
-    use std::io::{BufRead, BufReader, Write};
+fn control_stream(
+    record: &Record,
+    table: &dyn ProcessTable,
+) -> Option<std::os::unix::net::UnixStream> {
     use std::os::unix::fs::FileTypeExt;
     use std::os::unix::net::UnixStream;
     if !verified(record, table) {
@@ -102,7 +119,7 @@ pub(super) fn exchange(record: &Record, table: &dyn ProcessTable, request: Value
     {
         return None;
     }
-    let mut stream = UnixStream::connect(&record.socket).ok()?;
+    let stream = UnixStream::connect(&record.socket).ok()?;
     let peer = crate::relay::peer::peer_credentials(&stream).ok()?;
     if peer.uid != crate::relay::peer::current_uid() || peer.pid != Some(record.host.pid) {
         return None;
@@ -111,23 +128,58 @@ pub(super) fn exchange(record: &Record, table: &dyn ProcessTable, request: Value
     stream
         .set_write_timeout(Some(Duration::from_secs(3)))
         .ok()?;
-    writeln!(stream, "{request}").ok()?;
+    Some(stream)
+}
+#[cfg(unix)]
+pub(super) fn exchange_result(
+    record: &Record,
+    table: &dyn ProcessTable,
+    request: Value,
+) -> Result<Value, ExchangeFailure> {
+    use std::io::{BufRead, BufReader, Write};
+    let mut stream = control_stream(record, table).ok_or(ExchangeFailure::Unavailable)?;
+    let bytes = format!("{request}\n").into_bytes();
+    let mut written = 0;
+    while written < bytes.len() {
+        match stream.write(&bytes[written..]) {
+            Ok(0) => {
+                return Err(if written == 0 {
+                    ExchangeFailure::Unavailable
+                } else {
+                    ExchangeFailure::Uncertain
+                })
+            }
+            Ok(count) => written += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                return Err(if written == 0 {
+                    ExchangeFailure::Unavailable
+                } else {
+                    ExchangeFailure::Uncertain
+                })
+            }
+        }
+    }
     let mut response = String::new();
     BufReader::new(stream)
         .take(32_769)
         .read_line(&mut response)
-        .ok()?;
-    serde_json::from_str(&response).ok()
+        .map_err(|_| ExchangeFailure::Uncertain)?;
+    if !response.ends_with('\n') || response.len() > 32_768 {
+        return Err(ExchangeFailure::Uncertain);
+    }
+    serde_json::from_str(&response).map_err(|_| ExchangeFailure::Uncertain)
 }
-
-/// The initial managed host is Unix-only: no Windows route answers.
 #[cfg(windows)]
-pub(super) fn exchange(
+pub(super) fn exchange_result(
     _record: &Record,
     _table: &dyn ProcessTable,
     _request: Value,
-) -> Option<Value> {
-    None
+) -> Result<Value, ExchangeFailure> {
+    Err(ExchangeFailure::Unavailable)
+}
+pub(super) fn exchange(record: &Record, table: &dyn ProcessTable, request: Value) -> Option<Value> {
+    exchange_result(record, table, request).ok()
 }
 
 pub fn deliver(
@@ -144,25 +196,93 @@ pub fn deliver(
     if !path.exists() {
         return None;
     }
-    let Some(record) = read_record(&path).filter(|r| r.session_id == session) else {
-        return Some(InjectOutcome::Refused(
-            "Droid spawn ownership could not be verified".into(),
+    let Some(record) = read_record(&path) else {
+        return Some(InjectOutcome::Waiting(
+            "Droid ownership record is unavailable".into(),
         ));
     };
+    if record.session_id != session {
+        return Some(InjectOutcome::Refused(
+            "Droid ownership record names a different session".into(),
+        ));
+    }
     Some(
-        match exchange(&record, table, json!({"op":"prompt", "id":id, "text":text}))
-            .and_then(|v| v["status"].as_str().map(str::to_string))
-            .as_deref()
-        {
-            Some("delivered") => InjectOutcome::Delivered,
-            Some("accepted") => {
-                InjectOutcome::Accepted("Droid JSON-RPC host queued this turn".into())
+        match exchange_result(&record, table, json!({"op":"prompt", "id":id, "text":text})) {
+            Err(ExchangeFailure::Unavailable) => {
+                InjectOutcome::Waiting("Droid host is unavailable; nothing was submitted".into())
             }
-            Some("refused") => InjectOutcome::Refused("Droid JSON-RPC refused the turn".into()),
-            Some("in_doubt") | None => InjectOutcome::InDoubt(
-                "Droid JSON-RPC handoff could not be confirmed; it will not be repeated".into(),
+            #[cfg(unix)]
+            Err(ExchangeFailure::Uncertain) => InjectOutcome::InDoubt(
+                "Droid handoff could not be confirmed; it will not be repeated".into(),
             ),
-            _ => InjectOutcome::Waiting("Droid JSON-RPC host is not ready".into()),
+            Ok(response) => match response["status"].as_str() {
+                Some("delivered") => InjectOutcome::Delivered,
+                Some("accepted") => {
+                    InjectOutcome::Accepted("Droid native host queued this turn".into())
+                }
+                Some("refused") => {
+                    InjectOutcome::Refused("Droid native host refused the turn".into())
+                }
+                _ => InjectOutcome::InDoubt(
+                    "Droid did not confirm its submission outcome; it will not be repeated".into(),
+                ),
+            },
         },
     )
+}
+
+#[cfg(unix)]
+#[derive(Serialize, Deserialize)]
+pub(super) struct InitialTask {
+    pub id: String,
+    pub text: String,
+}
+#[cfg(unix)]
+pub(super) fn write_initial(
+    runtime: &Path,
+    launch: &str,
+    id: &str,
+    text: &str,
+) -> std::io::Result<()> {
+    if !is_session_id(launch)
+        || id.is_empty()
+        || id.len() > 256
+        || text.is_empty()
+        || text.len() > 65_536
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Invalid Droid initial task",
+        ));
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(runtime.join(format!("{launch}.task.json")))?;
+    serde_json::to_writer(
+        &mut file,
+        &InitialTask {
+            id: id.into(),
+            text: text.into(),
+        },
+    )?;
+    file.sync_all()
+}
+#[cfg(unix)]
+pub(super) fn initial(runtime: &Path, launch: &str) -> anyhow::Result<Option<InitialTask>> {
+    let path = runtime.join(format!("{launch}.task.json"));
+    if !path.exists() {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        private(runtime, true) && private(&path, false),
+        "Droid initial task is not private"
+    );
+    let file = crate::platform::fs::no_follow(std::fs::OpenOptions::new().read(true)).open(path)?;
+    anyhow::ensure!(
+        file.metadata()?.len() <= 1024 * 1024,
+        "Droid initial task exceeds limit"
+    );
+    Ok(Some(serde_json::from_reader(file.take(1024 * 1024 + 1))?))
 }

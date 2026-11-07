@@ -149,7 +149,7 @@ crates/relay-node/scripts/generate-contract.sh --out /tmp/CoreContract.swift
 One core runs per machine: whichever installed it (the relay CLI or a desktop
 app), the apps attach to the running daemon's socket.
 
-### Factory Droid workers
+## Factory Droid workers
 
 The `droid` harness starts the installed Factory CLI as a persistent
 `droid exec --input-format stream-jsonrpc --output-format stream-jsonrpc`
@@ -165,9 +165,19 @@ permission requests are refused except the exact launch-pinned
 `send_relay_message` MCP capability. That private server is installed for the
 worker automatically, and sends are attributed using its verified process
 ancestry, host/child start times and native session ID. It cannot name another
-agent identity. A delivery ID is retained for the host's lifetime: replaying
-identical text returns its prior state, a changed payload is refused, and an
-uncertain submission is never blindly sent again.
+agent identity. A private indexed delivery journal retains completed IDs while
+memory holds only pending messages: replaying identical text returns its prior
+state, a changed payload is refused, and an
+uncertain submission is never blindly sent again. The initial task is queued
+before the host publishes readiness, so core restart recovery cannot adopt
+a worker whose initial handoff was missed.
+
+The managed child disables Droid's automatic updater for that process; Relay
+never updates the person's CLI or global settings. The native wire contract
+and API-key inference were verified with Droid 1.6.0. Droid 0.148.1 initialized
+but rejected inference with the same valid key, so an older CLI authentication
+error alone does not establish that a key needs replacing. Automatic
+final-answer forwarding is unavailable for Droid; replies use the private MCP.
 
 The initial managed-worker route is available on macOS and Linux. Arbitrary
 already-open terminal sessions and Windows messaging are not offered by this

@@ -37,7 +37,7 @@ impl LocalSessions {
 
     /// Whether the nearest agent process of this user's above `pid` (itself
     /// included) is OpenCode, rather than a Claude Code session, a trusted
-    /// Codex, a Grok leader, Muse, Devin, `cursor-agent` or a Cursor editor
+    /// Codex, a Grok leader, Muse, Factory Droid, Devin, `cursor-agent` or a Cursor editor
     /// extension host, or a VS Code Copilot runtime.
     pub(super) fn opencode_is_nearest(&self, pid: i32, claude: &claude::Registry) -> bool {
         let table = &*self.table;
@@ -76,10 +76,10 @@ impl LocalSessions {
     }
 
     /// Whether the nearest agent process of this user's above `pid` (itself
-    /// included) is Devin, Cursor CLI/editor or VS Code Copilot
+    /// included) is Factory Droid, Devin, Cursor CLI/editor or VS Code Copilot
     /// one, rather than a Claude Code session, a trusted Codex, a Grok
     /// leader, OpenCode or Muse. It is what stops an environment tag a nested
-    /// Devin, Cursor or Copilot session inherited from an enclosing agent naming that
+    /// Droid, Devin, Cursor or Copilot session inherited from an enclosing agent naming that
     /// outer session: the file its own process holds, or the editor's hook
     /// record, decides instead.
     pub(super) fn devin_is_nearest(&self, pid: i32, claude: &claude::Registry) -> bool {

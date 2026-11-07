@@ -90,7 +90,7 @@ pub enum RelayCommands {
         #[arg(long)]
         launch_id: String,
     },
-    /// Make a session-scoped request to the local relay socket.
+    /// Private bounded relay-send transport for a spawned Factory Droid session.
     #[command(hide = true)]
     DroidSpawnMcp {
         #[arg(long)]

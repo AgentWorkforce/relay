@@ -61,7 +61,15 @@ pub fn is_droid_process(table: &dyn ProcessTable, pid: i32) -> bool {
     table
         .executable(pid)
         .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
-        .is_some_and(|name| matches!(name.as_str(), "droid" | "droid.exe"))
+        .is_some_and(|name| {
+            matches!(name.as_str(), "droid" | "droid.exe")
+                || name.strip_prefix("droid-").is_some_and(|version| {
+                    version.split('.').count() == 3
+                        && version.split('.').all(|part| {
+                            !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit())
+                        })
+                })
+        })
 }
 pub fn session(config: &DroidConfig, table: &dyn ProcessTable, pid: i32) -> Option<String> {
     let mut matches = records(config, table)

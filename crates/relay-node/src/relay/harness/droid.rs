@@ -21,6 +21,8 @@ pub mod host {
     }
 }
 #[cfg(unix)]
+mod dedup;
+#[cfg(unix)]
 pub mod protocol;
 
 use super::{
@@ -63,18 +65,21 @@ fn adapter(cx: &HarnessContext) -> Arc<dyn HarnessAdapter> {
 }
 const MARKER: &str = "AGENT_RELAY_DROID_SPAWN";
 const TIMEOUT: Duration = Duration::from_secs(30);
+const STARTUP_GUIDANCE: &str = "Droid did not open its native session. Check `droid --version` (verified with 1.6.0) and Factory sign-in.";
 fn unsupported() -> Option<String> {
     (!cfg!(unix)).then(|| "Factory Droid managed messaging is not available on Windows.".into())
 }
 
 mod registry;
-use registry::exchange;
 #[cfg(unix)]
 use registry::write_record;
+use registry::{child_owned, exchange, host_owned};
 pub use registry::{deliver, runtime, Record};
 pub(crate) use registry::{read_record, verified};
 
+type Terminate = Arc<dyn Fn(&dyn ProcessTable, SpawnedProcess) + Send + Sync>;
 pub struct DroidAdapter {
+    terminate: Terminate,
     executable: Option<PathBuf>,
     config: DroidConfig,
     table: Arc<dyn ProcessTable>,
@@ -115,7 +120,7 @@ impl DroidAdapter {
         }
         if root.is(self.table.process(root.pid)) {
             for process in owned {
-                stop_process(self.table.as_ref(), process.pid, Some(process.start));
+                (self.terminate)(self.table.as_ref(), SpawnedProcess::of(process));
             }
         }
     }
@@ -124,9 +129,13 @@ impl DroidAdapter {
         let development = cx
             .app_data_dir
             .file_name()
-            .is_some_and(|s| s.to_string_lossy().ends_with(".dev"));
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.ends_with(".dev"));
         Self {
             executable,
+            terminate: Arc::new(|table, process| {
+                stop_process(table, process.pid, Some(process.start))
+            }),
             config: DroidConfig::from_env(&|k| cx.var(k), &cx.home).development(development),
             table: cx.table.clone(),
             helper: std::env::current_exe().ok(),
@@ -146,7 +155,12 @@ impl DroidAdapter {
             .filter(|r| r.session_id == target.id)
     }
     fn process_state(&self, agent: &Watched) -> ProcessLiveness {
-        if agent.alive {
+        if agent.alive
+            || self.record(&agent.target).is_some_and(|r| {
+                agent.process == Some(r.host)
+                    && (host_owned(&r, self.table.as_ref()) || child_owned(&r, self.table.as_ref()))
+            })
+        {
             return ProcessLiveness::Running;
         }
         let gone = |process: SpawnedProcess| {
@@ -173,7 +187,7 @@ fn executable(cx: &HarnessContext) -> Option<PathBuf> {
     let usable =
         |p: &Path| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.mode() & 0o111 != 0);
     if let Some(path) = cx.var("RELAY_DESKTOP_DROID") {
-        return Some(PathBuf::from(path)).filter(|p| usable(p));
+        return std::fs::canonicalize(path).ok().filter(|p| usable(p));
     }
     cx.var("PATH")
         .into_iter()
@@ -183,7 +197,8 @@ fn executable(cx: &HarnessContext) -> Option<PathBuf> {
             cx.home.join(".local/bin/droid"),
             PathBuf::from("/opt/homebrew/bin/droid"),
         ])
-        .find(|p| usable(p))
+        .filter(|p| usable(p))
+        .find_map(|p| std::fs::canonicalize(p).ok())
 }
 
 impl HarnessAdapter for DroidAdapter {
@@ -227,6 +242,10 @@ impl SpawnFacet for DroidAdapter {
             let dir = runtime(&self.config);
             crate::relay::paths::socket_directory(&dir)
                 .map_err(|_| LaunchError::Failed("Droid spawn folder is not private".into()))?;
+            registry::write_initial(&dir, &launch.session_id, &launch.message_id, &launch.text)
+                .map_err(|_| {
+                    LaunchError::Failed("Droid initial task could not be saved privately".into())
+                })?;
             let arguments = vec![
                 "droid-spawn-host".into(),
                 "--executable".into(),
@@ -270,43 +289,31 @@ impl SpawnFacet for DroidAdapter {
             let ready = dir.join(format!("{}.ready.json", launch.session_id));
             loop {
                 if let Some(record) = read_record(&ready).filter(|r| {
-                    r.launch_id == launch.session_id && verified(r, self.table.as_ref())
+                    r.launch_id == launch.session_id
+                        && r.initial_message_id.as_deref() == Some(launch.message_id.as_str())
+                        && verified(r, self.table.as_ref())
                 }) {
                     let target = Target::new(SessionKind::Droid, record.session_id.clone());
                     started(&target, Some(record.host));
-                    match exchange(
-                        &record,
-                        self.table.as_ref(),
-                        json!({"op":"prompt","id":launch.message_id,"text":launch.text}),
-                    )
-                    .and_then(|v| v["status"].as_str().map(str::to_string))
-                    .as_deref()
-                    {
-                        Some("accepted" | "delivered") => {
-                            return Ok(Launched {
-                                target,
-                                process: Some(record.host),
-                                task: TaskHandoff::Unconfirmed("jsonrpc-input"),
-                            });
-                        }
-                        _ => {
-                            self.stop(&target, Some(&record.host));
-                            return Err(LaunchError::Failed(
-                                "Droid did not accept its initial task".into(),
-                            ));
-                        }
-                    }
+                    return Ok(Launched {
+                        target,
+                        process: Some(record.host),
+                        task: TaskHandoff::Unconfirmed("jsonrpc-input"),
+                    });
                 }
                 if self.table.process_gone(pid) || Instant::now() >= deadline {
                     if let Some(process) = process {
                         self.stop_pending(process, &launch.session_id);
                     }
-                    return Err(LaunchError::Failed("Droid JSON-RPC session did not start; check `droid auth status` and sign in with `droid auth login`".into()));
+                    return Err(LaunchError::Failed(STARTUP_GUIDANCE.into()));
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
         })();
         result.map_err(|error: LaunchError| {
+            let _ = std::fs::remove_file(
+                runtime(&self.config).join(format!("{}.task.json", launch.session_id)),
+            );
             let args = vec![
                 "exec".into(),
                 "--input-format".into(),
@@ -343,42 +350,54 @@ impl SpawnFacet for DroidAdapter {
             }
             std::thread::sleep(Duration::from_millis(50));
         };
-        (record.launch_id == intent.session_id && verified(&record, self.table.as_ref())).then(
-            || {
-                (
-                    Target::new(SessionKind::Droid, record.session_id),
-                    Some(record.host),
-                )
-            },
-        )
+        if record.launch_id != intent.session_id {
+            return None;
+        }
+        let target = Target::new(SessionKind::Droid, record.session_id.clone());
+        if record.initial_message_id.as_deref() != Some(intent.message_id.as_str())
+            || !verified(&record, self.table.as_ref())
+        {
+            self.stop(&target, Some(&record.host));
+            // A process that has not stopped still owns its place. It is
+            // never freed silently while an unobserved worker survives.
+            return self
+                .alive(&target, Some(&record.host))
+                .then_some((target, Some(record.host)));
+        }
+        Some((target, Some(record.host)))
     }
     fn alive(&self, target: &Target, process: Option<&SpawnedProcess>) -> bool {
-        self.record(target)
-            .is_some_and(|r| process == Some(&r.host) && verified(&r, self.table.as_ref()))
+        self.record(target).is_some_and(|r| {
+            process == Some(&r.host)
+                && (host_owned(&r, self.table.as_ref()) || child_owned(&r, self.table.as_ref()))
+        })
     }
     fn stop(&self, target: &Target, process: Option<&SpawnedProcess>) {
-        if let Some(record) = self
-            .record(target)
-            .filter(|r| process == Some(&r.host) && verified(r, self.table.as_ref()))
+        let Some(record) = self.record(target).filter(|r| process == Some(&r.host)) else {
+            return;
+        };
+        if verified(&record, self.table.as_ref())
+            && exchange(&record, self.table.as_ref(), json!({"op":"stop"})).is_some()
         {
-            if exchange(&record, self.table.as_ref(), json!({"op":"stop"})).is_some() {
-                let deadline = Instant::now() + Duration::from_secs(3);
-                while record.host.is(self.table.process(record.host.pid))
-                    && Instant::now() < deadline
-                {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while host_owned(&record, self.table.as_ref()) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
             }
-            stop_process(
-                self.table.as_ref(),
-                record.child.pid,
-                Some(record.child.start),
-            );
-            stop_process(
-                self.table.as_ref(),
-                record.host.pid,
-                Some(record.host.start),
-            );
+        }
+        if child_owned(&record, self.table.as_ref()) {
+            (self.terminate)(self.table.as_ref(), record.child);
+        }
+        if host_owned(&record, self.table.as_ref()) {
+            (self.terminate)(self.table.as_ref(), record.host);
+        }
+        if !host_owned(&record, self.table.as_ref()) && !child_owned(&record, self.table.as_ref()) {
+            let dir = runtime(&self.config);
+            for name in [
+                format!("{}.json", record.session_id),
+                format!("{}.ready.json", record.launch_id),
+            ] {
+                let _ = std::fs::remove_file(dir.join(name));
+            }
         }
     }
     fn observe(&self, agents: &[Watched]) -> Vec<Observation> {
@@ -407,3 +426,6 @@ impl SpawnFacet for DroidAdapter {
 
 #[cfg(all(test, unix))]
 mod tests;
+
+#[cfg(all(test, unix))]
+mod compatibility_tests;
