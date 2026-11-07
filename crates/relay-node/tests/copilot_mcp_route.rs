@@ -15,7 +15,9 @@ use futures_util::future::BoxFuture;
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
+/// A stand-in for Desktop's account-owned transport and peer refusal.
 struct ManagedAccount;
+/// Refuse any unexpected settings write during a routing-only test.
 struct NoDirect;
 impl agent_relay_node::relay::setup::DirectDelivery for NoDirect {
     fn delivers_directly(&self) -> bool {
@@ -93,6 +95,7 @@ impl AccountPlugin for ManagedAccount {
     }
 }
 
+/// Construct the production core in an isolated directory without running discovery.
 fn core(home: &std::path::Path, account: Option<Arc<dyn AccountPlugin>>) -> Arc<Core> {
     let config = Config {
         paths: CorePaths::for_socket(home.join("core.sock")).unwrap(),
@@ -115,6 +118,7 @@ fn core(home: &std::path::Path, account: Option<Arc<dyn AccountPlugin>>) -> Arc<
     .0
 }
 
+/// The same initialize envelope sent by the app-owned stdio bridge.
 fn request(method: &str) -> Request {
     Request {
         method: method.into(),
@@ -129,6 +133,7 @@ fn request(method: &str) -> Request {
 }
 
 #[tokio::test]
+/// The outer router must preserve the request and caller for account verification.
 async fn native_mcp_initialization_reaches_the_account_through_the_outer_router() {
     let temp = tempfile::tempdir().unwrap();
     let outbound = Outbound::new(
@@ -159,6 +164,7 @@ async fn native_mcp_initialization_reaches_the_account_through_the_outer_router(
 }
 
 #[tokio::test]
+/// A missing account transport refuses before parsing unrelated Codex-hook input.
 async fn unmanaged_or_declined_native_mcp_never_falls_into_the_codex_hook() {
     for account in [None, Some(TestAccount::new().into_plugin())] {
         let temp = tempfile::tempdir().unwrap();
